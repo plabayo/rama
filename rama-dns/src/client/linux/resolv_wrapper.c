@@ -92,7 +92,19 @@ rama_res_query(struct rama_resolver *resolver, struct rama_res_config *config,
   struct __res_state *state = &resolver->state;
   state->retrans = config->retrans;
   state->retry = config->retry;
-  state->nscount = config->nscount;
+  /* libc indexes its MAXNS-sized nameserver arrays below nscount: only ever
+     ask a prefix of the configured set. */
+  int nscount = config->nscount;
+  if (nscount < 0) {
+    nscount = 0;
+  }
+  if (nscount > resolver->nscount) {
+    nscount = resolver->nscount;
+  }
+  if (nscount > MAXNS) {
+    nscount = MAXNS;
+  }
+  state->nscount = nscount;
   state->options = config->options;
   errno = 0;
   int len = res_nquery(state, name, ns_c_in, type, answer, capacity);

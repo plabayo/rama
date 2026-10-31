@@ -2,6 +2,7 @@
 //! calls so embedders do not ship an Android component.
 
 use std::{
+    ptr::NonNull,
     sync::OnceLock,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -153,10 +154,18 @@ fn with_env<T>(
             BoxError::from_static_str("Android context is not initialized"),
         )
     })?;
-    // SAFETY: ndk-context returns the process JavaVM pointer installed by the
-    // Android runtime. It remains valid for the lifetime of the process, and
-    // jni's JavaVM wrapper does not take ownership of or destroy the VM.
-    let vm = unsafe { JavaVM::from_raw(context.vm().cast()) };
+    let vm_ptr = NonNull::new(context.vm()).ok_or_else(|| {
+        PlatformVerifyError::with_source(
+            PlatformVerifyErrorKind::Unavailable,
+            BoxError::from_static_str("Android context has a null JavaVM"),
+        )
+    })?;
+    // SAFETY: `JavaVM::from_raw` needs a valid, non-null `JavaVM` pointer
+    // supporting JNI >= 1.4. Non-null is checked above. The pointer was handed
+    // to `ndk_context::initialize_android_context`, whose `# Safety` makes its
+    // caller guarantee valid pointers; Android VMs support JNI 1.6 and are
+    // never destroyed while the process runs. The wrapper does not own the VM.
+    let vm = unsafe { JavaVM::from_raw(vm_ptr.as_ptr().cast()) };
     vm.attach_current_thread(f)
 }
 

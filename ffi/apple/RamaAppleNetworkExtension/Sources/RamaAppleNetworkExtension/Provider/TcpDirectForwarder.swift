@@ -159,6 +159,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// `closeClientWrite` so a torn egress isn't presented to the client
     /// app as a clean server EOF.
     private var s2cTerminalError: Error?
+    /// `.failed` reported by the egress connection while the server read was open.
+    /// Reads continue while the connection still returns bytes; a clean EOF after
+    /// the upload's FIN clears it, otherwise it ends the flow.
+    private var connectionFailure: Error?
+    /// The egress writer failed: the upload is dead, so no later EOF makes the close orderly.
+    private var egressWriteFailed = false
+    /// Identifies the receive in flight, so a grace timer ends only the one it was armed for.
+    private var receiveGeneration: UInt64 = 0
     /// Queue-confined error already observed while draining a server tail.
     /// A writer watchdog may expire before the original-error backstop; the
     /// owner must preserve this cause rather than replace it with a timeout.
@@ -166,7 +174,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// forwarder's queue; reading the cause on another queue races receive EOF.
     var pendingServerReadError: Error? {
         dispatchPrecondition(condition: .onQueue(queue))
-        return s2cTerminalError
+        return s2cTerminalError ?? connectionFailure
     }
 
     /// Set by `markClientReadDrained` / `markEgressReadDrained`
@@ -430,6 +438,55 @@ final class TcpDirectForwarder: @unchecked Sendable {
         }
     }
 
+    /// The egress connection reported `.failed` after it was ready; call on `queue`.
+    /// Returns whether the forwarder owns the flow's end: received bytes still
+    /// drain, and the failure is the cause unless both FINs were exchanged.
+    func failConnection(_ error: Error) -> Bool {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !cancelled, !terminalFired else { return false }
+        if s2cEofBuffered {
+            let uploadEnding = c2sPhase == .finishing || c2sPhase == .finished
+            // Network.framework reports `.failed` once both FINs are exchanged.
+            if s2cTerminalError != nil || uploadEnding { return true }
+            if s2cPhase == .finished {
+                failReadLocked(error)
+            } else {
+                // The upload half died; the flow ends once the server tail drained.
+                connectionFailure = error
+                armS2CBackstopLocked()
+            }
+            return true
+        }
+        guard serverTailMayRemainLocked else { return false }
+        if connectionFailure == nil { connectionFailure = error }
+        armS2CBackstopLocked()
+        if inFlightReceive { armReceiveGraceLocked() }
+        return true
+    }
+
+    /// The egress writer failed after promotion; call on `queue`. Returns whether
+    /// the forwarder owns the flow's end: the received server tail still drains,
+    /// and the first failure stays the cause.
+    func failEgressWrite(_ error: Error) -> Bool {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !cancelled, !terminalFired, serverTailMayRemainLocked else { return false }
+        egressWriteFailed = true
+        if connectionFailure == nil { connectionFailure = s2cTerminalError ?? error }
+        armS2CBackstopLocked()
+        if inFlightReceive { armReceiveGraceLocked() }
+        return true
+    }
+
+    /// Whether server bytes may still be on their way to the client. Without
+    /// any, a failure leaves nothing to drain and the owner tears down at once.
+    private var serverTailMayRemainLocked: Bool {
+        switch s2cPhase {
+        case .buffering: return !s2cBuffer.isEmpty || clientWritePump.hasOutstandingWork
+        case .active, .finishing: return true
+        case .finished: return false
+        }
+    }
+
     /// Fires from the read pump's `cancelForPromote` `onComplete`
     /// barrier (C→S direction). Tells the forwarder: "the old
     /// `flow.readData` is fully drained — you may now issue your
@@ -526,7 +583,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// callback (`onEgressPumpDrained`). After full drain, fires
     /// EOF/read transitions.
     private func flushC2SBufferLocked() {
-        guard !cancelled, c2sPhase == .active else { return }
+        // A failed connection cannot take more upload bytes; the flow ends with the failure.
+        guard !cancelled, c2sPhase == .active, connectionFailure == nil else { return }
         while var payload = c2sBuffer.first() {
             let chunk = payload.prefix(
                 maxBytes: min(writeChunkLimit, writerMemoryBudget.tcpPayloadViewMaxBytes))
@@ -652,13 +710,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// holding a paused chunk, no-op.
     private func scheduleClientReadLocked() {
         guard !cancelled, c2sPhase == .active,
-              !inFlightRead, !c2sWritePaused else { return }
+              !inFlightRead, !c2sWritePaused, connectionFailure == nil else { return }
         inFlightRead = true
         flow.readData { [weak self] data, error in
             guard let self else { return }
             if let data, !data.isEmpty, !self.onActivity() { return }
             let transitPayload: TcpPayloadCursor?
             if let data, !data.isEmpty {
+                // Forwarded without a copy; see `TcpRetainedBuffer`.
                 guard let payload = self.writerMemoryBudget.makeTcpTransitCursor(data)
                 else {
                     self.queue.async { [weak self] in
@@ -675,7 +734,9 @@ final class TcpDirectForwarder: @unchecked Sendable {
             self.queue.async { [weak self, transitPayload] in
                 guard let self else { return }
                 self.inFlightRead = false
-                guard !self.cancelled, self.c2sPhase == .active else {
+                guard !self.cancelled, self.c2sPhase == .active,
+                    self.connectionFailure == nil
+                else {
                     return
                 }
                 if let error {
@@ -702,6 +763,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
         guard !cancelled, s2cPhase == .active,
               !inFlightReceive, !s2cWritePaused else { return }
         inFlightReceive = true
+        receiveGeneration &+= 1
+        if connectionFailure != nil { armReceiveGraceLocked() }
         connection.receive(
             minimumIncompleteLength: 1,
             maximumLength: min(
@@ -728,7 +791,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
             }
             self.runOnQueue { [self, transitPayload] in
                 self.inFlightReceive = false
-                guard !self.cancelled, self.s2cPhase == .active else {
+                // A grace expiry may already have ended the read for this receive.
+                guard !self.cancelled, self.s2cPhase == .active, !self.s2cEofBuffered else {
                     return
                 }
 
@@ -739,7 +803,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 let terminalObserved = isComplete || error != nil
                 if terminalObserved {
                     self.s2cEofBuffered = true
-                    if let error { self.s2cTerminalError = error }
+                    if let error {
+                        self.s2cTerminalError = self.connectionFailure ?? error
+                    } else if !self.egressWriteFailed,
+                        self.c2sPhase == .finishing || self.c2sPhase == .finished
+                    {
+                        // Both FINs: the failure reported the orderly close.
+                        self.connectionFailure = nil
+                    }
                     self.noteS2CTerminalLocked()
                 }
                 if let transitPayload {
@@ -796,8 +867,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
 
     /// Transition C→S to `.finishing`: send FIN via the egress
     /// write pump and wait for the drain to actually complete
-    /// before marking `.finished`. This is load-bearing for
-    /// NWConnection lifecycle hygiene — firing terminal
+    /// before marking `.finished`. NWConnection lifecycle
+    /// hygiene depends on this — firing terminal
     /// (and consequently dropping the per-flow ctx) BEFORE
     /// the pump's drain → FIN sequence completes risked the
     /// pump being deallocated mid-flight, losing the FIN, and leaving the
@@ -848,9 +919,34 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 self.failReadLocked(error)
                 return
             }
+            if let failure = self.connectionFailure,
+                self.c2sPhase == .active || self.c2sPhase == .buffering
+            {
+                // Orderly server EOF, but the upload half died with the connection.
+                self.failReadLocked(failure)
+                return
+            }
             self.maybeFireTerminalLocked()
         }
         armS2CBackstopLocked()
+    }
+
+    /// After a connection failure a receive normally completes at once with what
+    /// is still buffered; one that does not ends the server read with the failure.
+    private func armReceiveGraceLocked() {
+        let generation = receiveGeneration
+        queue.asyncAfter(deadline: .now() + egressFailedReceiveGrace) { [weak self] in
+            guard let self, !self.cancelled, !self.terminalFired, self.inFlightReceive,
+                self.receiveGeneration == generation, self.s2cPhase == .active,
+                !self.s2cEofBuffered, let failure = self.connectionFailure
+            else { return }
+            self.s2cEofBuffered = true
+            self.s2cTerminalError = failure
+            self.noteS2CTerminalLocked()
+            if self.s2cBuffer.isEmpty && !self.s2cWritePaused {
+                self.finishS2CLocked()
+            }
+        }
     }
 
     // ── Internal: drain backstop ─────────────────────────────────
@@ -940,16 +1036,17 @@ final class TcpDirectForwarder: @unchecked Sendable {
         guard afterMs != .max else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.cancelled, !self.terminalFired else { return }
+            let abnormalError = self.s2cTerminalError ?? self.connectionFailure
             let abnormalTailPending =
-                self.s2cTerminalError != nil
-                && self.s2cEofBuffered
+                (self.s2cTerminalError != nil && self.s2cEofBuffered
+                    || self.connectionFailure != nil)
                 && self.s2cPhase != .finished
             guard self.s2cPhase == .finishing || abnormalTailPending else {
                 return
             }
             self.s2cBackstop = nil
             let idleMs = self.drainIdleMs()
-            if self.s2cTerminalError == nil && idleMs < self.drainStallMs {
+            if abnormalError == nil && idleMs < self.drainStallMs {
                 self.scheduleS2CBackstopLocked(
                     afterMs: max(self.drainStallMs - idleMs, 50))
                 return
@@ -960,7 +1057,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     text:
                         "promote forwarder S→C drain backstop fired; forcing teardown (peer not draining)"
                 ))
-            if let error = self.s2cTerminalError {
+            if let error = abnormalError {
                 self.failReadLocked(error)
             } else {
                 self.onDrainStall()
@@ -986,6 +1083,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private func maybeFireTerminalLocked() {
         guard !terminalFired else { return }
         guard c2sPhase == .finished, s2cPhase == .finished else { return }
+        if let failure = connectionFailure {
+            // No orderly close cleared the failure: the flow ends with it.
+            failReadLocked(failure)
+            return
+        }
         fireTerminalLocked(releaseConnection: true)
     }
 

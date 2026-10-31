@@ -12,14 +12,13 @@ use crate::Error;
 /// A value that is both a valid `HeaderValue` and `String`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HeaderValueString {
-    /// Care must be taken to only set this value when it is also
-    /// a valid `String`, since `as_str` will convert to a `&str`
-    /// in an unchecked manner.
+    // Safety invariant: `value.as_bytes()` is valid UTF-8.
     value: HeaderValue,
 }
 
 impl HeaderValueString {
     pub fn from_val(val: &HeaderValue) -> Result<Self, Error> {
+        // `to_str` succeeds only for visible ASCII, which is valid UTF-8.
         if val.to_str().is_ok() {
             Ok(Self { value: val.clone() })
         } else {
@@ -29,7 +28,7 @@ impl HeaderValueString {
 
     #[must_use]
     pub fn from_string(src: String) -> Option<Self> {
-        // A valid `str` (the argument)...
+        // Keeps the `value` invariant: the bytes come unchanged from a `str`.
         let bytes = Bytes::from(src);
         HeaderValue::from_maybe_shared(bytes)
             .ok()
@@ -38,15 +37,15 @@ impl HeaderValueString {
 
     #[must_use]
     pub const fn from_static(src: &'static str) -> Self {
-        // A valid `str` (the argument)...
+        // Keeps the `value` invariant: the bytes come unchanged from a `str`.
         Self {
             value: HeaderValue::from_static(src),
         }
     }
 
     pub fn as_str(&self) -> &str {
-        // HeaderValueString is only created from HeaderValues
-        // that have validated they are also UTF-8 strings.
+        // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8, which the
+        // `value` safety invariant gives.
         unsafe { str::from_utf8_unchecked(self.value.as_bytes()) }
     }
 }
@@ -85,7 +84,7 @@ impl FromStr for HeaderValueString {
     type Err = InvalidHeaderValue;
 
     fn from_str(src: &str) -> Result<Self, Self::Err> {
-        // A valid `str` (the argument)...
+        // Keeps the `value` invariant: the bytes come unchanged from a `str`.
         src.parse().map(|value| Self { value })
     }
 }

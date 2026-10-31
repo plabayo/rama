@@ -160,7 +160,7 @@ where
 }
 
 fn lookup_process_path(pid: i32) -> Option<std::path::PathBuf> {
-    match unsafe { pid_path(pid) } {
+    match pid_path(pid) {
         Ok(path) => path,
         Err(err) => {
             tracing::warn!(pid, error = %err, "demo traffic logger: failed to resolve pid path");
@@ -170,7 +170,7 @@ fn lookup_process_path(pid: i32) -> Option<std::path::PathBuf> {
 }
 
 fn lookup_process_arguments(pid: i32) -> Vec<String> {
-    match unsafe { pid_arguments(pid) } {
+    match pid_arguments(pid) {
         Ok(args) => args,
         Err(err) => {
             tracing::warn!(pid, error = %err, "demo traffic logger: failed to resolve pid arguments");

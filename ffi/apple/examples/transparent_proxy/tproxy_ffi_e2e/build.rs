@@ -44,7 +44,8 @@ fn main() {
     // engine glue) changes, and rebuild the staticlib from current sources.
     //
     // Skipped when an explicit prebuilt dir is provided via
-    // `RAMA_TPROXY_EXAMPLE_LIB_DIR` (e.g. CI that builds the lib itself).
+    // `RAMA_TPROXY_EXAMPLE_LIB_DIR` (e.g. CI that builds the lib itself); such a
+    // lib must also be built with `--features e2e` (it disables dial9).
     if env::var_os("RAMA_TPROXY_EXAMPLE_LIB_DIR").is_none() {
         let tproxy_rs_dir = transparent_proxy_dir.join("tproxy_rs");
         println!(

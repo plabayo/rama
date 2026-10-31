@@ -11,6 +11,7 @@ use super::{
     common::{authority_length, read_authority, write_authority_to_buf},
 };
 use rama_core::bytes::{BufMut, BytesMut};
+use rama_core::error::ErrorExt;
 use rama_core::telemetry::tracing;
 use rama_net::{address::HostWithPort, user};
 use rama_utils::collections::smallvec::{SmallVec, smallvec};
@@ -411,9 +412,9 @@ impl UsernamePasswordRequest {
 
         r.read_exact(&mut buffer[..username_length]).await?;
 
-        // SAFETY: above code has username_length check
-        let username =
-            unsafe { NonEmptyStr::new_unchecked(ArcStr::try_from(&buffer[..username_length])?) };
+        // Non-empty by the length check above; the checked constructor costs one comparison.
+        let username = NonEmptyStr::try_from(ArcStr::try_from(&buffer[..username_length])?)
+            .map_err(ErrorExt::into_box_error)?;
 
         let password_length = r.read_u8().await?;
 
@@ -423,10 +424,9 @@ impl UsernamePasswordRequest {
             let password_length = password_length as usize;
             r.read_exact(&mut buffer[..password_length]).await?;
 
-            // SAFETY: above code has username_length check
-            let password = unsafe {
-                NonEmptyStr::new_unchecked(ArcStr::try_from(&buffer[..password_length])?)
-            };
+            // Non-empty: this branch has `password_length != 0`.
+            let password = NonEmptyStr::try_from(ArcStr::try_from(&buffer[..password_length])?)
+                .map_err(ErrorExt::into_box_error)?;
 
             user::Basic::new(username, password)
         };

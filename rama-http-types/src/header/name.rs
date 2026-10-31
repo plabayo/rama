@@ -4,7 +4,7 @@ use rama_core::bytes::ByteStr;
 use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::error::Error;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::str::FromStr;
@@ -74,10 +74,11 @@ enum Repr<T> {
 struct Custom(ByteStr);
 
 #[derive(Debug, Clone)]
-// Invariant: buf holds only header-name token bytes (ASCII, so valid UTF-8);
-// lower marks it as already lowercase.
 struct MaybeLower<'a> {
+    // Safety invariant: every byte of `buf` is an ASCII header-name token
+    // byte, so `buf` is valid UTF-8.
     buf: &'a [u8],
+    // `buf` is already lowercase when true (hashing only, not safety).
     lower: bool,
 }
 
@@ -162,8 +163,17 @@ macro_rules! standard_headers {
 
             #[inline]
             fn as_str(&self) -> &'static str {
-                // Safety: test_parse_standard_headers ensures these &[u8]s are &str-safe.
-                unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
+                match *self {
+                    $(
+                    // UTF-8 is checked at compile time.
+                    StandardHeader::$konst => const {
+                        match std::str::from_utf8($name_bytes) {
+                            Ok(name) => name,
+                            Err(_) => panic!("standard header name is not UTF-8"),
+                        }
+                    },
+                    )+
+                }
             }
 
             const fn from_bytes(name_bytes: &[u8]) -> Option<StandardHeader> {
@@ -1255,7 +1265,7 @@ impl StandardName {
             } else {
                 b
             };
-            f.write_str(unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&b)) })?;
+            f.write_char(char::from(b))?;
         }
         Ok(())
     }
@@ -1292,6 +1302,7 @@ impl StandardName {
 /// ```
 // HEADER_CHARS maps every byte that is 128 or larger to 0 so everything that is
 // mapped by HEADER_CHARS, maps to a valid single-byte UTF-8 codepoint.
+// `NameTable` checks this at compile time.
 #[rustfmt::skip]
 const HEADER_CHARS: [u8; 256] = [
     //  0      1      2      3      4      5      6      7      8      9
@@ -1326,6 +1337,7 @@ const HEADER_CHARS: [u8; 256] = [
 /// Valid header name characters for HTTP/2.0 and HTTP/3.0
 // HEADER_CHARS_H2 maps every byte that is 128 or larger to 0 so everything that is
 // mapped by HEADER_CHARS_H2, maps to a valid single-byte UTF-8 codepoint.
+// `NameTable` checks this at compile time.
 #[rustfmt::skip]
 const HEADER_CHARS_H2: [u8; 256] = [
     //  0      1      2      3      4      5      6      7      8      9
@@ -1357,11 +1369,51 @@ const HEADER_CHARS_H2: [u8; 256] = [
         0,     0,     0,     0,     0,     0                              // 25x
 ];
 
+/// The byte tables `parse_hdr` validates header names with.
+#[derive(Clone, Copy)]
+enum NameTable {
+    /// [`HEADER_CHARS`]: any token byte, uppercase mapped to lowercase.
+    Http1,
+    /// [`HEADER_CHARS_H2`]: lowercase token bytes only.
+    Lowercase,
+}
+
+impl NameTable {
+    /// # Safety-usable invariant
+    ///
+    /// Every entry of the returned table is ASCII, and the entry of every
+    /// non-ASCII byte (`0x80..=0xFF`) is 0 (rejected).
+    #[inline]
+    const fn table(self) -> &'static [u8; 256] {
+        const fn ascii_only(table: &[u8; 256]) -> bool {
+            let mut i = 0;
+            while i < table.len() {
+                if !table[i].is_ascii() || (i >= 0x80 && table[i] != 0) {
+                    return false;
+                }
+                i += 1;
+            }
+            true
+        }
+        const _: () = assert!(ascii_only(&HEADER_CHARS) && ascii_only(&HEADER_CHARS_H2));
+
+        match self {
+            Self::Http1 => &HEADER_CHARS,
+            Self::Lowercase => &HEADER_CHARS_H2,
+        }
+    }
+}
+
+/// # Safety-usable invariant
+///
+/// A returned `Repr::Custom` name has `buf == data`, and every byte of `data`
+/// is ASCII.
 fn parse_hdr<'a>(
     data: &'a [u8],
     b: &'a mut [MaybeUninit<u8>; SCRATCH_BUF_SIZE],
-    table: &[u8; 256],
+    table: NameTable,
 ) -> Result<HdrName<'a>, InvalidHeaderName> {
+    let table = table.table();
     match data.len() {
         0 => Err(InvalidHeaderName::new()),
         len @ 1..=SCRATCH_BUF_SIZE => {
@@ -1369,15 +1421,22 @@ fn parse_hdr<'a>(
             data.iter()
                 .zip(b.iter_mut())
                 .for_each(|(index, out)| *out = MaybeUninit::new(table[*index as usize]));
-            // Safety: len bytes of b were just initialized.
-            let name: &'a [u8] = unsafe { slice_assume_init(&b[0..len]) };
+            // SAFETY: `assume_init_ref` requires every element of `b[0..len]`
+            // to be initialized. `len == data.len() <= SCRATCH_BUF_SIZE`, so
+            // the zip above wrote `b[i]` for every `i < len`.
+            let name: &'a [u8] = unsafe { b[0..len].assume_init_ref() };
             match StandardHeader::from_bytes(name) {
                 Some(sh) => Ok(StandardName::new(sh, name, data).into()),
                 None => {
                     if name.contains(&0) {
                         Err(InvalidHeaderName::new())
                     } else {
-                        Ok(HdrName::custom(data, data == name))
+                        // SAFETY: `HdrName::custom` requires every byte of
+                        // `data` to be an ASCII token byte. `name[i]` is
+                        // `table[data[i]]` and none is 0, so `table` accepts
+                        // every byte of `data`; `NameTable::table` rejects all
+                        // non-ASCII bytes. `lower` is only a hashing hint.
+                        Ok(unsafe { HdrName::custom(data, data == name) })
                     }
                 }
             }
@@ -1387,7 +1446,11 @@ fn parse_hdr<'a>(
             if data.iter().any(|&b| table[b as usize] == 0) {
                 Err(InvalidHeaderName::new())
             } else {
-                Ok(HdrName::custom(data, false))
+                // SAFETY: `HdrName::custom` requires every byte of `data` to be
+                // an ASCII token byte. The check above found no byte that
+                // `table` maps to 0, and `NameTable::table` maps every
+                // non-ASCII byte to 0.
+                Ok(unsafe { HdrName::custom(data, false) })
             }
         }
         _ => Err(InvalidHeaderName::new()),
@@ -1420,8 +1483,7 @@ impl HeaderName {
     /// HTTP's case-insensitive semantics for equality and hashing.
     pub fn from_bytes(src: &[u8]) -> Result<HeaderName, InvalidHeaderName> {
         let mut buf = uninit_u8_array();
-        // Precondition: HEADER_CHARS is a valid table for parse_hdr().
-        Ok(parse_hdr(src, &mut buf, &HEADER_CHARS)?.into())
+        Ok(parse_hdr(src, &mut buf, NameTable::Http1)?.into())
     }
 
     /// Converts a slice of bytes to an HTTP header name.
@@ -1444,8 +1506,7 @@ impl HeaderName {
     /// ```
     pub fn from_lowercase(src: &[u8]) -> Result<HeaderName, InvalidHeaderName> {
         let mut buf = uninit_u8_array();
-        // Precondition: HEADER_CHARS_H2 is a valid table for parse_hdr()
-        Ok(parse_hdr(src, &mut buf, &HEADER_CHARS_H2)?.into())
+        Ok(parse_hdr(src, &mut buf, NameTable::Lowercase)?.into())
     }
 
     /// Decode a lowercase HTTP/2 or HTTP/3 name, retaining its shared storage.
@@ -1454,11 +1515,12 @@ impl HeaderName {
     /// of `src` without copying; invalid or uppercase bytes are rejected.
     pub fn from_lowercase_bytes(src: Bytes) -> Result<Self, InvalidHeaderName> {
         let mut scratch = uninit_u8_array();
-        match parse_hdr(&src, &mut scratch, &HEADER_CHARS_H2)?.inner {
+        match parse_hdr(&src, &mut scratch, NameTable::Lowercase)?.inner {
             Repr::Standard(standard) => Ok(standard.into()),
             Repr::Custom(_) => {
-                // SAFETY: parse_hdr validated every byte as an ASCII lowercase
-                // token character, hence valid UTF-8.
+                // SAFETY: `ByteStr::from_utf8_unchecked` requires valid UTF-8.
+                // `parse_hdr` returned a custom name, so by its safety-usable
+                // invariant every byte of `src` is ASCII, which is valid UTF-8.
                 let name = unsafe { ByteStr::from_utf8_unchecked(src) };
                 Ok(Custom(name).into())
             }
@@ -2020,10 +2082,15 @@ impl Error for InvalidHeaderName {}
 // ===== HdrName =====
 
 impl<'a> HdrName<'a> {
-    // Precondition: buf holds only header-name token bytes; lower only if already lowercase.
-    fn custom(buf: &'a [u8], lower: bool) -> HdrName<'a> {
+    /// # Safety
+    ///
+    /// The caller must ensure every byte of `buf` is an ASCII header-name
+    /// token byte (the `MaybeLower::buf` safety invariant). `lower` must be
+    /// true only if `buf` is already lowercase; that part is semantic (hashing)
+    /// and cannot cause undefined behavior.
+    unsafe fn custom(buf: &'a [u8], lower: bool) -> HdrName<'a> {
         HdrName {
-            // Invariant (on MaybeLower): follows from the precondition
+            // The `MaybeLower::buf` invariant is this function's precondition.
             inner: Repr::Custom(MaybeLower { buf, lower }),
         }
     }
@@ -2033,8 +2100,7 @@ impl<'a> HdrName<'a> {
         F: FnOnce(HdrName<'_>) -> U,
     {
         let mut buf = uninit_u8_array();
-        // Precondition: HEADER_CHARS is a valid table for parse_hdr().
-        let hdr = parse_hdr(hdr, &mut buf, &HEADER_CHARS)?;
+        let hdr = parse_hdr(hdr, &mut buf, NameTable::Http1)?;
         Ok(f(hdr))
     }
 
@@ -2043,9 +2109,8 @@ impl<'a> HdrName<'a> {
         F: FnOnce(HdrName<'_>) -> U,
     {
         let mut buf = uninit_u8_array();
-        let hdr =
-            // Precondition: HEADER_CHARS is a valid table for parse_hdr().
-            parse_hdr(hdr.as_bytes(), &mut buf, &HEADER_CHARS).expect("static str is invalid name");
+        let hdr = parse_hdr(hdr.as_bytes(), &mut buf, NameTable::Http1)
+            .expect("static str is invalid name");
         f(hdr)
     }
 }
@@ -2060,7 +2125,9 @@ impl<'a> From<HdrName<'a>> for HeaderName {
             Repr::Custom(maybe_lower) => {
                 // The original spelling is kept, whether or not it is lowercase.
                 let buf = Bytes::copy_from_slice(maybe_lower.buf);
-                // Safety: the invariant on MaybeLower ensures buf is ASCII, hence valid UTF-8.
+                // SAFETY: `ByteStr::from_utf8_unchecked` requires valid UTF-8.
+                // `buf` is a copy of `maybe_lower.buf`, which is ASCII by the
+                // `MaybeLower::buf` safety invariant.
                 let byte_str = unsafe { ByteStr::from_utf8_unchecked(buf) };
 
                 HeaderName {
@@ -2136,9 +2203,7 @@ fn lowercase_ascii(bytes: &[u8]) -> String {
 
 fn fmt_lowercase_ascii(fmt: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
     for &b in bytes {
-        let b = HEADER_CHARS[b as usize];
-        // Safety: header names are restricted to ASCII token bytes.
-        fmt.write_str(unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&b)) })?;
+        fmt.write_char(char::from(HEADER_CHARS[b as usize]))?;
     }
     Ok(())
 }
@@ -2159,24 +2224,12 @@ const fn eq_ignore_ascii_case_const(lower: &[u8], s: &[u8]) -> bool {
     true
 }
 
-// Utility functions for MaybeUninit<>. These are drawn from unstable API's on
-// MaybeUninit<> itself.
+// Scratch buffer for `parse_hdr`, left uninitialized to skip zeroing it.
 const SCRATCH_BUF_SIZE: usize = 64;
 const SCRATCH_BUF_OVERFLOW: usize = SCRATCH_BUF_SIZE + 1;
 
 fn uninit_u8_array() -> [MaybeUninit<u8>; SCRATCH_BUF_SIZE] {
-    let arr = MaybeUninit::<[MaybeUninit<u8>; SCRATCH_BUF_SIZE]>::uninit();
-    // Safety: assume_init() is claiming that an array of MaybeUninit<>
-    // has been initialized, but MaybeUninit<>'s do not require initialization.
-    unsafe { arr.assume_init() }
-}
-
-// Assuming all the elements are initialized, get a slice of them.
-//
-// Safety: All elements of `slice` must be initialized to prevent
-// undefined behavior.
-unsafe fn slice_assume_init<T>(slice: &[MaybeUninit<T>]) -> &[T] {
-    &*(slice as *const [MaybeUninit<T>] as *const [T])
+    [const { MaybeUninit::uninit() }; SCRATCH_BUF_SIZE]
 }
 
 #[cfg(test)]
@@ -2230,8 +2283,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_static_invalid_name_lengths() {
-        // Safety: ONE_TOO_LONG contains only the UTF-8 safe, single-byte codepoint b'a'.
-        let _ = HeaderName::from_static(unsafe { std::str::from_utf8_unchecked(ONE_TOO_LONG) });
+        let _ = HeaderName::from_static(std::str::from_utf8(ONE_TOO_LONG).unwrap());
     }
 
     #[test]

@@ -799,7 +799,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             core?.logDebug(
                 "egress NWConnection failed after flow opened: \(String(describing: error))"
             )
-            if !failEgressThroughRust(error ?? TcpFlowContext.postReadyFailureError()) {
+            let failure = error ?? TcpFlowContext.postReadyFailureError()
+            if !failEgressThroughRust(failure) && !failEgressThroughForwarder(failure) {
                 applyPostReadyTeardown(error: error)
             }
         }
@@ -889,6 +890,18 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         return true
     }
 
+    /// A promoted egress that failed ends the forwarder's server read as a failed receive
+    /// does: the response tail it received still drains. Returns whether the forwarder
+    /// took the failure.
+    private func failEgressThroughForwarder(_ error: Error) -> Bool {
+        guard !ctx.isDone, ctx.mode == .promoted,
+            ctx.directForwarder?.failConnection(error) == true
+        else { return false }
+        ctx.egressFailed = true
+        cancelEgressTimers()
+        return true
+    }
+
     /// No egress timer may tear the flow down once its egress is reset or failed.
     private func cancelEgressTimers() {
         timeoutWork?.cancel()
@@ -924,12 +937,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             onTerminal: { [weak self] error in
                 guard let self else { return }
                 // Preserve terminal send failures in both modes. In promoted
-                // mode the forwarder's natural terminal is intentionally
-                // clean, so the errorful context teardown must win before we
-                // cancel the forwarder and let that clean callback run.
+                // mode the forwarder drains the received server tail first and
+                // ends the flow with the first failure.
                 if self.ctx.mode != .viaRust {
-                    self.ctx.applyWriterTerminal(error)
-                    self.ctx.directForwarder?.cancel()
+                    self.ctx.applyPromotedEgressWriterTerminal(error)
                 } else if !self.failEgressThroughRust(error) {
                     self.terminalDrainBackstop?.cancel()
                     self.terminalDrainBackstop = nil

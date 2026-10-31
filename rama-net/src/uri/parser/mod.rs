@@ -42,7 +42,7 @@
 //! ## File layout
 //!
 //! - [`mod.rs`](self) — `ParserMode`, [`parse`] entry, `MAX_URI_LEN`,
-//!   tiny shared helpers ([`check_pct_encoded`], [`bytes_to_str`])
+//!   tiny shared helpers ([`check_pct_encoded`], [`check_utf8_sequence`])
 //! - [`byte_sets`] — `[bool; 256]` lookup tables + `is_*` predicates
 //! - [`scheme`] — scheme-end scanner
 //! - [`path`] — single-pass walker for path / query / fragment
@@ -52,7 +52,7 @@
 use super::lazy::{LazyAuthority, LazyUriRef};
 use super::{AbsoluteUriRef, Component, ParseError, Uri};
 
-use rama_core::bytes::Bytes;
+use rama_core::bytes::{ByteStr, Bytes};
 
 pub(crate) mod authority;
 mod path;
@@ -96,6 +96,10 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     // Origin-form: starts with `/`. No scheme, no authority.
     if bytes[0] == b'/' {
         let scan = path::scan_path_query_fragment(&bytes, 0, mode)?;
+        // SAFETY: `ByteStr::from_utf8_unchecked` requires valid UTF-8.
+        // `scan_path_query_fragment` returned `Ok` for `bytes[0..]`, which its
+        // safety-usable invariant makes valid UTF-8.
+        let bytes = unsafe { ByteStr::from_utf8_unchecked(bytes) };
         return Ok(Uri::from_lazy(LazyUriRef {
             scheme: None,
             authority: None,
@@ -132,27 +136,33 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
 /// Shared by [`parse`] and [`parse_uri_reference`] so the scheme +
 /// hier-part walk has a single definition.
 fn try_parse_absolute(bytes: &Bytes, mode: ParserMode) -> Result<Option<Uri>, ParseError> {
-    let Some(colon) = scheme::find_scheme_end(bytes) else {
+    let Some(scheme_str) = scheme::find_scheme(bytes) else {
         return Ok(None);
     };
-    let scheme_str = bytes_to_str(&bytes[..colon]);
     let Ok(scheme) = crate::Protocol::try_from(scheme_str) else {
         return Err(ParseError::InvalidComponent(Component::Scheme));
     };
-    let after_colon = colon + 1;
+    let after_colon = scheme_str.len() + 1;
     let auth_scan = authority::parse_optional_authority(bytes, after_colon, mode)?;
     let path_start = auth_scan.path_start;
     let path_scan = path::scan_path_query_fragment(bytes, path_start, mode)?;
-    Ok(Some(build_uri(
-        Some(scheme),
-        auth_scan.authority,
-        (path_start as u16, path_scan.path_end),
-        path_scan.query,
-        path_scan.fragment,
-        // `Bytes::clone` is one atomic refcount bump — only paid on
-        // the commit path; no clone if we return None earlier.
-        bytes.clone(),
-    )))
+    // SAFETY: `build_uri` requires `bytes` to be valid UTF-8. It is the
+    // concatenation of `bytes[..after_colon]` (`scheme_str`, a `str`, then
+    // the ASCII `:` that `find_scheme` stopped at), `bytes[after_colon..path_start]`
+    // (valid UTF-8 by `parse_optional_authority`'s safety-usable invariant)
+    // and `bytes[path_start..]` (valid UTF-8 by `scan_path_query_fragment`'s).
+    Ok(Some(unsafe {
+        build_uri(
+            Some(scheme),
+            auth_scan.authority,
+            (path_start as u16, path_scan.path_end),
+            path_scan.query,
+            path_scan.fragment,
+            // `Bytes::clone` is one atomic refcount bump — only paid on
+            // the commit path; no clone if we return None earlier.
+            bytes.clone(),
+        )
+    }))
 }
 
 /// Parse an absolute URI directly from borrowed bytes.
@@ -263,15 +273,20 @@ pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri
         }
     }
 
-    Ok(build_uri(
-        None,
-        Some(auth),
-        // Path is empty by construction — authority-form has no path.
-        (len as u16, len as u16),
-        None,
-        None,
-        bytes,
-    ))
+    // SAFETY: `build_uri` requires `bytes` to be valid UTF-8. `parse_authority`
+    // returned `Ok` for `bytes[0..len]`, which its safety-usable invariant
+    // makes valid UTF-8.
+    Ok(unsafe {
+        build_uri(
+            None,
+            Some(auth),
+            // Path is empty by construction — authority-form has no path.
+            (len as u16, len as u16),
+            None,
+            None,
+            bytes,
+        )
+    })
 }
 
 /// Validate an HTTP request-target directly from borrowed wire bytes.
@@ -386,7 +401,7 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
             path: (0, 0),
             query: None,
             fragment: None,
-            bytes,
+            bytes: ByteStr::new(),
         }));
     }
 
@@ -429,14 +444,20 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
         }
     }
 
-    Ok(build_uri(
-        None,
-        auth_scan.authority,
-        (path_start as u16, path_scan.path_end),
-        path_scan.query,
-        path_scan.fragment,
-        bytes,
-    ))
+    // SAFETY: `build_uri` requires `bytes` to be valid UTF-8. It is
+    // `bytes[..path_start]` (valid UTF-8 by `parse_optional_authority`'s
+    // safety-usable invariant, started at 0) followed by `bytes[path_start..]`
+    // (valid UTF-8 by `scan_path_query_fragment`'s).
+    Ok(unsafe {
+        build_uri(
+            None,
+            auth_scan.authority,
+            (path_start as u16, path_scan.path_end),
+            path_scan.query,
+            path_scan.fragment,
+            bytes,
+        )
+    })
 }
 
 /// Assemble parsed parts into a [`Uri`]. Always emits the `Lazy` shape —
@@ -444,7 +465,11 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
 /// IDN host bytes are now preserved verbatim via
 /// [`Host::Uninterpreted`](crate::address::Host::Uninterpreted)), the
 /// typed view never diverges from the source buffer.
-fn build_uri(
+///
+/// # Safety
+///
+/// The caller must ensure that `bytes` is valid UTF-8.
+unsafe fn build_uri(
     scheme: Option<crate::Protocol>,
     authority: Option<LazyAuthority>,
     path: (u16, u16),
@@ -452,6 +477,9 @@ fn build_uri(
     fragment: Option<(u16, u16)>,
     bytes: Bytes,
 ) -> Uri {
+    // SAFETY: `ByteStr::from_utf8_unchecked` requires valid UTF-8, which
+    // `bytes` is by this fn's `# Safety` contract.
+    let bytes = unsafe { ByteStr::from_utf8_unchecked(bytes) };
     Uri::from_lazy(LazyUriRef {
         scheme,
         authority,
@@ -463,14 +491,6 @@ fn build_uri(
 }
 
 // --- Small shared helpers used by sibling modules --------------------------
-
-/// `bytes` is assumed to be valid UTF-8 (caller is responsible). Used for
-/// scheme conversion, where the parser has already validated the byte set
-/// is a subset of ASCII.
-pub(super) fn bytes_to_str(bytes: &[u8]) -> &str {
-    // Safety: scheme bytes are validated as ASCII alpha + digit + + - .
-    unsafe { core::str::from_utf8_unchecked(bytes) }
-}
 
 /// Validate the UTF-8 sequence starting at `bytes[i]`. Caller has verified
 /// `bytes[i] >= 0x80`; anything else is single-byte ASCII and bypasses
@@ -492,6 +512,11 @@ pub(super) fn bytes_to_str(bytes: &[u8]) -> &str {
 ///   one op instead of two range compares.
 /// - All-ASCII inputs never enter this function — that fast path pays
 ///   nothing.
+///
+/// # Safety-usable invariant
+///
+/// On `Ok(len)`, `bytes[i..i + len]` is in bounds and is one well-formed
+/// UTF-8 sequence.
 #[inline]
 pub(super) fn check_utf8_sequence(bytes: &[u8], i: usize) -> Result<usize, ParseError> {
     let b1 = bytes[i];

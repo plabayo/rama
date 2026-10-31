@@ -28,6 +28,14 @@ mod test_util;
 mod bridge;
 pub use bridge::BridgeIo;
 
+mod read_at;
+#[doc(inline)]
+pub use read_at::{BlockCache, BlockCacheConfig, FileIdentity, ReadAt, ReadAtFiles};
+
+mod read_buf;
+#[doc(inline)]
+pub use read_buf::poll_read_limited;
+
 mod owned;
 #[doc(inline)]
 pub use owned::{

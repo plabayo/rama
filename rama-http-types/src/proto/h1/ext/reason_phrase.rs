@@ -42,7 +42,14 @@ impl ReasonPhrase {
     ///
     /// # Safety
     ///
-    /// Given `reason` parameter is a valid "reason phrase"
+    /// The caller must ensure every byte of `reason` is one that the checked
+    /// constructors accept: HTAB, SP, a visible ASCII character or obs-text
+    /// (`0x80..=0xFF`).
+    ///
+    /// This is a semantic precondition, not a memory-safety one: no unsafe code
+    /// relies on it, and breaking it cannot cause undefined behavior. It is
+    /// `unsafe` because an invalid byte such as CR or LF is written verbatim
+    /// into an HTTP/1 status line.
     pub unsafe fn from_bytes_unchecked(reason: Bytes) -> Self {
         Self(reason)
     }

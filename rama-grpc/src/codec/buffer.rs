@@ -85,6 +85,9 @@ impl EncodeBuf<'_> {
     }
 }
 
+// SAFETY: every method forwards to the one inner `BytesMut`, whose own `BufMut` impl
+// relates `remaining_mut`, `chunk_mut` and `advance_mut` as the trait requires; the
+// `put*` overrides move that same cursor, so the forwarded methods stay consistent.
 unsafe impl BufMut for EncodeBuf<'_> {
     #[inline]
     fn remaining_mut(&self) -> usize {
@@ -93,10 +96,9 @@ unsafe impl BufMut for EncodeBuf<'_> {
 
     #[inline]
     unsafe fn advance_mut(&mut self, cnt: usize) {
-        // SAFETY: `BufMut::advance_mut`'s precondition (the first `cnt` bytes of
-        // the chunk have been initialized) is the caller's to uphold and is
-        // forwarded verbatim to the inner buffer, which has the identical
-        // precondition.
+        // SAFETY: `BytesMut::advance_mut` requires the next `cnt` bytes of its
+        // `chunk_mut()` to be initialized. `self.chunk_mut()` is that same chunk, so
+        // this method's identical `# Safety` precondition discharges it.
         unsafe { self.buf.advance_mut(cnt) }
     }
 
@@ -156,6 +158,9 @@ mod tests {
         let mut buf = EncodeBuf::new(&mut bytes);
 
         let initial = buf.remaining_mut();
+        buf.chunk_mut()[..20].copy_from_slice(&[0; 20]);
+        // SAFETY: the 20 bytes `advance_mut` exposes were initialized just above
+        // through `chunk_mut`, and nothing has touched the buffer since.
         unsafe { buf.advance_mut(20) };
         assert_eq!(buf.remaining_mut(), initial - 20);
 

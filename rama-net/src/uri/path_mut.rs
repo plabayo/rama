@@ -4,6 +4,8 @@
 //! Lazy → Owned promotion across multiple operations and supports
 //! the common `push_segment` / `pop_segment` pattern.
 
+use crate::std::string::String;
+
 use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
@@ -290,8 +292,7 @@ impl<'a> PathMut<'a> {
 
 impl core::fmt::Debug for PathMut<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Safety: parser invariant — path bytes are valid UTF-8.
-        let path = unsafe { core::str::from_utf8_unchecked(&self.owned.path) };
+        let path = String::from_utf8_lossy(&self.owned.path);
         f.debug_struct("PathMut").field("path", &path).finish()
     }
 }

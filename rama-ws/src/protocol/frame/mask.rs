@@ -23,6 +23,9 @@ fn apply_mask_fallback(buf: &mut [u8], mask: [u8; 4]) {
 pub(super) fn apply_mask_fast32(buf: &mut [u8], mask: [u8; 4]) {
     let mask_u32 = u32::from_ne_bytes(mask);
 
+    // SAFETY: `align_to_mut` requires every bit pattern of the source bytes to be a
+    // valid `u32` (and vice versa for writes back), which holds for `u8` and `u32`;
+    // the middle slice is aligned for `u32` by its postcondition.
     let (prefix, words, suffix) = unsafe { buf.align_to_mut::<u32>() };
     apply_mask_fallback(prefix, mask);
     let head = prefix.len() & 3;

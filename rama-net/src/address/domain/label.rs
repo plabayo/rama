@@ -10,7 +10,7 @@
 //! octets generic, or DNSSEC layer.
 
 use core::hash::{Hash, Hasher};
-use core::{cmp::Ordering, fmt};
+use core::{cmp::Ordering, fmt, ptr};
 
 /// A single DNS label in presentation format.
 ///
@@ -49,7 +49,8 @@ impl Label {
     )]
     pub fn from_str(s: &str) -> Result<&Self, LabelError> {
         validate_label_bytes(s.as_bytes())?;
-        // Safety: `validate_label_bytes` guarantees the invariant.
+        // SAFETY: `from_str_unchecked`'s (semantic) precondition is the label
+        // invariant, which `validate_label_bytes` just checked.
         Ok(unsafe { Self::from_str_unchecked(s) })
     }
 
@@ -58,12 +59,18 @@ impl Label {
     /// # Safety
     ///
     /// The caller must guarantee that `s` upholds every [invariant](Self).
-    /// In practice this is used when iterating over a `Domain`'s buffer, which
-    /// was already fully validated at construction.
+    /// The invariants are semantic: no unsafe code relies on them, so a
+    /// violation breaks `Label`'s documented guarantees but not memory
+    /// safety. In practice this is used when iterating over a `Domain`'s
+    /// buffer, which was already fully validated at construction.
     pub(crate) unsafe fn from_str_unchecked(s: &str) -> &Self {
-        // Safety: `Label` is `#[repr(transparent)]` over `str`, so the layout
-        // of `&str` and `&Label` is identical.
-        unsafe { &*(s as *const str as *const Self) }
+        // SAFETY: dereferencing the cast pointer to create `&Label` requires a
+        // non-null, aligned pointer to a live, valid `Label` for the returned
+        // lifetime. The pointer comes from `s` (same address and length
+        // metadata), `Label` is `#[repr(transparent)]` over `str` so it has
+        // the same layout and validity, and the result keeps `s`'s lifetime
+        // and shared (read-only) access.
+        unsafe { &*(ptr::from_ref::<str>(s) as *const Self) }
     }
 
     /// Returns the label as its underlying string.
@@ -332,6 +339,7 @@ mod tests {
     fn unchecked_constructor_layout() {
         // Compile-time-ish: confirm round trip through unchecked goes via repr(transparent).
         let s = "valid";
+        // SAFETY: "valid" satisfies the label invariant.
         let l = unsafe { Label::from_str_unchecked(s) };
         assert_eq!(l.as_str(), s);
         assert_eq!(l.len(), s.len());

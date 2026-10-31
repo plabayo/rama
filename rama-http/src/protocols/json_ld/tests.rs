@@ -45,6 +45,23 @@ fn invalid_json_bytes_are_rejected() {
 }
 
 #[test]
+fn invalid_utf8_inside_json_strings_is_rejected() {
+    // The escaping branch comes first: it has no debug-build UTF-8 check.
+    for input in [
+        &b"\"<\xf0\""[..],
+        b"\"\xf0\"",
+        b"\"\xff\xfe\"",
+        b"{\"k\":\"\xc3\"}",
+    ] {
+        if let Ok(document) = JsonLd::from_bytes(Bytes::from_static(input)) {
+            // Decoding the accepted text is what Miri reports as UB.
+            let code_points: u32 = document.as_str().chars().map(u32::from).sum();
+            panic!("accepted non-UTF-8 input {input:?} ({code_points})");
+        }
+    }
+}
+
+#[test]
 fn byte_slice_conversion_exposes_the_encoded_document() {
     let document = JsonLd::from_value(&json!({"@type": "WebSite"}));
 

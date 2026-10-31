@@ -17,7 +17,7 @@ static INIT_SHOULD_PANIC: AtomicBool = AtomicBool::new(false);
 static CONFIG_SHOULD_PANIC: AtomicBool = AtomicBool::new(false);
 
 fn init(
-    _config: Option<&rama_net_apple_networkextension::ffi::tproxy::TransparentProxyInitConfig>,
+    _config: Option<rama_net_apple_networkextension::tproxy::TransparentProxyInitConfig>,
 ) -> bool {
     assert!(
         !INIT_SHOULD_PANIC.swap(false, Ordering::SeqCst),
@@ -71,8 +71,7 @@ fn macro_generates_direct_dependency_ffi_symbols() {
         as unsafe extern "C" fn(
             *const rama_net_apple_networkextension::ffi::tproxy::TransparentProxyInitConfig,
         ) -> bool;
-    _ = rama_transparent_proxy_engine_new
-        as unsafe extern "C" fn() -> *mut RamaTransparentProxyEngine;
+    _ = rama_transparent_proxy_engine_new as extern "C" fn() -> *mut RamaTransparentProxyEngine;
     _ = rama_transparent_proxy_engine_handle_app_message
         as unsafe extern "C" fn(
             *mut RamaTransparentProxyEngine,
@@ -115,20 +114,23 @@ fn macro_generates_promote_ffi_symbols() {
 #[test]
 fn initialization_panic_is_contained_at_c_boundary() {
     INIT_SHOULD_PANIC.store(true, Ordering::SeqCst);
+    // SAFETY: a null config is allowed.
     assert!(!unsafe { rama_transparent_proxy_initialize(std::ptr::null()) });
 }
 
 #[test]
 fn engine_build_panic_is_contained_at_c_boundary() {
     CONFIG_SHOULD_PANIC.store(true, Ordering::SeqCst);
-    let engine = unsafe { rama_transparent_proxy_engine_new() };
+    let engine = rama_transparent_proxy_engine_new();
     assert!(engine.is_null());
 
-    let engine = unsafe { rama_transparent_proxy_engine_new() };
+    let engine = rama_transparent_proxy_engine_new();
     assert!(!engine.is_null());
     assert_eq!(
+        // SAFETY: `engine` is a live handle used only on this thread.
         unsafe { rama_transparent_proxy_engine_udp_idle_timeout_ms(engine) },
         60_000
     );
+    // SAFETY: `engine` is live and not used afterwards.
     unsafe { rama_transparent_proxy_engine_free(engine) };
 }

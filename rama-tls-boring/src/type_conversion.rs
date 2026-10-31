@@ -775,7 +775,9 @@ mod tests {
                         .lock()
                         .clone()
                         .expect("session of the first handshake");
-                    // The session was issued for this connector's own context.
+                    // SAFETY: `set_session` requires the session to belong to this `Ssl`'s
+                    // `SslContext`: `cached` comes from the new-session callback of
+                    // `connector`, whose context `connector.configure()` uses for `config`.
                     unsafe { config.set_session(&cached) }.unwrap();
                 }
                 let (client_io, server_io) = tokio::io::duplex(64 * 1024);

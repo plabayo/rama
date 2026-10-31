@@ -43,7 +43,9 @@ use crate::{
 #[cfg(target_os = "windows")]
 use crate::{
     TokioTcpStream,
-    posted_recv::iocp::{live_flows, outstanding_receives},
+    posted_recv::iocp::{
+        live_flows, outstanding_receives, post_foreign_completion, skipped_completions,
+    },
 };
 #[cfg(target_os = "windows")]
 use tokio::sync::Semaphore;
@@ -780,6 +782,37 @@ async fn wrapping_a_socket_attached_elsewhere_fails_open() {
     // SAFETY: the port is ours.
     let closed = unsafe { CloseHandle(other) };
     assert_ne!(closed, 0);
+}
+
+/// A packet on the pool's port that is not of a posted receive (one Winsock
+/// may queue for its own calls) is skipped, never taken as a slot.
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn a_completion_that_is_not_a_posted_receive_is_skipped() {
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let listener = super::harness::listen();
+    let (stream, peer) = tokio::join!(
+        TokioTcpStream::connect(listener.local_addr().unwrap()),
+        listener.accept()
+    );
+    let (stream, _peer) = (stream.unwrap(), peer.unwrap().0);
+    let stream = PostedRecv::new(stream);
+    assert!(stream.is_posted());
+
+    // SAFETY: OVERLAPPED is plain data and all zeroes is a valid value.
+    let foreign: &'static OVERLAPPED = Box::leak(Box::new(unsafe { std::mem::zeroed() }));
+    let before = skipped_completions();
+    post_foreign_completion(foreign).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while skipped_completions() == before {
+        assert!(
+            Instant::now() < deadline,
+            "the foreign completion was not skipped"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    drop(stream);
 }
 
 /// The control for everything above: without the wrapper, Windows drops a

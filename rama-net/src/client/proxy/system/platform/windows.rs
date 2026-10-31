@@ -138,7 +138,11 @@ impl RegistryWatch {
 
 #[cfg(all(target_os = "windows", not(test)))]
 struct RegistryWatch {
+    // Safety invariant: an open registry key handle owned by `self`, closed
+    // only by `Drop`.
     key: HKEY,
+    // Safety invariant: an open event handle owned by `self`, closed only by
+    // `Drop`.
     event: HANDLE,
 }
 
@@ -220,29 +224,36 @@ fn config_from_native(
 ///
 /// # Safety
 ///
-/// `pointer` must be null or point to a readable, NUL-terminated UTF-16 string
-/// allocated with `GlobalAlloc`, and ownership must be transferred exactly
-/// once to this function.
+/// `pointer` must be null or point to an aligned, readable, NUL-terminated
+/// UTF-16 string allocated with `GlobalAlloc`, and ownership must be
+/// transferred exactly once to this function: the caller must not use or free
+/// `pointer` afterwards.
 unsafe fn take_wide_string(pointer: windows_sys::core::PWSTR) -> Option<String> {
     if pointer.is_null() {
         return None;
     }
     let mut length = 0;
     loop {
-        // SAFETY: the caller guarantees a readable NUL-terminated sequence;
-        // all preceding units were non-NUL, so advancing by `length` is valid.
+        // SAFETY: `add` needs the result in the same allocation: units
+        // `0..length` were non-NUL, so `pointer + length` is at or before the
+        // terminator of the caller-guaranteed string.
         let current = unsafe { pointer.add(length) };
-        // SAFETY: `current` is within the caller-guaranteed UTF-16 sequence.
+        // SAFETY: a place read needs `current` aligned, readable and
+        // initialized for a u16: it lies within the caller's aligned string.
         if unsafe { *current } == 0 {
             break;
         }
         length += 1;
     }
-    // SAFETY: the scan established that exactly `length` initialized u16 units
-    // precede the terminator.
+    // SAFETY: `from_raw_parts` needs `pointer` non-null and aligned with
+    // `length` initialized u16s in one allocation, unmodified while the slice
+    // is used (this statement), and `length * 2 <= isize::MAX`: the scan read
+    // those units inside the caller's single-allocation string, which also
+    // bounds the size.
     let value = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(pointer, length) });
-    // SAFETY: ownership was transferred to this function and WinHTTP uses
-    // GlobalAlloc for the returned buffer.
+    // SAFETY: `GlobalFree` needs a `GlobalAlloc` handle not yet freed; the
+    // caller transferred exactly such a string, and the slice borrowing it
+    // ended above. `pointer` is not used afterwards.
     unsafe { GlobalFree(pointer.cast()) };
     Some(value)
 }

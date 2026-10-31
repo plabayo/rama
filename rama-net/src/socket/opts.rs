@@ -1415,7 +1415,10 @@ fn set_only_v6(socket: &Socket, only_v6: bool) -> io::Result<()> {
 #[cfg(target_os = "windows")]
 fn set_exclusive_address_use(socket: &Socket, exclusive: bool) -> io::Result<()> {
     let value = i32::from(exclusive);
-    // SAFETY: a live socket, and a pointer to an `i32` of the length passed.
+    // SAFETY: per the setsockopt docs the call only reads `optlen` bytes at
+    // `optval`; `value` is a live, initialized i32 (the BOOL that
+    // `SO_EXCLUSIVEADDRUSE` takes) and `optlen` is its size. `socket` is
+    // borrowed, so its handle stays open for the call.
     let result = unsafe {
         setsockopt(
             socket.as_raw_socket() as SOCKET,

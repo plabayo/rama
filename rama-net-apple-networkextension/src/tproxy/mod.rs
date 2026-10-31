@@ -159,8 +159,9 @@ pub use self::{
         MAX_WRITER_MEMORY_MAX_BYTES, MAX_WRITER_MEMORY_MAX_ITEMS, NwAttribution,
         NwEgressParameters, NwInterfaceType, NwMultipathServiceType, NwServiceClass,
         NwTcpConnectOptions, TransparentProxyConfig, TransparentProxyFlowAction,
-        TransparentProxyFlowMeta, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
-        TransparentProxyRuleProtocol, WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES,
+        TransparentProxyFlowMeta, TransparentProxyFlowProtocol, TransparentProxyInitConfig,
+        TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+        WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES,
     },
 };
 pub use crate::process::AuditToken;

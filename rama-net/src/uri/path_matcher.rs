@@ -103,7 +103,7 @@ pub struct PathPattern {
     /// Capture names are appended here at compile time; [`Element`] capture
     /// kinds index into it. Owning the names here is what lets
     /// [`PathCaptures`] borrow them for `'a`.
-    name_bytes: Vec<u8>,
+    names: String,
     trailing: TrailingSlash,
     opts: PathMatchOptions,
     /// `true` when no segment binds a name and there is no catch-all — the
@@ -212,7 +212,7 @@ enum ElementKind {
     /// Anonymous wildcard run (`{}`, 1+ chars within the segment).
     Star,
     /// Named wildcard run that records what it matched. The name is the
-    /// `name_bytes[start..start+len]` slice of the owning [`PathPattern`].
+    /// `names[start..start+len]` slice of the owning [`PathPattern`].
     Capture { name_start: usize, name_len: usize },
 }
 
@@ -223,13 +223,7 @@ impl PartialEq for PathPattern {
             && self.prefix == other.prefix
             && self.segments.len() == other.segments.len()
             && self.segments.iter().zip(&other.segments).all(|(a, b)| {
-                pattern_segments_eq(
-                    a,
-                    &self.name_bytes,
-                    b,
-                    &other.name_bytes,
-                    self.opts.ignore_ascii_case,
-                )
+                pattern_segments_eq(a, &self.names, b, &other.names, self.opts.ignore_ascii_case)
             })
     }
 }
@@ -243,21 +237,16 @@ impl Hash for PathPattern {
         self.prefix.hash(state);
         self.segments.len().hash(state);
         for segment in &self.segments {
-            hash_pattern_segment(
-                segment,
-                &self.name_bytes,
-                self.opts.ignore_ascii_case,
-                state,
-            );
+            hash_pattern_segment(segment, &self.names, self.opts.ignore_ascii_case, state);
         }
     }
 }
 
 fn pattern_segments_eq(
     a: &PatternSegment,
-    a_names: &[u8],
+    a_names: &str,
     b: &PatternSegment,
-    b_names: &[u8],
+    b_names: &str,
     ignore_ascii_case: bool,
 ) -> bool {
     match (a, b) {
@@ -299,9 +288,9 @@ fn pattern_segments_eq(
 
 fn elements_eq(
     a: &Element,
-    a_names: &[u8],
+    a_names: &str,
     b: &Element,
-    b_names: &[u8],
+    b_names: &str,
     ignore_ascii_case: bool,
 ) -> bool {
     a.optional == b.optional
@@ -310,9 +299,9 @@ fn elements_eq(
 
 fn element_kinds_eq(
     a: &ElementKind,
-    a_names: &[u8],
+    a_names: &str,
     b: &ElementKind,
-    b_names: &[u8],
+    b_names: &str,
     ignore_ascii_case: bool,
 ) -> bool {
     match (a, b) {
@@ -346,7 +335,7 @@ fn literal_eq(a: &[u8], b: &[u8], ignore_ascii_case: bool) -> bool {
 
 fn hash_pattern_segment<H: Hasher>(
     segment: &PatternSegment,
-    names: &[u8],
+    names: &str,
     ignore_ascii_case: bool,
     state: &mut H,
 ) {
@@ -370,12 +359,7 @@ fn hash_pattern_segment<H: Hasher>(
     }
 }
 
-fn hash_element<H: Hasher>(
-    element: &Element,
-    names: &[u8],
-    ignore_ascii_case: bool,
-    state: &mut H,
-) {
+fn hash_element<H: Hasher>(element: &Element, names: &str, ignore_ascii_case: bool, state: &mut H) {
     element.optional.hash(state);
     match &element.kind {
         ElementKind::Literal(literal) => {
@@ -433,7 +417,7 @@ struct PathRouteNode<T> {
 #[derive(Debug, Clone)]
 struct PathRouteEdge<T> {
     segment: PatternSegment,
-    name_bytes: Vec<u8>,
+    names: String,
     opts: PathMatchOptions,
     rank: PathRouterSegmentRank,
     child: Box<PathRouteNode<T>>,
@@ -561,22 +545,22 @@ impl<T> PathRouter<T> {
                 edge.opts == pattern.opts
                     && pattern_segments_eq(
                         &edge.segment,
-                        &edge.name_bytes,
+                        &edge.names,
                         segment,
-                        &pattern.name_bytes,
+                        &pattern.names,
                         pattern.opts.ignore_ascii_case,
                     )
             }) {
                 idx
             } else {
                 let idx = node.children.partition_point(|edge| edge.rank >= rank);
-                let (segment, name_bytes) =
-                    clone_pattern_segment_with_local_names(segment, &pattern.name_bytes);
+                let (segment, names) =
+                    clone_pattern_segment_with_local_names(segment, &pattern.names);
                 node.children.insert(
                     idx,
                     PathRouteEdge {
                         segment,
-                        name_bytes,
+                        names,
                         opts: pattern.opts,
                         rank,
                         child: Box::default(),
@@ -623,7 +607,7 @@ impl<T> PathRouter<T> {
         let captures = if matched.route.has_captures {
             matched.route.pattern.captures(path)?
         } else {
-            PathCaptures::empty(&matched.route.pattern.name_bytes)
+            PathCaptures::empty(&matched.route.pattern.names)
         };
         Some(PathRouteMatch {
             value: &matched.route.value,
@@ -823,16 +807,16 @@ fn prefix_content_segments<'s, 'p>(segments: &'s [EncodedSegment<'p>]) -> &'s [E
 
 fn clone_pattern_segment_with_local_names(
     segment: &PatternSegment,
-    names: &[u8],
-) -> (PatternSegment, Vec<u8>) {
-    let mut local_names = Vec::new();
+    names: &str,
+) -> (PatternSegment, String) {
+    let mut local_names = String::new();
     let segment = match segment {
         PatternSegment::CatchAll => PatternSegment::CatchAll,
         PatternSegment::NamedCatchAll {
             name_start,
             name_len,
         } => {
-            local_names.extend_from_slice(&names[*name_start..*name_start + *name_len]);
+            local_names.push_str(&names[*name_start..*name_start + *name_len]);
             PatternSegment::NamedCatchAll {
                 name_start: 0,
                 name_len: *name_len,
@@ -851,8 +835,8 @@ fn clone_pattern_segment_with_local_names(
 
 fn clone_element_with_local_names(
     element: &Element,
-    names: &[u8],
-    local_names: &mut Vec<u8>,
+    names: &str,
+    local_names: &mut String,
 ) -> Element {
     let kind = match &element.kind {
         ElementKind::Literal(literal) => ElementKind::Literal(literal.clone()),
@@ -862,7 +846,7 @@ fn clone_element_with_local_names(
             name_len,
         } => {
             let local_start = local_names.len();
-            local_names.extend_from_slice(&names[*name_start..*name_start + *name_len]);
+            local_names.push_str(&names[*name_start..*name_start + *name_len]);
             ElementKind::Capture {
                 name_start: local_start,
                 name_len: *name_len,
@@ -1050,7 +1034,7 @@ impl PathPattern {
         };
         let body = strip_leading_slash(raw);
 
-        let mut name_bytes: Vec<u8> = Vec::new();
+        let mut names = String::new();
         let mut segments = Vec::new();
         let mut capture_free = true;
 
@@ -1067,8 +1051,8 @@ impl PathPattern {
                     }
                     Some(CatchAll::Named(name)) => {
                         capture_free = false;
-                        let name_start = name_bytes.len();
-                        name_bytes.extend_from_slice(name);
+                        let name_start = names.len();
+                        names.push_str(name);
                         segments.push(PatternSegment::NamedCatchAll {
                             name_start,
                             name_len: name.len(),
@@ -1077,7 +1061,7 @@ impl PathPattern {
                     }
                     None => {}
                 }
-                let elements = parse_segment(seg, &mut name_bytes, &mut capture_free);
+                let elements = parse_segment(seg, &mut names, &mut capture_free);
                 if optional_whole_segment_binding(&elements).is_some() {
                     capture_free = false;
                 }
@@ -1097,7 +1081,7 @@ impl PathPattern {
 
         Self {
             segments,
-            name_bytes,
+            names,
             trailing,
             opts,
             capture_free,
@@ -1310,7 +1294,7 @@ impl PathPattern {
             prefix,
         ) {
             Some(PathCaptures {
-                name_bytes: &self.name_bytes,
+                names: &self.names,
                 bindings,
             })
         } else {
@@ -1345,7 +1329,7 @@ impl PathPattern {
     }
 }
 
-/// A recorded capture: name slice into the pattern's `name_bytes`
+/// A recorded capture: name slice into the pattern's `names`
 /// (`name_len == 0` for the anonymous glob), plus the matched value.
 #[derive(Debug, Clone)]
 struct Binding<'p> {
@@ -1402,23 +1386,20 @@ impl<'p> Sink<'_, 'p> {
 /// ```
 #[derive(Debug, Clone)]
 pub struct PathCaptures<'a, 'p> {
-    name_bytes: &'a [u8],
+    names: &'a str,
     bindings: SmallVec<[Binding<'p>; 4]>,
 }
 
 impl<'a, 'p> PathCaptures<'a, 'p> {
-    fn empty(name_bytes: &'a [u8]) -> Self {
+    fn empty(names: &'a str) -> Self {
         Self {
-            name_bytes,
+            names,
             bindings: SmallVec::new(),
         }
     }
 
     fn name_of(&self, b: &Binding<'p>) -> &'a str {
-        let raw = &self.name_bytes[b.name_start..b.name_start + b.name_len];
-        // Safety: capture names are pattern bytes copied verbatim; the
-        // accepted name bytes are all ASCII (see `is_name_byte`).
-        unsafe { core::str::from_utf8_unchecked(raw) }
+        &self.names[b.name_start..b.name_start + b.name_len]
     }
 
     /// The value captured under `name`, or `None` if `name` was not bound.
@@ -1476,7 +1457,7 @@ enum CatchAll<'a> {
     /// `{*}`
     Anon,
     /// `{*name}` (name is non-empty, all [`is_pattern_name_byte`]).
-    Named(&'a [u8]),
+    Named(&'a str),
 }
 
 /// If `seg` is a whole-segment catch-all (`{*}` or `{*name}`), classify it.
@@ -1487,10 +1468,11 @@ fn parse_catchall(seg: &[u8]) -> Option<CatchAll<'_>> {
     if inner.is_empty() {
         return Some(CatchAll::Anon);
     }
-    inner
-        .iter()
-        .all(|&b| is_pattern_name_byte(b))
-        .then_some(CatchAll::Named(inner))
+    if !inner.iter().all(|&b| is_pattern_name_byte(b)) {
+        return None;
+    }
+    // Name bytes are ASCII, so this never fails.
+    core::str::from_utf8(inner).ok().map(CatchAll::Named)
 }
 
 /// Parse one (non catch-all) pattern segment into a sequence of elements.
@@ -1498,11 +1480,11 @@ fn parse_catchall(seg: &[u8]) -> Option<CatchAll<'_>> {
 /// Scans for `{…}` brace groups (`{}` -> [`Star`](ElementKind::Star),
 /// `{name}` -> [`Capture`](ElementKind::Capture)); everything outside braces is
 /// literal. An unclosed `{`, or a group whose body isn't a valid token, is kept
-/// literal. `name_bytes` accumulates capture-name bytes; element name indices
+/// literal. `names` accumulates capture names; element name indices
 /// point into it. `capture_free` is cleared whenever a named capture is seen.
 fn parse_segment(
     seg: &[u8],
-    name_bytes: &mut Vec<u8>,
+    names: &mut String,
     capture_free: &mut bool,
 ) -> SmallVec<[Element; 2]> {
     let mut elements: SmallVec<[Element; 2]> = SmallVec::new();
@@ -1526,7 +1508,7 @@ fn parse_segment(
             b'{' => {
                 // A `{…}` group is a token only when it closes and its body is
                 // a valid name (or empty); otherwise the `{` is a literal byte.
-                if let Some((kind, next)) = parse_brace(seg, i, name_bytes, capture_free) {
+                if let Some((kind, next)) = parse_brace(seg, i, names, capture_free) {
                     flush_literal!();
                     elements.push(Element {
                         kind,
@@ -1576,7 +1558,7 @@ fn parse_segment(
 fn parse_brace(
     seg: &[u8],
     open: usize,
-    name_bytes: &mut Vec<u8>,
+    names: &mut String,
     capture_free: &mut bool,
 ) -> Option<(ElementKind, usize)> {
     let close = open + 1 + seg[open + 1..].iter().position(|&b| b == b'}')?;
@@ -1588,8 +1570,10 @@ fn parse_brace(
     if !inner.iter().all(|&b| is_pattern_name_byte(b)) {
         return None;
     }
-    let name_start = name_bytes.len();
-    name_bytes.extend_from_slice(inner);
+    // Name bytes are ASCII, so this never fails.
+    let inner = core::str::from_utf8(inner).ok()?;
+    let name_start = names.len();
+    names.push_str(inner);
     *capture_free = false;
     Some((
         ElementKind::Capture {

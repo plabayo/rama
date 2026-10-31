@@ -31,6 +31,7 @@ use rama_core::bytes::BytesMut;
 /// ```
 #[derive(Debug, Default)]
 pub struct DomainBuilder {
+    // Safety invariant: `buf` is valid UTF-8 (`str` labels joined by '.').
     buf: BytesMut,
     label_count: usize,
     starts_with_wildcard: bool,
@@ -94,6 +95,12 @@ impl DomainBuilder {
     /// Returns [`PushError`] if the label or resulting name length is invalid.
     pub fn push_label_bytes(&mut self, label: &[u8]) -> Result<&mut Self, PushError> {
         validate_label_bytes(label).map_err(PushError::from_label)?;
+        // A validated label is ASCII, so this does not fail; it reports the
+        // byte `validate_label_bytes` would if it did.
+        let label = core::str::from_utf8(label).map_err(|err| {
+            let at = err.valid_up_to();
+            PushError::from_label(LabelError::invalid_char(label[at], at))
+        })?;
         self.push_validated_label(label)
     }
 
@@ -106,14 +113,14 @@ impl DomainBuilder {
     /// Returns a too-long [`PushError`] if the resulting name length would
     /// exceed `MAX_NAME_LEN`.
     pub fn push(&mut self, label: &Label) -> Result<&mut Self, PushError> {
-        self.push_validated_label(label.as_str().as_bytes())
+        self.push_validated_label(label.as_str())
     }
 
-    fn push_validated_label(&mut self, label: &[u8]) -> Result<&mut Self, PushError> {
+    fn push_validated_label(&mut self, label: &str) -> Result<&mut Self, PushError> {
         // Wildcard `*` is only valid as the leftmost label. The label-level
         // validator accepts `"*"` standalone, so the positional rule lives
         // here in the builder.
-        let is_wildcard = label == b"*";
+        let is_wildcard = label == "*";
         if is_wildcard && !self.is_empty() {
             return Err(PushError::misplaced_wildcard());
         }
@@ -127,12 +134,13 @@ impl DomainBuilder {
         if new_len > MAX_NAME_LEN {
             return Err(PushError::too_long(new_len));
         }
+        // `buf` invariant kept: appends the ASCII '.' and a `str`.
         if !self.is_empty() {
             self.buf.extend_from_slice(b".");
         } else {
             self.starts_with_wildcard = is_wildcard;
         }
-        self.buf.extend_from_slice(label);
+        self.buf.extend_from_slice(label.as_bytes());
         self.label_count += 1;
         Ok(self)
     }
@@ -211,9 +219,12 @@ impl DomainBuilder {
             return Err(PushError::misplaced_wildcard());
         }
         if fully_qualified {
+            // `buf` invariant kept: appends the ASCII '.'.
             self.buf.extend_from_slice(b".");
         }
-        // Safety: builder maintained the Domain invariant at every push.
+        // SAFETY: `from_maybe_borrowed_unchecked` requires UTF-8, which `buf`
+        // is by its field invariant. Semantic part: every push validated its
+        // label and the count / wildcard checks above passed.
         Ok(unsafe { Domain::from_maybe_borrowed_unchecked(self.buf.freeze()) })
     }
 }

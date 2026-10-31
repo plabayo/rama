@@ -88,10 +88,6 @@ impl<B: BufRead> BufReadDecoder<B> {
     /// except that decoded chunks borrow the decoder (~iterator)
     /// so they need to be handled or copied before the next chunk can start decoding.
     pub fn next_strict(&mut self) -> Option<Result<&str, BufReadDecoderError<'_>>> {
-        enum BytesSource {
-            BufRead(usize),
-            Incomplete,
-        }
         macro_rules! try_io {
             ($io_result: expr) => {
                 match $io_result {
@@ -100,62 +96,85 @@ impl<B: BufRead> BufReadDecoder<B> {
                 }
             };
         }
-        let (source, result) = loop {
+        loop {
             if self.bytes_consumed > 0 {
                 self.buf_read.consume(self.bytes_consumed);
                 self.bytes_consumed = 0;
             }
             let buf = try_io!(self.buf_read.fill_buf());
 
-            // Force loop iteration to go through an explicit `continue`
-            enum Unreachable {}
-            let _: Unreachable = if self.incomplete.is_empty() {
+            if self.incomplete.is_empty() {
                 if buf.is_empty() {
                     return None; // EOF
                 }
-                match str::from_utf8(buf) {
-                    Ok(_) => break (BytesSource::BufRead(buf.len()), Ok(())),
-                    Err(error) => {
-                        let valid_up_to = error.valid_up_to();
-                        if valid_up_to > 0 {
-                            break (BytesSource::BufRead(valid_up_to), Ok(()));
-                        }
-                        if let Some(invalid_sequence_length) = error.error_len() {
-                            break (BytesSource::BufRead(invalid_sequence_length), Err(()));
-                        } else {
-                            self.bytes_consumed = buf.len();
-                            self.incomplete = Incomplete::new(buf);
-                            // need more input bytes
-                            continue;
-                        }
-                    }
+                // Only an incomplete code point at the very start needs more
+                // input; that is at most 3 bytes, so the first 4 decide it.
+                let head = &buf[..buf.len().min(4)];
+                if let Err(DecodeError::Incomplete {
+                    valid_prefix: "", ..
+                }) = decode(head)
+                {
+                    self.bytes_consumed = buf.len();
+                    self.incomplete = Incomplete::new(buf);
+                    // need more input bytes
+                    continue;
                 }
-            } else {
-                if buf.is_empty() {
-                    break (BytesSource::Incomplete, Err(())); // EOF with incomplete code point
-                }
-                let (consumed, opt_result) = self.incomplete.try_complete_offsets(buf);
-                self.bytes_consumed = consumed;
-                match opt_result {
-                    None => {
-                        // need more input bytes
-                        continue;
-                    }
-                    Some(result) => break (BytesSource::Incomplete, result),
-                }
-            };
-        };
-        let bytes = match source {
-            BytesSource::BufRead(byte_count) => {
-                self.bytes_consumed = byte_count;
-                let buf = try_io!(self.buf_read.fill_buf());
-                &buf[..byte_count]
+                // The borrow of `buf` cannot be returned from inside this
+                // loop, so `fill_buf` is called again below. A `BufRead`
+                // may return other bytes then, so those are what get decoded.
+                break;
             }
-            BytesSource::Incomplete => self.incomplete.take_buffer(),
-        };
-        match result {
-            Ok(()) => Some(Ok(unsafe { str::from_utf8_unchecked(bytes) })),
-            Err(()) => Some(Err(BufReadDecoderError::InvalidByteSequence(bytes))),
+
+            if buf.is_empty() {
+                // EOF with incomplete code point
+                return Some(Err(BufReadDecoderError::InvalidByteSequence(
+                    self.incomplete.take_buffer(),
+                )));
+            }
+            let (consumed, opt_result) = self.incomplete.try_complete_offsets(buf);
+            self.bytes_consumed = consumed;
+            let Some(result) = opt_result else {
+                // need more input bytes
+                continue;
+            };
+            let bytes = self.incomplete.take_buffer();
+            return Some(match result {
+                // SAFETY: `from_utf8_unchecked` needs valid UTF-8. By the
+                // safety-usable invariants of `try_complete_offsets` (an
+                // `Ok` result means the first `buffer_len` buffered bytes are
+                // valid UTF-8) and `take_buffer` (it returns exactly those
+                // bytes), with nothing in between touching `self.incomplete`.
+                Ok(()) => Ok(unsafe { str::from_utf8_unchecked(bytes) }),
+                Err(()) => Err(BufReadDecoderError::InvalidByteSequence(bytes)),
+            });
         }
+
+        let buf = try_io!(self.buf_read.fill_buf());
+        Some(match decode(buf) {
+            Ok(valid) => {
+                self.bytes_consumed = valid.len();
+                Ok(valid)
+            }
+            Err(
+                DecodeError::Invalid { valid_prefix, .. }
+                | DecodeError::Incomplete { valid_prefix, .. },
+            ) if !valid_prefix.is_empty() => {
+                self.bytes_consumed = valid_prefix.len();
+                Ok(valid_prefix)
+            }
+            Err(DecodeError::Invalid {
+                invalid_sequence, ..
+            }) => {
+                self.bytes_consumed = invalid_sequence.len();
+                Err(BufReadDecoderError::InvalidByteSequence(invalid_sequence))
+            }
+            // An incomplete code point at the start that the first
+            // `fill_buf` did not show: only a `BufRead` that changed its
+            // buffer gets here. Reported as invalid rather than buffered.
+            Err(DecodeError::Incomplete { .. }) => {
+                self.bytes_consumed = buf.len();
+                Err(BufReadDecoderError::InvalidByteSequence(buf))
+            }
+        })
     }
 }

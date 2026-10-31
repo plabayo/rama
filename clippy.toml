@@ -5,3 +5,10 @@ allow-panic-in-tests = true
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-dbg-in-tests = true
+
+# `missing_safety_doc` also for private and crate-visible `unsafe fn`.
+check-private-items = true
+# `undocumented_unsafe_blocks`: the `// SAFETY:` proof may sit above the enclosing
+# statement or the block's attributes.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

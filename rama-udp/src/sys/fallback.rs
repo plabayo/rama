@@ -1,6 +1,10 @@
-use std::io::{self, IoSliceMut};
+use std::{
+    io::{self, IoSliceMut},
+    mem::MaybeUninit,
+    ptr,
+};
 
-use rama_net::socket::core::{MaybeUninitSlice, SockAddr};
+use rama_net::socket::core::SockAddr;
 
 use super::{RecvMeta, SocketCapabilities, Transmit, UdpSockRef};
 
@@ -33,11 +37,14 @@ impl UdpSocketState {
         buffers: &mut [IoSliceMut<'_>],
         metadata: &mut [RecvMeta],
     ) -> io::Result<usize> {
-        // SAFETY: IoSliceMut and MaybeUninitSlice have the platform iovec layout.
-        // The socket initializes only the bytes it reports as received.
-        let buffers =
-            unsafe { &mut *(buffers as *mut [IoSliceMut<'_>] as *mut [MaybeUninitSlice<'_>]) };
-        let (len, _flags, address) = socket.0.recv_from_vectored(buffers)?;
+        // One datagram per call, as `BATCH_SIZE` says, into the first buffer.
+        let buffer: &mut [u8] = &mut buffers[0];
+        // SAFETY: the cast keeps the length and needs `MaybeUninit<u8>` laid out as `u8`,
+        // which std guarantees; the new reference reborrows `buffer` exclusively. Every
+        // initialized byte is a valid `MaybeUninit<u8>`, and socket2 documents that `recv_from`
+        // writes no uninitialized byte, so `buffer` stays initialized afterwards.
+        let buffer = unsafe { &mut *(ptr::from_mut::<[u8]>(buffer) as *mut [MaybeUninit<u8>]) };
+        let (len, address) = socket.0.recv_from(buffer)?;
         metadata[0] = RecvMeta {
             len,
             original_len: len,

@@ -7,8 +7,6 @@
 //! usage rules enforced by the public types. The module stays private so
 //! platform layouts and feature probes do not become part of Rama's API.
 
-#![deny(clippy::undocumented_unsafe_blocks)]
-
 use std::{
     net::{IpAddr, Ipv6Addr, SocketAddr},
     time::Duration,
@@ -38,6 +36,9 @@ mod imp;
 #[cfg(not(any(all(target_family = "wasm", target_os = "unknown"), unix, windows)))]
 #[path = "fallback.rs"]
 mod imp;
+
+mod paired;
+pub(crate) use paired::PairedSocket;
 
 pub(crate) use imp::UdpSocketState;
 #[cfg(any(target_os = "linux", target_os = "android"))]

@@ -576,17 +576,15 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
         // earlier `@`s inside the userinfo region (curl / browser /
         // url-crate parity). `UserInfo::try_from(&str)` is strict and
         // would reject those, so we do explicit control-byte
-        // screening here and bypass via `from_bytes_unchecked` —
+        // screening here and bypass via `from_byte_str` —
         // mirroring the URI parser's authority handler.
-        let ui_bytes = &s.as_bytes()[..idx];
-        if ui_bytes.iter().any(|&b| b < 0x20 || b == 0x7F) {
+        let ui = &s[..idx];
+        if ui.bytes().any(|b| b < 0x20 || b == 0x7F) {
             return Err(BoxError::from_static_str(
                 "userinfo contains control character",
             ));
         }
-        user_info = Some(UserInfo::from_bytes_unchecked(
-            rama_core::bytes::Bytes::copy_from_slice(ui_bytes),
-        ));
+        user_info = Some(UserInfo::from_byte_str(ui.into()));
         s = &s[idx + 1..];
     }
 
@@ -610,8 +608,8 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
             return Ok(Authority {
                 user_info,
                 address: HostWithOptPort {
-                    host: Host::Uninterpreted(super::UninterpretedHost::from_validated_bytes(
-                        rama_core::bytes::Bytes::copy_from_slice(inside.as_bytes()),
+                    host: Host::Uninterpreted(super::UninterpretedHost::from_validated(
+                        inside.into(),
                         true,
                     )),
                     port: OptPort::Unset,
@@ -1291,7 +1289,7 @@ mod tests {
         assert_eq!(authority.host().to_str().as_ptr(), source[12..].as_ptr());
         assert_eq!(
             format!("{authority:?}"),
-            "AuthorityRef { userinfo: Some(UserInfo { user: \"user\", password: \"***\" }), host: Name(DomainRef { bytes: [69, 88, 65, 77, 80, 76, 69, 46, 99, 111, 109] }), port: Set(1344) }"
+            "AuthorityRef { userinfo: Some(UserInfo { user: \"user\", password: \"***\" }), host: Name(DomainRef { bytes: \"EXAMPLE.com\" }), port: Set(1344) }"
         );
     }
 

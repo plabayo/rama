@@ -389,8 +389,10 @@ fn reversed_key_to_domain(reversed: &str) -> Domain {
         builder.extend_from_slice(b".");
         builder.extend_from_slice(part.as_bytes());
     }
-    // Safety: every key in the trie came from a validated Domain via
-    // `insert_domain`, so reversing the labels yields a valid Domain again.
+    // SAFETY: `from_maybe_borrowed_unchecked` requires UTF-8: `builder` holds
+    // only `str` pieces of `reversed` joined by the ASCII '.'. Semantic part:
+    // every trie key came from a validated Domain via `insert_domain`, so
+    // reversing the labels yields a valid Domain again.
     unsafe { Domain::from_maybe_borrowed_unchecked(builder.freeze()) }
 }
 

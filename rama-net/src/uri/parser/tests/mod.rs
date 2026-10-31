@@ -112,12 +112,12 @@ pub(super) fn lazy(u: &Uri) -> &LazyUriRef {
 
 /// `Option<(start, end)>` → `Option<&str>` slice of the lazy buffer.
 pub(super) fn range_str(l: &LazyUriRef, r: Option<(u16, u16)>) -> Option<&str> {
-    r.map(|(s, e)| core::str::from_utf8(&l.bytes[s as usize..e as usize]).unwrap())
+    r.map(|(s, e)| l.str_range((s, e)))
 }
 
 /// `&str` view of the path range.
 pub(super) fn path_str(l: &LazyUriRef) -> &str {
-    core::str::from_utf8(&l.bytes[l.path.0 as usize..l.path.1 as usize]).unwrap()
+    l.str_range(l.path)
 }
 
 /// `&str` view of the userinfo range, or `None` if no `@` was present in
@@ -130,7 +130,7 @@ pub(super) fn path_str(l: &LazyUriRef) -> &str {
 /// [`Uri::userinfo`](crate::uri::Uri::userinfo) accessor built on top.
 pub(super) fn userinfo_str(l: &LazyUriRef) -> Option<&str> {
     let (s, e) = l.authority.as_ref()?.userinfo_range?;
-    Some(core::str::from_utf8(&l.bytes[s as usize..e as usize]).unwrap())
+    Some(l.str_range((s, e)))
 }
 
 /// Asserts a `Uri` is in `Lazy` form with the given origin-form components

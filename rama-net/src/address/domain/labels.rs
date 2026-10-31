@@ -116,8 +116,9 @@ pub trait DomainLabels: sealed::Sealed {
             return None;
         }
         let joined = rest.join(".");
-        // Safety: each piece is a validated `&Label`, joined by '.' — this is
-        // exactly the presentation form of the parent domain.
+        // SAFETY: `from_maybe_borrowed_unchecked` requires UTF-8, which the
+        // `String` `joined` is. Semantic part: each piece is a `&Label` of a
+        // domain, joined by '.', the presentation form of the parent domain.
         Some(unsafe { Domain::from_maybe_borrowed_unchecked(joined) })
     }
 
@@ -159,7 +160,8 @@ impl<'a, D: DomainLabels + ?Sized + 'a> Iterator for SuffixIter<'a, D> {
         self.iter = Some(next_it);
 
         let joined = parts.join(".");
-        // Safety: same as `parent`.
+        // SAFETY: as in `DomainLabels::parent`: `joined` is a `String`
+        // (UTF-8), and the '.'-join of a domain's trailing labels is a name.
         Some(unsafe { Domain::from_maybe_borrowed_unchecked(joined) })
     }
 }
@@ -184,8 +186,10 @@ impl<'a> Iterator for DomainLabelIter<'a> {
 
     fn next(&mut self) -> Option<&'a Label> {
         self.0
-            // Safety: post-validation, every produced slice is a valid label.
             .next()
+            // SAFETY: `Label::from_str_unchecked` has only the semantic
+            // precondition that `s` is a valid label: `self.0` splits a
+            // validated domain on '.' with the FQDN dots stripped.
             .map(|s| unsafe { Label::from_str_unchecked(s) })
     }
 }
@@ -194,6 +198,7 @@ impl<'a> DoubleEndedIterator for DomainLabelIter<'a> {
     fn next_back(&mut self) -> Option<&'a Label> {
         self.0
             .next_back()
+            // SAFETY: as in `next`.
             .map(|s| unsafe { Label::from_str_unchecked(s) })
     }
 }
@@ -228,9 +233,10 @@ impl DomainLabels for Domain {
         if rest.is_empty() {
             return None;
         }
-        // Safety: `rest` is a suffix of a validated domain at a label
-        // boundary. No `*` can be present (the wildcard is only valid as
-        // the leftmost label, which we just dropped).
+        // SAFETY: `from_maybe_borrowed_unchecked` requires UTF-8: the bytes are
+        // a copy of the `str` `rest`. Semantic part: `rest` is a suffix of a
+        // validated domain at a label boundary, and no `*` is left (the
+        // wildcard is only valid as the leftmost label, which was dropped).
         Some(unsafe {
             Self::from_maybe_borrowed_unchecked(Bytes::copy_from_slice(rest.as_bytes()))
         })

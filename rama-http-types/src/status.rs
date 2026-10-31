@@ -55,7 +55,10 @@ use std::str::FromStr;
 /// assert!(StatusCode::OK.is_success());
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StatusCode(NonZeroU16);
+pub struct StatusCode(
+    // Safety invariant: the code is in `100..=999`.
+    NonZeroU16,
+);
 
 /// A possible error value when converting a `StatusCode` from a `u16` or `&str`.
 ///
@@ -90,6 +93,19 @@ impl StatusCode {
             }
         }
         Err(InvalidStatusCode::new())
+    }
+
+    /// Builds a status code constant; an out-of-range code fails compilation
+    /// when used in a `const` item.
+    #[expect(
+        clippy::panic,
+        reason = "only evaluated in const items, so a bad code fails the build"
+    )]
+    const fn from_const_u16(src: u16) -> StatusCode {
+        match StatusCode::from_u16(src) {
+            Ok(code) => code,
+            Err(_) => panic!("status code constant outside 100..=999"),
+        }
     }
 
     /// Converts a `&[u8]` to a status code.
@@ -148,14 +164,16 @@ impl StatusCode {
         let offset = (self.0.get() - 100) as usize;
         let offset = offset * 3;
 
-        // Invariant: self has checked range [100, 999] and CODE_DIGITS is
-        // ASCII-only, of length 900 * 3 = 2700 bytes
-
         #[cfg(debug_assertions)]
         {
             &CODE_DIGITS[offset..offset + 3]
         }
 
+        // SAFETY: `str::get_unchecked` requires the range to be in bounds and
+        // on char boundaries. The `StatusCode` invariant gives a code in
+        // `100..=999`, so `offset + 3 <= 899 * 3 + 3 == CODE_DIGITS.len()`,
+        // and `CODE_DIGITS` is ASCII, so every index is a char boundary (both
+        // checked at compile time below).
         #[cfg(not(debug_assertions))]
         unsafe {
             CODE_DIGITS.get_unchecked(offset..offset + 3)
@@ -320,7 +338,7 @@ macro_rules! status_codes {
         impl StatusCode {
         $(
             $(#[$docs])*
-            pub const $konst: StatusCode = StatusCode(unsafe { NonZeroU16::new_unchecked($num) });
+            pub const $konst: StatusCode = StatusCode::from_const_u16($num);
         )+
 
         }
@@ -580,6 +598,7 @@ impl<'de> serde::Deserialize<'de> for StatusCode {
 
 // A string of packed 3-ASCII-digit status code values for the supported range
 // of [100, 999] (900 codes, 2700 bytes).
+const _: () = assert!(CODE_DIGITS.len() == 900 * 3 && CODE_DIGITS.is_ascii());
 const CODE_DIGITS: &str = "\
 100101102103104105106107108109110111112113114115116117118119\
 120121122123124125126127128129130131132133134135136137138139\

@@ -186,6 +186,8 @@ struct DecodeState<T: EventDataRead> {
     carry: Vec<u8>,
     /// valid UTF-8 prefix of `carry`, always ending at a character boundary;
     /// the remaining suffix is an incomplete sequence of at most three bytes
+    // Safety invariant: `carry_valid_up_to <= carry.len()` and
+    // `carry[..carry_valid_up_to]` is valid UTF-8.
     carry_valid_up_to: usize,
     /// a CR was the last byte seen: an LF at the start of the next chunk
     /// belongs to that terminator and must be skipped
@@ -300,6 +302,7 @@ impl<T: EventDataRead> DecodeState<T> {
                     self.carry.push(byte);
                     if self.carry[..] == UTF8_BOM {
                         self.carry.clear();
+                        self.carry_valid_up_to = 0;
                         self.started = true;
                     } else if self.carry[..] != UTF8_BOM[..self.carry.len()] {
                         self.started = true;
@@ -348,6 +351,8 @@ impl<T: EventDataRead> DecodeState<T> {
         }
         let validate_from = self.carry_valid_up_to;
         self.carry.extend_from_slice(bytes);
+        // `carry[..validate_from]` is valid UTF-8 (invariant) and the bytes
+        // after it are validated here, so the new prefix is valid UTF-8 too.
         match std::str::from_utf8(&self.carry[validate_from..]) {
             Ok(_) => self.carry_valid_up_to = self.carry.len(),
             Err(err) => {
@@ -486,8 +491,11 @@ impl<T: EventDataRead> DecodeState<T> {
                         return Ok(offset);
                     }
                     debug_assert_eq!(valid_up_to, line.len());
-                    // SAFETY: `extend_carry` validated the line incrementally,
-                    // and the possible incomplete suffix was checked above.
+                    // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8.
+                    // `line[..valid_up_to]` is valid UTF-8 (the
+                    // `carry_valid_up_to` invariant, read before the take) and
+                    // `line[valid_up_to..]` was validated just above; two
+                    // valid UTF-8 strings concatenate to valid UTF-8.
                     let s = unsafe { std::str::from_utf8_unchecked(&line) };
                     let result = self.handle_line(s);
                     self.carry = line;
@@ -511,7 +519,9 @@ impl<T: EventDataRead> DecodeState<T> {
             Ok(s) => (s, &[][..], None),
             Err(err) => {
                 let (head, tail) = rest.split_at(err.valid_up_to());
-                // SAFETY: `valid_up_to` guarantees `head` is valid UTF-8
+                // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8.
+                // `Utf8Error::valid_up_to` documents that `rest[..valid_up_to]`
+                // is valid UTF-8, and `head` is exactly that prefix.
                 let s = unsafe { std::str::from_utf8_unchecked(head) };
                 match err.error_len() {
                     None => (s, tail, None),
@@ -568,6 +578,10 @@ impl<T: EventDataRead> DecodeState<T> {
             self.absorb(err, true)?;
             return Ok(offset + start);
         }
+        // `carry` is empty here: every path above that leaves it non-empty
+        // returns. So `carry[..bytes.len() - start]` is `valid[start..]`, valid
+        // UTF-8 because `start` follows an ASCII terminator (invariant).
+        debug_assert!(self.carry.is_empty());
         self.carry.extend_from_slice(&bytes[start..]);
         self.carry.extend_from_slice(utf8_tail);
         self.carry_valid_up_to = bytes.len() - start;

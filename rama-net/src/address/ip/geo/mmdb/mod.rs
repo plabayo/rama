@@ -1,7 +1,8 @@
 //! MaxMind DB (`.mmdb`) reader and minimal writer.
 //!
-//! See [`MmdbReader`] for querying an existing database and [`MmdbBuilder`]
-//! for constructing one (used to synthesise test fixtures).
+//! See [`MmdbReader`] for querying a database held in memory or mapped from
+//! disk, [`MmdbFileReader`] for querying a file through positional reads, and
+//! [`MmdbBuilder`] for constructing one (used to synthesise test fixtures).
 
 use core::net::IpAddr;
 
@@ -13,13 +14,21 @@ use std::path::Path;
 
 use super::GeoIpError;
 use super::location::GeoLocationRef;
-use crate::address::ip::IntoCanonicalIpAddr;
 
 use rama_core::bytes::Bytes;
 use rama_core::geo::Locale;
+use rama_utils::octets::kib;
 
 pub(crate) mod decoder;
 use decoder::Decoder;
+
+mod tree;
+use tree::Tree;
+
+#[cfg(feature = "std")]
+mod positional;
+#[cfg(feature = "std")]
+pub use positional::{MmdbFileConfig, MmdbFileReader};
 
 #[cfg(feature = "std")]
 mod writer;
@@ -30,6 +39,9 @@ pub use writer::{MmdbBuilder, MmdbWriteError};
 
 /// The marker that separates the data section from the metadata section.
 const METADATA_MARKER: &[u8] = b"\xab\xcd\xefMaxMind.com";
+
+/// Maximum size of the metadata section, marker included.
+const METADATA_MAX_LEN: usize = kib(128);
 
 /// The number of bits in each search-tree record. The format only defines
 /// 24, 28 and 32; a node always holds two records.
@@ -130,12 +142,7 @@ pub struct Metadata {
 pub struct MmdbReader {
     buf: Bytes,
     metadata: Metadata,
-    node_size: usize,
-    tree_size: usize,
-    data_section: usize,
-    /// Node reached after traversing the leading 96 zero bits, used as the
-    /// starting node when looking up an IPv4 address in an IPv6 tree.
-    ipv4_start_node: usize,
+    tree: Tree,
     lang: Box<str>,
 }
 
@@ -151,45 +158,23 @@ impl MmdbReader {
     }
 
     fn from_buf(buf: Bytes) -> Result<Self, GeoIpError> {
-        let metadata = parse_metadata(buf.as_ref())?;
-
-        // `record_size` and `ip_version` are validated into enums while
-        // parsing, so they can no longer hold impossible values here. The
-        // binary-format major version is the remaining compatibility gate.
-        if metadata.binary_format_major_version != 2 {
-            return Err(GeoIpError::Unsupported("only binary format version 2"));
-        }
-
-        let node_size = metadata.record_size.node_size();
-        let node_count = metadata.node_count as usize;
-        let tree_size = node_count
-            .checked_mul(node_size)
-            .ok_or(GeoIpError::Corrupt("tree size overflow"))?;
-        let data_section = tree_size
-            .checked_add(16)
-            .ok_or(GeoIpError::Corrupt("data section overflow"))?;
-        if data_section > buf.len() {
-            return Err(GeoIpError::Corrupt("tree extends past end of file"));
-        }
-
-        let mut reader = Self {
+        let size = buf.len();
+        let tail_start = metadata_tail_start(size);
+        let (metadata, marker) = parse_metadata(buf.get(tail_start..).unwrap_or_default())?;
+        let tree = Tree::new(buf.as_ref(), size, &metadata, tail_start + marker, true)?;
+        Ok(Self {
             buf,
             metadata,
-            node_size,
-            tree_size,
-            data_section,
-            ipv4_start_node: 0,
+            tree,
             lang: Box::from("en"),
-        };
-        reader.ipv4_start_node = reader.compute_ipv4_start_node()?;
-        Ok(reader)
+        })
     }
 
     /// Read a MaxMind DB from disk into memory.
     ///
     /// The whole file is read into a shared buffer. With the `mmap` feature,
-    /// `open_mmap` maps the file instead for a smaller resident set on very
-    /// large databases.
+    /// the `unsafe` `open_mmap` maps the file instead for a smaller resident
+    /// set on very large databases.
     ///
     /// # Errors
     ///
@@ -205,10 +190,17 @@ impl MmdbReader {
     /// Memory-map a MaxMind DB from disk instead of reading it into memory.
     ///
     /// Lookups fault in only the pages they touch, so a large database costs
-    /// little resident memory. The mapping is held for the reader's lifetime.
+    /// little resident memory. The mapping is held until the returned reader
+    /// and every clone of it have been dropped.
     ///
-    /// The file must not be modified or truncated while the reader is alive, or
-    /// lookups may observe garbage (or fault on some platforms).
+    /// # Safety
+    ///
+    /// The caller must ensure that the file at `path` is not written to,
+    /// truncated or otherwise modified, by this process or any other, from
+    /// this call until the returned reader and every clone of it have been
+    /// dropped. Lookups read the mapping through `&[u8]`, so a modification
+    /// is undefined behaviour (a truncation can also raise `SIGBUS`). Use
+    /// [`Self::open`] when this cannot be guaranteed.
     ///
     /// # Errors
     ///
@@ -216,10 +208,12 @@ impl MmdbReader {
     /// another [`GeoIpError`] if it is not a valid database.
     #[cfg(all(feature = "std", feature = "mmap"))]
     #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "mmap"))))]
-    pub fn open_mmap(path: impl AsRef<Path>) -> Result<Self, GeoIpError> {
+    pub unsafe fn open_mmap(path: impl AsRef<Path>) -> Result<Self, GeoIpError> {
         let file = std::fs::File::open(path)?;
-        // SAFETY: the file is opened read-only; the caller is responsible (per
-        // the doc above) for not mutating it while the reader is alive.
+        // SAFETY: `memmap2::Mmap::map` is unsafe because the mapped file may be
+        // modified while the map is in use. `Bytes::from_owner` keeps the map
+        // alive exactly as long as this reader and its clones, and the caller
+        // keeps the file unmodified for that span (this fn's `# Safety`).
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
         Self::from_buf(Bytes::from_owner(mmap))
     }
@@ -231,6 +225,26 @@ impl MmdbReader {
     pub fn with_language(mut self, lang: impl Into<Box<str>>) -> Self {
         self.lang = lang.into();
         self
+    }
+
+    /// Drop the 16-bit jump table built at open.
+    ///
+    /// The table maps the first 16 address bits straight to the node at that
+    /// depth, which skips 16 node reads per lookup. It costs 256 KiB, or
+    /// 512 KiB for an IPv6 database (one table for IPv6 and one for the IPv4
+    /// subtree), shared by all clones of the reader. Dropping it frees that
+    /// memory; opening still walks the top 16 levels of the tree, since that
+    /// walk also validates the records it reaches.
+    #[must_use]
+    pub fn without_jump_table(mut self) -> Self {
+        self.tree.drop_jump_table();
+        self
+    }
+
+    /// Whether lookups use the 16-bit jump table.
+    #[must_use]
+    pub fn has_jump_table(&self) -> bool {
+        self.tree.has_jump_table()
     }
 
     /// The parsed [`Metadata`] of this database.
@@ -260,139 +274,33 @@ impl MmdbReader {
     /// Returns [`GeoIpError::Corrupt`] if the search tree is structurally
     /// invalid for `ip`.
     pub fn try_lookup(&self, ip: IpAddr) -> Result<Option<GeoLocationRef<'_>>, GeoIpError> {
-        match self.find(ip)? {
-            Some(record_offset) => {
-                let decoder = Decoder::new(self.buf.as_ref(), self.data_section);
-                Ok(Some(GeoLocationRef::new(
-                    decoder,
-                    record_offset,
-                    &self.lang,
-                )))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Locate the data-section file offset for `ip`, if any.
-    fn find(&self, ip: IpAddr) -> Result<Option<usize>, GeoIpError> {
-        let ip = ip.into_canonical_ip_addr();
-        let node_count = self.metadata.node_count as usize;
-
-        // big-endian address bits, left-aligned into a 16-byte buffer
-        let mut octets = [0u8; 16];
-        let (start_node, nbits): (usize, usize) = match (self.metadata.ip_version, ip) {
-            (IpVersion::V4, IpAddr::V4(v4)) => {
-                octets[..4].copy_from_slice(&v4.octets());
-                (0, 32)
-            }
-            (IpVersion::V6, IpAddr::V6(v6)) => {
-                octets.copy_from_slice(&v6.octets());
-                (0, 128)
-            }
-            (IpVersion::V6, IpAddr::V4(v4)) => {
-                octets[..4].copy_from_slice(&v4.octets());
-                (self.ipv4_start_node, 32)
-            }
-            // an IPv6 address cannot be represented in an IPv4-only tree
-            (IpVersion::V4, IpAddr::V6(_)) => return Ok(None),
-        };
-
-        let mut node = start_node;
-        for i in 0..nbits {
-            if node >= node_count {
-                break;
-            }
-            let bit = (octets[i / 8] >> (7 - (i % 8))) & 1;
-            node = self.read_record(node, bit)?;
-        }
-
-        if node == node_count {
-            // explicit "no data" terminator
-            Ok(None)
-        } else if node > node_count {
-            // A leaf resolves to file offset `tree_size + (value - node_count)`.
-            // Values `node_count + 1 ..= node_count + 15` fall inside the
-            // 16-byte data-section separator and are not valid data pointers;
-            // reject those (and any offset past the buffer) as corrupt rather
-            // than handing the decoder a bogus position.
-            let rel = node - node_count;
-            if rel < 16 {
-                return Err(GeoIpError::Corrupt(
-                    "data pointer inside the 16-byte separator",
-                ));
-            }
-            let offset = self
-                .tree_size
-                .checked_add(rel)
-                .filter(|&o| o < self.buf.len())
-                .ok_or(GeoIpError::Corrupt("data pointer out of bounds"))?;
-            Ok(Some(offset))
-        } else {
-            // ran out of bits without reaching a leaf
-            Ok(None)
-        }
-    }
-
-    /// Walk the leading 96 zero bits from the root to find the IPv4 start node
-    /// in an IPv6 tree. Returns 0 for IPv4 trees.
-    fn compute_ipv4_start_node(&self) -> Result<usize, GeoIpError> {
-        if self.metadata.ip_version != IpVersion::V6 {
-            return Ok(0);
-        }
-        let node_count = self.metadata.node_count as usize;
-        let mut node = 0usize;
-        for _ in 0..96 {
-            if node >= node_count {
-                break;
-            }
-            node = self.read_record(node, 0)?;
-        }
-        Ok(node)
-    }
-
-    /// Read one record (left if `bit == 0`, right otherwise) from `node`.
-    /// `node` must be `< node_count`.
-    fn read_record(&self, node: usize, bit: u8) -> Result<usize, GeoIpError> {
-        let base = node
-            .checked_mul(self.node_size)
-            .ok_or(GeoIpError::Corrupt("node offset overflow"))?;
-        let b = |i: usize| -> Result<usize, GeoIpError> {
-            self.buf
-                .get(base + i)
-                .copied()
-                .map(usize::from)
-                .ok_or(GeoIpError::Corrupt("record out of bounds"))
-        };
-        let value = match self.metadata.record_size {
-            RecordSize::Bits24 => {
-                let o = if bit == 0 { 0 } else { 3 };
-                (b(o)? << 16) | (b(o + 1)? << 8) | b(o + 2)?
-            }
-            RecordSize::Bits28 => {
-                if bit == 0 {
-                    ((b(3)? >> 4) << 24) | (b(0)? << 16) | (b(1)? << 8) | b(2)?
-                } else {
-                    ((b(3)? & 0x0f) << 24) | (b(4)? << 16) | (b(5)? << 8) | b(6)?
-                }
-            }
-            RecordSize::Bits32 => {
-                let o = if bit == 0 { 0 } else { 4 };
-                (b(o)? << 24) | (b(o + 1)? << 16) | (b(o + 2)? << 8) | b(o + 3)?
-            }
-        };
-        Ok(value)
+        let buf = self.buf.get(..self.tree.data_end()).unwrap_or_default();
+        Ok(self.tree.find(buf, ip)?.map(|record| {
+            GeoLocationRef::new(
+                Decoder::new(buf, self.tree.data_section()),
+                record,
+                &self.lang,
+            )
+        }))
     }
 }
 
-/// Locate and parse the metadata section of a database buffer.
-fn parse_metadata(buf: &[u8]) -> Result<Metadata, GeoIpError> {
-    let marker_pos = buf
+/// Offset of the region that holds the metadata section of a `size`-byte database.
+fn metadata_tail_start(size: usize) -> usize {
+    size.saturating_sub(METADATA_MAX_LEN)
+}
+
+/// Locate and parse the metadata section in `tail`, the last bytes of a
+/// database from [`metadata_tail_start`] on. Returns the metadata and the
+/// offset of the marker within `tail`.
+fn parse_metadata(tail: &[u8]) -> Result<(Metadata, usize), GeoIpError> {
+    let marker_pos = tail
         .windows(METADATA_MARKER.len())
         .rposition(|w| w == METADATA_MARKER)
         .ok_or(GeoIpError::MissingMetadataMarker)?;
     let meta_start = marker_pos + METADATA_MARKER.len();
 
-    let dec = Decoder::new(buf, meta_start);
+    let dec = Decoder::new(tail, meta_start);
     let get = |key: &str| -> Result<usize, GeoIpError> {
         dec.map_get(meta_start, key)?
             .ok_or(GeoIpError::Corrupt("missing required metadata key"))
@@ -415,7 +323,7 @@ fn parse_metadata(buf: &[u8]) -> Result<Metadata, GeoIpError> {
         None => Vec::new(),
     };
 
-    Ok(Metadata {
+    let metadata = Metadata {
         node_count,
         record_size,
         ip_version,
@@ -424,7 +332,8 @@ fn parse_metadata(buf: &[u8]) -> Result<Metadata, GeoIpError> {
         binary_format_major_version,
         binary_format_minor_version,
         build_epoch,
-    })
+    };
+    Ok((metadata, marker_pos))
 }
 
 #[cfg(test)]
@@ -736,7 +645,9 @@ mod tests {
         .unwrap();
         b.write_to_file(&path).unwrap();
 
-        let reader = MmdbReader::open_mmap(&path).unwrap();
+        // SAFETY: the file lives in a private temp dir that nothing else
+        // writes to, and `dir` outlives `reader`.
+        let reader = unsafe { MmdbReader::open_mmap(&path) }.unwrap();
         assert_eq!(
             reader
                 .lookup(ip("1.2.3.4"))
@@ -916,7 +827,8 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn open_mmap_missing_file_errors() {
-        MmdbReader::open_mmap("/no/such/path/geoip-missing.mmdb").unwrap_err();
+        // SAFETY: the path does not exist, so no file is mapped.
+        unsafe { MmdbReader::open_mmap("/no/such/path/geoip-missing.mmdb") }.unwrap_err();
     }
 
     #[cfg(feature = "std")]

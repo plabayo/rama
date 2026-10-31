@@ -559,8 +559,8 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
                 .map_err(BoxError::from)
                 .context("parse bracketed IPvFuture")?;
             return Ok(HostWithOptPort {
-                host: Host::Uninterpreted(super::UninterpretedHost::from_validated_bytes(
-                    rama_core::bytes::Bytes::copy_from_slice(inside.as_bytes()),
+                host: Host::Uninterpreted(super::UninterpretedHost::from_validated(
+                    inside.into(),
                     true,
                 )),
                 port: OptPort::Unset,

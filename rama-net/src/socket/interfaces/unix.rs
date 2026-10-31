@@ -18,16 +18,30 @@ pub(super) fn interfaces() -> io::Result<Vec<Interface>> {
     let list = IfAddrs::load()?;
     let mut out = Vec::new();
 
+    // List contract, cited by the sockaddr reads below. getifaddrs(3): every
+    // node is an initialized `ifaddrs`; `ifa_name` is NUL-terminated;
+    // `ifa_addr` is null or a sockaddr whose `sa_family` gives its format, and
+    // `ifa_netmask` is null or the netmask of `ifa_addr` in that same format.
+    // On linux and android that format is `sockaddr_in`, `sockaddr_in6` or
+    // `sockaddr_ll` (packet(7)), fully readable. On apple `<sys/socket.h>`
+    // defines `sa_len` (byte 0) as the total length, so each sockaddr is
+    // readable for its `sa_len` bytes. All of it stays live and unmodified
+    // until `list` is dropped at the end of this function.
     let mut cursor = list.head;
     while !cursor.is_null() {
-        // SAFETY: `cursor` is a live node of the linked list owned by `list`.
+        // SAFETY: `cursor` is non-null and is `list.head` or an `ifa_next` of
+        // a node of the list `list` owns (`IfAddrs::head` invariant), so by
+        // the list contract it is an aligned, initialized `ifaddrs` that no
+        // one mutates or frees while `entry` (one iteration) is in use.
         let entry = unsafe { &*cursor };
         cursor = entry.ifa_next;
 
         if entry.ifa_name.is_null() {
             continue;
         }
-        // SAFETY: `ifa_name` is a NUL-terminated C string owned by the list.
+        // SAFETY: `ifa_name` is non-null and, by the list contract, a
+        // NUL-terminated string in the list, unmodified while `list` lives;
+        // the borrow (`name`) ends with this iteration.
         let name = unsafe { CStr::from_ptr(entry.ifa_name) }.to_string_lossy();
         if name.is_empty() {
             continue;
@@ -38,20 +52,31 @@ pub(super) fn interfaces() -> io::Result<Vec<Interface>> {
             continue;
         };
 
-        match sockaddr_family(entry.ifa_addr) {
+        // SAFETY: `ifa_addr` is null or, by the list contract, a sockaddr
+        // readable for at least its family header.
+        match unsafe { sockaddr_family(entry.ifa_addr) } {
             Some(libc::AF_INET) => {
-                if let Some(addr) = read_v4(entry.ifa_addr) {
+                // SAFETY: by the list contract an `AF_INET` `ifa_addr` is a
+                // readable `sockaddr_in` (apple: readable for its `sa_len`),
+                // which is the `read_v4` contract.
+                if let Some(addr) = unsafe { read_v4(entry.ifa_addr) } {
                     let address = IpAddr::V4(addr);
-                    let prefix = netmask_prefix(entry.ifa_netmask, address);
+                    // SAFETY: by the list contract `ifa_netmask` is null or in
+                    // the `AF_INET` format of `ifa_addr`, as `netmask_prefix`
+                    // requires for an IPv4 `address`.
+                    let prefix = unsafe { netmask_prefix(entry.ifa_netmask, address) };
                     interface
                         .addresses
                         .push(InterfaceAddress::new(address, prefix, None));
                 }
             }
             Some(libc::AF_INET6) => {
-                if let Some((addr, scope_id)) = read_v6(entry.ifa_addr) {
+                // SAFETY: by the list contract an `AF_INET6` `ifa_addr` is a
+                // readable `sockaddr_in6` (apple: readable for its `sa_len`).
+                if let Some((addr, scope_id)) = unsafe { read_v6(entry.ifa_addr) } {
                     let address = IpAddr::V6(addr);
-                    let prefix = netmask_prefix(entry.ifa_netmask, address);
+                    // SAFETY: as for IPv4, with the `AF_INET6` format.
+                    let prefix = unsafe { netmask_prefix(entry.ifa_netmask, address) };
                     interface.addresses.push(InterfaceAddress::new(
                         address,
                         prefix,
@@ -60,7 +85,10 @@ pub(super) fn interfaces() -> io::Result<Vec<Interface>> {
                 }
             }
             Some(LINK_FAMILY) => {
-                let (hw_address, index) = read_link(entry.ifa_addr);
+                // SAFETY: by the list contract a `LINK_FAMILY` `ifa_addr` is a
+                // readable `sockaddr_ll` (linux, android) or a `sockaddr_dl`
+                // readable for its `sa_len` bytes (apple).
+                let (hw_address, index) = unsafe { read_link(entry.ifa_addr) };
                 if interface.hw_address.is_none() {
                     interface.hw_address = hw_address;
                 }
@@ -84,6 +112,8 @@ pub(super) fn interfaces() -> io::Result<Vec<Interface>> {
 /// Owns the list allocated by `getifaddrs`, freeing it on drop so an unwind
 /// mid-parse cannot leak it.
 struct IfAddrs {
+    // Safety invariant: `head` is null or the head of a list returned by a
+    // successful `sys_getifaddrs` that has not been freed; `IfAddrs` owns it.
     head: *mut libc::ifaddrs,
 }
 
@@ -91,6 +121,8 @@ impl IfAddrs {
     fn load() -> io::Result<Self> {
         let mut head = ptr::null_mut();
         sys_getifaddrs(&mut head)?;
+        // Upholds the `head` invariant: `head` is null or was just returned by
+        // a successful `sys_getifaddrs`.
         Ok(Self { head })
     }
 }
@@ -98,7 +130,10 @@ impl IfAddrs {
 impl Drop for IfAddrs {
     fn drop(&mut self) {
         if !self.head.is_null() {
-            sys_freeifaddrs(self.head);
+            // SAFETY: by the `head` invariant the list came from a successful
+            // `sys_getifaddrs` and is not yet freed; `drop` runs once and no
+            // pointer into the list outlives `self`.
+            unsafe { sys_freeifaddrs(self.head) };
         }
     }
 }
@@ -111,7 +146,8 @@ fn sys_getifaddrs(out: &mut *mut libc::ifaddrs) -> io::Result<()> {
 
     #[cfg(not(target_os = "android"))]
     {
-        // SAFETY: `out` is a valid out-pointer for `getifaddrs` to store the list head in.
+        // SAFETY: getifaddrs(3) only writes the list head to `*out`, which
+        // `&mut` makes a live, aligned, writable `*mut ifaddrs`.
         if unsafe { libc::getifaddrs(out) } == 0 {
             Ok(())
         } else {
@@ -120,15 +156,24 @@ fn sys_getifaddrs(out: &mut *mut libc::ifaddrs) -> io::Result<()> {
     }
 }
 
-fn sys_freeifaddrs(list: *mut libc::ifaddrs) {
+/// Free a list returned by [`sys_getifaddrs`].
+///
+/// # Safety
+///
+/// The caller must pass a non-null `list` returned by a successful
+/// [`sys_getifaddrs`] that has not been freed. The list is freed by this call:
+/// the caller must not use `list` or any pointer into its nodes afterwards.
+unsafe fn sys_freeifaddrs(list: *mut libc::ifaddrs) {
     #[cfg(target_os = "android")]
     {
-        android::freeifaddrs(list);
+        // SAFETY: this function's contract is `android::freeifaddrs`'s.
+        unsafe { android::freeifaddrs(list) };
     }
 
     #[cfg(not(target_os = "android"))]
     {
-        // SAFETY: `list` was allocated by a successful `getifaddrs` call.
+        // SAFETY: freeifaddrs(3) frees a list from getifaddrs(3); the caller
+        // passes such a list, not yet freed and no longer used.
         unsafe { libc::freeifaddrs(list) }
     }
 }
@@ -143,7 +188,8 @@ mod android {
     use std::mem;
 
     fn resolve(name: &CStr) -> Option<*mut libc::c_void> {
-        // SAFETY: RTLD_DEFAULT with a NUL-terminated symbol name is a valid dlsym query.
+        // SAFETY: dlsym(3) with `RTLD_DEFAULT` and a NUL-terminated name (a
+        // live `&CStr`) only looks the symbol up; it reads no other memory.
         let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
         (!sym.is_null()).then_some(sym)
     }
@@ -155,15 +201,19 @@ mod android {
                 "getifaddrs requires android api level 24+",
             ));
         };
-        // SAFETY: the symbol was resolved from the running libc and has the
-        // posix `getifaddrs` signature.
+        // SAFETY: `transmute` from a data pointer to a same-sized fn pointer
+        // (size equality is compile-checked). `sym` is non-null and is the
+        // address dlsym(3) returned for `getifaddrs`, which bionic's
+        // `<ifaddrs.h>` declares as `int getifaddrs(struct ifaddrs**)`: the
+        // declared type, with the C ABI.
         let getifaddrs = unsafe {
             mem::transmute::<
                 *mut libc::c_void,
                 unsafe extern "C" fn(*mut *mut libc::ifaddrs) -> libc::c_int,
             >(sym)
         };
-        // SAFETY: `out` is a valid out-pointer for the list head.
+        // SAFETY: getifaddrs(3) only writes the list head to `*out`, a live,
+        // aligned, writable `*mut ifaddrs` (`&mut`).
         if unsafe { getifaddrs(out) } == 0 {
             Ok(())
         } else {
@@ -171,16 +221,24 @@ mod android {
         }
     }
 
-    pub(super) fn freeifaddrs(list: *mut libc::ifaddrs) {
+    /// Free a list returned by [`getifaddrs`]; leaks it when the symbol is
+    /// missing.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`super::sys_freeifaddrs`].
+    pub(super) unsafe fn freeifaddrs(list: *mut libc::ifaddrs) {
         let Some(sym) = resolve(c"freeifaddrs") else {
             return;
         };
-        // SAFETY: the symbol was resolved from the running libc and has the
-        // posix `freeifaddrs` signature.
+        // SAFETY: as in `getifaddrs`: `sym` is the non-null dlsym(3) address
+        // of `freeifaddrs`, declared `void freeifaddrs(struct ifaddrs*)` by
+        // bionic's `<ifaddrs.h>`.
         let freeifaddrs = unsafe {
             mem::transmute::<*mut libc::c_void, unsafe extern "C" fn(*mut libc::ifaddrs)>(sym)
         };
-        // SAFETY: `list` was allocated by a successful `getifaddrs` call.
+        // SAFETY: freeifaddrs(3) frees a getifaddrs(3) list; the caller passes
+        // such a list, not yet freed and no longer used.
         unsafe { freeifaddrs(list) }
     }
 }
@@ -218,67 +276,150 @@ fn interface_flags(raw: libc::c_uint) -> InterfaceFlags {
     flags
 }
 
-fn sockaddr_family(sa: *const libc::sockaddr) -> Option<libc::c_int> {
+/// The address family of the sockaddr behind `sa`, or `None` when null.
+///
+/// # Safety
+///
+/// The caller must ensure that `sa` is null or points to a sockaddr whose
+/// bytes up to and including its `sa_family` field are initialized and
+/// readable for the duration of the call. No alignment is required.
+unsafe fn sockaddr_family(sa: *const libc::sockaddr) -> Option<libc::c_int> {
     if sa.is_null() {
         return None;
     }
-    // SAFETY: `sa` is non-null and points at a kernel-provided sockaddr,
-    // whose family field is always present.
-    let family = unsafe { (*sa).sa_family };
+    let field = sa
+        .cast::<u8>()
+        .wrapping_add(mem::offset_of!(libc::sockaddr, sa_family));
+    // SAFETY: `read_unaligned` needs `field` readable and initialized for a
+    // `sa_family_t`, without alignment: `field` addresses the `sa_family`
+    // bytes of `*sa`, which the caller guarantees for non-null `sa`.
+    let family = unsafe { field.cast::<libc::sa_family_t>().read_unaligned() };
     Some(libc::c_int::from(family))
 }
+
+/// Byte copy of a sockaddr, as large as `sockaddr_storage`.
+type SockaddrBytes = [u8; mem::size_of::<libc::sockaddr_storage>()];
 
 /// Copy up to `wanted` bytes of the sockaddr behind `sa` into zeroed storage.
 ///
 /// On apple platforms the kernel-reported `sa_len` clamps the copy: routing
 /// sockaddrs (netmasks in particular) are routinely shorter than the full
 /// struct, and the zero-filled tail is semantically correct for masks.
-fn copy_sockaddr(sa: *const libc::sockaddr, wanted: usize) -> Option<libc::sockaddr_storage> {
+///
+/// # Safety
+///
+/// The caller must ensure that `sa` is null or points to a sockaddr whose
+/// first `n` bytes are initialized and readable, and not written by anyone,
+/// for the duration of the call. `n` is `wanted` on targets without `sa_len`;
+/// on apple it is `max(1, min(sa_len, wanted))`, `sa_len` being byte 0.
+/// No alignment is required.
+unsafe fn copy_sockaddr(sa: *const libc::sockaddr, wanted: usize) -> Option<SockaddrBytes> {
     if sa.is_null() {
         return None;
     }
 
-    // SAFETY: `sockaddr_storage` is a plain old data buffer, zero-initializing it is valid.
-    let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
-
-    let len = reported_sockaddr_len(sa, wanted).min(mem::size_of::<libc::sockaddr_storage>());
-    // SAFETY: `sa` points at a kernel-provided sockaddr of at least `len` bytes
-    // (clamped to the kernel-reported `sa_len` on platforms that have it), and
-    // `storage` is a writable buffer of at least `len` bytes.
-    unsafe { ptr::copy_nonoverlapping(sa.cast::<u8>(), (&raw mut storage).cast::<u8>(), len) };
+    let mut storage: SockaddrBytes = [0; mem::size_of::<libc::sockaddr_storage>()];
+    // SAFETY: `sa` is non-null and its byte 0 is readable (this function's
+    // contract), as `reported_sockaddr_len` requires.
+    let len = unsafe { reported_sockaddr_len(sa, wanted) }.min(storage.len());
+    // SAFETY: `copy_nonoverlapping` needs `sa` readable and `storage` writable
+    // for `len` bytes, without overlap. `len <= n` of this function's contract
+    // (`reported_sockaddr_len` postcondition), so `sa` is readable for it;
+    // `len <= storage.len()` by the `min`; `storage` is a local, so it cannot
+    // overlap `*sa`. u8 copies need no alignment. The copied bytes are
+    // initialized, as `[u8]` requires.
+    unsafe { ptr::copy_nonoverlapping(sa.cast::<u8>(), storage.as_mut_ptr(), len) };
 
     Some(storage)
 }
 
+/// The number of bytes of `sa` that [`copy_sockaddr`] may read.
+///
+/// # Safety
+///
+/// The caller must ensure that `sa` is non-null and its byte 0 (`sa_len`) is
+/// initialized and readable for the duration of the call.
+///
+/// Returns `min(sa_len, wanted)`.
 #[cfg(target_vendor = "apple")]
-fn reported_sockaddr_len(sa: *const libc::sockaddr, wanted: usize) -> usize {
-    // SAFETY: every sockaddr on apple platforms begins with an `sa_len` byte.
-    let len = usize::from(unsafe { (*sa).sa_len });
+unsafe fn reported_sockaddr_len(sa: *const libc::sockaddr, wanted: usize) -> usize {
+    const { assert!(mem::offset_of!(libc::sockaddr, sa_len) == 0) };
+    // SAFETY: `read` needs `sa` readable, aligned and initialized for one u8:
+    // `sa_len` is byte 0 (const assert above), which the caller guarantees,
+    // and a u8 has alignment 1.
+    let len = usize::from(unsafe { sa.cast::<u8>().read() });
     len.min(wanted)
 }
 
+/// The number of bytes of `sa` that [`copy_sockaddr`] may read.
+///
+/// # Safety
+///
+/// None on these targets; `unsafe` keeps one signature with the apple variant.
+///
+/// Returns `wanted`: these targets have no `sa_len`.
 #[cfg(not(target_vendor = "apple"))]
-fn reported_sockaddr_len(_sa: *const libc::sockaddr, wanted: usize) -> usize {
+unsafe fn reported_sockaddr_len(_sa: *const libc::sockaddr, wanted: usize) -> usize {
     wanted
 }
 
-fn read_v4(sa: *const libc::sockaddr) -> Option<Ipv4Addr> {
-    let storage = copy_sockaddr(sa, mem::size_of::<libc::sockaddr_in>())?;
-    // SAFETY: `storage` is a fully-initialized (zero-padded) buffer at least as
-    // large as `sockaddr_in`; `read_unaligned` because `sockaddr_storage` does
-    // not guarantee alignment for `sockaddr_in`.
-    let addr: libc::sockaddr_in = unsafe { ptr::read_unaligned((&raw const storage).cast()) };
+/// Read an IPv4 address from a sockaddr.
+///
+/// # Safety
+///
+/// The [`copy_sockaddr`] contract with `wanted = size_of::<sockaddr_in>()`.
+unsafe fn read_v4(sa: *const libc::sockaddr) -> Option<Ipv4Addr> {
+    // SAFETY: this function's contract is `copy_sockaddr`'s for this `wanted`.
+    let storage = unsafe { copy_sockaddr(sa, mem::size_of::<libc::sockaddr_in>()) }?;
+    let addr: libc::sockaddr_in = read_from_storage(&storage);
     Some(Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr)))
 }
 
 /// Read an IPv6 address and its zone (scope id) from a sockaddr.
-fn read_v6(sa: *const libc::sockaddr) -> Option<(Ipv6Addr, u32)> {
-    let storage = copy_sockaddr(sa, mem::size_of::<libc::sockaddr_in6>())?;
-    // SAFETY: `storage` is a fully-initialized (zero-padded) buffer at least as
-    // large as `sockaddr_in6`; `read_unaligned` because `sockaddr_storage` does
-    // not guarantee alignment for `sockaddr_in6`.
-    let addr: libc::sockaddr_in6 = unsafe { ptr::read_unaligned((&raw const storage).cast()) };
+///
+/// # Safety
+///
+/// The [`copy_sockaddr`] contract with `wanted = size_of::<sockaddr_in6>()`.
+unsafe fn read_v6(sa: *const libc::sockaddr) -> Option<(Ipv6Addr, u32)> {
+    // SAFETY: this function's contract is `copy_sockaddr`'s for this `wanted`.
+    let storage = unsafe { copy_sockaddr(sa, mem::size_of::<libc::sockaddr_in6>()) }?;
+    let addr: libc::sockaddr_in6 = read_from_storage(&storage);
     Some((Ipv6Addr::from(addr.sin6_addr.s6_addr), addr.sin6_scope_id))
+}
+
+/// A sockaddr struct for which every initialized byte pattern is a valid
+/// value.
+///
+/// # Safety
+///
+/// Implementors must be `repr(C)` structs of integer or integer-array fields
+/// only.
+unsafe trait PlainSockaddr: Copy {}
+
+// SAFETY: libc's `sockaddr_in` is `repr(C)` with integer and integer-array
+// fields only.
+unsafe impl PlainSockaddr for libc::sockaddr_in {}
+// SAFETY: libc's `sockaddr_in6` is `repr(C)` with integer and integer-array
+// fields only (`in6_addr` is a `[u8; 16]` wrapper).
+unsafe impl PlainSockaddr for libc::sockaddr_in6 {}
+// SAFETY: libc's `sockaddr_ll` is `repr(C)` with integer and integer-array
+// fields only.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe impl PlainSockaddr for libc::sockaddr_ll {}
+// SAFETY: libc's `sockaddr_dl` is `repr(C)` with integer and integer-array
+// fields only.
+#[cfg(target_vendor = "apple")]
+unsafe impl PlainSockaddr for libc::sockaddr_dl {}
+
+/// Reinterpret the leading bytes of `storage` as a `T`.
+fn read_from_storage<T: PlainSockaddr>(storage: &SockaddrBytes) -> T {
+    const { assert!(mem::size_of::<T>() <= mem::size_of::<SockaddrBytes>()) };
+    // SAFETY: `read_unaligned` needs `size_of::<T>()` readable bytes holding a
+    // valid `T`, with no alignment requirement. The const assert keeps the read
+    // inside `*storage`, whose bytes are initialized (`[u8]`); initialized
+    // bytes are a valid `T` (`PlainSockaddr`; padding, if any, may hold any
+    // byte).
+    unsafe { ptr::read_unaligned(storage.as_ptr().cast::<T>()) }
 }
 
 /// Prefix length of `address`'s network per the given netmask sockaddr.
@@ -286,23 +427,34 @@ fn read_v6(sa: *const libc::sockaddr) -> Option<(Ipv6Addr, u32)> {
 /// The mask is read with the family of the assigned address: netmask
 /// sockaddrs frequently carry a zero/garbage family of their own. Zero and
 /// non-contiguous masks yield `None`.
-fn netmask_prefix(mask: *const libc::sockaddr, address: IpAddr) -> Option<u8> {
+///
+/// # Safety
+///
+/// The [`copy_sockaddr`] contract for `mask`, with `wanted` the size of the
+/// `sockaddr_in` (IPv4 `address`) or `sockaddr_in6` (IPv6 `address`).
+unsafe fn netmask_prefix(mask: *const libc::sockaddr, address: IpAddr) -> Option<u8> {
     let mask_addr = match address {
-        IpAddr::V4(_) => IpAddr::V4(read_v4(mask)?),
-        IpAddr::V6(_) => IpAddr::V6(read_v6(mask)?.0),
+        // SAFETY: the IPv4 case of this function's contract is `read_v4`'s.
+        IpAddr::V4(_) => IpAddr::V4(unsafe { read_v4(mask) }?),
+        // SAFETY: the IPv6 case of this function's contract is `read_v6`'s.
+        IpAddr::V6(_) => IpAddr::V6(unsafe { read_v6(mask) }?.0),
     };
     let prefix = IpNet::with_netmask(address, mask_addr).ok()?.prefix_len();
     (prefix > 0).then_some(prefix)
 }
 
+/// Read the hardware address and interface index from a link-layer sockaddr.
+///
+/// # Safety
+///
+/// The [`copy_sockaddr`] contract with `wanted = size_of::<sockaddr_ll>()`.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn read_link(sa: *const libc::sockaddr) -> (Option<HardwareAddress>, Option<u32>) {
-    let Some(storage) = copy_sockaddr(sa, mem::size_of::<libc::sockaddr_ll>()) else {
+unsafe fn read_link(sa: *const libc::sockaddr) -> (Option<HardwareAddress>, Option<u32>) {
+    // SAFETY: this function's contract is `copy_sockaddr`'s for this `wanted`.
+    let Some(storage) = (unsafe { copy_sockaddr(sa, mem::size_of::<libc::sockaddr_ll>()) }) else {
         return (None, None);
     };
-    // SAFETY: `storage` is a fully-initialized buffer at least as large as
-    // `sockaddr_ll`; `read_unaligned` since alignment is not guaranteed.
-    let link: libc::sockaddr_ll = unsafe { ptr::read_unaligned((&raw const storage).cast()) };
+    let link: libc::sockaddr_ll = read_from_storage(&storage);
 
     let hw_address = link
         .sll_addr
@@ -314,14 +466,21 @@ fn read_link(sa: *const libc::sockaddr) -> (Option<HardwareAddress>, Option<u32>
     (hw_address, index)
 }
 
+/// Read the hardware address and interface index from a link-layer sockaddr.
+///
+/// # Safety
+///
+/// The caller must ensure that `sa` is null or points to a sockaddr whose
+/// first `max(1, sa_len)` bytes are initialized and readable, and not written
+/// by anyone, for the duration of the call (`sa_len` being byte 0). This
+/// implies the [`copy_sockaddr`] contract for any `wanted`.
 #[cfg(target_vendor = "apple")]
-fn read_link(sa: *const libc::sockaddr) -> (Option<HardwareAddress>, Option<u32>) {
-    let Some(storage) = copy_sockaddr(sa, mem::size_of::<libc::sockaddr_dl>()) else {
+unsafe fn read_link(sa: *const libc::sockaddr) -> (Option<HardwareAddress>, Option<u32>) {
+    // SAFETY: implied by this function's contract (see `# Safety`).
+    let Some(storage) = (unsafe { copy_sockaddr(sa, mem::size_of::<libc::sockaddr_dl>()) }) else {
         return (None, None);
     };
-    // SAFETY: `storage` is a fully-initialized buffer at least as large as
-    // `sockaddr_dl`; `read_unaligned` since alignment is not guaranteed.
-    let link: libc::sockaddr_dl = unsafe { ptr::read_unaligned((&raw const storage).cast()) };
+    let link: libc::sockaddr_dl = read_from_storage(&storage);
 
     let index = (link.sdl_index != 0).then(|| u32::from(link.sdl_index));
 
@@ -341,8 +500,13 @@ fn read_link(sa: *const libc::sockaddr) -> (Option<HardwareAddress>, Option<u32>
 
     let mut bytes = [0u8; HardwareAddress::MAX_LEN];
     let src = sa.cast::<u8>().wrapping_add(start);
-    // SAFETY: `start + addr_len <= sdl_len`, the kernel-reported length of the
-    // allocation behind `sa`, so the read stays in bounds.
+    // SAFETY: `copy_nonoverlapping` needs `src` readable and `bytes` writable
+    // for `addr_len` bytes, without overlap. `link.sdl_len` equals `sa_len`
+    // (byte 0 of `*sa`): it was copied when `sa_len >= 1` and is the zeroed 0
+    // otherwise. So `start + addr_len <= sa_len` puts `src..src + addr_len`
+    // inside the bytes the caller guarantees readable and initialized.
+    // `addr_len <= MAX_LEN` bounds the write to `bytes`, a local that cannot
+    // overlap `*sa`. u8 copies need no alignment.
     unsafe { ptr::copy_nonoverlapping(src, bytes.as_mut_ptr(), addr_len) };
 
     (
@@ -353,7 +517,8 @@ fn read_link(sa: *const libc::sockaddr) -> (Option<HardwareAddress>, Option<u32>
 
 fn name_to_index(name: &str) -> Option<u32> {
     let name = CString::new(name).ok()?;
-    // SAFETY: `name` is a valid NUL-terminated C string.
+    // SAFETY: if_nametoindex(3) only reads the NUL-terminated string at its
+    // argument; `name` is a live `CString`.
     let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
     (index != 0).then_some(index)
 }
@@ -363,7 +528,7 @@ mod tests {
     use super::*;
 
     fn v4_sockaddr(octets: [u8; 4]) -> libc::sockaddr_in {
-        // SAFETY: all-zero `sockaddr_in` is a valid POD value for a test fixture.
+        // SAFETY: all-zero `sockaddr_in` is a valid value: integer fields only (`mem::zeroed` docs).
         let mut sin: libc::sockaddr_in = unsafe { mem::zeroed() };
         #[cfg(target_vendor = "apple")]
         {
@@ -377,7 +542,7 @@ mod tests {
     }
 
     fn v6_sockaddr(addr: Ipv6Addr) -> libc::sockaddr_in6 {
-        // SAFETY: all-zero `sockaddr_in6` is a valid POD value for a test fixture.
+        // SAFETY: all-zero `sockaddr_in6` is a valid value: integer fields only (`mem::zeroed` docs).
         let mut sin6: libc::sockaddr_in6 = unsafe { mem::zeroed() };
         #[cfg(target_vendor = "apple")]
         {
@@ -393,38 +558,46 @@ mod tests {
     #[test]
     fn read_v4_roundtrip() {
         let sin = v4_sockaddr([192, 168, 1, 7]);
-        assert_eq!(
-            read_v4(ptr::from_ref(&sin).cast()),
-            Some(Ipv4Addr::new(192, 168, 1, 7))
-        );
+        // SAFETY: `sin` is a live, fully initialized `sockaddr_in` (no padding;
+        // apple: `sin_len` covers it), readable for the bytes `read_v4` reads.
+        let got = unsafe { read_v4(ptr::from_ref(&sin).cast()) };
+        assert_eq!(got, Some(Ipv4Addr::new(192, 168, 1, 7)));
     }
 
     #[test]
     fn read_v6_roundtrip() {
         let ip = Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0x5678, 0x9abc, 0xdef0);
         let sin6 = v6_sockaddr(ip);
-        assert_eq!(read_v6(ptr::from_ref(&sin6).cast()), Some((ip, 0)));
+        // SAFETY: `sin6` is a live, fully initialized `sockaddr_in6` (no
+        // padding; apple: `sin6_len` covers it).
+        let got = unsafe { read_v6(ptr::from_ref(&sin6).cast()) };
+        assert_eq!(got, Some((ip, 0)));
 
         let mut scoped = v6_sockaddr(ip);
         scoped.sin6_scope_id = 7;
-        assert_eq!(read_v6(ptr::from_ref(&scoped).cast()), Some((ip, 7)));
+        // SAFETY: as above, for `scoped`.
+        let got = unsafe { read_v6(ptr::from_ref(&scoped).cast()) };
+        assert_eq!(got, Some((ip, 7)));
     }
 
     #[test]
     fn read_from_null_sockaddr() {
-        assert_eq!(read_v4(ptr::null()), None);
-        assert_eq!(read_v6(ptr::null()), None);
-        assert_eq!(sockaddr_family(ptr::null()), None);
+        // SAFETY: null is allowed by the `read_v4` contract.
+        assert_eq!(unsafe { read_v4(ptr::null()) }, None);
+        // SAFETY: null is allowed by the `read_v6` contract.
+        assert_eq!(unsafe { read_v6(ptr::null()) }, None);
+        // SAFETY: null is allowed by the `sockaddr_family` contract.
+        assert_eq!(unsafe { sockaddr_family(ptr::null()) }, None);
     }
 
     #[test]
     fn netmask_prefix_contiguous_v4() {
         let mask = v4_sockaddr([255, 255, 255, 0]);
         let address: IpAddr = Ipv4Addr::new(10, 0, 0, 1).into();
-        assert_eq!(
-            netmask_prefix(ptr::from_ref(&mask).cast(), address),
-            Some(24)
-        );
+        // SAFETY: `mask` is a live, fully initialized `sockaddr_in` (no
+        // padding), matching the IPv4 `address`.
+        let prefix = unsafe { netmask_prefix(ptr::from_ref(&mask).cast(), address) };
+        assert_eq!(prefix, Some(24));
     }
 
     #[test]
@@ -433,10 +606,10 @@ mod tests {
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0,
         ]));
         let address: IpAddr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1).into();
-        assert_eq!(
-            netmask_prefix(ptr::from_ref(&mask).cast(), address),
-            Some(64)
-        );
+        // SAFETY: `mask` is a live, fully initialized `sockaddr_in6` (no
+        // padding), matching the IPv6 `address`.
+        let prefix = unsafe { netmask_prefix(ptr::from_ref(&mask).cast(), address) };
+        assert_eq!(prefix, Some(64));
     }
 
     #[test]
@@ -444,12 +617,19 @@ mod tests {
         let address: IpAddr = Ipv4Addr::new(10, 0, 0, 1).into();
 
         let mask = v4_sockaddr([255, 0, 255, 0]);
-        assert_eq!(netmask_prefix(ptr::from_ref(&mask).cast(), address), None);
+        // SAFETY: `mask` is a live, fully initialized `sockaddr_in` (no
+        // padding), matching the IPv4 `address`.
+        let prefix = unsafe { netmask_prefix(ptr::from_ref(&mask).cast(), address) };
+        assert_eq!(prefix, None);
 
         let mask = v4_sockaddr([0, 0, 0, 0]);
-        assert_eq!(netmask_prefix(ptr::from_ref(&mask).cast(), address), None);
+        // SAFETY: as above.
+        let prefix = unsafe { netmask_prefix(ptr::from_ref(&mask).cast(), address) };
+        assert_eq!(prefix, None);
 
-        assert_eq!(netmask_prefix(ptr::null(), address), None);
+        // SAFETY: null is allowed by the `netmask_prefix` contract.
+        let prefix = unsafe { netmask_prefix(ptr::null(), address) };
+        assert_eq!(prefix, None);
     }
 
     #[cfg(target_vendor = "apple")]
@@ -457,7 +637,7 @@ mod tests {
     fn netmask_prefix_clamps_to_reported_sa_len() {
         // a /64 netmask as the kernel reports it: `sa_len` covers only the
         // first 8 mask bytes; anything beyond must not be interpreted.
-        // SAFETY: all-zero `sockaddr_in6` is a valid POD value for a test fixture.
+        // SAFETY: all-zero `sockaddr_in6` is a valid value: integer fields only (`mem::zeroed` docs).
         let mut mask: libc::sockaddr_in6 = unsafe { mem::zeroed() };
         mask.sin6_len = 16; // 8 header bytes + 8 mask bytes
         mask.sin6_addr = libc::in6_addr {
@@ -465,10 +645,10 @@ mod tests {
         };
 
         let address: IpAddr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1).into();
-        assert_eq!(
-            netmask_prefix(ptr::from_ref(&mask).cast(), address),
-            Some(64)
-        );
+        // SAFETY: `mask` is a live, fully initialized 28-byte `sockaddr_in6`;
+        // `netmask_prefix` reads at most `sin6_len` (16) of its bytes.
+        let prefix = unsafe { netmask_prefix(ptr::from_ref(&mask).cast(), address) };
+        assert_eq!(prefix, Some(64));
     }
 
     #[test]
@@ -535,20 +715,23 @@ mod tests {
     #[test]
     fn read_link_extracts_mac_and_index() {
         const MAC: [u8; 6] = [0xaa, 0xbb, 0xcc, 0x0d, 0xee, 0xff];
-        // SAFETY: all-zero `sockaddr_ll` is a valid POD value for a test fixture.
+        // SAFETY: all-zero `sockaddr_ll` is a valid value: integer fields only (`mem::zeroed` docs).
         let mut link: libc::sockaddr_ll = unsafe { mem::zeroed() };
         link.sll_family = libc::AF_PACKET as libc::c_ushort;
         link.sll_ifindex = 3;
         link.sll_halen = MAC.len() as libc::c_uchar;
         link.sll_addr[..MAC.len()].copy_from_slice(&MAC);
 
-        let (hw_address, index) = read_link(ptr::from_ref(&link).cast());
+        // SAFETY: `link` is a live, fully initialized `sockaddr_ll` (no
+        // padding), as `read_link` reads.
+        let (hw_address, index) = unsafe { read_link(ptr::from_ref(&link).cast()) };
         assert_eq!(index, Some(3));
         assert_eq!(hw_address.unwrap().as_bytes(), &MAC);
 
         // an oversized (e.g. infiniband) hardware address is not truncated
         link.sll_halen = 20;
-        let (hw_address, index) = read_link(ptr::from_ref(&link).cast());
+        // SAFETY: as above.
+        let (hw_address, index) = unsafe { read_link(ptr::from_ref(&link).cast()) };
         assert_eq!(index, Some(3));
         assert!(hw_address.is_none());
     }
@@ -564,63 +747,79 @@ mod tests {
         let mut buf = [0u8; 64];
         assert!(total <= buf.len());
 
-        // SAFETY: all-zero `sockaddr_dl` is a valid POD value for a test fixture.
+        // SAFETY: all-zero `sockaddr_dl` is a valid value: integer fields only (`mem::zeroed` docs).
         let mut link: libc::sockaddr_dl = unsafe { mem::zeroed() };
         link.sdl_len = total as libc::c_uchar;
         link.sdl_family = libc::AF_LINK as libc::c_uchar;
         link.sdl_index = 7;
         link.sdl_nlen = NAME.len() as libc::c_uchar;
         link.sdl_alen = MAC.len() as libc::c_uchar;
-        // SAFETY: `buf` is 64 bytes, large enough for a `sockaddr_dl` header.
+        // SAFETY: `write_unaligned` needs `buf` writable for the 20-byte
+        // `sockaddr_dl` (64 bytes); its fields leave no padding, so `buf` stays
+        // initialized.
         unsafe { ptr::write_unaligned(buf.as_mut_ptr().cast::<libc::sockaddr_dl>(), link) };
         buf[data_offset..data_offset + NAME.len()].copy_from_slice(NAME);
         buf[data_offset + NAME.len()..total].copy_from_slice(&MAC);
 
-        let (hw_address, index) = read_link(buf.as_ptr().cast());
+        // SAFETY: `buf` is 64 initialized bytes and the header's `sdl_len` is
+        // at most 60, so the bytes `read_link` may read are in `buf`.
+        let (hw_address, index) = unsafe { read_link(buf.as_ptr().cast()) };
         assert_eq!(index, Some(7));
         assert_eq!(hw_address.unwrap().as_bytes(), &MAC);
 
         // a truncated sdl_len must not yield (partial) address bytes
-        // SAFETY: all-zero `sockaddr_dl` is a valid POD value for a test fixture.
+        // SAFETY: all-zero `sockaddr_dl` is a valid value: integer fields only (`mem::zeroed` docs).
         let mut short: libc::sockaddr_dl = unsafe { mem::zeroed() };
         short.sdl_len = (total - 3) as libc::c_uchar;
         short.sdl_index = 7;
         short.sdl_nlen = NAME.len() as libc::c_uchar;
         short.sdl_alen = MAC.len() as libc::c_uchar;
-        // SAFETY: `buf` is 64 bytes, large enough for a `sockaddr_dl` header.
+        // SAFETY: `write_unaligned` needs `buf` writable for the 20-byte
+        // `sockaddr_dl` (64 bytes); its fields leave no padding, so `buf` stays
+        // initialized.
         unsafe { ptr::write_unaligned(buf.as_mut_ptr().cast::<libc::sockaddr_dl>(), short) };
 
-        let (hw_address, index) = read_link(buf.as_ptr().cast());
+        // SAFETY: `buf` is 64 initialized bytes and the header's `sdl_len` is
+        // at most 60, so the bytes `read_link` may read are in `buf`.
+        let (hw_address, index) = unsafe { read_link(buf.as_ptr().cast()) };
         assert_eq!(index, Some(7));
         assert!(hw_address.is_none());
 
         // an oversized link-layer address is not truncated
-        // SAFETY: all-zero `sockaddr_dl` is a valid POD value for a test fixture.
+        // SAFETY: all-zero `sockaddr_dl` is a valid value: integer fields only (`mem::zeroed` docs).
         let mut oversized: libc::sockaddr_dl = unsafe { mem::zeroed() };
         oversized.sdl_len = 60;
         oversized.sdl_index = 7;
         oversized.sdl_nlen = NAME.len() as libc::c_uchar;
         oversized.sdl_alen = 9;
-        // SAFETY: `buf` is 64 bytes, large enough for a `sockaddr_dl` header.
+        // SAFETY: `write_unaligned` needs `buf` writable for the 20-byte
+        // `sockaddr_dl` (64 bytes); its fields leave no padding, so `buf` stays
+        // initialized.
         unsafe { ptr::write_unaligned(buf.as_mut_ptr().cast::<libc::sockaddr_dl>(), oversized) };
 
-        let (hw_address, index) = read_link(buf.as_ptr().cast());
+        // SAFETY: `buf` is 64 initialized bytes and the header's `sdl_len` is
+        // at most 60, so the bytes `read_link` may read are in `buf`.
+        let (hw_address, index) = unsafe { read_link(buf.as_ptr().cast()) };
         assert_eq!(index, Some(7));
         assert!(hw_address.is_none());
 
         // exactly 8 address bytes (the maximum) are accepted
         const WIDE: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
-        // SAFETY: all-zero `sockaddr_dl` is a valid POD value for a test fixture.
+        // SAFETY: all-zero `sockaddr_dl` is a valid value: integer fields only (`mem::zeroed` docs).
         let mut max: libc::sockaddr_dl = unsafe { mem::zeroed() };
         max.sdl_len = (data_offset + NAME.len() + WIDE.len()) as libc::c_uchar;
         max.sdl_index = 7;
         max.sdl_nlen = NAME.len() as libc::c_uchar;
         max.sdl_alen = WIDE.len() as libc::c_uchar;
-        // SAFETY: `buf` is 64 bytes, large enough for a `sockaddr_dl` header.
+        // SAFETY: `write_unaligned` needs `buf` writable for the 20-byte
+        // `sockaddr_dl` (64 bytes); its fields leave no padding, so `buf` stays
+        // initialized.
         unsafe { ptr::write_unaligned(buf.as_mut_ptr().cast::<libc::sockaddr_dl>(), max) };
         buf[data_offset + NAME.len()..data_offset + NAME.len() + WIDE.len()].copy_from_slice(&WIDE);
 
-        let (hw_address, index) = read_link(buf.as_ptr().cast());
+        // SAFETY: `buf` is 64 initialized bytes and the header's `sdl_len` is
+        // at most 60, so the bytes `read_link` may read are in `buf`.
+        let (hw_address, index) = unsafe { read_link(buf.as_ptr().cast()) };
         assert_eq!(index, Some(7));
         assert_eq!(hw_address.unwrap().as_bytes(), &WIDE);
     }

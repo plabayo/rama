@@ -413,7 +413,8 @@ pub(super) struct PromoteRegistry {
 pub(super) struct PromoteRequestCallback {
     /// Stored as `usize` to keep the registry `Send + Sync` without
     /// raw-pointer footguns — same pattern as the other FFI
-    /// callbacks in this crate.
+    /// callbacks in this crate. Being callable from any thread is part
+    /// of the [`PromoteRegistry::register_raw`] contract.
     pub(super) context: usize,
     pub(super) on_promote_request: unsafe extern "C" fn(context: *mut std::ffi::c_void),
 }
@@ -441,6 +442,15 @@ impl PromoteRegistry {
     /// promote has already fired is a no-op for the in-flight
     /// cutover — `requested` is CAS-guarded on the handle.
     ///
+    /// # Safety
+    ///
+    /// The caller must ensure that calling
+    /// `(cb.on_promote_request)(cb.context as *mut c_void)` is sound any number of
+    /// times, from any thread, from this call until the first of: a later
+    /// `register_raw`/`register_rust` on this registry returns, or the shared
+    /// `callback_active` flag is cleared. [`Self::fire`] calls it only inside that
+    /// window.
+    ///
     /// Callback contract: the registered C trampoline MUST NOT
     /// synchronously call any method on this same session,
     /// including `cancel`, callback registration, or
@@ -454,7 +464,7 @@ impl PromoteRegistry {
     /// immediately. This restriction is specific to the raw FFI
     /// callback; Rust-native callbacks do not enter through the
     /// Swift session-handle lock.
-    pub(super) fn register_raw(&self, cb: PromoteRequestCallback) {
+    pub(super) unsafe fn register_raw(&self, cb: PromoteRequestCallback) {
         // Serialises against `fire`'s snapshot+dispatch (which
         // holds the same lock across both). Without this, a swap
         // could land between fire's snapshot and dispatch, and
@@ -568,11 +578,13 @@ impl PromoteRegistry {
                 *self.pending_ack.lock() = None;
                 return Err(PromoteError::NoCallbackRegistered);
             }
-            // SAFETY (raw path): registration is FFI-owned; caller
-            // keeps `context` valid until the session is freed.
-            // Holding `callback_active` here AND in `register_raw`
-            // serialises swap-and-release against the dispatch.
             if let Some(cb) = raw_cb {
+                // SAFETY: the `register_raw` contract makes this call sound while
+                // `cb` is the current registration and `callback_active` is set.
+                // Both hold here: `active` (the `callback_active` guard) is held
+                // from the `*active` check through this call, and `register_raw`,
+                // `register_rust` and cancel take that same lock before replacing
+                // the slot or clearing the flag, so the snapshot is still current.
                 unsafe { (cb.on_promote_request)(cb.context as *mut std::ffi::c_void) };
             } else if let Some(rust) = rust_cb.as_ref() {
                 rust();
@@ -611,6 +623,12 @@ impl PromoteRegistry {
 /// service. If no handle is in the bridge's extensions (e.g. unit-test
 /// without an engine) or promotion fails, the layer logs and falls through
 /// to the inner service unchanged.
+///
+/// The inner service runs as configured whatever the promotion outcome, e.g.
+/// an [`IoForwardService`](rama_net::proxy::IoForwardService) keeps its
+/// lingering close. After a successful promotion it only sees the bytes
+/// handed over before the cutover: the native transport owns closing and
+/// draining from then on, and Rust relay settings are not transferred to it.
 ///
 /// **Placement matters** — only wrap services whose bridge is the raw
 /// kernel flow ↔ NWConnection. See [`PromoteHandle`]'s "Safety contract"
@@ -695,7 +713,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::assert_matches;
+    use std::{assert_matches, sync::atomic::AtomicUsize, time::Duration};
+
+    use rama_core::{ServiceInput, extensions::Extensions};
+    use rama_net::proxy::{BridgeCloseReason, IoForwardOutcome, IoForwardService, LingeringClose};
+    use rama_utils::octets::kib;
+
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt, DuplexStream, WriteHalf},
+        task::JoinHandle,
+        time::Instant,
+    };
 
     #[tokio::test]
     async fn no_op_handle_resolves_ok() {
@@ -929,5 +957,235 @@ mod tests {
             .expect("parked waiter must be woken by shutdown")
             .expect("task panicked");
         assert_matches!(r, Err(PromoteError::EngineShuttingDown));
+    }
+
+    // ── Configured relay behind the layer ──────────────────────────────
+
+    /// The client's ingress path as the engine session holds it: a shared
+    /// sender that a successful cutover takes away.
+    type ClientTx = Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>;
+
+    const REQUEST: &[u8] = b"PING\r\n";
+    const LATE: &[u8] = b"late";
+    const REPLY_LEN: usize = 6554;
+    const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
+    const SEND_INTERVAL: Duration = Duration::from_millis(100);
+
+    /// Bounds far below the defaults, so lingering by the defaults would overshoot them.
+    fn bounded_linger() -> LingeringClose {
+        LingeringClose::new()
+            .with_idle_timeout(Duration::from_millis(500))
+            .with_timeout(Duration::from_millis(1500))
+    }
+
+    fn reply() -> Vec<u8> {
+        (0..REPLY_LEN).map(|i| (i % 251) as u8).collect()
+    }
+
+    fn client_channel() -> (ClientTx, mpsc::Receiver<Bytes>) {
+        let (tx, rx) = mpsc::channel(16);
+        (Arc::new(parking_lot::Mutex::new(Some(tx))), rx)
+    }
+
+    async fn send(client_tx: &ClientTx, bytes: &'static [u8]) -> bool {
+        let tx = client_tx.lock().clone();
+        match tx {
+            Some(tx) => tx.send(Bytes::from_static(bytes)).await.is_ok(),
+            None => false,
+        }
+    }
+
+    /// Feeds the client's bytes into the relay's ingress leg until the sender
+    /// is gone, which ends that leg, or until the relay dropped it.
+    async fn pump_client(mut rx: mpsc::Receiver<Bytes>, mut ingress: WriteHalf<DuplexStream>) {
+        while let Some(bytes) = rx.recv().await {
+            if ingress.write_all(&bytes).await.is_err() {
+                return;
+            }
+        }
+        _ = ingress.shutdown().await;
+    }
+
+    /// An engine-side registry for `client_tx` whose promote callback is
+    /// answered with `answer` from another task, as the native side does.
+    /// The task yields whether a cutover was pending when it answered.
+    fn answering_registry(
+        client_tx: ClientTx,
+        answer: Result<(), PromoteError>,
+    ) -> (Arc<PromoteRegistry>, Arc<AtomicUsize>, JoinHandle<bool>) {
+        let registry = PromoteRegistry::new(
+            client_tx,
+            Arc::default(),
+            Arc::new(parking_lot::Mutex::new(true)),
+        );
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requested = Arc::new(Notify::new());
+        registry.register_rust({
+            let requests = requests.clone();
+            let requested = requested.clone();
+            move || {
+                requests.fetch_add(1, Ordering::SeqCst);
+                requested.notify_one();
+            }
+        });
+        let answered = tokio::spawn({
+            let registry = registry.clone();
+            async move {
+                requested.notified().await;
+                registry.confirm(answer)
+            }
+        });
+        (registry, requests, answered)
+    }
+
+    struct RelayRun {
+        outcome: IoForwardOutcome,
+        reply: Vec<u8>,
+        /// From the relay closing the client leg until the relay returned.
+        lingered: Duration,
+    }
+
+    /// Runs a configured `IoForwardService` behind `PromoteLayer`: once the
+    /// cutover settled the client sends a request, the origin replies and
+    /// stays silent, the relay idles out, and the client keeps sending after
+    /// that close.
+    async fn relay_through_promote_layer(
+        linger: Option<LingeringClose>,
+        (client_tx, client_rx): (ClientTx, mpsc::Receiver<Bytes>),
+        extensions: Extensions,
+        cutover_settled: impl Future<Output = ()>,
+    ) -> RelayRun {
+        let (client, ingress) = tokio::io::duplex(kib(64));
+        let (egress, mut origin) = tokio::io::duplex(kib(64));
+        let (mut client_r, client_w) = tokio::io::split(client);
+        tokio::spawn(pump_client(client_rx, client_w));
+
+        let svc = PromoteLayer::new().into_layer(
+            IoForwardService::default()
+                .with_idle_timeout(RELAY_IDLE_TIMEOUT)
+                .maybe_with_lingering_close(linger),
+        );
+        let ingress = ServiceInput {
+            input: ingress,
+            extensions,
+        };
+        let relay = tokio::spawn(async move {
+            let result = svc
+                .serve(BridgeIo(ingress, ServiceInput::new(egress)))
+                .await;
+            (result, Instant::now())
+        });
+
+        cutover_settled.await;
+        assert!(
+            send(&client_tx, REQUEST).await,
+            "ingress closed before the request",
+        );
+        let mut request = [0; REQUEST.len()];
+        origin.read_exact(&mut request).await.unwrap();
+        assert_eq!(request, REQUEST);
+        origin.write_all(&reply()).await.unwrap();
+
+        let mut received = Vec::new();
+        client_r.read_to_end(&mut received).await.unwrap();
+        let closed_at = Instant::now();
+        let sender = tokio::spawn(async move {
+            while send(&client_tx, LATE).await {
+                tokio::time::sleep(SEND_INTERVAL).await;
+            }
+        });
+        let (result, returned_at) = relay.await.unwrap();
+        sender.abort();
+        RelayRun {
+            outcome: result.expect("relay closed cleanly"),
+            reply: received,
+            lingered: returned_at.saturating_duration_since(closed_at),
+        }
+    }
+
+    fn assert_relay_kept_its_config(linger: Option<LingeringClose>, run: &RelayRun) {
+        assert_eq!(run.reply, reply(), "reply reached the client in full");
+        assert_eq!(run.outcome.reason(), BridgeCloseReason::IdleTimeout);
+        assert!(run.outcome.fatal_error().is_none());
+        assert_eq!(
+            run.outcome.bytes_l_to_r(),
+            REQUEST.len() as u64,
+            "bytes sent after the close reached the origin",
+        );
+        assert_eq!(run.outcome.bytes_r_to_l(), REPLY_LEN as u64);
+        match linger {
+            // The client never idles, so only the configured total bound ends the drain.
+            Some(linger) => assert!(
+                run.lingered >= linger.timeout() && run.lingered < linger.timeout() + SEND_INTERVAL,
+                "lingered {:?}, configured total {:?}",
+                run.lingered,
+                linger.timeout(),
+            ),
+            None => assert!(
+                run.lingered < SEND_INTERVAL,
+                "lingered {:?} with lingering disabled",
+                run.lingered,
+            ),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn promote_layer_without_handle_runs_configured_relay() {
+        for linger in [Some(bounded_linger()), None] {
+            let run =
+                relay_through_promote_layer(linger, client_channel(), Extensions::new(), async {})
+                    .await;
+            assert_relay_kept_its_config(linger, &run);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn promote_layer_after_rejected_cutover_runs_configured_relay() {
+        for linger in [Some(bounded_linger()), None] {
+            let (client_tx, client_rx) = client_channel();
+            let (registry, requests, answered) = answering_registry(
+                client_tx.clone(),
+                Err(PromoteError::SwiftCutoverFailed {
+                    reason: "rejected".into(),
+                }),
+            );
+            let extensions = Extensions::new();
+            extensions.insert(registry.into_handle(tokio::runtime::Handle::current()));
+            let run =
+                relay_through_promote_layer(linger, (client_tx, client_rx), extensions, async {
+                    assert!(answered.await.unwrap(), "no cutover pending to reject");
+                })
+                .await;
+            assert_eq!(requests.load(Ordering::SeqCst), 1);
+            assert_relay_kept_its_config(linger, &run);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn promote_layer_with_stream_transformed_runs_configured_relay() {
+        marker_runs_configured_relay(StreamTransformed { by: "test" }).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn promote_layer_with_stream_multiplexed_runs_configured_relay() {
+        marker_runs_configured_relay(StreamMultiplexed { by: "test" }).await;
+    }
+
+    /// A cutover that would succeed if requested takes the client's ingress
+    /// away, so the relay only behaves as configured when the marker skips it.
+    async fn marker_runs_configured_relay<M: Extension + Clone>(marker: M) {
+        for linger in [Some(bounded_linger()), None] {
+            let (client_tx, client_rx) = client_channel();
+            let (registry, requests, answered) = answering_registry(client_tx.clone(), Ok(()));
+            let extensions = Extensions::new();
+            extensions.insert(registry.into_handle(tokio::runtime::Handle::current()));
+            extensions.insert(marker.clone());
+            let run =
+                relay_through_promote_layer(linger, (client_tx, client_rx), extensions, async {})
+                    .await;
+            answered.abort();
+            assert_eq!(requests.load(Ordering::SeqCst), 0);
+            assert_relay_kept_its_config(linger, &run);
+        }
     }
 }

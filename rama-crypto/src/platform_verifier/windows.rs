@@ -15,18 +15,18 @@ use windows_sys::Win32::{
         CERT_E_WRONG_USAGE, CRYPT_E_REVOKED, FILETIME, TRUE,
     },
     Security::Cryptography::{
-        AUTHTYPE_SERVER, CERT_CHAIN_CACHE_END_CERT, CERT_CHAIN_CONTEXT,
-        CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS, CERT_CHAIN_POLICY_PARA,
+        AUTHTYPE_SERVER, CERT_CHAIN_CACHE_END_CERT, CERT_CHAIN_CONTEXT, CERT_CHAIN_ENGINE_CONFIG,
+        CERT_CHAIN_PARA, CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS, CERT_CHAIN_POLICY_PARA,
         CERT_CHAIN_POLICY_SSL, CERT_CHAIN_POLICY_STATUS,
         CERT_CHAIN_REVOCATION_ACCUMULATIVE_TIMEOUT, CERT_CHAIN_REVOCATION_CHECK_END_CERT,
         CERT_CONTEXT, CERT_OCSP_RESPONSE_PROP_ID, CERT_SET_PROPERTY_IGNORE_PERSIST_ERROR_FLAG,
         CERT_STORE_ADD_ALWAYS, CERT_STORE_DEFER_CLOSE_UNTIL_LAST_FREE_FLAG, CERT_STORE_PROV_MEMORY,
-        CERT_STRONG_SIGN_PARA, CERT_TRUST_IS_PARTIAL_CHAIN, CERT_TRUST_IS_UNTRUSTED_ROOT,
-        CERT_USAGE_MATCH, CRYPT_INTEGER_BLOB, CTL_USAGE, CertAddEncodedCertificateToStore,
-        CertCloseStore, CertCreateCertificateChainEngine, CertFreeCertificateChain,
-        CertFreeCertificateChainEngine, CertFreeCertificateContext, CertGetCertificateChain,
-        CertOpenStore, CertSetCertificateContextProperty, CertVerifyCertificateChainPolicy,
-        HCERTCHAINENGINE, HCERTSTORE, HTTPSPolicyCallbackData, USAGE_MATCH_TYPE_AND,
+        CERT_TRUST_IS_PARTIAL_CHAIN, CERT_TRUST_IS_UNTRUSTED_ROOT, CERT_USAGE_MATCH,
+        CRYPT_INTEGER_BLOB, CTL_USAGE, CertAddEncodedCertificateToStore, CertCloseStore,
+        CertCreateCertificateChainEngine, CertFreeCertificateChain, CertFreeCertificateChainEngine,
+        CertFreeCertificateContext, CertGetCertificateChain, CertOpenStore,
+        CertSetCertificateContextProperty, CertVerifyCertificateChainPolicy, HCERTCHAINENGINE,
+        HTTPSPolicyCallbackData, HTTPSPolicyCallbackData_0, USAGE_MATCH_TYPE_AND,
         X509_ASN_ENCODING, szOID_PKIX_KP_SERVER_AUTH,
     },
 };
@@ -40,119 +40,45 @@ const ALLOWED_EKUS: &[windows_sys::core::PCSTR] = &[szOID_PKIX_KP_SERVER_AUTH];
 /// Seconds between 1601-01-01 (the `FILETIME` epoch) and the Unix epoch.
 const FILETIME_UNIX_OFFSET_SECS: u64 = 11_644_473_600;
 
-// `windows-sys` declares the Windows 8+ layout of `CERT_CHAIN_PARA`. The
-// engine reads `cbSize`, so the declaration below also covers older releases.
-#[expect(non_snake_case, reason = "mirrors the CryptoAPI declaration")]
-#[repr(C)]
-struct CERT_CHAIN_PARA {
-    cbSize: u32,
-    RequestedUsage: CERT_USAGE_MATCH,
-    RequestedIssuancePolicy: CERT_USAGE_MATCH,
-    dwUrlRetrievalTimeout: u32,
-    fCheckRevocationFreshnessTime: i32,
-    dwRevocationFreshnessTime: u32,
-    pftCacheResync: *mut FILETIME,
-    pStrongSignPara: *const CERT_STRONG_SIGN_PARA,
-    dwStrongSignFlags: u32,
-}
+// The engine reads `cbSize` to interpret `CERT_CHAIN_PARA` and
+// `CERT_CHAIN_ENGINE_CONFIG`, so the Windows 8+ layouts that `windows-sys`
+// declares also work on older releases.
 
-// Same compatibility concern as `CERT_CHAIN_PARA`.
-#[expect(non_snake_case, reason = "mirrors the CryptoAPI declaration")]
-#[repr(C)]
-struct CERT_CHAIN_ENGINE_CONFIG {
-    cbSize: u32,
-    hRestrictedRoot: HCERTSTORE,
-    hRestrictedTrust: HCERTSTORE,
-    hRestrictedOther: HCERTSTORE,
-    cAdditionalStore: u32,
-    rghAdditionalStore: *mut HCERTSTORE,
-    dwFlags: u32,
-    dwUrlRetrievalTimeout: u32,
-    MaximumCachedCertificates: u32,
-    CycleDetectionModulus: u32,
-    hExclusiveRoot: HCERTSTORE,
-    hExclusiveTrustedPeople: HCERTSTORE,
-    dwExclusiveFlags: u32,
-}
-
-/// A structure that is valid when zeroed, apart from its `cbSize` field.
-///
-/// # Safety
-///
-/// Same requirements as [`mem::zeroed`].
-unsafe trait ZeroedWithSize: Sized {
-    const SIZE: u32 = {
-        let size = mem::size_of::<Self>();
-        assert!(
-            size <= u32::MAX as usize,
-            "structure is larger than a DWORD"
-        );
-        size as u32
-    };
-
-    fn zeroed_with_size() -> Self;
-}
-
-// SAFETY: only integers and pointers; MSDN requires unused fields to be zero.
-unsafe impl ZeroedWithSize for CERT_CHAIN_PARA {
-    fn zeroed_with_size() -> Self {
-        // SAFETY: see the impl.
-        let mut value: Self = unsafe { mem::zeroed() };
-        value.cbSize = Self::SIZE;
-        value
-    }
-}
-
-// SAFETY: integers, pointers and a union of integers.
-unsafe impl ZeroedWithSize for HTTPSPolicyCallbackData {
-    fn zeroed_with_size() -> Self {
-        // SAFETY: see the impl.
-        let mut value: Self = unsafe { mem::zeroed() };
-        value.Anonymous.cbSize = Self::SIZE;
-        value
-    }
-}
-
-// SAFETY: only integers and pointers.
-unsafe impl ZeroedWithSize for CERT_CHAIN_POLICY_PARA {
-    fn zeroed_with_size() -> Self {
-        // SAFETY: see the impl.
-        let mut value: Self = unsafe { mem::zeroed() };
-        value.cbSize = Self::SIZE;
-        value
-    }
-}
-
-// SAFETY: only integers and a pointer, which stays null.
-unsafe impl ZeroedWithSize for CERT_CHAIN_POLICY_STATUS {
-    fn zeroed_with_size() -> Self {
-        // SAFETY: see the impl.
-        let mut value: Self = unsafe { mem::zeroed() };
-        value.cbSize = Self::SIZE;
-        value
-    }
-}
-
-// SAFETY: only integers and pointers.
-unsafe impl ZeroedWithSize for CERT_CHAIN_ENGINE_CONFIG {
-    fn zeroed_with_size() -> Self {
-        // SAFETY: see the impl.
-        let mut value: Self = unsafe { mem::zeroed() };
-        value.cbSize = Self::SIZE;
-        value
-    }
+/// `size_of::<T>()` as the DWORD a `cbSize` field takes.
+const fn dword_size_of<T>() -> u32 {
+    let size = mem::size_of::<T>();
+    assert!(
+        size <= u32::MAX as usize,
+        "structure is larger than a DWORD"
+    );
+    size as u32
 }
 
 fn last_os_error(kind: PlatformVerifyErrorKind) -> PlatformVerifyError {
     PlatformVerifyError::with_source(kind, std::io::Error::last_os_error())
 }
 
-struct CertChain(NonNull<CERT_CHAIN_CONTEXT>);
+/// An owned chain context.
+struct CertChain(
+    // Safety invariant: a chain context returned by `CertGetCertificateChain`,
+    // owned by `self` and freed only by `Drop`.
+    NonNull<CERT_CHAIN_CONTEXT>,
+);
 
 impl CertChain {
+    /// The chain context, borrowed for `self`.
+    fn context(&self) -> &CERT_CHAIN_CONTEXT {
+        // SAFETY: `as_ref` needs an aligned pointer to an initialized
+        // `CERT_CHAIN_CONTEXT` that is not mutated while the borrow lives. By
+        // the field invariant it is a context `CertGetCertificateChain`
+        // returned (an initialized C structure), alive until `Drop` frees it,
+        // which the `&self` borrow excludes. CryptoAPI hands it out as
+        // `PCCERT_CHAIN_CONTEXT` (const) and does not mutate it.
+        unsafe { self.0.as_ref() }
+    }
+
     fn trust_error_status(&self) -> u32 {
-        // SAFETY: the chain context is valid for the lifetime of `self`.
-        unsafe { self.0.as_ref() }.TrustStatus.dwErrorStatus
+        self.context().TrustStatus.dwErrorStatus
     }
 
     fn verify_ssl_policy(
@@ -161,26 +87,41 @@ impl CertChain {
     ) -> Result<CERT_CHAIN_POLICY_STATUS, PlatformVerifyError> {
         let mut server_name: Vec<u16> = server_name.encode_utf16().chain(Some(0)).collect();
 
-        let mut extra = HTTPSPolicyCallbackData::zeroed_with_size();
-        extra.dwAuthType = AUTHTYPE_SERVER;
-        extra.pwszServerName = server_name.as_mut_ptr();
+        let mut extra = HTTPSPolicyCallbackData {
+            Anonymous: HTTPSPolicyCallbackData_0 {
+                cbSize: dword_size_of::<HTTPSPolicyCallbackData>(),
+            },
+            dwAuthType: AUTHTYPE_SERVER,
+            pwszServerName: server_name.as_mut_ptr(),
+            ..Default::default()
+        };
 
-        let mut params = CERT_CHAIN_POLICY_PARA::zeroed_with_size();
-        // Missing revocation information is not an error, as with other
-        // platform verifiers.
-        params.dwFlags = CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS;
-        params.pvExtraPolicyPara = NonNull::from(&mut extra).cast::<c_void>().as_ptr();
+        let params = CERT_CHAIN_POLICY_PARA {
+            cbSize: dword_size_of::<CERT_CHAIN_POLICY_PARA>(),
+            // Missing revocation information is not an error, as with other
+            // platform verifiers.
+            dwFlags: CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS,
+            pvExtraPolicyPara: NonNull::from(&mut extra).cast::<c_void>().as_ptr(),
+        };
 
         // An input/output structure: the caller sets its size.
-        let mut status = CERT_CHAIN_POLICY_STATUS::zeroed_with_size();
-        // SAFETY: the chain is valid, `params` and `extra` (and the name it
-        // points to) outlive the call, and `status` is valid for writes.
+        let mut status = CERT_CHAIN_POLICY_STATUS {
+            cbSize: dword_size_of::<CERT_CHAIN_POLICY_STATUS>(),
+            ..Default::default()
+        };
+        // SAFETY: per the CertVerifyCertificateChainPolicy docs the call reads
+        // the chain, `params` and (for `CERT_CHAIN_POLICY_SSL`) the
+        // `HTTPSPolicyCallbackData` it points to, with its NUL-terminated
+        // server name, and writes `*status`; it returns synchronously. The
+        // chain is live (field invariant); `params`, `extra` and
+        // `server_name` are live locals with sizes set; `status` is a live,
+        // writable local.
         let res = unsafe {
             CertVerifyCertificateChainPolicy(
                 CERT_CHAIN_POLICY_SSL,
                 self.0.as_ptr(),
-                &params,
-                &mut status,
+                &raw const params,
+                &raw mut status,
             )
         };
         if res != TRUE {
@@ -192,33 +133,46 @@ impl CertChain {
     }
 
     /// The built path of the first simple chain, leaf first.
+    ///
+    /// The structures reached here belong to the chain context: per the
+    /// `CERT_CHAIN_CONTEXT`, `CERT_SIMPLE_CHAIN`, `CERT_CHAIN_ELEMENT` and
+    /// `CERT_CONTEXT` docs, `rgpChain` is an array of `cChain` simple-chain
+    /// pointers, `rgpElement` an array of `cElement` element pointers, and
+    /// `pbCertEncoded` holds `cbCertEncoded` bytes, all initialized C data
+    /// that lives, unmodified, as long as the context (borrowed for `self`).
     fn certificates(&self) -> Vec<CertificateDer<'static>> {
-        // SAFETY: the chain context stays valid for the lifetime of `self`.
-        let context = unsafe { self.0.as_ref() };
+        let context = self.context();
         if context.cChain == 0 || context.rgpChain.is_null() {
             return Vec::new();
         }
-        // SAFETY: `rgpChain` holds `cChain` (> 0) simple chain pointers.
+        // SAFETY: a place read needs `rgpChain` aligned, readable and
+        // initialized for one pointer: it is non-null and holds `cChain > 0`
+        // entries (chain context data, see above).
         let first = unsafe { *context.rgpChain };
-        // SAFETY: simple chain pointers are null or valid for the chain's lifetime.
+        // SAFETY: `as_ref` needs null or an aligned pointer to an initialized,
+        // unmutated `CERT_SIMPLE_CHAIN` for the borrow: chain context data.
         let Some(simple) = (unsafe { first.as_ref() }) else {
             return Vec::new();
         };
         if simple.rgpElement.is_null() {
             return Vec::new();
         }
-        // SAFETY: `rgpElement` holds `cElement` element pointers.
+        // SAFETY: `from_raw_parts` needs a non-null, aligned pointer to
+        // `cElement` initialized pointers in one allocation, unmutated for the
+        // borrow, within `isize::MAX` bytes: chain context data, non-null
+        // checked above, and the array is one live allocation.
         let elements =
             unsafe { slice::from_raw_parts(simple.rgpElement, simple.cElement as usize) };
         elements
             .iter()
-            // SAFETY: element pointers are null or valid for the chain's lifetime.
+            // SAFETY: as for `first`, for a `CERT_CHAIN_ELEMENT`.
             .filter_map(|element| unsafe { element.as_ref() })
-            // SAFETY: certificate contexts are null or valid for the chain's lifetime.
+            // SAFETY: as for `first`, for a `CERT_CONTEXT`.
             .filter_map(|element| unsafe { element.pCertContext.as_ref() })
             .filter(|certificate| !certificate.pbCertEncoded.is_null())
             .map(|certificate| {
-                // SAFETY: `pbCertEncoded` holds `cbCertEncoded` bytes.
+                // SAFETY: as for `elements`, for the `cbCertEncoded` bytes at
+                // the non-null `pbCertEncoded`; the slice is copied at once.
                 let der = unsafe {
                     slice::from_raw_parts(
                         certificate.pbCertEncoded,
@@ -233,13 +187,20 @@ impl CertChain {
 
 impl Drop for CertChain {
     fn drop(&mut self) {
-        // SAFETY: the chain is owned by `self`.
+        // SAFETY: `CertFreeCertificateChain` frees a chain context once; by
+        // the field invariant `self` owns it and `drop` runs once, after the
+        // last borrow from `context()`.
         unsafe { CertFreeCertificateChain(self.0.as_ptr()) }
     }
 }
 
 /// A certificate context inside a [`CertificateStore`].
-struct Certificate(NonNull<CERT_CONTEXT>);
+struct Certificate(
+    // Safety invariant: a certificate context returned by
+    // `CertAddEncodedCertificateToStore`, owning one reference that `Drop`
+    // releases.
+    NonNull<CERT_CONTEXT>,
+);
 
 impl Certificate {
     fn set_ocsp_response(&mut self, response: &[u8]) -> Result<(), PlatformVerifyError> {
@@ -249,8 +210,12 @@ impl Certificate {
             })?,
             pbData: response.as_ptr().cast_mut(),
         };
-        // SAFETY: the context is valid and the blob matches the property type;
-        // CryptoAPI copies the data.
+        // SAFETY: per the CertSetCertificateContextProperty docs, for
+        // `CERT_OCSP_RESPONSE_PROP_ID` `pvData` points to a
+        // `CRYPT_DATA_BLOB` (an alias of `CRYPT_INTEGER_BLOB`) whose bytes the
+        // call copies before returning. The context is live (field
+        // invariant); `blob` is a live local naming `response`, readable for
+        // `cbData` bytes, and the call does not write through it.
         let res = unsafe {
             CertSetCertificateContextProperty(
                 self.0.as_ptr(),
@@ -269,7 +234,8 @@ impl Certificate {
 
 impl Drop for Certificate {
     fn drop(&mut self) {
-        // SAFETY: the context is owned by `self`.
+        // SAFETY: `CertFreeCertificateContext` releases one reference; by the
+        // field invariant `self` owns one and `drop` runs once.
         unsafe { CertFreeCertificateContext(self.0.as_ptr()) };
     }
 }
@@ -278,11 +244,17 @@ impl Drop for Certificate {
 ///
 /// Opened with `CERT_STORE_DEFER_CLOSE_UNTIL_LAST_FREE_FLAG`, so certificate
 /// contexts created from it may outlive it.
-struct CertificateStore(NonNull<c_void>);
+struct CertificateStore(
+    // Safety invariant: a store handle returned by `CertOpenStore`, owned by
+    // `self` and closed only by `Drop`.
+    NonNull<c_void>,
+);
 
 impl CertificateStore {
     fn new() -> Result<Self, PlatformVerifyError> {
-        // SAFETY: constant arguments; the result is checked for null.
+        // SAFETY: per the CertOpenStore docs `CERT_STORE_PROV_MEMORY` takes no
+        // encoding type, crypt provider or `pvPara` (null), so the call reads
+        // no caller memory; it returns a new handle or null, checked below.
         let store = unsafe {
             CertOpenStore(
                 CERT_STORE_PROV_MEMORY,
@@ -302,8 +274,11 @@ impl CertificateStore {
         let len = der.len().try_into().map_err(|err| {
             PlatformVerifyError::with_source(PlatformVerifyErrorKind::BadEncoding, err)
         })?;
-        // SAFETY: the store is valid, `der` is readable for `len` bytes and
-        // `context` is valid for writes.
+        // SAFETY: per the CertAddEncodedCertificateToStore docs the call reads
+        // `cbCertEncoded` bytes at `pbCertEncoded` and writes a new context
+        // (one reference owned by the caller) to `*ppCertContext`. The store
+        // is live (field invariant); `der` is readable for `len` bytes (`len`
+        // is its length); `context` is a live, writable local.
         let res = unsafe {
             CertAddEncodedCertificateToStore(
                 self.0.as_ptr(),
@@ -311,10 +286,11 @@ impl CertificateStore {
                 der.as_ptr(),
                 len,
                 CERT_STORE_ADD_ALWAYS,
-                &mut context,
+                &raw mut context,
             )
         };
         match (res, NonNull::new(context)) {
+            // Upholds the `Certificate` invariant: a context from a successful call.
             (TRUE, Some(context)) => Ok(Certificate(context)),
             _ => Err(PlatformVerifyError::new(
                 PlatformVerifyErrorKind::BadEncoding,
@@ -328,16 +304,19 @@ impl CertificateStore {
         now: SystemTime,
         engine: Option<&CertEngine>,
     ) -> Result<CertChain, PlatformVerifyError> {
-        let mut parameters = CERT_CHAIN_PARA::zeroed_with_size();
-        parameters.RequestedUsage = CERT_USAGE_MATCH {
-            dwType: USAGE_MATCH_TYPE_AND,
-            Usage: CTL_USAGE {
-                cUsageIdentifier: ALLOWED_EKUS.len() as u32,
-                rgpszUsageIdentifier: ALLOWED_EKUS.as_ptr().cast_mut().cast(),
+        let parameters = CERT_CHAIN_PARA {
+            cbSize: dword_size_of::<CERT_CHAIN_PARA>(),
+            RequestedUsage: CERT_USAGE_MATCH {
+                dwType: USAGE_MATCH_TYPE_AND,
+                Usage: CTL_USAGE {
+                    cUsageIdentifier: ALLOWED_EKUS.len() as u32,
+                    rgpszUsageIdentifier: ALLOWED_EKUS.as_ptr().cast_mut().cast(),
+                },
             },
+            // Below the 15s default: fetches are for revocation and intermediates.
+            dwUrlRetrievalTimeout: 10_000,
+            ..Default::default()
         };
-        // Below the 15s default: fetches are for revocation and intermediates.
-        parameters.dwUrlRetrievalTimeout = 10_000;
 
         // Revocation is checked for the leaf only, network time is bounded
         // across all fetches, and repeated connections reuse the cached leaf.
@@ -347,21 +326,28 @@ impl CertificateStore {
 
         let time = filetime(now)?;
         let mut chain = ptr::null_mut();
-        // SAFETY: all pointers are valid for the duration of the call; the
-        // engine reads `cbSize` to interpret the parameter layout.
+        // SAFETY: per the CertGetCertificateChain docs the call reads the
+        // engine (null: the default engine), the leaf context, `*pTime`, the
+        // additional store and `*pChainPara` (with the usage OIDs it names),
+        // and writes a new chain context to `*ppChainContext`, returning
+        // synchronously. The engine, leaf and store are live (their field
+        // invariants, borrowed for the call); `time`, `parameters` and `chain`
+        // are live locals; `ALLOWED_EKUS` is a static array of NUL-terminated
+        // OID strings that the call only reads.
         let res = unsafe {
             CertGetCertificateChain(
-                engine.map_or(ptr::null_mut(), |engine| engine.0.as_ptr()),
+                engine.map_or(ptr::null_mut(), |engine| engine.engine.as_ptr()),
                 leaf.0.as_ptr(),
-                &time,
+                &raw const time,
                 self.0.as_ptr(),
-                NonNull::from(&parameters).cast().as_ptr(),
+                &raw const parameters,
                 FLAGS,
                 ptr::null_mut(),
-                &mut chain,
+                &raw mut chain,
             )
         };
         match NonNull::new(chain) {
+            // Upholds the `CertChain` invariant: a context from a successful call.
             Some(chain) if res == TRUE => Ok(CertChain(chain)),
             _ => Err(last_os_error(PlatformVerifyErrorKind::Other)),
         }
@@ -370,53 +356,75 @@ impl CertificateStore {
 
 impl Drop for CertificateStore {
     fn drop(&mut self) {
-        // SAFETY: the store is owned by `self`.
+        // SAFETY: `CertCloseStore` closes a handle once; by the field
+        // invariant `self` owns it and `drop` runs once. With
+        // `CERT_STORE_DEFER_CLOSE_UNTIL_LAST_FREE_FLAG` contexts and engines
+        // still using the store keep it open.
         unsafe { CertCloseStore(self.0.as_ptr(), 0) };
     }
 }
 
 /// A chain engine that trusts additional roots.
-struct CertEngine(NonNull<c_void>);
+///
+/// Neither `Send` nor `Sync`: CryptoAPI documents no thread-safety for chain
+/// engines, so each one stays on the thread that creates it.
+struct CertEngine {
+    // Safety invariant: an engine returned by
+    // `CertCreateCertificateChainEngine`, owned by `self` and freed only by
+    // `Drop`; its `hExclusiveRoot` is `_roots`.
+    engine: NonNull<c_void>,
+    // Safety invariant: open at least until `engine` is freed. `Drop` frees
+    // the engine before fields drop, so this store closes after it.
+    _roots: CertificateStore,
+}
 
 impl CertEngine {
-    fn try_with_extra_roots(roots: &[CertificateDer<'static>]) -> Result<Self, BoxError> {
+    fn try_with_extra_roots(
+        roots: &[CertificateDer<'static>],
+    ) -> Result<Self, PlatformVerifyError> {
         let mut roots_store = CertificateStore::new()?;
         for root in roots {
             roots_store.add_cert(root)?;
         }
 
-        let mut config = CERT_CHAIN_ENGINE_CONFIG::zeroed_with_size();
-        config.hExclusiveRoot = roots_store.0.as_ptr();
+        // `dwExclusiveFlags` stays 0: only self-signed certificates anchor, as Windows trust does.
+        let config = CERT_CHAIN_ENGINE_CONFIG {
+            cbSize: dword_size_of::<CERT_CHAIN_ENGINE_CONFIG>(),
+            hExclusiveRoot: roots_store.0.as_ptr(),
+            ..Default::default()
+        };
 
         let mut engine: HCERTCHAINENGINE = ptr::null_mut();
-        // SAFETY: `config` is valid for reads (the engine reads `cbSize`) and
-        // `engine` is valid for writes. The engine references the root store,
-        // which CryptoAPI keeps alive.
-        let res = unsafe {
-            CertCreateCertificateChainEngine(NonNull::from(&config).cast().as_ptr(), &mut engine)
-        };
+        // SAFETY: per the CertCreateCertificateChainEngine docs the call reads
+        // `*pConfig` (its `cbSize` gives the layout) and writes a new engine
+        // to `*phChainEngine`. `config` is a live local whose only handle,
+        // `hExclusiveRoot`, is the live `roots_store`; `engine` is a live,
+        // writable local.
+        let res = unsafe { CertCreateCertificateChainEngine(&raw const config, &raw mut engine) };
         match NonNull::new(engine) {
-            Some(engine) if res == TRUE => Ok(Self(engine)),
-            _ => Err(last_os_error(PlatformVerifyErrorKind::Other).into()),
+            // Upholds both field invariants: a new engine using `roots_store`,
+            // which moves into the same value.
+            Some(engine) if res == TRUE => Ok(Self {
+                engine,
+                _roots: roots_store,
+            }),
+            _ => Err(last_os_error(PlatformVerifyErrorKind::Other)),
         }
     }
 }
 
 impl Drop for CertEngine {
     fn drop(&mut self) {
-        // SAFETY: the engine is owned by `self`.
-        unsafe { CertFreeCertificateChainEngine(self.0.as_ptr()) };
+        // SAFETY: `CertFreeCertificateChainEngine` frees an engine once; by
+        // the field invariant `self` owns it and `drop` runs once. `_roots`
+        // is still open here.
+        unsafe { CertFreeCertificateChainEngine(self.engine.as_ptr()) };
     }
 }
 
-// SAFETY: CryptoAPI engines are reference counted, not mutated by
-// `CertGetCertificateChain`, and may be used and freed from any thread.
-unsafe impl Send for CertEngine {}
-// SAFETY: see `Send`.
-unsafe impl Sync for CertEngine {}
-
 pub(super) struct Verifier {
-    extra_roots: Option<CertEngine>,
+    /// Roots for a per-verification [`CertEngine`]; never empty.
+    extra_roots: Option<Box<[CertificateDer<'static>]>>,
 }
 
 impl Verifier {
@@ -427,8 +435,10 @@ impl Verifier {
     pub(super) fn try_with_extra_roots(
         roots: &[CertificateDer<'static>],
     ) -> Result<Self, BoxError> {
+        // Reject unusable roots now rather than at every verification.
+        drop(CertEngine::try_with_extra_roots(roots)?);
         Ok(Self {
-            extra_roots: Some(CertEngine::try_with_extra_roots(roots)?),
+            extra_roots: Some(roots.into()),
         })
     }
 
@@ -449,15 +459,19 @@ impl Verifier {
             leaf.set_ocsp_response(response)?;
         }
 
+        // Declared before `chain` so it is dropped after the chain built
+        // with it.
+        let engine;
         let mut chain = store.build_chain(&leaf, now, None)?;
         // The system roots come first; additional roots only rescue a chain
         // the system could not complete.
-        if let Some(engine) = &self.extra_roots
+        if let Some(roots) = &self.extra_roots
             && chain.trust_error_status()
                 & (CERT_TRUST_IS_PARTIAL_CHAIN | CERT_TRUST_IS_UNTRUSTED_ROOT)
                 != 0
         {
-            chain = store.build_chain(&leaf, now, Some(engine))?;
+            engine = CertEngine::try_with_extra_roots(roots)?;
+            chain = store.build_chain(&leaf, now, Some(&engine))?;
         }
 
         let status = chain.verify_ssl_policy(server_name)?;
@@ -485,8 +499,12 @@ fn filetime(now: SystemTime) -> Result<FILETIME, PlatformVerifyError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|err| PlatformVerifyError::with_source(PlatformVerifyErrorKind::Other, err))?;
     // `FILETIME` counts 100ns intervals.
-    let intervals = (since_unix.as_secs() + FILETIME_UNIX_OFFSET_SECS) * 10_000_000
-        + u64::from(since_unix.subsec_nanos() / 100);
+    let intervals = since_unix
+        .as_secs()
+        .checked_add(FILETIME_UNIX_OFFSET_SECS)
+        .and_then(|secs| secs.checked_mul(10_000_000))
+        .and_then(|ticks| ticks.checked_add(u64::from(since_unix.subsec_nanos() / 100)))
+        .ok_or_else(|| PlatformVerifyError::new(PlatformVerifyErrorKind::Other))?;
     Ok(FILETIME {
         dwLowDateTime: intervals as u32,
         dwHighDateTime: (intervals >> 32) as u32,

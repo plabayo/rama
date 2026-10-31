@@ -27,6 +27,11 @@ enum Section {
     Fragment,
 }
 
+/// # Safety-usable invariant
+///
+/// On `Ok`, `bytes[start..]` is valid UTF-8: every byte `>= 0x80` starts a
+/// sequence accepted by [`check_utf8_sequence`] (graceful) or is rejected
+/// (strict), and every other byte is ASCII.
 pub(super) fn scan_path_query_fragment(
     bytes: &[u8],
     start: usize,
@@ -46,15 +51,15 @@ pub(super) fn scan_path_query_fragment(
             return Err(ParseError::ControlCharInUri { at: i, byte: b });
         }
 
-        // Non-ASCII byte: must be a well-formed UTF-8 sequence (the
-        // typed accessors derive `&str` via `from_utf8_unchecked`, so
-        // the bytes must in fact be UTF-8).
-        //
-        // Strict mode would reject any non-ASCII via the byte-set
-        // check below; we only run the UTF-8 path in graceful mode.
-        // Folding the check in-loop means the all-ASCII fast path
-        // pays zero overhead — only multi-byte sequences enter here.
-        if !strict && b >= 0x80 {
+        // Non-ASCII byte: must be a well-formed UTF-8 sequence, as the
+        // `Uri` keeps these bytes as `str` (see this fn's safety-usable
+        // invariant). Strict mode rejects non-ASCII outright, as its
+        // byte sets would. Folding the check in-loop means the all-ASCII
+        // fast path pays zero overhead.
+        if b >= 0x80 {
+            if strict {
+                return Err(ParseError::StrictViolation);
+            }
             let seq_len = check_utf8_sequence(bytes, i)?;
             // Section delimiters (`?`, `#`) are ASCII, so a multi-byte
             // sequence can't be one — safe to skip ahead wholesale.

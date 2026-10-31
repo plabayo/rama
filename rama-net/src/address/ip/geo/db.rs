@@ -2,7 +2,7 @@
 //! merge their results.
 //!
 //! [`IpGeoDb`] holds any number of labelled *sources*, each a set of
-//! [`MmdbReader`]s (e.g. a country DB + a city DB + an ASN DB from one
+//! [`GeoReader`]s (e.g. a country DB + a city DB + an ASN DB from one
 //! provider). A lookup merges every source into a single [`GeoLocation`] —
 //! earlier sources take precedence, later ones only fill the gaps — while
 //! [`IpGeoDb::lookup_all`] keeps the per-source breakdown for side-by-side use.
@@ -15,18 +15,51 @@ use core::net::IpAddr;
 use std::path::Path;
 
 use super::location::GeoLocation;
-use super::{GeoIpError, MmdbReader};
+use super::{GeoIpError, MmdbFileConfig, MmdbFileReader, MmdbReader};
 
 use serde::{Deserialize, Serialize};
 
 /// Name of the environment variable parsed by [`IpGeoDb::from_env`].
 pub const RAMA_IP_GEO_DB_ENV: &str = "RAMA_IP_GEO_DB";
 
+/// A database queried by [`IpGeoDb`]: held in memory or mapped
+/// ([`MmdbReader`]), or read through positional reads ([`MmdbFileReader`]).
+#[derive(Debug, Clone)]
+pub enum GeoReader {
+    /// A database held in memory or memory-mapped.
+    Mmdb(MmdbReader),
+    /// A database file read through positional reads, with hot reload.
+    File(MmdbFileReader),
+}
+
+impl GeoReader {
+    /// Look up `ip` as an owned [`GeoLocation`].
+    #[must_use]
+    pub fn lookup(&self, ip: IpAddr) -> Option<GeoLocation> {
+        match self {
+            Self::Mmdb(reader) => reader.lookup(ip).map(|view| view.to_owned()),
+            Self::File(reader) => reader.lookup(ip),
+        }
+    }
+}
+
+impl From<MmdbReader> for GeoReader {
+    fn from(reader: MmdbReader) -> Self {
+        Self::Mmdb(reader)
+    }
+}
+
+impl From<MmdbFileReader> for GeoReader {
+    fn from(reader: MmdbFileReader) -> Self {
+        Self::File(reader)
+    }
+}
+
 /// One labelled source: a set of readers queried and merged together.
 #[derive(Debug, Clone)]
 struct GeoSource {
     label: Box<str>,
-    readers: Vec<MmdbReader>,
+    readers: Vec<GeoReader>,
 }
 
 impl GeoSource {
@@ -45,11 +78,11 @@ fn merge_in_order(locations: impl IntoIterator<Item = GeoLocation>) -> Option<Ge
 }
 
 /// Merge every reader's record for `ip`, earlier readers winning.
-fn merge_readers(readers: &[MmdbReader], ip: IpAddr) -> Option<GeoLocation> {
+fn merge_readers(readers: &[GeoReader], ip: IpAddr) -> Option<GeoLocation> {
     merge_in_order(
         readers
             .iter()
-            .filter_map(|reader| reader.lookup(ip).map(|view| view.to_owned()))
+            .filter_map(|reader| reader.lookup(ip))
             .filter(|loc| !loc.is_empty()),
     )
 }
@@ -159,8 +192,47 @@ impl IpGeoDb {
     /// Returns [`GeoIpError`] if the value is malformed, set but not valid
     /// UTF-8, or a configured file cannot be loaded.
     pub fn from_env() -> Result<Option<Self>, GeoIpError> {
+        Self::from_env_with(|path| MmdbReader::open(path).map(GeoReader::from))
+    }
+
+    /// [`Self::from_env`], reading each configured file through positional
+    /// reads with [`MmdbFileReader`] (configured by `config`) instead of
+    /// loading it into memory. Each file follows replacements of its path.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_env`].
+    pub fn from_env_positional(config: &MmdbFileConfig) -> Result<Option<Self>, GeoIpError> {
+        Self::from_env_with(|path| {
+            MmdbFileReader::open_with_config(path, config.clone()).map(GeoReader::from)
+        })
+    }
+
+    /// [`Self::from_env`], memory-mapping each configured file through
+    /// [`MmdbReader::open_mmap`] instead of reading it into memory.
+    ///
+    /// # Safety
+    ///
+    /// Every file named by [`RAMA_IP_GEO_DB_ENV`] must meet the
+    /// [`MmdbReader::open_mmap`] `# Safety` contract for as long as the
+    /// returned database or any clone of it is alive.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_env`].
+    #[cfg(feature = "mmap")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "mmap")))]
+    pub unsafe fn from_env_mmap() -> Result<Option<Self>, GeoIpError> {
+        // SAFETY: every path reaching this closure comes from the environment
+        // variable whose files the caller keeps unmodified (this fn's `# Safety`).
+        Self::from_env_with(|path| unsafe { MmdbReader::open_mmap(path) }.map(GeoReader::from))
+    }
+
+    fn from_env_with(
+        open: impl Fn(&str) -> Result<GeoReader, GeoIpError>,
+    ) -> Result<Option<Self>, GeoIpError> {
         match std::env::var(RAMA_IP_GEO_DB_ENV) {
-            Ok(spec) if !spec.trim().is_empty() => Self::parse_spec(&spec).map(Some),
+            Ok(spec) if !spec.trim().is_empty() => Self::parse_spec_with(&spec, open).map(Some),
             Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
             Err(std::env::VarError::NotUnicode(_)) => Err(GeoIpError::InvalidConfig(
                 format!("{RAMA_IP_GEO_DB_ENV} is set but not valid UTF-8").into_boxed_str(),
@@ -180,6 +252,48 @@ impl IpGeoDb {
     /// Returns [`GeoIpError::InvalidConfig`] for a malformed string, or
     /// [`GeoIpError::Source`] if a configured file cannot be loaded.
     pub fn parse_spec(spec: &str) -> Result<Self, GeoIpError> {
+        Self::parse_spec_with(spec, |path| MmdbReader::open(path).map(GeoReader::from))
+    }
+
+    /// [`Self::parse_spec`], reading each configured file through positional
+    /// reads with [`MmdbFileReader`] (configured by `config`) instead of
+    /// loading it into memory. Each file follows replacements of its path.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::parse_spec`].
+    pub fn parse_spec_positional(spec: &str, config: &MmdbFileConfig) -> Result<Self, GeoIpError> {
+        Self::parse_spec_with(spec, |path| {
+            MmdbFileReader::open_with_config(path, config.clone()).map(GeoReader::from)
+        })
+    }
+
+    /// [`Self::parse_spec`], memory-mapping each configured file through
+    /// [`MmdbReader::open_mmap`] instead of reading it into memory.
+    ///
+    /// # Safety
+    ///
+    /// Every file named in `spec` must meet the [`MmdbReader::open_mmap`]
+    /// `# Safety` contract for as long as the returned database or any clone
+    /// of it is alive.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::parse_spec`].
+    #[cfg(feature = "mmap")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "mmap")))]
+    pub unsafe fn parse_spec_mmap(spec: &str) -> Result<Self, GeoIpError> {
+        Self::parse_spec_with(spec, |path| {
+            // SAFETY: every path reaching this closure is named in `spec`,
+            // whose files the caller keeps unmodified (this fn's `# Safety`).
+            unsafe { MmdbReader::open_mmap(path) }.map(GeoReader::from)
+        })
+    }
+
+    fn parse_spec_with(
+        spec: &str,
+        open: impl Fn(&str) -> Result<GeoReader, GeoIpError>,
+    ) -> Result<Self, GeoIpError> {
         let invalid = |why: String| GeoIpError::InvalidConfig(why.into_boxed_str());
         let mut builder = Self::builder();
         for entry in spec.split(';') {
@@ -202,7 +316,7 @@ impl IpGeoDb {
             };
             let mut readers = Vec::with_capacity(paths.len());
             for path in paths {
-                let reader = open_reader(path).map_err(|error| GeoIpError::Source {
+                let reader = open(path).map_err(|error| GeoIpError::Source {
                     path: path.into(),
                     error: Box::new(error),
                 })?;
@@ -215,19 +329,6 @@ impl IpGeoDb {
             return Err(invalid(format!("no sources parsed from {spec:?}")));
         }
         Ok(db)
-    }
-}
-
-/// Open a configured database path. With the `mmap` feature it is memory-mapped
-/// so a large database stays out of resident memory; otherwise it is read in.
-fn open_reader(path: &str) -> Result<MmdbReader, GeoIpError> {
-    #[cfg(feature = "mmap")]
-    {
-        MmdbReader::open_mmap(path)
-    }
-    #[cfg(not(feature = "mmap"))]
-    {
-        MmdbReader::open(path)
     }
 }
 
@@ -274,9 +375,9 @@ impl IpGeoDbBuilder {
     pub fn source(
         mut self,
         label: impl Into<Box<str>>,
-        readers: impl IntoIterator<Item = MmdbReader>,
+        readers: impl IntoIterator<Item = impl Into<GeoReader>>,
     ) -> Self {
-        let readers: Vec<_> = readers.into_iter().collect();
+        let readers: Vec<GeoReader> = readers.into_iter().map(Into::into).collect();
         if !readers.is_empty() {
             self.sources.push(GeoSource {
                 label: label.into(),
@@ -288,8 +389,8 @@ impl IpGeoDbBuilder {
 
     /// Add a labelled source from a single reader.
     #[must_use]
-    pub fn reader(self, label: impl Into<Box<str>>, reader: MmdbReader) -> Self {
-        self.source(label, [reader])
+    pub fn reader(self, label: impl Into<Box<str>>, reader: impl Into<GeoReader>) -> Self {
+        self.source(label, [reader.into()])
     }
 
     /// Finalise the [`IpGeoDb`].

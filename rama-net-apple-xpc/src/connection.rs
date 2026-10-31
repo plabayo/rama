@@ -1,13 +1,16 @@
 use std::{
     ffi::{CStr, c_void},
     ptr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
-// `xpc_connection_copy_invalidation_reason` returns a libc-malloc'd C string that the
-// caller must `free`. We declare `free` locally rather than pulling in the `libc` crate
-// for one symbol; `extern "C" { fn free(p: *mut c_void); }` is exactly Apple's libSystem
-// signature and resolves through the standard libc the process is already linked against.
+// `xpc_connection_copy_invalidation_reason` returns a caller-owned C string. Declared
+// locally rather than pulling in the `libc` crate for one symbol.
 unsafe extern "C" {
+    /// `void free(void *ptr)` from `<stdlib.h>`.
     #[link_name = "free"]
     fn libc_free(ptr: *mut c_void);
 }
@@ -24,8 +27,6 @@ use tokio::sync::{
     oneshot,
 };
 
-use block2::RcBlock;
-
 /// Default capacity for the per-connection event channel.
 ///
 /// Sized generously so that well-behaved peers never see back-pressure-induced
@@ -40,22 +41,209 @@ use crate::{
     call::XpcCall,
     error::{XpcConnectionError, XpcError},
     ffi::{
-        _xpc_error_connection_interrupted, _xpc_error_connection_invalid,
-        _xpc_error_key_description, _xpc_error_peer_code_signing_requirement, _xpc_type_connection,
-        _xpc_type_error, xpc_connection_cancel, xpc_connection_copy_invalidation_reason,
-        xpc_connection_get_asid, xpc_connection_get_egid, xpc_connection_get_euid,
-        xpc_connection_get_name, xpc_connection_get_pid, xpc_connection_resume,
-        xpc_connection_send_message, xpc_connection_send_message_with_reply,
+        _xpc_error_connection_interrupted, _xpc_error_key_description,
+        _xpc_error_peer_code_signing_requirement, _xpc_type_connection, _xpc_type_dictionary,
+        _xpc_type_error, xpc_connection_activate, xpc_connection_cancel,
+        xpc_connection_copy_invalidation_reason, xpc_connection_get_asid, xpc_connection_get_egid,
+        xpc_connection_get_euid, xpc_connection_get_name, xpc_connection_get_pid,
+        xpc_connection_resume, xpc_connection_send_message, xpc_connection_send_message_with_reply,
         xpc_connection_set_event_handler, xpc_connection_suspend, xpc_connection_t,
         xpc_dictionary_create_reply, xpc_dictionary_get_string, xpc_dictionary_set_value,
-        xpc_get_type, xpc_object_t,
+        xpc_object_t, xpc_release, xpc_retain,
     },
+    handler::XpcHandler,
     message::XpcMessage,
-    object::OwnedXpcObject,
+    object::{OwnedXpcObject, raw_type_is},
     router::extract_result,
     util::make_c_string,
     xpc_serde,
 };
+
+/// An owned reference to an activated (or listener-delivered) connection, plus the
+/// call lock shared by every Rust alias of it.
+///
+/// libxpc documents no concurrency guarantee for `xpc_connection_t`, so every libxpc
+/// call Rust makes on a connection runs under that lock ([`with_raw`](Self::with_raw)).
+/// Retain/release, `xpc_get_type` (the object's fixed type) and libxpc's own threads
+/// are outside the lock.
+#[derive(Debug)]
+pub(crate) struct ConnectionObject {
+    // Safety invariant: `raw` is a live `XPC_TYPE_CONNECTION` object on which this value
+    // owns one reference, released by `Drop`. Whenever that release can be the last one,
+    // the connection is activated and not suspended (see `InactiveXpcConnection` and
+    // `XpcConnection::suspend_count`), or it was delivered to a listener, for which
+    // libxpc keeps its own reference until it is invalid (`xpc_connection_set_event_handler`).
+    // `calls` is shared by every `ConnectionObject` and `InactiveXpcConnection` alias of
+    // `raw`, and is held across every libxpc call on `raw` other than retain/release.
+    raw: xpc_connection_t,
+    calls: Arc<Mutex<()>>,
+}
+
+// SAFETY: every libxpc call on the connection through any Rust alias holds `calls`
+// (field invariant), so Rust never makes concurrent libxpc calls on it; xpc_object(3)
+// permits using and releasing an object on a queue other than the one that retained it.
+unsafe impl Send for ConnectionObject {}
+// SAFETY: `&self` methods reach the connection only through `with_raw` (lock held),
+// `retain_clone` (retain) and `same_object` (pointer comparison).
+unsafe impl Sync for ConnectionObject {}
+
+impl ConnectionObject {
+    pub(crate) fn retain_clone(&self) -> Self {
+        // SAFETY: `xpc_retain` requires a live object; `self.raw` is one (field
+        // invariant). The new reference shares `calls` and is owned by the result.
+        unsafe { xpc_retain(self.raw.cast()) };
+        Self {
+            raw: self.raw,
+            calls: self.calls.clone(),
+        }
+    }
+
+    /// Run `f` with the connection while holding the call lock of all its aliases.
+    ///
+    /// `f` must not call `with_raw` on an alias of the same connection (it would
+    /// deadlock).
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// `f` receives a live connection, and no other Rust alias makes a libxpc call on it
+    /// until `f` returns.
+    pub(crate) fn with_raw<R>(&self, f: impl FnOnce(xpc_connection_t) -> R) -> R {
+        let _calls = self.calls.lock();
+        f(self.raw)
+    }
+
+    pub(crate) fn same_object(&self, other: &Self) -> bool {
+        ptr::eq(self.raw, other.raw)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn addr(&self) -> usize {
+        self.raw as usize
+    }
+}
+
+impl Drop for ConnectionObject {
+    fn drop(&mut self) {
+        // SAFETY: `xpc_release` requires an object the caller holds a reference on; this
+        // value owns one (field invariant), and the invariant's lifecycle clause makes a
+        // last release valid. `raw` is not used afterwards.
+        unsafe { xpc_release(self.raw.cast()) };
+    }
+}
+
+/// A connection returned by an `xpc_connection_create*` call that is not active yet.
+///
+/// Dropping it before [`activate`](Self::activate) still activates and then cancels the
+/// connection: <xpc/connection.h> calls releasing an inactive connection undefined
+/// (libxpc traps on it), and activating requires an event handler. It hands out no
+/// alias, so a leaked (`mem::forget`) value never releases.
+#[derive(Debug)]
+pub(crate) struct InactiveXpcConnection {
+    // Safety invariant: while `transferred` is false, `raw` is a connection returned by
+    // an `xpc_connection_create*` call, not activated, on which this value owns the one
+    // Rust reference, and outside `activate` no other Rust alias exists. Once
+    // `transferred` is set, the connection is activated and that reference belongs to
+    // the `ConnectionObject` `activate` returned. `calls` is the lock its
+    // `ConnectionObject` aliases share.
+    raw: xpc_connection_t,
+    calls: Arc<Mutex<()>>,
+    transferred: bool,
+}
+
+impl InactiveXpcConnection {
+    /// Wrap the reference returned by an `xpc_connection_create*` call.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `raw` is null or a connection returned by an
+    /// `xpc_connection_create*` call that has not been activated or resumed, on which the
+    /// caller owns that call's reference and no other Rust alias exists. The reference
+    /// moves into the result; a null `raw` returns [`XpcError::NullConnection`].
+    pub(crate) unsafe fn from_raw(
+        raw: xpc_connection_t,
+        context: &'static str,
+    ) -> Result<Self, XpcError> {
+        if raw.is_null() {
+            return Err(XpcError::NullConnection(context));
+        }
+        Ok(Self {
+            raw,
+            calls: Arc::new(Mutex::new(())),
+            transferred: false,
+        })
+    }
+
+    /// # Safety-usable invariant
+    ///
+    /// Returns a live connection, returned by an `xpc_connection_create*` call and not
+    /// activated, with no other Rust alias (so calls on it need no lock).
+    pub(crate) fn as_raw(&self) -> xpc_connection_t {
+        self.raw
+    }
+
+    /// Install the handler built by `make_handler` and activate the connection.
+    ///
+    /// `make_handler` receives an alias for the handler to keep.
+    pub(crate) fn activate(
+        mut self,
+        make_handler: impl FnOnce(ConnectionObject) -> XpcHandler,
+    ) -> ConnectionObject {
+        // SAFETY: `xpc_retain` requires a live object; `self.raw` is one (field invariant).
+        unsafe { xpc_retain(self.raw.cast()) };
+        // ConnectionObject invariant: this alias is never the last reference while the
+        // connection is inactive, since `self` keeps its own until it is activated here
+        // or torn down by `Drop` (also on unwind out of `make_handler`).
+        let handler = make_handler(ConnectionObject {
+            raw: self.raw,
+            calls: self.calls.clone(),
+        });
+        {
+            let _calls = self.calls.lock();
+            // SAFETY: requires a live connection and a non-null `void (^)(xpc_object_t)`
+            // block (`XPC_NONNULL_ALL`); `self.raw` is live and `handler.as_block_ptr()`
+            // is such a block (`XpcHandler`). The parameter is escaping (no
+            // `XPC_NOESCAPE`), so libxpc keeps its own `Block_copy` after `handler` drops.
+            unsafe { xpc_connection_set_event_handler(self.raw, handler.as_block_ptr()) };
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`), as above.
+            unsafe { xpc_connection_activate(self.raw) };
+        }
+        // Field invariant: the connection is active and this value's reference moves to
+        // the result, so `Drop` neither tears down nor releases it.
+        self.transferred = true;
+        ConnectionObject {
+            raw: self.raw,
+            calls: self.calls.clone(),
+        }
+    }
+}
+
+impl Drop for InactiveXpcConnection {
+    fn drop(&mut self) {
+        if self.transferred {
+            return;
+        }
+        let handler = XpcHandler::new(|_event| {});
+        let _calls = self.calls.lock();
+        // SAFETY: as in `activate`: live connection, `XpcHandler` block.
+        unsafe { xpc_connection_set_event_handler(self.raw, handler.as_block_ptr()) };
+        // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `self.raw` is one.
+        unsafe { xpc_connection_activate(self.raw) };
+        // SAFETY: requires a live connection; it is now active, so cancelling it is valid.
+        unsafe { xpc_connection_cancel(self.raw) };
+        // SAFETY: `xpc_release` requires an owned reference: this value owns one (field
+        // invariant), and the connection is activated, so a last release is valid.
+        unsafe { xpc_release(self.raw.cast()) };
+    }
+}
+
+/// How a connection reached this process; it decides what libxpc permits on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectionOrigin {
+    /// Returned by an `xpc_connection_create*` call.
+    Created,
+    /// Delivered to a listener connection's event handler.
+    Received,
+}
 
 /// An event received on an [`XpcConnection`].
 #[derive(Debug)]
@@ -78,10 +266,31 @@ pub enum XpcEvent {
 pub struct ReceivedXpcMessage {
     // Independent retained reference to the originating connection — keeps it alive
     // for the lifetime of this message even if the parent XpcConnection is dropped.
-    connection: OwnedXpcObject,
+    connection: ConnectionObject,
     message: XpcMessage,
-    raw_event: OwnedXpcObject,
+    /// `None` for a message sent without a reply context (fire-and-forget).
+    reply: Option<PendingReply>,
 }
+
+/// The empty reply dictionary `xpc_dictionary_create_reply` made for a received message.
+///
+/// Created while the event handler runs, so the received message graph never leaves the
+/// handler invocation; only this fresh dictionary crosses threads.
+#[derive(Debug)]
+struct PendingReply {
+    // Safety invariant: `dictionary` is a dictionary returned by
+    // `xpc_dictionary_create_reply` that holds no values until `ReceivedXpcMessage::reply`
+    // fills it, and `dictionary` is its only Rust owner.
+    dictionary: OwnedXpcObject,
+}
+
+// SAFETY: the moved value is the only Rust owner of a dictionary with no children (field
+// invariant), so all Rust access to it moves with it; xpc_object(3) permits using and
+// releasing an object on a queue other than the one that created it.
+unsafe impl Send for PendingReply {}
+// SAFETY: `&PendingReply` gives no access to the dictionary: the field is private, the
+// only use is by value in `ReceivedXpcMessage::reply`, and `Debug` prints the pointer.
+unsafe impl Sync for PendingReply {}
 
 impl ReceivedXpcMessage {
     /// Borrow the decoded message.
@@ -108,32 +317,29 @@ impl ReceivedXpcMessage {
             return Err(XpcError::ReplyNotExpected);
         };
 
-        // SAFETY: self.raw_event.raw is a valid XPC dictionary object retained by
-        // OwnedXpcObject. Returns a retained reply dictionary, or NULL for a
-        // fire-and-forget message (no reply context).
-        let reply = unsafe { xpc_dictionary_create_reply(self.raw_event.raw) };
-        // NULL ⇒ nothing to reply to; `ReplyNotExpected` lets a server swallow it
-        // rather than treating it as a fatal error.
-        if reply.is_null() {
+        // No reply context ⇒ nothing to reply to; `ReplyNotExpected` lets a server
+        // swallow it rather than treating it as a fatal error.
+        let Some(PendingReply { dictionary: reply }) = self.reply else {
             return Err(XpcError::ReplyNotExpected);
-        }
-        let reply = OwnedXpcObject::from_raw(reply, "reply message")?;
+        };
 
         for (key, value) in values {
             let key = make_c_string(&key)?;
             let value = OwnedXpcObject::from_message(value)?;
-            // SAFETY: reply.raw is a valid mutable XPC dictionary. key.as_ptr() is a
-            // valid null-terminated C string. value.raw is a valid retained XPC object.
-            unsafe { xpc_dictionary_set_value(reply.raw, key.as_ptr(), value.raw) };
+            // SAFETY: requires a live dictionary and a non-null NUL-terminated key
+            // (`XPC_NONNULL1 XPC_NONNULL2`). `reply` is the reply dictionary, owned only
+            // here (`PendingReply` invariant); `key` is a live `CString`; the dictionary
+            // retains `value`.
+            unsafe { xpc_dictionary_set_value(reply.as_raw(), key.as_ptr(), value.as_raw()) };
         }
 
-        // SAFETY: self.connection holds an independent retain on the originating
-        // xpc_connection_t (taken when the event was decoded), so it is guaranteed
-        // valid for this call regardless of whether the parent XpcConnection has
-        // already been dropped. reply.raw is a valid retained XPC object.
-        unsafe {
-            xpc_connection_send_message(self.connection.raw as xpc_connection_t, reply.raw);
-        }
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection and a dictionary message
+            // (`XPC_NONNULL_ALL`). `connection` is live under the call lock
+            // (`with_raw`), even if the parent `XpcConnection` was dropped; `reply` is a
+            // live dictionary, logically copied by the call.
+            unsafe { xpc_connection_send_message(connection, reply.as_raw()) };
+        });
         Ok(())
     }
 }
@@ -179,7 +385,14 @@ impl ReceivedXpcMessage {
 /// may connect. The kernel enforces the constraint before any message is delivered.
 #[derive(Debug)]
 pub struct XpcConnection {
-    connection: OwnedXpcObject,
+    // Safety invariant: `connection` has been activated (and given an event handler).
+    connection: ConnectionObject,
+    // Safety invariant: `Created` only if `connection` was returned by an
+    // `xpc_connection_create*` call.
+    origin: ConnectionOrigin,
+    // Safety invariant: never exceeds the number of returned `xpc_connection_suspend`
+    // calls on `connection` not yet balanced by an `xpc_connection_resume`.
+    suspend_count: AtomicUsize,
     extensions: Extensions,
     receiver: Receiver<XpcEvent>,
     /// Per-request timeout for [`send_request`](Self::send_request); `None` waits
@@ -187,87 +400,89 @@ pub struct XpcConnection {
     call_timeout: Option<std::time::Duration>,
 }
 
-// SAFETY: `XpcConnection` wraps an `OwnedXpcObject` (an `xpc_connection_t`), an
-// `Extensions` map, and an `mpsc::Receiver<XpcEvent>`. Apple documents
-// `xpc_connection_t` as safe to use from any thread. `Extensions` is `Send`.
-// `Receiver` is `Send` for `T: Send`.
-unsafe impl Send for XpcConnection {}
-// SAFETY: every `&self` method on `XpcConnection` only touches the
-// xpc_connection_t (Apple-documented thread-safe) and `Extensions`. The
-// `Receiver` is exclusively reached via `&mut self` (`recv`), so two
-// threads sharing `&XpcConnection` cannot race on it. The auto `Sync` derive
-// is blocked only because `Receiver` is not `Sync`; we re-assert
-// here under that exclusive-access guarantee.
-unsafe impl Sync for XpcConnection {}
-
 impl XpcConnection {
-    pub(crate) fn from_owned_peer(connection: OwnedXpcObject) -> Result<Self, XpcError> {
-        Self::from_owned_peer_with_capacity(
-            connection,
-            DEFAULT_MAX_PENDING_EVENTS,
-            DEFAULT_MAX_PENDING_EVENTS,
-        )
-    }
-
-    pub(crate) fn from_owned_peer_with_capacity(
-        connection: OwnedXpcObject,
+    /// Activate a connection this process created.
+    pub(crate) fn from_inactive(
+        connection: InactiveXpcConnection,
         capacity: usize,
         peer_event_capacity: usize,
-    ) -> Result<Self, XpcError> {
-        let capacity = capacity.max(1);
-        let peer_event_capacity = peer_event_capacity.max(1);
-        let (sender, receiver) = channel(capacity);
-        let raw_connection = connection.raw as xpc_connection_t;
-
-        let block = RcBlock::new(move |event: xpc_object_t| {
-            // Retain the event so it survives the event-handler scope before we
-            // classify it. Errors, peer connections, and messages all flow through
-            // `map_event`, which preserves the specific connection-error variant.
-            let Ok(retained) = OwnedXpcObject::retain(event, "peer event") else {
-                tracing::warn!("xpc peer received null event object, dropping");
-                return;
-            };
-
-            let event = map_event(raw_connection, retained, peer_event_capacity);
-            forward_event(&sender, event);
+    ) -> Self {
+        let (sender, receiver) = channel(capacity.max(1));
+        let connection = connection.activate(|handler_connection| {
+            Self::event_handler(handler_connection, sender, peer_event_capacity)
         });
+        Self::activated(connection, ConnectionOrigin::Created, receiver)
+    }
 
-        // SAFETY: `raw_connection` is a valid, non-null xpc_connection_t held by
-        // OwnedXpcObject for the lifetime of this Self. The `RcBlock` lives on the
-        // heap and `RcBlock::as_ptr` is documented (block2 rc_block.rs) to be valid
-        // for at least as long as the `RcBlock` is alive. Apple's
-        // `xpc_connection_set_event_handler` is documented to `_Block_copy` the
-        // block, which bumps the heap allocation's refcount — so when the local
-        // `RcBlock` is dropped at end-of-scope its refcount goes from 2 to 1 and
-        // libxpc's copy keeps the heap block alive for as long as it needs to
-        // invoke the handler. `xpc_connection_resume` activates the connection;
-        // it must be called exactly once before any messages are sent or received.
-        #[expect(
-            clippy::multiple_unsafe_ops_per_block,
-            reason = "set-handler-then-resume is a single XPC initialization sequence; the SAFETY comment above covers both calls"
-        )]
-        unsafe {
-            xpc_connection_set_event_handler(
-                raw_connection,
-                RcBlock::as_ptr(&block).cast::<c_void>(),
-            );
-            xpc_connection_resume(raw_connection);
-        }
+    /// Accept a peer connection delivered to a listener's event handler.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `raw` is a peer connection passed to the currently running
+    /// event-handler invocation of a listener connection, and that no
+    /// [`ConnectionObject`] for it exists yet.
+    pub(crate) unsafe fn accept_received(
+        raw: xpc_object_t,
+        capacity: usize,
+        peer_event_capacity: usize,
+    ) -> Self {
+        // SAFETY: the handler argument is live and retainable whatever its type
+        // (`xpc_connection_set_event_handler`); the new reference is owned below.
+        unsafe { xpc_retain(raw) };
+        // ConnectionObject invariant: a fresh lock is shared by all aliases, as no other
+        // `ConnectionObject` exists (contract); releases are valid because libxpc keeps
+        // its own reference to a delivered connection until it is invalid.
+        let connection = ConnectionObject {
+            raw: raw.cast(),
+            calls: Arc::new(Mutex::new(())),
+        };
+        let (sender, receiver) = channel(capacity.max(1));
+        let handler = Self::event_handler(connection.retain_clone(), sender, peer_event_capacity);
+        connection.with_raw(|raw| {
+            // SAFETY: requires a live connection and a non-null `void (^)(xpc_object_t)`
+            // block (`XPC_NONNULL_ALL`); `raw` is live under the call lock and
+            // `handler.as_block_ptr()` is such a block (`XpcHandler`). The parameter is
+            // escaping, so libxpc keeps its own `Block_copy` after `handler` drops.
+            unsafe { xpc_connection_set_event_handler(raw, handler.as_block_ptr()) };
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`), as above.
+            unsafe { xpc_connection_activate(raw) };
+        });
+        Self::activated(connection, ConnectionOrigin::Received, receiver)
+    }
 
-        tracing::info!(
-            // SAFETY: `raw_connection` is the live xpc_connection_t we just resumed
-            // above; it remains valid for the remainder of this scope. Returns the
-            // peer's pid or 0 if not yet known — both are safe values.
-            pid = unsafe { xpc_connection_get_pid(raw_connection) },
-            "xpc peer connection activated"
-        );
+    /// The handler holds its own reference on the connection: xpc_object(3) requires
+    /// objects used by asynchronously executed blocks to be retained by the block. libxpc
+    /// is observed to release the handler after the final `XPC_ERROR_CONNECTION_INVALID`
+    /// that `Drop`'s cancel schedules, breaking the cycle; otherwise it would only leak.
+    fn event_handler(
+        handler_connection: ConnectionObject,
+        sender: Sender<XpcEvent>,
+        peer_event_capacity: usize,
+    ) -> XpcHandler {
+        let peer_event_capacity = peer_event_capacity.max(1);
+        XpcHandler::new(move |event: xpc_object_t| {
+            // SAFETY: `event` is the argument of this event-handler invocation of
+            // `handler_connection`.
+            let event = unsafe { map_event(&handler_connection, event, peer_event_capacity) };
+            forward_event(&sender, event);
+        })
+    }
 
-        Ok(Self {
+    fn activated(
+        connection: ConnectionObject,
+        origin: ConnectionOrigin,
+        receiver: Receiver<XpcEvent>,
+    ) -> Self {
+        let connection = Self {
             connection,
+            origin,
+            suspend_count: AtomicUsize::new(0),
             extensions: Extensions::new(),
             receiver,
             call_timeout: None,
-        })
+        };
+        tracing::info!(pid = connection.pid(), "xpc peer connection activated");
+        connection
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -304,9 +519,12 @@ impl XpcConnection {
         tracing::trace!(message = ?message, "xpc send");
         Self::ensure_dictionary(&message)?;
         let object = OwnedXpcObject::from_message(message)?;
-        // SAFETY: self.connection.raw is a valid xpc_connection_t held by OwnedXpcObject
-        // for the lifetime of &self. object.raw is a valid retained XPC object.
-        unsafe { xpc_connection_send_message(self.connection.raw as xpc_connection_t, object.raw) };
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection and a dictionary message
+            // (`XPC_NONNULL_ALL`); `connection` is live under the call lock and `object`
+            // is a dictionary (`ensure_dictionary`), logically copied by the call.
+            unsafe { xpc_connection_send_message(connection, object.as_raw()) };
+        });
         Ok(())
     }
 
@@ -323,26 +541,31 @@ impl XpcConnection {
     pub async fn send_request(&self, message: XpcMessage) -> Result<XpcMessage, XpcError> {
         tracing::trace!(message = ?message, "xpc send request");
         Self::ensure_dictionary(&message)?;
-        let object = OwnedXpcObject::from_message(message)?;
         let (reply_sender, reply_receiver) = oneshot::channel();
         let reply_sender = Mutex::new(Some(reply_sender));
-        let raw_connection = self.connection.raw as xpc_connection_t;
+        // xpc_object(3): an object used by an asynchronously executed block is retained
+        // for it; the handler is released after its single invocation.
+        let reply_connection = self.connection.retain_clone();
 
         {
-            let block = RcBlock::new(move |reply: xpc_object_t| {
-                let result = match OwnedXpcObject::retain(reply, "async reply") {
-                    Err(err) => Err(err),
-                    Ok(reply_obj) => {
-                        if raw_is_error(reply) {
-                            // Preserve the specific connection-error variant
-                            // (Interrupted / Invalidated / PeerRequirementFailed)
-                            // rather than collapsing every error to `Invalidated(None)`.
-                            let error = map_connection_error(raw_connection, &reply_obj)
-                                .unwrap_or(XpcConnectionError::Invalidated(None));
-                            Err(XpcError::Connection(error))
-                        } else {
-                            reply_obj.to_message()
-                        }
+            // Scoped: `OwnedXpcObject` and `XpcHandler` must not live across the await.
+            let object = OwnedXpcObject::from_message(message)?;
+            let handler = XpcHandler::new(move |reply: xpc_object_t| {
+                // SAFETY: `map_connection_error` needs a non-null object live for the
+                // call: `reply` is the non-null `xpc_handler_t` argument, live for this
+                // invocation (the caller is not responsible for releasing it).
+                let error = unsafe { map_connection_error(&reply_connection, reply) };
+                let result = match error {
+                    // Preserve the specific connection-error variant (Interrupted /
+                    // Invalidated / PeerRequirementFailed).
+                    Some(error) => Err(XpcError::Connection(error)),
+                    None => {
+                        // SAFETY: `retain` needs `reply` live for the call (as above) and
+                        // the graph condition until every derived owner drops: as for
+                        // `map_event`, a delivered reply is a new object reachable only
+                        // through this argument, decoded here.
+                        unsafe { OwnedXpcObject::retain(reply, "async reply") }
+                            .and_then(|reply| reply.to_message())
                     }
                 };
 
@@ -351,23 +574,23 @@ impl XpcConnection {
                 }
             });
 
-            // SAFETY: raw_connection is a valid xpc_connection_t held by
-            // self.connection for the lifetime of &self. object.raw is a valid retained
-            // XPC object. The queue argument is null, so XPC uses the connection's own
-            // queue. The `RcBlock` lives on the heap and `RcBlock::as_ptr` is documented
-            // (block2 rc_block.rs) to be valid for at least as long as the RcBlock is
-            // alive; Apple's `xpc_connection_send_message_with_reply` is documented to
-            // `_Block_copy` the handler block, so libxpc bumps the heap refcount before
-            // we drop our local `RcBlock` at end-of-scope. libxpc invokes the block
-            // exactly once and releases its copy afterwards.
-            unsafe {
-                xpc_connection_send_message_with_reply(
-                    raw_connection,
-                    object.raw,
-                    ptr::null_mut(),
-                    RcBlock::as_ptr(&block).cast::<c_void>(),
-                );
-            }
+            self.connection.with_raw(|connection| {
+                // SAFETY: requires a live connection, a dictionary message and a non-null
+                // `void (^)(xpc_object_t)` block (`XPC_NONNULL1 XPC_NONNULL2
+                // XPC_NONNULL4`); a null `replyq` selects the connection's target queue.
+                // `connection` is live under the call lock, `object` is a dictionary
+                // (`ensure_dictionary`), and `handler.as_block_ptr()` is such a block
+                // (`XpcHandler`). The handler is escaping (no `XPC_NOESCAPE`), so libxpc
+                // keeps its own `Block_copy` after `handler` drops.
+                unsafe {
+                    xpc_connection_send_message_with_reply(
+                        connection,
+                        object.as_raw(),
+                        ptr::null_mut(),
+                        handler.as_block_ptr(),
+                    );
+                }
+            });
         }
 
         let reply = match self.call_timeout {
@@ -452,20 +675,26 @@ impl XpcConnection {
     ///
     /// PIDs are recycled by the kernel. For session-stable identity, use [`asid`](Self::asid).
     pub fn pid(&self) -> i32 {
-        // SAFETY: self.connection.raw is a valid, non-null xpc_connection_t for &self's lifetime.
-        unsafe { xpc_connection_get_pid(self.connection.raw as xpc_connection_t) }
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is one.
+            unsafe { xpc_connection_get_pid(connection) }
+        })
     }
 
     /// Effective user ID of the remote peer.
     pub fn euid(&self) -> u32 {
-        // SAFETY: Same as pid().
-        unsafe { xpc_connection_get_euid(self.connection.raw as xpc_connection_t) }
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is one.
+            unsafe { xpc_connection_get_euid(connection) }
+        })
     }
 
     /// Effective group ID of the remote peer.
     pub fn egid(&self) -> u32 {
-        // SAFETY: Same as pid().
-        unsafe { xpc_connection_get_egid(self.connection.raw as xpc_connection_t) }
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is one.
+            unsafe { xpc_connection_get_egid(connection) }
+        })
     }
 
     /// Audit session identifier of the remote peer.
@@ -474,28 +703,33 @@ impl XpcConnection {
     /// across PID recycling within the same login session. It is more reliable than
     /// [`pid`](Self::pid) for session-level identity checks.
     pub fn asid(&self) -> i32 {
-        // SAFETY: Same as pid().
-        unsafe { xpc_connection_get_asid(self.connection.raw as xpc_connection_t) }
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is one.
+            unsafe { xpc_connection_get_asid(connection) }
+        })
     }
 
     /// Service name of this connection, if any.
     ///
     /// Returns `None` for anonymous or peer connections created from endpoints.
     pub fn name(&self) -> Option<String> {
-        // SAFETY: self.connection.raw is a valid xpc_connection_t. The returned pointer
-        // is either null or a valid C string borrowed from the connection object; it
-        // remains valid for &self's lifetime. We copy it to a String before returning.
-        let ptr = unsafe { xpc_connection_get_name(self.connection.raw as xpc_connection_t) };
-        if ptr.is_null() {
-            return None;
-        }
-        // SAFETY: ptr is non-null and points to a valid, null-terminated C string
-        // owned by the XPC connection object, as guaranteed by the API contract above.
-        Some(
-            unsafe { std::ffi::CStr::from_ptr(ptr) }
-                .to_string_lossy()
-                .into_owned(),
-        )
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is one.
+            // Returns the connection's service name or NULL (handled below).
+            let ptr = unsafe { xpc_connection_get_name(connection) };
+            if ptr.is_null() {
+                return None;
+            }
+            // SAFETY: `CStr::from_ptr` needs a non-null NUL-terminated buffer unmutated
+            // while borrowed. `ptr` is non-null (checked) and is the name the connection
+            // was created with, kept alive by `self.connection`; the borrow ends at
+            // `into_owned`, inside the call lock.
+            Some(
+                unsafe { CStr::from_ptr(ptr) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        })
     }
 
     /// Explicitly cancel the connection.
@@ -504,32 +738,73 @@ impl XpcConnection {
     /// The connection is also canceled automatically on [`Drop`].
     pub fn cancel(&self) {
         tracing::debug!("xpc connection cancel");
-        // SAFETY: self.connection.raw is a valid xpc_connection_t. xpc_connection_cancel
-        // is idempotent per Apple's documentation.
-        unsafe { xpc_connection_cancel(self.connection.raw as xpc_connection_t) };
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is an
+            // activated one (field invariant), on which cancel is valid.
+            unsafe { xpc_connection_cancel(connection) };
+        });
     }
 
     /// Suspend event delivery on the connection.
     ///
-    /// Every call to `suspend` must be balanced by a corresponding call to [`resume`](Self::resume)
-    /// before the connection is released. Unbalanced suspends will cause a crash.
+    /// Balance it with [`resume`](Self::resume). Suspensions still outstanding when the
+    /// connection is dropped are resumed automatically, as libxpc requires before release.
     pub fn suspend(&self) {
         tracing::trace!("xpc connection suspend");
-        // SAFETY: self.connection.raw is a valid xpc_connection_t for &self's lifetime.
-        unsafe { xpc_connection_suspend(self.connection.raw as xpc_connection_t) };
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is one.
+            unsafe { xpc_connection_suspend(connection) };
+        });
+        // Counted only after the suspend returned (field invariant). Release pairs with
+        // the Acquire in `resume`, ordering this suspend before the resume it enables.
+        self.suspend_count.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Resume a previously suspended connection.
     ///
-    /// Must be called once for each preceding call to [`suspend`](Self::suspend).
+    /// A call without a matching [`suspend`](Self::suspend) is ignored: libxpc treats
+    /// resuming more often than suspending as a fatal error.
     pub fn resume(&self) {
+        let mut current = self.suspend_count.load(Ordering::Acquire);
+        loop {
+            let Some(next) = current.checked_sub(1) else {
+                tracing::debug!("xpc connection resume without matching suspend; ignored");
+                return;
+            };
+            match self.suspend_count.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
         tracing::trace!("xpc connection resume");
-        // SAFETY: Same as suspend().
-        unsafe { xpc_connection_resume(self.connection.raw as xpc_connection_t) };
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is one.
+            // The decrement above consumed one completed, unbalanced suspend (field
+            // invariant), so this resume does not over-resume.
+            unsafe { xpc_connection_resume(connection) };
+        });
     }
 
-    pub(crate) fn connection_raw(&self) -> xpc_connection_t {
-        self.connection.raw as xpc_connection_t
+    /// Run `f` under the call lock with a connection this process created; fails with
+    /// [`XpcError::EndpointUnsupported`] for a listener-delivered peer.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// `f` receives a live connection returned by an `xpc_connection_create*` call, with
+    /// the guarantees of [`ConnectionObject::with_raw`].
+    pub(crate) fn with_created_raw<R>(
+        &self,
+        f: impl FnOnce(xpc_connection_t) -> R,
+    ) -> Result<R, XpcError> {
+        match self.origin {
+            ConnectionOrigin::Created => Ok(self.connection.with_raw(f)),
+            ConnectionOrigin::Received => Err(XpcError::EndpointUnsupported),
+        }
     }
 }
 
@@ -541,9 +816,18 @@ impl ExtensionsRef for XpcConnection {
 
 impl Drop for XpcConnection {
     fn drop(&mut self) {
-        // SAFETY: self.connection.raw is a valid xpc_connection_t. xpc_connection_cancel
-        // is idempotent, so calling it here after an explicit cancel() is safe.
-        unsafe { xpc_connection_cancel(self.connection.raw as xpc_connection_t) };
+        let suspended = *self.suspend_count.get_mut();
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is an
+            // activated one (field invariant), on which cancel is valid.
+            unsafe { xpc_connection_cancel(connection) };
+            // <xpc/connection.h>: suspends must be balanced before the last release.
+            for _ in 0..suspended {
+                // SAFETY: as above; `&mut self` rules out concurrent `suspend`/`resume`,
+                // so `suspended` is exactly the number of unbalanced suspends.
+                unsafe { xpc_connection_resume(connection) };
+            }
+        });
     }
 }
 
@@ -556,73 +840,92 @@ impl Service<XpcMessage> for XpcConnection {
     }
 }
 
-/// Caller must pass a valid, non-null `xpc_object_t` (we always do — these
-/// helpers are reached only from a connection event-handler block where libxpc
-/// hands us a retained event).
-fn raw_is_type(event: xpc_object_t, ty: *const c_void) -> bool {
-    // SAFETY: see function-level comment — `event` is a valid xpc_object_t.
-    let value_type = unsafe { xpc_get_type(event) };
-    ptr::eq(value_type.cast::<c_void>(), ty)
-}
-
-fn raw_is_error(event: xpc_object_t) -> bool {
-    raw_is_type(event, unsafe {
-        // SAFETY: `_xpc_type_error` is a static XPC type singleton exported by
-        // libxpc and valid for the lifetime of the process.
-        &_xpc_type_error as *const _ as *const c_void
-    })
-}
-
-pub(crate) fn map_event(
-    connection: xpc_connection_t,
-    event: OwnedXpcObject,
+/// Classify one event delivered to `connection`'s event handler.
+///
+/// # Safety
+///
+/// The caller must ensure `event` is the argument of the currently running
+/// event-handler invocation of `connection`.
+unsafe fn map_event(
+    connection: &ConnectionObject,
+    event: xpc_object_t,
     peer_event_capacity: usize,
 ) -> XpcEvent {
-    if let Some(error) = map_connection_error(connection, &event) {
+    // SAFETY: the handler argument is non-null and live for the invocation (contract).
+    if unsafe { raw_type_is(event, &raw const _xpc_type_connection) } {
+        tracing::info!("xpc listener received peer connection");
+        // SAFETY: `event` is a peer connection delivered to this listener invocation
+        // (contract, checked type); libxpc delivers each peer once, so no
+        // `ConnectionObject` for it exists yet.
+        return XpcEvent::Connection(unsafe {
+            XpcConnection::accept_received(event, peer_event_capacity, peer_event_capacity)
+        });
+    }
+
+    // SAFETY: the handler argument is non-null and live for this invocation (contract).
+    if let Some(error) = unsafe { map_connection_error(connection, event) } {
         tracing::debug!(?error, "xpc connection lifecycle event");
         return XpcEvent::Error(error);
     }
 
-    // SAFETY: `_xpc_type_connection` is a static XPC type singleton exported
-    // by libxpc and valid for the lifetime of the process.
-    if event.is_type(unsafe { &_xpc_type_connection as *const _ as *const std::ffi::c_void }) {
-        tracing::info!("xpc listener received peer connection");
-        return match XpcConnection::from_owned_peer_with_capacity(
-            event,
-            peer_event_capacity,
-            peer_event_capacity,
-        ) {
-            Ok(connection) => XpcEvent::Connection(connection),
-            Err(err) => XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
+    // SAFETY: the handler argument is live for this invocation and retainable
+    // (`xpc_connection_set_event_handler`). Collection graph: the delivered message is
+    // a new object (the sender's dictionary is logically copied,
+    // `xpc_connection_send_message`) reachable only through this argument, and this
+    // crate keeps no owner of it or its non-endpoint children past this call.
+    let event = match unsafe { OwnedXpcObject::retain(event, "peer event") } {
+        Ok(event) => event,
+        Err(err) => {
+            return XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
                 err.to_string(),
-            )))),
-        };
+            ))));
+        }
+    };
+
+    if !event.is_type(&raw const _xpc_type_dictionary) {
+        return XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
+            "unexpected non-dictionary xpc event",
+        ))));
     }
 
-    match event.to_message() {
-        Ok(message) => {
-            tracing::trace!(message = ?message, "xpc incoming message");
-            // Independent retain on the connection so a held ReceivedXpcMessage outlives
-            // its parent XpcConnection if necessary (reply remains safe).
-            let connection_ref =
-                match OwnedXpcObject::retain(connection.cast(), "received connection ref") {
-                    Ok(c) => c,
-                    Err(err) => {
-                        return XpcEvent::Error(XpcConnectionError::Invalidated(Some(
-                            ArcStr::from(err.to_string()),
-                        )));
-                    }
-                };
-            XpcEvent::Message(ReceivedXpcMessage {
-                connection: connection_ref,
-                message,
-                raw_event: event,
-            })
+    let message = match event.to_message() {
+        Ok(message) => message,
+        Err(err) => {
+            return XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
+                err.to_string(),
+            ))));
         }
-        Err(err) => XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
-            err.to_string(),
-        )))),
-    }
+    };
+    tracing::trace!(message = ?message, "xpc incoming message");
+
+    // SAFETY: requires a non-null live object (`XPC_NONNULL_ALL`); `event` is one, used
+    // only on this thread. Returns a new +1 reply dictionary, or NULL when the message
+    // has no reply context (fire-and-forget), handled below. The reply dictionary holds
+    // the message's transaction until it is sent or released (`xpc_transaction_begin`).
+    let reply = unsafe { xpc_dictionary_create_reply(event.as_raw()) };
+    let reply = if reply.is_null() {
+        None
+    } else {
+        // SAFETY: `reply` is the non-null +1 dictionary just returned, with no other
+        // owner; ownership moves.
+        match unsafe { OwnedXpcObject::from_raw(reply, "reply message") } {
+            // `PendingReply` invariant: a new, empty dictionary owned only here.
+            Ok(dictionary) => Some(PendingReply { dictionary }),
+            Err(err) => {
+                return XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
+                    err.to_string(),
+                ))));
+            }
+        }
+    };
+
+    // Independent retain on the connection so a held ReceivedXpcMessage outlives its
+    // parent XpcConnection if necessary (reply remains safe).
+    XpcEvent::Message(ReceivedXpcMessage {
+        connection: connection.retain_clone(),
+        message,
+        reply,
+    })
 }
 
 /// Send `event` on `sender` with backpressure-aware semantics.
@@ -646,90 +949,127 @@ pub(crate) fn forward_event(sender: &Sender<XpcEvent>, event: XpcEvent) {
     }
 }
 
-pub(crate) fn map_connection_error(
-    connection: xpc_connection_t,
-    event: &OwnedXpcObject,
+/// Serialises this crate's reads of libxpc's process-wide `XPC_ERROR_*` dictionaries,
+/// which every connection's handlers share.
+static ERROR_OBJECT_CALLS: Mutex<()> = Mutex::new(());
+
+/// Map an `XPC_TYPE_ERROR` event to its error; `None` for any other event.
+///
+/// # Safety
+///
+/// The caller must ensure `event` is a non-null libxpc object that is live for the call.
+pub(crate) unsafe fn map_connection_error(
+    connection: &ConnectionObject,
+    event: xpc_object_t,
 ) -> Option<XpcConnectionError> {
-    // SAFETY: `_xpc_type_error` is a static XPC type singleton exported by
-    // libxpc and valid for the lifetime of the process.
-    if !event.is_type(unsafe { &_xpc_type_error as *const _ as *const std::ffi::c_void }) {
+    // SAFETY: `event` is non-null and live (contract).
+    if !unsafe { raw_type_is(event, &raw const _xpc_type_error) } {
         return None;
     }
 
+    let event_ptr = event.cast_const();
     if ptr::eq(
-        event.raw.cast_const(),
+        event_ptr,
         (&raw const _xpc_error_connection_interrupted).cast(),
     ) {
         return Some(XpcConnectionError::Interrupted);
     }
 
     if ptr::eq(
-        event.raw.cast_const(),
+        event_ptr,
         (&raw const _xpc_error_peer_code_signing_requirement).cast(),
     ) {
-        return Some(XpcConnectionError::PeerRequirementFailed(
-            connection_error_description(connection, event.raw),
-        ));
+        // SAFETY: `event` is a live error object (checked above, contract).
+        return Some(XpcConnectionError::PeerRequirementFailed(unsafe {
+            connection_error_description(connection, event)
+        }));
     }
 
-    if ptr::eq(
-        event.raw.cast_const(),
-        (&raw const _xpc_error_connection_invalid).cast(),
-    ) {
-        return Some(XpcConnectionError::Invalidated(
-            connection_error_description(connection, event.raw),
-        ));
-    }
-
-    Some(XpcConnectionError::Invalidated(
-        connection_error_description(connection, event.raw),
-    ))
+    // SAFETY: as above.
+    Some(XpcConnectionError::Invalidated(unsafe {
+        connection_error_description(connection, event)
+    }))
 }
 
-fn connection_error_description(
-    connection: xpc_connection_t,
+/// # Safety
+///
+/// The caller must ensure `event` is an `XPC_TYPE_ERROR` object live for the call.
+unsafe fn connection_error_description(
+    connection: &ConnectionObject,
     event: xpc_object_t,
 ) -> Option<ArcStr> {
-    // SAFETY: `connection` is a live xpc_connection_t (we hold an OwnedXpcObject that
-    // outlives this call). `xpc_connection_copy_invalidation_reason` either returns
-    // NULL or a libc-malloc'd, NUL-terminated C string that the caller must `free()`.
-    // We must NOT use `CString::from_raw` here — its `Drop` deallocates with Rust's
-    // global allocator using a layout derived from string length, which is
-    // incompatible with libc `free`. Instead we copy the string contents into an
-    // `ArcStr` while the buffer is still live, then free it with libc::free.
-    let copied = unsafe { xpc_connection_copy_invalidation_reason(connection) };
+    let copied = connection.with_raw(|connection| {
+        // SAFETY: requires a live connection (`XPC_NONNULL1`); `connection` is one, under
+        // the call lock. Returns NULL or a caller-owned NUL-terminated string (libxpc
+        // `copy` naming, released with free(3) as for `xpc_copy_description` in
+        // xpc_object(3)).
+        unsafe { xpc_connection_copy_invalidation_reason(connection) }
+    });
     if !copied.is_null() {
-        // SAFETY: `copied` is non-null and points to a NUL-terminated C string owned
-        // by libxpc (malloc'd) until we call `free` below. The borrow ends before the
-        // free.
+        // SAFETY: `copied` is non-null (checked), NUL-terminated and owned by this
+        // function until the `free` below; the borrow ends before it.
         let value = ArcStr::from(unsafe { CStr::from_ptr(copied) }.to_string_lossy());
-        // SAFETY: `copied` was returned by `xpc_connection_copy_invalidation_reason`
-        // (which malloc's the buffer per Apple's <xpc/connection.h>); the contract
-        // requires the caller to `free` it. No other code holds the pointer.
+        // SAFETY: `free` requires a pointer from the C allocator not freed yet; `copied`
+        // is the caller-owned string returned above and is not used afterwards. It must
+        // not go to `CString::from_raw`, which frees with Rust's allocator.
         unsafe { libc_free(copied.cast::<c_void>()) };
         return Some(value);
     }
 
-    // SAFETY: `_xpc_error_key_description` is a static XPC dictionary key
-    // exported by libxpc; reading it is always sound.
+    // SAFETY: reads the immutable extern static `const char *const
+    // _xpc_error_key_description` (<xpc/xpc.h>); a pointer copy, no reference is formed.
     let key = unsafe { _xpc_error_key_description };
     if key.is_null() {
         return None;
     }
 
-    // SAFETY: `event` is a valid retained xpc_object_t (caller passed it down
-    // from the live OwnedXpcObject). `key` is a valid XPC dictionary key
-    // checked non-null above. `xpc_dictionary_get_string` returns a borrowed
-    // NUL-terminated C string (or NULL if the key is absent / type mismatch),
-    // valid for the lifetime of `event`.
+    let _calls = ERROR_OBJECT_CALLS.lock();
+    // SAFETY: requires a live dictionary and a non-null NUL-terminated key
+    // (`XPC_NONNULL_ALL`); error objects are dictionaries (`XPC_TYPE_ERROR`). `event` is
+    // live (contract), `key` is non-null (checked) and libxpc's own key constant. This
+    // crate never mutates error objects and reads them only under `ERROR_OBJECT_CALLS`.
     let value = unsafe { xpc_dictionary_get_string(event, key) };
     if value.is_null() {
         return None;
     }
 
     Some(ArcStr::from(
-        // SAFETY: `value` was just checked non-null and is a NUL-terminated
-        // C string borrowed from `event`; the borrow ends before this scope.
+        // SAFETY: `value` is non-null (checked) and NUL-terminated, owned by `event`
+        // which outlives the borrow; the lock above is still held.
         unsafe { CStr::from_ptr(value) }.to_string_lossy(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{InactiveXpcConnection, XpcHandler};
+    use crate::ffi::{xpc_connection_cancel, xpc_connection_create};
+
+    /// Activation moves the call lock into the returned owner; once every owner is gone
+    /// the lock is freed.
+    #[test]
+    fn activation_does_not_leak_call_lock() {
+        // SAFETY: a NULL name creates an anonymous listener connection; NULL `targetq` is
+        // allowed. Returns a +1, inactive connection.
+        let raw = unsafe { xpc_connection_create(std::ptr::null(), std::ptr::null_mut()) };
+        // SAFETY: `raw` is the +1, not yet activated result of `xpc_connection_create`
+        // with no other alias; ownership moves.
+        let inactive = unsafe { InactiveXpcConnection::from_raw(raw, "test connection") }
+            .expect("inactive connection");
+        let calls = Arc::downgrade(&inactive.calls);
+
+        let connection = inactive.activate(|alias| {
+            drop(alias);
+            XpcHandler::new(|_event| {})
+        });
+        connection.with_raw(|raw| {
+            // SAFETY: requires a live connection; `raw` is an activated one.
+            unsafe { xpc_connection_cancel(raw) };
+        });
+        drop(connection);
+
+        assert_eq!(calls.strong_count(), 0);
+    }
 }

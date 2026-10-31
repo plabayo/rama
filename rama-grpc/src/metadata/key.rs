@@ -2,6 +2,7 @@ use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
+use std::ptr;
 use std::str::FromStr;
 
 use rama_core::bytes::Bytes;
@@ -18,8 +19,9 @@ use super::encoding::{Ascii, Binary, ValueEncoding};
 #[derive(Clone, Eq, PartialEq, Hash)]
 #[repr(transparent)]
 pub struct MetadataKey<VE: ValueEncoding> {
-    // Note: There are unsafe transmutes that assume that the memory layout
-    // of MetadataValue is identical to HeaderName
+    // `#[repr(transparent)]` over `inner` (the only non-ZST field) gives this
+    // type the layout of `HeaderName`; `unchecked_from_header_name_ref` relies
+    // on it.
     pub(crate) inner: rama_http_types::header::HeaderName,
     phantom: PhantomData<VE>,
 }
@@ -89,12 +91,17 @@ impl<VE: ValueEncoding> MetadataKey<VE> {
         self.inner.as_str()
     }
 
-    /// Converts a HeaderName reference to a MetadataKey. This method assumes
-    /// that the caller has made sure that the header name has the correct
-    /// "-bin" or non-"-bin" suffix, it does not validate its input.
+    /// Converts a HeaderName reference to a MetadataKey. The caller should
+    /// make sure the name has the "-bin" or non-"-bin" suffix of `VE`; it is
+    /// not validated, and a wrong suffix is a logic error, not UB.
     #[inline]
     pub(crate) fn unchecked_from_header_name_ref(header_name: &HeaderName) -> &Self {
-        unsafe { &*(header_name as *const HeaderName as *const Self) }
+        // SAFETY: the cast reference must be aligned, point to a valid `Self`
+        // and keep the source's lifetime. `Self` is `#[repr(transparent)]`
+        // over `HeaderName` (its other field is the 1-aligned ZST
+        // `PhantomData<VE>`), so it has the same size, alignment and validity.
+        // The result is a shared reborrow with the same lifetime.
+        unsafe { &*ptr::from_ref::<HeaderName>(header_name).cast::<Self>() }
     }
 
     /// Converts a HeaderName reference to a MetadataKey. This method assumes

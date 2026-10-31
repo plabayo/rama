@@ -17,9 +17,15 @@ pub(crate) struct OwnedUriRef {
     pub(crate) authority: Option<Authority>,
     /// Path bytes. Always present (§3.3); empty `BytesMut` = empty path.
     /// `/` is part of the path itself, not an outer delimiter — hence no `Option`.
+    ///
+    /// Invariant (semantic): valid UTF-8 — setters percent-encode non-ASCII
+    /// and every other mutation cuts at ASCII bytes or UTF-8 boundaries.
+    /// No unsafe code relies on it; readers that need `str` validate.
     pub(crate) path: BytesMut,
     /// `None` = no `?` on wire; `Some(empty)` = `?` with empty content.
     /// Distinct URIs per §3.4 (SigV4 / cache keys / proxy fidelity).
+    ///
+    /// Invariant (semantic): valid UTF-8, as for `path`.
     pub(crate) query: Option<Query>,
     /// Same `None` vs `Some(empty)` distinction as `query`, per §3.5.
     pub(crate) fragment: Option<Fragment>,

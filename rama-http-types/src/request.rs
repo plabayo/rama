@@ -100,6 +100,9 @@ use crate::{HeaderMap, HeaderName, HeaderValue, Method, Result, Uri, Version, bo
 #[derive(Clone)]
 pub struct Request<T = Body> {
     head: Parts,
+    // Safety invariant: pinning is structural for `body`. `Request` has no `Drop`
+    // impl, no manual `Unpin` impl, is not `repr(packed)`, and no method takes
+    // `Pin<&mut Self>` and moves `body` out.
     body: T,
 }
 
@@ -714,6 +717,10 @@ impl<T> Request<T> {
     /// request.body_mut().push_str("hello world");
     /// assert!(!request.body().is_empty());
     /// ```
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// Returns a reference to the `body` field of `self` and moves nothing.
     #[inline]
     pub fn body_mut(&mut self) -> &mut T {
         &mut self.body

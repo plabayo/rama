@@ -37,17 +37,19 @@ pub(crate) const DEFAULT_MAX_HEADERS: usize = 100;
 const AVERAGE_HEADER_SIZE: usize = 30; // totally scientific
 const MAX_URI_LEN: usize = (u16::MAX - 1) as usize;
 
-/// construct `HeaderValue` from a maybe shared expression.
+/// Construct a `HeaderValue` from the bytes of a header value that `httparse`
+/// accepted (after obs-fold unfolding).
 macro_rules! header_value {
-    ($bytes:expr) => {{ {
-        // unsafe used because of the call of `HeaderValue::from_maybe_shared_unchecked`.
-        // SAFETY:
-        // 1. The input `$bytes` must be a valid header value as per RFC 7230.
-        // 2. Specifically, it must not contain any prohibited characters (like `\r`, `\n`, or non-visible ASCII characters outside of allowed ranges).
-        // 3. This is safe because the caller is responsible for ensuring the byte content
-        //    has been validated or is known to be a constant/static valid header value.
-        unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) }
-    } }};
+    ($bytes:expr) => {{
+        let bytes = $bytes;
+        // SAFETY: `HeaderValue::from_maybe_shared_unchecked` has a semantic
+        // precondition only: every byte is HTAB or in `0x20..=0xFF` except DEL.
+        // `httparse` 1.10 accepts exactly those bytes in a header value (its
+        // `HEADER_VALUE_MAP`). Obs-fold is only accepted in responses, where
+        // `obs_fold_line` replaces its CR/LF with SP before this runs. Debug
+        // builds re-check the bytes.
+        unsafe { HeaderValue::from_maybe_shared_unchecked(bytes) }
+    }};
 }
 
 pub(super) fn parse_headers<T>(
@@ -179,8 +181,7 @@ impl Http1Transaction for Server {
                         Version::HTTP_10
                     };
 
-                    record_header_indices(bytes, req.headers, &mut headers_indices)?;
-                    headers_len = req.headers.len();
+                    headers_len = record_header_indices(bytes, req.headers, &mut headers_indices)?;
                 }
                 Ok(httparse::Status::Partial) => return Ok(None),
                 // if invalid Token, try to determine if for method or path
@@ -260,7 +261,10 @@ impl Http1Transaction for Server {
         let mut headers = HeaderMap::with_capacity(headers_len);
 
         for header in &headers_indices[..headers_len] {
-            // SAFETY: array is valid up to `headers_len`
+            // SAFETY: `assume_init_ref` requires an initialized element.
+            // `headers_len` is the count `record_header_indices` returned, so
+            // `headers_indices[..headers_len]` is initialized (its
+            // safety-usable invariant), and nothing wrote to it since.
             let header = unsafe { header.assume_init_ref() };
             let name = HeaderName::from_bytes(&slice[header.name.0..header.name.1])
                 .inspect_err(|err| {
@@ -1029,8 +1033,8 @@ impl Http1Transaction for Client {
                         } else {
                             Version::HTTP_10
                         };
-                        record_header_indices(bytes, res.headers, &mut headers_indices)?;
-                        let headers_len = res.headers.len();
+                        let headers_len =
+                            record_header_indices(bytes, res.headers, &mut headers_indices)?;
                         (len, status, reason, version, headers_len)
                     }
                     Ok(httparse::Status::Partial) => return Ok(None),
@@ -1050,7 +1054,11 @@ impl Http1Transaction for Client {
                 .obsolete_multiline_headers_in_responses_are_allowed()
             {
                 for header in &mut headers_indices[..headers_len] {
-                    // SAFETY: array is valid up to `headers_len`
+                    // SAFETY: `assume_init_mut` requires an initialized
+                    // element. `headers_len` is 0 (HTTP/0.9) or the count
+                    // `record_header_indices` returned, so
+                    // `headers_indices[..headers_len]` is initialized (its
+                    // safety-usable invariant).
                     let header = unsafe { header.assume_init_mut() };
                     Self::obs_fold_line(&mut slice, header);
                 }
@@ -1067,7 +1075,9 @@ impl Http1Transaction for Client {
             let mut saw_chunked = false;
 
             for header in &headers_indices[..headers_len] {
-                // SAFETY: array is valid up to `headers_len`
+                // SAFETY: `assume_init_ref` requires an initialized element.
+                // As above, `headers_indices[..headers_len]` is initialized,
+                // and `obs_fold_line` only rewrote entries in place.
                 let header = unsafe { header.assume_init_ref() };
                 let name = HeaderName::from_bytes(&slice[header.name.0..header.name.1])
                     .inspect_err(|err| {
@@ -1117,8 +1127,10 @@ impl Http1Transaction for Client {
             });
 
             if let Some(reason) = reason {
-                // SAFETY: httparse ensures that only valid reason
-                // phrase bytes are present in this field.
+                // SAFETY: `ReasonPhrase::from_bytes_unchecked` has a semantic
+                // precondition only: HTAB, SP, VCHAR or obs-text bytes.
+                // `httparse::Response::reason` holds only HTAB, SP and VCHAR
+                // (it is empty when the phrase had obs-text or invalid bytes).
                 let reason = unsafe { ReasonPhrase::from_bytes_unchecked(reason) };
                 extensions.insert(reason);
             }
@@ -1561,12 +1573,18 @@ struct HeaderIndices {
     value: (usize, usize),
 }
 
+/// Record the byte ranges of `headers` within `bytes` into `indices`.
+///
+/// # Safety-usable invariant
+///
+/// On `Ok(n)`, `n <= indices.len()` and `indices[..n]` is initialized.
 fn record_header_indices(
     bytes: &[u8],
     headers: &[httparse::Header<'_>],
     indices: &mut [MaybeUninit<HeaderIndices>],
-) -> Result<(), crate::error::Parse> {
+) -> Result<usize, crate::error::Parse> {
     let bytes_ptr = bytes.as_ptr() as usize;
+    let mut recorded = 0;
 
     for (header, indices) in headers.iter().zip(indices.iter_mut()) {
         if header.name.len() >= (1 << 16) {
@@ -1582,9 +1600,11 @@ fn record_header_indices(
             name: (name_start, name_end),
             value: (value_start, value_end),
         });
+        // `zip` visits `indices` in order, so this wrote `indices[recorded]`.
+        recorded += 1;
     }
 
-    Ok(())
+    Ok(recorded)
 }
 
 fn title_case_in_place(name: &mut [u8]) {

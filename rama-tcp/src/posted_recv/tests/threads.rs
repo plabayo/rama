@@ -19,7 +19,7 @@ use {
     },
     crate::{
         TcpStream,
-        posted_recv::{PostedRecv, PostedRecvConfig},
+        posted_recv::{PostedRecv, PostedRecvConfig, iocp},
     },
     rama_utils::octets::{kib, mib},
     std::time::Instant,
@@ -211,6 +211,58 @@ async fn threads_scale_with_the_load() {
     assert!(peak <= max, "{peak} threads is over the maximum of {max}");
 
     wait_for_threads(1).await;
+}
+
+/// A panic on a completion thread outside the guard around each completion
+/// neither ends a thread that still counts as running nor keeps one running
+/// that no longer counts.
+#[cfg(target_os = "windows")]
+#[tokio::test(flavor = "multi_thread")]
+async fn panics_keep_the_thread_count_true() {
+    if !in_own_process(module_path!(), "panics_keep_the_thread_count_true") {
+        return;
+    }
+    let idle = Duration::from_millis(50);
+    set_completion_threads(CompletionThreads::single().with_idle_timeout(idle));
+    let origin = spawn_origin(SIZES_SMALL, Close::Fin).await;
+
+    // The only thread panics as it starts and after a batch, and still
+    // completes receives.
+    iocp::inject_panics(1, 1, 0);
+    for _ in 0..2 {
+        let mut stream = connect(origin.addr, &PostedRecvConfig::default()).await;
+        let received = tokio::time::timeout(
+            Duration::from_secs(10),
+            exchange(&mut stream, Duration::ZERO),
+        )
+        .await
+        .expect("the completion thread completes receives");
+        assert!(received.is_complete(SIZES_SMALL));
+    }
+    assert_eq!(iocp::pending_panics(), 0);
+    assert_eq!(running_completion_threads(), 1);
+    assert_eq!(iocp::live_threads(), 1);
+
+    // Threads that panic once counted out end.
+    set_completion_threads(
+        CompletionThreads::new()
+            .with_min_threads(3)
+            .with_idle_timeout(idle),
+    );
+    wait_for_threads(3).await;
+    iocp::inject_panics(0, 0, 2);
+    set_completion_threads(CompletionThreads::single().with_idle_timeout(idle));
+    wait_for_threads(1).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while iocp::live_threads() != 1 {
+        assert!(
+            Instant::now() < deadline,
+            "{} completion threads alive, 1 counted",
+            iocp::live_threads()
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(iocp::pending_panics(), 0);
 }
 
 /// With several threads completing receives of the same stream at once,

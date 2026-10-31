@@ -92,6 +92,34 @@ const PATTERN_NAME_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 2
 const HTTP_TOKEN_BYTE_SET: [bool; 256] =
     set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
 
+/// `true` when `table` accepts no byte `>= 0x80`.
+const fn accepts_only_ascii(table: &[bool; 256]) -> bool {
+    let mut b = 0x80;
+    while b < 256 {
+        if table[b] {
+            return false;
+        }
+        b += 1;
+    }
+    true
+}
+
+// Every grammar byte set above is ASCII-only; the scheme predicates' safety-usable
+// invariant below relies on it.
+const _: () = {
+    assert!(accepts_only_ascii(&PATH_BYTE_SET));
+    assert!(accepts_only_ascii(&QUERY_FRAGMENT_BYTE_SET));
+    assert!(accepts_only_ascii(&SCHEME_FIRST_BYTE_SET));
+    assert!(accepts_only_ascii(&SCHEME_REST_BYTE_SET));
+    assert!(accepts_only_ascii(&USERINFO_BYTE_SET));
+    assert!(accepts_only_ascii(&UNRESERVED_BYTE_SET));
+    assert!(accepts_only_ascii(&TEMPLATE_LITERAL_BYTE_SET));
+    assert!(accepts_only_ascii(&REG_NAME_BYTE_SET));
+    assert!(accepts_only_ascii(&IPVFUTURE_TAIL_BYTE_SET));
+    assert!(accepts_only_ascii(&LABEL_BYTE_SET));
+    assert!(accepts_only_ascii(&PATTERN_NAME_BYTE_SET));
+};
+
 // --- Predicates (single-load hot path) -------------------------------------
 
 #[inline(always)]
@@ -125,11 +153,17 @@ pub(crate) const fn is_query_fragment_byte(b: u8) -> bool {
     QUERY_FRAGMENT_BYTE_SET[b as usize]
 }
 
+/// # Safety-usable invariant
+///
+/// Returns `true` only for ASCII bytes (const-asserted above).
 #[inline(always)]
 pub(crate) const fn is_scheme_first_byte(b: u8) -> bool {
     SCHEME_FIRST_BYTE_SET[b as usize]
 }
 
+/// # Safety-usable invariant
+///
+/// Returns `true` only for ASCII bytes (const-asserted above).
 #[inline(always)]
 pub(crate) const fn is_scheme_rest_byte(b: u8) -> bool {
     SCHEME_REST_BYTE_SET[b as usize]
