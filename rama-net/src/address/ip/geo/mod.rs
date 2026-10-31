@@ -19,6 +19,9 @@
 //! - **Minimal memory.** The database is held once as a shared buffer and
 //!   never fully materialised; a lookup walks a handful of tree nodes and
 //!   decodes only the matched record.
+//! - **Positional reads.** [`MmdbFileReader`] reads the file through
+//!   positional reads instead of holding or mapping it, returns owned
+//!   [`GeoLocation`]s and follows files replaced by rename while running.
 //! - **No third-party dependencies.** The reader and writer use `std` only.
 //!
 //! [`IpAddr`]: core::net::IpAddr
@@ -35,7 +38,9 @@ pub use csv::{
 #[cfg(feature = "std")]
 mod db;
 #[cfg(feature = "std")]
-pub use db::{IpGeoDb, IpGeoDbBuilder, IpGeoInfo, IpGeoSourceResult, RAMA_IP_GEO_DB_ENV};
+pub use db::{
+    GeoReader, IpGeoDb, IpGeoDbBuilder, IpGeoInfo, IpGeoSourceResult, RAMA_IP_GEO_DB_ENV,
+};
 
 mod location;
 pub use location::{AsOrg, Coordinates, GeoLocation, GeoLocationRef, Subdivision, TimeZoneName};
@@ -43,7 +48,7 @@ pub use location::{AsOrg, Coordinates, GeoLocation, GeoLocationRef, Subdivision,
 pub mod mmdb;
 pub use mmdb::{IpVersion, Metadata, MmdbReader, RecordSize};
 #[cfg(feature = "std")]
-pub use mmdb::{MmdbBuilder, MmdbWriteError};
+pub use mmdb::{MmdbBuilder, MmdbFileConfig, MmdbFileReader, MmdbWriteError};
 
 use core::fmt;
 
@@ -65,6 +70,9 @@ pub enum GeoIpError {
     /// Failed to read the database from disk.
     #[cfg(feature = "std")]
     Io(std::io::Error),
+    /// The file behind a positional reader changed while it was open: it
+    /// became shorter than at open or its handle went stale.
+    SourceChanged,
     /// A geolocation database configuration string (e.g. the value of the
     /// `RAMA_IP_GEO_DB` environment variable) was malformed.
     InvalidConfig(Box<str>),
@@ -88,6 +96,7 @@ impl fmt::Display for GeoIpError {
             Self::Unsupported(why) => write!(f, "mmdb: unsupported database: {why}"),
             #[cfg(feature = "std")]
             Self::Io(err) => write!(f, "mmdb: i/o error: {err}"),
+            Self::SourceChanged => f.write_str("mmdb: database file changed while open"),
             Self::InvalidConfig(why) => write!(f, "geoip: invalid configuration: {why}"),
             Self::Source { path, error } => {
                 write!(f, "geoip: failed to load source {path:?}: {error}")

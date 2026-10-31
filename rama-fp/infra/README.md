@@ -191,12 +191,23 @@ shared agent can crash under parallelism). The `geoip` mount + `RAMA_IP_GEO_DB`
 are declared in each app's `fly.toml`, and the services treat a missing/unsynced
 database as "no geo" rather than a startup error — so the order does not matter.
 
-The services memory-map the databases, so a live file must never be written in
-place. `sync` uploads each database to a temporary file on the volume, checks its
-size, then renames it over the live name: running services keep the copy they
-mapped and load the new one on their next start. Replace the files the same way
-by hand (copy next to the target, then `mv`); never `cp` or download onto the
-live path.
+`RAMA_IP_GEO_DB_MODE` selects how the services read the databases:
+
+| Value            | Reads the files by                                                    |
+| ---------------- | --------------------------------------------------------------------- |
+| `mmap` (default) | memory-mapping them; a new file is loaded on the next start           |
+| `pread`          | positional reads with a 4 MiB block cache per file; a file replaced by rename is picked up by the first lookup after the one-minute check interval, later if the filesystem caches file attributes (NFS) |
+| `memory`         | reading them fully into memory; a new file is loaded on the next start |
+
+An unknown value logs a warning and falls back to `mmap`.
+
+A live file must never be written in place: under `mmap` that is undefined
+behaviour, under `pread` lookups return wrong or no results until the change is
+noticed. `sync`
+uploads each database to a temporary file on the volume, checks its size, then
+renames it over the live name: running services keep the copy they opened.
+Replace the files the same way by hand (copy next to the target, then `mv`);
+never `cp` or download onto the live path.
 
 > IP2Location LITE caps a token at **5 downloads / 24h**; if that (or any
 > download) fails, the script reuses the previously fetched file and carries on.

@@ -10,7 +10,7 @@ use crate::std::boxed::Box;
 use crate::std::string::String;
 use crate::std::vec::Vec;
 
-use super::mmdb::decoder::Decoder;
+use super::mmdb::decoder::{Decoder, Section};
 #[cfg(feature = "std")]
 use super::mmdb::{MmdbBuilder, MmdbValue, MmdbWriteError};
 use crate::asn::LossyAsn;
@@ -331,13 +331,13 @@ impl MmdbBuilder {
 /// [`MmdbReader::lookup`]: super::MmdbReader::lookup
 #[derive(Debug, Clone)]
 pub struct GeoLocationRef<'a> {
-    decoder: Decoder<'a>,
+    decoder: Decoder<&'a [u8]>,
     record: usize,
     lang: &'a str,
 }
 
 impl<'a> GeoLocationRef<'a> {
-    pub(crate) fn new(decoder: Decoder<'a>, record: usize, lang: &'a str) -> Self {
+    pub(crate) fn new(decoder: Decoder<&'a [u8]>, record: usize, lang: &'a str) -> Self {
         Self {
             decoder,
             record,
@@ -351,125 +351,177 @@ impl<'a> GeoLocationRef<'a> {
         self.lang
     }
 
-    /// Offset (into the record map) of the value for `key`, if present.
-    fn field(&self, key: &str) -> Option<usize> {
-        self.decoder.map_get(self.record, key).ok().flatten()
-    }
-
-    /// Read a string value at `container`'s `key`.
-    fn sub_str(&self, container: usize, key: &str) -> Option<&'a str> {
-        let off = self.decoder.map_get(container, key).ok().flatten()?;
-        self.decoder.read_str(off).ok()
-    }
-
-    /// Read a string at `sub_key` within the top-level field `field_key`.
-    fn field_sub_str(&self, field_key: &str, sub_key: &str) -> Option<&'a str> {
-        self.sub_str(self.field(field_key)?, sub_key)
-    }
-
-    /// Offset of `key` within the `location` sub-map, if present.
-    fn loc_off(&self, key: &str) -> Option<usize> {
-        self.decoder
-            .map_get(self.field(keys::LOCATION)?, key)
-            .ok()
-            .flatten()
-    }
-
-    /// Resolve a localised name from the `names` sub-map of `container`,
-    /// preferring the configured language and falling back to English.
-    fn pick_name(&self, container: usize) -> Option<&'a str> {
-        let names = self
-            .decoder
-            .map_get(container, keys::NAMES)
-            .ok()
-            .flatten()?;
-        if let Some(off) = self.decoder.map_get(names, self.lang).ok().flatten()
-            && let Ok(s) = self.decoder.read_str(off)
-        {
-            return Some(s);
+    fn fields(&self) -> RecordFields<'_, &'a [u8]> {
+        RecordFields {
+            decoder: &self.decoder,
+            record: self.record,
+            lang: self.lang,
         }
-        let off = self.decoder.map_get(names, keys::EN).ok().flatten()?;
+    }
+
+    fn read_str(&self, off: usize) -> Option<&'a str> {
         self.decoder.read_str(off).ok()
     }
 
     /// Continent of the IP address, if recorded.
     #[must_use]
     pub fn continent(&self) -> Option<ContinentRef<'a>> {
-        Some(ContinentRef::from_code(
-            self.field_sub_str(keys::CONTINENT, keys::CODE)?,
-        ))
+        self.fields()
+            .continent(|off| self.read_str(off))
+            .map(ContinentRef::from_code)
     }
 
     /// Country of the IP address, if recorded.
     #[must_use]
     pub fn country(&self) -> Option<CountryRef<'a>> {
-        Some(CountryRef::from_code(
-            self.field_sub_str(keys::COUNTRY, keys::ISO_CODE)?,
-        ))
+        self.fields()
+            .country(|off| self.read_str(off))
+            .map(CountryRef::from_code)
     }
 
     /// Registered country of the IP address, if recorded.
     #[must_use]
     pub fn registered_country(&self) -> Option<CountryRef<'a>> {
-        Some(CountryRef::from_code(
-            self.field_sub_str(keys::REGISTERED_COUNTRY, keys::ISO_CODE)?,
-        ))
+        self.fields()
+            .registered_country(|off| self.read_str(off))
+            .map(CountryRef::from_code)
     }
 
     /// Localised city name, if available.
     #[must_use]
     pub fn city(&self) -> Option<&'a str> {
-        self.pick_name(self.field(keys::CITY)?)
+        self.fields().city(|off| self.read_str(off))
     }
 
     /// Postal / ZIP code, if available.
     #[must_use]
     pub fn postal_code(&self) -> Option<&'a str> {
-        self.field_sub_str(keys::POSTAL, keys::CODE)
+        self.fields().postal_code(|off| self.read_str(off))
     }
 
     /// Approximate latitude in degrees, if available.
     #[must_use]
     pub fn latitude(&self) -> Option<f64> {
-        self.decoder.read_f64(self.loc_off(keys::LATITUDE)?).ok()
+        self.fields().location_f64(keys::LATITUDE)
     }
 
     /// Approximate longitude in degrees, if available.
     #[must_use]
     pub fn longitude(&self) -> Option<f64> {
-        self.decoder.read_f64(self.loc_off(keys::LONGITUDE)?).ok()
+        self.fields().location_f64(keys::LONGITUDE)
     }
 
     /// Accuracy radius in kilometres, if available.
     #[must_use]
     pub fn accuracy_radius_km(&self) -> Option<u16> {
-        self.decoder
-            .read_u16(self.loc_off(keys::ACCURACY_RADIUS)?)
-            .ok()
+        let fields = self.fields();
+        fields.accuracy_radius_km(fields.field(keys::LOCATION)?)
     }
 
     /// IANA time zone identifier, if available.
     #[must_use]
     pub fn time_zone(&self) -> Option<&'a str> {
-        self.field_sub_str(keys::LOCATION, keys::TIME_ZONE)
+        let fields = self.fields();
+        fields.time_zone(fields.field(keys::LOCATION)?, |off| self.read_str(off))
     }
 
     /// Autonomous system number, if available, preserved verbatim as a
     /// [`LossyAsn`] (the value may be outside the assignable ranges).
     #[must_use]
     pub fn asn(&self) -> Option<LossyAsn> {
-        let off = self.field(keys::ASN_NUMBER)?;
-        self.decoder.read_u32(off).ok().map(LossyAsn::from)
+        self.fields().asn()
     }
 
     /// Autonomous system organisation, if available.
     #[must_use]
     pub fn as_organization(&self) -> Option<&'a str> {
-        let off = self.field(keys::ASN_ORG)?;
-        self.decoder.read_str(off).ok()
+        self.fields().as_organization(|off| self.read_str(off))
     }
 
-    fn subdivisions_owned(&self) -> Vec<Subdivision> {
+    /// Materialise this view into an owned, `'static` [`GeoLocation`].
+    #[must_use]
+    pub fn to_owned(&self) -> GeoLocation {
+        decode_owned(&self.decoder, self.record, self.lang)
+    }
+}
+
+/// Field lookups over one record, shared by the borrowing view and the owned
+/// decode. String fields are read through a caller-supplied `read`, so each
+/// side picks borrowing or copying while the field logic exists once.
+struct RecordFields<'r, S> {
+    decoder: &'r Decoder<S>,
+    record: usize,
+    lang: &'r str,
+}
+
+impl<S: Section> RecordFields<'_, S> {
+    /// Offset (into the record map) of the value for `key`, if present.
+    fn field(&self, key: &str) -> Option<usize> {
+        self.sub(self.record, key)
+    }
+
+    /// Offset of `key` within the map at `container`, if present.
+    fn sub(&self, container: usize, key: &str) -> Option<usize> {
+        self.decoder.map_get(container, key).ok().flatten()
+    }
+
+    /// Resolve a localised name from the `names` sub-map of `container`,
+    /// preferring the configured language and falling back to English.
+    fn pick_name<T>(&self, container: usize, read: impl Fn(usize) -> Option<T>) -> Option<T> {
+        let names = self.sub(container, keys::NAMES)?;
+        if let Some(off) = self.sub(names, self.lang)
+            && let Some(name) = read(off)
+        {
+            return Some(name);
+        }
+        read(self.sub(names, keys::EN)?)
+    }
+
+    fn continent<T>(&self, read: impl Fn(usize) -> Option<T>) -> Option<T> {
+        read(self.sub(self.field(keys::CONTINENT)?, keys::CODE)?)
+    }
+
+    fn country<T>(&self, read: impl Fn(usize) -> Option<T>) -> Option<T> {
+        read(self.sub(self.field(keys::COUNTRY)?, keys::ISO_CODE)?)
+    }
+
+    fn registered_country<T>(&self, read: impl Fn(usize) -> Option<T>) -> Option<T> {
+        read(self.sub(self.field(keys::REGISTERED_COUNTRY)?, keys::ISO_CODE)?)
+    }
+
+    fn city<T>(&self, read: impl Fn(usize) -> Option<T>) -> Option<T> {
+        self.pick_name(self.field(keys::CITY)?, read)
+    }
+
+    fn postal_code<T>(&self, read: impl Fn(usize) -> Option<T>) -> Option<T> {
+        read(self.sub(self.field(keys::POSTAL)?, keys::CODE)?)
+    }
+
+    /// A double in the `location` sub-map.
+    fn location_f64(&self, key: &str) -> Option<f64> {
+        let off = self.sub(self.field(keys::LOCATION)?, key)?;
+        self.decoder.read_f64(off).ok()
+    }
+
+    fn accuracy_radius_km(&self, location: usize) -> Option<u16> {
+        let off = self.sub(location, keys::ACCURACY_RADIUS)?;
+        self.decoder.read_u16(off).ok()
+    }
+
+    fn time_zone<T>(&self, location: usize, read: impl Fn(usize) -> Option<T>) -> Option<T> {
+        read(self.sub(location, keys::TIME_ZONE)?)
+    }
+
+    fn asn(&self) -> Option<LossyAsn> {
+        let off = self.field(keys::ASN_NUMBER)?;
+        self.decoder.read_u32(off).ok().map(LossyAsn::from)
+    }
+
+    fn as_organization<T>(&self, read: impl Fn(usize) -> Option<T>) -> Option<T> {
+        read(self.field(keys::ASN_ORG)?)
+    }
+
+    fn subdivisions(&self, read: impl Fn(usize) -> Option<Box<str>>) -> Vec<Subdivision> {
         let Some(arr) = self.field(keys::SUBDIVISIONS) else {
             return Vec::new();
         };
@@ -479,8 +531,8 @@ impl<'a> GeoLocationRef<'a> {
         elements
             .into_iter()
             .filter_map(|off| {
-                let iso_code = self.sub_str(off, keys::ISO_CODE).map(Box::from);
-                let name = self.pick_name(off).map(Box::from);
+                let iso_code = self.sub(off, keys::ISO_CODE).and_then(&read);
+                let name = self.pick_name(off, &read);
                 if iso_code.is_none() && name.is_none() {
                     None
                 } else {
@@ -489,52 +541,69 @@ impl<'a> GeoLocationRef<'a> {
             })
             .collect()
     }
+}
 
-    /// Materialise this view into an owned, `'static` [`GeoLocation`].
-    #[must_use]
-    pub fn to_owned(&self) -> GeoLocation {
-        // Resolve the location submap once and read every coordinate field from
-        // it, rather than re-scanning the top-level record map per accessor.
-        let location = self.field(keys::LOCATION).and_then(|loc| {
-            let read_f64 = |key: &str| {
-                self.decoder
-                    .map_get(loc, key)
-                    .ok()
-                    .flatten()
-                    .and_then(|o| self.decoder.read_f64(o).ok())
-            };
-            match (read_f64(keys::LATITUDE), read_f64(keys::LONGITUDE)) {
-                (Some(latitude), Some(longitude)) => Some(Coordinates {
-                    latitude,
-                    longitude,
-                    accuracy_radius_km: self
-                        .decoder
-                        .map_get(loc, keys::ACCURACY_RADIUS)
-                        .ok()
-                        .flatten()
-                        .and_then(|o| self.decoder.read_u16(o).ok()),
-                    time_zone: self.sub_str(loc, keys::TIME_ZONE).map(TimeZoneName::from),
-                }),
-                _ => None,
-            }
-        });
-        // Build the AS record whenever a number OR an organisation is present;
-        // `LossyAsn` preserves the number verbatim, so nothing is dropped.
-        let autonomous_system = {
-            let asn = self.asn();
-            let organization = self.as_organization().map(Box::from);
-            (asn.is_some() || organization.is_some()).then_some(AsOrg { asn, organization })
+/// Decode the record at `record` into an owned [`GeoLocation`], resolving
+/// localised names in `lang` with an English fallback.
+pub(crate) fn decode_owned<S: Section>(
+    decoder: &Decoder<S>,
+    record: usize,
+    lang: &str,
+) -> GeoLocation {
+    let fields = RecordFields {
+        decoder,
+        record,
+        lang,
+    };
+    let read = |off: usize| decoder.read_box_str(off).ok();
+
+    // resolve the location submap once and read every coordinate field from it
+    let location = fields.field(keys::LOCATION).and_then(|loc| {
+        let read_f64 = |key: &str| {
+            fields
+                .sub(loc, key)
+                .and_then(|off| decoder.read_f64(off).ok())
         };
-        GeoLocation {
-            continent: self.continent().map(|c| c.to_owned()),
-            country: self.country().map(|c| c.to_owned()),
-            registered_country: self.registered_country().map(|c| c.to_owned()),
-            subdivisions: self.subdivisions_owned(),
-            city: self.city().map(Box::from),
-            postal_code: self.postal_code().map(Box::from),
-            location,
-            autonomous_system,
+        match (read_f64(keys::LATITUDE), read_f64(keys::LONGITUDE)) {
+            (Some(latitude), Some(longitude)) => Some(Coordinates {
+                latitude,
+                longitude,
+                accuracy_radius_km: fields.accuracy_radius_km(loc),
+                time_zone: fields.time_zone(loc, |off| {
+                    decoder.with_str(off, |tz| TimeZoneName::from(tz)).ok()
+                }),
+            }),
+            _ => None,
         }
+    });
+    // Build the AS record whenever a number OR an organisation is present;
+    // `LossyAsn` preserves the number verbatim, so nothing is dropped.
+    let autonomous_system = {
+        let asn = fields.asn();
+        let organization = fields.as_organization(read);
+        (asn.is_some() || organization.is_some()).then_some(AsOrg { asn, organization })
+    };
+    GeoLocation {
+        continent: fields.continent(|off| {
+            decoder
+                .with_str(off, |code| ContinentRef::from_code(code).to_owned())
+                .ok()
+        }),
+        country: fields.country(|off| {
+            decoder
+                .with_str(off, |code| CountryRef::from_code(code).to_owned())
+                .ok()
+        }),
+        registered_country: fields.registered_country(|off| {
+            decoder
+                .with_str(off, |code| CountryRef::from_code(code).to_owned())
+                .ok()
+        }),
+        subdivisions: fields.subdivisions(read),
+        city: fields.city(read),
+        postal_code: fields.postal_code(read),
+        location,
+        autonomous_system,
     }
 }
 
