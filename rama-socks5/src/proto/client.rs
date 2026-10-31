@@ -620,4 +620,26 @@ mod tests {
             UsernamePasswordRequest,
         );
     }
+
+    #[tokio::test]
+    async fn unknown_bytes_are_rejected_at_their_position() {
+        use std::assert_matches;
+
+        assert_matches!(
+            Header::read_from(&mut &[4u8, 1, 0][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 0, byte: 4 })
+        );
+        assert_matches!(
+            Request::read_from(&mut &[4u8, 1, 0, 1, 127, 0, 0, 1, 0, 80][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 0, byte: 4 })
+        );
+        assert_matches!(
+            Request::read_from(&mut &[5u8, 1, 0, 2, 127, 0, 0, 1, 0, 80][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 3, byte: 2 })
+        );
+        assert_matches!(
+            UsernamePasswordRequest::read_from(&mut &[5u8, 1, b'u', 1, b'p'][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 0, byte: 5 })
+        );
+    }
 }

@@ -116,6 +116,13 @@ fn x_requested_with_marks_only_xml_http_request_as_xhr() {
         captured_request_initiator(&request("com.example.app"), false),
         None
     );
+    // A singleton header: a repeated line is invalid, so not an XHR either.
+    let mut repeated = request("XMLHttpRequest");
+    repeated.headers.append(
+        "x-requested-with",
+        rama_http::HeaderValue::from_static("XMLHttpRequest"),
+    );
+    assert_eq!(captured_request_initiator(&repeated, false), None);
 }
 
 #[test]
