@@ -10,10 +10,14 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 rama_utils::macros::enums::enum_builder! {
     /// The purpose token of a [`SecPurpose`] header.
     ///
+    /// Matched case-sensitively, as a Structured Field token: `PREFETCH` is
+    /// another, unknown, token.
+    ///
     /// # Example values
     ///
     /// * `prefetch`
     @String
+    #[case_sensitive]
     pub enum SecPurposeKind {
         /// A speculative fetch: a prefetch, or a prerender when [`SecPurpose`]
         /// carries the `prerender` parameter.
@@ -461,6 +465,20 @@ mod tests {
         for lines in [&["", "prefetch"][..], &["prefetch", ""], &[" ", "prefetch"]] {
             assert_eq!(test_decode::<SecPurpose>(lines), None, "{lines:?}");
         }
+    }
+
+    #[test]
+    fn standalone_kind_keeps_its_case() {
+        use serde::{Deserialize, de::IntoDeserializer, de::value::Error as DeError};
+
+        let kind: SecPurposeKind = "PREFETCH".parse().unwrap();
+        assert_eq!(kind, SecPurposeKind::Unknown("PREFETCH".into()));
+        assert_eq!(SecPurposeKind::from("PREFETCH".to_owned()), kind);
+        assert_eq!(kind.to_string().parse::<SecPurposeKind>().unwrap(), kind);
+        let deserialized: Result<SecPurposeKind, DeError> =
+            SecPurposeKind::deserialize("PREFETCH".into_deserializer());
+        assert_eq!(deserialized.unwrap(), kind);
+        assert!(!SecPurpose::new(kind).is_prefetch());
     }
 
     #[test]
