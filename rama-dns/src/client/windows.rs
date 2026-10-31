@@ -4,7 +4,7 @@ use std::{
     collections::VecDeque,
     ffi::c_void,
     fmt,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     pin::pin,
     ptr::{self, NonNull},
     sync::{
@@ -163,8 +163,13 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 ///
 /// Concurrent lookups of one name and record type share one query. Lookups
 /// are unbounded by default: the DNS Client service queues them itself.
+///
+/// A and AAAA lookups of this computer's own name are answered from its
+/// unicast addresses without a DNS query, as getaddrinfo does; see
+/// [`Self::local_hostname`].
 pub struct WindowsDnsResolver {
     timeout: Duration,
+    local_hostname: bool,
     limit: LookupLimit,
     in_flight: InFlight<(Domain, u16)>,
 }
@@ -173,6 +178,7 @@ impl Default for WindowsDnsResolver {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
+            local_hostname: true,
             limit: LookupLimit::new(Limits::UNBOUNDED),
             in_flight: InFlight::new(Abandoned::Cancel),
         }
@@ -196,6 +202,26 @@ impl WindowsDnsResolver {
         /// lookups with this resolver.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self.in_flight = InFlight::new(Abandoned::Cancel);
+            self
+        }
+    }
+
+    #[must_use]
+    pub const fn local_hostname(&self) -> bool {
+        self.local_hostname
+    }
+
+    generate_set_and_with! {
+        /// Answer A and AAAA lookups of this computer's DNS host name, fully
+        /// qualified DNS name or NetBIOS name (ignoring ASCII case) from its
+        /// preferred, non-loopback unicast addresses without a DNS query, as
+        /// getaddrinfo checks the local host name before the hosts file and
+        /// DNS (default true). IPv6 link-local addresses are left out, as an
+        /// answer has no scope id; `false` sends every lookup to DNS. Clones
+        /// made before this call no longer share lookups with this resolver.
+        pub fn local_hostname(mut self, enabled: bool) -> Self {
+            self.local_hostname = enabled;
             self.in_flight = InFlight::new(Abandoned::Cancel);
             self
         }
@@ -277,6 +303,43 @@ impl WindowsDnsResolver {
             },
         ))
     }
+
+    /// An A or AAAA lookup, answered locally when `domain` names this computer.
+    fn address_lookup<T: HostAddress>(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<T, BoxError>> + Send + '_ {
+        let local_host = self.local_hostname.then_some(LocalHost::System);
+        self.address_lookup_on(domain, local_host, DnsBackend::System)
+    }
+
+    /// [`Self::address_lookup`] with names and addresses from `local_host`
+    /// (`None` is DNS only) and queries on `backend`.
+    fn address_lookup_on<T: HostAddress>(
+        &self,
+        domain: Domain,
+        local_host: Option<LocalHost>,
+        backend: DnsBackend,
+    ) -> impl Stream<Item = Result<T, BoxError>> + Send + '_ {
+        match own_name_stream(local_host, &domain) {
+            // a local answer takes no query slot
+            Some(answer) => Either::Left(answer),
+            None => Either::Right(self.coalesced(
+                domain,
+                T::RRTYPE,
+                move |domain, deadline, timeout| {
+                    query_record_stream_with_backend(
+                        domain,
+                        deadline,
+                        timeout,
+                        T::RRTYPE,
+                        T::PARSER,
+                        backend,
+                    )
+                },
+            )),
+        }
+    }
 }
 
 /// `lookup` once `limit` has a slot for it, holding the slot until it ends.
@@ -315,24 +378,14 @@ impl DnsAddressResolver for WindowsDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-        self.coalesced(domain, ffi::DNS_TYPE_A, |domain, deadline, timeout| {
-            query_record_stream(domain, deadline, timeout, ffi::DNS_TYPE_A, parse_a_records)
-        })
+        self.address_lookup(domain)
     }
 
     fn lookup_ipv6(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-        self.coalesced(domain, ffi::DNS_TYPE_AAAA, |domain, deadline, timeout| {
-            query_record_stream(
-                domain,
-                deadline,
-                timeout,
-                ffi::DNS_TYPE_AAAA,
-                parse_aaaa_records,
-            )
-        })
+        self.address_lookup(domain)
     }
 }
 
@@ -417,6 +470,128 @@ impl DnsServiceBindingResolver for WindowsDnsResolver {
 }
 
 impl DnsResolver for WindowsDnsResolver {}
+
+/// An address type, looked up as A or AAAA records.
+trait HostAddress: fmt::Debug + Clone + Send + Sync + 'static {
+    const RRTYPE: u16;
+    const PARSER: RecordParser<Self>;
+
+    /// `ip` if it is of this family.
+    fn from_ip(ip: IpAddr) -> Option<Self>;
+}
+
+impl HostAddress for Ipv4Addr {
+    const RRTYPE: u16 = ffi::DNS_TYPE_A;
+    const PARSER: RecordParser<Self> = parse_a_records;
+
+    fn from_ip(ip: IpAddr) -> Option<Self> {
+        match ip {
+            IpAddr::V4(ip) => Some(ip),
+            IpAddr::V6(_) => None,
+        }
+    }
+}
+
+impl HostAddress for Ipv6Addr {
+    const RRTYPE: u16 = ffi::DNS_TYPE_AAAA;
+    const PARSER: RecordParser<Self> = parse_aaaa_records;
+
+    fn from_ip(ip: IpAddr) -> Option<Self> {
+        match ip {
+            IpAddr::V4(_) => None,
+            IpAddr::V6(ip) => Some(ip),
+        }
+    }
+}
+
+/// This computer's addresses of family `T`, in table order, if `domain` is
+/// one of the names of `local_host`; `None` otherwise. The address table is
+/// read when the stream is first polled.
+fn own_name_stream<T: HostAddress>(
+    local_host: Option<LocalHost>,
+    domain: &Domain,
+) -> Option<impl Stream<Item = Result<T, BoxError>> + Send + use<T>> {
+    let host =
+        local_host.filter(|host| is_computer_name(domain.as_str(), &host.computer_names()))?;
+    tracing::debug!(%domain, "dns::windows: own computer name, answered locally");
+    Some(
+        stream::once(async move { host.unicast_addresses() }).flat_map(|rows| {
+            let items: Vec<_> = match rows {
+                Ok(rows) => rows
+                    .iter()
+                    .filter(|row| row.answers_own_name())
+                    .filter_map(|row| T::from_ip(row.ip))
+                    .map(Ok)
+                    .collect(),
+                Err(err) => vec![Err(err)],
+            };
+            stream::iter(items)
+        }),
+    )
+}
+
+/// Whether `domain`, less one root dot, equals one of the non-empty `names`,
+/// ignoring ASCII case.
+fn is_computer_name(domain: &str, names: &[Box<str>]) -> bool {
+    let domain = domain.strip_suffix('.').unwrap_or(domain);
+    !domain.is_empty()
+        && names
+            .iter()
+            .any(|name| !name.is_empty() && name.eq_ignore_ascii_case(domain))
+}
+
+/// Where this computer's names and unicast addresses are read from.
+#[derive(Clone)]
+enum LocalHost {
+    System,
+    #[cfg(test)]
+    Fake(Arc<FakeLocalHost>),
+}
+
+impl LocalHost {
+    /// The non-empty DNS host, fully qualified DNS and NetBIOS names.
+    fn computer_names(&self) -> Arc<[Box<str>]> {
+        match self {
+            Self::System => local_host::cached_computer_names(),
+            #[cfg(test)]
+            Self::Fake(fake) => fake.names.clone(),
+        }
+    }
+
+    /// Every IPv4 and IPv6 row of the unicast address table, in table order.
+    fn unicast_addresses(&self) -> Result<Vec<UnicastAddress>, BoxError> {
+        match self {
+            Self::System => local_host::unicast_addresses(),
+            #[cfg(test)]
+            Self::Fake(fake) => Ok(fake.addresses.clone()),
+        }
+    }
+}
+
+/// One IPv4 or IPv6 row of the unicast address table.
+#[derive(Debug, Clone, Copy)]
+struct UnicastAddress {
+    ip: IpAddr,
+    skip_as_source: bool,
+    dad_state: ffi::NL_DAD_STATE,
+}
+
+impl UnicastAddress {
+    /// getaddrinfo answers a computer name with the addresses that are not
+    /// `SkipAsSource`; IPv6 link-local ones would need a scope id.
+    fn answers_own_name(&self) -> bool {
+        !self.skip_as_source
+            && self.dad_state == ffi::IpDadStatePreferred
+            && !self.ip.is_loopback()
+            && !matches!(self.ip, IpAddr::V6(ip) if ip.is_unicast_link_local())
+    }
+}
+
+#[cfg(test)]
+struct FakeLocalHost {
+    names: Arc<[Box<str>]>,
+    addresses: Vec<UnicastAddress>,
+}
 
 /// Parses the record list of a finished query, emitting each value of the
 /// parser's record type; an error discards the whole RRset.
@@ -1295,6 +1470,8 @@ enum FakeMode {
     DeferCancel,
     /// Answers synchronously with records.
     AnswerSync,
+    /// Answers synchronously with NXDOMAIN.
+    NameErrorSync,
     /// Invokes the callback with records inside `query`, then returns pending.
     AnswerInsideQuery,
     /// Pending; `cancel` first completes it with records, then reads the handle.
@@ -1323,6 +1500,7 @@ struct FakeDnsBackend {
     cancel_called: AtomicBool,
     callback_completed_during_cancel: AtomicBool,
     wait_loop_iterations: AtomicUsize,
+    queries: AtomicUsize,
     query_type: AtomicU16,
     callback_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
     /// Address of the cancel handle of the last pending query.
@@ -1351,6 +1529,7 @@ impl FakeDnsBackend {
             cancel_called: AtomicBool::new(false),
             callback_completed_during_cancel: AtomicBool::new(false),
             wait_loop_iterations: AtomicUsize::new(0),
+            queries: AtomicUsize::new(0),
             query_type: AtomicU16::new(0),
             callback_threads: Mutex::new(Vec::new()),
             query_cancel_handle: AtomicUsize::new(0),
@@ -1377,7 +1556,15 @@ impl FakeDnsBackend {
         // SAFETY: reference creation: the `DnsBackend::query` contract makes
         // `request` an aligned, initialized request that nothing writes.
         let request = unsafe { &*request };
+        self.queries.fetch_add(1, Ordering::SeqCst);
         self.query_type.store(request.QueryType, Ordering::SeqCst);
+
+        if self.mode == FakeMode::NameErrorSync {
+            // SAFETY: a place write: the contract makes `result` an aligned,
+            // writable result; a synchronous answer keeps no pointer to it.
+            unsafe { (*result).QueryStatus = ffi::DNS_ERROR_RCODE_NAME_ERROR };
+            return ffi::DNS_ERROR_RCODE_NAME_ERROR;
+        }
 
         if self.mode == FakeMode::AnswerSync {
             // SAFETY: a place write: the contract makes `result` an aligned,
@@ -1576,18 +1763,240 @@ impl fmt::Display for WindowsDnsResolverError {
 
 impl std::error::Error for WindowsDnsResolverError {}
 
+/// Reads this computer's names and unicast addresses from the OS.
+mod local_host {
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        ptr::{self, NonNull},
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
+    use parking_lot::Mutex;
+    use rama_core::{
+        error::{BoxError, BoxErrorExt as _, ErrorExt as _},
+        telemetry::tracing,
+    };
+
+    use super::{UnicastAddress, ffi};
+
+    /// The names a queried name is compared with.
+    const NAME_FORMATS: [ffi::COMPUTER_NAME_FORMAT; 3] = [
+        ffi::ComputerNameDnsHostname,
+        ffi::ComputerNameDnsFullyQualified,
+        ffi::ComputerNameNetBIOS,
+    ];
+
+    /// How long [`cached_computer_names`] reuses names: they change only at
+    /// restart (SetComputerNameExW docs), and a failed read is retried.
+    const NAMES_TTL: Duration = Duration::from_secs(5);
+
+    static NAMES: Mutex<Option<(Instant, Arc<[Box<str>]>)>> = Mutex::new(None);
+
+    /// [`computer_names`], read again once older than [`NAMES_TTL`].
+    pub(super) fn cached_computer_names() -> Arc<[Box<str>]> {
+        let mut cached = NAMES.lock();
+        if let Some((read_at, names)) = &*cached
+            && read_at.elapsed() < NAMES_TTL
+        {
+            return names.clone();
+        }
+        let names: Arc<[Box<str>]> = computer_names().into();
+        *cached = Some((Instant::now(), names.clone()));
+        names
+    }
+
+    /// The non-empty names of [`NAME_FORMATS`], in that order.
+    pub(super) fn computer_names() -> Vec<Box<str>> {
+        NAME_FORMATS.into_iter().filter_map(computer_name).collect()
+    }
+
+    /// The computer's name in `format`; `None` if empty or unreadable.
+    pub(super) fn computer_name(format: ffi::COMPUTER_NAME_FORMAT) -> Option<Box<str>> {
+        let mut size = 0_u32;
+        // SAFETY: with a null `lpBuffer`, `GetComputerNameExW` needs `nSize`
+        // to be zero ("If lpBuffer is NULL, this parameter must be zero") and
+        // writes the required size through it; `size` is a writable local.
+        let ok = unsafe { ffi::GetComputerNameExW(format, ptr::null_mut(), &raw mut size) };
+        if ok != 0 || size == 0 {
+            // nothing to copy: an empty name
+            return None;
+        }
+
+        let mut buffer = vec![0_u16; usize::try_from(size).ok()?];
+        let mut len = size;
+        // SAFETY: `GetComputerNameExW` writes at most `nSize` UTF-16 units,
+        // NUL included, to `lpBuffer`; `buffer` holds exactly `len` units and
+        // `len` is a writable local.
+        let ok = unsafe { ffi::GetComputerNameExW(format, buffer.as_mut_ptr(), &raw mut len) };
+        if ok == 0 {
+            tracing::debug!(
+                format,
+                error = %std::io::Error::last_os_error(),
+                "dns::windows: computer name unavailable",
+            );
+            return None;
+        }
+        // on success `nSize` is the units copied, NUL excluded
+        let name = buffer.get(..usize::try_from(len).ok()?)?;
+        (!name.is_empty()).then(|| String::from_utf16_lossy(name).into_boxed_str())
+    }
+
+    /// Every IPv4 and IPv6 row of the unicast address table, in table order.
+    pub(super) fn unicast_addresses() -> Result<Vec<UnicastAddress>, BoxError> {
+        let Some(table) = UnicastTable::read()? else {
+            return Ok(Vec::new());
+        };
+        // SAFETY: the `table_rows` contract is the field invariant of
+        // `UnicastTable`; `table` lives, unfreed, until the end of this call.
+        Ok(unsafe { table_rows(table.0.as_ptr()) })
+    }
+
+    /// A table from `GetUnicastIpAddressTable`, freed with `FreeMibTable` on
+    /// drop.
+    struct UnicastTable(
+        // Safety invariant: the table a `GetUnicastIpAddressTable` call that
+        // returned `NO_ERROR` wrote, owned by this value and not freed yet.
+        // Per the API docs it is a `NumEntries` count followed by that many
+        // initialized rows, which nothing else writes.
+        NonNull<ffi::MIB_UNICASTIPADDRESS_TABLE>,
+    );
+
+    impl UnicastTable {
+        /// The current table; `None` if the computer has no unicast address.
+        fn read() -> Result<Option<Self>, BoxError> {
+            let mut table = ptr::null_mut();
+            // SAFETY: `GetUnicastIpAddressTable` needs a supported family
+            // (`AF_UNSPEC` is one) and a writable table pointer, here a local.
+            let status = unsafe { ffi::GetUnicastIpAddressTable(ffi::AF_UNSPEC, &raw mut table) };
+            match status {
+                // field invariant of `UnicastTable`: a `NO_ERROR` table, owned here
+                ffi::NO_ERROR => NonNull::new(table).map(Self).map(Some).ok_or_else(|| {
+                    BoxError::from_static_str("GetUnicastIpAddressTable returned no table")
+                }),
+                ffi::ERROR_NOT_FOUND => Ok(None),
+                status => Err(BoxError::from_static_str("GetUnicastIpAddressTable failed")
+                    .context_field("status", status)),
+            }
+        }
+    }
+
+    impl Drop for UnicastTable {
+        fn drop(&mut self) {
+            // SAFETY: `FreeMibTable` frees the buffer `GetUnicastIpAddressTable`
+            // returned (both API docs); the field invariant makes this pointer
+            // that buffer, unfreed, and this drop runs once.
+            unsafe { ffi::FreeMibTable(self.0.as_ptr().cast_const().cast()) };
+        }
+    }
+
+    /// The IPv4 and IPv6 rows of a unicast address table, in table order.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `table` is aligned and points to a
+    /// `NumEntries` count followed by that many `MIB_UNICASTIPADDRESS_ROW`s
+    /// laid out as the `Table` array of [`ffi::MIB_UNICASTIPADDRESS_TABLE`],
+    /// all within one allocation, initialized, readable and not written
+    /// during the call.
+    pub(super) unsafe fn table_rows(
+        table: *const ffi::MIB_UNICASTIPADDRESS_TABLE,
+    ) -> Vec<UnicastAddress> {
+        // SAFETY: a place read of `NumEntries` of the aligned, initialized
+        // table (this function's contract). No reference is made.
+        let count = unsafe { (*table).NumEntries };
+        // SAFETY: a field projection within the live table (this function's
+        // contract); the raw pointer keeps the provenance of `table`.
+        let rows = unsafe { &raw const (*table).Table }.cast::<ffi::MIB_UNICASTIPADDRESS_ROW>();
+        (0..count)
+            .filter_map(|idx| {
+                // `idx < NumEntries`: the row lies in the table
+                let row = rows.wrapping_add(idx as usize);
+                // SAFETY: the `unicast_address` contract: row `idx` is one of
+                // the table's `NumEntries` initialized rows, aligned as an
+                // array element and not written (this function's contract).
+                unsafe { unicast_address(row) }
+            })
+            .collect()
+    }
+
+    /// The address, `SkipAsSource` and DAD state of `row`; `None` for a
+    /// family other than IPv4 and IPv6.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `row` is aligned and points to an
+    /// initialized, readable `MIB_UNICASTIPADDRESS_ROW` that nothing writes
+    /// during the call.
+    unsafe fn unicast_address(row: *const ffi::MIB_UNICASTIPADDRESS_ROW) -> Option<UnicastAddress> {
+        // SAFETY: a field projection within the live row (this function's
+        // contract). No reference is made.
+        let address = unsafe { &raw const (*row).Address };
+        // SAFETY: `ptr::read` of an aligned, initialized `SOCKADDR_INET`
+        // (this function's contract); a union has no validity requirement.
+        let address = unsafe { address.read() };
+        // SAFETY: a union field read: every member starts with the family,
+        // and any initialized `u16` is valid.
+        let family = unsafe { address.si_family };
+        let ip = match family {
+            ffi::AF_INET => {
+                // SAFETY: a union field read: the family says the union holds
+                // a `SOCKADDR_IN`, whose integer fields are initialized.
+                let v4 = unsafe { address.Ipv4 };
+                // SAFETY: a union field read of the 4 initialized address
+                // bytes; any of them form a valid `u32`.
+                let raw = unsafe { v4.sin_addr.S_un.S_addr };
+                // `S_addr` holds the address in network order
+                IpAddr::V4(Ipv4Addr::from(raw.to_ne_bytes()))
+            }
+            ffi::AF_INET6 => {
+                // SAFETY: a union field read: the family says the union holds
+                // a `SOCKADDR_IN6`, whose integer fields are initialized.
+                let v6 = unsafe { address.Ipv6 };
+                // SAFETY: a union field read of the 16 initialized address
+                // bytes; any of them form a valid `[u8; 16]`.
+                IpAddr::V6(Ipv6Addr::from(unsafe { v6.sin6_addr.u.Byte }))
+            }
+            _ => return None,
+        };
+        // SAFETY: a field projection within the live row, as above.
+        let skip_as_source = unsafe { &raw const (*row).SkipAsSource }.cast::<u8>();
+        // SAFETY: `ptr::read` of one initialized byte of the row. The C type
+        // is `BOOLEAN`, a `UCHAR`: read it as `u8` rather than assume the
+        // `bool` windows-sys declares holds 0 or 1.
+        let skip_as_source = unsafe { skip_as_source.read() } != 0;
+        // SAFETY: a place read of the `DadState` integer of the aligned,
+        // initialized row. No reference is made.
+        let dad_state = unsafe { (*row).DadState };
+        Some(UnicastAddress {
+            ip,
+            skip_as_source,
+            dad_state,
+        })
+    }
+}
+
 mod ffi {
     // Official docs index for DNS structures and functions:
     // <https://learn.microsoft.com/en-us/windows/win32/dns/dns-structures>
     // <https://learn.microsoft.com/en-us/windows/win32/api/windns/>
 
     pub(super) use windows_sys::Win32::{
-        Foundation::{DNS_INFO_NO_RECORDS, DNS_REQUEST_PENDING},
+        Foundation::{DNS_INFO_NO_RECORDS, DNS_REQUEST_PENDING, ERROR_NOT_FOUND, NO_ERROR},
         NetworkManagement::Dns::{
             DNS_QUERY_CANCEL, DNS_QUERY_REQUEST, DNS_QUERY_REQUEST_VERSION1, DNS_QUERY_RESULT,
             DNS_QUERY_RESULTS_VERSION1, DNS_QUERY_STANDARD, DNS_RECORDA, DNS_TYPE_A, DNS_TYPE_AAAA,
             DNS_TYPE_CNAME, DNS_TYPE_TEXT, DNSREC_ANSWER, DNSREC_QUESTION, DNSREC_SECTION,
             DnsCancelQuery, DnsFree, DnsFreeRecordList, DnsQueryEx,
+        },
+        NetworkManagement::IpHelper::{
+            FreeMibTable, GetUnicastIpAddressTable, MIB_UNICASTIPADDRESS_ROW,
+            MIB_UNICASTIPADDRESS_TABLE,
+        },
+        Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, IpDadStatePreferred, NL_DAD_STATE},
+        System::SystemInformation::{
+            COMPUTER_NAME_FORMAT, ComputerNameDnsFullyQualified, ComputerNameDnsHostname,
+            ComputerNameNetBIOS, GetComputerNameExW,
         },
     };
 
@@ -1782,12 +2191,20 @@ mod tests {
     };
     use std::{
         assert_matches,
+        collections::BTreeSet,
+        net::ToSocketAddrs as _,
         pin::pin,
         sync::atomic::AtomicUsize,
         task::{Context, Poll, Waker},
         time::{SystemTime, UNIX_EPOCH},
     };
-    use windows_sys::Win32::NetworkManagement::Dns::{DNSREC_ADDITIONAL, DNSREC_AUTHORITY};
+    use windows_sys::Win32::{
+        NetworkManagement::Dns::{DNSREC_ADDITIONAL, DNSREC_AUTHORITY},
+        Networking::WinSock::{
+            IN_ADDR, IN_ADDR_0, IN6_ADDR, IN6_ADDR_0, IpDadStateDeprecated, IpDadStateTentative,
+            SOCKADDR_IN, SOCKADDR_IN6,
+        },
+    };
 
     use crate::wire::SvcParam;
 
@@ -3084,5 +3501,367 @@ mod tests {
         })
         .await;
         assert!(completed.is_ok(), "timed-out lookup hung");
+    }
+
+    fn unicast(ip: &str, skip_as_source: bool, dad_state: ffi::NL_DAD_STATE) -> UnicastAddress {
+        UnicastAddress {
+            ip: ip.parse().expect("ip"),
+            skip_as_source,
+            dad_state,
+        }
+    }
+
+    /// Two usable IPv4 addresses, one usable IPv6 address, and one row for
+    /// each filter.
+    fn fake_host() -> LocalHost {
+        let preferred = ffi::IpDadStatePreferred;
+        LocalHost::Fake(Arc::new(FakeLocalHost {
+            names: [
+                "DESKTOP-RAMA".into(),
+                "desktop-rama.corp.example".into(),
+                "DESKTOP-RAMA".into(),
+            ]
+            .into(),
+            addresses: vec![
+                unicast("192.0.2.10", false, preferred),
+                unicast("2001:db8::10", false, preferred),
+                unicast("192.0.2.11", true, preferred),
+                unicast("2001:db8::11", true, preferred),
+                unicast("192.0.2.12", false, IpDadStateTentative),
+                unicast("2001:db8::12", false, IpDadStateDeprecated),
+                unicast("127.0.0.1", false, preferred),
+                unicast("::1", false, preferred),
+                unicast("fe80::1", false, preferred),
+                unicast("192.0.2.20", false, preferred),
+            ],
+        }))
+    }
+
+    async fn own_name_lookup<T: HostAddress>(
+        name: &str,
+        local_host: Option<LocalHost>,
+        fake: &Arc<FakeDnsBackend>,
+    ) -> Vec<Result<T, BoxError>> {
+        WindowsDnsResolver::new()
+            .address_lookup_on(
+                Domain::try_from(name.to_owned()).expect("domain"),
+                local_host,
+                DnsBackend::Fake(fake.clone()),
+            )
+            .collect()
+            .await
+    }
+
+    fn addrs<T>(items: Vec<Result<T, BoxError>>) -> Vec<T> {
+        items
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .expect("no error items")
+    }
+
+    #[tokio::test]
+    async fn own_name_is_answered_without_querying_dns() {
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::AnswerSync));
+        for name in [
+            "DESKTOP-RAMA",
+            "desktop-rama",
+            "Desktop-Rama.",
+            "desktop-rama.corp.example",
+            "DESKTOP-RAMA.CORP.EXAMPLE.",
+        ] {
+            let v4 = addrs(own_name_lookup::<Ipv4Addr>(name, Some(fake_host()), &fake).await);
+            assert_eq!(
+                v4,
+                [Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(192, 0, 2, 20)],
+                "{name}"
+            );
+            let v6 = addrs(own_name_lookup::<Ipv6Addr>(name, Some(fake_host()), &fake).await);
+            assert_eq!(v6, ["2001:db8::10".parse::<Ipv6Addr>().unwrap()], "{name}");
+        }
+        assert_eq!(fake.queries.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn own_name_without_addresses_of_the_family_is_empty() {
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::AnswerSync));
+        let host = LocalHost::Fake(Arc::new(FakeLocalHost {
+            names: ["desktop-rama".into()].into(),
+            addresses: vec![unicast("192.0.2.10", false, ffi::IpDadStatePreferred)],
+        }));
+        assert!(
+            own_name_lookup::<Ipv6Addr>("desktop-rama", Some(host), &fake)
+                .await
+                .is_empty()
+        );
+        assert_eq!(fake.queries.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn own_name_answer_takes_no_query_slot() {
+        let resolver = WindowsDnsResolver::new().with_max_concurrency(1);
+        let gate = Arc::new(Notify::new());
+        let mut held =
+            pin!(resolver.coalesced(uncached("held"), ffi::DNS_TYPE_A, gated_lookup(&gate)));
+        let mut cx = Context::from_waker(Waker::noop());
+        // the held lookup takes the only slot and waits on its gate
+        assert!(held.as_mut().poll_next(&mut cx).is_pending());
+
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::AnswerSync));
+        let lookup = |name| {
+            resolver.address_lookup_on::<Ipv4Addr>(
+                Domain::from_static(name),
+                Some(fake_host()),
+                DnsBackend::Fake(fake.clone()),
+            )
+        };
+        let mut queued = pin!(lookup("desktop-rama2"));
+        assert!(queued.as_mut().poll_next(&mut cx).is_pending());
+        let v4 = collect_without_waiting(lookup("desktop-rama"));
+        assert_eq!(
+            addrs(v4),
+            [Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(192, 0, 2, 20)]
+        );
+        assert_eq!(fake.queries.load(Ordering::SeqCst), 0);
+
+        gate.notify_waiters();
+        assert_matches!(held.next().await, Some(Ok(_)));
+        assert_eq!(held.next().await.map(|_| ()), None);
+        assert_answer(&queued.collect::<Vec<_>>().await);
+    }
+
+    #[tokio::test]
+    async fn other_names_are_sent_to_dns() {
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::AnswerSync));
+        let names = [
+            "desktop-rama2",
+            "desktop",
+            "desktop-rama.corp",
+            "rama.corp.example",
+        ];
+        for name in names {
+            assert_answer(&own_name_lookup::<Ipv4Addr>(name, Some(fake_host()), &fake).await);
+        }
+        assert_eq!(fake.queries.load(Ordering::SeqCst), names.len());
+        assert!(fake.live_lists.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dns_only_sends_the_own_name_to_dns() {
+        let fake = Arc::new(FakeDnsBackend::with_mode(FakeMode::NameErrorSync));
+        assert!(
+            own_name_lookup::<Ipv4Addr>("DESKTOP-RAMA", None, &fake)
+                .await
+                .is_empty()
+        );
+        assert!(
+            own_name_lookup::<Ipv6Addr>("DESKTOP-RAMA", None, &fake)
+                .await
+                .is_empty()
+        );
+        assert_eq!(fake.queries.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn local_hostname_setting_defaults_on_and_splits_sharing() {
+        let resolver = WindowsDnsResolver::new();
+        assert!(resolver.local_hostname());
+        let dns_only = resolver.clone().with_local_hostname(false);
+        assert!(!dns_only.local_hostname());
+        assert!(!dns_only.in_flight.shares_with(&resolver.in_flight));
+    }
+
+    #[test]
+    fn computer_name_match_ignores_case_and_one_root_dot() {
+        let names: [Box<str>; 2] = ["".into(), "Desktop-Rama".into()];
+        assert!(is_computer_name("desktop-rama", &names));
+        assert!(is_computer_name("DESKTOP-RAMA.", &names));
+        assert!(!is_computer_name("desktop-rama..", &names));
+        assert!(!is_computer_name(".", &names));
+        assert!(!is_computer_name("", &names));
+        assert!(!is_computer_name("desktop-ram", &names));
+    }
+
+    /// A unicast address table as `GetUnicastIpAddressTable` lays it out.
+    #[repr(C)]
+    struct TestUnicastTable<const N: usize> {
+        num_entries: u32,
+        table: [ffi::MIB_UNICASTIPADDRESS_ROW; N],
+    }
+
+    fn table_row(
+        ip: &str,
+        skip_as_source: bool,
+        dad_state: ffi::NL_DAD_STATE,
+    ) -> ffi::MIB_UNICASTIPADDRESS_ROW {
+        let mut row = ffi::MIB_UNICASTIPADDRESS_ROW::default();
+        match ip.parse().expect("ip") {
+            IpAddr::V4(ip) => {
+                row.Address.Ipv4 = SOCKADDR_IN {
+                    sin_family: ffi::AF_INET,
+                    sin_addr: IN_ADDR {
+                        S_un: IN_ADDR_0 {
+                            S_addr: u32::from_ne_bytes(ip.octets()),
+                        },
+                    },
+                    ..Default::default()
+                }
+            }
+            IpAddr::V6(ip) => {
+                row.Address.Ipv6 = SOCKADDR_IN6 {
+                    sin6_family: ffi::AF_INET6,
+                    sin6_addr: IN6_ADDR {
+                        u: IN6_ADDR_0 { Byte: ip.octets() },
+                    },
+                    ..Default::default()
+                }
+            }
+        }
+        row.SkipAsSource = skip_as_source;
+        row.DadState = dad_state;
+        row
+    }
+
+    #[test]
+    fn unicast_table_rows_are_read_in_order_and_filtered() {
+        let preferred = ffi::IpDadStatePreferred;
+        let table = TestUnicastTable::<9> {
+            num_entries: 9,
+            table: [
+                table_row("192.0.2.10", false, preferred),
+                // an unknown family is skipped
+                ffi::MIB_UNICASTIPADDRESS_ROW::default(),
+                table_row("2001:db8::10", false, preferred),
+                table_row("192.0.2.11", true, preferred),
+                table_row("192.0.2.12", false, IpDadStateTentative),
+                table_row("127.0.0.1", false, preferred),
+                table_row("fe80::1", false, preferred),
+                table_row("::1", false, preferred),
+                table_row("2001:db8::12", false, IpDadStateDeprecated),
+            ],
+        };
+        assert_eq!(
+            std::mem::offset_of!(TestUnicastTable<9>, table),
+            std::mem::offset_of!(ffi::MIB_UNICASTIPADDRESS_TABLE, Table),
+        );
+
+        // SAFETY: the `table_rows` contract: `table` is a live, aligned local
+        // laid out as the SDK table (offset checked above) with `num_entries`
+        // initialized rows, and nothing writes it during the call.
+        let rows = unsafe { local_host::table_rows((&raw const table).cast()) };
+        let ips: Vec<String> = rows.iter().map(|row| row.ip.to_string()).collect();
+        assert_eq!(
+            ips,
+            [
+                "192.0.2.10",
+                "2001:db8::10",
+                "192.0.2.11",
+                "192.0.2.12",
+                "127.0.0.1",
+                "fe80::1",
+                "::1",
+                "2001:db8::12",
+            ]
+        );
+        assert!(rows[2].skip_as_source && !rows[0].skip_as_source);
+        assert_eq!(rows[3].dad_state, IpDadStateTentative);
+
+        let answered: Vec<IpAddr> = rows
+            .iter()
+            .filter(|row| row.answers_own_name())
+            .map(|row| row.ip)
+            .collect();
+        assert_eq!(
+            answered,
+            [
+                IpAddr::from(Ipv4Addr::new(192, 0, 2, 10)),
+                "2001:db8::10".parse::<IpAddr>().unwrap(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore = "reads the computer name and addresses from the OS")]
+    async fn own_host_name_resolves_like_getaddrinfo() {
+        let name = local_host::computer_name(ffi::ComputerNameDnsHostname).expect("host name");
+        // getaddrinfo answers no-longer-preferred rows too; this resolver does not
+        let not_preferred: BTreeSet<IpAddr> = local_host::unicast_addresses()
+            .expect("unicast table")
+            .into_iter()
+            .filter(|row| row.dad_state != ffi::IpDadStatePreferred)
+            .map(|row| row.ip)
+            .collect();
+        let expected: BTreeSet<IpAddr> = (name.as_ref(), 0)
+            .to_socket_addrs()
+            .expect("getaddrinfo")
+            .map(|addr| addr.ip())
+            .filter(|ip| {
+                !ip.is_loopback()
+                    && !matches!(ip, IpAddr::V6(ip) if ip.is_unicast_link_local())
+                    && !not_preferred.contains(ip)
+            })
+            .collect();
+        assert!(
+            !expected.is_empty(),
+            "getaddrinfo has no address for {name}"
+        );
+
+        let resolver = WindowsDnsResolver::new();
+        for name in [name.to_ascii_uppercase(), name.to_ascii_lowercase()] {
+            let domain = Domain::try_from(name.clone()).expect("domain");
+            let v4: Vec<_> = resolver.lookup_ipv4(domain.clone()).collect().await;
+            let v6: Vec<_> = resolver.lookup_ipv6(domain).collect().await;
+            let resolved: BTreeSet<IpAddr> = v4
+                .into_iter()
+                .map(|item| item.map(IpAddr::from))
+                .chain(v6.into_iter().map(|item| item.map(IpAddr::from)))
+                .collect::<Result<_, _>>()
+                .expect("own-name lookup");
+            assert_eq!(resolved, expected, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore = "queries the DNS Client service")]
+    async fn unknown_single_label_name_is_empty_before_the_timeout() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let domain = Domain::try_from(format!("rama-{nonce:x}")).expect("domain");
+        let started = std::time::Instant::now();
+        let addrs: Vec<_> = WindowsDnsResolver::new()
+            .lookup_ipv4(domain)
+            .collect()
+            .await;
+        let elapsed = started.elapsed();
+        // DnsQueryEx waits about 1.3s for LLMNR and mDNS before its NXDOMAIN
+        assert!(elapsed < DEFAULT_TIMEOUT, "took {elapsed:?}");
+        assert!(addrs.is_empty(), "{addrs:?}");
+    }
+
+    #[test]
+    #[ignore = "micro-benchmark: cargo test -p rama-dns --lib computer_name_check_cost -- --ignored --nocapture"]
+    fn computer_name_check_cost() {
+        const ITERATIONS: u32 = 10_000;
+        let mut matched = 0_usize;
+        let started = std::time::Instant::now();
+        for _ in 0..ITERATIONS {
+            let names = std::hint::black_box(local_host::computer_names());
+            matched += usize::from(is_computer_name("rama-not-this-host", &names));
+        }
+        let uncached = started.elapsed() / ITERATIONS;
+        let host = LocalHost::System;
+        let started = std::time::Instant::now();
+        for _ in 0..ITERATIONS {
+            let names = std::hint::black_box(host.computer_names());
+            matched += usize::from(is_computer_name("rama-not-this-host", &names));
+        }
+        let cached = started.elapsed() / ITERATIONS;
+        eprintln!(
+            "own-name check over {ITERATIONS} runs: {} ns/op reading 3 names (6 GetComputerNameExW calls), {} ns/op cached",
+            uncached.as_nanos(),
+            cached.as_nanos(),
+        );
+        assert_eq!(matched, 0);
     }
 }
