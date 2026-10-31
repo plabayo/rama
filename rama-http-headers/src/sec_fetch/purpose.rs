@@ -8,7 +8,7 @@ use rama_http_types::{
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 rama_utils::macros::enums::enum_builder! {
-    /// The purpose token that opens a [`SecPurpose`] header.
+    /// The purpose token of a [`SecPurpose`] header.
     ///
     /// # Example values
     ///
@@ -24,8 +24,8 @@ rama_utils::macros::enums::enum_builder! {
 /// The `Sec-Purpose` [request header][mdn].
 ///
 /// Sent by browsers on a speculative request: something fetched before the
-/// user asked for it. The header is a Structured Field List (RFC 9651) whose
-/// first member is the token `prefetch`, optionally with parameters:
+/// user asked for it. The header is a Structured Field List (RFC 9651) with
+/// a member that is the token `prefetch`, optionally with parameters:
 ///
 /// * `prefetch`: `<link rel=prefetch>` or a speculation-rules prefetch.
 /// * `prefetch;prerender`: a speculation-rules prerender, or one the browser
@@ -33,10 +33,11 @@ rama_utils::macros::enums::enum_builder! {
 /// * `prefetch;anonymous-client-ip`: a prefetch sent through a private
 ///   prefetch proxy, hiding the client's IP address.
 ///
-/// Unknown parameters are ignored and an unknown first token is kept as
-/// [`SecPurposeKind::Unknown`]. Several field lines combine into one List,
-/// of which only the first member is read; a first member that is not a
-/// token, or no member at all, is invalid.
+/// A parameter is set by any value but `?0`, and unknown parameters are
+/// ignored. Several field lines combine into one List. The first `prefetch`
+/// member is read, wherever it is; without one, a first member that is
+/// another token (`prefetch` matches case-sensitively) is kept as
+/// [`SecPurposeKind::Unknown`], and anything else is invalid.
 ///
 /// The legacy spellings `Purpose: prefetch`, `X-Purpose: preview` (Safari)
 /// and `X-Moz: prefetch` (older Firefox) are separate headers this type does
@@ -141,28 +142,45 @@ impl SecPurpose {
 
     /// Decode a complete Structured Field List.
     fn parse(input: &[u8]) -> Result<Self, Error> {
-        let mut purpose: Option<Self> = None;
+        /// The member the parameters being reported belong to.
+        enum Target {
+            Prefetch,
+            First,
+            Other,
+        }
+
+        // The first `prefetch` member, wherever it is in the List.
+        let mut prefetch: Option<Self> = None;
+        // The first member, when it is a token other than `prefetch`.
+        let mut first: Option<Self> = None;
         let mut seen_member = false;
-        // Whether the parameters being reported belong to the first member.
-        let mut in_first = false;
-        let mut invalid = false;
+        let mut target = Target::Other;
         parse_list(input, |event| match event {
             ListEvent::Member(member) => {
-                in_first = !seen_member;
+                let is_first = !seen_member;
                 seen_member = true;
-                if in_first {
-                    match member {
-                        ListMember::Item(BareItem::Token(token)) => {
-                            purpose = Some(Self::new(token.into()));
-                        }
-                        _ => invalid = true,
+                target = match member {
+                    // Tokens are case-sensitive: `PREFETCH` is another token.
+                    ListMember::Item(BareItem::Token("prefetch")) if prefetch.is_none() => {
+                        prefetch = Some(Self::prefetch());
+                        Target::Prefetch
                     }
-                }
+                    ListMember::Item(BareItem::Token(token)) if is_first => {
+                        first = Some(Self::new(SecPurposeKind::Unknown(token.into())));
+                        Target::First
+                    }
+                    _ => Target::Other,
+                };
             }
             ListEvent::Parameter { key, value } => {
-                if in_first && let Some(purpose) = purpose.as_mut() {
-                    // Parameters are a map: a repeated key overrides the earlier one.
-                    let set = value == BareItem::Boolean(true);
+                let purpose = match target {
+                    Target::Prefetch => prefetch.as_mut(),
+                    Target::First => first.as_mut(),
+                    Target::Other => None,
+                };
+                if let Some(purpose) = purpose {
+                    // Any value but `?0` sets a flag; a repeated key overrides the earlier one.
+                    let set = value != BareItem::Boolean(false);
                     match key {
                         "prerender" => purpose.prerender = set,
                         "anonymous-client-ip" => purpose.anonymous_client_ip = set,
@@ -172,10 +190,7 @@ impl SecPurpose {
             }
         })
         .map_err(|_error| Error::invalid())?;
-        if invalid {
-            return Err(Error::invalid());
-        }
-        purpose.ok_or_else(Error::invalid)
+        prefetch.or(first).ok_or_else(Error::invalid)
     }
 }
 
@@ -190,12 +205,16 @@ impl HeaderDecode for SecPurpose {
     where
         I: Iterator<Item = &'i HeaderValue>,
     {
-        // A List: several field lines combine into one (RFC 9651 §4.2).
-        let mut combined = Vec::new();
-        for value in values {
-            if !combined.is_empty() {
-                combined.extend_from_slice(b", ");
-            }
+        // A List: every field line combines into one, empty ones included (RFC 9651 §4.2).
+        let Some(first) = values.next() else {
+            return Err(Error::invalid());
+        };
+        let Some(second) = values.next() else {
+            return Self::parse(first.as_bytes());
+        };
+        let mut combined = first.as_bytes().to_vec();
+        for value in std::iter::once(second).chain(values) {
+            combined.extend_from_slice(b", ");
             combined.extend_from_slice(value.as_bytes());
         }
         Self::parse(&combined)
@@ -303,12 +322,19 @@ mod tests {
             decode("prefetch;anonymous-client-ip;prerender"),
             Some(SecPurpose::prerender().with_anonymous_client_ip(true))
         );
-        // Only `?1` sets a flag; the last repetition of a key wins.
+        // Any value but `?0` sets a flag; the last repetition of a key wins.
         assert_eq!(
             decode("prefetch;prerender=?0"),
             Some(SecPurpose::prefetch())
         );
-        assert_eq!(decode("prefetch;prerender=1"), Some(SecPurpose::prefetch()));
+        assert_eq!(
+            decode("prefetch;prerender=1;anonymous-client-ip=x"),
+            Some(SecPurpose::prerender().with_anonymous_client_ip(true))
+        );
+        assert_eq!(
+            decode("prefetch;prerender=0;anonymous-client-ip=\"?0\""),
+            Some(SecPurpose::prerender().with_anonymous_client_ip(true))
+        );
         assert_eq!(
             decode("prefetch;prerender;prerender=?0"),
             Some(SecPurpose::prefetch())
@@ -335,26 +361,75 @@ mod tests {
     }
 
     #[test]
-    fn only_the_first_member_counts() {
+    fn the_first_prefetch_member_counts() {
+        let decode = |lines: &[&str]| test_decode::<SecPurpose>(lines);
         assert_eq!(
-            test_decode::<SecPurpose>(&["prefetch;prerender, prefetch;anonymous-client-ip"]),
+            decode(&["prefetch;prerender, prefetch;anonymous-client-ip"]),
             Some(SecPurpose::prerender())
         );
         // Lines combine as a List, so the first line wins.
         assert_eq!(
-            test_decode::<SecPurpose>(&["prefetch", "prefetch;prerender"]),
+            decode(&["prefetch", "prefetch;prerender"]),
             Some(SecPurpose::prefetch())
         );
         assert_eq!(
-            test_decode::<SecPurpose>(&["prefetch;prerender", "prefetch"]),
+            decode(&["prefetch;prerender", "prefetch"]),
             Some(SecPurpose::prerender())
         );
-        // Later members must still be valid List syntax.
-        assert_eq!(test_decode::<SecPurpose>(&["prefetch", "\"x"]), None);
+        // A `prefetch` member need not be first; other members' parameters are not its own.
+        for lines in [
+            &["preview;anonymous-client-ip, prefetch;prerender"][..],
+            &["(a b);prerender=?0, prefetch;prerender"],
+            &["1, prefetch;prerender"],
+            &["preview", "prefetch;prerender"],
+        ] {
+            assert_eq!(decode(lines), Some(SecPurpose::prerender()), "{lines:?}");
+        }
+        // Without one, a leading token is kept, with its own parameters.
         assert_eq!(
-            test_decode::<SecPurpose>(&["prefetch", "(a b);x=1"]),
+            decode(&["preview;prerender, other;anonymous-client-ip"]),
+            Some(SecPurpose::new(SecPurposeKind::Unknown("preview".into())).with_prerender(true))
+        );
+        // Later members must still be valid List syntax.
+        assert_eq!(decode(&["prefetch", "\"x"]), None);
+        assert_eq!(
+            decode(&["prefetch", "(a b);x=1"]),
             Some(SecPurpose::prefetch())
         );
+    }
+
+    #[test]
+    fn prefetch_matches_case_sensitively() {
+        for raw in ["PREFETCH;prerender", "Prefetch;prerender"] {
+            let purpose = test_decode::<SecPurpose>(&[raw]).unwrap();
+            assert_eq!(purpose.kind(), &SecPurposeKind::Unknown(raw[..8].into()));
+            assert!(!purpose.is_prefetch());
+            assert!(purpose.is_prerender());
+            assert_eq!(test_encode(purpose)["sec-purpose"], raw);
+        }
+        // An exact `prefetch` later in the List still counts.
+        assert_eq!(
+            test_decode::<SecPurpose>(&["PREFETCH, prefetch"]),
+            Some(SecPurpose::prefetch())
+        );
+    }
+
+    #[test]
+    fn lines_combine_like_their_joined_value() {
+        for lines in [
+            &["prefetch", "prefetch;prerender"][..],
+            &["preview", "prefetch"],
+            &["", "prefetch"],
+            &[" ", "prefetch"],
+            &["prefetch", ""],
+            &["prefetch", "", "prefetch"],
+        ] {
+            assert_eq!(
+                test_decode::<SecPurpose>(lines),
+                test_decode::<SecPurpose>(&[&lines.join(", ")]),
+                "{lines:?}"
+            );
+        }
     }
 
     #[test]
@@ -378,13 +453,14 @@ mod tests {
             assert_eq!(test_decode::<SecPurpose>(&[raw]), None, "{raw:?}");
             assert!(raw.parse::<SecPurpose>().is_err(), "{raw:?}");
         }
-        // A non-token first member is invalid even before a valid one.
-        assert_eq!(test_decode::<SecPurpose>(&["1", "prefetch"]), None);
-        // An empty line is an empty List, adding no member.
-        assert_eq!(
-            test_decode::<SecPurpose>(&["", "prefetch"]),
-            Some(SecPurpose::prefetch())
-        );
+        // Without a `prefetch` member, a first member that is not a token is invalid.
+        for lines in [&["1", "preview"][..], &["(preview)", "preview"]] {
+            assert_eq!(test_decode::<SecPurpose>(lines), None, "{lines:?}");
+        }
+        // Combining an empty line leaves a stray comma: not a List.
+        for lines in [&["", "prefetch"][..], &["prefetch", ""], &[" ", "prefetch"]] {
+            assert_eq!(test_decode::<SecPurpose>(lines), None, "{lines:?}");
+        }
     }
 
     #[test]
