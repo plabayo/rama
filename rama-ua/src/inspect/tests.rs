@@ -94,6 +94,31 @@ fn profile_export_does_not_guess_an_unobserved_request_initiator() {
 }
 
 #[test]
+fn x_requested_with_marks_only_xml_http_request_as_xhr() {
+    let request = |value: &'static str| {
+        Request::builder()
+            .uri("https://example.test/api")
+            .header("x-requested-with", value)
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0
+    };
+    for value in ["XMLHttpRequest", "xmlhttprequest"] {
+        assert_eq!(
+            captured_request_initiator(&request(value), false),
+            Some(RequestInitiator::Xhr),
+            "{value}"
+        );
+    }
+    // Android WebView sends the app's package name: not an XHR.
+    assert_eq!(
+        captured_request_initiator(&request("com.example.app"), false),
+        None
+    );
+}
+
+#[test]
 fn speculative_navigation_is_not_the_navigation_profile() {
     let navigation = |purpose: Option<&str>| {
         let mut request = Request::builder()

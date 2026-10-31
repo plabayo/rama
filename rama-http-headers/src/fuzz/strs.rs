@@ -19,7 +19,7 @@ use crate::{
     PermissionsPolicyDirectiveName, Referer, SecFetchDest, SecFetchMode, SecFetchSite, SecPurpose,
     SecPurposeKind, SecWebSocketExtensions, SecWebSocketProtocol, Server, SourceExpression,
     SourceList, Te, TeDirective, TransferEncoding, TransferEncodingDirective, UserAgent,
-    XRobotsTag,
+    XRequestedWith, XRobotsTag,
     exotic::XClacksOverhead,
     fuzz::{
         StrExercise,
@@ -237,6 +237,7 @@ pub(super) const STRS: &[StrExercise] = &[
     enum_str!(SecFetchDest, |dest| dest),
     enum_str!(SecFetchMode, |mode| mode),
     enum_str!(SecFetchSite, |site| site),
+    enum_str!(XRequestedWith, |value| value),
     enum_str!(SecPurposeKind, |kind| SecPurpose::new(kind)
         .with_prerender(true)),
     ("SecPurpose::from_str", |s: &str| {

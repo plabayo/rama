@@ -14,7 +14,7 @@ use crate::{
     CapsuleProtocol, Connection, Date, HeaderDecode, HeaderEncode, Host, Location, Origin,
     ProxyAuthorization, SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUser, SecPurpose,
     SecWebSocketAccept, SecWebSocketExtensions, SecWebSocketKey, SecWebSocketProtocol,
-    SecWebSocketVersion, Upgrade, Vary,
+    SecWebSocketVersion, Upgrade, Vary, XRequestedWith,
 };
 
 fn values(lines: &[&str]) -> Vec<HeaderValue> {
@@ -55,6 +55,7 @@ fn singleton_fields_refuse_a_second_line() {
         SecWebSocketKey => "dGhlIHNhbXBsZSBub25jZQ==", "AQIDBAUGBwgJCgsMDQ4PEA==",
         SecWebSocketAccept => "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
         SecWebSocketVersion => "13", "13",
+        XRequestedWith => "XMLHttpRequest", "XMLHttpRequest",
         AltUsed => "example.com", "example.net",
         CapsuleProtocol => "?1", "?0",
         Date => "Sun, 06 Nov 1994 08:49:37 GMT", "Mon, 07 Nov 1994 08:49:37 GMT",

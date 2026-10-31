@@ -186,6 +186,7 @@ pub use self::name::{
     X_FORWARDED_PROTO,
     X_ROBOTS_TAG,
     X_CLACKS_OVERHEAD,
+    X_REQUESTED_WITH,
     SEC_GPC,
     SEC_FETCH_SITE,
     SEC_FETCH_DEST,
