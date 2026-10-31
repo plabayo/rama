@@ -208,8 +208,11 @@ pub(super) async fn get_report(
     StateParam(mut state): StateParam<State>,
     parts: Parts,
 ) -> Result<Response, ErrorResponse> {
-    // Script navigation is a protocol probe, not the user-activated navigation sample.
-    if super::storage::is_protocol_probe(&parts.uri) {
+    // Script navigation is a protocol probe and a prefetch or prerender is
+    // speculative: neither is the user-activated navigation sample.
+    if super::storage::is_protocol_probe(&parts.uri)
+        || super::storage::is_speculative(&parts.headers)
+    {
         state.storage = None;
     }
     let ja4h = get_ja4h_info(&parts);

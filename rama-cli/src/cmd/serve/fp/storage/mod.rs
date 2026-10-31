@@ -24,7 +24,7 @@ mod migrations;
 mod startup;
 mod worker;
 use super::data::Http3Info;
-pub(super) use intent::{CaptureLayer, is_protocol_probe};
+pub(super) use intent::{CaptureLayer, is_protocol_probe, is_speculative};
 use worker::CollectionQueue;
 mod postgres;
 

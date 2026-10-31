@@ -8,7 +8,7 @@ use rama::{
     error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef},
     http::{
-        Method, Request, Version,
+        HeaderMap, Method, Request, Version,
         header::USER_AGENT,
         headers::{HeaderMapExt as _, SecFetchDest, SecFetchMode, SecPurpose},
         proto::h3::observation::H3RequestObservation,
@@ -105,9 +105,18 @@ pub(in super::super) fn is_protocol_probe(uri: &Uri) -> bool {
     })
 }
 
-fn initiator(method: &Method, uri: &Uri) -> Option<Initiator> {
+/// Whether the request is a prefetch or prerender: not the navigator's own navigation.
+pub(in super::super) fn is_speculative(headers: &HeaderMap) -> bool {
+    headers.typed_get::<SecPurpose>().is_some()
+}
+
+fn initiator(method: &Method, uri: &Uri, headers: &HeaderMap) -> Option<Initiator> {
     let path = uri.path()?.as_encoded_str();
-    if method == Method::GET && path == "/report" && !is_protocol_probe(uri) {
+    if method == Method::GET
+        && path == "/report"
+        && !is_protocol_probe(uri)
+        && !is_speculative(headers)
+    {
         Some(Initiator::Navigator)
     } else if method == Method::POST && path.starts_with("/api/fetch/number/") {
         Some(Initiator::Fetch)
@@ -132,7 +141,7 @@ where
     async fn serve(&self, request: Request<B>) -> Result<Self::Output, Self::Error> {
         // A connection can begin with an untracked asset. Its safe native first
         // request recipe must precede the connection's Bootstrap reference.
-        let initiator = initiator(request.method(), request.uri());
+        let initiator = initiator(request.method(), request.uri(), request.headers());
         let bootstrap_only =
             initiator.is_none()
                 && request.version() == Version::HTTP_3
@@ -151,8 +160,7 @@ where
             && request.method() == Method::GET
             && request.headers().typed_get::<SecFetchMode>() == Some(SecFetchMode::Navigate)
             && request.headers().typed_get::<SecFetchDest>() == Some(SecFetchDest::Document)
-            // a prefetch or prerender is not the navigator's own navigation
-            && request.headers().typed_get::<SecPurpose>().is_none();
+            && !is_speculative(request.headers());
         let initiator = initiator.or_else(|| navigation.then_some(Initiator::Navigator));
         let mut completed = None;
         if (initiator.is_some() || bootstrap_only)
