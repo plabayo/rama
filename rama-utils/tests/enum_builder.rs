@@ -47,6 +47,190 @@ mod nested {
             Known => "known" | "alias",
         }
     }
+
+    rama_utils::macros::enums::enum_builder! {
+        @String
+        #[case_sensitive]
+        pub enum CaseEnum {
+            Known => "known" | "Alias",
+        }
+    }
+
+    rama_utils::macros::enums::enum_builder! {
+        @String
+        #[strict]
+        #[case_sensitive]
+        pub enum StrictCaseEnum {
+            Known => "known",
+        }
+    }
+
+    // Variants named like the associated types of the generated conversions.
+    rama_utils::macros::enums::enum_builder! {
+        @U8
+        #[strict]
+        pub enum Status {
+            Ok => 0,
+            Error => 1,
+            Err => 2,
+        }
+    }
+
+    rama_utils::macros::enums::enum_builder! {
+        @Bytes
+        #[strict]
+        pub enum ByteStatus {
+            Error => b"error",
+            Err => b"err",
+        }
+    }
+
+    rama_utils::macros::enums::enum_builder! {
+        @String
+        #[strict]
+        pub enum TextStatus {
+            Error => "error",
+            Err => "err",
+        }
+    }
+
+    rama_utils::macros::enums::enum_builder! {
+        @String
+        pub enum LenientStatus {
+            Err => "err",
+        }
+    }
+
+    // Methods named like the trait methods and helpers the expansion uses.
+    rama_utils::macros::enums::enum_builder! {
+        @Bytes
+        pub enum ShadowedBytes {
+            Known => b"known",
+        }
+    }
+
+    // Shadows `From::from`, which the expansion must not call.
+    impl ShadowedBytes {
+        pub(crate) fn from(_: &[u8]) -> Self {
+            Self::Unknown(vec![0])
+        }
+
+        pub(crate) fn __known(_: &[u8]) -> Option<Self> {
+            None
+        }
+    }
+
+    rama_utils::macros::enums::enum_builder! {
+        @U8
+        pub enum ShadowedNumber {
+            Known => 7,
+        }
+    }
+
+    #[expect(
+        clippy::unused_self,
+        clippy::trivially_copy_pass_by_ref,
+        reason = "mirrors `Ord::cmp` and the generated helpers, which the expansion must not call"
+    )]
+    impl ShadowedNumber {
+        pub(crate) fn cmp(&self, _: &Self) -> core::cmp::Ordering {
+            core::cmp::Ordering::Equal
+        }
+
+        pub(crate) fn __known(_: &u8) -> Option<Self> {
+            None
+        }
+
+        pub(crate) fn __known_variant_name(&self) -> &'static str {
+            "shadowed"
+        }
+    }
+
+    rama_utils::macros::enums::enum_builder! {
+        @String
+        pub enum ShadowedText {
+            Known => "known",
+        }
+    }
+
+    impl ShadowedText {
+        pub(crate) fn __known(_: &str) -> Option<Self> {
+            None
+        }
+    }
+}
+
+#[test]
+fn case_sensitive_string_enums_match_exactly() {
+    use nested::{CaseEnum, StrictCaseEnum};
+
+    for s in ["known", "Alias"] {
+        assert_eq!(CaseEnum::from(s), CaseEnum::Known, "{s:?}");
+        assert_eq!(CaseEnum::from(s.to_owned()), CaseEnum::Known, "{s:?}");
+        assert_eq!(s.parse::<CaseEnum>().unwrap(), CaseEnum::Known, "{s:?}");
+    }
+    for s in ["KNOWN", " known", "alias"] {
+        let unknown = CaseEnum::from(s);
+        assert_eq!(unknown, CaseEnum::Unknown(s.into()), "{s:?}");
+        assert_eq!(CaseEnum::strict_parse(s), None, "{s:?}");
+        // An unknown spelling survives a serde round trip.
+        let json = serde_json::to_string(&unknown).unwrap();
+        assert_eq!(serde_json::from_str::<CaseEnum>(&json).unwrap(), unknown);
+    }
+
+    assert_eq!(
+        "known".parse::<StrictCaseEnum>().unwrap(),
+        StrictCaseEnum::Known
+    );
+    "KNOWN".parse::<StrictCaseEnum>().unwrap_err();
+    serde_json::from_str::<StrictCaseEnum>("\"KNOWN\"").unwrap_err();
+}
+
+#[test]
+fn variants_named_like_associated_types_expand() {
+    use nested::{ByteStatus, LenientStatus, Status, TextStatus};
+
+    assert_eq!(Status::try_from(0).unwrap(), Status::Ok);
+    assert_eq!(Status::try_from(1).unwrap(), Status::Error);
+    assert_eq!(Status::try_from(2).unwrap(), Status::Err);
+    Status::try_from(3).unwrap_err();
+    assert_eq!("error".parse::<ByteStatus>().unwrap(), ByteStatus::Error);
+    assert_eq!("err".parse::<TextStatus>().unwrap(), TextStatus::Err);
+    assert_eq!("ERR".parse::<LenientStatus>().unwrap(), LenientStatus::Err);
+}
+
+#[test]
+fn expansion_never_calls_caller_methods() {
+    use nested::{ShadowedBytes, ShadowedNumber, ShadowedText};
+
+    // The caller's methods answer direct calls...
+    assert_eq!(
+        ShadowedBytes::from(b"known"),
+        ShadowedBytes::Unknown(vec![0])
+    );
+    assert_eq!(ShadowedBytes::__known(b"known"), None);
+    assert_eq!(ShadowedNumber::__known(&7), None);
+    assert_eq!(ShadowedNumber::Known.__known_variant_name(), "shadowed");
+    assert_eq!(
+        ShadowedNumber::Known.cmp(&ShadowedNumber::Unknown(8)),
+        core::cmp::Ordering::Equal
+    );
+    assert_eq!(ShadowedText::__known("known"), None);
+
+    // ...while every generated conversion keeps using its own.
+    let from_str: ShadowedBytes = "known".into();
+    let from_array: ShadowedBytes = b"known".into();
+    assert_eq!(from_str, ShadowedBytes::Known);
+    assert_eq!(from_array, ShadowedBytes::Known);
+    assert_eq!(
+        "known".parse::<ShadowedBytes>().unwrap(),
+        ShadowedBytes::Known
+    );
+    assert_eq!(ShadowedNumber::from(7u8), ShadowedNumber::Known);
+    assert_eq!(ShadowedNumber::Known.variant_name(), "Known");
+    assert!(ShadowedNumber::Known < ShadowedNumber::Unknown(8));
+    let owned: ShadowedText = "known".to_owned().into();
+    assert_eq!(owned, ShadowedText::Known);
 }
 
 #[test]

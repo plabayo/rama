@@ -11,15 +11,21 @@
 /// deserializing an unrecognized value fails. Use it when an unknown value is
 /// never meaningful. `#[display_unknown = f]` only applies to the default mode.
 ///
+/// A `@String` enum matches borrowed strings ignoring ASCII case and
+/// surrounding whitespace, and owned strings exactly. With `#[case_sensitive]`
+/// (after `#[strict]`, if both) every conversion matches exactly, as a token
+/// whose case carries meaning needs.
+///
 /// `@U8`, `@U16` and `@U64` enums order variants primarily by numeric protocol value.
 /// Distinct variants sharing a value use a deterministic variant tie-break.
 /// They also expose `variant_name`, the bare mnemonic that `Display` and
 /// `Debug` decorate, for use as a stable label.
 //
-// Each kind has one body. The mode travels as two bracketed groups: the
-// `Unknown` variant ident (plus an optional display hook) when unknown values
-// are kept, and the error type when the enum is strict. Every item that only
-// exists in one mode sits in a repetition over the metavariable of its group.
+// Each kind has one body. The mode travels as bracketed groups: the `Unknown`
+// variant ident (plus an optional display hook) when unknown values are kept,
+// and the error type when the enum is strict. Every item that only exists in
+// one mode sits in a repetition over the metavariable of its group. `@String`
+// adds a third group, `case_sensitive` or empty, which picks its string match.
 macro_rules! __enum_builder {
     (
         $(#[$m:meta])*
@@ -94,22 +100,24 @@ macro_rules! __enum_builder {
         $(#[$m:meta])*
         @String
         #[strict]
+        $(#[$case_sensitive:ident])?
         $enum_vis:vis enum $enum_name:ident { $($body:tt)* }
     ) => {
         $crate::macros::enums::enum_builder! {
             $(#[$m])*
-            @__string [] [$crate::macros::enums::UnknownEnumValue]
+            @__string [] [$crate::macros::enums::UnknownEnumValue] [$($case_sensitive)?]
             $enum_vis enum $enum_name { $($body)* }
         }
     };
     (
         $(#[$m:meta])*
         @String
+        $(#[$case_sensitive:ident])?
         $enum_vis:vis enum $enum_name:ident { $($body:tt)* }
     ) => {
         $crate::macros::enums::enum_builder! {
             $(#[$m])*
-            @__string [Unknown] []
+            @__string [Unknown] [] [$($case_sensitive)?]
             $enum_vis enum $enum_name { $($body)* }
         }
     };
@@ -136,7 +144,7 @@ macro_rules! __enum_builder {
 
         impl ::core::cmp::PartialOrd for $enum_name {
             fn partial_cmp(&self, other: &Self) -> Option<::core::cmp::Ordering> {
-                Some(self.cmp(other))
+                Some(::core::cmp::Ord::cmp(self, other))
             }
         }
 
@@ -153,7 +161,8 @@ macro_rules! __enum_builder {
                                 return ::core::cmp::Ordering::Less;
                             }
                         )?
-                        self.__known_variant_name().cmp(&other.__known_variant_name())
+                        <Self as $crate::macros::enums::__KnownVariantName>::__known_variant_name(self)
+                            .cmp(<Self as $crate::macros::enums::__KnownVariantName>::__known_variant_name(other))
                     }
                     ordering => ordering,
                 }
@@ -179,21 +188,24 @@ macro_rules! __enum_builder {
                         );
                     }
                 )?
-                $crate::macros::enums::__Cow::Borrowed(self.__known_variant_name())
+                $crate::macros::enums::__Cow::Borrowed(
+                    <Self as $crate::macros::enums::__KnownVariantName>::__known_variant_name(self),
+                )
             }
+        }
 
-            /// Return a known value's variant name, and `""` for an unknown
-            /// value, which every caller handles before this.
+        impl $crate::macros::enums::__KnownVariantName for $enum_name {
             fn __known_variant_name(&self) -> &'static str {
                 match self {
                     $(Self::$enum_var => stringify!($enum_var),)*
                     $(Self::$unknown(_) => "",)?
                 }
             }
+        }
 
-            /// The variant `value` is known as, if any.
-            fn __from_known_value(value: $number) -> Option<Self> {
-                match value {
+        impl $crate::macros::enums::__KnownValue<$number> for $enum_name {
+            fn __known(value: &$number) -> Option<Self> {
+                match *value {
                     $($enum_val => Some($enum_name::$enum_var),)*
                     _ => None,
                 }
@@ -203,7 +215,7 @@ macro_rules! __enum_builder {
         $(
             impl From<$number> for $enum_name {
                 fn from(x: $number) -> Self {
-                    Self::__from_known_value(x).unwrap_or(Self::$unknown(x))
+                    <Self as $crate::macros::enums::__KnownValue<$number>>::__known(&x).unwrap_or(Self::$unknown(x))
                 }
             }
         )?
@@ -212,8 +224,8 @@ macro_rules! __enum_builder {
             impl ::core::convert::TryFrom<$number> for $enum_name {
                 type Error = $strict_err;
 
-                fn try_from(x: $number) -> Result<Self, Self::Error> {
-                    Self::__from_known_value(x).ok_or(<$strict_err>::__new(stringify!($enum_name)))
+                fn try_from(x: $number) -> Result<Self, $strict_err> {
+                    <Self as $crate::macros::enums::__KnownValue<$number>>::__known(&x).ok_or(<$strict_err>::__new(stringify!($enum_name)))
                 }
             }
         )?
@@ -315,9 +327,10 @@ macro_rules! __enum_builder {
             $enum_vis fn try_as_str(&self) -> Option<&str> {
                 ::core::str::from_utf8(self.as_bytes()).ok()
             }
+        }
 
-            /// The variant `bytes` are known as, if any.
-            fn __from_known_bytes(bytes: &[u8]) -> Option<Self> {
+        impl $crate::macros::enums::__KnownValue<[u8]> for $enum_name {
+            fn __known(bytes: &[u8]) -> Option<Self> {
                 match bytes {
                     $($enum_val => Some($enum_name::$enum_var),)*
                     _ => None,
@@ -328,27 +341,27 @@ macro_rules! __enum_builder {
         $(
             impl<'a> From<&'a [u8]> for $enum_name {
                 fn from(b: &'a [u8]) -> Self {
-                    Self::__from_known_bytes(b).unwrap_or_else(|| Self::$unknown(b.to_vec()))
+                    <Self as $crate::macros::enums::__KnownValue<[u8]>>::__known(b).unwrap_or_else(|| Self::$unknown(b.to_vec()))
                 }
             }
 
             impl<'a, const N: usize> From<&'a [u8; N]> for $enum_name {
                 fn from(b: &'a [u8; N]) -> Self {
-                    Self::from(&b[..])
+                    <Self as ::core::convert::From<&[u8]>>::from(&b[..])
                 }
             }
 
             impl<'a> From<&'a str> for $enum_name {
                 fn from(s: &'a str) -> Self {
-                    Self::from(s.as_bytes())
+                    <Self as ::core::convert::From<&[u8]>>::from(s.as_bytes())
                 }
             }
 
             impl ::core::str::FromStr for $enum_name {
                 type Err = ::core::convert::Infallible;
 
-                fn from_str(s: &str) -> Result<Self, Self::Err> {
-                    Ok(Self::__from_known_bytes(s.as_bytes())
+                fn from_str(s: &str) -> Result<Self, ::core::convert::Infallible> {
+                    Ok(<Self as $crate::macros::enums::__KnownValue<[u8]>>::__known(s.as_bytes())
                         .unwrap_or_else(|| Self::$unknown(s.as_bytes().to_vec())))
                 }
             }
@@ -361,7 +374,7 @@ macro_rules! __enum_builder {
 
             impl From<$crate::macros::enums::__Vec<u8>> for $enum_name {
                 fn from(b: $crate::macros::enums::__Vec<u8>) -> Self {
-                    match Self::__from_known_bytes(&b) {
+                    match <Self as $crate::macros::enums::__KnownValue<[u8]>>::__known(&b) {
                         Some(known) => known,
                         None => $enum_name::$unknown(b),
                     }
@@ -373,15 +386,15 @@ macro_rules! __enum_builder {
             impl<'a> ::core::convert::TryFrom<&'a [u8]> for $enum_name {
                 type Error = $strict_err;
 
-                fn try_from(b: &'a [u8]) -> Result<Self, Self::Error> {
-                    Self::__from_known_bytes(b).ok_or(<$strict_err>::__new(stringify!($enum_name)))
+                fn try_from(b: &'a [u8]) -> Result<Self, $strict_err> {
+                    <Self as $crate::macros::enums::__KnownValue<[u8]>>::__known(b).ok_or(<$strict_err>::__new(stringify!($enum_name)))
                 }
             }
 
             impl<'a> ::core::convert::TryFrom<&'a str> for $enum_name {
                 type Error = $strict_err;
 
-                fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+                fn try_from(s: &'a str) -> Result<Self, $strict_err> {
                     <Self as ::core::convert::TryFrom<&[u8]>>::try_from(s.as_bytes())
                 }
             }
@@ -389,7 +402,7 @@ macro_rules! __enum_builder {
             impl ::core::str::FromStr for $enum_name {
                 type Err = $strict_err;
 
-                fn from_str(s: &str) -> Result<Self, Self::Err> {
+                fn from_str(s: &str) -> Result<Self, $strict_err> {
                     <Self as ::core::convert::TryFrom<&[u8]>>::try_from(s.as_bytes())
                 }
             }
@@ -471,6 +484,7 @@ macro_rules! __enum_builder {
         @__string
         [$($unknown:ident)?]
         [$($strict_err:path)?]
+        [$($case_sensitive:ident)?]
         $enum_vis:vis enum $enum_name:ident
         { $( $(#[$enum_meta:meta])* $enum_var:ident => $enum_val:literal $(| $enum_val_alt:literal)* ),* $(,)? }
     ) => {
@@ -519,18 +533,18 @@ macro_rules! __enum_builder {
                 }
             }
 
-            /// Parse a known value, ignoring ASCII case, or return `None`.
+            /// Parse a known value, or return `None`. It ignores ASCII case and
+            /// surrounding whitespace, unless the enum is `#[case_sensitive]`.
             pub fn strict_parse(s: &str) -> Option<Self> {
-                $crate::macros::match_ignore_ascii_case_str!(match(s) {
+                $crate::macros::enums::__match_str!([$($case_sensitive)?] match(s) {
                     $($enum_val $(| $enum_val_alt)* => Some($enum_name::$enum_var)),*
                     , _ => None,
                 })
             }
+        }
 
-            /// The variant spelled exactly `s`, if any.
-            // NOTE(allow) only the default mode has a caller
-            #[allow(dead_code)]
-            fn __from_exact_str(s: &str) -> Option<Self> {
+        impl $crate::macros::enums::__KnownValue<str> for $enum_name {
+            fn __known(s: &str) -> Option<Self> {
                 match s {
                     $($enum_val $(| $enum_val_alt)* => Some($enum_name::$enum_var),)*
                     _ => None,
@@ -548,7 +562,7 @@ macro_rules! __enum_builder {
             impl ::core::str::FromStr for $enum_name {
                 type Err = ::core::convert::Infallible;
 
-                fn from_str(s: &str) -> Result<Self, Self::Err> {
+                fn from_str(s: &str) -> Result<Self, ::core::convert::Infallible> {
                     Ok(Self::strict_parse(s).unwrap_or_else(|| Self::$unknown(s.into())))
                 }
             }
@@ -556,7 +570,7 @@ macro_rules! __enum_builder {
             // Unlike `From<&str>`, an owned string must match a value exactly.
             impl From<$crate::macros::enums::__String> for $enum_name {
                 fn from(s: $crate::macros::enums::__String) -> Self {
-                    Self::__from_exact_str(&s).unwrap_or_else(|| Self::$unknown(s.into_boxed_str()))
+                    <Self as $crate::macros::enums::__KnownValue<str>>::__known(&s).unwrap_or_else(|| Self::$unknown(s.into_boxed_str()))
                 }
             }
         )?
@@ -565,7 +579,7 @@ macro_rules! __enum_builder {
             impl<'a> ::core::convert::TryFrom<&'a str> for $enum_name {
                 type Error = $strict_err;
 
-                fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+                fn try_from(s: &'a str) -> Result<Self, $strict_err> {
                     Self::strict_parse(s).ok_or(<$strict_err>::__new(stringify!($enum_name)))
                 }
             }
@@ -573,7 +587,7 @@ macro_rules! __enum_builder {
             impl ::core::str::FromStr for $enum_name {
                 type Err = $strict_err;
 
-                fn from_str(s: &str) -> Result<Self, Self::Err> {
+                fn from_str(s: &str) -> Result<Self, $strict_err> {
                     <Self as ::core::convert::TryFrom<&str>>::try_from(s)
                 }
             }
@@ -611,6 +625,45 @@ macro_rules! __enum_builder {
 
 #[doc(inline)]
 pub use crate::__enum_builder as enum_builder;
+
+#[doc(hidden)]
+#[macro_export]
+// The string match behind a `@String` enum's `strict_parse`: ASCII
+// case-insensitive and trimmed by default, exact when `#[case_sensitive]`.
+macro_rules! __enum_builder_match_str {
+    ([] match ($s:expr) { $($arms:tt)+ }) => {
+        $crate::macros::match_ignore_ascii_case_str!(match($s) { $($arms)+ })
+    };
+    (
+        [case_sensitive]
+        match ($s:expr) {
+            $($case:literal $(| $alt:literal)* => $ret:expr),* , _ => $fallback:expr $(,)?
+        }
+    ) => {
+        match $s {
+            $($case $(| $alt)* => $ret,)*
+            _ => $fallback,
+        }
+    };
+}
+
+#[doc(hidden)]
+pub use crate::__enum_builder_match_str as __match_str;
+
+/// The variant a raw value is known as, implemented by [`enum_builder`]
+/// expansions. A trait, not an inherent method, so it never collides with a
+/// method the caller defines on the enum.
+#[doc(hidden)]
+pub trait __KnownValue<Raw: ?Sized>: Sized {
+    fn __known(raw: &Raw) -> Option<Self>;
+}
+
+/// A numeric [`enum_builder`] value's variant name, or `""` for an unknown
+/// value, which every caller handles first.
+#[doc(hidden)]
+pub trait __KnownVariantName {
+    fn __known_variant_name(&self) -> &'static str;
+}
 
 /// The error of converting a value no variant of a strict (`#[strict]`)
 /// [`enum_builder`] enum matches.
