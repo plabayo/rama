@@ -1,11 +1,12 @@
-//! Zero-copy decoder for the MaxMind DB data section.
+//! Decoder for the MaxMind DB data section, over any [`Section`] source.
 //!
-//! Every read is bounds-checked against the backing buffer and every offset
+//! Every read is bounds-checked against the backing source and every offset
 //! computation uses checked arithmetic, so a malformed or hostile database
 //! can only ever produce a [`GeoIpError::Corrupt`] — never a panic, an
 //! out-of-bounds read, or an unbounded loop. Pointer following and structural
 //! nesting are both depth-capped.
 
+use crate::std::boxed::Box;
 use crate::std::vec::Vec;
 
 use crate::address::ip::geo::GeoIpError;
@@ -24,32 +25,83 @@ const fn corrupt(why: &'static str) -> GeoIpError {
     GeoIpError::Corrupt(why)
 }
 
-/// A cheap, copyable cursor over a database buffer for a given section base.
+/// Byte source the decoder and the tree walk read from.
 ///
-/// `base` is the offset (into `buf`) that pointer values are relative to:
+/// Implementations must report the same errors for the same out-of-range
+/// request, so every source decodes a database identically.
+pub(crate) trait Section {
+    /// The byte at `off`.
+    fn byte(&self, off: usize) -> Result<u8>;
+
+    /// Fill `out` with the bytes starting at `off`.
+    fn read_into(&self, off: usize, out: &mut [u8]) -> Result<()>;
+
+    /// Run `f` over the `len` bytes starting at `off`.
+    fn with_slice<R>(&self, off: usize, len: usize, f: impl FnOnce(&[u8]) -> R) -> Result<R>;
+}
+
+/// The `len` bytes at `off` of `buf`, with the errors every [`Section`] uses.
+pub(crate) fn slice_at(buf: &[u8], off: usize, len: usize) -> Result<&[u8]> {
+    let end = off.checked_add(len).ok_or(corrupt("length overflow"))?;
+    buf.get(off..end).ok_or(corrupt("slice out of bounds"))
+}
+
+/// Error of a [`Section::byte`] read past the end.
+pub(crate) const OFFSET_OUT_OF_BOUNDS: GeoIpError = corrupt("offset out of bounds");
+
+impl Section for [u8] {
+    #[inline]
+    fn byte(&self, off: usize) -> Result<u8> {
+        self.get(off).copied().ok_or(OFFSET_OUT_OF_BOUNDS)
+    }
+
+    #[inline]
+    fn read_into(&self, off: usize, out: &mut [u8]) -> Result<()> {
+        out.copy_from_slice(slice_at(self, off, out.len())?);
+        Ok(())
+    }
+
+    #[inline]
+    fn with_slice<R>(&self, off: usize, len: usize, f: impl FnOnce(&[u8]) -> R) -> Result<R> {
+        Ok(f(slice_at(self, off, len)?))
+    }
+}
+
+impl<T: Section + ?Sized> Section for &T {
+    #[inline]
+    fn byte(&self, off: usize) -> Result<u8> {
+        (**self).byte(off)
+    }
+
+    #[inline]
+    fn read_into(&self, off: usize, out: &mut [u8]) -> Result<()> {
+        (**self).read_into(off, out)
+    }
+
+    #[inline]
+    fn with_slice<R>(&self, off: usize, len: usize, f: impl FnOnce(&[u8]) -> R) -> Result<R> {
+        (**self).with_slice(off, len, f)
+    }
+}
+
+/// A cheap, copyable cursor over a database source for a given section base.
+///
+/// `base` is the offset (into `src`) that pointer values are relative to:
 /// the data section start when decoding records, or the metadata section
 /// start when decoding metadata.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Decoder<'a> {
-    buf: &'a [u8],
+pub(crate) struct Decoder<S> {
+    src: S,
     base: usize,
 }
 
-impl<'a> Decoder<'a> {
-    pub(crate) fn new(buf: &'a [u8], base: usize) -> Self {
-        Self { buf, base }
+impl<S: Section> Decoder<S> {
+    pub(crate) fn new(src: S, base: usize) -> Self {
+        Self { src, base }
     }
 
     fn byte(&self, off: usize) -> Result<u8> {
-        self.buf
-            .get(off)
-            .copied()
-            .ok_or(corrupt("offset out of bounds"))
-    }
-
-    fn slice(&self, off: usize, len: usize) -> Result<&'a [u8]> {
-        let end = off.checked_add(len).ok_or(corrupt("length overflow"))?;
-        self.buf.get(off..end).ok_or(corrupt("slice out of bounds"))
+        self.src.byte(off)
     }
 
     /// Decode the type number and the header length (1, or 2 for an extended
@@ -117,11 +169,9 @@ impl<'a> Decoder<'a> {
                 (((v0 << 24) | (b1 << 16) | (b2 << 8) | b3) + 526_336, 4)
             }
             _ => {
-                let bytes = self.slice(off + 1, 4)?;
-                (
-                    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize,
-                    5,
-                )
+                let mut bytes = [0u8; 4];
+                self.src.read_into(off + 1, &mut bytes)?;
+                (u32::from_be_bytes(bytes) as usize, 5)
             }
         };
         let target = self
@@ -215,9 +265,11 @@ impl<'a> Decoder<'a> {
                 return Err(corrupt("map key is not a string"));
             }
             let (ksize, kpo) = self.size_and_payload(key_res, khl)?;
-            let kbytes = self.slice(kpo, ksize)?;
+            let matches = self
+                .src
+                .with_slice(kpo, ksize, |kbytes| kbytes == key.as_bytes())?;
             let after_key = self.field_end(p)?;
-            if kbytes == key.as_bytes() {
+            if matches {
                 return Ok(Some(after_key));
             }
             p = self.field_end(after_key)?;
@@ -225,13 +277,17 @@ impl<'a> Decoder<'a> {
         Ok(None)
     }
 
-    /// Resolve and decode a UTF-8 string field.
-    pub(crate) fn read_str(&self, off: usize) -> Result<&'a str> {
+    /// Resolve a UTF-8 string field and run `f` over it.
+    pub(crate) fn with_str<R>(&self, off: usize, f: impl FnOnce(&str) -> R) -> Result<R> {
         let (size, po) = self.typed_payload(off, 2, "expected a string")?;
-        let bytes = self.slice(po, size)?;
-        core::str::from_utf8(bytes)
-            .ok()
+        self.src
+            .with_slice(po, size, |bytes| core::str::from_utf8(bytes).ok().map(f))?
             .ok_or(corrupt("string is not valid utf-8"))
+    }
+
+    /// Resolve and copy out a UTF-8 string field.
+    pub(crate) fn read_box_str(&self, off: usize) -> Result<Box<str>> {
+        self.with_str(off, |s| Box::from(s))
     }
 
     fn read_uint(&self, off: usize, max_bytes: usize) -> Result<u128> {
@@ -245,12 +301,12 @@ impl<'a> Decoder<'a> {
         if size > max_bytes {
             return Err(corrupt("integer wider than expected"));
         }
-        let bytes = self.slice(po, size)?;
-        let mut v: u128 = 0;
-        for &b in bytes {
-            v = (v << 8) | u128::from(b);
-        }
-        Ok(v)
+        let mut buf = [0u8; 16];
+        let bytes = buf
+            .get_mut(..size)
+            .ok_or(corrupt("integer wider than expected"))?;
+        self.src.read_into(po, bytes)?;
+        Ok(bytes.iter().fold(0u128, |v, &b| (v << 8) | u128::from(b)))
     }
 
     pub(crate) fn read_u16(&self, off: usize) -> Result<u16> {
@@ -276,10 +332,9 @@ impl<'a> Decoder<'a> {
         if size != 8 {
             return Err(corrupt("double must be 8 bytes"));
         }
-        let b = self.slice(po, 8)?;
-        Ok(f64::from_be_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
+        let mut b = [0u8; 8];
+        self.src.read_into(po, &mut b)?;
+        Ok(f64::from_be_bytes(b))
     }
 
     /// Resolve an array field and return the (resolved) offset of each element.
@@ -292,6 +347,17 @@ impl<'a> Decoder<'a> {
             p = self.field_end(p)?;
         }
         Ok(out)
+    }
+}
+
+impl<'a> Decoder<&'a [u8]> {
+    /// Resolve and decode a UTF-8 string field, borrowing the buffer.
+    pub(crate) fn read_str(&self, off: usize) -> Result<&'a str> {
+        let (size, po) = self.typed_payload(off, 2, "expected a string")?;
+        let bytes = slice_at(self.src, po, size)?;
+        core::str::from_utf8(bytes)
+            .ok()
+            .ok_or(corrupt("string is not valid utf-8"))
     }
 }
 
@@ -309,14 +375,14 @@ mod tests {
     #[test]
     fn reads_inline_string() {
         let b = buf();
-        let d = Decoder::new(&b, 0);
+        let d = Decoder::new(b.as_slice(), 0);
         assert_eq!(d.read_str(0).unwrap(), "hi");
     }
 
     #[test]
     fn follows_pointer_to_string() {
         let b = buf();
-        let d = Decoder::new(&b, 0);
+        let d = Decoder::new(b.as_slice(), 0);
         // offset 3 is a pointer to offset 0
         assert_eq!(d.read_str(3).unwrap(), "hi");
     }
@@ -324,11 +390,11 @@ mod tests {
     #[test]
     fn out_of_bounds_is_error_not_panic() {
         let b = buf();
-        let d = Decoder::new(&b, 0);
+        let d = Decoder::new(b.as_slice(), 0);
         d.read_str(99).unwrap_err();
         // truncated string: claims 5 bytes but buffer too short
         let bad = vec![0x45, b'x'];
-        let d2 = Decoder::new(&bad, 0);
+        let d2 = Decoder::new(bad.as_slice(), 0);
         d2.read_str(0).unwrap_err();
     }
 
@@ -336,7 +402,7 @@ mod tests {
     fn pointer_cycle_is_rejected() {
         // a pointer at offset 0 pointing to itself (value 0, base 0)
         let bad = vec![0x20, 0x00];
-        let d = Decoder::new(&bad, 0);
+        let d = Decoder::new(bad.as_slice(), 0);
         d.read_str(0).unwrap_err();
     }
 
@@ -344,7 +410,7 @@ mod tests {
     fn map_key_must_be_a_string() {
         // map{ <u16 5> : "x" } — the key is an integer, not a string
         let bad = vec![0xE1, 0xA1, 0x05, 0x41, b'x'];
-        let d = Decoder::new(&bad, 0);
+        let d = Decoder::new(bad.as_slice(), 0);
         d.map_get(0, "x").unwrap_err();
     }
 
@@ -352,7 +418,7 @@ mod tests {
     fn integer_wider_than_expected_is_rejected() {
         // a uint16-typed field claiming 4 payload bytes
         let bad = vec![0xA4, 0x00, 0x00, 0x00, 0x01];
-        let d = Decoder::new(&bad, 0);
+        let d = Decoder::new(bad.as_slice(), 0);
         d.read_u16(0).unwrap_err();
     }
 
@@ -360,7 +426,7 @@ mod tests {
     fn array_offsets_rejects_non_array() {
         // a string where an array is expected
         let bad = vec![0x42, b'h', b'i'];
-        let d = Decoder::new(&bad, 0);
+        let d = Decoder::new(bad.as_slice(), 0);
         d.array_offsets(0).unwrap_err();
     }
 }

@@ -841,6 +841,11 @@ required-features = ["dns"]
 harness = false
 
 [[bench]]
+name = "ip_geo_lookup"
+required-features = ["net", "mmap"]
+harness = false
+
+[[bench]]
 name = "extensions_lookup"
 required-features = ["boring"]
 harness = false
