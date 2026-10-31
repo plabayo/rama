@@ -1138,6 +1138,9 @@ standard_headers! {
     /// `Sec-Fetch-User` — Fetch Metadata request header.
     (SecFetchUser, SEC_FETCH_USER, b"sec-fetch-user");
 
+    /// `Sec-Purpose` — marks a speculative (prefetch or prerender) request.
+    (SecPurpose, SEC_PURPOSE, b"sec-purpose");
+
     /// `Permissions-Policy`.
     (PermissionsPolicy, PERMISSIONS_POLICY, b"permissions-policy");
 

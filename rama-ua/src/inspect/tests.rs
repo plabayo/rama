@@ -94,6 +94,41 @@ fn profile_export_does_not_guess_an_unobserved_request_initiator() {
 }
 
 #[test]
+fn speculative_navigation_is_not_the_navigation_profile() {
+    let navigation = |purpose: Option<&str>| {
+        let mut request = Request::builder()
+            .uri("https://example.test/")
+            .header("sec-fetch-site", "same-origin")
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", "document");
+        if let Some(purpose) = purpose {
+            request = request.header("sec-purpose", purpose);
+        }
+        request.body(()).unwrap().into_parts().0
+    };
+    assert_eq!(
+        captured_request_initiator(&navigation(None), false),
+        Some(RequestInitiator::Navigate)
+    );
+    for purpose in [
+        "prefetch",
+        "prefetch;prerender",
+        "prefetch;anonymous-client-ip",
+    ] {
+        let parts = navigation(Some(purpose));
+        assert_eq!(captured_request_initiator(&parts, false), None, "{purpose}");
+        let mut profile = UserAgentProfileInput::new("browser/1");
+        fill_profile(&mut profile, parts, None, None);
+        assert!(profile.h1_headers_navigate.is_none(), "{purpose}");
+    }
+    // An invalid value is no speculation signal.
+    assert_eq!(
+        captured_request_initiator(&navigation(Some("\"prefetch\"")), false),
+        Some(RequestInitiator::Navigate)
+    );
+}
+
+#[test]
 fn h2_upgrade_initiator_belongs_to_the_supplied_protocol_observation() {
     let (parts, _) = Request::builder()
         .uri("https://example.test/socket")

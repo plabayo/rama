@@ -5,7 +5,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::{
     HeaderMap, Version,
-    headers::{ContentType, HeaderMapExt, SecFetchMode},
+    headers::{ContentType, HeaderMapExt, SecFetchMode, SecPurpose},
     inspect::capture::{CaptureMetadata, CaptureStore, StoredRecord},
     proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
 };
@@ -151,6 +151,11 @@ fn captured_request_initiator(
         return Some(RequestInitiator::Xhr);
     }
     if parts.headers.typed_get::<SecFetchMode>() != Some(SecFetchMode::Navigate) {
+        return None;
+    }
+    // A prefetch or prerender navigation sends a different header set (no
+    // `Sec-Fetch-User`, an added `Sec-Purpose`): not the navigation profile.
+    if parts.headers.typed_get::<SecPurpose>().is_some() {
         return None;
     }
     let is_form = parts

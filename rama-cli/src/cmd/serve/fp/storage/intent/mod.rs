@@ -10,7 +10,7 @@ use rama::{
     http::{
         Method, Request, Version,
         header::USER_AGENT,
-        headers::{HeaderMapExt as _, SecFetchDest, SecFetchMode},
+        headers::{HeaderMapExt as _, SecFetchDest, SecFetchMode, SecPurpose},
         proto::h3::observation::H3RequestObservation,
     },
     layer::Layer,
@@ -150,7 +150,9 @@ where
         let navigation = bootstrap_only
             && request.method() == Method::GET
             && request.headers().typed_get::<SecFetchMode>() == Some(SecFetchMode::Navigate)
-            && request.headers().typed_get::<SecFetchDest>() == Some(SecFetchDest::Document);
+            && request.headers().typed_get::<SecFetchDest>() == Some(SecFetchDest::Document)
+            // a prefetch or prerender is not the navigator's own navigation
+            && request.headers().typed_get::<SecPurpose>().is_none();
         let initiator = initiator.or_else(|| navigation.then_some(Initiator::Navigator));
         let mut completed = None;
         if (initiator.is_some() || bootstrap_only)

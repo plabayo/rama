@@ -364,6 +364,9 @@ pub(super) const TOKENS: &[&[u8]] = &[
     b"permessage-deflate",
     b"server_max_window_bits=",
     b"camera=",
+    b"prefetch",
+    b";prerender",
+    b";anonymous-client-ip",
 ];
 
 pub(super) const STR_ONLY: &[&str] = &[

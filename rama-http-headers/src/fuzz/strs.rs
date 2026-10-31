@@ -16,9 +16,10 @@ use crate::{
     CrossOriginEmbedderPolicyValue, CrossOriginOpenerPolicy, CrossOriginOpenerPolicyValue,
     CrossOriginResourcePolicy, DirectiveName, ETag, HashAlgorithm, HostSource, LastEventId,
     LastModified, Origin, PermissionsPolicy, PermissionsPolicyDirective,
-    PermissionsPolicyDirectiveName, Referer, SecFetchDest, SecFetchMode, SecFetchSite,
-    SecWebSocketExtensions, SecWebSocketProtocol, Server, SourceExpression, SourceList, Te,
-    TeDirective, TransferEncoding, TransferEncodingDirective, UserAgent, XRobotsTag,
+    PermissionsPolicyDirectiveName, Referer, SecFetchDest, SecFetchMode, SecFetchSite, SecPurpose,
+    SecPurposeKind, SecWebSocketExtensions, SecWebSocketProtocol, Server, SourceExpression,
+    SourceList, Te, TeDirective, TransferEncoding, TransferEncodingDirective, UserAgent,
+    XRobotsTag,
     exotic::XClacksOverhead,
     fuzz::{
         StrExercise,
@@ -236,6 +237,20 @@ pub(super) const STRS: &[StrExercise] = &[
     enum_str!(SecFetchDest, |dest| dest),
     enum_str!(SecFetchMode, |mode| mode),
     enum_str!(SecFetchSite, |site| site),
+    enum_str!(SecPurposeKind, |kind| SecPurpose::new(kind)
+        .with_prerender(true)),
+    ("SecPurpose::from_str", |s: &str| {
+        if let Ok(purpose) = s.parse::<SecPurpose>() {
+            roundtrip(&purpose);
+            display(&purpose);
+            // the display form is the wire form: it parses back unchanged
+            assert_eq!(
+                purpose.to_string().parse::<SecPurpose>().ok().as_ref(),
+                Some(&purpose),
+                "{s:?}"
+            );
+        }
+    }),
     enum_str!(PermissionsPolicyDirectiveName, |name| {
         PermissionsPolicy::empty().with_directive(PermissionsPolicyDirective::deny(name))
     }),

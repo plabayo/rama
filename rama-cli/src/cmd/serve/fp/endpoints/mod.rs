@@ -1012,6 +1012,12 @@ impl From<RequestInfo> for Table {
                 ("Authority".to_owned(), info.authority),
                 ("Path".to_owned(), info.path),
                 ("Fetch Mode".to_owned(), info.fetch_mode.to_string()),
+                (
+                    "Purpose".to_owned(),
+                    info.purpose
+                        .map(|purpose| purpose.to_string())
+                        .unwrap_or_default(),
+                ),
                 ("Resource Type".to_owned(), info.resource_type.to_string()),
                 ("Initiator".to_owned(), info.initiator.to_string()),
                 (

@@ -58,7 +58,10 @@ pub mod exotic;
 pub mod privacy;
 
 pub mod sec_fetch;
-pub use sec_fetch::{FetchMetadata, SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUser};
+pub use sec_fetch::{
+    FetchMetadata, SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUser, SecPurpose,
+    SecPurposeKind,
+};
 
 pub mod x_robots_tag;
 pub use x_robots_tag::XRobotsTag;
