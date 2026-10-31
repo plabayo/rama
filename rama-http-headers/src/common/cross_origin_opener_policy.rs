@@ -29,6 +29,7 @@ enum_builder! {
     /// here.
     @String
     #[strict]
+    #[case_sensitive]
     pub enum CrossOriginOpenerPolicyValue {
         /// `unsafe-none` — the spec default when the header is absent.
         UnsafeNone => "unsafe-none",
@@ -280,6 +281,21 @@ mod tests {
         assert_eq!(raw, r#"same-origin; report-to="coop-endpoint""#);
         let parsed = test_decode::<CrossOriginOpenerPolicy>(&[raw.as_str()]).expect("decode");
         assert_eq!(parsed, v);
+    }
+
+    #[test]
+    fn parser_matches_tokens_case_sensitively() {
+        // Browsers compare the token exactly and ignore any other spelling.
+        for raw in ["Same-Origin", "UNSAFE-NONE"] {
+            assert!(
+                test_decode::<CrossOriginOpenerPolicy>(&[raw]).is_none(),
+                "{raw}"
+            );
+            assert!(
+                test_decode::<CrossOriginOpenerPolicyReportOnly>(&[raw]).is_none(),
+                "{raw}"
+            );
+        }
     }
 
     #[test]

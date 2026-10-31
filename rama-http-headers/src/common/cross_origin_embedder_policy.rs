@@ -22,6 +22,7 @@ enum_builder! {
     /// Embedder-policy token values per the HTML Standard.
     @String
     #[strict]
+    #[case_sensitive]
     pub enum CrossOriginEmbedderPolicyValue {
         /// `unsafe-none` — the spec default when the header is absent.
         ///
@@ -271,11 +272,18 @@ mod tests {
     }
 
     #[test]
-    fn parser_case_insensitive_token() {
-        assert_eq!(
-            test_decode::<CrossOriginEmbedderPolicy>(&["Require-Corp"]),
-            Some(CrossOriginEmbedderPolicy::require_corp()),
-        );
+    fn parser_matches_tokens_case_sensitively() {
+        // Browsers compare the token exactly and ignore any other spelling.
+        for raw in ["Require-Corp", "CREDENTIALLESS"] {
+            assert!(
+                test_decode::<CrossOriginEmbedderPolicy>(&[raw]).is_none(),
+                "{raw}"
+            );
+            assert!(
+                test_decode::<CrossOriginEmbedderPolicyReportOnly>(&[raw]).is_none(),
+                "{raw}"
+            );
+        }
     }
 
     #[test]

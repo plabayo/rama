@@ -36,6 +36,7 @@ enum_builder! {
     /// ```
     @String
     #[strict]
+    #[case_sensitive]
     pub enum CrossOriginResourcePolicy {
         /// `same-site` — only documents from the same registrable
         /// site may embed the resource.
@@ -116,15 +117,15 @@ mod tests {
     }
 
     #[test]
-    fn parser_case_insensitive() {
-        assert_eq!(
-            test_decode::<CrossOriginResourcePolicy>(&["Same-Origin"]),
-            Some(CrossOriginResourcePolicy::SameOrigin),
-        );
-        assert_eq!(
-            test_decode::<CrossOriginResourcePolicy>(&["CROSS-ORIGIN"]),
-            Some(CrossOriginResourcePolicy::CrossOrigin),
-        );
+    fn parser_matches_case_sensitively() {
+        // Browsers compare the value exactly and ignore any other spelling.
+        for raw in ["Same-Origin", "CROSS-ORIGIN", "Same-site"] {
+            assert_eq!(
+                test_decode::<CrossOriginResourcePolicy>(&[raw]),
+                None,
+                "{raw}"
+            );
+        }
     }
 
     #[test]
