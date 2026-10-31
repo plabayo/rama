@@ -4854,6 +4854,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-opentelemetry",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

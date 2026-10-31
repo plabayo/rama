@@ -1259,6 +1259,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-appender",
+ "windows-sys",
 ]
 
 [[package]]
