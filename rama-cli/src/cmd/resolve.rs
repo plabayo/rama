@@ -145,11 +145,6 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
             )
             .await?;
         }
-        Some(RecordType::Unknown(variant)) => {
-            return Err(
-                BoxError::from_static_str("unknown record type").context_field("value", variant)
-            );
-        }
         None => {
             println!("Resolving IP for domain: {domain}");
             let extensions = Extensions::new();
@@ -347,6 +342,7 @@ fn rewrite_name_servers(
 rama::utils::macros::enums::enum_builder! {
     #[allow(clippy::upper_case_acronyms)]
     @String
+    #[strict]
     enum RecordType {
         A => "A",
         AAAA => "AAAA",

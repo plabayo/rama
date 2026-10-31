@@ -221,19 +221,19 @@ pub(super) const STRS: &[StrExercise] = &[
     enum_str!(TeDirective, |d| Te::new(QualityValue::new_value(d))),
     enum_str!(DirectiveName, |name| ContentSecurityPolicy::empty()
         .with(name, SourceList::self_origin())),
-    enum_str!(CrossOriginEmbedderPolicyValue, |value| {
+    strict_enum_str!(CrossOriginEmbedderPolicyValue, |value| {
         CrossOriginEmbedderPolicy {
             value,
             report_to: None,
         }
     }),
-    enum_str!(CrossOriginOpenerPolicyValue, |value| {
+    strict_enum_str!(CrossOriginOpenerPolicyValue, |value| {
         CrossOriginOpenerPolicy {
             value,
             report_to: None,
         }
     }),
-    enum_str!(CrossOriginResourcePolicy, |policy| policy),
+    strict_enum_str!(CrossOriginResourcePolicy, |policy| policy),
     enum_str!(SecFetchDest, |dest| dest),
     enum_str!(SecFetchMode, |mode| mode),
     enum_str!(SecFetchSite, |site| site),
@@ -258,7 +258,7 @@ pub(super) const STRS: &[StrExercise] = &[
     enum_str!(MaxImagePreviewSetting, |setting| XRobotsTag::new(
         RobotsTag::new_max_image_preview(setting)
     )),
-    enum_str!(PerMessageDeflateIdentifier, |identifier| {
+    strict_enum_str!(PerMessageDeflateIdentifier, |identifier| {
         SecWebSocketExtensions::per_message_deflate_with_config(PerMessageDeflateConfig::from(
             identifier,
         ))

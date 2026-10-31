@@ -46,16 +46,9 @@ impl Header {
     where
         R: AsyncRead + Unpin,
     {
-        let version: ProtocolVersion = r.read_u8().await?.into();
-        match version {
-            ProtocolVersion::Socks5 => (),
-            ProtocolVersion::Unknown(version) => {
-                return Err(ProtocolError::UnexpectedByte {
-                    pos: 0,
-                    byte: version,
-                });
-            }
-        }
+        let byte = r.read_u8().await?;
+        let version = ProtocolVersion::try_from(byte)
+            .map_err(|_unknown| ProtocolError::UnexpectedByte { pos: 0, byte })?;
 
         let method: SocksMethod = r.read_u8().await?.into();
 
@@ -142,13 +135,9 @@ impl Reply {
     where
         R: AsyncRead + Unpin,
     {
-        let version: ProtocolVersion = r.read_u8().await?.into();
-        match version {
-            ProtocolVersion::Socks5 => (),
-            ProtocolVersion::Unknown(version) => {
-                return Err(ProtocolError::unexpected_byte(0, version));
-            }
-        }
+        let byte = r.read_u8().await?;
+        let version = ProtocolVersion::try_from(byte)
+            .map_err(|_unknown| ProtocolError::unexpected_byte(0, byte))?;
 
         let reply: ReplyKind = r.read_u8().await?.into();
 
@@ -310,13 +299,9 @@ impl UsernamePasswordResponse {
     where
         R: AsyncRead + Unpin,
     {
-        let version: UsernamePasswordSubnegotiationVersion = r.read_u8().await?.into();
-        match version {
-            UsernamePasswordSubnegotiationVersion::One => (),
-            UsernamePasswordSubnegotiationVersion::Unknown(version) => {
-                return Err(ProtocolError::unexpected_byte(0, version));
-            }
-        }
+        let byte = r.read_u8().await?;
+        let version = UsernamePasswordSubnegotiationVersion::try_from(byte)
+            .map_err(|_unknown| ProtocolError::unexpected_byte(0, byte))?;
 
         let status = r.read_u8().await?;
 

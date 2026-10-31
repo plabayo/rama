@@ -56,3 +56,23 @@ macro_rules! enum_str {
         })
     };
 }
+
+/// Like `enum_str!`, for a `#[strict]` enum: parsing fails on unknown values.
+macro_rules! strict_enum_str {
+    ($ty:ty $(, |$v:ident| $header:expr)?) => {
+        (concat!(stringify!($ty), "::from_str"), |s: &str| {
+            let parsed = s.parse::<$ty>();
+            assert_eq!(parsed.as_ref().ok(), <$ty>::strict_parse(s).as_ref(), "{s:?}");
+            if let Ok(parsed) = parsed {
+                $crate::fuzz::support::token(&parsed);
+                $crate::fuzz::support::sink(parsed.as_static_str());
+                // a known value parses back from its own spelling
+                assert_eq!(parsed.as_str().parse::<$ty>().as_ref(), Ok(&parsed), "{s:?}");
+                $(
+                    let $v = parsed;
+                    $crate::fuzz::support::roundtrip(&$header);
+                )?
+            }
+        })
+    };
+}

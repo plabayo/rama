@@ -20,11 +20,8 @@ use super::cross_origin_policy_util::{
 
 enum_builder! {
     /// Embedder-policy token values per the HTML Standard.
-    ///
-    /// The auto-generated [`Unknown`](Self::Unknown) variant is
-    /// reachable only via direct construction; the COEP decoder uses
-    /// strict parsing and rejects any token outside the spec set.
     @String
+    #[strict]
     pub enum CrossOriginEmbedderPolicyValue {
         /// `unsafe-none` — the spec default when the header is absent.
         ///
@@ -362,14 +359,5 @@ mod tests {
         // an unrepresentable endpoint drops reporting, never the policy itself
         let map = test_encode(CrossOriginEmbedderPolicy::require_corp().with_report_to("a\r\nb"));
         assert_eq!(map[CrossOriginEmbedderPolicy::name()], "require-corp");
-
-        let map = test_encode(CrossOriginEmbedderPolicyReportOnly {
-            value: "\u{7f}".parse().unwrap(),
-            report_to: None,
-        });
-        assert!(
-            map.get(CrossOriginEmbedderPolicyReportOnly::name())
-                .is_none()
-        );
     }
 }

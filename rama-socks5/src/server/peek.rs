@@ -179,7 +179,7 @@ fn socks5_greeting_verdict(buffer: &[u8]) -> PeekVerdict<()> {
     let Some(&version) = buffer.first() else {
         return PeekVerdict::NeedMore;
     };
-    if ProtocolVersion::from(version) != ProtocolVersion::Socks5 {
+    if ProtocolVersion::try_from(version).is_err() {
         return PeekVerdict::Reject;
     }
 

@@ -18,10 +18,7 @@ enum_builder! {
     /// When the header is absent the user agent applies its default
     /// embedding policy (effectively `cross-origin` for legacy
     /// backwards compatibility). The typed value here represents the
-    /// header being *present*. The auto-generated
-    /// [`Unknown`](Self::Unknown) variant is reachable only if a
-    /// caller constructs it directly — the [`HeaderDecode`] impl uses
-    /// strict parsing and rejects any unknown token.
+    /// header being *present*.
     ///
     /// # Example values
     ///
@@ -38,6 +35,7 @@ enum_builder! {
     /// assert_eq!(corp.to_string(), "same-origin");
     /// ```
     @String
+    #[strict]
     pub enum CrossOriginResourcePolicy {
         /// `same-site` — only documents from the same registrable
         /// site may embed the resource.
@@ -58,9 +56,7 @@ impl TypedHeader for CrossOriginResourcePolicy {
 
 impl HeaderDecode for CrossOriginResourcePolicy {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        // Strict parse: unknown tokens fail rather than landing in
-        // `Unknown(...)`. CORP is a closed set per Fetch — anything
-        // else on the wire is malformed.
+        // CORP is a closed set per Fetch: anything else on the wire is malformed.
         values
             .just_one()
             .and_then(|v| v.to_str().ok())
@@ -141,20 +137,11 @@ mod tests {
 
     #[test]
     fn parser_rejects_unknown_token() {
-        // The auto-generated `Unknown(String)` variant exists, but the
-        // decoder uses strict parsing — unknown tokens must fail.
         assert_eq!(test_decode::<CrossOriginResourcePolicy>(&["nope"]), None);
     }
 
     #[test]
     fn parser_rejects_empty_value() {
         assert_eq!(test_decode::<CrossOriginResourcePolicy>(&[""]), None);
-    }
-
-    #[test]
-    fn encode_skips_values_that_are_not_valid_header_values() {
-        let corp: CrossOriginResourcePolicy = "a\nb".parse().unwrap();
-        let map = test_encode(corp);
-        assert!(map.get(CrossOriginResourcePolicy::name()).is_none());
     }
 }

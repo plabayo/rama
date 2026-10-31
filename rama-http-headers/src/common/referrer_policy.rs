@@ -65,11 +65,9 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 pub struct ReferrerPolicy(NonEmptySmallVec<2, Policy>);
 
 enum_builder! {
-    /// One of the eight recognised `Referrer-Policy` tokens. The
-    /// auto-generated `Unknown(String)` variant is unreachable from
-    /// the [`HeaderDecode`] impl — it only stores recognised tokens —
-    /// but the macro produces it unconditionally.
+    /// One of the eight recognised `Referrer-Policy` tokens.
     @String
+    #[strict]
     enum Policy {
         NoReferrer => "no-referrer",
         NoReferrerWhenDowngrade => "no-referrer-when-downgrade",

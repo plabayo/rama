@@ -7,6 +7,7 @@ enum_builder! {
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
     @U8
+    #[strict]
     pub enum ProtocolVersion {
         Socks5 => 0x05,
     }
@@ -17,6 +18,7 @@ enum_builder! {
     ///
     /// [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929#section-2
     @U8
+    #[strict]
     pub enum UsernamePasswordSubnegotiationVersion {
         One => 0x01,
     }
@@ -117,6 +119,7 @@ enum_builder! {
     ///
     /// Reference: <https://datatracker.ietf.org/doc/html/rfc1928>
     @U8
+    #[strict]
     pub enum AddressType {
         /// The address is a version-4 IP address, with a length of 4 octets.
         IpV4 => 0x01,
