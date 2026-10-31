@@ -1123,6 +1123,9 @@ standard_headers! {
     /// `X-Clacks-Overhead` — GNU Terry Pratchett.
     (XClacksOverhead, X_CLACKS_OVERHEAD, b"x-clacks-overhead");
 
+    /// `X-Requested-With` — marks a script-initiated (XHR) request.
+    (XRequestedWith, X_REQUESTED_WITH, b"x-requested-with");
+
     /// `Sec-GPC` — Global Privacy Control.
     (SecGpc, SEC_GPC, b"sec-gpc");
 
@@ -1137,6 +1140,9 @@ standard_headers! {
 
     /// `Sec-Fetch-User` — Fetch Metadata request header.
     (SecFetchUser, SEC_FETCH_USER, b"sec-fetch-user");
+
+    /// `Sec-Purpose` — marks a speculative (prefetch or prerender) request.
+    (SecPurpose, SEC_PURPOSE, b"sec-purpose");
 
     /// `Permissions-Policy`.
     (PermissionsPolicy, PERMISSIONS_POLICY, b"permissions-policy");

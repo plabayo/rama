@@ -33,6 +33,13 @@ use rama::{
 use std::{convert::Infallible, sync::OnceLock};
 
 fn initial_request(connection: &Extensions) -> Request<()> {
+    initial_request_with_purpose(connection, None)
+}
+
+fn initial_request_with_purpose(
+    connection: &Extensions,
+    purpose: Option<&'static str>,
+) -> Request<()> {
     let mut input = request("/report?h3_probe=1");
     *input.version_mut() = Version::HTTP_3;
     input
@@ -45,6 +52,11 @@ fn initial_request(connection: &Extensions) -> Request<()> {
         COOKIE,
         HeaderValue::from_static("rama-storage-auth=private-canary"),
     );
+    if let Some(purpose) = purpose {
+        input
+            .headers_mut()
+            .insert("sec-purpose", HeaderValue::from_static(purpose));
+    }
     input
         .headers_mut()
         .insert("x-bootstrap", HeaderValue::from_static("fresh request"));
@@ -266,6 +278,87 @@ async fn untracked_initial_navigation_is_stored_before_its_exact_bootstrap_conne
             );
         }
     }
+}
+
+#[tokio::test]
+async fn speculative_initial_navigation_keeps_its_bootstrap_but_not_the_navigator() {
+    let (queue, receiver) = queue(8);
+    let service = CaptureLayer::new(queue.clone()).into_layer(
+        StorageAuthLayer {
+            storage_auth: Some("private-canary".to_owned()),
+        }
+        .into_layer(service_fn(|input: Request<()>| async {
+            Ok::<_, Infallible>(input)
+        })),
+    );
+    let connection = Extensions::new();
+    connection.insert(CollectionLease::default());
+    connection.insert(collector::tests::observed());
+    let mut first = initial_request_with_purpose(&connection, Some("prefetch;prerender"));
+    *first.uri_mut() = Uri::parse("/").unwrap();
+    let native = first
+        .extensions()
+        .get_ref::<H3RequestObservation>()
+        .unwrap()
+        .clone();
+    let expected = prepare(&first, None)
+        .unwrap()
+        .joint
+        .canonical(JointCaptureLimits::default())
+        .unwrap()
+        .id;
+    service.serve(first).await.unwrap();
+    let later = service
+        .serve(later_request(&connection, &native, true, true))
+        .await
+        .unwrap();
+    let h3 = data::http3_info(later.extensions()).await.unwrap();
+    submit(later.extensions(), Some(&h3));
+    let records = Arc::new(Mutex::new(Vec::new()));
+    worker::run(
+        receiver,
+        MemorySink(records.clone()),
+        store_limits(),
+        QueueConfig {
+            capacity: 8,
+            ..QueueConfig::default()
+        },
+        async {},
+        current_day,
+        || Ok([8; 12]),
+    )
+    .await
+    .unwrap();
+    let records = records.lock();
+    assert_eq!(records.len(), 3);
+    let request = &records[0].1;
+    assert_eq!(request.joint.level, CaptureLevel::Request);
+    assert_eq!(
+        request
+            .joint
+            .canonical(JointCaptureLimits::default())
+            .unwrap()
+            .id,
+        expected
+    );
+    // The prerender is captured for its bootstrap, never as the navigator's navigation.
+    assert!(!matches!(
+        request.flow.as_ref(),
+        Some(FlowKey::Http {
+            initiator: Some(_),
+            ..
+        })
+    ));
+    let connection = &records[1].1;
+    let slot = connection
+        .joint
+        .slots
+        .iter()
+        .find(|slot| slot.kind == CapturedSlotKind::Http3Bootstrap)
+        .unwrap();
+    let bootstrap =
+        H3BootstrapCapture::from_canonical(&slot.value, H3BootstrapLimits::default()).unwrap();
+    assert_eq!(bootstrap.request, expected);
 }
 
 #[tokio::test]

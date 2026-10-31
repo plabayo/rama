@@ -50,16 +50,9 @@ impl Header {
     where
         R: AsyncRead + Unpin,
     {
-        let version: ProtocolVersion = r.read_u8().await?.into();
-        match version {
-            ProtocolVersion::Socks5 => (),
-            ProtocolVersion::Unknown(version) => {
-                return Err(ProtocolError::UnexpectedByte {
-                    pos: 0,
-                    byte: version,
-                });
-            }
-        }
+        let byte = r.read_u8().await?;
+        let version = ProtocolVersion::try_from(byte)
+            .map_err(|_unknown| ProtocolError::UnexpectedByte { pos: 0, byte })?;
 
         let mlen = r.read_u8().await?;
         let methods = match mlen {
@@ -175,16 +168,9 @@ impl Request {
     where
         R: AsyncRead + Unpin,
     {
-        let version: ProtocolVersion = r.read_u8().await?.into();
-        match version {
-            ProtocolVersion::Socks5 => (),
-            ProtocolVersion::Unknown(version) => {
-                return Err(ProtocolError::UnexpectedByte {
-                    pos: 0,
-                    byte: version,
-                });
-            }
-        }
+        let byte = r.read_u8().await?;
+        let version = ProtocolVersion::try_from(byte)
+            .map_err(|_unknown| ProtocolError::UnexpectedByte { pos: 0, byte })?;
 
         let command: Command = r.read_u8().await?.into();
 
@@ -387,16 +373,9 @@ impl UsernamePasswordRequest {
     where
         R: AsyncRead + Unpin,
     {
-        let version: UsernamePasswordSubnegotiationVersion = r.read_u8().await?.into();
-        match version {
-            UsernamePasswordSubnegotiationVersion::One => (),
-            UsernamePasswordSubnegotiationVersion::Unknown(version) => {
-                return Err(ProtocolError::UnexpectedByte {
-                    pos: 0,
-                    byte: version,
-                });
-            }
-        }
+        let byte = r.read_u8().await?;
+        let version = UsernamePasswordSubnegotiationVersion::try_from(byte)
+            .map_err(|_unknown| ProtocolError::UnexpectedByte { pos: 0, byte })?;
 
         let username_length = r.read_u8().await?;
         if username_length == 0 {
@@ -639,6 +618,28 @@ mod tests {
                 basic: &user::Basic::new_insecure(non_empty_str!("a")),
             },
             UsernamePasswordRequest,
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_bytes_are_rejected_at_their_position() {
+        use std::assert_matches;
+
+        assert_matches!(
+            Header::read_from(&mut &[4u8, 1, 0][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 0, byte: 4 })
+        );
+        assert_matches!(
+            Request::read_from(&mut &[4u8, 1, 0, 1, 127, 0, 0, 1, 0, 80][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 0, byte: 4 })
+        );
+        assert_matches!(
+            Request::read_from(&mut &[5u8, 1, 0, 2, 127, 0, 0, 1, 0, 80][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 3, byte: 2 })
+        );
+        assert_matches!(
+            UsernamePasswordRequest::read_from(&mut &[5u8, 1, b'u', 1, b'p'][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 0, byte: 5 })
         );
     }
 }

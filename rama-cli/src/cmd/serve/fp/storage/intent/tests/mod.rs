@@ -109,11 +109,33 @@ fn only_explicit_report_and_api_flows_prepare_observations() {
         (Method::GET, "/api/ws-other", false),
     ] {
         assert_eq!(
-            initiator(&method, &Uri::parse(path).unwrap()).is_some(),
+            initiator(&method, &Uri::parse(path).unwrap(), &HeaderMap::new()).is_some(),
             expected,
             "{method} {path}"
         );
     }
+}
+
+#[test]
+fn speculative_report_is_not_the_navigator() {
+    let report = Uri::parse("/report").unwrap();
+    let mut headers = HeaderMap::new();
+    for purpose in ["prefetch", "prefetch;prerender"] {
+        headers.insert("sec-purpose", purpose.parse().unwrap());
+        assert!(
+            initiator(&Method::GET, &report, &headers).is_none(),
+            "{purpose}"
+        );
+    }
+    // Other flows are not navigations, so a purpose does not change them.
+    assert!(
+        initiator(
+            &Method::POST,
+            &Uri::parse("/api/fetch/number/1").unwrap(),
+            &headers
+        )
+        .is_some()
+    );
 }
 
 #[tokio::test]

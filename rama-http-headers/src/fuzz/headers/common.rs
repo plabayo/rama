@@ -23,7 +23,7 @@ use crate::{
     ProxyStatus, Range, Referer, ReferrerPolicy, RetryAfter, SecWebSocketAccept,
     SecWebSocketExtensions, SecWebSocketKey, SecWebSocketProtocol, SecWebSocketVersion, Server,
     SetCookie, StrictTransportSecurity, Te, TransferEncoding, Upgrade, UserAgent, Vary,
-    XContentTypeOptions, XFrameOptions,
+    XContentTypeOptions, XFrameOptions, XRequestedWith,
     encoding::{AcceptEncoding, Encoding},
     fuzz::{
         ValuesExercise,
@@ -449,4 +449,8 @@ pub(super) const HEADERS: &[ValuesExercise] = &[
     }),
     decode!(XContentTypeOptions),
     decode!(XFrameOptions),
+    decode!(XRequestedWith, |h| {
+        token(&h);
+        sink(h.as_str());
+    }),
 ];

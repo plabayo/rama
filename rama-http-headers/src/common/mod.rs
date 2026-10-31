@@ -93,6 +93,7 @@ pub use self::vary::Vary;
 //pub use self::warning::Warning;
 pub use self::x_content_type_options::XContentTypeOptions;
 pub use self::x_frame_options::XFrameOptions;
+pub use self::x_requested_with::XRequestedWith;
 
 #[cfg(test)]
 pub(crate) fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
@@ -230,3 +231,4 @@ mod vary;
 //mod warning;
 mod x_content_type_options;
 mod x_frame_options;
+mod x_requested_with;

@@ -135,6 +135,7 @@ rama_utils::macros::enums::enum_builder! {
     /// Possible identifiers used for PerMessageDeflate
     #[derive(Default)]
     @String
+    #[strict]
     pub enum PerMessageDeflateIdentifier {
         #[default]
         /// Standard identifier

@@ -46,16 +46,9 @@ impl Header {
     where
         R: AsyncRead + Unpin,
     {
-        let version: ProtocolVersion = r.read_u8().await?.into();
-        match version {
-            ProtocolVersion::Socks5 => (),
-            ProtocolVersion::Unknown(version) => {
-                return Err(ProtocolError::UnexpectedByte {
-                    pos: 0,
-                    byte: version,
-                });
-            }
-        }
+        let byte = r.read_u8().await?;
+        let version = ProtocolVersion::try_from(byte)
+            .map_err(|_unknown| ProtocolError::UnexpectedByte { pos: 0, byte })?;
 
         let method: SocksMethod = r.read_u8().await?.into();
 
@@ -142,13 +135,9 @@ impl Reply {
     where
         R: AsyncRead + Unpin,
     {
-        let version: ProtocolVersion = r.read_u8().await?.into();
-        match version {
-            ProtocolVersion::Socks5 => (),
-            ProtocolVersion::Unknown(version) => {
-                return Err(ProtocolError::unexpected_byte(0, version));
-            }
-        }
+        let byte = r.read_u8().await?;
+        let version = ProtocolVersion::try_from(byte)
+            .map_err(|_unknown| ProtocolError::unexpected_byte(0, byte))?;
 
         let reply: ReplyKind = r.read_u8().await?.into();
 
@@ -310,13 +299,9 @@ impl UsernamePasswordResponse {
     where
         R: AsyncRead + Unpin,
     {
-        let version: UsernamePasswordSubnegotiationVersion = r.read_u8().await?.into();
-        match version {
-            UsernamePasswordSubnegotiationVersion::One => (),
-            UsernamePasswordSubnegotiationVersion::Unknown(version) => {
-                return Err(ProtocolError::unexpected_byte(0, version));
-            }
-        }
+        let byte = r.read_u8().await?;
+        let version = UsernamePasswordSubnegotiationVersion::try_from(byte)
+            .map_err(|_unknown| ProtocolError::unexpected_byte(0, byte))?;
 
         let status = r.read_u8().await?;
 
@@ -384,6 +369,28 @@ mod tests {
         test_write_read_eq!(
             UsernamePasswordResponse::new_invalid_credentails(),
             UsernamePasswordResponse,
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_bytes_are_rejected_at_their_position() {
+        use std::assert_matches;
+
+        assert_matches!(
+            Header::read_from(&mut &[4u8, 0][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 0, byte: 4 })
+        );
+        assert_matches!(
+            Reply::read_from(&mut &[6u8, 0, 0, 1, 127, 0, 0, 1, 0, 80][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 0, byte: 6 })
+        );
+        assert_matches!(
+            Reply::read_from(&mut &[5u8, 0, 0, 9, 127, 0, 0, 1, 0, 80][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 3, byte: 9 })
+        );
+        assert_matches!(
+            UsernamePasswordResponse::read_from(&mut &[5u8, 0][..]).await,
+            Err(ProtocolError::UnexpectedByte { pos: 0, byte: 5 })
         );
     }
 }

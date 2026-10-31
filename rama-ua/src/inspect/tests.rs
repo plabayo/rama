@@ -94,6 +94,73 @@ fn profile_export_does_not_guess_an_unobserved_request_initiator() {
 }
 
 #[test]
+fn x_requested_with_marks_only_xml_http_request_as_xhr() {
+    let request = |value: &'static str| {
+        Request::builder()
+            .uri("https://example.test/api")
+            .header("x-requested-with", value)
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0
+    };
+    for value in ["XMLHttpRequest", "xmlhttprequest"] {
+        assert_eq!(
+            captured_request_initiator(&request(value), false),
+            Some(RequestInitiator::Xhr),
+            "{value}"
+        );
+    }
+    // Android WebView sends the app's package name: not an XHR.
+    assert_eq!(
+        captured_request_initiator(&request("com.example.app"), false),
+        None
+    );
+    // A singleton header: a repeated line is invalid, so not an XHR either.
+    let mut repeated = request("XMLHttpRequest");
+    repeated.headers.append(
+        "x-requested-with",
+        rama_http::HeaderValue::from_static("XMLHttpRequest"),
+    );
+    assert_eq!(captured_request_initiator(&repeated, false), None);
+}
+
+#[test]
+fn speculative_navigation_is_not_the_navigation_profile() {
+    let navigation = |purpose: Option<&str>| {
+        let mut request = Request::builder()
+            .uri("https://example.test/")
+            .header("sec-fetch-site", "same-origin")
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", "document");
+        if let Some(purpose) = purpose {
+            request = request.header("sec-purpose", purpose);
+        }
+        request.body(()).unwrap().into_parts().0
+    };
+    assert_eq!(
+        captured_request_initiator(&navigation(None), false),
+        Some(RequestInitiator::Navigate)
+    );
+    for purpose in [
+        "prefetch",
+        "prefetch;prerender",
+        "prefetch;anonymous-client-ip",
+    ] {
+        let parts = navigation(Some(purpose));
+        assert_eq!(captured_request_initiator(&parts, false), None, "{purpose}");
+        let mut profile = UserAgentProfileInput::new("browser/1");
+        fill_profile(&mut profile, parts, None, None);
+        assert!(profile.h1_headers_navigate.is_none(), "{purpose}");
+    }
+    // An invalid value is no speculation signal.
+    assert_eq!(
+        captured_request_initiator(&navigation(Some("\"prefetch\"")), false),
+        Some(RequestInitiator::Navigate)
+    );
+}
+
+#[test]
 fn h2_upgrade_initiator_belongs_to_the_supplied_protocol_observation() {
     let (parts, _) = Request::builder()
         .uri("https://example.test/socket")

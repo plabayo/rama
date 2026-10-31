@@ -12,9 +12,9 @@ use crate::{
     AccessControlAllowCredentials, AccessControlAllowHeaders, AccessControlAllowPrivateNetwork,
     AccessControlRequestMethod, AccessControlRequestPrivateNetwork, Allow, AltUsed, Authorization,
     CapsuleProtocol, Connection, Date, HeaderDecode, HeaderEncode, Host, Location, Origin,
-    ProxyAuthorization, SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUser, SecWebSocketAccept,
-    SecWebSocketExtensions, SecWebSocketKey, SecWebSocketProtocol, SecWebSocketVersion, Upgrade,
-    Vary,
+    ProxyAuthorization, SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUser, SecPurpose,
+    SecWebSocketAccept, SecWebSocketExtensions, SecWebSocketKey, SecWebSocketProtocol,
+    SecWebSocketVersion, Upgrade, Vary, XRequestedWith,
 };
 
 fn values(lines: &[&str]) -> Vec<HeaderValue> {
@@ -55,6 +55,7 @@ fn singleton_fields_refuse_a_second_line() {
         SecWebSocketKey => "dGhlIHNhbXBsZSBub25jZQ==", "AQIDBAUGBwgJCgsMDQ4PEA==",
         SecWebSocketAccept => "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
         SecWebSocketVersion => "13", "13",
+        XRequestedWith => "XMLHttpRequest", "XMLHttpRequest",
         AltUsed => "example.com", "example.net",
         CapsuleProtocol => "?1", "?0",
         Date => "Sun, 06 Nov 1994 08:49:37 GMT", "Mon, 07 Nov 1994 08:49:37 GMT",
@@ -87,6 +88,7 @@ fn list_fields_read_every_line() {
         AccessControlAllowHeaders => "x-a", "x-b",
         SecWebSocketProtocol => "chat", "superchat",
         SecWebSocketExtensions => "permessage-deflate", "x-other",
+        SecPurpose => "prefetch;prerender", "prefetch",
         XForwardedFor => "203.0.113.5", "198.51.100.7",
         XForwardedHost => "example.com", "example.net",
         XForwardedProto => "https", "http",

@@ -5,6 +5,10 @@
 //! [`TypedHeader`] of its own; [`FetchMetadata`] reads them together, since the
 //! headers only carry their full meaning as a set.
 //!
+//! `Sec-Purpose` ([`SecPurpose`]) marks a speculative request. It is not
+//! defined by the Fetch Metadata spec, but describes the same request context,
+//! so it lives here and [`FetchMetadata`] carries it too.
+//!
 //! [Fetch Metadata]: https://w3c.github.io/webappsec-fetch-metadata/
 //! [`TypedHeader`]: crate::TypedHeader
 
@@ -65,6 +69,9 @@ pub use mode::SecFetchMode;
 mod site;
 pub use site::SecFetchSite;
 
+mod purpose;
+pub use purpose::{SecPurpose, SecPurposeKind};
+
 mod user;
 pub use user::SecFetchUser;
 
@@ -76,6 +83,11 @@ pub use user::SecFetchUser;
 /// empty, so a partial set (some embedded browsers only send `Sec-Fetch-Site`)
 /// still yields the fields that were sent.
 ///
+/// It also carries [`SecPurpose`], which marks a speculative request (see
+/// [`is_speculative`]). That header is not defined by the Fetch Metadata spec,
+/// but is read alongside the four that are, as it describes the same context.
+///
+/// [`is_speculative`]: Self::is_speculative
 /// [Fetch Metadata]: https://w3c.github.io/webappsec-fetch-metadata/
 /// [`TypedHeader`]: crate::TypedHeader
 ///
@@ -109,6 +121,8 @@ pub struct FetchMetadata {
     /// Whether the `Sec-Fetch-User` header was sent, marking a navigation
     /// triggered by user activation.
     pub user: bool,
+    /// The `Sec-Purpose` header, sent on a speculative request.
+    pub purpose: Option<SecPurpose>,
 }
 
 impl FetchMetadata {
@@ -124,6 +138,7 @@ impl FetchMetadata {
             mode: headers.typed_get(),
             dest: headers.typed_get(),
             user: headers.typed_get::<SecFetchUser>().is_some(),
+            purpose: headers.typed_get(),
         };
         (!metadata.is_empty()).then_some(metadata)
     }
@@ -133,16 +148,47 @@ impl FetchMetadata {
     /// Present fields replace their header; absent fields remove it, so the
     /// map carries exactly this metadata afterwards.
     pub fn insert_into(&self, headers: &mut HeaderMap) {
-        insert_or_remove(headers, self.site.clone());
-        insert_or_remove(headers, self.mode.clone());
-        insert_or_remove(headers, self.dest.clone());
-        insert_or_remove(headers, self.user.then_some(SecFetchUser));
+        // Destructured so a new field fails to compile until it is written here.
+        let Self {
+            site,
+            mode,
+            dest,
+            user,
+            purpose,
+        } = self;
+        insert_or_remove(headers, site.clone());
+        insert_or_remove(headers, mode.clone());
+        insert_or_remove(headers, dest.clone());
+        insert_or_remove(headers, user.then_some(SecFetchUser));
+        insert_or_remove(headers, purpose.clone());
     }
 
     /// Whether no field is set.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.site.is_none() && self.mode.is_none() && self.dest.is_none() && !self.user
+        // Destructured so a new field fails to compile until it is checked here.
+        let Self {
+            site,
+            mode,
+            dest,
+            user,
+            purpose,
+        } = self;
+        site.is_none() && mode.is_none() && dest.is_none() && !user && purpose.is_none()
+    }
+
+    /// Whether the browser marked this request as speculative: a prefetch or
+    /// prerender (`Sec-Purpose`) rather than a load the user asked for.
+    ///
+    /// This labels a request, it does not prove the response was never shown.
+    /// When the user goes on to a prefetched or prerendered page, the browser
+    /// uses the speculative response and sends no second request. Excluding
+    /// speculative requests from page-view counts therefore undercounts;
+    /// knowing whether one was seen takes a client-side signal, such as
+    /// `document.prerendering` and the `prerenderingchange` event.
+    #[must_use]
+    pub fn is_speculative(&self) -> bool {
+        self.purpose.is_some()
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -173,6 +219,14 @@ impl FetchMetadata {
         /// Set whether the request was triggered by user activation (`Sec-Fetch-User`).
         pub fn user(mut self, user: bool) -> Self {
             self.user = user;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the `Sec-Purpose` value.
+        pub fn purpose(mut self, purpose: Option<SecPurpose>) -> Self {
+            self.purpose = purpose;
             self
         }
     }

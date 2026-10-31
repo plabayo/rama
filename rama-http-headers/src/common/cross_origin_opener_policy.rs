@@ -27,11 +27,9 @@ enum_builder! {
     /// COOP is combined with a cross-origin-isolating COEP, and the
     /// COOP header parser rejects it. It's intentionally not modelled
     /// here.
-    ///
-    /// The auto-generated [`Unknown`](Self::Unknown) variant is
-    /// reachable only via direct construction; the COOP decoder uses
-    /// strict parsing and rejects any token outside the spec set.
     @String
+    #[strict]
+    #[case_sensitive]
     pub enum CrossOriginOpenerPolicyValue {
         /// `unsafe-none` — the spec default when the header is absent.
         UnsafeNone => "unsafe-none",
@@ -286,6 +284,21 @@ mod tests {
     }
 
     #[test]
+    fn parser_matches_tokens_case_sensitively() {
+        // Browsers compare the token exactly and ignore any other spelling.
+        for raw in ["Same-Origin", "UNSAFE-NONE"] {
+            assert!(
+                test_decode::<CrossOriginOpenerPolicy>(&[raw]).is_none(),
+                "{raw}"
+            );
+            assert!(
+                test_decode::<CrossOriginOpenerPolicyReportOnly>(&[raw]).is_none(),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
     fn parser_rejects_same_origin_plus_coep_per_spec() {
         // The HTML Standard explicitly excludes `same-origin-plus-COEP`
         // from valid wire values for the COOP header — it's an
@@ -364,11 +377,5 @@ mod tests {
         // an unrepresentable endpoint drops reporting, never the policy itself
         let map = test_encode(CrossOriginOpenerPolicy::same_origin().with_report_to("a\r\nb"));
         assert_eq!(map[CrossOriginOpenerPolicy::name()], "same-origin");
-
-        let map = test_encode(CrossOriginOpenerPolicyReportOnly {
-            value: "\u{7f}".parse().unwrap(),
-            report_to: None,
-        });
-        assert!(map.get(CrossOriginOpenerPolicyReportOnly::name()).is_none());
     }
 }
