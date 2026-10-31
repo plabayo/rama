@@ -5,8 +5,9 @@
 /// By default an enum keeps any unrecognized value in an `Unknown` variant,
 /// and converting into it never fails. With `#[strict]` (after the `@U8`,
 /// `@U16`, `@U64`, `@Bytes` or `@String` kind) the enum has no `Unknown`
-/// variant: conversions become `TryFrom` (and a fallible `FromStr`) that fail
-/// with [`UnknownEnumValue`](crate::macros::enums::UnknownEnumValue), and
+/// variant: conversions become `TryFrom` (plus a fallible `FromStr` for
+/// `@Bytes` and `@String`; numeric kinds have no `FromStr`) that fail with
+/// [`UnknownEnumValue`](crate::macros::enums::UnknownEnumValue), and
 /// deserializing an unrecognized value fails. Use it when an unknown value is
 /// never meaningful. `#[display_unknown = f]` only applies to the default mode.
 ///
@@ -152,7 +153,7 @@ macro_rules! __enum_builder {
                                 return ::core::cmp::Ordering::Less;
                             }
                         )?
-                        self.known_variant_name().cmp(&other.known_variant_name())
+                        self.__known_variant_name().cmp(&other.__known_variant_name())
                     }
                     ordering => ordering,
                 }
@@ -178,12 +179,12 @@ macro_rules! __enum_builder {
                         );
                     }
                 )?
-                $crate::macros::enums::__Cow::Borrowed(self.known_variant_name())
+                $crate::macros::enums::__Cow::Borrowed(self.__known_variant_name())
             }
 
             /// Return a known value's variant name, and `""` for an unknown
             /// value, which every caller handles before this.
-            fn known_variant_name(&self) -> &'static str {
+            fn __known_variant_name(&self) -> &'static str {
                 match self {
                     $(Self::$enum_var => stringify!($enum_var),)*
                     $(Self::$unknown(_) => "",)?
@@ -191,7 +192,7 @@ macro_rules! __enum_builder {
             }
 
             /// The variant `value` is known as, if any.
-            fn from_known_value(value: $number) -> Option<Self> {
+            fn __from_known_value(value: $number) -> Option<Self> {
                 match value {
                     $($enum_val => Some($enum_name::$enum_var),)*
                     _ => None,
@@ -202,7 +203,7 @@ macro_rules! __enum_builder {
         $(
             impl From<$number> for $enum_name {
                 fn from(x: $number) -> Self {
-                    Self::from_known_value(x).unwrap_or(Self::$unknown(x))
+                    Self::__from_known_value(x).unwrap_or(Self::$unknown(x))
                 }
             }
         )?
@@ -212,7 +213,7 @@ macro_rules! __enum_builder {
                 type Error = $strict_err;
 
                 fn try_from(x: $number) -> Result<Self, Self::Error> {
-                    Self::from_known_value(x).ok_or(<$strict_err>::__new(stringify!($enum_name)))
+                    Self::__from_known_value(x).ok_or(<$strict_err>::__new(stringify!($enum_name)))
                 }
             }
         )?
@@ -316,7 +317,7 @@ macro_rules! __enum_builder {
             }
 
             /// The variant `bytes` are known as, if any.
-            fn from_known_bytes(bytes: &[u8]) -> Option<Self> {
+            fn __from_known_bytes(bytes: &[u8]) -> Option<Self> {
                 match bytes {
                     $($enum_val => Some($enum_name::$enum_var),)*
                     _ => None,
@@ -327,7 +328,7 @@ macro_rules! __enum_builder {
         $(
             impl<'a> From<&'a [u8]> for $enum_name {
                 fn from(b: &'a [u8]) -> Self {
-                    Self::from_known_bytes(b).unwrap_or_else(|| Self::$unknown(b.to_vec()))
+                    Self::__from_known_bytes(b).unwrap_or_else(|| Self::$unknown(b.to_vec()))
                 }
             }
 
@@ -347,7 +348,7 @@ macro_rules! __enum_builder {
                 type Err = ::core::convert::Infallible;
 
                 fn from_str(s: &str) -> Result<Self, Self::Err> {
-                    Ok(Self::from_known_bytes(s.as_bytes())
+                    Ok(Self::__from_known_bytes(s.as_bytes())
                         .unwrap_or_else(|| Self::$unknown(s.as_bytes().to_vec())))
                 }
             }
@@ -360,7 +361,7 @@ macro_rules! __enum_builder {
 
             impl From<$crate::macros::enums::__Vec<u8>> for $enum_name {
                 fn from(b: $crate::macros::enums::__Vec<u8>) -> Self {
-                    match Self::from_known_bytes(&b) {
+                    match Self::__from_known_bytes(&b) {
                         Some(known) => known,
                         None => $enum_name::$unknown(b),
                     }
@@ -373,7 +374,7 @@ macro_rules! __enum_builder {
                 type Error = $strict_err;
 
                 fn try_from(b: &'a [u8]) -> Result<Self, Self::Error> {
-                    Self::from_known_bytes(b).ok_or(<$strict_err>::__new(stringify!($enum_name)))
+                    Self::__from_known_bytes(b).ok_or(<$strict_err>::__new(stringify!($enum_name)))
                 }
             }
 
@@ -381,7 +382,7 @@ macro_rules! __enum_builder {
                 type Error = $strict_err;
 
                 fn try_from(s: &'a str) -> Result<Self, Self::Error> {
-                    Self::try_from(s.as_bytes())
+                    <Self as ::core::convert::TryFrom<&[u8]>>::try_from(s.as_bytes())
                 }
             }
 
@@ -389,7 +390,7 @@ macro_rules! __enum_builder {
                 type Err = $strict_err;
 
                 fn from_str(s: &str) -> Result<Self, Self::Err> {
-                    Self::try_from(s.as_bytes())
+                    <Self as ::core::convert::TryFrom<&[u8]>>::try_from(s.as_bytes())
                 }
             }
         )?
@@ -525,6 +526,16 @@ macro_rules! __enum_builder {
                     , _ => None,
                 })
             }
+
+            /// The variant spelled exactly `s`, if any.
+            // NOTE(allow) only the default mode has a caller
+            #[allow(dead_code)]
+            fn __from_exact_str(s: &str) -> Option<Self> {
+                match s {
+                    $($enum_val $(| $enum_val_alt)* => Some($enum_name::$enum_var),)*
+                    _ => None,
+                }
+            }
         }
 
         $(
@@ -542,9 +553,10 @@ macro_rules! __enum_builder {
                 }
             }
 
+            // Unlike `From<&str>`, an owned string must match a value exactly.
             impl From<$crate::macros::enums::__String> for $enum_name {
                 fn from(s: $crate::macros::enums::__String) -> Self {
-                    Self::strict_parse(&s).unwrap_or_else(|| Self::$unknown(s.into_boxed_str()))
+                    Self::__from_exact_str(&s).unwrap_or_else(|| Self::$unknown(s.into_boxed_str()))
                 }
             }
         )?
@@ -562,7 +574,7 @@ macro_rules! __enum_builder {
                 type Err = $strict_err;
 
                 fn from_str(s: &str) -> Result<Self, Self::Err> {
-                    Self::try_from(s)
+                    <Self as ::core::convert::TryFrom<&str>>::try_from(s)
                 }
             }
         )?

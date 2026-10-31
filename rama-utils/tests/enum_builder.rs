@@ -40,6 +40,13 @@ mod nested {
             Known => 7,
         }
     }
+
+    rama_utils::macros::enums::enum_builder! {
+        @String
+        pub enum TextEnum {
+            Known => "known" | "alias",
+        }
+    }
 }
 
 #[test]
@@ -60,6 +67,27 @@ fn numeric_enum_expands_without_caller_imports() {
     assert_eq!(known, nested::NumberEnum::Known);
     assert_eq!(known.variant_name(), "Known");
     assert_eq!(nested::NumberEnum::from(8).variant_name(), "8");
+}
+
+#[test]
+fn lenient_string_enum_matches_owned_strings_exactly() {
+    use nested::TextEnum;
+
+    // A borrowed string matches ignoring ASCII case and surrounding whitespace.
+    for s in ["known", "KNOWN", " known ", "Alias"] {
+        assert_eq!(TextEnum::from(s), TextEnum::Known, "{s:?}");
+        assert_eq!(s.parse::<TextEnum>().unwrap(), TextEnum::Known, "{s:?}");
+    }
+    // An owned string only matches a value exactly.
+    assert_eq!(TextEnum::from("known".to_owned()), TextEnum::Known);
+    assert_eq!(TextEnum::from("alias".to_owned()), TextEnum::Known);
+    for s in ["KNOWN", " known "] {
+        assert_eq!(
+            TextEnum::from(s.to_owned()),
+            TextEnum::Unknown(s.into()),
+            "{s:?}"
+        );
+    }
 }
 
 #[test]
