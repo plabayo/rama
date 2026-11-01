@@ -24,6 +24,7 @@ fn ipv4() -> Ipv4Header {
         IpProtocol::UDP,
     )
 }
+
 fn ipv6(protocol: IpProtocol) -> Ipv6Header {
     Ipv6Header::new(
         "2001:db8::1".parse().unwrap(),
@@ -300,4 +301,40 @@ fn fragment_size_includes_the_reconstructed_header() {
         Ipv6Packet::parse(&bytes[..n]).unwrap_err(),
         IpPacketError::Length
     );
+}
+
+#[test]
+fn checksum_matches_independent_odd_length_and_carry_vectors() {
+    for (bytes, expected) in [
+        (&[][..], 0xffff),
+        (&[1][..], 0xfeff),
+        (&[0xff][..], 0x00ff),
+        (&[1, 2, 3][..], 0xfbfd),
+        (&[0xff, 0xff, 0xff][..], 0x00ff),
+    ] {
+        assert_eq!(internet_checksum(bytes), expected);
+    }
+    // A wide scalar sum is independent of the incremental implementation's
+    // per-word carry folding and buffering across odd slice boundaries.
+    fn reference(bytes: &[u8]) -> u16 {
+        let mut sum: u64 = bytes
+            .chunks(2)
+            .map(|pair| (u64::from(pair[0]) << 8) + u64::from(pair.get(1).copied().unwrap_or(0)))
+            .sum();
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        !(sum as u16)
+    }
+    let bytes: Vec<_> = (0..131_073).map(|i| (i * 37 + 19) as u8).collect();
+    for len in [1, 2, 3, 511, 512, 513, 65_535, 131_072, 131_073] {
+        let expected = reference(&bytes[..len]);
+        assert_eq!(internet_checksum(&bytes[..len]), expected);
+        let mut incremental = InternetChecksum::new();
+        for part in bytes[..len].chunks(37) {
+            incremental.update(part);
+            incremental.update(&[]);
+        }
+        assert_eq!(incremental.finish(), expected);
+    }
 }

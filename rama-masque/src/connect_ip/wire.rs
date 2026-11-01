@@ -12,11 +12,13 @@ pub const ADDRESS_ASSIGN: CapsuleType = match CapsuleType::new(1) {
     Ok(v) => v,
     Err(_) => panic!("invalid capsule constant"),
 };
+
 /// ADDRESS_REQUEST (RFC 9484 §4.7.2).
 pub const ADDRESS_REQUEST: CapsuleType = match CapsuleType::new(2) {
     Ok(v) => v,
     Err(_) => panic!("invalid capsule constant"),
 };
+
 /// ROUTE_ADVERTISEMENT (RFC 9484 §4.7.3).
 pub const ROUTE_ADVERTISEMENT: CapsuleType = match CapsuleType::new(3) {
     Ok(v) => v,
@@ -44,6 +46,7 @@ pub enum ConnectIpProtocolError {
     /// This is not a defined CONNECT-IP control capsule.
     CapsuleType,
 }
+
 impl fmt::Display for ConnectIpProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -58,6 +61,7 @@ impl fmt::Display for ConnectIpProtocolError {
         })
     }
 }
+
 impl std::error::Error for ConnectIpProtocolError {}
 
 /// One source prefix assigned to the peer. An assignment capsule is a full snapshot.
@@ -68,6 +72,7 @@ pub struct AddressAssignment {
     /// Canonical assigned prefix, or 0.0.0.0/32 or ::/128 to reject a request.
     pub prefix: IpNet,
 }
+
 impl AddressAssignment {
     /// Whether the entry reports that an address request was refused.
     #[must_use]
@@ -76,6 +81,7 @@ impl AddressAssignment {
             && self.prefix.prefix_len() == family_bits(self.prefix.addr())
     }
 }
+
 /// A preferred source prefix requested from the peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddressRequest {
@@ -99,6 +105,7 @@ pub struct IpRoute {
     /// Restricted protocol, or all protocols.
     pub protocol: Option<IpProtocol>,
 }
+
 impl IpRoute {
     /// Route all addresses in a prefix, without allocating individual addresses.
     #[must_use]
@@ -109,11 +116,13 @@ impl IpRoute {
             protocol,
         }
     }
+
     /// Whether the address is in this range, irrespective of protocol.
     #[must_use]
     pub fn contains(self, address: IpAddr) -> bool {
         address.is_ipv4() == self.start.is_ipv4() && self.start <= address && address <= self.end
     }
+
     /// Whether this range permits an address and known protocol.
     #[must_use]
     pub fn allows(self, address: IpAddr, protocol: Option<IpProtocol>) -> bool {
@@ -140,6 +149,7 @@ pub enum ConnectIpCapsule {
     /// Complete advertised route snapshot for the receiver.
     RouteAdvertisement(Vec<IpRoute>),
 }
+
 impl ConnectIpCapsule {
     /// Capsule type on the wire.
     #[must_use]
@@ -150,6 +160,7 @@ impl ConnectIpCapsule {
             Self::RouteAdvertisement(_) => ROUTE_ADVERTISEMENT,
         }
     }
+
     /// Decode a complete value, enforcing an entry bound before growing state.
     pub fn decode(
         ty: CapsuleType,
@@ -218,17 +229,17 @@ impl ConnectIpCapsule {
             _ => Err(ConnectIpProtocolError::CapsuleType),
         }
     }
-    /// Encode the value (the generic HTTP layer writes the capsule header).
-    pub fn encode(&self, max_entries: usize) -> Result<Bytes, ConnectIpProtocolError> {
-        let mut out = BytesMut::new();
+
+    /// Validate a capsule without allocating a serialized copy, and size its value.
+    pub(super) fn encoded_len(&self, max_entries: usize) -> Result<usize, ConnectIpProtocolError> {
         match self {
             Self::AddressAssign(entries) => {
                 if entries.len() > max_entries {
                     return Err(ConnectIpProtocolError::Limit);
                 }
-                for e in entries {
-                    put_prefix(&mut out, e.request_id, e.prefix)?;
-                }
+                entries.iter().try_fold(0, |len, e| {
+                    Ok(len + prefix_encoded_len(e.request_id, e.prefix)?)
+                })
             }
             Self::AddressRequest(entries) => {
                 if entries.is_empty() {
@@ -237,18 +248,41 @@ impl ConnectIpCapsule {
                 if entries.len() > max_entries {
                     return Err(ConnectIpProtocolError::Limit);
                 }
-                for e in entries {
+                entries.iter().try_fold(0, |len, e| {
                     if e.request_id == 0 {
                         return Err(ConnectIpProtocolError::RequestId);
                     }
-                    put_prefix(&mut out, e.request_id, e.prefix)?;
-                }
+                    Ok(len + prefix_encoded_len(e.request_id, e.prefix)?)
+                })
             }
             Self::RouteAdvertisement(routes) => {
                 if routes.len() > max_entries {
                     return Err(ConnectIpProtocolError::Limit);
                 }
                 validate_routes(routes)?;
+                Ok(routes
+                    .iter()
+                    .map(|r| if r.start.is_ipv4() { 10 } else { 34 })
+                    .sum())
+            }
+        }
+    }
+
+    /// Encode the value (the generic HTTP layer writes the capsule header).
+    pub fn encode(&self, max_entries: usize) -> Result<Bytes, ConnectIpProtocolError> {
+        let mut out = BytesMut::with_capacity(self.encoded_len(max_entries)?);
+        match self {
+            Self::AddressAssign(entries) => {
+                for e in entries {
+                    put_prefix(&mut out, e.request_id, e.prefix)?;
+                }
+            }
+            Self::AddressRequest(entries) => {
+                for e in entries {
+                    put_prefix(&mut out, e.request_id, e.prefix)?;
+                }
+            }
+            Self::RouteAdvertisement(routes) => {
                 for r in routes {
                     out.put_u8(if r.start.is_ipv4() { 4 } else { 6 });
                     put_address(&mut out, r.start);
@@ -301,6 +335,7 @@ pub fn validate_routes(routes: &[IpRoute]) -> Result<(), ConnectIpProtocolError>
     }
     Ok(())
 }
+
 fn validate_prefix(prefix: IpNet) -> Result<(), ConnectIpProtocolError> {
     if prefix.addr() != prefix.network() {
         Err(ConnectIpProtocolError::Prefix)
@@ -308,9 +343,11 @@ fn validate_prefix(prefix: IpNet) -> Result<(), ConnectIpProtocolError> {
         Ok(())
     }
 }
+
 fn family_bits(address: IpAddr) -> u8 {
     if address.is_ipv4() { 32 } else { 128 }
 }
+
 fn take_byte(input: &mut &[u8]) -> Result<u8, ConnectIpProtocolError> {
     let (&b, rest) = input
         .split_first()
@@ -318,6 +355,7 @@ fn take_byte(input: &mut &[u8]) -> Result<u8, ConnectIpProtocolError> {
     *input = rest;
     Ok(b)
 }
+
 fn take_address(input: &mut &[u8], version: u8) -> Result<IpAddr, ConnectIpProtocolError> {
     let len = match version {
         4 => 4,
@@ -335,12 +373,20 @@ fn take_address(input: &mut &[u8], version: u8) -> Result<IpAddr, ConnectIpProto
     *input = &input[len..];
     Ok(address)
 }
+
 fn put_address(out: &mut BytesMut, address: IpAddr) {
     match address {
         IpAddr::V4(a) => out.extend_from_slice(&a.octets()),
         IpAddr::V6(a) => out.extend_from_slice(&a.octets()),
     }
 }
+
+fn prefix_encoded_len(id: u64, prefix: IpNet) -> Result<usize, ConnectIpProtocolError> {
+    validate_prefix(prefix)?;
+    let id = VarInt::from_u64(id).map_err(|_error| ConnectIpProtocolError::RequestId)?;
+    Ok(id.size() + 2 + if prefix.addr().is_ipv4() { 4 } else { 16 })
+}
+
 fn put_prefix(out: &mut BytesMut, id: u64, prefix: IpNet) -> Result<(), ConnectIpProtocolError> {
     validate_prefix(prefix)?;
     VarInt::from_u64(id)
@@ -360,11 +406,17 @@ pub fn decode_ip_datagram(mut datagram: &[u8]) -> Result<(u64, &[u8]), ConnectIp
         .into_inner();
     Ok((id, datagram))
 }
+
 /// Prefix an IP packet with context zero. IP validation belongs to the packet/session API.
 #[must_use]
 pub fn encode_ip_datagram(packet: &[u8]) -> Bytes {
+    encode_ip_datagram_mut(packet).freeze()
+}
+
+// Keep the framing buffer mutable until forwarding edits have been applied.
+pub(super) fn encode_ip_datagram_mut(packet: &[u8]) -> BytesMut {
     let mut out = BytesMut::with_capacity(1 + packet.len());
     out.put_u8(0);
     out.extend_from_slice(packet);
-    out.freeze()
+    out
 }

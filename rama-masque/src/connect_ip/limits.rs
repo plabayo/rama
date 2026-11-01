@@ -22,6 +22,7 @@ pub struct IpAdmissionLimits {
     /// Rates shared by every tunnel of one principal.
     pub budget: IpBudgetConfig,
 }
+
 impl Default for IpAdmissionLimits {
     fn default() -> Self {
         Self {
@@ -33,17 +34,20 @@ impl Default for IpAdmissionLimits {
         }
     }
 }
+
 #[derive(Debug)]
 struct Principal {
     live: usize,
     idle_since: Instant,
     budget: ConnectIpBudget,
 }
+
 #[derive(Debug, Default)]
 struct Counts {
     live: usize,
     principals: HashMap<PrincipalKey, Principal>,
 }
+
 /// Shared tunnel admission state. Clones count against the same bounds.
 #[derive(Debug, Clone)]
 pub struct ConnectIpLimits {
@@ -51,11 +55,13 @@ pub struct ConnectIpLimits {
     retention: Duration,
     counts: Arc<Mutex<Counts>>,
 }
+
 impl Default for ConnectIpLimits {
     fn default() -> Self {
         Self::from_validated(IpAdmissionLimits::default())
     }
 }
+
 impl ConnectIpLimits {
     /// Construct limits, refusing zero capacities or budget bursts.
     pub fn try_new(config: IpAdmissionLimits) -> Result<Self, ConnectIpError> {
@@ -68,6 +74,7 @@ impl ConnectIpLimits {
         ConnectIpBudget::new(config.budget)?;
         Ok(Self::from_validated(config))
     }
+
     fn from_validated(config: IpAdmissionLimits) -> Self {
         let refill = |rate: rama_utils::rate::Rate, burst: u64| {
             let nanos = (rate.per().as_nanos().saturating_mul(u128::from(burst)))
@@ -84,11 +91,13 @@ impl ConnectIpLimits {
             counts: Arc::default(),
         }
     }
+
     /// Number of admitted, not-yet-ended tunnels (includes pending upgrades).
     #[must_use]
     pub fn live_tunnels(&self) -> usize {
         self.counts.lock().live
     }
+
     pub(super) fn admit(&self, request: &Request) -> Result<IpTunnelLease, ConnectIpError> {
         let key = UserOrClientIpKey::new()
             .rate_key(request)
@@ -136,12 +145,14 @@ impl ConnectIpLimits {
         })
     }
 }
+
 #[derive(Debug)]
 pub(super) struct IpTunnelLease {
     limits: ConnectIpLimits,
     key: PrincipalKey,
     pub budget: ConnectIpBudget,
 }
+
 impl Drop for IpTunnelLease {
     fn drop(&mut self) {
         let mut counts = self.limits.counts.lock();

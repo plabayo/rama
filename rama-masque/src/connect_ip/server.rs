@@ -29,6 +29,7 @@ pub struct ConnectIpRequest {
     /// Validated scope requested by the client; not yet an authorization decision.
     pub scope: ConnectIpScope,
 }
+
 /// A Rama CONNECT-IP proxy service, independent of the platform packet interface.
 ///
 /// `A` authorizes each request and returns local packet permissions/configuration.
@@ -49,6 +50,7 @@ pub struct ConnectIpService<A, H, R = GlobalDnsResolver> {
     limits: ConnectIpLimits,
     open_timeout: Duration,
 }
+
 impl<A, H, R: fmt::Debug> fmt::Debug for ConnectIpService<A, H, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConnectIpService")
@@ -58,6 +60,7 @@ impl<A, H, R: fmt::Debug> fmt::Debug for ConnectIpService<A, H, R> {
             .finish_non_exhaustive()
     }
 }
+
 impl<A, H, R> Clone for ConnectIpService<A, H, R> {
     fn clone(&self) -> Self {
         Self {
@@ -71,6 +74,7 @@ impl<A, H, R> Clone for ConnectIpService<A, H, R> {
         }
     }
 }
+
 impl<A, H> ConnectIpService<A, H> {
     /// Create a service with bounded total/principal admission and a ten-second
     /// deadline covering admission, DNS and upgrade. No forwarding policy is implicit.
@@ -86,6 +90,7 @@ impl<A, H> ConnectIpService<A, H> {
         }
     }
 }
+
 impl<A, H, R> ConnectIpService<A, H, R> {
     generate_set_and_with! { /// Shared admission and principal accounting.
     pub fn limits(mut self,limits:ConnectIpLimits)->Self {self.limits=limits;self} }
@@ -104,6 +109,7 @@ impl<A, H, R> ConnectIpService<A, H, R> {
         }
     }
 }
+
 impl<A, H, R> Service<Request> for ConnectIpService<A, H, R>
 where
     A: Service<ConnectIpRequest, Output = ConnectIpSessionConfig, Error: Into<BoxError>>,
@@ -177,6 +183,7 @@ where
         Ok(response)
     }
 }
+
 fn refuse(version: Version, status: StatusCode) -> Response {
     let mut response = Response::new(Body::empty());
     *response.status_mut() = status;
@@ -246,6 +253,7 @@ impl<R: DnsAddressResolver> DnsAddressResolver for BoundedResolver<R> {
     {
         self.0.lookup_ipv4(domain).take(257)
     }
+
     fn lookup_ipv6(
         &self,
         domain: rama_net::address::Domain,

@@ -1,7 +1,7 @@
 use super::{
     ADDRESS_ASSIGN, ADDRESS_REQUEST, ConnectIpCapsule, ConnectIpPolicy, ConnectIpProtocolError,
     ConnectIpState, ConnectIpStateLimits, IpPacketDrop, ROUTE_ADVERTISEMENT, decode_ip_datagram,
-    encode_ip_datagram,
+    wire::encode_ip_datagram_mut,
 };
 use parking_lot::Mutex;
 use rama_core::{bytes::Bytes, extensions::ExtensionsRef};
@@ -43,6 +43,7 @@ pub struct IpBudgetConfig {
     /// Lifetime byte quota. `None` leaves lifetime bytes unlimited, but rates apply.
     pub byte_quota: Option<u64>,
 }
+
 impl Default for IpBudgetConfig {
     fn default() -> Self {
         Self {
@@ -54,6 +55,7 @@ impl Default for IpBudgetConfig {
         }
     }
 }
+
 /// A shared principal/connection budget. Clones spend the same counters/buckets.
 #[derive(Debug, Clone)]
 pub struct ConnectIpBudget {
@@ -61,6 +63,7 @@ pub struct ConnectIpBudget {
     bytes: RateLimiter,
     remaining: Option<Arc<AtomicU64>>,
 }
+
 impl ConnectIpBudget {
     /// Construct a budget; zero bursts are refused.
     pub fn new(config: IpBudgetConfig) -> Result<Self, ConnectIpError> {
@@ -73,6 +76,7 @@ impl ConnectIpBudget {
             remaining: config.byte_quota.map(|q| Arc::new(AtomicU64::new(q))),
         })
     }
+
     pub(super) fn charge(&self, bytes: u64) -> bool {
         if let Some(remaining) = &self.remaining
             && remaining
@@ -115,6 +119,7 @@ pub struct ConnectIpSessionConfig {
     /// Optional shared principal/connection budgets, charged before the tunnel budget.
     pub shared_budgets: Vec<ConnectIpBudget>,
 }
+
 impl ConnectIpSessionConfig {
     /// A bounded session, with IPv6 disabled until its link MTU is verified.
     #[must_use]
@@ -130,6 +135,7 @@ impl ConnectIpSessionConfig {
             shared_budgets: Vec::new(),
         }
     }
+
     fn validate(&self) -> Result<(), ConnectIpError> {
         if self.max_packet_size < 20
             || self.max_packet_size > 65575
@@ -147,6 +153,7 @@ impl ConnectIpSessionConfig {
         }
         Ok(())
     }
+
     /// HTTP framing configuration, also used when constructing external test carriers.
     pub fn http_config(&self) -> Result<SessionConfig, ConnectIpError> {
         self.validate()?;
@@ -163,6 +170,7 @@ impl ConnectIpSessionConfig {
         })
     }
 }
+
 /// Terminal session failures. Ordinary IP forwarding errors are reported as drops.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -182,6 +190,7 @@ pub enum ConnectIpError {
     /// Native datagram capacity or probing cannot sustain the IPv6 link MTU.
     Ipv6Mtu,
 }
+
 impl fmt::Display for ConnectIpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -195,12 +204,15 @@ impl fmt::Display for ConnectIpError {
         }
     }
 }
+
 impl std::error::Error for ConnectIpError {}
+
 impl From<ConnectIpProtocolError> for ConnectIpError {
     fn from(e: ConnectIpProtocolError) -> Self {
         Self::Protocol(e)
     }
 }
+
 impl From<SessionError> for ConnectIpError {
     fn from(e: SessionError) -> Self {
         Self::Carrier(e)
@@ -222,6 +234,7 @@ pub enum ConnectIpEvent {
     /// A packet was discarded; the request stream remains usable.
     Dropped(IpPacketDrop),
 }
+
 /// Whether an outgoing packet was generated here or is crossing links.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpPacketOrigin {
@@ -230,6 +243,7 @@ pub enum IpPacketOrigin {
     /// Rama forwards this packet between links; decrement once before encapsulation.
     Forwarded,
 }
+
 /// Result of a packet send. Unreliable delivery does not imply peer receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpPacketSend {
@@ -238,6 +252,7 @@ pub enum IpPacketSend {
     /// Refused locally; no packet was sent.
     Dropped(IpPacketDrop),
 }
+
 /// Cheap counters without addresses, payloads or credentials.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConnectIpStats {
@@ -263,11 +278,13 @@ struct Shared {
     received: AtomicU64,
     dropped: AtomicU64,
 }
+
 impl Shared {
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
         self.notify.notify_waiters();
     }
+
     async fn cancelled(&self) {
         loop {
             let notified = self.notify.notified();
@@ -279,6 +296,7 @@ impl Shared {
             notified.await;
         }
     }
+
     fn active(&self) -> Result<(), ConnectIpError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(ConnectIpError::Closed);
@@ -295,12 +313,15 @@ impl Shared {
         }
         Ok(())
     }
+
     pub(super) fn charge(&self, bytes: u64) -> bool {
         self.config.shared_budgets.iter().all(|b| b.charge(bytes)) && self.budget.charge(bytes)
     }
+
     fn touch(&self) {
         *self.last_activity.lock() = Instant::now();
     }
+
     fn stats(&self) -> ConnectIpStats {
         ConnectIpStats {
             sent: self.sent.load(Ordering::Relaxed),
@@ -308,7 +329,8 @@ impl Shared {
             dropped: self.dropped.load(Ordering::Relaxed),
         }
     }
-    fn check(&self, bytes: &[u8], outgoing: bool) -> Result<(), IpPacketDrop> {
+
+    fn check<'a>(&self, bytes: &'a [u8], outgoing: bool) -> Result<IpPacket<'a>, IpPacketDrop> {
         if bytes.len() > self.config.max_packet_size {
             return Err(IpPacketDrop::TooLarge);
         }
@@ -327,17 +349,21 @@ impl Shared {
         }
         self.config
             .policy
-            .check(packet, outgoing, &self.state.lock())
+            .check(packet, outgoing, &self.state.lock())?;
+        Ok(packet)
     }
+
     fn drop_packet(&self, reason: IpPacketDrop) -> IpPacketSend {
         self.dropped.fetch_add(1, Ordering::Relaxed);
         IpPacketSend::Dropped(reason)
     }
 }
+
 struct SendGuard {
     shared: Arc<Shared>,
     complete: bool,
 }
+
 impl Drop for SendGuard {
     fn drop(&mut self) {
         if !self.complete {
@@ -352,6 +378,7 @@ pub struct ConnectIpSession<T = Upgraded> {
     sender: ConnectIpSender<T>,
     receiver: ConnectIpReceiver<T>,
 }
+
 impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
     /// Wrap an accepted HTTP upgrade. Handshake and admission must happen first.
     pub fn new(io: T, config: ConnectIpSessionConfig) -> Result<Self, ConnectIpError> {
@@ -385,6 +412,7 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
             },
         })
     }
+
     /// Validate a previously unverified IPv6 path with a 1280-byte ICMPv6 echo.
     ///
     /// Run before splitting the session or forwarding IPv6. `nonce` must be fresh
@@ -523,14 +551,17 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
             }
         }
     }
+
     /// Separate packet/control sending from reception; dropping either half aborts the tunnel.
     pub fn split(self) -> (ConnectIpSender<T>, ConnectIpReceiver<T>) {
         (self.sender, self.receiver)
     }
+
     /// Receive an authorized packet or control-state event.
     pub async fn recv(&mut self) -> Result<Option<ConnectIpEvent>, ConnectIpError> {
         self.receiver.recv().await
     }
+
     /// Send a packet, applying local authorization and optional forwarding hop decrement.
     pub async fn send_packet(
         &mut self,
@@ -539,57 +570,68 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
     ) -> Result<IpPacketSend, ConnectIpError> {
         self.sender.send_packet(packet, origin).await
     }
+
     /// Send a validated control snapshot/request.
     pub async fn send_control(&mut self, capsule: ConnectIpCapsule) -> Result<(), ConnectIpError> {
         self.sender.send_control(capsule).await
     }
+
     /// Reserve an unused local address request ID.
     pub fn next_request_id(&self) -> Result<u64, ConnectIpError> {
         self.sender.next_request_id()
     }
+
     /// Current state snapshot.
     #[must_use]
     pub fn state(&self) -> ConnectIpState {
         self.sender.state()
     }
+
     /// Locally authorized policy, including the pinned resolved scope.
     #[must_use]
     pub fn policy(&self) -> &ConnectIpPolicy {
         &self.sender.shared.config.policy
     }
+
     /// Current carrier limit for an IP packet, excluding Context ID overhead.
     /// IPv6 also remains subject to the configured verified link MTU.
     #[must_use]
     pub fn max_packet_size(&self) -> usize {
         self.sender.max_packet_size()
     }
+
     /// Counters for this tunnel.
     #[must_use]
     pub fn stats(&self) -> ConnectIpStats {
         self.sender.stats()
     }
+
     /// Finish the request stream within the configured write deadline.
     pub async fn close(&mut self) -> Result<(), ConnectIpError> {
         self.sender.close().await
     }
 }
+
 /// The unique send half; state is shared with the receive half.
 #[derive(Debug)]
 pub struct ConnectIpSender<T = Upgraded> {
     http: SessionSender<T>,
     shared: Arc<Shared>,
 }
+
 impl<T> ConnectIpSender<T> {
     /// Current directional control state.
     #[must_use]
     pub fn state(&self) -> ConnectIpState {
         self.shared.state.lock().clone()
     }
+
     /// Locally authorized policy, including the pinned resolved scope.
     #[must_use]
     pub fn policy(&self) -> &ConnectIpPolicy {
         &self.shared.config.policy
     }
+
     /// Current carrier limit after subtracting the one-byte Context ID.
     #[must_use]
     pub fn max_packet_size(&self) -> usize {
@@ -600,17 +642,20 @@ impl<T> ConnectIpSender<T> {
             .and_then(|n| n.channel().max_payload_size())
             .map_or(configured, |n| configured.min(n.saturating_sub(1)))
     }
+
     /// Current packet counters.
     #[must_use]
     pub fn stats(&self) -> ConnectIpStats {
         self.shared.stats()
     }
+
     /// Reserve an address request ID.
     pub fn next_request_id(&self) -> Result<u64, ConnectIpError> {
         self.shared.active()?;
         Ok(self.shared.state.lock().next_request_id()?)
     }
 }
+
 impl<T: AsyncWrite> ConnectIpSender<T> {
     /// Send control state. Cancellation after state reservation closes both halves.
     pub async fn send_control(&mut self, capsule: ConnectIpCapsule) -> Result<(), ConnectIpError> {
@@ -650,10 +695,11 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
             }
         }
     }
+
     /// Send an IP packet. Forwarded link-local packets are never sent to another link.
     pub async fn send_packet(
         &mut self,
-        mut packet: Bytes,
+        packet: Bytes,
         origin: IpPacketOrigin,
     ) -> Result<IpPacketSend, ConnectIpError> {
         if let Err(error) = self.shared.active() {
@@ -663,19 +709,26 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
         if !self.shared.charge(packet.len() as u64) {
             return Ok(self.shared.drop_packet(IpPacketDrop::Budget));
         }
-        if let Err(reason) = self.shared.check(&packet, true) {
-            return Ok(self.shared.drop_packet(reason));
-        }
+        let parsed = match self.shared.check(&packet, true) {
+            Ok(packet) => packet,
+            Err(reason) => return Ok(self.shared.drop_packet(reason)),
+        };
         if origin == IpPacketOrigin::Forwarded {
-            let p = IpPacket::parse(&packet).map_err(|_error| ConnectIpError::Config)?;
+            let p = parsed;
             if link_local(p.source()) || link_local(p.destination()) {
                 return Ok(self.shared.drop_packet(IpPacketDrop::Scope));
             }
-            let mut owned = packet.to_vec();
-            if decrement_hop_limit(&mut owned).is_err() {
+            if p.hop_limit() <= 1 {
                 return Ok(self.shared.drop_packet(IpPacketDrop::HopLimit));
             }
-            packet = Bytes::from(owned);
+        }
+        // One copy supplies context-ID headroom and mutable forwarding headers.
+        // Never mutate the caller's potentially shared Bytes storage.
+        let mut datagram = encode_ip_datagram_mut(&packet);
+        // A blocked carrier only needs the framed buffer, not the original owner too.
+        drop(packet);
+        if origin == IpPacketOrigin::Forwarded {
+            decrement_hop_limit(&mut datagram[1..]).map_err(|_error| ConnectIpError::Config)?;
         }
         let mut guard = SendGuard {
             shared: self.shared.clone(),
@@ -683,7 +736,7 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
         };
         let result = timeout_at(
             Instant::now() + self.shared.config.write_timeout,
-            self.http.send_datagram(encode_ip_datagram(&packet)),
+            self.http.send_datagram(datagram.freeze()),
         )
         .await;
         match result {
@@ -715,6 +768,7 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
             }
         }
     }
+
     /// Close the stream and wake any pending receive.
     pub async fn close(&mut self) -> Result<(), ConnectIpError> {
         let mut guard = SendGuard {
@@ -736,35 +790,41 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
         }
     }
 }
+
 impl<T> Drop for ConnectIpSender<T> {
     fn drop(&mut self) {
         self.shared.close();
         self.http.abort();
     }
 }
+
 /// The unique receive half; malformed control closes the request stream.
 #[derive(Debug)]
 pub struct ConnectIpReceiver<T = Upgraded> {
     http: SessionReceiver<T>,
     shared: Arc<Shared>,
 }
+
 impl<T> ConnectIpReceiver<T> {
     /// Current directional control state after the latest received update.
     #[must_use]
     pub fn state(&self) -> ConnectIpState {
         self.shared.state.lock().clone()
     }
+
     /// Locally authorized policy, including the pinned resolved scope.
     #[must_use]
     pub fn policy(&self) -> &ConnectIpPolicy {
         &self.shared.config.policy
     }
+
     /// Counters shared with the send half.
     #[must_use]
     pub fn stats(&self) -> ConnectIpStats {
         self.shared.stats()
     }
 }
+
 impl<T: AsyncRead> ConnectIpReceiver<T> {
     /// Receive one event. Invalid packets are observable drops, not protocol errors.
     pub async fn recv(&mut self) -> Result<Option<ConnectIpEvent>, ConnectIpError> {
@@ -776,11 +836,26 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
         loop {
             let deadline = *self.shared.last_activity.lock() + self.shared.config.idle_timeout;
             let event = tokio::select! {
-                _=self.shared.cancelled()=>{self.http.abort();return Err(ConnectIpError::Closed);}
-                result=timeout_at(deadline,self.http.recv())=>match result {Ok(Ok(event))=>event,Ok(Err(e))=>{self.shared.close();self.http.abort();return Err(e.into());},Err(_)=>{
-                    if Instant::now()<*self.shared.last_activity.lock()+self.shared.config.idle_timeout {continue;}
-                    self.shared.close();self.http.abort();return Err(ConnectIpError::Timeout);
-                }}
+                _ = self.shared.cancelled() => {
+                    self.http.abort();
+                    return Err(ConnectIpError::Closed);
+                }
+                result = timeout_at(deadline, self.http.recv()) => match result {
+                    Ok(Ok(event)) => event,
+                    Ok(Err(error)) => {
+                        self.shared.close();
+                        self.http.abort();
+                        return Err(error.into());
+                    }
+                    Err(_) => {
+                        if Instant::now() < *self.shared.last_activity.lock() + self.shared.config.idle_timeout {
+                            continue;
+                        }
+                        self.shared.close();
+                        self.http.abort();
+                        return Err(ConnectIpError::Timeout);
+                    }
+                }
             };
             let Some(event) = event else {
                 self.shared.close();
@@ -799,7 +874,7 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
                             Err(_) => Some(IpPacketDrop::Invalid),
                             Ok((id, _)) if id != 0 => Some(IpPacketDrop::UnknownContext),
                             Ok((_, packet)) => match self.shared.check(packet, false) {
-                                Ok(()) => {
+                                Ok(_) => {
                                     let offset = payload.len() - packet.len();
                                     self.shared.touch();
                                     self.shared.received.fetch_add(1, Ordering::Relaxed);
@@ -853,12 +928,14 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
         }
     }
 }
+
 impl<T> Drop for ConnectIpReceiver<T> {
     fn drop(&mut self) {
         self.shared.close();
         self.http.abort();
     }
 }
+
 fn link_local(address: std::net::IpAddr) -> bool {
     match address {
         std::net::IpAddr::V4(a) => {

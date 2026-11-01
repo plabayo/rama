@@ -36,6 +36,7 @@ use tokio::time::timeout;
 fn prefix(s: &str) -> IpNet {
     s.parse().unwrap()
 }
+
 fn config(role: ConnectIpRole) -> ConnectIpSessionConfig {
     let mut policy = ConnectIpPolicy::new(role);
     let direction = IpDirectionPolicy {
@@ -52,6 +53,7 @@ fn config(role: ConnectIpRole) -> ConnectIpSessionConfig {
     config.ipv6_link_mtu = Some(1350);
     config
 }
+
 fn packets() -> Vec<Bytes> {
     let mut raw = [0; 1400];
     let mut out = Vec::new();
@@ -73,6 +75,7 @@ fn packets() -> Vec<Bytes> {
     out.push(Bytes::copy_from_slice(&raw[..n]));
     out
 }
+
 async fn echo(mut session: ConnectIpSession) -> Result<(), BoxError> {
     session
         .send_control(ConnectIpCapsule::AddressAssign(vec![AddressAssignment {
@@ -147,6 +150,7 @@ async fn echo(mut session: ConnectIpSession) -> Result<(), BoxError> {
     }
     Ok(())
 }
+
 async fn exercise(mut session: ConnectIpSession, native: bool) -> Result<(), BoxError> {
     for _ in 0..2 {
         assert!(matches!(
@@ -374,12 +378,14 @@ fn assignments(requests: &[AddressRequest]) -> ConnectIpCapsule {
             .collect(),
     )
 }
+
 fn peer_routes() -> ConnectIpCapsule {
     ConnectIpCapsule::RouteAdvertisement(vec![
         IpRoute::from_prefix(prefix("192.0.2.2/32"), None),
         IpRoute::from_prefix(prefix("2001:db8::2/128"), None),
     ])
 }
+
 fn address_requests() -> Vec<AddressRequest> {
     vec![
         AddressRequest {

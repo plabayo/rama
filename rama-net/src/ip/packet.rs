@@ -27,6 +27,7 @@ pub enum IpPacketError {
     /// Forwarding would exhaust the TTL / Hop Limit.
     HopLimit,
 }
+
 impl fmt::Display for IpPacketError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -42,6 +43,7 @@ impl fmt::Display for IpPacketError {
         })
     }
 }
+
 impl core::error::Error for IpPacketError {}
 
 /// Fragment metadata. `offset` is measured in bytes, not wire units of eight.
@@ -54,6 +56,7 @@ pub struct IpFragment {
     /// More fragments follow.
     pub more: bool,
 }
+
 impl IpFragment {
     /// Whether this is part of a fragmented packet (rather than an atomic fragment).
     #[must_use]
@@ -68,6 +71,7 @@ pub struct Ipv4Packet<'a> {
     bytes: &'a [u8],
     header_len: usize,
 }
+
 impl<'a> Ipv4Packet<'a> {
     /// Validate lengths, options, fragmentation and the IPv4 header checksum.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, IpPacketError> {
@@ -99,56 +103,67 @@ impl<'a> Ipv4Packet<'a> {
         }
         Ok(Self { bytes, header_len })
     }
+
     /// Complete packet, bounded by Total Length.
     #[must_use]
     pub fn as_bytes(self) -> &'a [u8] {
         self.bytes
     }
+
     /// Header including options.
     #[must_use]
     pub fn header(self) -> &'a [u8] {
         &self.bytes[..self.header_len]
     }
+
     /// Options, including padding.
     #[must_use]
     pub fn options(self) -> &'a [u8] {
         &self.bytes[20..self.header_len]
     }
+
     /// Payload (a fragment's payload if fragmented).
     #[must_use]
     pub fn payload(self) -> &'a [u8] {
         &self.bytes[self.header_len..]
     }
+
     /// Source address.
     #[must_use]
     pub fn source(self) -> Ipv4Addr {
         v4(&self.bytes[12..16])
     }
+
     /// Destination address.
     #[must_use]
     pub fn destination(self) -> Ipv4Addr {
         v4(&self.bytes[16..20])
     }
+
     /// Protocol number, including on non-initial fragments.
     #[must_use]
     pub fn protocol(self) -> IpProtocol {
         IpProtocol::new(self.bytes[9])
     }
+
     /// Time to live.
     #[must_use]
     pub fn hop_limit(self) -> u8 {
         self.bytes[8]
     }
+
     /// DSCP and ECN bits.
     #[must_use]
     pub fn traffic_class(self) -> u8 {
         self.bytes[1]
     }
+
     /// Don't Fragment flag.
     #[must_use]
     pub fn dont_fragment(self) -> bool {
         self.bytes[6] & 0x40 != 0
     }
+
     /// Identification, byte offset and More Fragments flag.
     #[must_use]
     pub fn fragment(self) -> IpFragment {
@@ -195,6 +210,7 @@ pub struct Ipv6Packet<'a> {
     protocol: Option<IpProtocol>,
     fragment: Option<IpFragment>,
 }
+
 impl<'a> Ipv6Packet<'a> {
     /// Validate base length and the structure of known extension headers.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, IpPacketError> {
@@ -269,51 +285,61 @@ impl<'a> Ipv6Packet<'a> {
             fragment,
         })
     }
+
     /// Complete packet, bounded by Payload Length.
     #[must_use]
     pub fn as_bytes(self) -> &'a [u8] {
         self.bytes
     }
+
     /// Source address.
     #[must_use]
     pub fn source(self) -> Ipv6Addr {
         v6(&self.bytes[8..24])
     }
+
     /// Destination address.
     #[must_use]
     pub fn destination(self) -> Ipv6Addr {
         v6(&self.bytes[24..40])
     }
+
     /// The base header's next-header number.
     #[must_use]
     pub fn next_header(self) -> IpProtocol {
         IpProtocol::new(self.bytes[6])
     }
+
     /// First non-extension protocol, or `None` if a non-initial fragment hides it.
     #[must_use]
     pub fn protocol(self) -> Option<IpProtocol> {
         self.protocol
     }
+
     /// Hop Limit.
     #[must_use]
     pub fn hop_limit(self) -> u8 {
         self.bytes[7]
     }
+
     /// DSCP and ECN bits.
     #[must_use]
     pub fn traffic_class(self) -> u8 {
         (self.bytes[0] << 4) | (self.bytes[1] >> 4)
     }
+
     /// Twenty-bit Flow Label.
     #[must_use]
     pub fn flow_label(self) -> u32 {
         u32::from_be_bytes([0, self.bytes[1] & 15, self.bytes[2], self.bytes[3]])
     }
+
     /// Payload including extension headers.
     #[must_use]
     pub fn payload(self) -> &'a [u8] {
         &self.bytes[40..]
     }
+
     /// Upper-layer bytes, absent for non-initial fragments and No Next Header.
     #[must_use]
     pub fn upper_layer_payload(self) -> Option<&'a [u8]> {
@@ -325,11 +351,13 @@ impl<'a> Ipv6Packet<'a> {
             Some(&self.bytes[self.upper_offset..])
         }
     }
+
     /// Fragment metadata, including atomic fragments.
     #[must_use]
     pub fn fragment(self) -> Option<IpFragment> {
         self.fragment
     }
+
     /// Known extension headers in wire order, including the Fragment header.
     #[must_use]
     pub fn extensions(self) -> Ipv6Extensions<'a> {
@@ -350,6 +378,7 @@ pub struct Ipv6Extension<'a> {
     /// Entire header, including its Next Header byte.
     pub bytes: &'a [u8],
 }
+
 /// Iterator over a previously validated packet's extension headers.
 #[derive(Debug, Clone)]
 pub struct Ipv6Extensions<'a> {
@@ -358,6 +387,7 @@ pub struct Ipv6Extensions<'a> {
     next: u8,
     done: bool,
 }
+
 impl<'a> Iterator for Ipv6Extensions<'a> {
     type Item = Ipv6Extension<'a>;
     fn next(&mut self) -> Option<Self::Item> {
@@ -374,9 +404,11 @@ impl<'a> Iterator for Ipv6Extensions<'a> {
         Some(Ipv6Extension { protocol, bytes })
     }
 }
+
 fn is_extension(value: u8) -> bool {
     matches!(value, 0 | 43 | 44 | 51 | 60)
 }
+
 fn extension(bytes: &[u8], offset: usize, kind: u8) -> Result<&[u8], IpPacketError> {
     let rest = bytes.get(offset..).ok_or(IpPacketError::Truncated)?;
     if rest.len() < 2 {
@@ -392,6 +424,7 @@ fn extension(bytes: &[u8], offset: usize, kind: u8) -> Result<&[u8], IpPacketErr
     }
     rest.get(..len).ok_or(IpPacketError::Truncated)
 }
+
 fn validate_ipv6_options(mut options: &[u8]) -> Result<(), IpPacketError> {
     while let Some((&kind, rest)) = options.split_first() {
         if kind == 0 {
@@ -415,6 +448,7 @@ pub enum IpPacket<'a> {
     /// IPv6 packet.
     V6(Ipv6Packet<'a>),
 }
+
 impl<'a> IpPacket<'a> {
     /// Parse one packet; [`Self::as_bytes`] excludes trailing link-layer padding.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, IpPacketError> {
@@ -425,6 +459,7 @@ impl<'a> IpPacket<'a> {
             _ => Err(IpPacketError::Version),
         }
     }
+
     /// Complete packet bytes.
     #[must_use]
     pub fn as_bytes(self) -> &'a [u8] {
@@ -433,6 +468,7 @@ impl<'a> IpPacket<'a> {
             Self::V6(p) => p.as_bytes(),
         }
     }
+
     /// Source address.
     #[must_use]
     pub fn source(self) -> IpAddr {
@@ -441,6 +477,7 @@ impl<'a> IpPacket<'a> {
             Self::V6(p) => p.source().into(),
         }
     }
+
     /// Destination address.
     #[must_use]
     pub fn destination(self) -> IpAddr {
@@ -449,6 +486,7 @@ impl<'a> IpPacket<'a> {
             Self::V6(p) => p.destination().into(),
         }
     }
+
     /// Upper-layer protocol, if available without reassembly.
     #[must_use]
     pub fn protocol(self) -> Option<IpProtocol> {
@@ -457,6 +495,7 @@ impl<'a> IpPacket<'a> {
             Self::V6(p) => p.protocol(),
         }
     }
+
     /// Upper-layer bytes, absent for non-initial fragments and No Next Header.
     #[must_use]
     pub fn upper_layer_payload(self) -> Option<&'a [u8]> {
@@ -466,6 +505,7 @@ impl<'a> IpPacket<'a> {
             Self::V6(p) => p.upper_layer_payload(),
         }
     }
+
     /// TTL / Hop Limit.
     #[must_use]
     pub fn hop_limit(self) -> u8 {
@@ -474,6 +514,7 @@ impl<'a> IpPacket<'a> {
             Self::V6(p) => p.hop_limit(),
         }
     }
+
     /// DSCP and ECN bits.
     #[must_use]
     pub fn traffic_class(self) -> u8 {
@@ -482,11 +523,13 @@ impl<'a> IpPacket<'a> {
             Self::V6(p) => p.traffic_class(),
         }
     }
+
     /// Explicit Congestion Notification codepoint.
     #[must_use]
     pub fn ecn(self) -> EcnCodepoint {
         EcnCodepoint::from_bits(self.traffic_class())
     }
+
     /// Fragment metadata; IPv4 has identification even when not fragmented.
     #[must_use]
     pub fn fragment(self) -> Option<IpFragment> {
@@ -515,6 +558,7 @@ pub struct Ipv4Header {
     /// Don't Fragment flag.
     pub dont_fragment: bool,
 }
+
 impl Ipv4Header {
     /// An unfragmented header with hop limit 64, no ECN/DSCP and identification zero.
     #[must_use]
@@ -533,6 +577,7 @@ impl Ipv4Header {
             dont_fragment: false,
         }
     }
+
     /// Serialize a complete packet. Options must include zero padding to a four-byte boundary.
     /// The output is untouched when any input is invalid.
     pub fn encode(
@@ -599,6 +644,7 @@ pub struct Ipv6Header {
     /// Twenty-bit Flow Label.
     pub flow_label: u32,
 }
+
 impl Ipv6Header {
     /// A header with hop limit 64, zero flow label and no ECN/DSCP.
     #[must_use]
@@ -612,6 +658,7 @@ impl Ipv6Header {
             flow_label: 0,
         }
     }
+
     /// Serialize a base header and payload. This does not validate extension bytes:
     /// use [`Ipv6Packet::parse`] to validate a complete packet built from raw extensions.
     /// The output is untouched when the base fields or buffer length are invalid.
@@ -672,17 +719,21 @@ pub fn set_traffic_class(bytes: &mut [u8], traffic_class: u8) -> Result<(), IpPa
     }
     Ok(())
 }
+
 fn update_ipv4_checksum(header: &mut [u8]) {
     header[10..12].fill(0);
     let sum = internet_checksum(header);
     header[10..12].copy_from_slice(&sum.to_be_bytes());
 }
+
 fn word(bytes: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes([bytes[offset], bytes[offset + 1]])
 }
+
 fn v4(bytes: &[u8]) -> Ipv4Addr {
     Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3])
 }
+
 fn v6(bytes: &[u8]) -> Ipv6Addr {
     let mut octets = [0; 16];
     octets.copy_from_slice(bytes);

@@ -42,11 +42,13 @@ pub enum IpSourcePolicy {
     /// Explicitly configured sources (e.g. a site-to-site routed network).
     Static(Vec<IpNet>),
 }
+
 impl Default for IpSourcePolicy {
     fn default() -> Self {
         Self::Static(Vec::new())
     }
 }
+
 impl IpSourcePolicy {
     fn allows(&self, address: IpAddr, assigned: &[super::AddressAssignment]) -> bool {
         let prefixes = match self {
@@ -57,6 +59,7 @@ impl IpSourcePolicy {
                 || assigned.iter().any(|a| a.prefix.contains(&address)))
     }
 }
+
 /// Local permissions for a packet direction; defaults to deny all.
 #[derive(Debug, Clone)]
 pub struct IpDirectionPolicy {
@@ -68,6 +71,7 @@ pub struct IpDirectionPolicy {
     /// Disable only when routes are configured out of band.
     pub require_advertised_route: bool,
 }
+
 impl Default for IpDirectionPolicy {
     fn default() -> Self {
         Self {
@@ -107,6 +111,7 @@ pub struct ConnectIpPolicy {
     /// Requested upper-layer protocol (None for wildcard).
     pub scope_protocol: Option<IpProtocol>,
 }
+
 impl ConnectIpPolicy {
     /// Deny all packet traffic until local permissions are configured.
     #[must_use]
@@ -119,6 +124,7 @@ impl ConnectIpPolicy {
             scope_protocol: None,
         }
     }
+
     /// Check a packet against local policy and current control state.
     pub fn check(
         &self,
@@ -208,6 +214,7 @@ impl ConnectIpPolicy {
         }
         self.check_scope(src, dst, proto, outgoing)
     }
+
     fn check_flow(
         &self,
         src: IpAddr,
@@ -244,6 +251,7 @@ impl ConnectIpPolicy {
         }
         self.check_scope(src, dst, proto, outgoing)
     }
+
     fn check_scope(
         &self,
         src: IpAddr,

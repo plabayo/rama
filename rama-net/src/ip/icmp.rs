@@ -174,6 +174,7 @@ pub struct IpPacketQuote {
     /// Original protocol, if known without reassembly.
     pub protocol: Option<IpProtocol>,
 }
+
 impl IpPacketQuote {
     /// Parse the header of an invoking packet quoted by an ICMP error.
     pub fn parse(bytes: &[u8]) -> Result<Self, IpPacketError> {

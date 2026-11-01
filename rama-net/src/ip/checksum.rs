@@ -4,7 +4,7 @@
 /// bytes are padded with zero only when [`Self::finish`] is called.
 #[derive(Debug, Clone, Default)]
 pub struct InternetChecksum {
-    sum: u32,
+    sum: u16,
     high: Option<u8>,
 }
 
@@ -34,8 +34,9 @@ impl InternetChecksum {
     }
 
     fn add(&mut self, word: u16) {
-        self.sum += u32::from(word);
-        self.sum = (self.sum & 0xffff) + (self.sum >> 16);
+        let sum = u32::from(self.sum) + u32::from(word);
+        // Two 16-bit words sum to at most 0x1fffe, so one carry fold fits u16.
+        self.sum = ((sum & 0xffff) + (sum >> 16)) as u16;
     }
 
     /// Complemented checksum, suitable for writing in network byte order.
@@ -45,10 +46,8 @@ impl InternetChecksum {
         if let Some(high) = self.high {
             self.add(u16::from(high) << 8);
         }
-        while self.sum >> 16 != 0 {
-            self.sum = (self.sum & 0xffff) + (self.sum >> 16);
-        }
-        !(self.sum as u16)
+        // Every addition is already folded, including the padded final byte.
+        !self.sum
     }
 }
 

@@ -56,11 +56,13 @@ impl From<u8> for IpProtocol {
         Self(value)
     }
 }
+
 impl From<IpProtocol> for u8 {
     fn from(value: IpProtocol) -> Self {
         value.0
     }
 }
+
 impl fmt::Display for IpProtocol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)

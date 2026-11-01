@@ -26,6 +26,7 @@ pub enum IpTarget {
     /// Addresses returned by an authorized, bounded DNS lookup.
     Hostname(Domain),
 }
+
 impl fmt::Display for IpTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -35,6 +36,7 @@ impl fmt::Display for IpTarget {
         }
     }
 }
+
 /// Destination and protocol requested by the client, before local authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectIpScope {
@@ -43,6 +45,7 @@ pub struct ConnectIpScope {
     /// `None` means wildcard; `Some(0)` is a real next-header number, not wildcard.
     pub protocol: Option<IpProtocol>,
 }
+
 impl Default for ConnectIpScope {
     fn default() -> Self {
         Self {
@@ -51,6 +54,7 @@ impl Default for ConnectIpScope {
         }
     }
 }
+
 impl ConnectIpScope {
     /// Parse decoded URI-template values. Missing variables are wildcards;
     /// present-but-empty values are invalid.
@@ -107,6 +111,7 @@ pub enum ConnectIpRequestError {
     /// Request authority, scheme or path does not match this endpoint.
     Mismatch,
 }
+
 impl fmt::Display for ConnectIpRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -118,6 +123,7 @@ impl fmt::Display for ConnectIpRequestError {
         })
     }
 }
+
 impl std::error::Error for ConnectIpRequestError {}
 
 /// A configured CONNECT-IP HTTPS URI template, shared by clients and server matchers.
@@ -130,6 +136,7 @@ pub struct ConnectIpTemplate {
     matcher: UriTemplateMatcher,
     authority: String,
 }
+
 impl ConnectIpTemplate {
     /// Parse an absolute HTTPS template, applying RFC 9484 §3 restrictions.
     pub fn try_new(input: impl AsRef<str>) -> Result<Self, ConnectIpRequestError> {
@@ -179,11 +186,13 @@ impl ConnectIpTemplate {
             authority,
         })
     }
+
     /// Original absolute URI template.
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.template.as_str()
     }
+
     /// Build a request; unprovided application variables are omitted by RFC 6570.
     pub fn request(
         &self,
@@ -192,6 +201,7 @@ impl ConnectIpTemplate {
     ) -> Result<Request, ConnectIpRequestError> {
         self.request_with(scope, version, |_| None)
     }
+
     /// Build a request with additional template-variable values.
     ///
     /// Credentials can be added to the request by the caller or an authentication
@@ -239,6 +249,7 @@ impl ConnectIpTemplate {
         request.extensions().insert(TargetHttpVersion(version));
         Ok(request)
     }
+
     /// Validate a handshake and extract its requested scope.
     pub fn match_request<B>(
         &self,
@@ -291,11 +302,13 @@ impl ConnectIpTemplate {
         ConnectIpScope::from_template_values(get("target"), get("ipproto"))
     }
 }
+
 fn same_authority(a: &str, b: &str) -> bool {
     a.strip_suffix(":443")
         .unwrap_or(a)
         .eq_ignore_ascii_case(b.strip_suffix(":443").unwrap_or(b))
 }
+
 /// Validate the proxy's response before exposing packet I/O.
 pub fn validate_connect_ip_response<B>(
     version: Version,
