@@ -33,23 +33,29 @@ macro_rules! __arcstr {
         // (note that consts in macros don't have hygiene the way let does).
         const __ARC_STR_TEXT: &$crate::str::arcstr::_private::str = $text;
         {
-            const __ARC_STR_SI: &$crate::str::arcstr::_private::StaticArcStrInner<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]> = unsafe {
-                &$crate::str::arcstr::_private::StaticArcStrInner {
-                    len_flag: match $crate::str::arcstr::_private::StaticArcStrInner::<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]>::encode_len(__ARC_STR_TEXT.len()) {
-                        Some(len) => len,
-                        None => panic!("impossibly long length")
-                    },
-                    count_flag: $crate::str::arcstr::_private::STATIC_COUNT_VALUE,
-                    // See comment for `_private::ConstPtrDeref` for what the hell's
-                    // going on here.
-                    data: *$crate::str::arcstr::_private::ConstPtrDeref::<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]> {
-                        p: __ARC_STR_TEXT.as_ptr(),
-                    }
-                    .a,
-                    // data: __ARC_STR_TEXT.as_ptr().cast::<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]>().read(),
-                }
+            const __ARC_STR_SI: &$crate::str::arcstr::_private::StaticArcStrInner<
+                [$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()],
+            > = &$crate::str::arcstr::_private::StaticArcStrInner {
+                len_flag: match $crate::str::arcstr::_private::StaticArcStrInner::<
+                    [$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()],
+                >::encode_len(__ARC_STR_TEXT.len())
+                {
+                    Some(len) => len,
+                    None => panic!("impossibly long length"),
+                },
+                count_flag: $crate::str::arcstr::_private::STATIC_COUNT_VALUE,
+                data: match __ARC_STR_TEXT.as_bytes().first_chunk() {
+                    Some(data) => *data,
+                    None => panic!("arcstr! data must be the whole text"),
+                },
             };
-            const __ARC_STR_FINAL: $crate::str::arcstr::ArcStr = unsafe { $crate::str::arcstr::ArcStr::_private_new_from_static_data(__ARC_STR_SI) };
+            const __ARC_STR_FINAL: $crate::str::arcstr::ArcStr =
+                // SAFETY: `_private_new_from_static_data` requires `data` to be
+                // valid UTF-8: it is a copy of all bytes of `__ARC_STR_TEXT`, a
+                // `&str` (the array length is its length).
+                unsafe {
+                    $crate::str::arcstr::ArcStr::_private_new_from_static_data(__ARC_STR_SI)
+                };
             __ARC_STR_FINAL
         }
     }};
@@ -107,7 +113,13 @@ macro_rules! __substr {
         {
             const PARENT: $crate::str::arcstr::ArcStr = $crate::str::arcstr::arcstr!(__S);
             const SUBSTR: $crate::str::arcstr::Substr =
-                unsafe { $crate::str::arcstr::Substr::from_parts_unchecked(PARENT, 0..__S.len()) };
+                // SAFETY: `from_parts_unchecked` requires `0 <= __S.len() <=
+                // PARENT.len()` on char boundaries of `PARENT`: `PARENT` holds
+                // exactly the bytes of `__S`, and `0` and the length of a `str`
+                // are always char boundaries.
+                unsafe {
+                    $crate::str::arcstr::Substr::from_parts_unchecked(PARENT, 0..__S.len())
+                };
             SUBSTR
         }
     }};

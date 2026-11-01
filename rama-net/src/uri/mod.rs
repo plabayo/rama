@@ -268,10 +268,10 @@ impl<'a> AbsoluteUriRef<'a> {
     /// host.
     #[must_use]
     pub fn authority_ref(self) -> Option<AuthorityRef<'a>> {
-        let host = self.host.as_ref(self.source.as_bytes())?;
+        let host = self.host.as_ref(self.source)?;
         let userinfo = self
             .userinfo
-            .map(|range| UserInfoRef::new(self.range(range).as_bytes()));
+            .map(|range| UserInfoRef::new(self.range(range)));
         Some(AuthorityRef::new(userinfo, host, self.port))
     }
 
@@ -355,27 +355,24 @@ impl AbsoluteHost {
         }
     }
 
-    fn as_ref<'a>(self, source: &'a [u8]) -> Option<HostRef<'a>> {
+    fn as_ref<'a>(self, source: &'a str) -> Option<HostRef<'a>> {
         let (start, end) = self.range()?;
         let host = &source[usize::from(start)..usize::from(end)];
         Some(match self {
             Self::None => return None,
             Self::Empty(_) | Self::RegName(_, _) => {
-                HostRef::Uninterpreted(UninterpretedHostRef::from_validated_bytes(host, false))
+                HostRef::Uninterpreted(UninterpretedHostRef::from_validated(host, false))
             }
-            Self::Ipv4(_, _) => {
-                let host = core::str::from_utf8(host).ok()?;
-                HostRef::Address(core::net::IpAddr::V4(host.parse().ok()?))
-            }
+            Self::Ipv4(_, _) => HostRef::Address(core::net::IpAddr::V4(host.parse().ok()?)),
             Self::Ipv6(_, _) => {
                 let host = &host[1..host.len() - 1];
-                let host = core::str::from_utf8(host).ok()?;
                 HostRef::Address(core::net::IpAddr::V6(host.parse().ok()?))
             }
-            Self::IpvFuture(_, _) => HostRef::Uninterpreted(
-                UninterpretedHostRef::from_validated_bytes(&host[1..host.len() - 1], true),
-            ),
-            Self::Domain(_, _) => HostRef::Name(DomainRef::from_validated_bytes(host)),
+            Self::IpvFuture(_, _) => HostRef::Uninterpreted(UninterpretedHostRef::from_validated(
+                &host[1..host.len() - 1],
+                true,
+            )),
+            Self::Domain(_, _) => HostRef::Name(DomainRef::from_validated_str(host)),
         })
     }
 }
@@ -622,22 +619,31 @@ impl Uri {
         // as we write it — the lazy form needs the raw bytes, but the host/port
         // are carried as already-parsed values so nothing is re-scanned.
         let mut s = String::new();
-        let userinfo_range = match &user_info {
-            Some(ui) => {
-                _ = write!(s, "{ui}");
-                let end = u16::try_from(s.len()).unwrap_or(u16::MAX);
-                s.push('@');
-                Some((0, end))
-            }
-            None => None,
-        };
+        let userinfo_end = user_info.as_ref().map(|ui| {
+            _ = write!(s, "{ui}");
+            let end = s.len();
+            s.push('@');
+            end
+        });
         _ = write!(s, "{address}");
+
+        // The lazy form indexes with `u16`; a longer rendering keeps the
+        // owned components instead of truncated ranges.
+        let (Ok(len), Ok(userinfo_end)) = (
+            u16::try_from(s.len()),
+            userinfo_end.map(u16::try_from).transpose(),
+        ) else {
+            return Self::from_owned(OwnedUriRef {
+                authority: Some(crate::address::Authority { user_info, address }),
+                ..OwnedUriRef::default()
+            });
+        };
+        let userinfo_range = userinfo_end.map(|end| (0, end));
         let HostWithOptPort { host, port } = address;
 
-        let bytes = rama_core::bytes::Bytes::from(s);
-        // Empty path anchored at the end, matching `parse_authority_form`.
-        let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
+        let bytes = rama_core::bytes::ByteStr::from(s);
 
+        // Empty path anchored at the end, matching `parse_authority_form`.
         Self::from_lazy(LazyUriRef {
             scheme: None,
             authority: Some(LazyAuthority {
@@ -760,22 +766,30 @@ impl Uri {
         // nothing is re-scanned.
         let mut s = String::new();
         _ = write!(s, "{scheme}://");
-        let userinfo_range = match &user_info {
-            Some(ui) => {
-                let start = u16::try_from(s.len()).unwrap_or(u16::MAX);
-                _ = write!(s, "{ui}");
-                let end = u16::try_from(s.len()).unwrap_or(u16::MAX);
-                s.push('@');
-                Some((start, end))
-            }
-            None => None,
-        };
+        let userinfo_range = user_info.as_ref().map(|ui| {
+            let start = s.len();
+            _ = write!(s, "{ui}");
+            let end = s.len();
+            s.push('@');
+            (start, end)
+        });
         _ = write!(s, "{address}");
+
+        // The lazy form indexes with `u16`; a longer rendering keeps the
+        // owned components instead of truncated ranges. Every offset is at
+        // most `s.len()`, so it fits once `len` does.
+        let Ok(len) = u16::try_from(s.len()) else {
+            return Self::from_owned(OwnedUriRef {
+                scheme: Some(scheme),
+                authority: Some(crate::address::Authority { user_info, address }),
+                ..OwnedUriRef::default()
+            });
+        };
+        let userinfo_range = userinfo_range.map(|(start, end)| (start as u16, end as u16));
         let HostWithOptPort { host, port } = address;
 
-        let bytes = rama_core::bytes::Bytes::from(s);
+        let bytes = rama_core::bytes::ByteStr::from(s);
         // Empty path anchored at the end, matching `Uri::parse("scheme://host")`.
-        let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
 
         Self::from_lazy(LazyUriRef {
             scheme: Some(scheme),
@@ -803,12 +817,7 @@ impl Uri {
     pub fn as_str(&self) -> Cow<'_, str> {
         match &self.inner {
             UriInner::Asterisk => Cow::Borrowed("*"),
-            UriInner::Lazy(lazy_uri_ref) => {
-                // Safety: parser invariant — the source buffer is valid UTF-8
-                // (graceful mode) or ASCII (strict mode).
-                let s = unsafe { core::str::from_utf8_unchecked(&lazy_uri_ref.bytes) };
-                Cow::Borrowed(s)
-            }
+            UriInner::Lazy(lazy_uri_ref) => Cow::Borrowed(lazy_uri_ref.as_str()),
             UriInner::Owned(_) => Cow::Owned(self.to_string()),
         }
     }
@@ -828,7 +837,7 @@ impl Uri {
     pub fn encode_to(&self, buf: &mut Vec<u8>) {
         match &self.inner {
             UriInner::Asterisk => buf.push(b'*'),
-            UriInner::Lazy(lazy) => buf.extend_from_slice(&lazy.bytes),
+            UriInner::Lazy(lazy) => buf.extend_from_slice(lazy.as_bytes()),
             UriInner::Owned(_) => {
                 let result = write!(wire::VecWriter(buf), "{self}");
                 debug_assert!(result.is_ok(), "VecWriter is infallible");
@@ -873,7 +882,7 @@ impl Uri {
             UriInner::Asterisk => None,
             UriInner::Lazy(arc) => {
                 let (s, e) = arc.path;
-                Some(PathRef::new(&arc.bytes[s as usize..e as usize]))
+                Some(PathRef::new(&arc.as_bytes()[s as usize..e as usize]))
             }
             UriInner::Owned(arc) => Some(PathRef::new(&arc.path)),
         }
@@ -883,15 +892,15 @@ impl Uri {
     /// delimiter on the wire.
     ///
     /// `Some(empty)` vs `None` matters — `?` followed by nothing is
-    /// distinct from no `?` at all (load-bearing for SigV4 / cache
-    /// keys / proxy fidelity).
+    /// distinct from no `?` at all (RFC 3986 §3.4); request signatures
+    /// (SigV4), cache keys and proxy forwarding depend on it.
     #[must_use]
     pub fn query(&self) -> Option<QueryRef<'_>> {
         match &self.inner {
             UriInner::Asterisk => None,
             UriInner::Lazy(arc) => {
                 let (s, e) = arc.query?;
-                Some(QueryRef::new(&arc.bytes[s as usize..e as usize]))
+                Some(QueryRef::new(&arc.as_bytes()[s as usize..e as usize]))
             }
             UriInner::Owned(arc) => arc.query.as_ref().map(|q| q.view()),
         }
@@ -910,7 +919,7 @@ impl Uri {
             UriInner::Asterisk => None,
             UriInner::Lazy(arc) => {
                 let (s, e) = arc.fragment?;
-                Some(FragmentRef::new(&arc.bytes[s as usize..e as usize]))
+                Some(FragmentRef::new(&arc.as_bytes()[s as usize..e as usize]))
             }
             UriInner::Owned(arc) => arc.fragment.as_ref().map(|f| f.view()),
         }
@@ -1003,8 +1012,8 @@ impl Uri {
             UriInner::Asterisk => None,
             UriInner::Lazy(arc) => {
                 let auth = arc.authority.as_ref()?;
-                let (s, e) = auth.userinfo_range?;
-                Some(UserInfoRef::new(&arc.bytes[s as usize..e as usize]))
+                let range = auth.userinfo_range?;
+                Some(UserInfoRef::new(arc.str_range(range)))
             }
             UriInner::Owned(arc) => arc
                 .authority
@@ -1028,7 +1037,7 @@ impl Uri {
                 let auth = arc.authority.as_ref()?;
                 let userinfo = auth
                     .userinfo_range
-                    .map(|(s, e)| UserInfoRef::new(&arc.bytes[s as usize..e as usize]));
+                    .map(|range| UserInfoRef::new(arc.str_range(range)));
                 Some(AuthorityRef::new(
                     userinfo,
                     HostRef::from(&auth.host),
@@ -1343,11 +1352,22 @@ impl Uri {
         }
     }
 
+    /// Internal constructor for the owned variant.
+    fn from_owned(owned: OwnedUriRef) -> Self {
+        Self {
+            inner: UriInner::Owned(Arc::new(owned)),
+        }
+    }
+
     // ---- Mutation -------------------------------------------------------
 
     /// Promote to [`UriInner::Owned`] if needed and return mutable access
     /// to the decomposed components. Cheap when already `Owned` and the
     /// inner `Arc` is uniquely held.
+    #[expect(
+        clippy::unreachable,
+        reason = "the `if` above leaves `self.inner` as `Owned`; borrowck cannot see it"
+    )]
     fn to_mut(&mut self) -> &mut OwnedUriRef {
         if !matches!(self.inner, UriInner::Owned(_)) {
             let owned = self.as_owned_components();
@@ -1355,10 +1375,7 @@ impl Uri {
         }
         match &mut self.inner {
             UriInner::Owned(arc) => Arc::make_mut(arc),
-            // SAFETY: the preceding `if` block guarantees `self.inner` is the
-            // `Owned` variant. Borrowck can't see across the conditional
-            // assignment, so we have to tell it explicitly.
-            _ => unsafe { core::hint::unreachable_unchecked() },
+            _ => unreachable!("Uri::to_mut: inner was just promoted to Owned"),
         }
     }
 
@@ -1372,10 +1389,12 @@ impl Uri {
             UriInner::Lazy(arc) => {
                 let l = arc.as_ref();
                 let authority = l.authority.as_ref().map(|la| {
-                    let user_info = la.userinfo_range.map(|(s, e)| {
-                        crate::address::UserInfo::from_bytes_unchecked(
-                            l.bytes.slice(s as usize..e as usize),
-                        )
+                    let user_info = la.userinfo_range.map(|range| {
+                        // `ByteStr` -> `Bytes` is a refcount bump; the slice stays zero-copy.
+                        crate::address::UserInfo::from_byte_str(lazy::byte_str_slice(
+                            &rama_core::bytes::Bytes::from(l.bytes.clone()),
+                            l.str_range(range),
+                        ))
                     });
                     crate::address::Authority {
                         user_info,
@@ -1385,7 +1404,7 @@ impl Uri {
                         },
                     }
                 });
-                let slice = |(s, e): (u16, u16)| &l.bytes[s as usize..e as usize];
+                let slice = |(s, e): (u16, u16)| &l.as_bytes()[s as usize..e as usize];
                 OwnedUriRef {
                     scheme: l.scheme.clone(),
                     authority,
@@ -1932,9 +1951,7 @@ impl Uri {
         match &self.inner {
             UriInner::Asterisk => f.write_str("*"),
             UriInner::Lazy(arc) => {
-                // Safety: parser invariant — the source buffer is valid UTF-8
-                // (graceful mode) or ASCII (strict mode).
-                let s = unsafe { core::str::from_utf8_unchecked(&arc.bytes) };
+                let s = arc.as_str();
                 if redact_userinfo
                     && let Some(auth) = &arc.authority
                     && let Some((u_s, u_e)) = auth.userinfo_range

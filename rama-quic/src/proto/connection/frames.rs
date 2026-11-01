@@ -159,7 +159,7 @@ impl Connection {
             let max_crypto_data_size = max_size
                 - buf.len()
                 - 1 // Frame Type
-                - VarInt::size(unsafe { VarInt::from_u64_unchecked(frame.offset) })
+                - VarInt::size(VarInt::from_u64(frame.offset).unwrap_or(VarInt::MAX))
                 - 2; // Maximum encoded length for frame size, given we send less than 2^14 bytes
 
             let len = frame

@@ -15,22 +15,24 @@ const CHILD: &str = "RAMA_PAC_HARDENED_TEST_CHILD";
 fn hardened_runtime_without_executable_memory_entitlements() {
     if std::env::var_os(CHILD).is_some() {
         // Check kernel state in the running process, not just codesign output.
+        // Declaration matches the libsystem prototype
+        // `int csops(pid_t, unsigned int, void *, size_t)` from `<sys/codesign.h>`.
         unsafe extern "C" {
             fn csops(pid: i32, ops: u32, address: *mut std::ffi::c_void, size: usize) -> i32;
         }
         let mut status = 0_u32;
-        // SAFETY: CS_OPS_STATUS (0) writes one u32 to this live local value.
-        assert_eq!(
-            unsafe {
-                csops(
-                    std::process::id().try_into().unwrap(),
-                    0,
-                    std::ptr::from_mut(&mut status).cast(),
-                    std::mem::size_of_val(&status),
-                )
-            },
-            0
-        );
+        // SAFETY: `csops` copies at most `size` bytes into `address` (CS_OPS_STATUS (0)
+        // writes one `uint32_t`); `address` is the live, aligned, writable `u32` local
+        // `status` and `size` is its size.
+        let result = unsafe {
+            csops(
+                std::process::id().try_into().unwrap(),
+                0,
+                std::ptr::from_mut(&mut status).cast(),
+                std::mem::size_of_val(&status),
+            )
+        };
+        assert_eq!(result, 0);
         assert_ne!(status & 0x0001_0000, 0, "CS_RUNTIME must be set");
 
         let error = rama_js::JsRuntime::warm_up().unwrap_err();

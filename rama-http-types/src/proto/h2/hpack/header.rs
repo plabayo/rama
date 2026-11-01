@@ -117,7 +117,10 @@ pub enum Name<'a> {
 
 #[doc(hidden)]
 #[derive(Clone, Eq, PartialEq, Default)]
-pub struct BytesStr(Bytes);
+pub struct BytesStr(
+    // Safety invariant: the bytes are valid UTF-8.
+    Bytes,
+);
 
 fn len(name: &HeaderName, value: &HeaderValue) -> usize {
     let n: &str = name.as_ref();
@@ -418,7 +421,8 @@ impl BytesStr {
     }
 
     pub(crate) fn as_str(&self) -> &str {
-        // Safety: check valid utf-8 in constructor
+        // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8, which the
+        // `BytesStr` safety invariant gives.
         unsafe { std::str::from_utf8_unchecked(self.0.as_ref()) }
     }
 }

@@ -39,7 +39,12 @@ pub const MAX_NAME_LEN: usize = 253;
 /// The validator only accepts ASCII bytes, so the contents are always valid
 /// UTF-8.
 #[derive(Debug, Clone)]
-pub struct Domain(Bytes);
+pub struct Domain(
+    // Safety invariant: the bytes are valid UTF-8 (`as_str` views them as
+    // `str`). That they also form a valid name (`is_valid_name`) is a
+    // semantic invariant that no unsafe code relies on.
+    Bytes,
+);
 
 impl Domain {
     /// Maximum byte length of a fully-qualified domain name (RFC 1035).
@@ -65,9 +70,16 @@ impl Domain {
         Self(Bytes::from_static(s.as_bytes()))
     }
 
-    /// Safety: callee ensures that the given byte/string source is a valid
-    /// domain. Useful when we have a buffer that we know came from a Domain
-    /// originally (e.g. label-joining helpers, trie key reversal).
+    /// Build a domain from bytes known to be one, without validation. Useful
+    /// when the buffer came from a `Domain` originally (e.g. label-joining
+    /// helpers, trie key reversal).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `s` is valid UTF-8; [`Self::as_str`]
+    /// views it as `str`. The caller must also ensure that `s` passes
+    /// `is_valid_name`; that part is semantic: violating it breaks
+    /// `Domain`'s documented guarantees but not memory safety.
     pub(crate) unsafe fn from_maybe_borrowed_unchecked(s: impl Into<Bytes>) -> Self {
         let bytes = s.into();
         debug_assert!(
@@ -121,9 +133,10 @@ impl Domain {
             return self;
         }
 
-        let lower = Bytes::from(self.as_str().to_ascii_lowercase());
-        // Safety: ASCII-lowercasing a valid domain preserves its length,
-        // structure, and allowed byte set.
+        let lower = self.as_str().to_ascii_lowercase();
+        // SAFETY: `from_maybe_borrowed_unchecked` requires UTF-8, which the
+        // `String` `lower` is, and (semantic) a valid name: ASCII-lowercasing
+        // a valid domain keeps its length, structure and allowed byte set.
         unsafe { Self::from_maybe_borrowed_unchecked(lower) }
     }
 
@@ -150,6 +163,7 @@ impl Domain {
     /// allocate.
     #[must_use]
     pub fn strip_leading_dot(&self) -> Option<Self> {
+        // Field invariant kept: dropping one leading ASCII byte leaves UTF-8.
         (self.0.first() == Some(&b'.')).then(|| Self(self.0.slice(1..)))
     }
 
@@ -379,8 +393,9 @@ impl Domain {
     /// Gets the domain name as reference.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        // Safety: the validator only accepts ASCII bytes, so the contents
-        // are always valid UTF-8.
+        // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8, which
+        // `self.0` is by its field invariant; `Bytes` is immutable and the
+        // result borrows `self`.
         unsafe { core::str::from_utf8_unchecked(&self.0) }
     }
 
@@ -436,28 +451,27 @@ pub(crate) fn is_loopback_name(name: &str) -> bool {
 /// types stay interchangeable as collection keys.
 #[derive(Debug, Clone, Copy)]
 pub struct DomainRef<'a> {
-    bytes: &'a [u8],
+    bytes: &'a str,
 }
 
 impl<'a> DomainRef<'a> {
+    /// Wrap a validated domain name. Validity is a semantic precondition;
+    /// UTF-8 is carried by the type.
     #[must_use]
-    pub(crate) const fn from_validated_bytes(bytes: &'a [u8]) -> Self {
+    pub(crate) const fn from_validated_str(bytes: &'a str) -> Self {
         Self { bytes }
     }
 
     /// Returns the raw bytes (always ASCII).
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {
-        self.bytes
+        self.bytes.as_bytes()
     }
 
-    /// Returns the domain as a `&str`. ASCII bytes are valid UTF-8 by
-    /// construction.
+    /// Returns the domain as a `&str`.
     #[must_use]
     pub fn as_str(&self) -> &'a str {
-        // Safety: `DomainRef` is only ever constructed from a validated
-        // Domain buffer.
-        unsafe { core::str::from_utf8_unchecked(self.bytes) }
+        self.bytes
     }
 
     /// Returns `true` if this is an RFC 6761 §6.3 loopback name. See
@@ -472,9 +486,10 @@ impl<'a> DomainRef<'a> {
     /// shadow the std `ToOwned` trait method.
     #[must_use]
     pub fn into_owned(self) -> Domain {
-        let bytes = Bytes::copy_from_slice(self.bytes);
-        // Safety: `DomainRef`'s contents are a validated `Domain` in
-        // presentation form.
+        let bytes = Bytes::copy_from_slice(self.bytes.as_bytes());
+        // SAFETY: `from_maybe_borrowed_unchecked` requires UTF-8: `bytes` is a
+        // copy of the `str` `self.bytes`. The semantic part (a valid name) is
+        // `DomainRef`'s own construction contract.
         unsafe { Domain::from_maybe_borrowed_unchecked(bytes) }
     }
 
@@ -501,7 +516,7 @@ impl<'a> DomainRef<'a> {
 
 impl<'a> From<&'a Domain> for DomainRef<'a> {
     fn from(d: &'a Domain) -> Self {
-        Self::from_validated_bytes(&d.0)
+        Self::from_validated_str(d.as_str())
     }
 }
 
@@ -510,7 +525,7 @@ impl<'a> TryFrom<&'a str> for DomainRef<'a> {
 
     fn try_from(name: &'a str) -> Result<Self, Self::Error> {
         validate_domain_str(name)?;
-        Ok(Self::from_validated_bytes(name.as_bytes()))
+        Ok(Self::from_validated_str(name))
     }
 }
 
@@ -1152,7 +1167,9 @@ pub trait AsDomainRef: seal::AsDomainRefPrivate {
     /// For `&'static str` inputs this validates and panics on invalid input
     /// (matching [`Domain::from_static`]); for [`Domain`] it clones cheaply.
     fn to_domain(&self) -> Domain {
-        // Safety: domain_as_str is contractually a validated domain string.
+        // SAFETY: `from_maybe_borrowed_unchecked` requires UTF-8: the bytes are
+        // a copy of the `str` from `domain_as_str`. The semantic part (a valid
+        // name) is the sealed `AsDomainRef` contract of `domain_as_str`.
         unsafe {
             Domain::from_maybe_borrowed_unchecked(Bytes::copy_from_slice(
                 self.domain_as_str().as_bytes(),

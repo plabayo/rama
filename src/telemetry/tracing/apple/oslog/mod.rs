@@ -37,7 +37,7 @@ use rama_core::telemetry::tracing::{
 };
 use rama_utils::octets::kib;
 use std::{
-    ffi::{CString, NulError, c_char, c_void},
+    ffi::{CStr, CString, NulError, c_void},
     fmt::{self, Write as _},
     ptr::NonNull,
     sync::{
@@ -254,13 +254,14 @@ impl OsLogLayer {
         let subsystem = CString::new(subsystem.as_ref()).map_err(OsLogError::InvalidSubsystem)?;
         let category = CString::new(category.as_ref()).map_err(OsLogError::InvalidCategory)?;
 
-        // SAFETY: both pointers are valid NUL-terminated strings for the
-        // duration of this call. The shim returns the retained os_log_t as an
-        // opaque pointer.
+        // SAFETY: [`ffi`] contract: both arguments are `CString`s that outlive
+        // this call. os/log.h: `os_log_create` returns a +1 `os_log_t`.
         let raw = unsafe { ffi::rama_apple_oslog_create(subsystem.as_ptr(), category.as_ptr()) };
         let raw = NonNull::new(raw).ok_or(OsLogError::CreateFailed)?;
 
         Ok(Self {
+            // Establishes the `LogHandle` field invariant: `raw` is the +1
+            // reference just returned by `os_log_create`, owned only here.
             log: Arc::new(LogHandle(raw)),
             layer_id: next_layer_id(),
             privacy: Privacy::default(),
@@ -330,7 +331,7 @@ impl OsLogLayer {
         }
     }
 
-    fn format_span(&self, state: &SpanState) -> Vec<u8> {
+    fn format_span(&self, state: &SpanState) -> CString {
         let mut output = BoundedString::new(self.max_message_bytes);
         if self.include_target {
             _ = write!(output, "[{}] ", state.metadata.target());
@@ -343,7 +344,7 @@ impl OsLogLayer {
         output.into_c_message()
     }
 
-    fn format_span_split(&self, state: &SpanState) -> (Vec<u8>, Vec<u8>) {
+    fn format_span_split(&self, state: &SpanState) -> (CString, CString) {
         let mut public = BoundedString::new(self.max_message_bytes);
         if self.include_target {
             _ = write!(public, "[{}] ", state.metadata.target());
@@ -355,7 +356,7 @@ impl OsLogLayer {
         (public.into_c_message(), private.into_c_message())
     }
 
-    fn format_event<S>(&self, event: &Event<'_>, ctx: &Context<'_, S>) -> Vec<u8>
+    fn format_event<S>(&self, event: &Event<'_>, ctx: &Context<'_, S>) -> CString
     where
         S: Subscriber + for<'lookup> LookupSpan<'lookup>,
     {
@@ -385,7 +386,7 @@ impl OsLogLayer {
         output.into_c_message()
     }
 
-    fn format_event_split<S>(&self, event: &Event<'_>, ctx: &Context<'_, S>) -> (Vec<u8>, Vec<u8>)
+    fn format_event_split<S>(&self, event: &Event<'_>, ctx: &Context<'_, S>) -> (CString, CString)
     where
         S: Subscriber + for<'lookup> LookupSpan<'lookup>,
     {
@@ -589,127 +590,133 @@ where
     }
 }
 
-struct LogHandle(NonNull<c_void>);
+struct LogHandle(
+    // Safety invariant: a +1 `os_log_t` reference returned by `os_log_create`,
+    // owned by this handle and released only by its `Drop`.
+    NonNull<c_void>,
+);
 
-// SAFETY: Apple documents os_log_t values as process-wide logging handles;
-// os_log calls are safe to make concurrently from different threads.
+// SAFETY: `Send` and `Sync` require that the handle may be used and released
+// from any thread, concurrently. os/log.h documents `os_log_t` objects as
+// entries of a process-global collection that are never deallocated, and
+// Apple's `os` Swift overlay declares `OSLog` and `Logger` `Sendable`, which is
+// Apple's statement that the logging calls on them are thread-safe. The Rust
+// side holds no mutable state.
 unsafe impl Send for LogHandle {}
-// SAFETY: see the Send implementation above. The handle is immutable and all
-// operations are delegated to Apple's thread-safe unified logging runtime.
+// SAFETY: see the `Send` proof; every method takes `&self` and only forwards
+// the immutable handle to the os_log runtime.
 unsafe impl Sync for LogHandle {}
 
 impl LogHandle {
     fn enabled(&self, os_type: OsLogType) -> bool {
-        // SAFETY: self.0 is a retained os_log_t and os_type has one of Apple's
-        // documented os_log_type_t values.
+        // SAFETY: [`ffi`] contract: `self.0` is a live `os_log_t` (field
+        // invariant) and `OsLogType` discriminants are `os_log_type_t` values.
         unsafe { ffi::rama_apple_oslog_enabled(self.0.as_ptr(), os_type as u8) != 0 }
     }
 
-    fn emit(&self, os_type: OsLogType, message: &[u8], privacy: Privacy) {
-        debug_assert_eq!(message.last(), Some(&0));
-        // SAFETY: message is NUL-terminated and lives for the synchronous shim
-        // call; self.0 is a valid os_log_t.
+    fn emit(&self, os_type: OsLogType, message: &CStr, privacy: Privacy) {
+        // SAFETY: [`ffi`] contract: `self.0` is a live `os_log_t` (field
+        // invariant); `message` is a `&CStr`, so NUL-terminated and borrowed
+        // for this synchronous call.
         unsafe {
             ffi::rama_apple_oslog_emit(
                 self.0.as_ptr(),
                 os_type as u8,
-                message.as_ptr().cast::<c_char>(),
+                message.as_ptr(),
                 privacy as u8,
             );
         }
     }
 
-    fn emit_split(&self, os_type: OsLogType, public: &[u8], private: &[u8]) {
-        debug_assert_eq!(public.last(), Some(&0));
-        debug_assert_eq!(private.last(), Some(&0));
-        if private == [0] {
+    fn emit_split(&self, os_type: OsLogType, public: &CStr, private: &CStr) {
+        if private.is_empty() {
             self.emit(os_type, public, Privacy::Public);
             return;
         }
+        // SAFETY: [`ffi`] contract: `self.0` is a live `os_log_t` (field
+        // invariant); both texts are `&CStr` borrowed for this call.
         unsafe {
             ffi::rama_apple_oslog_emit_split(
                 self.0.as_ptr(),
                 os_type as u8,
-                public.as_ptr().cast::<c_char>(),
-                private.as_ptr().cast::<c_char>(),
+                public.as_ptr(),
+                private.as_ptr(),
             );
         }
     }
 
     fn signpost_enabled(&self) -> bool {
-        // SAFETY: self.0 is a valid os_log_t. The shim also performs the OS
-        // availability check before touching signpost APIs.
+        // SAFETY: [`ffi`] contract: `self.0` is a live `os_log_t` (field
+        // invariant); the shim availability-checks the signpost API.
         unsafe { ffi::rama_apple_oslog_signpost_enabled(self.0.as_ptr()) != 0 }
     }
 
     fn signpost_id_generate(&self) -> u64 {
-        // SAFETY: self.0 is a valid os_log_t and the shim availability-checks
-        // the signpost API.
+        // SAFETY: [`ffi`] contract: `self.0` is a live `os_log_t` (field
+        // invariant); the shim availability-checks the signpost API.
         unsafe { ffi::rama_apple_oslog_signpost_id_generate(self.0.as_ptr()) }
     }
 
-    fn signpost_begin(&self, signpost_id: u64, message: &[u8], privacy: Privacy) {
+    fn signpost_begin(&self, signpost_id: u64, message: &CStr, privacy: Privacy) {
         debug_assert!(is_valid_signpost_id(signpost_id));
-        debug_assert_eq!(message.last(), Some(&0));
-        // SAFETY: the ID came from Apple for this handle, message is
-        // NUL-terminated, and the shim performs the availability check.
+        // SAFETY: [`ffi`] contract: `self.0` is a live `os_log_t` (field
+        // invariant); `message` is a `&CStr` borrowed for this call.
         unsafe {
             ffi::rama_apple_oslog_signpost_begin(
                 self.0.as_ptr(),
                 signpost_id,
-                message.as_ptr().cast::<c_char>(),
+                message.as_ptr(),
                 privacy as u8,
             );
         }
     }
 
-    fn signpost_end(&self, signpost_id: u64, message: &[u8], privacy: Privacy) {
+    fn signpost_end(&self, signpost_id: u64, message: &CStr, privacy: Privacy) {
         debug_assert!(is_valid_signpost_id(signpost_id));
-        debug_assert_eq!(message.last(), Some(&0));
-        // SAFETY: this matches a begin emitted by this handle, message is
-        // NUL-terminated, and the shim availability-checks the API.
+        // SAFETY: [`ffi`] contract: `self.0` is a live `os_log_t` (field
+        // invariant); `message` is a `&CStr` borrowed for this call.
         unsafe {
             ffi::rama_apple_oslog_signpost_end(
                 self.0.as_ptr(),
                 signpost_id,
-                message.as_ptr().cast::<c_char>(),
+                message.as_ptr(),
                 privacy as u8,
             );
         }
     }
 
-    fn signpost_begin_split(&self, signpost_id: u64, public: &[u8], private: &[u8]) {
+    fn signpost_begin_split(&self, signpost_id: u64, public: &CStr, private: &CStr) {
         debug_assert!(is_valid_signpost_id(signpost_id));
-        debug_assert_eq!(public.last(), Some(&0));
-        debug_assert_eq!(private.last(), Some(&0));
-        if private == [0] {
+        if private.is_empty() {
             self.signpost_begin(signpost_id, public, Privacy::Public);
             return;
         }
+        // SAFETY: [`ffi`] contract: `self.0` is a live `os_log_t` (field
+        // invariant); both texts are `&CStr` borrowed for this call.
         unsafe {
             ffi::rama_apple_oslog_signpost_begin_split(
                 self.0.as_ptr(),
                 signpost_id,
-                public.as_ptr().cast::<c_char>(),
-                private.as_ptr().cast::<c_char>(),
+                public.as_ptr(),
+                private.as_ptr(),
             );
         }
     }
 
-    fn signpost_end_split(&self, signpost_id: u64, public: &[u8], private: &[u8]) {
+    fn signpost_end_split(&self, signpost_id: u64, public: &CStr, private: &CStr) {
         debug_assert!(is_valid_signpost_id(signpost_id));
-        debug_assert_eq!(public.last(), Some(&0));
-        debug_assert_eq!(private.last(), Some(&0));
-        if private == [0] {
+        if private.is_empty() {
             self.signpost_end(signpost_id, public, Privacy::Public);
             return;
         }
+        // SAFETY: [`ffi`] contract: `self.0` is a live `os_log_t` (field
+        // invariant); both texts are `&CStr` borrowed for this call.
         unsafe {
             ffi::rama_apple_oslog_signpost_end_split(
                 self.0.as_ptr(),
                 signpost_id,
-                public.as_ptr().cast::<c_char>(),
-                private.as_ptr().cast::<c_char>(),
+                public.as_ptr(),
+                private.as_ptr(),
             );
         }
     }
@@ -717,8 +724,9 @@ impl LogHandle {
 
 impl Drop for LogHandle {
     fn drop(&mut self) {
-        // SAFETY: os_log_create returned this retained handle, and Arc ensures
-        // it is released exactly once after the last layer clone is dropped.
+        // SAFETY: [`ffi`] contract for `rama_apple_oslog_release`: by the field
+        // invariant `self.0` is this handle's own +1 reference, and `Drop` runs
+        // once, so it is released exactly once and never used afterwards.
         unsafe { ffi::rama_apple_oslog_release(self.0.as_ptr()) };
     }
 }
@@ -849,7 +857,7 @@ impl BoundedString {
         self.truncated |= value.truncated;
     }
 
-    fn into_c_message(mut self) -> Vec<u8> {
+    fn into_c_message(mut self) -> CString {
         if self.truncated {
             let keep = self.max_bytes.saturating_sub(MIN_MESSAGE_BYTES);
             truncate_utf8(&mut self.value, keep);
@@ -869,9 +877,8 @@ impl BoundedString {
             return escaped.into_c_message();
         }
 
-        let mut bytes = self.value.into_bytes();
-        bytes.push(0);
-        bytes
+        // NUL bytes were escaped above, so the empty fallback is never taken.
+        CString::new(self.value).unwrap_or_default()
     }
 }
 
@@ -913,6 +920,22 @@ const fn is_valid_signpost_id(signpost_id: u64) -> bool {
     signpost_id != OS_SIGNPOST_ID_NULL && signpost_id != OS_SIGNPOST_ID_INVALID
 }
 
+/// Declarations of the C shim in `shim.c` (signatures match `shim.h`).
+///
+/// # Safety
+///
+/// Callers of every function here must ensure that:
+///
+/// - `log` is a live `os_log_t` (a value returned by `rama_apple_oslog_create`
+///   and not yet passed to `rama_apple_oslog_release`);
+///   `rama_apple_oslog_release` consumes that reference, so `log` must not be
+///   used again afterwards;
+/// - `subsystem`, `category`, `message`, `public_message` and `private_fields`
+///   are non-null and point to NUL-terminated strings readable until the call
+///   returns.
+///
+/// The shim passes text only as `%s` arguments of constant format strings,
+/// never as a format string, and availability-checks the signpost API.
 mod ffi {
     use std::ffi::{c_char, c_void};
 
@@ -994,12 +1017,12 @@ mod tests {
                 let (public, private) = self.formatter.format_event_split(event, &ctx);
                 format!(
                     "{} |private| {}",
-                    String::from_utf8(public[..public.len() - 1].to_vec()).unwrap(),
-                    String::from_utf8(private[..private.len() - 1].to_vec()).unwrap()
+                    public.to_str().unwrap(),
+                    private.to_str().unwrap()
                 )
             } else {
                 let message = self.formatter.format_event(event, &ctx);
-                String::from_utf8(message[..message.len() - 1].to_vec()).unwrap()
+                message.into_string().unwrap()
             };
             self.events.write().unwrap().push(message);
         }
@@ -1033,14 +1056,19 @@ mod tests {
         message.push_str("ééééé");
         let message = message.into_c_message();
 
-        assert_eq!(message.last(), Some(&0));
-        std::str::from_utf8(&message[..message.len() - 1]).unwrap();
-        assert!(message.len() <= 9);
+        message.to_str().unwrap();
+        assert!(message.as_bytes().len() <= 8);
 
         let mut message = BoundedString::new(16);
         message.push_str("left\0right");
         let message = message.into_c_message();
-        assert_eq!(&message[..message.len() - 1], b"left\\0right");
+        assert_eq!(message.as_bytes(), b"left\\0right");
+
+        let mut message = BoundedString::new(4);
+        message.push_str("\0\0\0\0");
+        let message = message.into_c_message();
+        assert!(!message.as_bytes().is_empty());
+        assert!(!message.as_bytes().contains(&0));
     }
 
     #[test]

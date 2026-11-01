@@ -106,7 +106,9 @@ extract_mmdb() {
   esac
   found="$(find "$tmp" -type f -iname '*.mmdb' | head -n1)"
   [ -n "$found" ] || die "no .mmdb found inside $archive"
-  mv "$found" "$GEOIP_DIR/$dest"
+  # stage next to the target, then rename: a service may have the old file mapped
+  mv "$found" "$GEOIP_DIR/.$dest.tmp"
+  mv -f "$GEOIP_DIR/.$dest.tmp" "$GEOIP_DIR/$dest"
   rm -rf "$tmp"
 }
 
@@ -251,21 +253,35 @@ deploy_app() {
 }
 
 # push all 3 dbs to one machine; arg = "app:machine_id".
+# The services memory-map these files, so a live file is never written in
+# place: each db is uploaded to a temp file on the same volume, checked, then
+# renamed over the live name. A running service keeps the copy it mapped
+# (POSIX rename/mmap) and loads the new one on its next start.
 # NOTE: failures must `return 1`, not `die`/`exit` — these run inside a
 # parallel_map subshell whose `|| marker` only fires on a non-zero return.
 push_one() {
-  local app="${1%%:*}" mid="${1##*:}" f n
+  local app="${1%%:*}" mid="${1##*:}" f n tmp size remote_size
   for f in "$GEOLITE2_CITY" "$GEOLITE2_ASN" "$IP2LOCATION_DB"; do
     log "[$app/$mid] put $f"
+    tmp="$VOLUME_MOUNT/.$f.tmp"
+    size="$(wc -c <"$GEOIP_DIR/$f" | tr -d ' ')"
     n=1
     while true; do
       # Fly autostop is driven by service traffic, not SSH, so a machine can be
       # reaped mid-sync (and a running machine's idle timer is NOT reset by our
       # session) — re-wake it before every attempt. Volumes persist regardless.
       fly machine start "$mid" -a "$app" >/dev/null 2>&1 || true
-      # flyctl sftp refuses to overwrite, so drop any prior/partial copy first
-      fly ssh console -a "$app" --machine "$mid" -C "rm -f $VOLUME_MOUNT/$f" >/dev/null 2>&1 || true
-      fly ssh sftp put "$GEOIP_DIR/$f" "$VOLUME_MOUNT/$f" -a "$app" --machine "$mid" && break
+      # flyctl sftp refuses to overwrite, so drop any partial temp copy first
+      fly ssh console -a "$app" --machine "$mid" -C "rm -f $tmp" >/dev/null 2>&1 || true
+      if fly ssh sftp put "$GEOIP_DIR/$f" "$tmp" -a "$app" --machine "$mid"; then
+        remote_size="$(fly ssh console -a "$app" --machine "$mid" -C "stat -c %s $tmp" 2>/dev/null | tr -d '\r ')"
+        # only a complete upload replaces the live file
+        if [ "$remote_size" = "$size" ] \
+           && fly ssh console -a "$app" --machine "$mid" -C "mv -f $tmp $VOLUME_MOUNT/$f" >/dev/null 2>&1; then
+          break
+        fi
+        warn "[$app/$mid] $f: uploaded size '${remote_size}' != ${size} or rename failed; retrying"
+      fi
       if [ "$n" -ge "$RETRY_MAX" ]; then warn "[$app/$mid] upload failed: $f"; return 1; fi
       sleep $(( n * 2 + (RANDOM % 5) ))
       n=$((n + 1))

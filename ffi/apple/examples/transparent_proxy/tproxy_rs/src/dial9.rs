@@ -32,8 +32,16 @@ const MAX_FILE_BYTES: u64 = mib_u64(64);
 pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFactory {
     let factory = DefaultTransparentProxyAsyncRuntimeFactory::new();
 
-    // Example-specific opt-out for the test harness and local diagnostics.
-    // Applications should make this choice in their own configuration.
+    // The FFI e2e harness builds with `e2e` and runs many engines in one process;
+    // the dial9 writer does not follow engine shutdown, so each engine would keep
+    // its runtime threads and FDs open.
+    if cfg!(feature = "e2e") {
+        tracing::debug!("rama-tproxy dial9: disabled in `e2e` builds");
+        return factory.without_dial9_recorder();
+    }
+
+    // Example-specific opt-out for local diagnostics. Applications should make
+    // this choice in their own configuration.
     if let Some("true" | "1") = std::env::var("RAMA_TPROXY_DIAL9_DISABLED").ok().as_deref() {
         tracing::debug!(
             "rama-tproxy dial9: explicitly disabled via RAMA_TPROXY_DIAL9_DISABLED env var",

@@ -55,7 +55,13 @@ compile_error!(
 /// enormous strings without panicking. This seems very niche to me, though.
 #[derive(Clone)]
 #[repr(C)] // We mentioned ArcStr being good at FFI at some point so why not
-pub struct Substr(ArcStr, Idx, Idx);
+pub struct Substr(
+    ArcStr,
+    // Safety invariant: `self.1 <= self.2 <= self.0.len()`, and both are char
+    // boundaries of `self.0`.
+    Idx,
+    Idx,
+);
 
 #[inline]
 #[cfg(target_pointer_width = "64")]
@@ -96,6 +102,12 @@ fn index_overflow(i: usize) -> ! {
 }
 #[cold]
 #[inline(never)]
+fn bad_substr_window(begin: usize, end: usize, len: usize) -> ! {
+    panic!("Bad substr range: {begin}..{end} must be within the substr's length {len}");
+}
+
+#[cold]
+#[inline(never)]
 fn bad_substr_idx(s: &ArcStr, i: usize, e: usize) -> ! {
     assert!(i <= e, "Bad substr range: start {i} must be <= end {e}");
     let max = if cfg!(target_pointer_width = "64",) {
@@ -134,6 +146,7 @@ impl Substr {
     #[inline]
     #[must_use]
     pub const fn new() -> Self {
+        // Field invariant: `0..0` is a char-boundary range of any string.
         Self(ArcStr::new(), 0, 0)
     }
 
@@ -153,6 +166,7 @@ impl Substr {
     #[must_use]
     pub fn full(a: ArcStr) -> Self {
         let l = to_idx(a.len());
+        // Field invariant: `0` and `len` are char boundaries of any string.
         Self(a, 0, l)
     }
 
@@ -170,8 +184,10 @@ impl Substr {
             Bound::Excluded(&n) => n,
             Bound::Unbounded => a.len(),
         };
+        // Panics unless `begin <= end <= a.len()` on char boundaries.
         _ = &a.as_str()[begin..end];
 
+        // Field invariant: checked by the slicing above.
         Self(ArcStr::clone(a), to_idx(begin), to_idx(end))
     }
 
@@ -200,8 +216,6 @@ impl Substr {
     #[must_use]
     pub fn substr(&self, range: impl RangeBounds<usize>) -> Self {
         use core::ops::Bound;
-        let my_end = self.2;
-
         let begin = match range.start_bound() {
             Bound::Included(&n) => n,
             Bound::Excluded(&n) => n + 1,
@@ -213,18 +227,22 @@ impl Substr {
             Bound::Excluded(&n) => n,
             Bound::Unbounded => self.len(),
         };
+        // `range` is relative to this substr: bound it by our length, not by
+        // our end in the parent.
+        if begin > end || end > self.len() {
+            bad_substr_window(begin, end, self.len());
+        }
+        // No overflow: `self.1 + end <= self.2` by the check above.
         let new_begin = self.1 + begin;
         let new_end = self.1 + end;
-        // _ = &self.0.as_str()[new_begin..new_end];
-        if begin > end
-            || end > my_end
-            || !self.0.is_char_boundary(new_begin)
-            || !self.0.is_char_boundary(new_end)
-        {
+        if !self.0.is_char_boundary(new_begin) || !self.0.is_char_boundary(new_end) {
             bad_substr_idx(&self.0, new_begin, new_end);
         }
         debug_assert!(self.0.get(new_begin..new_end).is_some());
 
+        // Field invariant: `self.1 <= new_begin <= new_end <= self.2 <=
+        // self.0.len()` by the first check and our own invariant; both are
+        // char boundaries of `self.0` by the second check.
         Self(ArcStr::clone(&self.0), new_begin as Idx, new_end as Idx)
     }
 
@@ -313,16 +331,17 @@ impl Substr {
     /// ```
     /// use rama_utils::str::arcstr::{ArcStr, Substr, arcstr};
     /// const FOOBAR: ArcStr = arcstr!("foobar");
+    /// // SAFETY: `2 <= 5 <= 6` and every index of an ASCII string is a char boundary.
     /// const OBA: Substr = unsafe { Substr::from_parts_unchecked(FOOBAR, 2..5) };
     /// assert_eq!(OBA, "oba");
     /// ```
     // TODO: can I do a compile_fail test that only is a failure under a certain feature?
     ///
     /// # Safety
-    /// You promise that `range` is in bounds for `s`, and that the start and
-    /// end are both on character boundaries. Note that we do check that the
-    /// `usize` indices fit into `u32` if thats our configured index type, so
-    /// `_unchecked` is not *entirely* a lie.
+    ///
+    /// The caller must ensure that `range.start <= range.end <= s.len()` and
+    /// that both `range.start` and `range.end` are char boundaries of `s`.
+    /// The returned `Substr` dereferences to `&s[range]`.
     ///
     /// # Panics
     /// If the `substr-usize-indices` is not enabled, and the target arch is
@@ -332,6 +351,7 @@ impl Substr {
     #[inline]
     #[must_use]
     pub const unsafe fn from_parts_unchecked(s: ArcStr, range: Range<usize>) -> Self {
+        // Field invariant: the `# Safety` contract.
         Self(s, to_idx_const(range.start), to_idx_const(range.end))
     }
 
@@ -517,6 +537,8 @@ impl core::ops::Deref for Substr {
     #[inline]
     fn deref(&self) -> &str {
         debug_assert!(self.0.get(self.1..self.2).is_some());
+        // SAFETY: `str::get_unchecked` needs `start <= end <= len` with both
+        // on UTF-8 sequence boundaries: the field invariant of `Substr`.
         unsafe { self.0.get_unchecked(self.1..self.2) }
     }
 }
@@ -633,6 +655,9 @@ impl<'a> From<Substr> for crate::std::borrow::Cow<'a, str> {
     fn from(s: Substr) -> Self {
         if let Some(st) = ArcStr::as_static(&s.0) {
             debug_assert!(st.get(s.range()).is_some());
+            // SAFETY: `str::get_unchecked` needs `start <= end <= len` with
+            // both on UTF-8 sequence boundaries. `st` is the whole parent
+            // string `s.0`, so the `Substr` field invariant gives this.
             crate::std::borrow::Cow::Borrowed(unsafe { st.get_unchecked(s.range()) })
         } else {
             crate::std::borrow::Cow::Owned(s.to_string())
@@ -725,20 +750,38 @@ mod test {
     use super::*;
     #[test]
     #[should_panic]
-    #[cfg(not(miri))] // XXX does miri still hate unwinding?
     #[cfg(target_pointer_width = "64")]
-    fn test_from_parts_unchecked_err() {
-        let s = crate::str::arcstr::arcstr!("foo");
-        // Note: this is actually a violation of the safety requirement of
-        // from_parts_unchecked (the indices are illegal), but I can't get an
-        // ArcStr that's big enough, and I'm the author so I know it's fine
-        // because we hit the panic case.
-        let _u = unsafe { Substr::from_parts_unchecked(s, 0x1_0000_0000usize..0x1_0000_0001) };
+    fn test_from_parts_unchecked_index_overflow_panics() {
+        // The index check `from_parts_unchecked` runs, without an `ArcStr`
+        // large enough to call it within its contract.
+        _ = to_idx_const(0x1_0000_0000usize);
     }
     #[test]
     fn test_from_parts_unchecked_valid() {
         let s = crate::str::arcstr::arcstr!("foobar");
+        // SAFETY: `2 <= 5 <= 6`, and every index of an ASCII string is a
+        // char boundary.
         let u = unsafe { Substr::from_parts_unchecked(s, 2..5) };
         assert_eq!(&*u, "oba");
+    }
+
+    // Heap handles count with loom atomics, usable only inside `loom::model`.
+    #[test]
+    #[cfg(not(loom))]
+    fn substr_of_substr_stays_within_its_window() {
+        let s = ArcStr::from("0123456789abcdefghij");
+        let sub = s.substr(5..10);
+        assert_eq!(sub.substr(1..4), "678");
+        assert_eq!(sub.substr(..), "56789");
+        assert_eq!(sub.substr(5..), "");
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    #[should_panic(expected = "Bad substr range")]
+    fn substr_of_substr_past_its_end_panics() {
+        let s = ArcStr::from("0123456789abcdefghij");
+        // In bounds of the parent, but past the end of the `5..10` window.
+        _ = s.substr(5..10).substr(0..8);
     }
 }

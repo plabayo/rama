@@ -4,6 +4,8 @@ use jni::{
     refs::Reference as _,
 };
 
+use std::ptr::NonNull;
+
 use super::*;
 
 pub(super) fn read(
@@ -14,24 +16,27 @@ pub(super) fn read(
             drop(panic);
             BoxError::from_static_str("Android context is not initialized")
         })?;
-    // SAFETY: ndk-context returns the process JavaVM pointer installed by the
-    // Android runtime. It remains valid for the lifetime of the process, and
-    // jni's JavaVM wrapper does not take ownership of or destroy the VM.
-    let vm = unsafe { jni::JavaVM::from_raw(initial_context.vm().cast()) };
+    let vm_ptr = NonNull::new(initial_context.vm())
+        .ok_or_else(|| BoxError::from_static_str("Android context has a null JavaVM"))?;
+    // SAFETY: `JavaVM::from_raw` needs a valid, non-null `JavaVM` pointer
+    // supporting JNI >= 1.4. Non-null is checked above. The pointer was handed
+    // to `ndk_context::initialize_android_context`, whose `# Safety` makes its
+    // caller guarantee valid pointers; Android VMs support JNI 1.6 and are
+    // never destroyed while the process runs. The wrapper does not own the VM.
+    let vm = unsafe { jni::JavaVM::from_raw(vm_ptr.as_ptr().cast()) };
     vm.attach_current_thread(|env| -> Result<SystemProxyConfig, BoxError> {
-        // ndk-context may replace and release its Activity reference during
-        // lifecycle changes. Re-read it only after this thread is attached,
-        // then retain our own global reference for the complete snapshot read.
-        // A release racing this narrow acquisition window is inherent to
-        // ndk-context's raw-pointer API; embedders should initialize it with an
-        // Application context when possible.
         let context = std::panic::catch_unwind(ndk_context::android_context).map_err(|panic| {
             drop(panic);
             BoxError::from_static_str("Android context is not initialized")
         })?;
-        // SAFETY: ndk-context stores a global JNI reference. We use this
-        // non-owning wrapper only long enough to create our own global ref;
-        // the wrapper does not delete the underlying reference on drop.
+        // SAFETY: `global_kind_from_raw` needs a valid global reference (or
+        // null) with no owning wrapper, of a type `JObject` suits. ndk-context
+        // documents `context()` as an `android.content.Context`. The "Android
+        // setup" requirement in the `SystemProxyConfig::try_from_system` docs
+        // makes the embedder keep it a valid global reference, never released
+        // or deleted, for the rest of the process. ndk-context holds it as a
+        // raw pointer, so no owning wrapper exists; `JObject` is non-owning and
+        // is used only within this closure to take our own global reference.
         let borrowed_context = unsafe { JObject::global_kind_from_raw(context.context().cast()) };
         let context = env.new_global_ref(&borrowed_context)?;
         let sdk_int = env

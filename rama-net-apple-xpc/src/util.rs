@@ -1,6 +1,7 @@
 use std::{
     ffi::{CString, c_void},
-    ptr,
+    panic::{AssertUnwindSafe, catch_unwind},
+    process, ptr,
 };
 
 use rama_utils::str::arcstr::ArcStr;
@@ -10,16 +11,11 @@ use crate::{
     ffi::{dispatch_queue_create, dispatch_queue_t},
 };
 
-// `dispatch_queue_create` returns a +1 retained dispatch_queue_t. When that queue is
-// handed to `xpc_connection_create_mach_service`/`xpc_connection_create`, XPC retains
-// it internally — but the +1 we received still belongs to us, so dropping the wrapper
-// without releasing it leaks one queue per connection. Declare `dispatch_release`
-// locally rather than expanding the bindgen surface.
-//
-// `dispatch_release` is a real libdispatch C symbol on every macOS version we support;
-// it is only macro'd to a no-op in Objective-C compilation with `OS_OBJECT_USE_OBJC=1`,
-// which does not affect Rust callers.
+// Declared locally rather than expanding the bindgen surface. `dispatch_release` is a
+// real libdispatch symbol; it is only macro'd away for Objective-C with
+// `OS_OBJECT_USE_OBJC=1`, which does not apply to Rust callers.
 unsafe extern "C" {
+    /// `void dispatch_release(dispatch_object_t object)` from `<dispatch/object.h>`.
     fn dispatch_release(object: *mut c_void);
 }
 
@@ -28,40 +24,59 @@ pub(crate) fn make_c_string(value: impl AsRef<str>) -> Result<CString, XpcError>
     CString::new(value).map_err(|_e| XpcError::InvalidCString(ArcStr::from(value)))
 }
 
+/// Run `f`, aborting the process if it panics.
+///
+/// Every Rust closure handed to libxpc as a block runs under this guard: block2 invokes
+/// blocks through `extern "C-unwind"`, and libxpc/libdispatch do not document support
+/// for unwinding through their frames.
+///
+/// # Safety-usable invariant
+///
+/// No panic escapes this function: it either returns `f`'s value or never returns.
+pub(crate) fn abort_on_unwind<R>(f: impl FnOnce() -> R) -> R {
+    // The payload is not dropped: its `Drop` could panic again.
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_payload| process::abort())
+}
+
 #[derive(Debug)]
 pub(crate) struct DispatchQueue {
-    pub(crate) raw: dispatch_queue_t,
+    // Safety invariant: `raw` is null, or a dispatch queue on which this value owns
+    // exactly one reference, released once by `Drop`.
+    raw: dispatch_queue_t,
 }
 
 impl DispatchQueue {
     pub(crate) fn new(label: Option<&str>) -> Result<Self, XpcError> {
-        let raw = match label {
-            Some(label) => {
-                let label = make_c_string(label)?;
-                // SAFETY: `label` is a valid NUL-terminated C string whose buffer
-                // outlives this call (libdispatch copies the label internally).
-                // Passing NULL for the second arg requests a serial queue with default
-                // attributes. Returns a +1 retained queue (released in `Drop`) or NULL
-                // on allocation failure.
-                unsafe { dispatch_queue_create(label.as_ptr(), ptr::null_mut()) }
-            }
-            None => ptr::null_mut(),
+        let Some(label) = label else {
+            return Ok(Self {
+                raw: ptr::null_mut(),
+            });
         };
-        if label.is_some() && raw.is_null() {
+        let label = make_c_string(label)?;
+        // SAFETY: `label` is a NUL-terminated string live for the call, and
+        // dispatch_queue_create(3) copies it. A null `attr` is `DISPATCH_QUEUE_SERIAL`.
+        // The result is `DISPATCH_RETURNS_RETAINED`: `Self` takes that one reference.
+        let raw = unsafe { dispatch_queue_create(label.as_ptr(), ptr::null_mut()) };
+        if raw.is_null() {
             return Err(XpcError::QueueCreationFailed);
         }
         Ok(Self { raw })
+    }
+
+    /// Queue to pass as a `targetq` argument: null (libdispatch default target queue)
+    /// or a queue that stays live while `self` is.
+    pub(crate) fn as_raw(&self) -> dispatch_queue_t {
+        self.raw
     }
 }
 
 impl Drop for DispatchQueue {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            // SAFETY: `self.raw` was obtained from `dispatch_queue_create`, which
-            // returns a +1 retained queue. We release exactly that retain here.
-            // Consumers (e.g. xpc_connection_create_mach_service) retain the queue
-            // internally before the Drop runs, so the queue object itself remains
-            // alive for as long as XPC needs it.
+            // SAFETY: `dispatch_release` requires a non-null dispatch object on which the
+            // caller owns a reference; the field invariant gives exactly that, and `raw`
+            // is not used again. Connections that target this queue hold their own
+            // reference (libdispatch retains target queues, `dispatch_set_target_queue`).
             unsafe { dispatch_release(self.raw.cast::<c_void>()) };
         }
     }

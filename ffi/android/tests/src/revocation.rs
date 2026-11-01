@@ -36,7 +36,9 @@ fn ca_params(name: &str) -> rcgen::CertificateParams {
 
 fn sdk_level() -> Result<i32, String> {
     let context = ndk_context::android_context();
-    // SAFETY: initialized by JNI_OnLoad; Android owns the VM for the process.
+    // SAFETY: `JavaVM::from_raw` needs a valid, non-null `JavaVM` pointer
+    // supporting JNI >= 1.4. `JNI_OnLoad` stored the non-null loading VM,
+    // which stays valid for the process and supports JNI 1.6.
     let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) };
     vm.attach_current_thread(|env| {
         env.get_static_field(

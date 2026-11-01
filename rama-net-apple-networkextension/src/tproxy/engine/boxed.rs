@@ -193,6 +193,11 @@ impl BoxedTransparentProxyEngine {
         self.0.stop_box(reason);
     }
 
+    /// # Safety-usable invariant
+    ///
+    /// Same as [`TransparentProxyEngine::new_tcp_session`], which this always
+    /// forwards to (the inner engine is private and only built from a
+    /// [`TransparentProxyEngine`]).
     pub fn new_tcp_session(
         &self,
         meta: TransparentProxyFlowMeta,
@@ -208,6 +213,10 @@ impl BoxedTransparentProxyEngine {
         )
     }
 
+    /// # Safety-usable invariant
+    ///
+    /// Same as [`TransparentProxyEngine::new_udp_session`], which this always
+    /// forwards to.
     pub fn new_udp_session(
         &self,
         meta: TransparentProxyFlowMeta,

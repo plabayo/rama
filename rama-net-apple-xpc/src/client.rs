@@ -2,10 +2,9 @@ use rama_core::telemetry::tracing;
 use rama_utils::str::arcstr::ArcStr;
 
 use crate::{
-    connection::{DEFAULT_MAX_PENDING_EVENTS, XpcConnection},
+    connection::{DEFAULT_MAX_PENDING_EVENTS, InactiveXpcConnection, XpcConnection},
     error::XpcError,
     ffi::{XPC_CONNECTION_MACH_SERVICE_PRIVILEGED, xpc_connection_create_mach_service},
-    object::OwnedXpcObject,
     peer::PeerSecurityRequirement,
     util::{DispatchQueue, make_c_string},
 };
@@ -127,24 +126,23 @@ impl XpcConnection {
             0
         };
 
-        // SAFETY: service_name is a valid null-terminated C string from make_c_string.
-        // queue.raw is either a valid dispatch_queue_t or null. flags is a valid
-        // XPC_CONNECTION_MACH_SERVICE_* combination (0 or PRIVILEGED).
-        let raw =
-            unsafe { xpc_connection_create_mach_service(service_name.as_ptr(), queue.raw, flags) };
-        let connection = OwnedXpcObject::from_raw(raw as _, "client connection")?;
+        // SAFETY: requires a non-null NUL-terminated name (`XPC_NONNULL1`), a nullable
+        // target queue and `XPC_CONNECTION_MACH_SERVICE_*` flags. `service_name` is a live
+        // `CString`, `queue.as_raw()` is null or a live queue, `flags` is 0 or PRIVILEGED.
+        let raw = unsafe {
+            xpc_connection_create_mach_service(service_name.as_ptr(), queue.as_raw(), flags)
+        };
+        // SAFETY: `raw` is the +1, not yet activated result of an `xpc_connection_create*`
+        // call (`XPC_RETURNS_RETAINED`) with no other alias; ownership moves.
+        let connection = unsafe { InactiveXpcConnection::from_raw(raw, "client connection") }?;
 
         if let Some(requirement) = peer_requirement.as_ref() {
-            requirement.apply(connection.raw as _)?;
+            requirement.apply(&connection)?;
         }
 
         Ok(
-            Self::from_owned_peer_with_capacity(
-                connection,
-                max_pending_events,
-                max_pending_events,
-            )?
-            .maybe_with_call_timeout(call_timeout),
+            Self::from_inactive(connection, max_pending_events, max_pending_events)
+                .maybe_with_call_timeout(call_timeout),
         )
     }
 }

@@ -94,6 +94,9 @@ pub fn decode(input: &[u8]) -> Result<&str, DecodeError<'_>> {
 
     // FIXME: separate function from here to guide inlining?
     let (valid, after_valid) = input.split_at(error.valid_up_to());
+    // SAFETY: `from_utf8_unchecked` needs valid UTF-8. `Utf8Error::valid_up_to`
+    // is documented as the largest index such that `from_utf8(&input[..index])`
+    // returns `Ok`, and `valid` is exactly `input[..valid_up_to]`.
     let valid = unsafe { str::from_utf8_unchecked(valid) };
 
     match error.error_len() {
@@ -150,12 +153,21 @@ impl Incomplete {
         let remaining_input = &input[consumed..];
         let result_bytes = self.take_buffer();
         let result = match result {
+            // SAFETY: `from_utf8_unchecked` needs valid UTF-8. By the
+            // safety-usable invariants of `try_complete_offsets` (an `Ok`
+            // result means the first `buffer_len` buffered bytes are valid
+            // UTF-8) and `take_buffer` (it returns exactly those bytes), with
+            // nothing in between touching `self`.
             Ok(()) => Ok(unsafe { str::from_utf8_unchecked(result_bytes) }),
             Err(()) => Err(result_bytes),
         };
         Some((result, remaining_input))
     }
 
+    /// # Safety-usable invariant
+    ///
+    /// Returns `&self.buffer[..self.buffer_len]` as it was on entry (or
+    /// panics), then sets `buffer_len` to 0.
     fn take_buffer(&mut self) -> &[u8] {
         let len = self.buffer_len as usize;
         self.buffer_len = 0;
@@ -165,6 +177,12 @@ impl Incomplete {
     /// (consumed_from_input, None): not enough input
     /// (consumed_from_input, Some(Err(()))): error bytes in buffer
     /// (consumed_from_input, Some(Ok(()))): UTF-8 string in buffer
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// On `(_, Some(Ok(())))`, `self.buffer[..self.buffer_len]` is valid UTF-8
+    /// (`buffer_len` set by this call to a length `from_utf8` validated). This
+    /// holds whatever the public fields held on entry.
     fn try_complete_offsets(&mut self, input: &[u8]) -> (usize, Option<Result<(), ()>>) {
         let initial_buffer_len = self.buffer_len as usize;
         let copied_from_input;

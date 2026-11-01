@@ -75,8 +75,12 @@ impl<B: StreamingBody> StreamingBody for crate::Request<B> {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        // SAFETY:
-        // A pin projection.
+        // SAFETY: `Pin::map_unchecked_mut` requires that the returned
+        // reference does not move while `self` stays pinned and that the
+        // closure does not move out of its argument. `body_mut` returns the
+        // `body` field and moves nothing (its safety-usable invariant), and
+        // pinning is structural for that field (the `body` safety invariant of
+        // `Request`), so the body stays pinned until it is dropped in place.
         unsafe { self.map_unchecked_mut(Self::body_mut).poll_frame(cx) }
     }
 
@@ -97,8 +101,12 @@ impl<B: StreamingBody> StreamingBody for crate::Response<B> {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        // SAFETY:
-        // A pin projection.
+        // SAFETY: `Pin::map_unchecked_mut` requires that the returned
+        // reference does not move while `self` stays pinned and that the
+        // closure does not move out of its argument. `body_mut` returns the
+        // `body` field and moves nothing (its safety-usable invariant), and
+        // pinning is structural for that field (the `body` safety invariant of
+        // `Response`), so the body stays pinned until it is dropped in place.
         unsafe { self.map_unchecked_mut(Self::body_mut).poll_frame(cx) }
     }
 

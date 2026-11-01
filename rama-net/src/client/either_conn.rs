@@ -5,7 +5,9 @@ use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
 
 use rama_core::Service;
-use rama_core::combinators::{define_either, impl_async_read_write_either, impl_iterator_either};
+use rama_core::combinators::{
+    PinProjectEither, define_either, impl_async_read_write_either, impl_iterator_either,
+};
 use rama_core::error::BoxError;
 
 use tokio::io::{AsyncRead, AsyncWrite, Error as IoError, ReadBuf, Result as IoResult};
@@ -25,7 +27,16 @@ macro_rules! impl_either_conn {
     };
 }
 
+macro_rules! pin_project_either_conn {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        // SAFETY: this crate defines `$id` and implements neither `Unpin` (beyond the auto
+        // impl) nor `Drop` for it; other crates cannot add either impl (orphan rule).
+        unsafe impl<$($param),+> PinProjectEither for $id<$($param),+> {}
+    };
+}
+
 impl_either_conn!(define_either);
+impl_either_conn!(pin_project_either_conn);
 impl_either_conn!(impl_iterator_either);
 
 use crate::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
@@ -80,6 +91,7 @@ macro_rules! impl_either_conn_connected {
 }
 
 impl_either_conn_connected!(define_either);
+impl_either_conn_connected!(pin_project_either_conn);
 impl_either_conn_connected!(impl_async_read_write_either);
 impl_either_conn_connected!(impl_iterator_either);
 

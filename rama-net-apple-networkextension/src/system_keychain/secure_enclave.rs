@@ -55,6 +55,7 @@
 
 use std::fmt;
 
+/// Mirrors the C `RamaSeBytes` in `rama_apple_se_ffi.h`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct RamaSeBytes {
@@ -69,10 +70,13 @@ impl RamaSeBytes {
     };
 }
 
+// Declarations from `rama_apple_se_ffi.h`, implemented by the Swift bridge. The C
+// `RamaSeAccessibility` enum has only non-negative enumerators, so its type is
+// `unsigned int` (Swift imports it with a `UInt32` raw value).
 unsafe extern "C" {
     fn rama_apple_se_is_available() -> bool;
 
-    fn rama_apple_se_p256_create(accessibility: i32, out_blob: *mut RamaSeBytes) -> i32;
+    fn rama_apple_se_p256_create(accessibility: u32, out_blob: *mut RamaSeBytes) -> i32;
 
     fn rama_apple_se_p256_encrypt(
         blob: *const u8,
@@ -115,7 +119,7 @@ pub enum SecureEnclaveAccessibility {
 }
 
 impl SecureEnclaveAccessibility {
-    fn as_raw(self) -> i32 {
+    fn as_raw(self) -> u32 {
         match self {
             Self::AfterFirstUnlock => 0,
             Self::Always => 1,
@@ -168,7 +172,10 @@ impl std::error::Error for SecureEnclaveError {}
 ///
 /// Useful for graceful fallback on Intel Macs without a T2 chip.
 pub fn is_available() -> bool {
-    // SAFETY: the bridge function takes no arguments and returns a primitive.
+    // SAFETY: `bool rama_apple_se_is_available(void)` has no preconditions. Rust
+    // `bool` is the FFI counterpart of C `_Bool` (size 1, bit patterns 0x00/0x01 per
+    // the Reference's boolean type), and the Swift `@_cdecl` body returns a Swift
+    // `Bool`, which is always 0 or 1.
     unsafe { rama_apple_se_is_available() }
 }
 
@@ -197,14 +204,18 @@ impl SecureEnclaveKey {
     /// blob is encrypted to the SE and is the only way to reload the key.
     pub fn create(acc: SecureEnclaveAccessibility) -> Result<Self, SecureEnclaveError> {
         let mut out = RamaSeBytes::EMPTY;
-        // SAFETY: `out` is a valid pointer to writable storage; the bridge writes
-        // a fresh malloc'd buffer (taken below) or zeroes the struct on error.
-        let code = unsafe { rama_apple_se_p256_create(acc.as_raw(), &mut out) };
+        // SAFETY: `rama_apple_se_p256_create` writes one `RamaSeBytes` to the non-null
+        // `out_blob` (bridge-owned buffer on `RAMA_SE_OK`, `(NULL, 0)` otherwise) and
+        // keeps no pointer to it. `out` is a live, writable local; `acc.as_raw()` is a
+        // `RamaSeAccessibility` enumerator.
+        let code = unsafe { rama_apple_se_p256_create(acc.as_raw(), &raw mut out) };
         if code != RAMA_SE_OK {
             return Err(SecureEnclaveError::from_code(code));
         }
+        // SAFETY: `out` was filled by the bridge on `RAMA_SE_OK` and is not used again.
+        let blob = unsafe { take_bytes(out) }?;
         Ok(Self {
-            blob: zeroize::Zeroizing::new(take_bytes(out)),
+            blob: zeroize::Zeroizing::new(blob),
         })
     }
 
@@ -231,21 +242,25 @@ impl SecureEnclaveKey {
     /// SE on this Mac (see module docs for the layout).
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, SecureEnclaveError> {
         let mut out = RamaSeBytes::EMPTY;
-        // SAFETY: blob/plaintext pointers are valid for their stated lengths,
-        // and `out` points to writable storage.
+        // SAFETY: `rama_apple_se_p256_encrypt` reads `blob_len` bytes from `blob` and
+        // `pt_len` bytes from `pt` during the call only, and writes one `RamaSeBytes`
+        // to the non-null `out_ct` (bridge-owned buffer on `RAMA_SE_OK`, `(NULL, 0)`
+        // otherwise). `self.blob` and `plaintext` are live slices of exactly the
+        // passed lengths; `out` is a live, writable local.
         let code = unsafe {
             rama_apple_se_p256_encrypt(
                 self.blob.as_ptr(),
                 self.blob.len(),
                 plaintext.as_ptr(),
                 plaintext.len(),
-                &mut out,
+                &raw mut out,
             )
         };
         if code != RAMA_SE_OK {
             return Err(SecureEnclaveError::from_code(code));
         }
-        Ok(take_bytes(out))
+        // SAFETY: `out` was filled by the bridge on `RAMA_SE_OK` and is not used again.
+        unsafe { take_bytes(out) }
     }
 
     /// Inverse of [`Self::encrypt`].
@@ -261,36 +276,57 @@ impl SecureEnclaveKey {
         ciphertext: &[u8],
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, SecureEnclaveError> {
         let mut out = RamaSeBytes::EMPTY;
-        // SAFETY: blob/ciphertext pointers are valid for their stated lengths,
-        // and `out` points to writable storage.
+        // SAFETY: `rama_apple_se_p256_decrypt` reads `blob_len` bytes from `blob` and
+        // `ct_len` bytes from `ct` during the call only, and writes one `RamaSeBytes`
+        // to the non-null `out_pt` (bridge-owned buffer on `RAMA_SE_OK`, `(NULL, 0)`
+        // otherwise). `self.blob` and `ciphertext` are live slices of exactly the
+        // passed lengths; `out` is a live, writable local.
         let code = unsafe {
             rama_apple_se_p256_decrypt(
                 self.blob.as_ptr(),
                 self.blob.len(),
                 ciphertext.as_ptr(),
                 ciphertext.len(),
-                &mut out,
+                &raw mut out,
             )
         };
         if code != RAMA_SE_OK {
             return Err(SecureEnclaveError::from_code(code));
         }
-        Ok(zeroize::Zeroizing::new(take_bytes(out)))
+        // SAFETY: `out` was filled by the bridge on `RAMA_SE_OK` and is not used again.
+        unsafe { take_bytes(out) }.map(zeroize::Zeroizing::new)
     }
 }
 
-/// Copy bytes out of a bridge-allocated `RamaSeBytes` and free the original.
-fn take_bytes(bytes: RamaSeBytes) -> Vec<u8> {
+/// Copy bytes out of a bridge-allocated `RamaSeBytes` and free (and wipe) the original.
+///
+/// Returns [`SecureEnclaveError::System`] for a length above `isize::MAX`; the
+/// buffer is freed in every case.
+///
+/// # Safety
+///
+/// The caller must ensure `bytes` was written by a bridge call that returned
+/// `RAMA_SE_OK` and has not been freed: per `rama_apple_se_ffi.h`, `ptr` is then
+/// NULL or a bridge `malloc` buffer valid for reads of `len` initialized bytes that
+/// nothing else references. Ownership moves into this call, which releases the
+/// buffer exactly once; the caller must not use `bytes` afterwards.
+unsafe fn take_bytes(bytes: RamaSeBytes) -> Result<Vec<u8>, SecureEnclaveError> {
     let copied = if bytes.ptr.is_null() || bytes.len == 0 {
-        Vec::new()
+        Ok(Vec::new())
+    } else if bytes.len > isize::MAX as usize {
+        Err(SecureEnclaveError::System)
     } else {
-        // SAFETY: bridge contract guarantees `ptr` is valid for `len` bytes
-        // until we hand the struct back to `rama_apple_se_bytes_free`.
+        // SAFETY: `slice::from_raw_parts` needs a non-null pointer, aligned for `u8`
+        // (always), readable for `len` initialized bytes in one allocation, unmutated
+        // for the borrow, and `len <= isize::MAX`. Non-null and the length bound are
+        // checked above; readability and exclusivity are this function's
+        // precondition. The borrow ends before the buffer is freed below.
         let slice = unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len) };
-        slice.to_vec()
+        Ok(slice.to_vec())
     };
-    // SAFETY: `bytes` was returned by the bridge; freeing a (NULL, 0) struct is
-    // explicitly defined as a no-op on the Swift side.
+    // SAFETY: `rama_apple_se_bytes_free` wipes and frees a bridge buffer and is a
+    // no-op for a NULL `ptr`. By this function's precondition `bytes` is a live
+    // bridge buffer (or NULL) that we own; it is released exactly once, here.
     unsafe { rama_apple_se_bytes_free(bytes) };
     copied
 }

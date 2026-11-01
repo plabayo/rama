@@ -1,8 +1,4 @@
-use std::{
-    ffi::c_void,
-    ptr,
-    sync::{Arc, LazyLock, OnceLock},
-};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use ahash::{HashMap, HashMapExt as _};
 use parking_lot::Mutex;
@@ -13,17 +9,18 @@ use tokio::sync::{
     mpsc::{Receiver, channel, error::TryRecvError, error::TrySendError},
 };
 
-use block2::RcBlock;
-
 use crate::{
-    connection::{DEFAULT_MAX_PENDING_EVENTS, XpcConnection, map_connection_error},
+    connection::{
+        ConnectionObject, DEFAULT_MAX_PENDING_EVENTS, InactiveXpcConnection, XpcConnection,
+        map_connection_error,
+    },
     error::{XpcConnectionError, XpcError},
     ffi::{
         _xpc_type_connection, _xpc_type_error, XPC_CONNECTION_MACH_SERVICE_LISTENER,
-        xpc_connection_activate, xpc_connection_cancel, xpc_connection_create_mach_service,
-        xpc_connection_set_event_handler, xpc_connection_t, xpc_get_type, xpc_object_t,
+        xpc_connection_cancel, xpc_connection_create_mach_service, xpc_object_t,
     },
-    object::OwnedXpcObject,
+    handler::XpcHandler,
+    object::raw_type_is,
     peer::PeerSecurityRequirement,
     util::{DispatchQueue, make_c_string},
 };
@@ -42,7 +39,9 @@ use crate::{
 /// Entries hold their own retain on the listener connection and are removed by
 /// [`XpcListener::drop`] (pointer-checked, so a displaced listener's drop does
 /// not evict its replacement).
-static ACTIVE_NAMED_LISTENERS: LazyLock<Mutex<HashMap<ArcStr, OwnedXpcObject>>> =
+///
+/// Safety invariant: every entry is an activated listener connection.
+static ACTIVE_NAMED_LISTENERS: LazyLock<Mutex<HashMap<ArcStr, ConnectionObject>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Default capacity for the listener's accept (peer-connection) queue.
@@ -161,7 +160,8 @@ impl XpcListenerConfig {
 /// for services that do not have a launchd entry.
 #[derive(Debug)]
 pub struct XpcListener {
-    connection: OwnedXpcObject,
+    // Safety invariant: `connection` is an activated listener connection.
+    connection: ConnectionObject,
     receiver: Receiver<XpcConnection>,
     service_name: ArcStr,
     terminated: Arc<OnceLock<XpcConnectionError>>,
@@ -210,25 +210,27 @@ impl XpcListener {
         let service_name_c = make_c_string(&service_name)?;
         let queue = DispatchQueue::new(target_queue_label.as_deref())?;
 
-        // SAFETY: service_name_c is a valid null-terminated C string produced by
-        // make_c_string. queue.raw is either a valid dispatch_queue_t or null (anonymous
-        // queue). XPC_CONNECTION_MACH_SERVICE_LISTENER is the correct flag for a server-
-        // side Mach service. The returned value is a new retained connection or NULL.
+        // SAFETY: requires a non-null NUL-terminated name (`XPC_NONNULL1`), a nullable
+        // target queue and `XPC_CONNECTION_MACH_SERVICE_*` flags. `service_name_c` is a
+        // live `CString`, `queue.as_raw()` is null or a live queue, and the flag is
+        // `XPC_CONNECTION_MACH_SERVICE_LISTENER`.
         let raw = unsafe {
             xpc_connection_create_mach_service(
                 service_name_c.as_ptr(),
-                queue.raw,
+                queue.as_raw(),
                 XPC_CONNECTION_MACH_SERVICE_LISTENER as u64,
             )
         };
-        let connection = OwnedXpcObject::from_raw(raw as _, "listener connection")?;
+        // SAFETY: `raw` is null or the +1, not yet activated result of an
+        // `xpc_connection_create*` call (`XPC_RETURNS_RETAINED`) with no other alias;
+        // ownership moves.
+        let connection = unsafe { InactiveXpcConnection::from_raw(raw, "listener connection") }?;
 
         if let Some(requirement) = peer_requirement.as_ref() {
-            requirement.apply(connection.raw as _)?;
+            requirement.apply(&connection)?;
         }
 
         let (sender, receiver) = channel(max_pending_connections);
-        let raw_connection = connection.raw as _;
         let terminated = Arc::new(OnceLock::<XpcConnectionError>::new());
         let terminated_notify = Arc::new(Notify::new());
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -237,110 +239,105 @@ impl XpcListener {
         let block_terminated = terminated.clone();
         let block_terminated_notify = terminated_notify.clone();
         let block_cancelled = cancelled.clone();
-        let block = RcBlock::new(move |event: xpc_object_t| {
-            if raw_is_error(event) {
-                // A listener connection only receives error events when it is
-                // done for good (cancelled, or the Mach receive right was not /
-                // no longer granted — e.g. the name is held by another listener).
-                //
-                // libxpc also delivers a final `XPC_ERROR_CONNECTION_INVALID`
-                // after a deliberate `xpc_connection_cancel` — that is normal
-                // teardown, not a failure, so it must not be recorded as a
-                // termination reason nor logged as an error.
-                if block_cancelled.load(std::sync::atomic::Ordering::Acquire) {
-                    tracing::debug!(
+        // The handler keeps its own alias of the connection (xpc_object(3): an object used
+        // by an asynchronously executed block is retained for it). The cycle ends when
+        // libxpc releases the handler after cancellation.
+        let make_handler = move |handler_connection: ConnectionObject| {
+            XpcHandler::new(move |event: xpc_object_t| {
+                // SAFETY: the handler argument is non-null and live for this invocation.
+                if unsafe { raw_type_is(event, &raw const _xpc_type_error) } {
+                    // A listener connection only receives error events when it is
+                    // done for good (cancelled, or the Mach receive right was not /
+                    // no longer granted — e.g. the name is held by another listener).
+                    //
+                    // libxpc also delivers a final `XPC_ERROR_CONNECTION_INVALID`
+                    // after a deliberate `xpc_connection_cancel` — that is normal
+                    // teardown, not a failure, so it must not be recorded as a
+                    // termination reason nor logged as an error.
+                    if block_cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                        tracing::debug!(
+                            service = %block_service_name,
+                            "xpc listener cancelled; ignoring final invalidation event"
+                        );
+                        return;
+                    }
+                    // Surface it: record the reason for `accept` and wake any waiter.
+                    // SAFETY: the handler argument is non-null and live for this invocation.
+                    let error = unsafe { map_connection_error(&handler_connection, event) }
+                        .unwrap_or(XpcConnectionError::Invalidated(None));
+                    tracing::error!(
                         service = %block_service_name,
-                        "xpc listener cancelled; ignoring final invalidation event"
+                        %error,
+                        "xpc listener terminated by error event"
                     );
+                    // Set-then-notify: `accept` checks the state before awaiting the
+                    // (permit-storing) notify, so this cannot be missed.
+                    _ = block_terminated.set(error);
+                    block_terminated_notify.notify_one();
                     return;
                 }
-                // Surface it: record the reason for `accept` and wake any waiter.
-                let error = OwnedXpcObject::retain(event, "listener error event")
-                    .ok()
-                    .and_then(|retained| map_connection_error(raw_connection, &retained))
-                    .unwrap_or(XpcConnectionError::Invalidated(None));
-                tracing::error!(
-                    service = %block_service_name,
-                    %error,
-                    "xpc listener terminated by error event"
-                );
-                // Set-then-notify: `accept` checks the state before awaiting the
-                // (permit-storing) notify, so this cannot be missed.
-                _ = block_terminated.set(error);
-                block_terminated_notify.notify_one();
-                return;
-            }
 
-            if !raw_is_connection(event) {
-                tracing::debug!("xpc listener: ignoring non-connection event");
-                return;
-            }
+                // SAFETY: as above.
+                if !unsafe { raw_type_is(event, &raw const _xpc_type_connection) } {
+                    tracing::debug!("xpc listener: ignoring non-connection event");
+                    return;
+                }
 
-            let Ok(peer) = OwnedXpcObject::retain(event, "listener peer connection") else {
-                return;
-            };
-
-            match XpcConnection::from_owned_peer_with_capacity(
-                peer,
-                peer_max_pending_events,
-                peer_max_pending_events,
-            ) {
-                Ok(peer_conn) => {
-                    let pid = peer_conn.pid();
-                    let asid = peer_conn.asid();
-                    match sender.try_send(peer_conn) {
-                        Ok(()) => {
-                            tracing::info!(
-                                pid,
-                                asid,
-                                "xpc listener enqueued incoming peer connection"
-                            );
-                        }
-                        Err(TrySendError::Full(_)) => {
-                            tracing::warn!(
-                                pid,
-                                asid,
-                                capacity = max_pending_connections,
-                                "xpc listener accept queue full; dropping incoming peer connection"
-                            );
-                        }
-                        Err(TrySendError::Closed(_)) => {
-                            tracing::warn!(
-                                pid,
-                                asid,
-                                "xpc listener accept queue closed; dropping incoming peer connection"
-                            );
-                        }
+                // SAFETY: `event` is a peer connection (checked) passed to this listener's
+                // running handler invocation; libxpc delivers each peer once, so no
+                // `ConnectionObject` for it exists yet.
+                let peer_conn = unsafe {
+                    XpcConnection::accept_received(
+                        event,
+                        peer_max_pending_events,
+                        peer_max_pending_events,
+                    )
+                };
+                let pid = peer_conn.pid();
+                let asid = peer_conn.asid();
+                match sender.try_send(peer_conn) {
+                    Ok(()) => {
+                        tracing::info!(pid, asid, "xpc listener enqueued incoming peer connection");
+                    }
+                    Err(TrySendError::Full(_)) => {
+                        tracing::warn!(
+                            pid,
+                            asid,
+                            capacity = max_pending_connections,
+                            "xpc listener accept queue full; dropping incoming peer connection"
+                        );
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        tracing::warn!(
+                            pid,
+                            asid,
+                            "xpc listener accept queue closed; dropping incoming peer connection"
+                        );
                     }
                 }
-                Err(err) => {
-                    tracing::warn!(%err, "xpc listener: failed to wrap peer connection");
-                }
-            }
-        });
+            })
+        };
 
-        // Serialise same-name binds: the lock is held across displace + register
-        // + activate so (a) two concurrent binds for one name cannot both think
+        // Serialise same-name binds: the lock is held across displace + activate
+        // + register so (a) two concurrent binds for one name cannot both think
         // they own the receive right, and (b) a displaced entry is always a
         // fully-activated connection (cancel of a never-activated connection is
         // a libxpc programming error).
         let mut registry = ACTIVE_NAMED_LISTENERS.lock();
-        match registry.remove(&service_name) {
+        let register = match registry.remove(&service_name) {
             Some(previous) if takeover => {
                 tracing::warn!(
                     service = %service_name,
                     "xpc listener bind: cancelling live in-process listener with the same \
                      service name (takeover)"
                 );
-                // SAFETY: previous.raw is a valid retained xpc_connection_t (the
-                // registry holds its own retain) that was activated by the bind
-                // that registered it. xpc_connection_cancel is idempotent and
-                // callable from any thread.
-                unsafe { xpc_connection_cancel(previous.raw as xpc_connection_t) };
-                registry.insert(
-                    service_name.clone(),
-                    OwnedXpcObject::retain(connection.raw, "registry listener connection")?,
-                );
+                previous.with_raw(|previous| {
+                    // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `previous`
+                    // is an activated listener connection (registry invariant), on which
+                    // cancel is valid, under its call lock.
+                    unsafe { xpc_connection_cancel(previous) };
+                });
+                true
             }
             Some(previous) => {
                 tracing::warn!(
@@ -352,34 +349,15 @@ impl XpcListener {
                 // The previous listener keeps the receive right and its registry
                 // slot; this doomed bind is deliberately not registered.
                 registry.insert(service_name.clone(), previous);
+                false
             }
-            None => {
-                registry.insert(
-                    service_name.clone(),
-                    OwnedXpcObject::retain(connection.raw, "registry listener connection")?,
-                );
-            }
-        }
+            None => true,
+        };
 
-        // SAFETY: `raw_connection` is a valid, non-null xpc_connection_t held by
-        // `connection` (OwnedXpcObject) for the lifetime of this Self. The `RcBlock`
-        // lives on the heap and `RcBlock::as_ptr` is documented (block2 rc_block.rs)
-        // valid for at least as long as the RcBlock is alive; Apple's
-        // `xpc_connection_set_event_handler` is documented to `_Block_copy` the
-        // block, transferring an extra refcount to libxpc — so when the local
-        // `RcBlock` is dropped at end-of-scope, libxpc's copy keeps the block alive
-        // for as long as the connection accepts events. `xpc_connection_activate`
-        // must be called exactly once to begin accepting connections.
-        #[expect(
-            clippy::multiple_unsafe_ops_per_block,
-            reason = "set-handler-then-activate is a single XPC listener-init sequence; the SAFETY comment above covers both calls"
-        )]
-        unsafe {
-            xpc_connection_set_event_handler(
-                raw_connection,
-                RcBlock::as_ptr(&block).cast::<c_void>(),
-            );
-            xpc_connection_activate(raw_connection);
+        let connection = connection.activate(make_handler);
+        if register {
+            // Registry invariant: `connection` was activated just above.
+            registry.insert(service_name.clone(), connection.retain_clone());
         }
         drop(registry);
 
@@ -468,9 +446,11 @@ impl XpcListener {
         // time libxpc delivers the scheduled final invalidation event.
         self.cancelled
             .store(true, std::sync::atomic::Ordering::Release);
-        // SAFETY: self.connection.raw is a valid, non-null xpc_connection_t held by
-        // OwnedXpcObject. xpc_connection_cancel is idempotent per Apple's documentation.
-        unsafe { xpc_connection_cancel(self.connection.raw as _) };
+        self.connection.with_raw(|connection| {
+            // SAFETY: requires a live connection (`XPC_NONNULL_ALL`); `connection` is an
+            // activated listener connection (field invariant), on which cancel is valid.
+            unsafe { xpc_connection_cancel(connection) };
+        });
     }
 
     /// Remove this listener's registry entry, unless a takeover already
@@ -479,7 +459,7 @@ impl XpcListener {
         let mut registry = ACTIVE_NAMED_LISTENERS.lock();
         if registry
             .get(&self.service_name)
-            .is_some_and(|entry| ptr::eq(entry.raw, self.connection.raw))
+            .is_some_and(|entry| entry.same_object(&self.connection))
         {
             registry.remove(&self.service_name);
         }
@@ -493,31 +473,6 @@ impl Drop for XpcListener {
     }
 }
 
-/// Caller must pass a valid, non-null `xpc_object_t` (we always do — these
-/// helpers are reached only from the listener event-handler block where
-/// libxpc hands us a retained event).
-fn raw_is_type(event: xpc_object_t, ty: *const c_void) -> bool {
-    // SAFETY: see function-level comment — `event` is a valid xpc_object_t.
-    let value_type = unsafe { xpc_get_type(event) };
-    ptr::eq(value_type.cast::<c_void>(), ty)
-}
-
-fn raw_is_error(event: xpc_object_t) -> bool {
-    raw_is_type(event, unsafe {
-        // SAFETY: `_xpc_type_error` is a static XPC type singleton exported
-        // by libxpc and valid for the lifetime of the process.
-        &_xpc_type_error as *const _ as *const c_void
-    })
-}
-
-fn raw_is_connection(event: xpc_object_t) -> bool {
-    raw_is_type(event, unsafe {
-        // SAFETY: `_xpc_type_connection` is a static XPC type singleton
-        // exported by libxpc and valid for the lifetime of the process.
-        &_xpc_type_connection as *const _ as *const c_void
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,7 +481,7 @@ mod tests {
         ACTIVE_NAMED_LISTENERS
             .lock()
             .get(name)
-            .map(|entry| entry.raw as usize)
+            .map(ConnectionObject::addr)
     }
 
     #[test]
@@ -538,11 +493,11 @@ mod tests {
         .into();
 
         let a = XpcListener::bind(XpcListenerConfig::new(name.clone())).expect("bind a");
-        let a_ptr = a.connection.raw as usize;
+        let a_ptr = a.connection.addr();
         assert_eq!(registered_ptr(&name), Some(a_ptr));
 
         let b = XpcListener::bind(XpcListenerConfig::new(name.clone())).expect("bind b");
-        let b_ptr = b.connection.raw as usize;
+        let b_ptr = b.connection.addr();
         assert_eq!(
             registered_ptr(&name),
             Some(b_ptr),
@@ -566,7 +521,7 @@ mod tests {
         .into();
 
         let a = XpcListener::bind(XpcListenerConfig::new(name.clone())).expect("bind a");
-        let a_ptr = a.connection.raw as usize;
+        let a_ptr = a.connection.addr();
 
         let b = XpcListener::bind(XpcListenerConfig::new(name.clone()).with_takeover(false))
             .expect("bind b");

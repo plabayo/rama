@@ -41,7 +41,9 @@ impl VarInt {
     ///
     /// # Safety
     ///
-    /// `x` must be less than 2^62.
+    /// The caller must ensure that `x` is less than 2^62. The precondition is semantic,
+    /// not memory safety: a larger value makes encoding panic (and [`VarInt::size`] in
+    /// debug builds), and no unsafe code relies on the bound.
     pub const unsafe fn from_u64_unchecked(x: u64) -> Self {
         Self(x)
     }

@@ -596,7 +596,7 @@ impl UdpIngressBudget {
         if sequence != NO_RELEASE_WAITER {
             _ = coordinator
                 .released_flows
-                .remove(&(sequence, flow as *const _ as usize));
+                .remove(&(sequence, std::ptr::from_ref(flow) as usize));
         }
     }
 
@@ -727,7 +727,7 @@ impl UdpIngressBudget {
         coordinator.fitting_waiters.remove(sequence);
         debug_assert_eq!(
             removed.as_ref().map(Weak::as_ptr),
-            Some(flow as *const _),
+            Some(std::ptr::from_ref(flow)),
             "UDP global waiter registry mismatch"
         );
         if removed.is_some() {

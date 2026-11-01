@@ -1,6 +1,5 @@
 #![expect(
     clippy::panic,
-    clippy::multiple_unsafe_ops_per_block,
     clippy::allow_attributes,
     reason = "derived from the `append-only-vec` crate; matches stdlib panicking conventions"
 )]
@@ -47,16 +46,43 @@ use loom::{
 /// looks for (see [`Self::push_tagged`]).
 // `repr(C)`: what readers need first (length, tags) shares a cache line with
 // the first inline items.
+//
+// Publication order (cited by the proofs below): a push gets the directory and
+// bin of its slot through `Acquire` loads or CASes of pointers installed by
+// `Release` (or `AcqRel`) CASes after their allocation was initialized, writes
+// its item, and publishes it with a `Release` CAS of `count` from `idx` to
+// `idx + 1`. All later CASes of `count` are read-modify-writes, so they extend
+// the release sequence of every earlier one: an `Acquire` load of `count` that
+// returns `n` synchronizes-with the publication of every item below `n`. Those
+// item writes and the installs of their directory and bins then
+// happen-before the load and whatever it happens-before; by write-read
+// coherence, loads of `spill` and of directory entries ordered after it
+// return the installed pointers, which never change while the vec lives.
 #[repr(C)]
 pub struct AppendOnlyVec<T, const INLINE: usize = 0, const BIN_OFFSET: u32 = 3> {
     /// Amount of items actually stored in this vec (this is updated when value is stored)
+    // Safety invariant: items `0..count` are initialized and owned by the vec,
+    // and are never moved, written or dropped while it is shared. `count`
+    // grows only through the publication CAS above, so every item below it
+    // was published in publication order.
     count: AtomicUsize,
     /// Bitwise or of the tags of all items pushed so far.
     tags: AtomicUsize,
     /// The bins of the items beyond `INLINE`, allocated on first use.
+    // Safety invariant: null, or a directory allocated with `spill_layout()`
+    // (bin 0 inside it), installed once and freed only when the vec is
+    // dropped. Each directory entry (and `far`, and each entry of `far`) is
+    // null or installed once with a bin of `bin_size(bin)` items allocated
+    // with `Layout::array::<T>` (dangling when `T` is zero sized), or a
+    // `Box<FarBins<T>>`, never changed or freed until the vec is dropped.
     spill: AtomicPtr<Spill<T>>,
     /// Amount of items reserved in this vec (this is updated immediately on insert)
+    // Safety invariant: every index below `MAX_LEN` is returned by its
+    // `fetch_add` to at most one push; a push that gets an index of
+    // `MAX_LEN` or more undoes its add, so the value never drops below the
+    // number of indices handed out.
     reserved: AtomicUsize,
+    // The slots of items `0..INLINE`; see `count` for which are initialized.
     inline: [UnsafeCell<MaybeUninit<T>>; INLINE],
 }
 
@@ -136,19 +162,37 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     ///
     /// # Safety
     ///
-    /// `slot` must be valid for writes and aligned. Whatever it held is
-    /// overwritten without being dropped.
+    /// The caller must ensure that `slot` is non-null, aligned for `Self`,
+    /// valid for writes of `size_of::<Self>()` bytes, and not accessed by
+    /// anything else during the call. Whatever it held is overwritten without
+    /// being dropped. Afterwards `*slot` is an initialized, empty vec.
     pub unsafe fn init_in_place(slot: *mut Self) {
         const { Self::assert_params() }
 
-        // Safety: the caller guarantees `slot` is valid for writes and aligned;
-        // the inline storage is `MaybeUninit`, so leaving it as is is valid.
-        unsafe {
-            (&raw mut (*slot).count).write(AtomicUsize::new(0));
-            (&raw mut (*slot).tags).write(AtomicUsize::new(0));
-            (&raw mut (*slot).spill).write(AtomicPtr::new(ptr::null_mut()));
-            (&raw mut (*slot).reserved).write(AtomicUsize::new(0));
-        }
+        // The inline storage is `MaybeUninit`, so leaving it as is gives a
+        // valid empty vec once these four fields are written.
+        //
+        // SAFETY: the place `(*slot).count` stays in bounds of `*slot`, which
+        // is non-null, aligned and valid for writes of a whole `Self`
+        // (precondition); the same holds for the other fields below.
+        let count = unsafe { &raw mut (*slot).count };
+        // SAFETY: `write` needs the field pointer aligned for its field and
+        // valid for writes (same premises), with nothing else accessing
+        // `*slot` during the call (precondition); likewise for the writes
+        // below.
+        unsafe { count.write(AtomicUsize::new(0)) };
+        // SAFETY: see the first place above.
+        let tags = unsafe { &raw mut (*slot).tags };
+        // SAFETY: see the first write above.
+        unsafe { tags.write(AtomicUsize::new(0)) };
+        // SAFETY: see the first place above.
+        let spill = unsafe { &raw mut (*slot).spill };
+        // SAFETY: see the first write above.
+        unsafe { spill.write(AtomicPtr::new(ptr::null_mut())) };
+        // SAFETY: see the first place above.
+        let reserved = unsafe { &raw mut (*slot).reserved };
+        // SAFETY: see the first write above.
+        unsafe { reserved.write(AtomicUsize::new(0)) };
     }
 
     /// Pushes an element and returns its index.
@@ -181,16 +225,21 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         } else {
             let (bin, offset) = Self::spill_indices(idx - INLINE);
             let bucket = self.create_bin_if_needed(bin);
-            // Safety: the bin holds `bin_size(bin)` items, and `offset` is below that.
+            // SAFETY: `add` needs the result in bounds of the bin's
+            // allocation: `bucket` is bin `bin` with room for `bin_size(bin)`
+            // items (`create_bin_if_needed`'s safety-usable invariant), and
+            // `offset < bin_size(bin)` (`spill_indices`'s). Zero sized items
+            // move a dangling pointer by zero bytes.
             unsafe { bucket.add(offset) }
         };
 
-        // Safety:
-        // - the slot is in bounds of the inline items or of an allocated bin
-        // - `reserved` handed this index to this push only
-        unsafe {
-            slot.write(element);
-        }
+        // SAFETY: `write` needs `slot` valid for writes of a `T` and aligned:
+        // it is inline slot `idx` (an `UnsafeCell<MaybeUninit<T>>`, written
+        // through `UnsafeCell::get`) or item `offset` of a bin allocated as an
+        // array of `T`. No one else accesses it: `reserved` handed `idx` to
+        // this push only, readers stop below `count <= idx`, and dropping
+        // needs `&mut self`. The slot held no item, so nothing is leaked.
+        unsafe { slot.write(element) };
 
         // Publish in index order, so `count` always covers a prefix of written items.
         let mut failures = 0;
@@ -230,8 +279,9 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         if idx >= self.len() {
             return None;
         }
-        // Safety: this is safe because we check if idx is within bounds
-        unsafe { Some(self.get_unchecked(idx)) }
+        // SAFETY: `get_unchecked` needs item `idx` published before this call:
+        // `idx` is below the `Acquire` load of `count` in `len` just above.
+        Some(unsafe { self.get_unchecked(idx) })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -245,6 +295,9 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     /// Returns an iterator over the elements currently in the vector.
     /// The iterator snapshots the length at creation time.
     pub fn iter(&self) -> Iter<'_, T, INLINE, BIN_OFFSET> {
+        // Field invariant: `start = 0 <= end = n`, with `n` an `Acquire` load
+        // of `count` on this thread, which happens-before any later use of
+        // the iterator.
         Iter {
             vec: self,
             start: 0,
@@ -268,6 +321,9 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         } else {
             ptr::null_mut()
         };
+        // Field invariant: `len` is an `Acquire` load of `count` on this
+        // thread; when `len > INLINE`, the publication order makes `spill`
+        // the installed directory; `front = 0 <= back = chunk_count(len)`.
         Chunks {
             vec: self,
             spill,
@@ -296,6 +352,13 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         size_of::<Spill<T>>().next_multiple_of(core::mem::align_of::<T>());
 
     /// The layout of the spill directory together with the first bin.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// Returns the same layout on every call (or panics): its size is not
+    /// zero, it holds a `Spill<T>` at offset 0, and, unless `T` is zero sized,
+    /// `INITIAL_BIN_SIZE` items of `T` from `FIRST_BIN_OFFSET` (aligned for
+    /// `T`).
     fn spill_layout() -> Layout {
         if size_of::<T>() == 0 {
             // zero sized items need no room, nor alignment, for their bin
@@ -319,44 +382,79 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     ///
     /// Takes the pointer the directory was allocated as, not a reference to
     /// it: only the former may reach past the directory into the bin.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `spill` points to a live directory
+    /// allocated with [`Self::spill_layout`]. The result is the first bin:
+    /// room for `INITIAL_BIN_SIZE` items, aligned for `T` (dangling when `T`
+    /// is zero sized).
     #[inline(always)]
-    fn first_bin(spill: *mut Spill<T>) -> *mut T {
+    unsafe fn first_bin(spill: *mut Spill<T>) -> *mut T {
         if size_of::<T>() == 0 {
             ptr::NonNull::<T>::dangling().as_ptr()
         } else {
-            // Safety: the first bin starts at this offset of the directory's allocation.
+            // SAFETY: `add` needs the result in bounds of `spill`'s
+            // allocation, which has `spill_layout()` (precondition) and so
+            // extends past `FIRST_BIN_OFFSET` (its safety-usable invariant).
             unsafe { spill.cast::<u8>().add(Self::FIRST_BIN_OFFSET).cast::<T>() }
         }
     }
 
-    /// Pointer to spill bin `bin` of the installed directory `spill`; the bin
-    /// must be installed.
+    /// Pointer to spill bin `bin` of the installed directory `spill`, as
+    /// listed there (null if not installed).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `spill` is the installed directory of a
+    /// vec that stays alive during the call, that its install (the
+    /// `AcqRel` CAS that published it, after `alloc_spill` initialized it)
+    /// happens-before this call, that `bin < NEAR_BINS + FAR_BINS`, and, for
+    /// `bin >= NEAR_BINS`, that the install of the far directory
+    /// happens-before this call. Observing the pointer through a `Relaxed`
+    /// load is not enough. A bin whose install happens-before this call is
+    /// returned as installed.
     #[inline(always)]
-    fn bin_ptr(spill: *mut Spill<T>, bin: usize) -> *mut T {
+    unsafe fn bin_ptr(spill: *mut Spill<T>, bin: usize) -> *mut T {
         if bin == 0 {
-            Self::first_bin(spill)
+            // SAFETY: an installed directory is allocated with `spill_layout()`
+            // (`spill` field invariant) and live (precondition).
+            unsafe { Self::first_bin(spill) }
         } else if bin < NEAR_BINS {
-            // Safety: an installed directory lives as long as the vec.
+            // SAFETY: the shared reference to `near[bin]` is to an aligned
+            // field of the live, installed directory (precondition, `spill`
+            // field invariant), whose initialization happens-before this call
+            // (precondition), so the load does not race with it; afterwards
+            // it is only accessed through shared references to its atomics
+            // until the vec drops.
             unsafe { (*spill).near[bin].load(Ordering::Acquire) }
         } else {
-            // Safety: an installed directory lives as long as the vec, and so
-            // does its far half, installed before any far bin.
-            unsafe {
-                let far = (*spill).far.load(Ordering::Acquire);
-                (*far)[bin - NEAR_BINS].load(Ordering::Acquire)
-            }
+            // SAFETY: as for `near[bin]` above, for the `far` field.
+            let far = unsafe { (*spill).far.load(Ordering::Acquire) };
+            // SAFETY: the far install happens-before this call (precondition),
+            // so by coherence `far` is that installed, live `Box<FarBins<T>>`
+            // (`spill` field invariant); `bin - NEAR_BINS < FAR_BINS`.
+            unsafe { (*far)[bin - NEAR_BINS].load(Ordering::Acquire) }
         }
     }
 
     /// The directory entry of spill bin `bin` (not the first) of the installed
     /// directory, installing the far half of it if the bin is listed there.
-    fn bin_slot(&self, bin: usize) -> &AtomicPtr<T> {
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the directory is installed and its install
+    /// happens-before this call, and that `1 <= bin < NEAR_BINS + FAR_BINS`.
+    unsafe fn bin_slot(&self, bin: usize) -> &AtomicPtr<T> {
         let spill = self.spill.load(Ordering::Acquire);
         if bin < NEAR_BINS {
-            // Safety: an installed directory lives as long as the vec.
+            // SAFETY: by the precondition and coherence `spill` is the
+            // installed directory, which lives while `self` is borrowed
+            // (`spill` field invariant); `near[bin]` is an initialized,
+            // aligned field only accessed through shared references.
             return unsafe { &(*spill).near[bin] };
         }
-        // Safety: see above.
+        // SAFETY: as for `near[bin]` above, for the `far` field.
         let far_slot = unsafe { &(*spill).far };
         let mut far = far_slot.load(Ordering::Acquire);
         if far.is_null() {
@@ -371,24 +469,34 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
             ) {
                 Ok(_) => far = new,
                 Err(found) => {
-                    // Safety: `new` was just leaked from a box and never shared.
+                    // SAFETY: `Box::from_raw` needs a pointer from
+                    // `Box::into_raw` that no other owner uses: the failed CAS
+                    // did not publish `new`, so this function owns it alone.
                     drop(unsafe { Box::from_raw(new) });
                     far = found;
                 }
             }
         }
-        // Safety: an installed far directory lives as long as the vec.
+        // SAFETY: `far` is the installed far directory (our successful CAS, or
+        // read by an `Acquire` load or failed CAS from the `AcqRel` CAS that
+        // installed it), a live `Box<FarBins<T>>` until the vec drops; the
+        // shared reference is to an initialized atomic in it, and
+        // `bin - NEAR_BINS < FAR_BINS` by the precondition.
         unsafe { &(*far)[bin - NEAR_BINS] }
     }
 
     /// The spill directory, allocated on first use together with the first
     /// bin. Cooperative: concurrent callers race to install it and the losers
     /// free theirs.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// Returns the installed directory (non-null), whose install
+    /// happens-before this return.
     fn spill_or_create(&self) -> *mut Spill<T> {
         let mut spill = self.spill.load(Ordering::Acquire);
         if spill.is_null() {
-            let layout = Self::spill_layout();
-            let new = Self::alloc_spill(layout);
+            let new = Self::alloc_spill();
             match self.spill.compare_exchange(
                 ptr::null_mut(),
                 new,
@@ -397,11 +505,14 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
             ) {
                 Ok(_) => spill = new,
                 Err(found) => {
-                    // Safety: `new` was just allocated with this layout and never shared.
-                    unsafe {
-                        ptr::drop_in_place(new);
-                        dealloc(new.cast::<u8>(), layout);
-                    }
+                    // SAFETY: `drop_in_place` needs a valid, initialized
+                    // `Spill` that is not used afterwards: `alloc_spill`
+                    // initialized it and the failed CAS did not publish it.
+                    unsafe { ptr::drop_in_place(new) };
+                    // SAFETY: `dealloc` needs the allocation's layout: it was
+                    // allocated with `spill_layout()`, which returns the same
+                    // layout on every call; nothing else holds `new`.
+                    unsafe { dealloc(new.cast::<u8>(), Self::spill_layout()) };
                     spill = found;
                 }
             }
@@ -411,19 +522,31 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
 
     /// Allocate an empty directory (all bins null) with room for the first
     /// bin, which is left uninitialized.
-    fn alloc_spill(layout: Layout) -> *mut Spill<T> {
-        // Safety: the layout holds the directory, so it is not zero sized.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// Returns the only pointer to a fresh allocation of `spill_layout()`
+    /// holding an initialized `Spill` with every entry null.
+    fn alloc_spill() -> *mut Spill<T> {
+        let layout = Self::spill_layout();
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "`alloc` aligns to `spill_layout()`, whose alignment is at least `Spill<T>`'s"
+        )]
+        // SAFETY: `alloc` needs a layout of non-zero size, which
+        // `spill_layout()` returns (its safety-usable invariant).
         let new = unsafe { alloc(layout) }.cast::<Spill<T>>();
         if new.is_null() {
             handle_alloc_error(layout);
         }
-        // Safety: the allocation starts with room for an aligned directory.
-        unsafe {
-            new.write(Spill {
-                near: core::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
-                far: AtomicPtr::new(ptr::null_mut()),
-            });
-        }
+        let empty = Spill {
+            near: core::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
+            far: AtomicPtr::new(ptr::null_mut()),
+        };
+        // SAFETY: `write` needs `new` valid for writes of a `Spill<T>` and
+        // aligned: the layout holds a `Spill<T>` at offset 0 with at least
+        // its alignment, and the allocation is not shared yet.
+        unsafe { new.write(empty) };
         new
     }
 
@@ -432,15 +555,27 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     /// Note: this function supports cooperative allocations. Meaning it can be called
     /// in parallel/concurrently. In that case the first one to install the bin wins,
     /// the slower ones de-allocate theirs and use that one instead.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// Returns (or panics) the installed bin `bin`: room for `bin_size(bin)`
+    /// items, aligned for `T` (dangling when `T` is zero sized), live until
+    /// the vec drops, with its install and the directory's happening-before
+    /// this return.
     fn create_bin_if_needed(&self, bin: usize) -> *mut T {
         let spill = self.spill_or_create();
         if bin == 0 {
-            return Self::first_bin(spill);
+            // SAFETY: `spill` is the installed, live directory
+            // (`spill_or_create`'s safety-usable invariant).
+            return unsafe { Self::first_bin(spill) };
         }
         if bin >= NEAR_BINS + FAR_BINS {
             capacity_overflow();
         }
-        let slot = self.bin_slot(bin);
+        // SAFETY: the directory install happens-before this point
+        // (`spill_or_create`), and `1 <= bin < NEAR_BINS + FAR_BINS` by the
+        // checks above.
+        let slot = unsafe { self.bin_slot(bin) };
         let ptr = slot.load(Ordering::Acquire);
         if !ptr.is_null() {
             return ptr;
@@ -452,8 +587,9 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
             let Ok(layout) = Layout::array::<T>(Self::bin_size(bin)) else {
                 capacity_overflow();
             };
-            // Safety: `T` is not zero sized, so neither is the layout
-            let ptr = unsafe { alloc(layout) as *mut T };
+            // SAFETY: `alloc` needs a layout of non-zero size: `T` is not zero
+            // sized and `bin_size(bin) >= 1`.
+            let ptr = unsafe { alloc(layout).cast::<T>() };
             if ptr.is_null() {
                 handle_alloc_error(layout);
             }
@@ -470,10 +606,10 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
             // Another push installed the bin first: use that one, free ours.
             Err(found) => {
                 if let Some(layout) = layout {
-                    // Safety:
-                    // - We just allocated this ptr so it exists
-                    // - Layout matches the exact layout of creation
-                    unsafe { dealloc(new_ptr as *mut u8, layout) };
+                    // SAFETY: `dealloc` needs the allocation's own layout:
+                    // `new_ptr` was allocated above with `layout`, and the
+                    // failed CAS did not publish it, so nothing else holds it.
+                    unsafe { dealloc(new_ptr.cast::<u8>(), layout) };
                 }
                 found
             }
@@ -484,6 +620,13 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     /// the inline ones).
     ///
     /// Returns (bin_index, offset_in_this_bin)
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// For `i < MAX_LEN - INLINE`, returns `(bin, offset)` with
+    /// `offset < bin_size(bin)`: `i + INITIAL_BIN_SIZE` does not overflow
+    /// (`MAX_LEN`), and lies in `[bin_size(bin), 2 * bin_size(bin))` for
+    /// `bin = ilog2(i + INITIAL_BIN_SIZE) - BIN_OFFSET`.
     const fn spill_indices(i: usize) -> (usize, usize) {
         // offset this so we are aligned for ilog2
         let i = i + Self::INITIAL_BIN_SIZE;
@@ -507,25 +650,61 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     /// Pointer to the slot of item `idx`.
     ///
     /// # Safety
-    /// The slot must exist: `idx` is below a length read from `count` (with
-    /// `Acquire`), or below `reserved` with exclusive access to the vec.
+    ///
+    /// The caller must ensure that item `idx` is published and its
+    /// publication happens-before this call (see [`Self::get_unchecked`]); with
+    /// `&mut` access to the vec this holds for every index below `count`.
+    ///
+    /// The result points to the initialized item `idx`, in the inline storage
+    /// (through `UnsafeCell::get`) or in the bin holding `idx`. It is aligned
+    /// and valid for reads and writes of a `T` while the vec is live and not
+    /// moved: inline slots move with the vec, bins stay in place until it
+    /// drops. It grants no exclusivity: reads are allowed while the item is
+    /// not written, and writes or moves out only by a caller that has
+    /// exclusive access to the item (no live reference to it).
     unsafe fn slot(&self, idx: usize) -> *mut T {
         if idx < INLINE {
             return self.inline[idx].get().cast::<T>();
         }
         let (bin, offset) = Self::spill_indices(idx - INLINE);
-        // Safety: the item exists, so the directory and its bin were installed
-        // before `count` (or `reserved`) covered it.
-        unsafe { Self::bin_ptr(self.spill.load(Ordering::Acquire), bin).add(offset) }
+        let spill = self.spill.load(Ordering::Acquire);
+        // SAFETY: by the publication order, the initialization and install of
+        // the directory, the install of the far directory (if `bin >=
+        // NEAR_BINS`) and of bin `bin` happen-before this call, so by
+        // coherence `spill` is the installed directory, which lives while
+        // `self` is borrowed; `bin < NEAR_BINS + FAR_BINS` as the push of `idx`
+        // installed it. So `bin_ptr`'s precondition holds and it returns the
+        // installed bin.
+        let bucket = unsafe { Self::bin_ptr(spill, bin) };
+        // SAFETY: `add` needs the result in bounds of the bin's allocation:
+        // the bin has room for `bin_size(bin)` items and `offset <
+        // bin_size(bin)` (`spill_indices`, `idx < count <= MAX_LEN`).
+        unsafe { bucket.add(offset) }
     }
 
     /// Get item with idx from this vec
     ///
     /// # Safety
-    /// This function is safe if idx < self.len()
+    ///
+    /// The caller must ensure that the push that published item `idx`
+    /// happens-before this call. That holds when `idx` is below a value that
+    /// an `Acquire` load of the length returned ([`Self::len`], or the length
+    /// [`Self::iter`] and [`Self::chunks`] read) and that load happens-before
+    /// this call, e.g. `idx < self.len()` on this thread. `idx` learned
+    /// through a `Relaxed` channel from the pushing thread is not enough.
+    ///
+    /// The returned reference is valid while `self` is borrowed: published
+    /// items are never moved, written or dropped while the vec is shared.
     pub unsafe fn get_unchecked(&self, idx: usize) -> &T {
-        // Safety: this is safe if idx < self.len()
-        unsafe { &*self.slot(idx) }
+        // SAFETY: `slot`'s precondition is this function's.
+        let slot = unsafe { self.slot(idx) };
+        // SAFETY: the shared reference needs `slot` aligned and pointing to an
+        // initialized `T` that stays valid and is not written while `self` is
+        // borrowed: `slot`'s postcondition (the borrow keeps the vec live and
+        // in place), and item `idx` was written before its publication, which
+        // happens-before this call (`count` field invariant: never written
+        // again while shared).
+        unsafe { &*slot }
     }
 
     /// Check at compile time that the parameters fit the system's pointer width.
@@ -540,7 +719,14 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     ///
     /// Like a `Vec`, the items keep dropping and the storage is freed even
     /// if dropping an item unwinds.
-    fn drop_manual(&mut self, skip_items: usize) {
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `skip_items <= count`, that items
+    /// `..skip_items` were moved out and are not used through the vec again,
+    /// and that the vec is not used at all after this call (not even
+    /// dropped): its items are dropped and its storage freed.
+    unsafe fn drop_manual(&mut self, skip_items: usize) {
         #[cfg(not(all(loom, test)))]
         let len = *self.count.get_mut();
 
@@ -554,7 +740,12 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         let spill = self.spill.with_mut(|ptr| *ptr);
 
         // Declared first, so it frees the storage after the items dropped.
+        // Field invariant: `spill` is this vec's directory (or null), which
+        // the precondition lets this call free.
         let _storage = FreeSpill::<T, INLINE, BIN_OFFSET> { spill };
+        // Field invariant: items `skip_items..len` are initialized
+        // (`count` field invariant, minus those moved out) and, by the
+        // precondition, owned by this call alone.
         DropItems {
             vec: self,
             from: skip_items,
@@ -567,16 +758,24 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     /// the rest of `from`'s chunk, at most up to `len`.
     ///
     /// # Safety
-    /// Same as [`Self::slot`] for every index of the run.
+    ///
+    /// The caller must ensure that `from < len` and that [`Self::slot`]'s
+    /// precondition holds for `len - 1` (and so for every index below it).
+    /// The result points to `run >= 1` slots `from..from + run`, contiguous
+    /// in one allocation, with `from + run <= len`, valid as [`Self::slot`]'s
+    /// result is (while the vec is live and not moved).
     unsafe fn run(&self, from: usize, len: usize) -> (*mut T, usize) {
         if from < INLINE {
             // From the whole inline array, not one slot: the run spans several.
-            // Safety: `from` is in bounds of the inline items.
+            // SAFETY: `add` needs the result in bounds of the inline array,
+            // which holds `INLINE > from` slots laid out as `T`s
+            // (`UnsafeCell<MaybeUninit<T>>` has the layout of `T`).
             let first = unsafe { self.inline.as_ptr().cast::<T>().cast_mut().add(from) };
             return (first, INLINE.min(len) - from);
         }
         let (bin, offset) = Self::spill_indices(from - INLINE);
-        // Safety: guaranteed by the caller; a bin pointer covers its whole bin.
+        // SAFETY: `from < len`, so `slot`'s precondition for `len - 1` covers
+        // `from`. The bin has room for `bin_size(bin) - offset` items from it.
         let first = unsafe { self.slot(from) };
         (first, (Self::bin_size(bin) - offset).min(len - from))
     }
@@ -586,6 +785,9 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
 /// dropping one unwinds, the guard made for the rest still drops it.
 struct DropItems<'a, T, const INLINE: usize, const BIN_OFFSET: u32> {
     vec: &'a AppendOnlyVec<T, INLINE, BIN_OFFSET>,
+    // Safety invariant: `len <= vec.count` with every push to `vec`
+    // happening-before; items `from..len` are initialized and owned by this
+    // guard alone (dropped by it, used by nothing else).
     from: usize,
     len: usize,
 }
@@ -595,17 +797,24 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> DropItems<'_, T, INLINE, BIN
         if self.from >= self.len {
             return;
         }
-        // Safety: `from` is below the published length and the vec is being
-        // dropped, so nobody else accesses its items.
+        // SAFETY: `from < len` (checked above) and `len <= count` with every
+        // push happening-before (field invariant): `slot`'s precondition for
+        // `len - 1`.
         let (first, run) = unsafe { self.vec.run(self.from, self.len) };
+        // Field invariant: hands items `from + run..len` to the new guard.
         let _rest = DropItems {
             vec: self.vec,
             from: self.from + run,
             len: self.len,
         };
+        // Field invariant: this guard now owns nothing.
         self.from = self.len;
-        // Safety: these items are initialized and dropped exactly once; a
-        // slice keeps dropping its other items if one unwinds.
+        // SAFETY: `drop_in_place` needs a valid, aligned slice of initialized
+        // `T`s that is not used afterwards: `first..first + run` are
+        // contiguous slots in one allocation (`run`'s postcondition) of
+        // initialized items that only this call owns (taken from the field
+        // invariant above). Whether or not the slice's drop continues after a
+        // panic, no item is dropped twice: `_rest` owns only later items.
         unsafe { ptr::drop_in_place(ptr::slice_from_raw_parts_mut(first, run)) };
     }
 }
@@ -618,6 +827,10 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> Drop for DropItems<'_, T, IN
 
 /// Frees the spill directory (if any) and every bin it lists when dropped.
 struct FreeSpill<T, const INLINE: usize, const BIN_OFFSET: u32> {
+    // Safety invariant: null, or a vec's directory (see `spill` of
+    // `AppendOnlyVec`) that this guard owns alone, with every install
+    // happening-before; its items were dropped or moved out before this guard
+    // drops.
     spill: *mut Spill<T>,
 }
 
@@ -627,13 +840,19 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> Drop for FreeSpill<T, INLINE
         if spill.is_null() {
             return;
         }
-        // Safety: we have exclusive access to the installed directory.
-        let (near, far) = unsafe { (&mut (*spill).near, &mut (*spill).far) };
+        // SAFETY: the `&mut` is to an initialized, aligned field of the live
+        // directory, which this guard owns alone (field invariant).
+        let near = unsafe { &mut (*spill).near };
         // Bin 0 lives in the directory's allocation. Later bins can be
         // installed out of order by concurrent pushes, so look at all.
         for (bin, slot) in near.iter_mut().enumerate().skip(1) {
-            AppendOnlyVec::<T, INLINE, BIN_OFFSET>::dealloc_bin(bin, slot);
+            // SAFETY: entry `bin` of the directory is null or bin `bin`
+            // (`spill` field invariant of `AppendOnlyVec`), owned by this
+            // guard, whose items are gone (field invariant).
+            unsafe { AppendOnlyVec::<T, INLINE, BIN_OFFSET>::dealloc_bin(bin, slot) };
         }
+        // SAFETY: as for `near`, for the `far` field; `near` is not used again.
+        let far = unsafe { &mut (*spill).far };
         #[cfg(not(all(loom, test)))]
         let far = *far.get_mut();
 
@@ -641,26 +860,41 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> Drop for FreeSpill<T, INLINE
         let far = far.with_mut(|ptr| *ptr);
 
         if !far.is_null() {
-            // Safety: the far directory was leaked from a box and we have exclusive access.
+            // SAFETY: `Box::from_raw` needs a pointer from `Box::into_raw`
+            // with no other owner: a non-null `far` is the installed
+            // `Box<FarBins<T>>` (`spill` field invariant), owned by this guard.
             let mut far = unsafe { Box::from_raw(far) };
             for (bin, slot) in far.iter_mut().enumerate() {
-                AppendOnlyVec::<T, INLINE, BIN_OFFSET>::dealloc_bin(NEAR_BINS + bin, slot);
+                // SAFETY: as for the near entries, for bin `NEAR_BINS + bin`.
+                unsafe {
+                    AppendOnlyVec::<T, INLINE, BIN_OFFSET>::dealloc_bin(NEAR_BINS + bin, slot)
+                };
             }
         }
-        // Safety: allocated with this layout, and nobody else can access the vec anymore.
+        // SAFETY: `drop_in_place` needs an initialized `Spill` not used
+        // afterwards: the directory is owned by this guard and freed next.
+        unsafe { ptr::drop_in_place(spill) };
+        // SAFETY: `dealloc` needs the allocation's layout: the directory was
+        // allocated with `spill_layout()`, which returns the same layout on
+        // every call; nothing uses it afterwards.
         unsafe {
-            ptr::drop_in_place(spill);
             dealloc(
                 spill.cast::<u8>(),
                 AppendOnlyVec::<T, INLINE, BIN_OFFSET>::spill_layout(),
-            );
-        }
+            )
+        };
     }
 }
 
 /// Turns an unwind into an abort while armed: a push that unwound between
 /// reserving and publishing its slot would leave every later push waiting
 /// forever.
+///
+/// This keeps later pushes live; no unsafe code relies on it, as an
+/// unpublished slot is never read or dropped (`count` stays below it). It
+/// relies on a panic in a destructor during unwinding aborting, which the
+/// `Drop` docs say it "will likely" do; with `panic = "abort"` there is no
+/// unwinding at all.
 struct AbortOnUnwind {
     armed: bool,
 }
@@ -676,7 +910,13 @@ impl Drop for AbortOnUnwind {
 
 impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN_OFFSET> {
     /// Free spill bin `bin`, if `slot` lists one. Its items are dropped already.
-    fn dealloc_bin(bin: usize, slot: &mut AtomicPtr<T>) {
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `slot` is null or holds bin `bin`, as
+    /// allocated for it (see `spill` of `AppendOnlyVec`), that this call owns
+    /// it, and that nothing uses it afterwards.
+    unsafe fn dealloc_bin(bin: usize, slot: &mut AtomicPtr<T>) {
         #[cfg(not(all(loom, test)))]
         let bucket = *slot.get_mut();
 
@@ -692,10 +932,10 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         )]
         let layout = Layout::array::<T>(Self::bin_size(bin)).expect("layout of a bin");
 
-        // Safety:
-        // - We allocated this ptr with this exact layout
-        // - nobody else can access the vec anymore
-        unsafe { dealloc(bucket as *mut u8, layout) };
+        // SAFETY: `dealloc` needs the allocation's layout: a non-null bin of a
+        // non-zero-sized `T` was allocated with `Layout::array::<T>(bin_size(bin))`
+        // (precondition), recomputed here; nothing uses it afterwards.
+        unsafe { dealloc(bucket.cast::<u8>(), layout) };
     }
 }
 
@@ -726,16 +966,18 @@ fn spin_wait(failures: &mut usize) {
     }
 }
 
-// Safety:
-// - This vec is Send if and only if all items send
+// SAFETY: the vec owns its items and its allocations; moving it to another
+// thread moves the `T`s there (`T: Send`). Its raw pointers are to storage it
+// owns, with no thread affinity.
 unsafe impl<T: Send, const INLINE: usize, const BIN_OFFSET: u32> Send
     for AppendOnlyVec<T, INLINE, BIN_OFFSET>
 {
 }
 
-// Safety:
-// - This vec is Sync if and only if all items Sync
-// - But it also needs Send for the entire collection to be sync
+// SAFETY: through `&AppendOnlyVec` threads get `&T` (`T: Sync`) and push `T`s
+// that the owner later drops or moves out on its thread (`T: Send`). Shared
+// state is changed only through atomics and through slots that `reserved`
+// hands to one push each, published in publication order.
 unsafe impl<T: Send + Sync, const INLINE: usize, const BIN_OFFSET: u32> Sync
     for AppendOnlyVec<T, INLINE, BIN_OFFSET>
 {
@@ -743,7 +985,9 @@ unsafe impl<T: Send + Sync, const INLINE: usize, const BIN_OFFSET: u32> Sync
 
 impl<T, const INLINE: usize, const BIN_OFFSET: u32> Drop for AppendOnlyVec<T, INLINE, BIN_OFFSET> {
     fn drop(&mut self) {
-        self.drop_manual(0);
+        // SAFETY: `drop_manual(0)` needs no item moved out, true while the vec
+        // owns all of them, and no later use, as the vec is being dropped.
+        unsafe { self.drop_manual(0) };
     }
 }
 
@@ -774,7 +1018,8 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> Index<usize>
         // Bounds check + Acquire ordering to ensure data visibility
         assert!(idx < self.len(), "Index out of bounds");
 
-        // Safety: we just check if idx is within bounds
+        // SAFETY: `get_unchecked` needs item `idx` published before this call:
+        // `idx` is below the `Acquire` load of `count` in `len` just above.
         unsafe { self.get_unchecked(idx) }
     }
 }
@@ -785,18 +1030,28 @@ pub struct Chunks<'a, T, const INLINE: usize, const BIN_OFFSET: u32> {
     vec: &'a AppendOnlyVec<T, INLINE, BIN_OFFSET>,
     /// The spill directory if the first `len` items reach beyond the inline
     /// ones, else null. Kept as allocated, see [`AppendOnlyVec::first_bin`].
+    // Safety invariant: null if `len <= INLINE`, else `vec`'s installed
+    // directory.
     spill: *mut Spill<T>,
     /// Length of the vec when the iterator was created.
+    // Safety invariant: a value an `Acquire` load of `vec.count` returned,
+    // which happens-before every use of this iterator.
     len: usize,
     /// Next chunk to yield from the front.
+    // Safety invariant: `front <= back <= chunk_count(len)`.
     front: usize,
     /// One past the last chunk to yield from the back.
     back: usize,
 }
 
 impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> Chunks<'a, T, INLINE, BIN_OFFSET> {
-    /// The initialized part of chunk `chunk`, which must hold at least one of the first `self.len` elements.
-    fn chunk(&self, chunk: usize) -> &'a [T] {
+    /// The initialized part of chunk `chunk`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `chunk < chunk_count(self.len)`, so it
+    /// holds at least one of the first `self.len` items.
+    unsafe fn chunk(&self, chunk: usize) -> &'a [T] {
         type Vec<T, const I: usize, const O: u32> = AppendOnlyVec<T, I, O>;
         let (ptr, count) = if chunk < Vec::<T, INLINE, BIN_OFFSET>::INLINE_CHUNKS {
             let count = core::cmp::min(self.len, INLINE);
@@ -814,26 +1069,37 @@ impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> Chunks<'a, T, INLINE, BI
             if self.spill.is_null() {
                 return &[];
             }
-            // The bin holds published items, so it was installed before `count` covered them.
-            let ptr = Vec::<T, INLINE, BIN_OFFSET>::bin_ptr(self.spill, bin);
+            // SAFETY: `self.spill` is the installed directory (field
+            // invariant, `len > INLINE` as this is a spill chunk) and lives as
+            // long as `'a`; `bin < NEAR_BINS + FAR_BINS` since it holds a
+            // published item; that item's publication, and so the
+            // initialization and install of the directory, of the far
+            // directory and of this bin, happens-before this call (the `len`
+            // field invariant, publication order).
+            let ptr = unsafe { Vec::<T, INLINE, BIN_OFFSET>::bin_ptr(self.spill, bin) };
             (ptr.cast_const(), count)
         };
-        // Safety:
-        // - `len` was read with `Acquire` from `count`, which is only advanced after the
-        //   element (and its bin) was written, so the first `count` slots of this chunk are
-        //   initialized (a zero sized bin is dangling but aligned)
-        // - elements are never removed or moved while the vec is borrowed
+        // SAFETY: `from_raw_parts` needs a non-null pointer, aligned for `T`,
+        // to `count` initialized `T`s in one allocation, not written for `'a`,
+        // with `count * size_of::<T>() <= isize::MAX`. `ptr` is the inline
+        // array or this chunk's installed bin (aligned, non-null, dangling for
+        // zero sized `T`), and `count` is at most its room. These are items
+        // below `len`, published before this call (field invariant), so
+        // initialized and never written, moved or dropped while `'a` borrows
+        // the vec (`count` field invariant).
         unsafe { core::slice::from_raw_parts(ptr, count) }
     }
 }
 
-// Safety: yields shared slices of the items only, like `&[T]` iterators.
+// SAFETY: a `Chunks` only reads: it yields `&[T]` of published items (sharing
+// them needs `T: Sync`) and reaches no push, so no `T` moves between threads.
+// Its directory pointer is read-only access to storage `vec` owns.
 unsafe impl<T: Sync, const INLINE: usize, const BIN_OFFSET: u32> Send
     for Chunks<'_, T, INLINE, BIN_OFFSET>
 {
 }
 
-// Safety: yields shared slices of the items only, like `&[T]` iterators.
+// SAFETY: as for `Send`; `&Chunks` allows no mutation at all.
 unsafe impl<T: Sync, const INLINE: usize, const BIN_OFFSET: u32> Sync
     for Chunks<'_, T, INLINE, BIN_OFFSET>
 {
@@ -848,7 +1114,8 @@ impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> Iterator
         if self.front < self.back {
             let chunk = self.front;
             self.front += 1;
-            Some(self.chunk(chunk))
+            // SAFETY: `chunk < back <= chunk_count(len)` (field invariant).
+            Some(unsafe { self.chunk(chunk) })
         } else {
             None
         }
@@ -866,7 +1133,9 @@ impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> DoubleEndedIterator
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.front < self.back {
             self.back -= 1;
-            Some(self.chunk(self.back))
+            // SAFETY: `back` was at most `chunk_count(len)` (field invariant)
+            // and was decremented.
+            Some(unsafe { self.chunk(self.back) })
         } else {
             None
         }
@@ -881,6 +1150,9 @@ impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> ExactSizeIterator
 /// A double-ended iterator for [`AppendOnlyVec`]
 pub struct Iter<'a, T, const INLINE: usize, const BIN_OFFSET: u32> {
     vec: &'a AppendOnlyVec<T, INLINE, BIN_OFFSET>,
+    // Safety invariant: `start <= end <= n`, where `n` is a value an
+    // `Acquire` load of `vec.count` returned, and that load happens-before
+    // every use of this iterator.
     start: usize,
     end: usize,
 }
@@ -894,7 +1166,10 @@ impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> Iterator
         if self.start < self.end {
             let pos = self.start;
             self.start += 1;
-            // Safety: We are within the snapshot bounds captured at creation
+            // SAFETY: `get_unchecked` needs item `pos` published before this
+            // call: `pos < end <= n` (checked above, field invariant), with
+            // `n` from an `Acquire` load of `count` that happens-before this
+            // call. `start` advanced past `pos`, keeping `start <= end`.
             Some(unsafe { self.vec.get_unchecked(pos) })
         } else {
             None
@@ -914,7 +1189,8 @@ impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> DoubleEndedIterator
         if self.start < self.end {
             self.end -= 1;
             let pos = self.end;
-            // Safety: We are within the snapshot bounds captured at creation
+            // SAFETY: as in `next`: `pos = old_end - 1 < old_end <= n`, and
+            // `start <= pos = end` keeps the field invariant.
             Some(unsafe { self.vec.get_unchecked(pos) })
         } else {
             None
@@ -953,6 +1229,8 @@ impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> IntoIterator
 pub struct IntoIterOwned<T, const INLINE: usize, const BIN_OFFSET: u32> {
     // We need to manually handle dropping of items that we didn't iter over
     vec: ManuallyDrop<AppendOnlyVec<T, INLINE, BIN_OFFSET>>,
+    // Safety invariant: `consumed <= vec.count`; items `..consumed` were moved
+    // out and items `consumed..count` are still owned by `vec`.
     consumed: usize,
 }
 
@@ -963,6 +1241,7 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> IntoIterator
     type IntoIter = IntoIterOwned<T, INLINE, BIN_OFFSET>;
 
     fn into_iter(self) -> Self::IntoIter {
+        // Field invariant: nothing moved out yet.
         IntoIterOwned {
             vec: ManuallyDrop::new(self),
             consumed: 0,
@@ -978,11 +1257,19 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> Iterator
     fn next(&mut self) -> Option<Self::Item> {
         if self.consumed < self.vec.len() {
             let idx = self.consumed;
+            // Field invariant: item `idx` is moved out below.
             self.consumed += 1;
 
-            // Safety: This is safe because consume < total, and since we own this
-            // structure no one else can change this
-            unsafe { Some(ptr::read(self.vec.slot(idx))) }
+            // SAFETY: owning the vec, every push to it happens-before this
+            // call, and `idx < count`: `slot`'s precondition.
+            let slot = unsafe { self.vec.slot(idx) };
+            // SAFETY: `ptr::read` needs `slot` valid for reads, aligned and
+            // pointing to an initialized `T`: `slot`'s postcondition (the vec
+            // is not moved since the call above) with item `idx < count`, not
+            // moved out (`consumed` was `idx`). Owning the vec, this has
+            // exclusive access to the item. The bitwise copy takes it over;
+            // `consumed` past `idx` stops any later drop of it.
+            Some(unsafe { ptr::read(slot) })
         } else {
             None
         }
@@ -996,7 +1283,10 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> Iterator
 
 impl<T, const INLINE: usize, const BIN_OFFSET: u32> Drop for IntoIterOwned<T, INLINE, BIN_OFFSET> {
     fn drop(&mut self) {
-        self.vec.drop_manual(self.consumed);
+        // SAFETY: `drop_manual` needs `consumed <= count` with items
+        // `..consumed` moved out (field invariant), and no later use of the
+        // vec: it is in a `ManuallyDrop` that is never dropped or used again.
+        unsafe { self.vec.drop_manual(self.consumed) };
     }
 }
 
@@ -1026,46 +1316,75 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> Extend<T>
 mod tests {
     use super::*;
 
-    /// A vec of zero sized items made to look full, which takes no memory,
-    /// never dropped: that would visit every pretend item.
-    fn full_of_zero_sized() -> std::mem::ManuallyDrop<AppendOnlyVec<(), 0, 0>> {
-        let vec = AppendOnlyVec::<(), 0, 0>::new();
-        let full = AppendOnlyVec::<(), 0, 0>::MAX_LEN;
-        vec.reserved.store(full, Ordering::Relaxed);
-        vec.count.store(full, Ordering::Relaxed);
-        std::mem::ManuallyDrop::new(vec)
+    mod full {
+        use super::*;
+
+        type Zst = AppendOnlyVec<(), 0, 0>;
+
+        /// A vec of zero sized items made to look full, which takes no memory.
+        /// It has no directory although `count` covers spill items, so it
+        /// breaks the publication invariant: this wrapper (its field private
+        /// to this module) only exposes operations that never reach an item,
+        /// and never drops the vec, which would visit every pretend item.
+        pub(super) struct FullOfZeroSized(std::mem::ManuallyDrop<Zst>);
+
+        impl FullOfZeroSized {
+            pub(super) fn new() -> Self {
+                let vec = Zst::new();
+                vec.reserved.store(Zst::MAX_LEN, Ordering::Relaxed);
+                vec.count.store(Zst::MAX_LEN, Ordering::Relaxed);
+                Self(std::mem::ManuallyDrop::new(vec))
+            }
+
+            /// As if `extra` pushes reserved past the limit and have yet to
+            /// undo it: `reserved` stays at or above `MAX_LEN`, so pushes
+            /// still return before touching a slot.
+            pub(super) fn reserve_past_the_limit(&self, extra: usize) {
+                self.0
+                    .reserved
+                    .store(Zst::MAX_LEN + extra, Ordering::Relaxed);
+            }
+
+            pub(super) fn reserved(&self) -> usize {
+                self.0.reserved.load(Ordering::Relaxed)
+            }
+
+            pub(super) fn len(&self) -> usize {
+                self.0.len()
+            }
+
+            pub(super) fn try_push(&self) -> Result<usize, ()> {
+                self.0.try_push(())
+            }
+
+            pub(super) fn push(&self) -> usize {
+                self.0.push(())
+            }
+        }
     }
+
+    use full::FullOfZeroSized;
 
     #[test]
     fn a_full_vec_gives_the_item_back_and_stays_as_it_was() {
-        let vec = full_of_zero_sized();
-        assert_eq!(vec.try_push(()), Err(()));
+        let vec = FullOfZeroSized::new();
+        assert_eq!(vec.try_push(), Err(()));
         assert_eq!(vec.len(), AppendOnlyVec::<(), 0, 0>::MAX_LEN);
-        assert_eq!(
-            vec.reserved.load(Ordering::Relaxed),
-            AppendOnlyVec::<(), 0, 0>::MAX_LEN
-        );
+        assert_eq!(vec.reserved(), AppendOnlyVec::<(), 0, 0>::MAX_LEN);
     }
 
     #[test]
     fn pushes_past_the_limit_at_once_never_wrap_the_reservation() {
-        let vec = full_of_zero_sized();
-        // As if this many pushes reserved past the limit and have yet to undo it.
-        vec.reserved.store(
-            AppendOnlyVec::<(), 0, 0>::MAX_LEN + 1_000,
-            Ordering::Relaxed,
-        );
-        assert_eq!(vec.try_push(()), Err(()));
-        assert_eq!(
-            vec.reserved.load(Ordering::Relaxed),
-            AppendOnlyVec::<(), 0, 0>::MAX_LEN + 1_000
-        );
+        let vec = FullOfZeroSized::new();
+        vec.reserve_past_the_limit(1_000);
+        assert_eq!(vec.try_push(), Err(()));
+        assert_eq!(vec.reserved(), AppendOnlyVec::<(), 0, 0>::MAX_LEN + 1_000);
     }
 
     #[test]
     fn a_push_past_the_limit_panics_without_aborting() {
-        let vec = full_of_zero_sized();
-        let pushed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vec.push(())));
+        let vec = FullOfZeroSized::new();
+        let pushed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vec.push()));
         pushed.unwrap_err();
         assert_eq!(vec.len(), AppendOnlyVec::<(), 0, 0>::MAX_LEN);
     }
@@ -1153,6 +1472,8 @@ mod tests {
         for i in 0..1000 {
             vec.push(i);
         }
+        // SAFETY: 1000 items exceed the inline ones, so `spill` is the
+        // installed directory, live while `vec` is; this thread did the pushes.
         let far = unsafe {
             (*vec.spill.load(Ordering::Relaxed))
                 .far

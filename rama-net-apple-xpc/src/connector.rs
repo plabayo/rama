@@ -21,12 +21,14 @@ impl Service<XpcClientConfig> for XpcConnector {
                 XpcError::InvalidCString(_)
                 | XpcError::PeerRequirementFailed { .. }
                 | XpcError::UnsupportedObjectType(_)
+                | XpcError::EndpointUnsupported
                 | XpcError::InvalidMessage(_)
                 | XpcError::SerializationFailed(_)
                 | XpcError::DeserializationFailed(_) => ConnectionErrorKind::InvalidInput,
                 XpcError::NullConnection(_)
                 | XpcError::NullObject(_)
                 | XpcError::QueueCreationFailed
+                | XpcError::FdDupFailed
                 | XpcError::ReplyNotExpected
                 | XpcError::ReplyCanceled
                 | XpcError::CallTimedOut(_)

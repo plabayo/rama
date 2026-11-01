@@ -771,11 +771,14 @@ fn trace_http1_match(
     target_end: usize,
     version: &'static str,
 ) {
-    // Method bytes are RFC 9110 `tchar`, and target validation guarantees
-    // UTF-8, so both views are safe and borrow the single replay buffer.
-    let method = unsafe { core::str::from_utf8_unchecked(&buffer[method_start..method_end]) };
-    let target = unsafe { core::str::from_utf8_unchecked(&buffer[method_end + 1..target_end]) };
-    tracing::trace!(method, target, version, "HTTP/1 peek matched request-line");
+    // Field values are only evaluated when the event is enabled, and the
+    // lossy view borrows (no copy) for the validated UTF-8 request-line.
+    tracing::trace!(
+        method = %String::from_utf8_lossy(&buffer[method_start..method_end]),
+        target = %String::from_utf8_lossy(&buffer[method_end + 1..target_end]),
+        version,
+        "HTTP/1 peek matched request-line"
+    );
 }
 
 #[inline]

@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <libproc.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/proc_info.h>
@@ -15,7 +16,14 @@ struct rama_net_socket_info {
     uint8_t protocol;
 };
 
-// 1: endpoint, 0: irrelevant or closed descriptor, negative errno: failure.
+_Static_assert(sizeof(struct rama_net_socket_info) == 24, "SocketInfo size");
+_Static_assert(offsetof(struct rama_net_socket_info, scope) == 16, "SocketInfo.scope");
+_Static_assert(offsetof(struct rama_net_socket_info, port) == 20, "SocketInfo.port");
+_Static_assert(offsetof(struct rama_net_socket_info, version) == 22, "SocketInfo.version");
+_Static_assert(offsetof(struct rama_net_socket_info, protocol) == 23, "SocketInfo.protocol");
+
+// 1: endpoint (`*out` fully written), 0: irrelevant or closed descriptor,
+// negative errno: failure. `out` must be valid for writes of one record.
 int rama_net_pid_socket(int pid, int fd, struct rama_net_socket_info *out) {
     struct socket_fdinfo info;
 

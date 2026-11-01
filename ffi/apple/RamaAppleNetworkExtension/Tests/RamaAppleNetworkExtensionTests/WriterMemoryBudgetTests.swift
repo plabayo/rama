@@ -94,6 +94,38 @@ final class WriterMemoryBudgetTests: XCTestCase {
         XCTAssertEqual(budget.snapshot().retainedItems, 0)
     }
 
+    // The view aliases immutable root memory, so mutating a uniquely held view
+    // must copy first instead of writing into the root.
+    func testTransportDataViewCopiesBeforeMutation() {
+        let byteCount = 96
+        let budget = WriterMemoryBudget()
+        let events = TestValue<[String]>([])
+        let original = Data(repeating: 0xA7, count: byteCount)
+        let mutations: [(String, (inout Data) -> Void)] = [
+            ("subscript", { $0[0] = 0x11 }),
+            ("replaceSubrange", { $0.replaceSubrange(0..<1, with: [0x11]) }),
+            ("resetBytes", { $0.resetBytes(in: 0..<1) }),
+            ("range subscript", { $0[0..<2] = Data([0x11, 0x22]) }),
+        ]
+        autoreleasepool {
+            XCTAssertTrue(budget.tryReserve(bytes: byteCount))
+            let slice = budget.makePregrantedWriterPayload(
+                observedNoCopyPayload(count: byteCount, events: events))
+            for (name, mutate) in mutations {
+                var view = slice.data
+                XCTAssertTrue(
+                    view.withUnsafeBytes { $0.baseAddress == UnsafeRawPointer(slice.bytes) },
+                    "\(name): the transport view must not copy the root")
+                mutate(&view)
+                XCTAssertNotEqual(view, original, name)
+                XCTAssertEqual(
+                    Data(bytes: slice.bytes, count: byteCount), original,
+                    "\(name): mutating the view wrote into the root")
+            }
+        }
+        XCTAssertEqual(events.get(), ["payload destroyed"])
+    }
+
 
     func testTransportViewsHoldFifoCapacityUntilTheirLastRelease() {
         let budget = WriterMemoryBudget(policy: WriterMemoryPolicy(

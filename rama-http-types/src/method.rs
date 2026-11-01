@@ -356,11 +356,11 @@ mod extension {
     use std::str;
 
     #[derive(Clone, PartialEq, Eq, Hash)]
-    // Invariant: the first self.1 bytes of self.0 are valid UTF-8.
+    // Safety invariant: `self.0[..self.1]` is valid UTF-8.
     pub struct InlineExtension([u8; InlineExtension::MAX], u8);
 
     #[derive(Clone, PartialEq, Eq, Hash)]
-    // Invariant: self.0 contains valid UTF-8.
+    // Safety invariant: `self.0` is valid UTF-8.
     pub struct AllocatedExtension(Box<[u8]>);
 
     impl InlineExtension {
@@ -372,15 +372,16 @@ mod extension {
 
             write_checked(src, &mut data)?;
 
-            // Invariant: write_checked ensures that the first src.len() bytes
-            // of data are valid UTF-8.
+            // Keeps the invariant: by `write_checked`'s safety-usable
+            // invariant `data[..src.len()]` is ASCII, and its indexing into
+            // `data` bounds `src.len()` by `MAX`, so the cast is exact.
             Ok(InlineExtension(data, src.len() as u8))
         }
 
         pub fn as_str(&self) -> &str {
             let InlineExtension(data, len) = self;
-            // Safety: the invariant of InlineExtension ensures that the first
-            // len bytes of data contain valid UTF-8.
+            // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8, which
+            // the `InlineExtension` safety invariant gives for these bytes.
             unsafe { str::from_utf8_unchecked(&data[..*len as usize]) }
         }
     }
@@ -391,14 +392,14 @@ mod extension {
 
             write_checked(src, &mut data)?;
 
-            // Invariant: data is exactly src.len() long and write_checked
-            // ensures that the first src.len() bytes of data are valid UTF-8.
+            // Keeps the invariant: `data` is `src.len()` long and ASCII by
+            // `write_checked`'s safety-usable invariant.
             Ok(AllocatedExtension(data.into_boxed_slice()))
         }
 
         pub fn as_str(&self) -> &str {
-            // Safety: the invariant of AllocatedExtension ensures that self.0
-            // contains valid UTF-8.
+            // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8, which
+            // the `AllocatedExtension` safety invariant gives.
             unsafe { str::from_utf8_unchecked(&self.0) }
         }
     }
@@ -449,8 +450,12 @@ mod extension {
         b'\0', b'\0', b'\0', b'\0', b'\0', b'\0'                              // 25x
     ];
 
-    // write_checked ensures (among other things) that the first src.len() bytes
-    // of dst are valid UTF-8
+    const _: () = assert!(METHOD_CHARS.is_ascii());
+
+    /// # Safety-usable invariant
+    ///
+    /// On `Ok`, `dst[..src.len()]` is ASCII: every byte is a non-zero entry of
+    /// `METHOD_CHARS`, which is ASCII (checked at compile time above).
     fn write_checked(src: &[u8], dst: &mut [u8]) -> Result<(), InvalidMethod> {
         for (i, &b) in src.iter().enumerate() {
             let b = METHOD_CHARS[b as usize];

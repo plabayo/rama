@@ -13,8 +13,15 @@
 //! HTML parser boundary.
 
 use rama_core::bytes::{ByteStr, Bytes};
-use serde::{Serialize, de::DeserializeOwned};
-use std::io::{self, Write};
+use serde::{
+    Serialize,
+    de::{self, DeserializeOwned},
+    ser,
+};
+use std::{
+    io::{self, Write},
+    string::FromUtf8Error,
+};
 
 use crate::headers::ContentType;
 use crate::service::web::response::{Headers, IntoResponse};
@@ -42,7 +49,8 @@ impl JsonLd {
     {
         let mut writer = ScriptSafeJsonWriter::with_capacity(INITIAL_CAPACITY);
         serde_json::to_writer(&mut writer, value)?;
-        Ok(Self(ByteStr::from(writer.into_string())))
+        let text = writer.into_string().map_err(ser::Error::custom)?;
+        Ok(Self(ByteStr::from(text)))
     }
 
     /// Serialize an existing serde_json::Value.
@@ -60,28 +68,29 @@ impl JsonLd {
 
     /// Validate and prepare existing JSON bytes.
     ///
-    /// The original allocation is retained when the input contains no literal
-    /// less-than sign. Otherwise only those bytes are rewritten into JSON
-    /// Unicode escapes.
+    /// The input must be valid UTF-8 and valid JSON. The original allocation
+    /// is retained when the input contains no literal less-than sign.
+    /// Otherwise only those bytes are rewritten into JSON Unicode escapes.
     pub fn from_bytes(bytes: Bytes) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice::<serde::de::IgnoredAny>(&bytes)?;
+        // serde_json skips the contents of ignored strings without checking
+        // their UTF-8, so the whole document is validated up front.
+        let text = ByteStr::from_utf8(bytes).map_err(de::Error::custom)?;
+        serde_json::from_str::<de::IgnoredAny>(&text)?;
 
-        if !bytes.contains(&b'<') {
-            // SAFETY: serde_json accepted the complete input, which includes
-            // validating that all strings and therefore the document are
-            // valid UTF-8.
-            return Ok(Self(unsafe { ByteStr::from_utf8_unchecked(bytes) }));
+        if !text.contains('<') {
+            return Ok(Self(text));
         }
 
-        let mut writer = ScriptSafeJsonWriter::with_capacity(bytes.len());
+        let mut writer = ScriptSafeJsonWriter::with_capacity(text.len());
         #[expect(
             clippy::expect_used,
             reason = "the in-memory JSON-LD writer cannot fail"
         )]
         writer
-            .write_all(&bytes)
+            .write_all(text.as_bytes())
             .expect("the in-memory JSON-LD writer cannot fail");
-        Ok(Self(ByteStr::from(writer.into_string())))
+        let text = writer.into_string().map_err(de::Error::custom)?;
+        Ok(Self(ByteStr::from(text)))
     }
 
     /// Deserialize the document into T.
@@ -225,11 +234,8 @@ impl ScriptSafeJsonWriter {
         }
     }
 
-    fn into_string(self) -> String {
-        // SAFETY: callers only feed this writer either serde_json output or a
-        // complete document already validated by serde_json. Replacing ASCII
-        // less-than with an ASCII JSON escape preserves UTF-8.
-        unsafe { String::from_utf8_unchecked(self.bytes) }
+    fn into_string(self) -> Result<String, FromUtf8Error> {
+        String::from_utf8(self.bytes)
     }
 }
 

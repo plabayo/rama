@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -343,6 +344,18 @@ impl Default for NwTcpConnectOptions {
     }
 }
 
+/// Process settings handed once to `rama_transparent_proxy_initialize`,
+/// decoded from the FFI struct into owned values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TransparentProxyInitConfig {
+    /// Writable storage directory for Rust-managed state, if provided.
+    pub storage_dir: Option<PathBuf>,
+    /// Shared app-group directory, if configured.
+    pub app_group_dir: Option<PathBuf>,
+    /// Bundle identifier of the process hosting the engine, if known.
+    pub bundle_identifier: Option<Box<str>>,
+}
+
 /// Protocol filter used by transparent-proxy network rules.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -364,14 +377,16 @@ impl TransparentProxyRuleProtocol {
 
 impl From<u32> for TransparentProxyRuleProtocol {
     fn from(value: u32) -> Self {
-        if value <= Self::Udp as u32 {
-            // SAFETY: repr(u32) and valid range
-            unsafe { ::std::mem::transmute::<u32, Self>(value) }
-        } else {
-            tracing::debug!(
-                "invalid raw u32 value transmuted as TransparentProxyRuleProtocol: {value} (defaulting it to Any)"
-            );
-            Self::Any
+        match value {
+            0 => Self::Any,
+            1 => Self::Tcp,
+            2 => Self::Udp,
+            _ => {
+                tracing::debug!(
+                    "invalid raw u32 value transmuted as TransparentProxyRuleProtocol: {value} (defaulting it to Any)"
+                );
+                Self::Any
+            }
         }
     }
 }
@@ -404,12 +419,10 @@ impl TransparentProxyFlowProtocol {
     /// letting the caller decide how to handle it (e.g. passthrough,
     /// blocked, surface to telemetry).
     pub fn from_raw_strict(value: u32) -> Result<Self, u32> {
-        if (Self::Tcp as u32..=Self::Udp as u32).contains(&value) {
-            // SAFETY: repr(u32) with explicit discriminants 1..=2 and we
-            // just verified `value` falls in that range.
-            Ok(unsafe { ::std::mem::transmute::<u32, Self>(value) })
-        } else {
-            Err(value)
+        match value {
+            1 => Ok(Self::Tcp),
+            2 => Ok(Self::Udp),
+            _ => Err(value),
         }
     }
 }
@@ -446,12 +459,11 @@ impl std::fmt::Display for TransparentProxyFlowAction {
 impl TransparentProxyFlowAction {
     /// Strict conversion mirroring [`TransparentProxyFlowProtocol::from_raw_strict`].
     pub fn from_raw_strict(value: u32) -> Result<Self, u32> {
-        if (Self::Intercept as u32..=Self::Blocked as u32).contains(&value) {
-            // SAFETY: repr(u32) with explicit discriminants 1..=3 and we
-            // just verified `value` falls in that range.
-            Ok(unsafe { ::std::mem::transmute::<u32, Self>(value) })
-        } else {
-            Err(value)
+        match value {
+            1 => Ok(Self::Intercept),
+            2 => Ok(Self::Passthrough),
+            3 => Ok(Self::Blocked),
+            _ => Err(value),
         }
     }
 }
@@ -1089,6 +1101,46 @@ impl Default for TransparentProxyConfig {
 #[cfg(test)]
 mod transparent_proxy_config_tests {
     use super::*;
+
+    #[test]
+    fn raw_u32_decoders_round_trip_and_reject_unknown_codes() {
+        for p in [
+            TransparentProxyRuleProtocol::Any,
+            TransparentProxyRuleProtocol::Tcp,
+            TransparentProxyRuleProtocol::Udp,
+        ] {
+            assert_eq!(TransparentProxyRuleProtocol::from(p.as_u32()), p);
+        }
+        assert_eq!(
+            TransparentProxyRuleProtocol::from(3),
+            TransparentProxyRuleProtocol::Any
+        );
+        for p in [
+            TransparentProxyFlowProtocol::Tcp,
+            TransparentProxyFlowProtocol::Udp,
+        ] {
+            assert_eq!(
+                TransparentProxyFlowProtocol::from_raw_strict(p.as_u32()),
+                Ok(p)
+            );
+        }
+        for raw in [0, 3, u32::MAX] {
+            assert_eq!(TransparentProxyFlowProtocol::from_raw_strict(raw), Err(raw));
+        }
+        for a in [
+            TransparentProxyFlowAction::Intercept,
+            TransparentProxyFlowAction::Passthrough,
+            TransparentProxyFlowAction::Blocked,
+        ] {
+            assert_eq!(
+                TransparentProxyFlowAction::from_raw_strict(a.as_u32()),
+                Ok(a)
+            );
+        }
+        for raw in [0, 4, u32::MAX] {
+            assert_eq!(TransparentProxyFlowAction::from_raw_strict(raw), Err(raw));
+        }
+    }
 
     /// Pin the wire-side contract that Swift consumes: the default
     /// returned to Swift must match the documented Swift-side default

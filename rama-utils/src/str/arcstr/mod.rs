@@ -86,25 +86,6 @@ pub use crate::__substr as substr;
 // Not public API, exists for macros
 #[doc(hidden)]
 pub mod _private {
-    // Not part of public API. Transmutes a `*const u8` to a `&[u8; N]`.
-    //
-    // As of writing this, it's unstable to directly deref a raw pointer in
-    // const code. We can get around this by transmuting (using the
-    // const-transmute union trick) to transmute from `*const u8` to `&[u8; N]`,
-    // and the dereferencing that.
-    //
-    // ... I'm a little surprised that this is allowed, but in general I do
-    // remember a motivation behind stabilizing transmute in `const fn` was that
-    // the union trick existed as a workaround.
-    //
-    // Anyway, this trick is courtesy of rodrimati1992 (that means you have to
-    // blame them if it blows up :p).
-    #[repr(C)]
-    pub union ConstPtrDeref<Arr: Copy + 'static> {
-        pub p: *const u8,
-        pub a: &'static Arr,
-    }
-
     pub use super::arc_str::{STATIC_COUNT_VALUE, StaticArcStrInner};
     pub use ::const_format::formatcp;
     pub use core::primitive::{str, u8};

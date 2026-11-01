@@ -349,6 +349,9 @@ impl Iterator for EncodedBytes<'_> {
     }
 }
 
+/// Bytes passed through verbatim must be ASCII so the output stays `str`;
+/// every `is_allowed` caller passes a [`crate::byte_sets`] predicate, which
+/// is ASCII-only, so the extra `is_ascii` test changes nothing for them.
 fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -> Cow<'a, str> {
     let mut i = 0;
     let mut needs_encoding = false;
@@ -359,7 +362,7 @@ fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -
                 needs_encoding = true;
                 break;
             }
-            b if is_allowed(b) => i += 1,
+            b if b.is_ascii() && is_allowed(b) => i += 1,
             _ => {
                 needs_encoding = true;
                 break;
@@ -368,7 +371,11 @@ fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -
     }
 
     if !needs_encoding {
-        // Safety: allowed bytes and pct triplets are ASCII.
+        // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8. The loop
+        // above consumed all of `input` without breaking, so each byte was
+        // either matched by the `is_ascii` arm or part of a pct triplet: `%`
+        // plus two bytes `rama_utils::hex::decode_pair` accepted as hex
+        // digits, which are ASCII. All-ASCII bytes are valid UTF-8.
         return Cow::Borrowed(unsafe { core::str::from_utf8_unchecked(input) });
     }
 
@@ -384,7 +391,7 @@ fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -
         } else if b == b'%' {
             push_pct_encoded(&mut out, b);
             i += 1;
-        } else if is_allowed(b) {
+        } else if b.is_ascii() && is_allowed(b) {
             out.push(b as char);
             i += 1;
         } else {
@@ -400,42 +407,53 @@ fn write_encoded_preserving_pct(
     input: &[u8],
     is_allowed: fn(u8) -> bool,
 ) -> fmt::Result {
+    // Loop invariant: every byte of `input[start..i]` was matched by the
+    // `is_ascii` arm or is part of a pct triplet (`%` plus two
+    // `decode_pair`-accepted hex digits), so the range is ASCII.
     let mut i = 0;
     let mut start = 0;
     while i < input.len() {
         match input[i] {
             b'%' if is_pct_triplet(input, i) => i += 3,
             b'%' => {
-                write_encoded_prefix(f, &input[start..i])?;
+                // SAFETY: `input[start..i]` is ASCII by the loop invariant.
+                unsafe { write_encoded_prefix(f, &input[start..i]) }?;
                 write_pct_encoded(f, input[i])?;
                 i += 1;
                 start = i;
             }
-            b if is_allowed(b) => i += 1,
+            b if b.is_ascii() && is_allowed(b) => i += 1,
             b => {
-                write_encoded_prefix(f, &input[start..i])?;
+                // SAFETY: `input[start..i]` is ASCII by the loop invariant.
+                unsafe { write_encoded_prefix(f, &input[start..i]) }?;
                 write_pct_encoded(f, b)?;
                 i += 1;
                 start = i;
             }
         }
     }
-    write_encoded_prefix(f, &input[start..])
+    // SAFETY: `input[start..]` is ASCII by the loop invariant, which holds
+    // with `i == input.len()` at loop exit.
+    unsafe { write_encoded_prefix(f, &input[start..]) }
 }
 
-fn write_encoded_prefix(f: &mut fmt::Formatter<'_>, input: &[u8]) -> fmt::Result {
+/// # Safety
+///
+/// The caller must ensure that every byte of `input` is ASCII.
+unsafe fn write_encoded_prefix(f: &mut fmt::Formatter<'_>, input: &[u8]) -> fmt::Result {
     if input.is_empty() {
         return Ok(());
     }
-    // Safety: every byte in this prefix is either an allowed URI grammar byte
-    // or part of a preserved pct triplet; both are ASCII.
+    // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8; `input` is
+    // ASCII by this fn's `# Safety` contract, and ASCII is valid UTF-8.
     f.write_str(unsafe { core::str::from_utf8_unchecked(input) })
 }
 
 fn write_pct_encoded(f: &mut fmt::Formatter<'_>, b: u8) -> fmt::Result {
     let [high, low] = rama_utils::hex::encode_byte_upper(b);
     let bytes = [b'%', high, low];
-    // Safety: the literal '%' and hex digits are ASCII.
+    // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8. `bytes` is the
+    // ASCII '%' and the two ASCII hex digits `encode_byte_upper` documents.
     f.write_str(unsafe { core::str::from_utf8_unchecked(&bytes) })
 }
 

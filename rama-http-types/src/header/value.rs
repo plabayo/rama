@@ -182,11 +182,22 @@ impl HeaderValue {
     /// within the buffer.
     ///
     /// ## Panics
-    /// In a debug build this will panic if `src` is not valid UTF-8.
+    /// In a debug build this panics if `src` contains a byte that
+    /// [`HeaderValue::from_bytes`] rejects.
     ///
-    /// ## Safety
-    /// `src` must contain valid UTF-8. In a release build it is undefined
-    /// behaviour to call this with `src` that is not valid UTF-8.
+    /// # Safety
+    ///
+    /// The caller must ensure that every byte of `src` is one that
+    /// [`HeaderValue::from_bytes`] accepts: HTAB, or any byte in `0x20..=0xFF`
+    /// other than DEL (`0x7F`). Obs-text (`0x80..=0xFF`) is allowed; the bytes
+    /// need not be UTF-8.
+    ///
+    /// This is a semantic precondition, not a memory-safety one: no unsafe code
+    /// relies on it, and breaking it cannot cause undefined behavior. The
+    /// function is `unsafe` because this byte rule keeps CR, LF and NUL out of
+    /// field values, so a caller that breaks it can inject or split field lines
+    /// at any outgoing boundary that does not re-validate (see
+    /// [`is_valid_h2_h3_field_value`]).
     pub unsafe fn from_maybe_shared_unchecked<T>(src: T) -> HeaderValue
     where
         T: AsRef<[u8]> + 'static,
@@ -302,7 +313,10 @@ impl HeaderValue {
             return Err(ToStrError { _priv: () });
         }
 
-        unsafe { Ok(str::from_utf8_unchecked(bytes)) }
+        // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8. The loop
+        // above checked every byte of `bytes` with `is_valid_ascii`, so by its
+        // safety-usable invariant `bytes` is ASCII, which is valid UTF-8.
+        Ok(unsafe { str::from_utf8_unchecked(bytes) })
     }
 
     /// Returns the length of `self`.
@@ -427,11 +441,18 @@ impl fmt::Debug for HeaderValue {
             f.write_str("Sensitive")
         } else {
             f.write_str("\"")?;
+            // `bytes[from..i]` only holds bytes that passed `is_valid_ascii`:
+            // `from` moves past every byte that fails the check below.
             let mut from = 0;
             let bytes = self.as_bytes();
             for (i, &b) in bytes.iter().enumerate() {
                 if !is_valid_ascii(b) || b == b'"' {
                     if from != i {
+                        // SAFETY: `str::from_utf8_unchecked` requires valid
+                        // UTF-8. Every byte in `bytes[from..i]` passed
+                        // `is_valid_ascii` (loop invariant above), so by its
+                        // safety-usable invariant the slice is ASCII, which is
+                        // valid UTF-8.
                         f.write_str(unsafe { str::from_utf8_unchecked(&bytes[from..i]) })?;
                     }
                     if b == b'"' {
@@ -443,6 +464,9 @@ impl fmt::Debug for HeaderValue {
                 }
             }
 
+            // SAFETY: as above; the loop ended, so every byte in
+            // `bytes[from..]` passed `is_valid_ascii` and, by its safety-usable
+            // invariant, the slice is ASCII.
             f.write_str(unsafe { str::from_utf8_unchecked(&bytes[from..]) })?;
             f.write_str("\"")
         }
@@ -639,6 +663,12 @@ fn has_outer_whitespace(value: &[u8]) -> bool {
     matches!(value.first(), Some(b' ' | b'\t')) || matches!(value.last(), Some(b' ' | b'\t'))
 }
 
+/// Visible ASCII (32-126) or horizontal tab.
+///
+/// # Safety-usable invariant
+///
+/// `is_valid_ascii(b)` implies `b < 0x80`, so a byte slice whose every byte
+/// passes is ASCII and therefore valid UTF-8.
 const fn is_valid_ascii(b: u8) -> bool {
     b >= 32 && b < 127 || b == b'\t'
 }

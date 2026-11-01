@@ -78,6 +78,10 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
                 )
             },
             inlineWriteCompletionWhenOnQueue: true,
+            // "An error will be sent if the associated content could not be fully
+            // sent before an error occurred" (connection.h): part of the chunk may
+            // already be on the wire, so a resend could duplicate it.
+            retriesTransientWriteErrors: false,
             onActivity: onActivity,
             retryScheduler: retryScheduler,
             stallScheduler: stallScheduler,

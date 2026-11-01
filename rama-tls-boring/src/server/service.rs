@@ -462,9 +462,15 @@ mod tests {
             };
             let plain = Extensions::new();
             let (first, second) = (context(&plain), context(&plain));
-            assert!(std::ptr::eq(&*first, &*second), "resumption: {resumption}");
+            assert!(
+                std::ptr::eq(&raw const *first, &raw const *second),
+                "resumption: {resumption}"
+            );
             let (first, second) = (context(&overriding), context(&overriding));
-            assert!(!std::ptr::eq(&*first, &*second), "resumption: {resumption}");
+            assert!(
+                !std::ptr::eq(&raw const *first, &raw const *second),
+                "resumption: {resumption}"
+            );
         }
     }
 }

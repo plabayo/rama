@@ -43,6 +43,8 @@ use tokio::time::Instant;
 /// ownership is taken of the internal connection.
 pub struct LeasedConnection<C: ExtensionsRef, ID> {
     admission: Option<ConnectionAdmissionLease>,
+    // Safety invariant: unless `pooled_conn_taken` is `true`, `pooled_conn`
+    // holds a value that has been neither taken nor dropped.
     pooled_conn: ManuallyDrop<PooledConnection<C, ID>>,
     pooled_conn_taken: bool,
     active_slot: ActiveSlot,
@@ -79,8 +81,11 @@ impl<C: ExtensionsRef, ID> LeasedConnection<C, ID> {
         // We cannot use ::into_inner as we still require a Drop impl as well, so
         // we assign pooled_conn_taken to true to avoid double-dropping.
         self.pooled_conn_taken = true;
-        // SAFETY: value is only dropped in `Self::Drop`, and value is only taken
-        // here if we move out of leased drop.
+        // SAFETY: `ManuallyDrop::take` requires that the slot is not used again.
+        // `self` is owned here and `pooled_conn_taken` was `false` on entry (it
+        // is only set here, and this consumes `self`), so by the field
+        // invariant the value is live. The flag set above makes `Drop` skip the
+        // slot, and nothing else reads it before `self` is dropped.
         unsafe { ManuallyDrop::take(&mut self.pooled_conn) }.conn
     }
 }
@@ -631,6 +636,10 @@ impl<C: ExtensionsRef, ID> Drop for LeasedConnection<C, ID> {
                 trace!(
                     "LRU connection pool: dropping connection with no response or a failed request"
                 );
+                // SAFETY: `ManuallyDrop::drop` requires a live value that is not
+                // used again. `pooled_conn_taken` is `false` (checked above), so
+                // by the field invariant the value is live, and this `drop`
+                // returns right after without touching the slot.
                 unsafe { ManuallyDrop::drop(&mut self.pooled_conn) };
                 return;
             }
@@ -639,20 +648,17 @@ impl<C: ExtensionsRef, ID> Drop for LeasedConnection<C, ID> {
             {
                 trace!("LRU connection pool: dropping pooled connection that was marked as failed");
 
-                // SAFETY: pooled_conn_taken is false,
-                // indicating we didn't move ownership yet by
-                // using Self::into_inner, and we are neither
-                // returning it as is done in the other (else)
-                // branch only.
+                // SAFETY: as in the branch above: `pooled_conn_taken` is `false`,
+                // so the value is live (field invariant), and the slot is not
+                // used after this call.
                 unsafe { ManuallyDrop::drop(&mut self.pooled_conn) };
             } else {
                 trace!("LRU connection pool: returning pooled connection back to pool");
 
-                // SAFETY: pooled_conn_taken is false,
-                // indicating we didn't move ownership yet by
-                // using Self::into_inner, and neither do we drop it as that is only
-                // done in the 'truth' variant of this if-else branching
-                // as can be seen above.
+                // SAFETY: `ManuallyDrop::take` requires that the slot is not used
+                // again. `pooled_conn_taken` is `false`, so the value is live
+                // (field invariant); this is the only branch that runs, and the
+                // slot is not touched after the move.
                 let pooled_conn = unsafe { ManuallyDrop::take(&mut self.pooled_conn) };
                 self.returner.return_conn(pooled_conn);
             }

@@ -221,8 +221,7 @@ fn common_capabilities(a: DatagramCapabilities, b: DatagramCapabilities) -> Data
 /// Packet-oriented Tokio UDP socket with portable ancillary metadata.
 #[derive(Debug)]
 struct PacketSocket {
-    io: Arc<UdpSocket>,
-    state: Arc<sys::UdpSocketState>,
+    io: Arc<sys::PairedSocket>,
     socket_is_ipv6: bool,
     cached_bound_address: Option<SocketAddr>,
 }
@@ -238,10 +237,9 @@ impl PacketSocket {
         receive_original_destination: bool,
     ) -> Result<Self, DatagramError> {
         let socket_is_ipv6 = socket.local_addr()?.is_ipv6();
-        let state = sys::UdpSocketState::new((&socket).into(), receive_original_destination)?;
+        let io = sys::PairedSocket::new(socket, receive_original_destination)?;
         Ok(Self {
-            io: Arc::new(socket),
-            state: Arc::new(state),
+            io: Arc::new(io),
             socket_is_ipv6,
             cached_bound_address: None,
         })
@@ -264,11 +262,10 @@ impl PacketSocket {
         }
         socket.set_nonblocking(true)?;
         let socket_is_ipv6 = socket.local_addr()?.is_ipv6();
-        let state = sys::UdpSocketState::new((&socket).into(), receive_original_destination)?;
-        let io = UdpSocket::from_std(socket)?;
+        let io =
+            sys::PairedSocket::new(UdpSocket::from_std(socket)?, receive_original_destination)?;
         Ok(Self {
             io: Arc::new(io),
-            state: Arc::new(state),
             socket_is_ipv6,
             cached_bound_address: None,
         })
@@ -289,7 +286,7 @@ impl PacketSocket {
     }
 
     fn current_capabilities(&self) -> DatagramCapabilities {
-        capabilities(&self.state)
+        capabilities(self.io.state())
     }
 }
 
@@ -299,7 +296,6 @@ impl DatagramSocket for PacketSocket {
     fn create_sender(&self) -> Self::Sender {
         PacketSender {
             io: self.io.clone(),
-            state: self.state.clone(),
             socket_is_ipv6: self.socket_is_ipv6,
             writable: None,
         }
@@ -329,9 +325,8 @@ impl DatagramSocket for PacketSocket {
             }
 
             let result = self.io.try_io(Interest::READABLE, || {
-                let socket = (&*self.io).into();
-                self.state
-                    .recv(&socket, &mut buffers[..count], &mut raw_metadata[..count])
+                self.io
+                    .recv(&mut buffers[..count], &mut raw_metadata[..count])
             });
             match result {
                 Ok(received) => {
@@ -387,14 +382,13 @@ impl Socket for PacketSocket {
 
 // Construct every replacement through the same function so its layout always matches
 // the future already stored in the reusable allocation.
-async fn wait_writable(io: Arc<UdpSocket>) -> io::Result<()> {
+async fn wait_writable(io: Arc<sys::PairedSocket>) -> io::Result<()> {
     io.writable().await
 }
 
 /// Send handle for a [`UdpPacketSocket`].
 struct PacketSender {
-    io: Arc<UdpSocket>,
-    state: Arc<sys::UdpSocketState>,
+    io: Arc<sys::PairedSocket>,
     socket_is_ipv6: bool,
     writable: Option<ReusableBoxFuture<'static, io::Result<()>>>,
 }
@@ -405,7 +399,6 @@ impl Clone for PacketSender {
     fn clone(&self) -> Self {
         Self {
             io: self.io.clone(),
-            state: self.state.clone(),
             socket_is_ipv6: self.socket_is_ipv6,
             writable: None,
         }
@@ -426,7 +419,7 @@ impl DatagramSender for PacketSender {
         cx: &mut Context<'_>,
         datagram: &SendDatagram<'_>,
     ) -> Poll<Result<(), DatagramError>> {
-        let capabilities = capabilities(&self.state);
+        let capabilities = capabilities(self.io.state());
         if let Err(error) = datagram.validate(capabilities) {
             return Poll::Ready(Err(error));
         }
@@ -454,16 +447,15 @@ impl DatagramSender for PacketSender {
 
             // `try_io` must observe `WouldBlock` from the syscall so Tokio can
             // clear its cached WRITABLE readiness before we wait again.
-            let result = self.io.try_io(Interest::WRITABLE, || {
-                let socket = (&*self.io).into();
-                self.state.try_send(&socket, &transmit)
-            });
+            let result = self
+                .io
+                .try_io(Interest::WRITABLE, || self.io.try_send(&transmit));
             match result {
                 Ok(()) => return Poll::Ready(Ok(())),
                 Err(error) if is_would_block(&error) => {}
                 Err(error)
                     if datagram.segment_size().is_some()
-                        && self.state.max_gso_segments() == 1
+                        && self.io.state().max_gso_segments() == 1
                         && is_segmentation_rejection(&error) =>
                 {
                     return Poll::Ready(Err(DatagramError::SegmentationRejected(error)));
@@ -474,7 +466,7 @@ impl DatagramSender for PacketSender {
     }
 
     fn capabilities(&self) -> DatagramCapabilities {
-        capabilities(&self.state)
+        capabilities(self.io.state())
     }
 }
 
@@ -1092,13 +1084,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            SockRef::from(&*socket.primary.io)
+            SockRef::from(&**socket.primary.io)
                 .unicast_hops_v6()
                 .unwrap(),
             42,
         );
         assert!(
-            !SockRef::from(&*socket.primary.io)
+            !SockRef::from(&**socket.primary.io)
                 .multicast_loop_v6()
                 .unwrap()
         );
@@ -1145,7 +1137,9 @@ mod tests {
         const SO_NUMRCVPKT: libc::c_int = 0x1112;
         let mut count: libc::c_int = 0;
         let mut len = size_of::<libc::c_int>() as libc::socklen_t;
-        // SAFETY: a valid descriptor and an int-sized output, as the option requires.
+        // SAFETY: `getsockopt(2)` writes at most `*option_len` bytes at `option_value` and the
+        // written size to `option_len`: the live locals `count` (an integer, valid for any
+        // bytes) and `len`, its size. The descriptor is open for the borrow of `socket`.
         let result = unsafe {
             libc::getsockopt(
                 socket.as_raw_fd(),
@@ -1323,7 +1317,7 @@ mod tests {
     #[cfg(target_vendor = "apple")]
     #[tokio::test]
     async fn a_link_local_send_goes_out_over_its_source_interface() {
-        // SAFETY: a NUL-terminated name, read only for the call's duration.
+        // SAFETY: `if_nametoindex(3)` reads a NUL-terminated name: a static C string literal.
         let lo0 = unsafe { libc::if_nametoindex(c"lo0".as_ptr()) };
         assert_ne!(lo0, 0, "lo0 has an index");
         let wildcard: SocketAddr = "[::]:0".parse().unwrap();

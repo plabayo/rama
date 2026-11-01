@@ -193,6 +193,11 @@ impl PostedRecvConfig {
 
 mod sealed {
     pub trait Sealed {
+        /// # Safety-usable invariant
+        ///
+        /// Returns the socket this stream owns, which stays open while the
+        /// stream lives and is closed only by dropping it or by
+        /// [`Sealed::into_std`] and what it returns.
         #[cfg(target_os = "windows")]
         fn raw_socket(&self) -> std::os::windows::io::RawSocket;
 
@@ -214,8 +219,10 @@ mod sealed {
 /// Sealed, and only implemented for [`TcpStream`] and [`TokioTcpStream`]:
 /// the posted receives read the socket directly, so wrapping a stream that
 /// transforms its bytes (TLS, a peek buffer, ...) would bypass it. Their
-/// sockets suit overlapped receives; no other overlapped I/O may be issued
-/// on a wrapped socket.
+/// sockets suit overlapped receives. Code that uses the raw socket of a
+/// wrapped stream must not issue overlapped I/O on it, which would complete
+/// to the wrapper's port and never be reported to its issuer, nor set
+/// `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` on it, before or after wrapping.
 pub trait RawTcpStream:
     sealed::Sealed + AsyncRead + AsyncWrite + Socket + Unpin + Send + 'static
 {
@@ -338,7 +345,15 @@ impl<S: RawTcpStream> PostedRecv<S> {
     pub fn try_with_config(stream: S, config: &PostedRecvConfig) -> Result<Self, (io::Error, S)> {
         #[cfg(target_os = "windows")]
         {
-            let reader = match iocp::Reader::new(stream.raw_socket(), config) {
+            // SAFETY: the `Reader::new` contract: by the safety-usable
+            // invariant of `Sealed::raw_socket` the socket is open while
+            // `stream` lives. `stream` moves into `inner`, a `ManuallyDrop`
+            // released only by `Drop`, which calls `stop` first; a forgotten
+            // wrapper never closes it. Tokio, mio (which polls through its own
+            // AFD handle) and std neither issue overlapped I/O on the socket
+            // nor set its completion modes; other code could only do so
+            // through the raw socket, which the `RawTcpStream` docs rule out.
+            let reader = match unsafe { iocp::Reader::new(stream.raw_socket(), config) } {
                 Ok(reader) => reader,
                 Err(err) => return Err((err, stream)),
             };
@@ -381,7 +396,8 @@ impl<S: RawTcpStream> PostedRecv<S> {
     /// Borrow the inner stream.
     ///
     /// Reading from it directly bypasses the posted receives and reorders the
-    /// stream, and no overlapped I/O may be issued on its socket.
+    /// stream. Do not issue overlapped I/O on its socket, see
+    /// [`RawTcpStream`].
     pub fn get_ref(&self) -> &S {
         &self.inner
     }
@@ -402,11 +418,14 @@ impl<S: RawTcpStream> Drop for PostedRecv<S> {
         match &self.reader {
             Some(reader) => {
                 reader.stop();
-                // SAFETY: `inner` is never used again after this.
+                // SAFETY: `ManuallyDrop::take` leaves `inner` uninhabited:
+                // this is `Drop`, which runs once, and nothing uses `inner`
+                // after this line.
                 let stream = unsafe { std::mem::ManuallyDrop::take(&mut self.inner) };
                 reader.close(stream.into_std());
             }
-            // SAFETY: `inner` is never used again after this.
+            // SAFETY: `ManuallyDrop::drop` drops `inner` in place: this is
+            // `Drop`, which runs once, and nothing uses `inner` afterwards.
             None => unsafe { std::mem::ManuallyDrop::drop(&mut self.inner) },
         }
     }

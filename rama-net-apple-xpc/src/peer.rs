@@ -1,8 +1,9 @@
 use std::ptr;
 
-use rama_utils::str::arcstr::ArcStr;
+use rama_utils::str::arcstr::{ArcStr, arcstr};
 
 use crate::{
+    connection::InactiveXpcConnection,
     error::XpcError,
     ffi::{
         xpc_connection_set_peer_code_signing_requirement,
@@ -10,7 +11,7 @@ use crate::{
         xpc_connection_set_peer_entitlement_matches_value_requirement,
         xpc_connection_set_peer_lightweight_code_requirement,
         xpc_connection_set_peer_platform_identity_requirement,
-        xpc_connection_set_peer_team_identity_requirement, xpc_connection_t,
+        xpc_connection_set_peer_team_identity_requirement,
     },
     message::XpcMessage,
     object::OwnedXpcObject,
@@ -75,14 +76,20 @@ pub enum PeerSecurityRequirement {
 }
 
 impl PeerSecurityRequirement {
-    pub(crate) fn apply(&self, connection: xpc_connection_t) -> Result<(), XpcError> {
-        // SAFETY for all arms: `connection` is a valid, non-null xpc_connection_t passed
-        // in by the caller (always sourced from OwnedXpcObject). String arguments are
-        // null-terminated C strings from make_c_string or null (accepted by the APIs).
-        // XPC object arguments are valid retained objects from OwnedXpcObject::from_message.
+    /// Apply this requirement to a connection that is not activated yet.
+    ///
+    /// Call at most once per connection: <xpc/connection.h> makes a second
+    /// `xpc_connection_set_peer_*_requirement` call a programming error.
+    pub(crate) fn apply(&self, connection: &InactiveXpcConnection) -> Result<(), XpcError> {
+        // Every arm: `connection.as_raw()` is a live, not yet activated connection with no
+        // other Rust alias (so no call lock is needed), as the `set_peer_*_requirement`
+        // calls need; strings are live `CString`s and objects are live `OwnedXpcObject`s,
+        // both safe to free after the call (<xpc/connection.h>).
+        let connection = connection.as_raw();
         let result = match self {
             Self::CodeSigning(requirement) => {
                 let requirement = make_c_string(requirement)?;
+                // SAFETY: `XPC_NONNULL_ALL`; see above.
                 unsafe {
                     xpc_connection_set_peer_code_signing_requirement(
                         connection,
@@ -95,6 +102,7 @@ impl PeerSecurityRequirement {
                     .as_deref()
                     .map(make_c_string)
                     .transpose()?;
+                // SAFETY: `XPC_NONNULL1`; the identifier is `_Nullable`. See above.
                 unsafe {
                     xpc_connection_set_peer_team_identity_requirement(
                         connection,
@@ -109,6 +117,7 @@ impl PeerSecurityRequirement {
                     .as_deref()
                     .map(make_c_string)
                     .transpose()?;
+                // SAFETY: `XPC_NONNULL1`; the identifier is `_Nullable`. See above.
                 unsafe {
                     xpc_connection_set_peer_platform_identity_requirement(
                         connection,
@@ -120,6 +129,7 @@ impl PeerSecurityRequirement {
             }
             Self::EntitlementExists(entitlement) => {
                 let entitlement = make_c_string(entitlement)?;
+                // SAFETY: `XPC_NONNULL_ALL`; see above.
                 unsafe {
                     xpc_connection_set_peer_entitlement_exists_requirement(
                         connection,
@@ -128,22 +138,42 @@ impl PeerSecurityRequirement {
                 }
             }
             Self::EntitlementMatchesValue { entitlement, value } => {
+                // <xpc/connection.h> lists BOOL, STRING and INT64 as the valid value types.
+                if !matches!(
+                    value,
+                    XpcMessage::Bool(_) | XpcMessage::String(_) | XpcMessage::Int64(_)
+                ) {
+                    return Err(XpcError::InvalidMessage(arcstr!(
+                        "entitlement requirement value must be a Bool, String or Int64"
+                    )));
+                }
                 let entitlement = make_c_string(entitlement)?;
                 let value = OwnedXpcObject::from_message(value.clone())?;
+                // SAFETY: `XPC_NONNULL_ALL`; `value` has a valid type (checked above).
+                // See above.
                 unsafe {
                     xpc_connection_set_peer_entitlement_matches_value_requirement(
                         connection,
                         entitlement.as_ptr(),
-                        value.raw,
+                        value.as_raw(),
                     )
                 }
             }
             Self::LightweightCodeRequirement(requirement) => {
+                // The requirement "must be an `xpc_dictionary_t`" (<xpc/connection.h>);
+                // libxpc traps on any other type.
+                if !matches!(requirement, XpcMessage::Dictionary(_)) {
+                    return Err(XpcError::InvalidMessage(arcstr!(
+                        "lightweight code requirement must be a Dictionary"
+                    )));
+                }
                 let requirement = OwnedXpcObject::from_message(requirement.clone())?;
+                // SAFETY: `XPC_NONNULL_ALL`; `requirement` is a dictionary (checked
+                // above). See above.
                 unsafe {
                     xpc_connection_set_peer_lightweight_code_requirement(
                         connection,
-                        requirement.raw,
+                        requirement.as_raw(),
                     )
                 }
             }

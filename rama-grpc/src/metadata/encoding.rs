@@ -149,11 +149,7 @@ impl self::value_encoding::Sealed for Binary {
         if crate::util::base64::STANDARD.decode(value).is_err() {
             panic!("Invalid base64 passed to from_static: {value}");
         }
-        unsafe {
-            // Because this is valid base64 this must be a valid HTTP header value,
-            // no need to check again by calling from_shared.
-            HeaderValue::from_maybe_shared_unchecked(Bytes::from_static(value.as_ref()))
-        }
+        HeaderValue::from_static(value)
     }
 
     fn decode(value: &[u8]) -> Result<Bytes, InvalidMetadataValueBytes> {

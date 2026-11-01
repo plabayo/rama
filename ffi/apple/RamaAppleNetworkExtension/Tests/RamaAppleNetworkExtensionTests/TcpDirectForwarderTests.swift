@@ -1195,6 +1195,263 @@ final class TcpDirectForwarderTests: XCTestCase {
         XCTAssertEqual(h.s2cPhase, .finished)
     }
 
+    // MARK: - Egress connection failure
+
+    func testConnectionFailureBeforeReceiveErrorDrainsTailWithOriginalError() {
+        let h = Harness("conn.failed.then.receive.error")
+        h.flow.captureWriteCompletions = true
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        let tail = Data([0xCA, 0xFE])
+        XCTAssertTrue(h.conn.completePendingReceive(data: tail, isComplete: false, error: nil))
+        waitFor("tail enters client writer", timeout: 1.0) {
+            h.flow.pendingWriteCompletionCount == 1 && h.conn.pendingReceiveCount == 1
+        }
+        XCTAssertTrue(h.queue.sync { h.forwarder.failConnection(NWError.posix(.ECONNRESET)) })
+        XCTAssertTrue(
+            h.conn.completePendingReceive(
+                data: nil, isComplete: false, error: NWError.posix(.ECONNRESET)))
+        h.drain()
+        XCTAssertNil(h.queue.sync { h.readError }, "tail must drain before teardown")
+
+        XCTAssertTrue(h.flow.completeNextWrite())
+        waitFor("tail drain ends with the reset", timeout: 1.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        XCTAssertEqual(h.flow.writes, [tail])
+        guard case .posix(.ECONNRESET)? = h.flow.lastCloseWriteError as? NWError else {
+            return XCTFail("client write half must close with the reset")
+        }
+        XCTAssertEqual(h.queue.sync { h.terminalCount }, 0)
+    }
+
+    func testReceiveErrorBeforeConnectionFailureKeepsReceiveError() {
+        let h = Harness("receive.error.then.conn.failed")
+        h.flow.captureWriteCompletions = true
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        let tail = Data([0xBE, 0xEF])
+        XCTAssertTrue(
+            h.conn.completePendingReceive(
+                data: tail, isComplete: false, error: NWError.posix(.ECONNRESET)))
+        waitFor("tail enters client writer", timeout: 1.0) {
+            h.flow.pendingWriteCompletionCount == 1
+        }
+        XCTAssertTrue(h.queue.sync { h.forwarder.failConnection(NWError.posix(.ENETDOWN)) })
+        XCTAssertNil(h.queue.sync { h.readError })
+
+        XCTAssertTrue(h.flow.completeNextWrite())
+        waitFor("tail drain ends with the receive error", timeout: 1.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        guard case .posix(.ECONNRESET)? = h.queue.sync(execute: { h.readError }) as? NWError
+        else { return XCTFail("the first observed error must stay the cause") }
+        XCTAssertEqual(h.flow.writes, [tail])
+    }
+
+    /// Network.framework reports `.failed` once both FINs are exchanged, even
+    /// before the server's last bytes were read.
+    func testConnectionFailureAfterUploadFinThenEofIsOrderlyClose() {
+        let h = Harness("upload.fin.conn.failed.then.eof")
+        h.flow.captureWriteCompletions = true
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        h.flow.completeRead(data: nil, error: nil)
+        waitFor("upload FIN sent", timeout: 1.0) { h.c2sPhase == .finished }
+
+        XCTAssertTrue(h.queue.sync { h.forwarder.failConnection(NWError.posix(.ENETDOWN)) })
+        let tail = Data([0x01, 0x02, 0x03])
+        XCTAssertTrue(h.conn.completePendingReceive(data: tail, isComplete: false, error: nil))
+        waitFor("reads continue after the failure", timeout: 1.0) {
+            h.conn.pendingReceiveCount == 1
+        }
+        XCTAssertTrue(h.conn.completePendingReceive(data: nil, isComplete: true, error: nil))
+        waitFor("tail enters client writer", timeout: 1.0) {
+            h.flow.pendingWriteCompletionCount == 1
+        }
+        XCTAssertNil(
+            h.queue.sync { h.forwarder.pendingServerReadError },
+            "a slow client after an orderly close must not inherit the failure")
+        XCTAssertTrue(h.flow.completeNextWrite())
+        waitFor("orderly terminal", timeout: 1.0) { h.queue.sync { h.terminalCount == 1 } }
+        XCTAssertNil(h.queue.sync { h.readError })
+        XCTAssertEqual(h.flow.writes, [tail])
+        XCTAssertEqual(h.flow.closeWriteCallCount, 1)
+        XCTAssertNil(h.flow.lastCloseWriteError)
+    }
+
+    func testEofBeforeConnectionFailureAfterUploadFinStaysOrderly() {
+        let h = Harness("upload.fin.eof.then.conn.failed")
+        h.flow.captureWriteCompletions = true
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        h.flow.completeRead(data: nil, error: nil)
+        waitFor("upload FIN sent", timeout: 1.0) { h.c2sPhase == .finished }
+
+        let tail = Data([0x04, 0x05])
+        XCTAssertTrue(h.conn.completePendingReceive(data: tail, isComplete: true, error: nil))
+        waitFor("tail enters client writer", timeout: 1.0) {
+            h.flow.pendingWriteCompletionCount == 1
+        }
+        XCTAssertTrue(h.queue.sync { h.forwarder.failConnection(NWError.posix(.ENETDOWN)) })
+        XCTAssertTrue(h.flow.completeNextWrite())
+        waitFor("orderly terminal", timeout: 1.0) { h.queue.sync { h.terminalCount == 1 } }
+        XCTAssertNil(h.queue.sync { h.readError })
+        XCTAssertNil(h.flow.lastCloseWriteError)
+        XCTAssertNil(h.queue.sync { h.forwarder.pendingServerReadError })
+    }
+
+    func testConnectionFailureEndsAReceiveThatNeverCompletes() {
+        let h = Harness("conn.failed.receive.silent")
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        XCTAssertEqual(h.conn.pendingReceiveCount, 1)
+
+        XCTAssertTrue(h.queue.sync { h.forwarder.failConnection(NWError.posix(.ECONNRESET)) })
+        waitFor("grace ends the read with the failure", timeout: 2.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        guard case .posix(.ECONNRESET)? = h.flow.lastCloseWriteError as? NWError else {
+            return XCTFail("client write half must close with the failure")
+        }
+        // The late completion is not delivered.
+        XCTAssertTrue(
+            h.conn.completePendingReceive(data: Data([0xAA]), isComplete: false, error: nil))
+        h.drain()
+        XCTAssertTrue(h.flow.writes.isEmpty)
+    }
+
+    func testConnectionFailureWithOpenUploadFailsAfterServerTailDrains() {
+        let h = Harness("conn.failed.open.upload")
+        h.flow.captureWriteCompletions = true
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        XCTAssertEqual(h.flow.pendingReadCount, 1, "upload is open and quiet")
+
+        let tail = Data([0x0A, 0x0B])
+        XCTAssertTrue(h.conn.completePendingReceive(data: tail, isComplete: true, error: nil))
+        waitFor("tail enters client writer", timeout: 1.0) {
+            h.flow.pendingWriteCompletionCount == 1
+        }
+        XCTAssertTrue(h.queue.sync { h.forwarder.failConnection(NWError.posix(.ECONNRESET)) })
+        // Upload bytes read after the failure are not sent to the dead connection.
+        let sendsBefore = h.conn.sentChunks.count
+        h.flow.completeRead(data: Data([0x10, 0x11]), error: nil)
+        h.drain()
+        XCTAssertEqual(h.conn.sentChunks.count, sendsBefore)
+
+        XCTAssertTrue(h.flow.completeNextWrite())
+        waitFor("upload half fails once the tail drained", timeout: 1.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        XCTAssertEqual(h.flow.writes, [tail])
+        XCTAssertNil(h.flow.lastCloseWriteError, "the server's EOF was orderly")
+        guard case .posix(.ECONNRESET)? = h.queue.sync(execute: { h.readError }) as? NWError
+        else { return XCTFail("the upload half must end with the failure") }
+        XCTAssertEqual(h.queue.sync { h.terminalCount }, 0)
+    }
+
+    func testConnectionFailureAfterTerminalIsNotOwned() {
+        let h = Harness("conn.failed.after.terminal")
+        h.forwarder.cancel()
+        h.drain()
+        XCTAssertFalse(h.queue.sync { h.forwarder.failConnection(NWError.posix(.ECONNRESET)) })
+    }
+
+    func testEgressWriteFailureBeforeReceiveEndDrainsTailWithFirstError() {
+        let h = Harness("write.failed.then.receive.ended")
+        h.flow.captureWriteCompletions = true
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        let tail = Data([0xCA, 0xFE])
+        XCTAssertTrue(h.conn.completePendingReceive(data: tail, isComplete: false, error: nil))
+        waitFor("tail enters client writer", timeout: 1.0) {
+            h.flow.pendingWriteCompletionCount == 1 && h.conn.pendingReceiveCount == 1
+        }
+        XCTAssertTrue(h.queue.sync { h.forwarder.failEgressWrite(NWError.posix(.EPIPE)) })
+        // The writer reset the connection, so the pending receive ends as cancelled.
+        XCTAssertTrue(
+            h.conn.completePendingReceive(
+                data: nil, isComplete: false, error: NWError.posix(.ECANCELED)))
+        h.drain()
+        XCTAssertNil(h.queue.sync { h.readError }, "tail must drain before teardown")
+
+        XCTAssertTrue(h.flow.completeNextWrite())
+        waitFor("tail drain ends with the write failure", timeout: 1.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        XCTAssertEqual(h.flow.writes, [tail])
+        guard case .posix(.EPIPE)? = h.flow.lastCloseWriteError as? NWError else {
+            return XCTFail("the first failure must stay the cause")
+        }
+        XCTAssertEqual(h.queue.sync { h.terminalCount }, 0)
+    }
+
+    func testEgressWriteFailureWithPendingReceiveEndsAfterGrace() {
+        let h = Harness("write.failed.receive.pending")
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        XCTAssertEqual(h.conn.pendingReceiveCount, 1)
+        XCTAssertEqual(h.flow.pendingReadCount, 1)
+
+        XCTAssertTrue(h.queue.sync { h.forwarder.failEgressWrite(NWError.posix(.ECONNRESET)) })
+        waitFor("grace ends the read with the write failure", timeout: 2.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        guard case .posix(.ECONNRESET)? = h.queue.sync(execute: { h.readError }) as? NWError
+        else { return XCTFail("the write failure must be the cause") }
+        // Neither late result reaches its destination.
+        let sendsBefore = h.conn.sentChunks.count
+        h.flow.completeRead(data: Data([0x10]), error: nil)
+        XCTAssertTrue(
+            h.conn.completePendingReceive(data: Data([0xAA]), isComplete: false, error: nil))
+        h.drain()
+        XCTAssertEqual(h.conn.sentChunks.count, sendsBefore)
+        XCTAssertTrue(h.flow.writes.isEmpty)
+    }
+
+    func testEgressWriteFailureIsNotClearedByOrderlyServerEof() {
+        let h = Harness("upload.fin.write.failed.eof")
+        h.flow.captureWriteCompletions = true
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        h.flow.completeRead(data: nil, error: nil)
+        waitFor("upload FIN sent", timeout: 1.0) { h.c2sPhase == .finished }
+
+        XCTAssertTrue(h.queue.sync { h.forwarder.failEgressWrite(NWError.posix(.EPIPE)) })
+        let tail = Data([0x04, 0x05])
+        XCTAssertTrue(h.conn.completePendingReceive(data: tail, isComplete: true, error: nil))
+        waitFor("tail enters client writer", timeout: 1.0) {
+            h.flow.pendingWriteCompletionCount == 1
+        }
+        XCTAssertTrue(h.flow.completeNextWrite())
+        waitFor("flow ends with the write failure", timeout: 1.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        XCTAssertEqual(h.flow.writes, [tail])
+        XCTAssertNil(h.flow.lastCloseWriteError, "the server's EOF was orderly")
+        XCTAssertEqual(h.queue.sync { h.terminalCount }, 0, "a write failure is never a clean end")
+    }
+
+    func testEgressWriteFailureAfterTerminalIsNotOwned() {
+        let h = Harness("write.failed.after.terminal")
+        h.forwarder.cancel()
+        h.drain()
+        XCTAssertFalse(h.queue.sync { h.forwarder.failEgressWrite(NWError.posix(.EPIPE)) })
+    }
+
     // MARK: - Markers without data
 
     /// `acceptClientCarryover(.none)` followed by

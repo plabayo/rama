@@ -6,12 +6,8 @@ use crate::{
     ProtocolError,
     protocol::{IncompleteMessageType, PerMessageDeflateConfig, Role},
 };
-use flate2::{
-    Compress, CompressError, Compression, Decompress, DecompressError, FlushCompress,
-    FlushDecompress, Status,
-};
+use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 use rama_core::error::{BoxError, ErrorContext};
-use std::slice;
 
 #[derive(Debug)]
 pub(super) struct PerMessageDeflateState {
@@ -151,7 +147,7 @@ impl DeflateEncoder {
             let i = self.compress.total_in() as usize - before_in as usize;
             match self
                 .compress
-                .buf_compress(&input_data[i..], &mut buf, FlushCompress::Sync)
+                .compress_vec(&input_data[i..], &mut buf, FlushCompress::Sync)
                 .context("deflate encode next chunk")?
             {
                 Status::BufError => buf.reserve((buf.len() as f64 * 1.5) as usize),
@@ -164,7 +160,7 @@ impl DeflateEncoder {
             buf.reserve(5);
             match self
                 .compress
-                .buf_compress(&[], &mut buf, FlushCompress::Sync)
+                .compress_vec(&[], &mut buf, FlushCompress::Sync)
                 .context("enforce buf to finish")?
             {
                 Status::Ok | Status::BufError => (),
@@ -213,9 +209,10 @@ impl DeflateDecoder {
 
             while self.decompress.total_in() - before_in < payload.as_ref().len() as u64 {
                 let i = self.decompress.total_in() as usize - before_in as usize;
+                // fills only spare capacity; output past `max_size` is rejected below
                 match self
                     .decompress
-                    .buf_decompress(&payload[i..], &mut buf, FlushDecompress::Sync, max_size)
+                    .decompress_vec(&payload[i..], &mut buf, FlushDecompress::Sync)
                     .context("flate2 decode next chunk")
                     .map_err(ProtocolError::DeflateError)?
                 {
@@ -247,7 +244,7 @@ fn grow_inflate_buffer(buf: &mut Vec<u8>, max_size: usize) -> Result<(), Protoco
         .capacity()
         .saturating_add((buf.capacity() / 2).max(1))
         .min(max_size);
-    buf.reserve(next_capacity - buf.capacity());
+    buf.reserve_exact(next_capacity - buf.len());
     Ok(())
 }
 
@@ -256,102 +253,6 @@ fn check_decode_size(size: usize, max_size: usize) -> Result<(), ProtocolError> 
         return Err(ProtocolError::MessageTooLong { size, max_size });
     }
     Ok(())
-}
-
-trait BufCompress {
-    fn buf_compress(
-        &mut self,
-        input: &[u8],
-        output: &mut Vec<u8>,
-        flush: FlushCompress,
-    ) -> Result<Status, CompressError>;
-}
-
-trait BufDecompress {
-    fn buf_decompress(
-        &mut self,
-        input: &[u8],
-        output: &mut Vec<u8>,
-        flush: FlushDecompress,
-        max_size: usize,
-    ) -> Result<Status, DecompressError>;
-}
-
-impl BufCompress for Compress {
-    fn buf_compress(
-        &mut self,
-        input: &[u8],
-        output: &mut Vec<u8>,
-        flush: FlushCompress,
-    ) -> Result<Status, CompressError> {
-        op_buf(input, output, self.total_out(), |input, out| {
-            let ret = self.compress(input, out, flush);
-            (ret, self.total_out())
-        })
-    }
-}
-
-impl BufDecompress for Decompress {
-    fn buf_decompress(
-        &mut self,
-        input: &[u8],
-        output: &mut Vec<u8>,
-        flush: FlushDecompress,
-        max_size: usize,
-    ) -> Result<Status, DecompressError> {
-        op_buf_limited(input, output, self.total_out(), max_size, |input, out| {
-            let ret = self.decompress(input, out, flush);
-            (ret, self.total_out())
-        })
-    }
-}
-
-// This function's body is a copy of the Compress::compress_vec and Decompress::decompress_vec
-// functions to work with a Vec<u8>.
-fn op_buf<Fn, E>(input: &[u8], output: &mut Vec<u8>, before: u64, op: Fn) -> Result<Status, E>
-where
-    Fn: FnOnce(&[u8], &mut [u8]) -> (Result<Status, E>, u64),
-{
-    let cap = output.capacity();
-    let len = output.len();
-
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "single uninitialized-tail write sequence: ptr.add → from_raw_parts_mut → set_len; splitting them harms readability without changing the safety contract"
-    )]
-    unsafe {
-        let ptr = output.as_mut_ptr().add(len);
-        let out = slice::from_raw_parts_mut(ptr, cap - len);
-        let (ret, total_out) = op(input, out);
-        output.set_len((total_out - before) as usize + len);
-        ret
-    }
-}
-
-fn op_buf_limited<Fn, E>(
-    input: &[u8],
-    output: &mut Vec<u8>,
-    before: u64,
-    max_size: usize,
-    op: Fn,
-) -> Result<Status, E>
-where
-    Fn: FnOnce(&[u8], &mut [u8]) -> (Result<Status, E>, u64),
-{
-    let cap = output.capacity().min(max_size);
-    let len = output.len();
-
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "single uninitialized-tail write sequence: ptr.add → from_raw_parts_mut → set_len; splitting them harms readability without changing the safety contract"
-    )]
-    unsafe {
-        let ptr = output.as_mut_ptr().add(len);
-        let out = slice::from_raw_parts_mut(ptr, cap - len);
-        let (ret, total_out) = op(input, out);
-        output.set_len((total_out - before) as usize + len);
-        ret
-    }
 }
 
 #[cfg(test)]

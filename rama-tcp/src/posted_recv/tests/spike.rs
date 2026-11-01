@@ -14,6 +14,7 @@ use std::{
 };
 
 use rama_net::socket::core::SockRef;
+use rama_utils::octets::kib;
 use windows_sys::Win32::{
     Foundation::{
         CloseHandle, ERROR_NETNAME_DELETED, GetLastError, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS,
@@ -47,7 +48,9 @@ impl Port {
     }
 
     fn attach(&self, socket: SOCKET) {
-        // SAFETY: `socket` is a live socket owned by the caller.
+        // SAFETY: `CreateIoCompletionPort` with an existing port associates
+        // `socket` with it, or fails without effect (CreateIoCompletionPort
+        // docs); the port is open while `self` lives.
         let port = unsafe { CreateIoCompletionPort(socket as HANDLE, self.0, 0, 0) };
         assert_eq!(port, self.0, "attaching the socket failed");
     }
@@ -65,7 +68,7 @@ impl Port {
                     self.0,
                     entries.as_mut_ptr(),
                     16,
-                    &mut n,
+                    &raw mut n,
                     timeout.as_millis() as u32,
                     0,
                 )
@@ -75,8 +78,11 @@ impl Port {
             }
             for entry in &entries[..n as usize] {
                 let op = entry.lpOverlapped.cast::<Op>();
-                // SAFETY: every posted OVERLAPPED is the first field of an `Op`
-                // that the test keeps alive until its completion is collected.
+                // SAFETY: a place read of `ov.Internal`: this module issues
+                // overlapped I/O only through `post`, so every completion
+                // holds the address of a leaked, never freed `Op` whose
+                // first field is the OVERLAPPED; the request completed, so
+                // the system no longer writes it.
                 let status = unsafe { (*op).ov.Internal } as NTSTATUS;
                 done.push(Done {
                     op,
@@ -124,8 +130,9 @@ struct Done {
 
 impl Done {
     fn op(&self) -> &Op {
-        // SAFETY: the op outlives the test step that collected it and the
-        // kernel no longer touches it once completed.
+        // SAFETY: reference creation: `op` is a leaked `Op` (see `drain`),
+        // aligned, initialized and never freed; its request completed, so
+        // the system no longer writes it, and `post` gave up the only `&mut`.
         unsafe { &*self.op }
     }
 
@@ -135,26 +142,34 @@ impl Done {
 }
 
 /// Post an overlapped receive; returns 0 on immediate success or the WSA error.
-fn post(socket: SOCKET, op: &mut Op) -> i32 {
+///
+/// Takes the leaked `op` for good: the system writes it until its request
+/// completes.
+fn post(socket: SOCKET, op: &'static mut Op) -> i32 {
     let buf = WSABUF {
         len: op.buf.len() as u32,
         buf: op.buf.as_mut_ptr(),
     };
+    let ov = &raw mut op.ov;
     let mut flags = 0;
-    // SAFETY: `op` stays alive and unmoved until its completion is collected.
+    // SAFETY: an overlapped `WSARecv` needs one `WSABUF` valid for the call,
+    // and a buffer and OVERLAPPED that stay valid and untouched until the
+    // request completes (WSARecv docs): `op` is leaked, so never freed, and
+    // its `&'static mut` is consumed here, so no Rust code accesses it until
+    // `drain` collects its completion. A closed `socket` just fails.
     let rc = unsafe {
         WSARecv(
             socket,
-            &buf,
+            &raw const buf,
             1,
             ptr::null_mut(),
-            &mut flags,
-            &mut op.ov,
+            &raw mut flags,
+            ov,
             None,
         )
     };
     if rc == SOCKET_ERROR {
-        // SAFETY: no preconditions.
+        // SAFETY: `WSAGetLastError` has no preconditions.
         unsafe { WSAGetLastError() }
     } else {
         0
@@ -166,20 +181,30 @@ fn post(socket: SOCKET, op: &mut Op) -> i32 {
 fn overlapped_results(socket: SOCKET, op: &Op) -> (i32, u32) {
     let mut bytes = 0;
     let mut flags = 0;
-    // SAFETY: `op` is completed, so the call only reads it.
-    let wsa = if unsafe { WSAGetOverlappedResult(socket, &op.ov, &mut bytes, 0, &mut flags) } == 0 {
-        // SAFETY: no preconditions.
+    // SAFETY: `WSAGetOverlappedResult` with `fWait` false reads the
+    // OVERLAPPED of a request on `socket`: a borrowed `Op` has no request
+    // running, since `post` consumes the only reference to an op it posts and
+    // `Done` hands one out once its completion was collected.
+    let wsa = if unsafe {
+        WSAGetOverlappedResult(socket, &raw const op.ov, &raw mut bytes, 0, &raw mut flags)
+    } == 0
+    {
+        // SAFETY: `WSAGetLastError` has no preconditions.
         unsafe { WSAGetLastError() }
     } else {
         0
     };
-    // SAFETY: as above; with `bWait = FALSE` the handle is not waited on.
-    let win = if unsafe { GetOverlappedResult(socket as HANDLE, &op.ov, &mut bytes, 0) } == 0 {
-        // SAFETY: no preconditions.
-        unsafe { GetLastError() }
-    } else {
-        0
-    };
+    // SAFETY: as above, for `GetOverlappedResult`; with `bWait = FALSE` the
+    // handle is not waited on.
+    let win =
+        if unsafe { GetOverlappedResult(socket as HANDLE, &raw const op.ov, &raw mut bytes, 0) }
+            == 0
+        {
+            // SAFETY: `GetLastError` has no preconditions.
+            unsafe { GetLastError() }
+        } else {
+            0
+        };
     (wsa, win)
 }
 
@@ -228,8 +253,8 @@ fn posted_read_keeps_data_that_arrives_before_reset() {
         let (client, origin) = pair(reply_then_reset(len));
         port.attach(raw(&client));
 
-        let first = Op::new(1, 16 * 1024);
-        let second = Op::new(2, 16 * 1024);
+        let first = Op::new(1, kib(16));
+        let second = Op::new(2, kib(16));
         let rc = post(raw(&client), first);
         eprintln!("ws1/q1 N={len}: overlapped WSARecv on FIONBIO socket -> {rc}");
         assert_eq!(
@@ -263,7 +288,7 @@ fn posted_read_keeps_data_that_arrives_before_reset() {
             "Q4: reset maps to WSAECONNRESET / ERROR_NETNAME_DELETED"
         );
 
-        let third = Op::new(3, 16 * 1024);
+        let third = Op::new(3, kib(16));
         let rc = post(raw(&client), third);
         eprintln!("ws1/q4 reset N={len}: read posted after the reset -> {rc}");
         assert_eq!(rc, WSAECONNRESET);
@@ -278,9 +303,8 @@ fn posted_reads_fill_in_post_order() {
     let (client, origin) = pair(reply_then_reset(len));
     port.attach(raw(&client));
 
-    let mut ops: Vec<_> = (0..5).map(|id| Op::new(id, 1500)).collect();
-    for op in &mut ops {
-        assert_eq!(post(raw(&client), op), WSA_IO_PENDING);
+    for id in 0..5 {
+        assert_eq!(post(raw(&client), Op::new(id, 1500)), WSA_IO_PENDING);
     }
     send_request(&client);
     origin.join().unwrap();
@@ -324,9 +348,12 @@ fn completion_status_for_cancel_and_eof() {
     port.attach(raw(&client));
 
     let cancelled = Op::new(0, 1024);
+    let cancelled_ov = &raw const cancelled.ov;
     assert_eq!(post(raw(&client), cancelled), WSA_IO_PENDING);
-    // SAFETY: the socket is live and the op is still owned by the kernel.
-    let ok = unsafe { CancelIoEx(raw(&client) as HANDLE, &cancelled.ov) };
+    // SAFETY: `CancelIoEx` cancels the requests of an open handle that were
+    // issued with the given OVERLAPPED, which it only compares by address
+    // (CancelIoEx docs): `client` is open and `cancelled_ov` is that address.
+    let ok = unsafe { CancelIoEx(raw(&client) as HANDLE, cancelled_ov) };
     assert_ne!(ok, 0);
     let done = port.drain(WAIT);
     let results = overlapped_results(raw(&client), done[0].op());
@@ -437,7 +464,8 @@ fn close_with_posted_read() {
             assert_eq!(post(raw(&client), op), WSA_IO_PENDING);
         }
         if post_read && cancel_first {
-            // SAFETY: the socket is live.
+            // SAFETY: `CancelIoEx` with a null OVERLAPPED cancels the pending
+            // I/O of an open handle (CancelIoEx docs): `client` is open.
             unsafe { CancelIoEx(raw(&client) as HANDLE, ptr::null()) };
             let done = port.drain(WAIT);
             assert_eq!(done[0].status, STATUS_CANCELLED);
@@ -471,11 +499,15 @@ fn read_posted_from_exited_thread_survives() {
     let (client, origin) = pair(reply_then_reset(234));
     port.attach(raw(&client));
     let socket = raw(&client);
-    let op = Op::new(0, 16 * 1024);
-    let op_addr = &raw mut *op as usize;
+    // `Op` is not `Send`: hand the thread its address, giving up `op`.
+    let op_addr = ptr::from_mut(Op::new(0, kib(16))).expose_provenance();
     let rc = thread::spawn(move || {
-        // SAFETY: the op is kept alive by the test until it completes.
-        post(socket, unsafe { &mut *(op_addr as *mut Op) })
+        // SAFETY: reference creation: the address is of a leaked `Op`, never
+        // freed, whose provenance was exposed above; the `&'static mut` it
+        // came from was consumed, so this is the only reference to it.
+        post(socket, unsafe {
+            &mut *ptr::with_exposed_provenance_mut::<Op>(op_addr)
+        })
     })
     .join()
     .unwrap();
@@ -508,7 +540,7 @@ fn immediate_success_still_queues_a_completion() {
     port.attach(raw(&client));
     send_request(&client);
     thread::sleep(Duration::from_millis(30));
-    let op = Op::new(0, 16 * 1024);
+    let op = Op::new(0, kib(16));
     let rc = post(raw(&client), op);
     let done = port.drain(WAIT);
     eprintln!(

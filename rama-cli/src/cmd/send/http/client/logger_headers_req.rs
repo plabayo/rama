@@ -120,7 +120,7 @@ mod tests {
         let inner = Extensions::new();
         inner.insert(super::super::VerboseLogs);
         let logger = RequestHeaderLoggerService::new(inner);
-        assert!(std::ptr::eq(logger.extensions(), &logger.inner));
+        assert!(std::ptr::eq(logger.extensions(), &raw const logger.inner));
         assert!(logger.extensions().contains::<super::super::VerboseLogs>());
     }
 }

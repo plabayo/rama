@@ -1358,7 +1358,7 @@ mod tests {
         let equal = Policy("trusted");
         let other = Policy("untrusted");
         let id = |policy| TlsPoolId::builder().with_component(policy).build();
-        assert!(!ptr::eq(&first, &equal));
+        assert!(!ptr::eq(&raw const first, &raw const equal));
         assert_eq!(id(&first), id(&equal));
         assert_ne!(id(&first), id(&other));
         assert_eq!(

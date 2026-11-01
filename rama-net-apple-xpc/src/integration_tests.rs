@@ -7,7 +7,7 @@
 //! - [`anonymous_channel_round_trip_proves_rcblock_outlives_construction_scope`]
 //!   — RcBlock retention contract (item 2). If libxpc were not actually
 //!   `_Block_copy`'ing the handler block, the local `RcBlock` would be released
-//!   when `from_owned_peer`/`bind` returned and the first event would invoke a
+//!   when `from_inactive`/`bind` returned and the first event would invoke a
 //!   freed block.
 //! - [`reply_succeeds_after_parent_connection_dropped`] — `ReceivedXpcMessage`
 //!   must hold its own retain on the originating connection (item 4) so the
@@ -16,14 +16,17 @@
 //!   capacity must drop the new event with a warn log rather than blocking the
 //!   libdispatch thread (item 6).
 
-use std::assert_matches;
-use std::time::Duration;
+use std::{assert_matches, ptr, time::Duration};
 
 use tokio::time::timeout;
 
 use crate::{
-    XpcConnection, XpcEndpoint, XpcError, XpcEvent, XpcListener, XpcListenerConfig, XpcMessage,
-    connection::DEFAULT_MAX_PENDING_EVENTS, object::OwnedXpcObject,
+    PeerSecurityRequirement, XpcClientConfig, XpcConnection, XpcEndpoint, XpcError, XpcEvent,
+    XpcListener, XpcListenerConfig, XpcMessage,
+    connection::{DEFAULT_MAX_PENDING_EVENTS, InactiveXpcConnection},
+    ffi::{xpc_connection_create, xpc_endpoint_create},
+    object::OwnedXpcObject,
+    util::DispatchQueue,
 };
 
 /// Receive the next [`XpcEvent::Message`] on `conn`, panicking on anything else.
@@ -207,23 +210,21 @@ async fn low_capacity_peer_connection_drops_excess_messages_without_panic() {
     // created anonymous server with capacity = 2. Send many messages from the
     // client; we should observe at most 2 messages on recv and the bounded
     // channel must drop the rest silently rather than panic or deadlock.
-    use crate::ffi::xpc_connection_create;
-    use crate::util::DispatchQueue;
-    use std::ptr;
-
     let queue = DispatchQueue::new(None).expect("queue");
-    // SAFETY: xpc_connection_create with a NULL name creates an anonymous
-    // listener-style connection. queue.raw may be NULL (anonymous queue).
-    let raw = unsafe { xpc_connection_create(ptr::null(), queue.raw) };
-    let server_conn =
-        OwnedXpcObject::from_raw(raw as _, "anonymous channel server").expect("from_raw");
-    // SAFETY: server_conn is a valid xpc_connection_t.
-    let raw_ep = unsafe { crate::ffi::xpc_endpoint_create(server_conn.raw as _) };
-    let ep_obj = OwnedXpcObject::from_raw(raw_ep as _, "endpoint").expect("from_raw");
-    let endpoint = XpcEndpoint::from_raw_object(ep_obj);
+    // SAFETY: a NULL name creates an anonymous listener connection; `targetq` is NULL
+    // or a live queue. Returns a +1, inactive connection.
+    let raw = unsafe { xpc_connection_create(ptr::null(), queue.as_raw()) };
+    // SAFETY: `raw` is null or the +1, not yet activated connection just created.
+    let server_conn = unsafe { InactiveXpcConnection::from_raw(raw, "anonymous channel server") }
+        .expect("from_raw");
+    // SAFETY: `server_conn` is a live connection from `xpc_connection_create`, as
+    // <xpc/endpoint.h> requires. Returns a +1 endpoint.
+    let raw_ep = unsafe { xpc_endpoint_create(server_conn.as_raw()) };
+    // SAFETY: `raw_ep` is null or the +1 endpoint just returned; ownership moves.
+    let ep_obj = unsafe { OwnedXpcObject::from_raw(raw_ep.cast(), "endpoint") }.expect("from_raw");
+    let endpoint = XpcEndpoint::from_raw_object(ep_obj).expect("endpoint");
 
-    let mut server =
-        XpcConnection::from_owned_peer_with_capacity(server_conn, 2, 2).expect("server connection");
+    let mut server = XpcConnection::from_inactive(server_conn, 2, 2);
 
     let client = endpoint.into_connection().expect("into_connection");
 
@@ -549,4 +550,145 @@ async fn server_survives_unknown_selector_and_handler_error() {
         .await
         .expect("good request after bad ones must succeed");
     assert_eq!(doubled, 42);
+}
+
+/// libxpc traps when the last reference to a never-activated connection is released.
+/// A requirement that libxpc rejects (EINVAL) must surface as an error instead.
+#[test]
+fn rejected_peer_requirement_on_connect_returns_err() {
+    let config = XpcClientConfig::new("org.ramaproxy.test.xpc.invalid-requirement")
+        .with_peer_requirement(PeerSecurityRequirement::CodeSigning(
+            "this is ((( not a requirement".into(),
+        ));
+    assert_matches!(
+        XpcConnection::connect(config),
+        Err(XpcError::PeerRequirementFailed { .. })
+    );
+}
+
+#[test]
+fn rejected_peer_requirement_on_bind_returns_err() {
+    let name = format!(
+        "org.ramaproxy.test.xpc.invalid-requirement.bind.{}",
+        std::process::id()
+    );
+    let config = XpcListenerConfig::new(name).with_peer_requirement(
+        PeerSecurityRequirement::CodeSigning("this is ((( not a requirement".into()),
+    );
+    assert_matches!(
+        XpcListener::bind(config),
+        Err(XpcError::PeerRequirementFailed { .. })
+    );
+}
+
+/// libxpc traps on a non-dictionary lightweight code requirement.
+#[test]
+fn non_dictionary_lightweight_requirement_returns_err() {
+    let config = XpcClientConfig::new("org.ramaproxy.test.xpc.invalid-lwcr").with_peer_requirement(
+        PeerSecurityRequirement::LightweightCodeRequirement(XpcMessage::Int64(3)),
+    );
+    assert_matches!(
+        XpcConnection::connect(config),
+        Err(XpcError::InvalidMessage(_))
+    );
+}
+
+#[test]
+fn unsupported_entitlement_value_type_returns_err() {
+    let config = XpcClientConfig::new("org.ramaproxy.test.xpc.invalid-entitlement")
+        .with_peer_requirement(PeerSecurityRequirement::EntitlementMatchesValue {
+            entitlement: "com.example.entitlement".into(),
+            value: XpcMessage::Array(vec![]),
+        });
+    assert_matches!(
+        XpcConnection::connect(config),
+        Err(XpcError::InvalidMessage(_))
+    );
+}
+
+/// libxpc traps on releasing a suspended connection and on over-resuming one.
+#[tokio::test]
+async fn unbalanced_suspend_resume_does_not_trap() {
+    let (server, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
+    let client = endpoint.into_connection().expect("into_connection");
+
+    client.resume();
+    client.suspend();
+    client.suspend();
+    client.resume();
+    drop(client);
+
+    server.suspend();
+    drop(server);
+}
+
+/// <xpc/endpoint.h>: endpoints may only be created from `xpc_connection_create*`
+/// connections; a listener-delivered peer must be rejected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn endpoint_from_received_peer_connection_is_rejected() {
+    let (mut server, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
+    XpcEndpoint::from_connection(&server).expect("endpoint from created connection");
+
+    let client = endpoint.into_connection().expect("into_connection");
+    XpcEndpoint::from_connection(&client).expect("endpoint from endpoint-created connection");
+    let mut payload = std::collections::BTreeMap::new();
+    payload.insert("hello".to_owned(), XpcMessage::Bool(true));
+    client.send(XpcMessage::Dictionary(payload)).expect("send");
+
+    let peer = next_peer(&mut server).await;
+    assert_matches!(
+        XpcEndpoint::from_connection(&peer),
+        Err(XpcError::EndpointUnsupported)
+    );
+}
+
+#[test]
+fn public_types_keep_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<XpcConnection>();
+    assert_send_sync::<crate::ReceivedXpcMessage>();
+    assert_send_sync::<XpcEndpoint>();
+    assert_send_sync::<XpcMessage>();
+}
+
+/// <xpc/connection.h>: releasing the last reference to an inactive created connection
+/// is undefined (libxpc traps). A plain-object wrapper must refuse it instead.
+#[test]
+fn plain_object_wrapper_rejects_inactive_connection() {
+    // SAFETY: a NULL name creates an anonymous listener connection; NULL `targetq` is
+    // allowed. Returns a +1, inactive connection.
+    let raw = unsafe { xpc_connection_create(ptr::null(), ptr::null_mut()) };
+    // SAFETY: `raw` is a live object whose +1 reference this test owns; not a collection.
+    let result = unsafe { OwnedXpcObject::from_raw(raw.cast(), "inactive connection") };
+    // The reference is leaked by `from_raw`, never released while inactive.
+    assert_matches!(result, Err(XpcError::UnsupportedObjectType(_)));
+}
+
+#[test]
+fn plain_object_retain_rejects_connection() {
+    // SAFETY: as above.
+    let raw = unsafe { xpc_connection_create(ptr::null(), ptr::null_mut()) };
+    // SAFETY: `raw` is the +1, not yet activated result of `xpc_connection_create` with
+    // no other alias; ownership moves.
+    let inactive = unsafe { InactiveXpcConnection::from_raw(raw, "inactive connection") }
+        .expect("inactive connection");
+    // SAFETY: `inactive` keeps the connection live for the call.
+    let result = unsafe { OwnedXpcObject::retain(inactive.as_raw().cast(), "retain") };
+    assert_matches!(result, Err(XpcError::UnsupportedObjectType(_)));
+}
+
+/// A panic while building the handler must still tear the inactive connection down
+/// (activate, cancel) before its release.
+#[test]
+fn inactive_connection_survives_panicking_handler_builder() {
+    // SAFETY: as above.
+    let raw = unsafe { xpc_connection_create(ptr::null(), ptr::null_mut()) };
+    // SAFETY: `raw` is the +1, not yet activated result of `xpc_connection_create` with
+    // no other alias; ownership moves.
+    let inactive = unsafe { InactiveXpcConnection::from_raw(raw, "inactive connection") }
+        .expect("inactive connection");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        inactive.activate(|_alias| panic!("handler builder failed"))
+    }));
+    assert_matches!(result, Err(_));
 }

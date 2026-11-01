@@ -202,6 +202,28 @@ int rama_res_test_contract(void) {
                  sizeof(answer));
   CHECK(query_arguments_match && config.nscount == 3 && config.ndots == 5);
 
+  /* A count beyond the configured set, or below zero, is clamped into it. */
+  config.nscount = MAXNS + 1;
+  expected_nscount = 3;
+  query_arguments_match = 0;
+  test_res_query(resolver, &config, "example.test.", ns_t_txt, answer,
+                 sizeof(answer));
+  CHECK(query_arguments_match && config.nscount == 3);
+  resolver->nscount = 2;
+  config.nscount = 3;
+  expected_nscount = 2;
+  query_arguments_match = 0;
+  test_res_query(resolver, &config, "example.test.", ns_t_txt, answer,
+                 sizeof(answer));
+  CHECK(query_arguments_match && config.nscount == 2);
+  resolver->nscount = 3;
+  config.nscount = -1;
+  expected_nscount = 0;
+  query_arguments_match = 0;
+  test_res_query(resolver, &config, "example.test.", ns_t_txt, answer,
+                 sizeof(answer));
+  CHECK(query_arguments_match && config.nscount == 0);
+
   /* Observe the count at the actual close call, and that destruction frees
      the allocation once, even if the last query restricted the count. */
   resolver->state.nscount = 1;

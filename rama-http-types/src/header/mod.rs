@@ -58,12 +58,21 @@
     clippy::assertions_on_result_states,
     clippy::str_to_string,
     clippy::let_underscore_must_use,
-    clippy::multiple_unsafe_ops_per_block,
-    clippy::unnecessary_safety_comment,
     clippy::map_err_ignore,
     dead_code,
-    mismatched_lifetime_syntaxes,
-    unsafe_op_in_unsafe_fn
+    mismatched_lifetime_syntaxes
+)]
+// The group allows above must not cover the workspace's unsafe hygiene lints.
+#![warn(
+    clippy::missing_safety_doc,
+    clippy::missing_transmute_annotations,
+    clippy::ptr_as_ptr,
+    clippy::ptr_cast_constness,
+    clippy::as_ptr_cast_mut,
+    clippy::borrow_as_ptr,
+    clippy::ref_as_ptr,
+    clippy::cast_ptr_alignment,
+    clippy::transmute_ptr_to_ptr
 )]
 
 mod map;

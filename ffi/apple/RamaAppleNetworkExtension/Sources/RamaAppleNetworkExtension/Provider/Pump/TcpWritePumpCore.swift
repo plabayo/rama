@@ -40,6 +40,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
     var aggregateBudget: WriterMemoryBudget { writerMemoryBudget }
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let inlineWriteCompletionWhenOnQueue: Bool
+    /// Whether a transient write error resends the same chunk. Only safe when the
+    /// transport guarantees an errored write took none of the chunk.
+    private let retriesTransientWriteErrors: Bool
     private let onDrained: @Sendable () -> Void
     private let doWrite: (Data, @escaping @Sendable (Error?) -> Void) -> Void
     private let logHwm: @Sendable (Int) -> Void
@@ -81,6 +84,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
         doWrite: @escaping (Data, @escaping @Sendable (Error?) -> Void) -> Void,
         logHwm: @escaping @Sendable (Int) -> Void,
         inlineWriteCompletionWhenOnQueue: Bool = false,
+        retriesTransientWriteErrors: Bool = true,
         onActivity: @escaping @Sendable () -> Bool = { true },
         retryScheduler: TcpWritePumpRetryScheduler? = nil,
         stallScheduler: TcpWritePumpRetryScheduler? = nil,
@@ -100,6 +104,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
         self.doWrite = doWrite
         self.logHwm = logHwm
         self.inlineWriteCompletionWhenOnQueue = inlineWriteCompletionWhenOnQueue
+        self.retriesTransientWriteErrors = retriesTransientWriteErrors
         self.onActivity = onActivity
         self.retryScheduler = retryScheduler ?? { [queue] delayMs, work in
             queue.asyncAfter(
@@ -488,7 +493,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 }
                 self.writing = false
                 if let error {
-                    if isTransientWriteBackpressure(error) {
+                    if self.retriesTransientWriteErrors && isTransientWriteBackpressure(error) {
                         self.lastBackpressureError = error
                         let currentDelayMs = self.retrying ?? writeRetryInitialDelayMs
                         self.pending.pushFront(chunk)

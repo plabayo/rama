@@ -1,25 +1,37 @@
-use std::ffi::{c_int, c_uchar};
+use std::ffi::c_int;
 
-use super::{CMsgHdr, MsgHdr};
+use super::{CMsgHdr, MAX_PAYLOAD, MsgHdr, control_payload_struct};
 
+/// A `T` at offset 0 (`repr(C)`), aligned for `libc::cmsghdr` (8 is a conservative bound,
+/// checked by the assertion below).
 #[derive(Copy, Clone)]
-#[repr(align(8))] // Conservative bound for align_of<libc::cmsghdr>
+#[repr(C, align(8))]
 pub(crate) struct Aligned<T>(pub(crate) T);
 
-/// Helpers for [`libc::msghdr`]
-impl MsgHdr for libc::msghdr {
+const _: () = assert!(align_of::<libc::cmsghdr>() <= align_of::<Aligned<[u8; 0]>>());
+
+// SAFETY: `cmsg_first_hdr` returns `msg_control` itself or null, `control_len` returns
+// `msg_controllen`, and `cmsg_nxt_hdr` returns null or `cmsg.wrapping_byte_add(offset)`
+// for a `usize` offset, which keeps the provenance of `cmsg`.
+unsafe impl MsgHdr for libc::msghdr {
     type ControlMessage = libc::cmsghdr;
 
     fn cmsg_first_hdr(&self) -> *mut Self::ControlMessage {
-        // SAFETY: callers of the private `MsgHdr` abstraction establish that
-        // `self` contains a valid control buffer before walking it.
-        unsafe { libc::CMSG_FIRSTHDR(self) }
+        // `CMSG_FIRSTHDR`, without the `unsafe` libc helper: this only reads two fields.
+        if self.control_len() >= size_of::<libc::cmsghdr>() {
+            self.msg_control.cast()
+        } else {
+            std::ptr::null_mut()
+        }
     }
 
     unsafe fn cmsg_nxt_hdr(&self, cmsg: *const Self::ControlMessage) -> *mut Self::ControlMessage {
         // `CMSG_NXTHDR` in pointer arithmetic: several platforms' own macros round-trip the
-        // address through an integer, which loses the control buffer's provenance.
-        // SAFETY: the caller supplies a complete header in this control buffer.
+        // address through an integer, which leaves the result with exposed rather than the
+        // control buffer's own provenance.
+        // SAFETY: `&*cmsg` needs `cmsg` aligned and pointing to an initialized header that is
+        // not written while the reference lives; this function's contract requires all three
+        // for the duration of the call.
         let len = unsafe { &*cmsg }.len();
         let Some(offset) = cmsg_align(len) else {
             return std::ptr::null_mut();
@@ -58,24 +70,28 @@ fn cmsg_align(len: usize) -> Option<usize> {
     len.checked_next_multiple_of(unit)
 }
 
-/// Helpers for [`libc::cmsghdr`]
-impl CMsgHdr for libc::cmsghdr {
+// SAFETY: libc declares `cmsghdr` with integer fields only (some libcs add integer or
+// `Padding` filler), so every initialized bit pattern is a valid value. libc defines
+// `CMSG_LEN(n)` as the aligned `cmsghdr` size plus `n`, and `CMSG_SPACE(n)` as that size plus
+// `n` rounded up to the same alignment, so the relations hold for `n <= MAX_PAYLOAD`, where
+// neither `u32` sum can overflow; larger `n` return `usize::MAX`. The
+// `native_lengths_stay_consistent_with_the_header_they_describe` test checks them, and that
+// `CMSG_DATA` agrees with `cmsg_data`, on each tested target.
+unsafe impl CMsgHdr for libc::cmsghdr {
     fn cmsg_len(length: usize) -> usize {
-        // SAFETY: this libc macro only computes a size; it dereferences no
-        // caller-provided pointer.
+        if length > MAX_PAYLOAD {
+            return usize::MAX;
+        }
+        // SAFETY: `CMSG_LEN` only computes a size; `length <= u16::MAX` converts losslessly.
         unsafe { libc::CMSG_LEN(length as _) as usize }
     }
 
     fn cmsg_space(length: usize) -> usize {
-        // SAFETY: this libc macro only computes a size; it dereferences no
-        // caller-provided pointer.
+        if length > MAX_PAYLOAD {
+            return usize::MAX;
+        }
+        // SAFETY: `CMSG_SPACE` only computes a size; `length <= u16::MAX` converts losslessly.
         unsafe { libc::CMSG_SPACE(length as _) as usize }
-    }
-
-    unsafe fn cmsg_data(this: *const Self) -> *mut c_uchar {
-        // SAFETY: the caller guarantees that `this` is a header inside a
-        // control buffer, so the payload offset stays inside it as well.
-        unsafe { libc::CMSG_DATA(this) }
     }
 
     fn set(&mut self, level: c_int, ty: c_int, len: usize) {
@@ -88,3 +104,41 @@ impl CMsgHdr for libc::cmsghdr {
         self.cmsg_len as _
     }
 }
+
+control_payload_struct! {
+    libc::in_addr => libc::in_addr_t;
+    libc::in6_addr => [u8; 16];
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+control_payload_struct! {
+    libc::in_pktinfo => libc::c_int, libc::in_addr, libc::in_addr;
+}
+
+#[cfg(target_os = "android")]
+control_payload_struct! {
+    libc::in6_pktinfo => libc::in6_addr, libc::c_int;
+}
+
+#[cfg(not(any(target_os = "android", target_os = "redox", target_os = "hurd")))]
+control_payload_struct! {
+    libc::in6_pktinfo => libc::in6_addr, libc::c_uint;
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+control_payload_struct! {
+    libc::sockaddr_in => libc::sa_family_t, libc::in_port_t, libc::in_addr, [u8; 8];
+    libc::sockaddr_in6 => libc::sa_family_t, libc::in_port_t, u32, libc::in6_addr, u32;
+    libc::timespec => TimeT, libc::c_long;
+}
+
+/// The type of `timespec::tv_sec`.
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[cfg_attr(
+    target_env = "musl",
+    expect(
+        deprecated,
+        reason = "musl deprecates `time_t` ahead of its 64-bit change"
+    )
+)]
+type TimeT = libc::time_t;

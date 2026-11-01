@@ -15,7 +15,7 @@ use crate::std::{borrow::Cow, string::String};
 
 use crate::user::Basic;
 
-use rama_core::bytes::Bytes;
+use rama_core::bytes::ByteStr;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::str::NonEmptyStr;
@@ -76,7 +76,7 @@ fn reject_decoded_control(s: &str) -> Result<(), BoxError> {
 /// pct-encoded bytes are not decoded for the Debug view.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UserInfo {
-    bytes: Bytes,
+    bytes: ByteStr,
 }
 
 impl UserInfo {
@@ -94,30 +94,29 @@ impl UserInfo {
     pub const fn from_static(s: &'static str) -> Self {
         validate_userinfo_static(s.as_bytes());
         Self {
-            bytes: Bytes::from_static(s.as_bytes()),
+            bytes: ByteStr::from_static(s),
         }
     }
 
-    /// Construct from already-validated bytes (parser invariant: UTF-8,
-    /// no `@` or control characters). Skips validation — only callable
-    /// from inside the crate.
+    /// Construct from already-validated text (no `@` or control
+    /// characters). Skips the grammar check — only callable from inside the
+    /// crate; the grammar is a semantic precondition, UTF-8 is carried by
+    /// the type.
     #[must_use]
-    pub(crate) fn from_bytes_unchecked(bytes: Bytes) -> Self {
+    pub(crate) fn from_byte_str(bytes: ByteStr) -> Self {
         Self { bytes }
     }
 
     /// Raw on-the-wire bytes (possibly pct-encoded — not decoded here).
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.as_bytes()
     }
 
-    /// `&str` view of the raw bytes. Parser-validated UTF-8.
+    /// `&str` view of the raw bytes.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        // Safety: parser only emits UTF-8 (graceful) or ASCII (strict).
-        // `from_static_str` is the other constructor and inputs `&str`.
-        unsafe { core::str::from_utf8_unchecked(&self.bytes) }
+        &self.bytes
     }
 
     /// Borrowed view. Named `view` (not `as_ref`) so it doesn't shadow
@@ -202,7 +201,7 @@ impl TryFrom<&str> for UserInfo {
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         validate_userinfo_runtime(s.as_bytes())?;
         Ok(Self {
-            bytes: Bytes::copy_from_slice(s.as_bytes()),
+            bytes: ByteStr::from(s),
         })
     }
 }
@@ -212,7 +211,7 @@ impl TryFrom<String> for UserInfo {
     fn try_from(s: String) -> Result<Self, Self::Error> {
         validate_userinfo_runtime(s.as_bytes())?;
         Ok(Self {
-            bytes: Bytes::from(s),
+            bytes: ByteStr::from(s),
         })
     }
 }
@@ -355,7 +354,7 @@ impl From<Basic> for UserInfo {
             s.extend(utf8_percent_encode(password, USERINFO_PASSWORD_ENCODE_SET));
         }
         Self {
-            bytes: Bytes::from(s),
+            bytes: ByteStr::from(s),
         }
     }
 }
@@ -389,7 +388,7 @@ impl TryFrom<UserInfo> for Basic {
 /// rendered as `"***"`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UserInfoRef<'a> {
-    bytes: &'a [u8],
+    bytes: &'a str,
 }
 
 impl<'a> UserInfoRef<'a> {
@@ -397,29 +396,29 @@ impl<'a> UserInfoRef<'a> {
     /// produce one.
     #[must_use]
     #[inline]
-    pub(crate) const fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) const fn new(bytes: &'a str) -> Self {
         Self { bytes }
     }
 
     /// Raw on-the-wire bytes (possibly pct-encoded).
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {
-        self.bytes
+        self.bytes.as_bytes()
     }
 
-    /// `&str` view (parser-validated UTF-8).
+    /// `&str` view of the raw bytes.
     #[must_use]
     pub fn as_str(&self) -> &'a str {
-        // Safety: parser invariant.
-        unsafe { core::str::from_utf8_unchecked(self.bytes) }
+        self.bytes
     }
 
     /// Split on the first `:`. Mirrors [`UserInfo::split_user_password`].
     #[must_use]
     pub fn split_user_password(&self) -> (&'a [u8], Option<&'a [u8]>) {
-        match self.bytes.iter().position(|&b| b == b':') {
-            Some(i) => (&self.bytes[..i], Some(&self.bytes[i + 1..])),
-            None => (self.bytes, None),
+        let bytes = self.as_bytes();
+        match bytes.iter().position(|&b| b == b':') {
+            Some(i) => (&bytes[..i], Some(&bytes[i + 1..])),
+            None => (bytes, None),
         }
     }
 
@@ -429,7 +428,7 @@ impl<'a> UserInfoRef<'a> {
     #[must_use]
     pub fn into_owned(self) -> UserInfo {
         UserInfo {
-            bytes: Bytes::copy_from_slice(self.bytes),
+            bytes: ByteStr::from(self.bytes),
         }
     }
 
@@ -437,7 +436,7 @@ impl<'a> UserInfoRef<'a> {
     /// [`UserInfo::as_decoded_str`] (incl. the re-splitting caveat).
     #[must_use]
     pub fn as_decoded_str(&self) -> Cow<'a, str> {
-        percent_decode(self.bytes).decode_utf8_lossy()
+        percent_decode(self.as_bytes()).decode_utf8_lossy()
     }
 
     /// Percent-decoded user component (before the first raw `:`).
@@ -511,13 +510,8 @@ impl core::fmt::Display for UserInfoRef<'_> {
 // the borrowed view's impl is the canonical site and the owned one
 // delegates through `UserInfoRef::from(self)`.
 
-fn fmt_redacted(bytes: &[u8], f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    // SAFETY: parser/static-validator invariant: UserInfo bytes are valid
-    // UTF-8 (graceful preserves UTF-8; strict is ASCII-only; the
-    // const validator at `from_static_str` rejects non-UTF-8 byte
-    // sequences via its byte-class check, which is ASCII).
-    let s = unsafe { core::str::from_utf8_unchecked(bytes) };
-    let (user, password) = match bytes.iter().position(|&b| b == b':') {
+fn fmt_redacted(s: &str, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let (user, password) = match s.bytes().position(|b| b == b':') {
         Some(i) => (&s[..i], Some(&s[i + 1..])),
         None => (s, None),
     };
@@ -749,13 +743,7 @@ mod tests {
             "user%00",    // pct-decoded NUL
         ];
         for input in bad_inputs {
-            let result = std::panic::catch_unwind(|| {
-                UserInfo::from_static(unsafe {
-                    // Safety: the leaked `&'static str` is only used
-                    // inside `catch_unwind`; we never escape it.
-                    core::mem::transmute::<&str, &'static str>(input)
-                })
-            });
+            let result = std::panic::catch_unwind(|| UserInfo::from_static(input));
             assert!(result.is_err(), "expected panic for {input:?}");
         }
     }
@@ -871,8 +859,8 @@ mod tests {
         // Decoding it into an `Authorization`-bound credential would be
         // CRLF injection, so `to_basic` must reject it. (`from_static`
         // would reject at compile time, so build via the unchecked ctor.)
-        for raw in [b"a%0Db".as_slice(), b"a%0Ab", b"a%00b", b"user:p%0Dw"] {
-            let ui = UserInfo::from_bytes_unchecked(Bytes::copy_from_slice(raw));
+        for raw in ["a%0Db", "a%0Ab", "a%00b", "user:p%0Dw"] {
+            let ui = UserInfo::from_byte_str(ByteStr::from(raw));
             ui.to_basic().unwrap_err();
         }
     }

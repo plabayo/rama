@@ -1,13 +1,15 @@
 use std::ffi::CStr;
 use std::{
-    mem::size_of,
+    mem::{offset_of, size_of},
     net::{Ipv4Addr, Ipv6Addr},
     ptr,
     time::Duration,
 };
 
 use ahash::{HashSet, HashSetExt as _};
-use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo};
+use libc::{
+    AF_INET, AF_INET6, SOCK_STREAM, addrinfo, c_int, in_addr, in6_addr, sockaddr_in, sockaddr_in6,
+};
 use rama_core::{
     error::BoxError,
     futures::{Stream, async_stream::stream_fn},
@@ -24,13 +26,7 @@ pub(super) fn lookup_ipv4_stream(
     timeout: Duration,
     native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
-    lookup_address_stream(
-        domain,
-        timeout,
-        native,
-        AF_INET,
-        lookup_addresses_impl::<Ipv4Addr>,
-    )
+    lookup_address_stream(domain, timeout, native, lookup_addresses_impl::<Ipv4Addr>)
 }
 
 pub(super) fn lookup_ipv6_stream(
@@ -38,33 +34,23 @@ pub(super) fn lookup_ipv6_stream(
     timeout: Duration,
     native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
-    lookup_address_stream(
-        domain,
-        timeout,
-        native,
-        AF_INET6,
-        lookup_addresses_impl::<Ipv6Addr>,
-    )
+    lookup_address_stream(domain, timeout, native, lookup_addresses_impl::<Ipv6Addr>)
 }
 
 fn lookup_address_stream<T, F>(
     domain: Domain,
     timeout: Duration,
     native: NativeConfig,
-    family: libc::c_int,
     lookup: F,
 ) -> impl Stream<Item = Result<LookupEvent<T>, BoxError>> + Send
 where
-    T: Send + 'static + std::fmt::Debug,
-    F: FnOnce(
-            &Domain,
-            libc::c_int,
-            &mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
-        ) -> Result<(), BoxError>
+    T: FromSockAddr + Send + 'static + std::fmt::Debug,
+    F: FnOnce(&Domain, &mpsc::Sender<Result<LookupEvent<T>, BoxError>>) -> Result<(), BoxError>
         + Send
         + 'static,
 {
     stream_fn(async move |mut yielder| {
+        let family = T::FAMILY;
         tracing::debug!(?timeout, %domain, family, "dns::linux: getaddrinfo query");
 
         let deadline = deadline_after(timeout);
@@ -73,7 +59,7 @@ where
             if budget.is_zero() {
                 return Err(DnsTimeoutError::new(timeout).into());
             }
-            lookup(&domain, family, &tx)
+            lookup(&domain, &tx)
         });
         let Some(join) = task.await else {
             tracing::debug!("linux::getaddrinfo: no native lookup slot before the deadline");
@@ -122,7 +108,6 @@ where
 
 fn lookup_addresses_impl<T>(
     domain: &Domain,
-    family: libc::c_int,
     tx: &mpsc::Sender<Result<LookupEvent<T>, BoxError>>,
 ) -> Result<(), BoxError>
 where
@@ -132,7 +117,7 @@ where
 
     let hints = addrinfo {
         ai_flags: libc::AI_ADDRCONFIG,
-        ai_family: family,
+        ai_family: T::FAMILY,
         ai_socktype: SOCK_STREAM,
         ai_protocol: 0,
         ai_addrlen: 0,
@@ -142,11 +127,25 @@ where
     };
 
     let mut result: *mut addrinfo = ptr::null_mut();
-    let status = unsafe { libc::getaddrinfo(name.as_ptr(), ptr::null(), &hints, &mut result) };
+    // SAFETY: getaddrinfo(3) needs a NUL-terminated node name or null, a
+    // service name or null, hints or null whose other members are 0 or null,
+    // and a writable result pointer: `name` is a `CString`, the service is
+    // null, `hints` sets only flags, family and socket type, and `result` is
+    // a local. On success it stores a list to free with freeaddrinfo(3).
+    let status = unsafe {
+        libc::getaddrinfo(
+            name.as_ptr(),
+            ptr::null(),
+            &raw const hints,
+            &raw mut result,
+        )
+    };
     if status != 0 {
         // SAFETY: `gai_strerror` takes any status code.
         let message = unsafe { libc::gai_strerror(status) };
-        // SAFETY: it returns a static NUL-terminated message.
+        // SAFETY: gai_strerror(3) returns a NUL-terminated message that stays
+        // valid and unmodified at least until the next call on this thread;
+        // it is copied out before any other call.
         let message = unsafe { CStr::from_ptr(message) }
             .to_string_lossy()
             .into_owned();
@@ -155,17 +154,28 @@ where
         );
     }
 
+    // Safety invariant of `AddrInfoGuard`: `result` is the list getaddrinfo
+    // just returned, not freed yet, owned by the guard from here on.
     let _guard = AddrInfoGuard(result);
     let mut seen = HashSet::new();
     let mut current = result;
 
     while !current.is_null() {
+        // SAFETY: reference creation: per getaddrinfo(3) the list is a chain
+        // of initialized `addrinfo` structures linked through `ai_next`,
+        // allocated by libc and valid until freeaddrinfo(3), which only
+        // `_guard` calls, after this loop. Nothing writes them meanwhile.
         let current_ref = unsafe { &*current };
-        if current_ref.ai_family == family
+        // The address length is `socklen_t`, a `u32`.
+        if current_ref.ai_family == T::FAMILY
             && !current_ref.ai_addr.is_null()
-            && (current_ref.ai_addrlen as usize) >= T::sockaddr_len()
+            && (current_ref.ai_addrlen as usize) >= size_of::<T::SockAddr>()
         {
-            let addr = unsafe { T::from_sockaddr(current_ref.ai_addr.cast()) };
+            // SAFETY: the `from_sockaddr` contract: per getaddrinfo(3)
+            // `ai_addr` points to a socket address of family `ai_family` and
+            // length `ai_addrlen`, written by libc and valid until the list
+            // is freed; the family and the length were checked just above.
+            let addr = unsafe { T::from_sockaddr(current_ref.ai_addr.cast_const().cast()) };
             // `getaddrinfo` does not expose per-record TTL — the cache layer
             // treats `None` as "unknown, fall back to the configured default".
             //
@@ -189,24 +199,40 @@ where
     Ok(())
 }
 
+/// An IP address read out of a `getaddrinfo` result of its family.
 trait FromSockAddr: Sized {
+    /// The `AF_*` family of the addresses this reads.
+    const FAMILY: c_int;
+    /// The socket address type of that family.
+    type SockAddr;
     type Key: Eq + std::hash::Hash;
 
-    unsafe fn from_sockaddr(addr: *const libc::sockaddr) -> Self;
-    fn sockaddr_len() -> usize;
+    /// Read the IP address out of a socket address.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `addr` points to a socket address of
+    /// family [`Self::FAMILY`] whose first `size_of::<Self::SockAddr>()`
+    /// bytes are readable and within one allocation for the duration of the
+    /// call, with the address field initialized. `addr` need not be aligned.
+    unsafe fn from_sockaddr(addr: *const Self::SockAddr) -> Self;
     fn clone_key(&self) -> Self::Key;
 }
 
 impl FromSockAddr for Ipv4Addr {
+    const FAMILY: c_int = AF_INET;
+    type SockAddr = sockaddr_in;
     type Key = Self;
 
-    unsafe fn from_sockaddr(addr: *const libc::sockaddr) -> Self {
-        let addr = unsafe { &*addr.cast::<libc::sockaddr_in>() };
-        Self::from(addr.sin_addr.s_addr.to_ne_bytes())
-    }
-
-    fn sockaddr_len() -> usize {
-        size_of::<libc::sockaddr_in>()
+    unsafe fn from_sockaddr(addr: *const sockaddr_in) -> Self {
+        let field = addr
+            .wrapping_byte_add(offset_of!(sockaddr_in, sin_addr))
+            .cast::<in_addr>();
+        // SAFETY: `ptr::read_unaligned`: `sin_addr` lies within the readable
+        // `sockaddr_in` (this function's contract), is initialized, and an
+        // `in_addr` is a `u32`, valid for any initialized bytes.
+        let addr = unsafe { field.read_unaligned() };
+        Self::from(addr.s_addr.to_ne_bytes())
     }
 
     fn clone_key(&self) -> Self::Key {
@@ -215,15 +241,19 @@ impl FromSockAddr for Ipv4Addr {
 }
 
 impl FromSockAddr for Ipv6Addr {
+    const FAMILY: c_int = AF_INET6;
+    type SockAddr = sockaddr_in6;
     type Key = Self;
 
-    unsafe fn from_sockaddr(addr: *const libc::sockaddr) -> Self {
-        let addr = unsafe { &*addr.cast::<libc::sockaddr_in6>() };
-        Self::from(addr.sin6_addr.s6_addr)
-    }
-
-    fn sockaddr_len() -> usize {
-        size_of::<libc::sockaddr_in6>()
+    unsafe fn from_sockaddr(addr: *const sockaddr_in6) -> Self {
+        let field = addr
+            .wrapping_byte_add(offset_of!(sockaddr_in6, sin6_addr))
+            .cast::<in6_addr>();
+        // SAFETY: `ptr::read_unaligned`: `sin6_addr` lies within the readable
+        // `sockaddr_in6` (this function's contract), is initialized, and an
+        // `in6_addr` is a `[u8; 16]`, valid for any initialized bytes.
+        let addr = unsafe { field.read_unaligned() };
+        Self::from(addr.s6_addr)
     }
 
     fn clone_key(&self) -> Self::Key {
@@ -231,14 +261,18 @@ impl FromSockAddr for Ipv6Addr {
     }
 }
 
-struct AddrInfoGuard(*mut addrinfo);
+struct AddrInfoGuard(
+    // Safety invariant: null, or a list returned by getaddrinfo(3) that is
+    // not freed yet and is owned by this guard.
+    *mut addrinfo,
+);
 
 impl Drop for AddrInfoGuard {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe {
-                libc::freeaddrinfo(self.0);
-            }
+            // SAFETY: freeaddrinfo(3) frees a list returned by getaddrinfo(3):
+            // the field invariant, and the guard drops once.
+            unsafe { libc::freeaddrinfo(self.0) };
         }
     }
 }

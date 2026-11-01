@@ -77,9 +77,19 @@ impl fmt::Display for Dir {
 }
 
 /// Identifier for a stream within a particular connection.
-#[cfg_attr(feature = "fuzz-utils", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct StreamId(pub(crate) u64);
+pub struct StreamId(
+    // Invariant: the value is below 2^62, so it fits a varint.
+    pub(crate) u64,
+);
+
+#[cfg(feature = "fuzz-utils")]
+impl<'arbitrary> arbitrary::Arbitrary<'arbitrary> for StreamId {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'arbitrary>) -> arbitrary::Result<Self> {
+        // built from a `VarInt` to keep the field invariant
+        Ok(<VarInt as arbitrary::Arbitrary>::arbitrary(u)?.into())
+    }
+}
 
 impl fmt::Display for StreamId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -137,8 +147,8 @@ impl StreamId {
 
 impl From<StreamId> for VarInt {
     fn from(x: StreamId) -> Self {
-        // SAFETY: every `StreamId` is built from a varint (`From<VarInt>`, `decode`) or a
-        // masked index (`new`), so `x.0` is always below 2^62.
+        // SAFETY: `from_u64_unchecked` requires `x.0 < 2^62`, the invariant of
+        // `StreamId.0` (a semantic bound; no memory safety depends on it).
         unsafe { Self::from_u64_unchecked(x.0) }
     }
 }

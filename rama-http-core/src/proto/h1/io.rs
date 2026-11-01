@@ -6,6 +6,7 @@ use std::task::{Context, Poll};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use rama_core::extensions::ExtensionsRef;
+use rama_core::io::poll_read_limited;
 use rama_core::telemetry::tracing::{debug, trace};
 use std::task::ready;
 use tokio::io::AsyncRead;
@@ -289,23 +290,22 @@ where
             self.read_buf.reserve(next);
         }
 
-        // SAFETY: ReadBuf and poll_read promise not to set any uninitialized
-        // bytes onto `dst`.
+        // SAFETY: `as_uninit_slice_mut` requires that the slice is neither read nor
+        // written with uninitialized bytes. It is only wrapped in `buf`, a tokio
+        // `ReadBuf`, whose safe API writes only initialized bytes and reads only the
+        // bytes it filled, and which must never be de-initialized (tokio docs).
         let dst = unsafe { self.read_buf.chunk_mut().as_uninit_slice_mut() };
-        let room = dst.len().min(max);
-        let mut buf = ReadBuf::uninit(&mut dst[..room]);
-        let had_room = buf.remaining() > 0;
-        match Pin::new(&mut self.io).poll_read(cx, &mut buf) {
-            Poll::Ready(Ok(_)) => {
-                let n = buf.filled().len();
+        let had_room = dst.len().min(max) > 0;
+        let mut buf = ReadBuf::uninit(dst);
+        match poll_read_limited(Pin::new(&mut self.io), cx, &mut buf, max) {
+            Poll::Ready(Ok(n)) => {
                 self.read_eof |= n == 0 && had_room;
                 trace!("received {n} bytes");
-                // Safety: we just read that many bytes into the
-                // uninitialized part of the buffer, so this is okay.
-                // @tokio pls give me back `poll_read_buf` thanks
-                unsafe {
-                    self.read_buf.advance_mut(n);
-                }
+                // SAFETY: `advance_mut(n)` needs the next `n` bytes of `chunk_mut()`
+                // initialized. `buf` wrapped that chunk with nothing filled, so by
+                // `poll_read_limited`'s safety-usable invariant its first `n` bytes
+                // are initialized; `read_buf` was not touched in between.
+                unsafe { self.read_buf.advance_mut(n) };
                 self.read_buf_strategy.record(n);
                 Poll::Ready(Ok(n))
             }
@@ -731,6 +731,58 @@ mod tests {
         // let mock = Mock::new().build();
         // let mut io_buf = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
         // io_buf.flush().await.expect("should short-circuit flush");
+    }
+
+    /// Keeps the replacement buffers reachable, so leak checkers do not report them.
+    static REPLACEMENT: std::sync::atomic::AtomicPtr<u8> =
+        std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+    /// IO whose reads replace their `ReadBuf` with one over 16 filled bytes of its own.
+    struct Replacer;
+
+    impl AsyncRead for Replacer {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let own: &'static mut [u8] = Box::leak(vec![7u8; 64].into_boxed_slice());
+            REPLACEMENT.store(own.as_mut_ptr(), std::sync::atomic::Ordering::Relaxed);
+            let mut other = ReadBuf::new(own);
+            other.advance(16);
+            *buf = other;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for Replacer {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "replaced the ReadBuf")]
+    fn read_from_io_rejects_replaced_read_buf() {
+        let io = rama_core::ServiceInput::new(Replacer);
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(io);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let res = buffered.poll_read_from_io(&mut cx);
+        assert!(res.is_ready());
+        let sum: u32 = buffered.read_buf.iter().copied().map(u32::from).sum();
+        assert!(sum < u32::MAX);
     }
 
     #[cfg(not(miri))]

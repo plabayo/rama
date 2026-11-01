@@ -12,7 +12,7 @@ use crate::address::{
 use crate::byte_sets::{
     is_control_byte, is_ipvfuture_tail_byte, is_reg_name_byte, is_userinfo_byte,
 };
-use crate::uri::lazy::LazyAuthority;
+use crate::uri::lazy::{LazyAuthority, byte_str_slice};
 use crate::uri::{AbsoluteHost, Component, ParseError};
 
 use rama_core::bytes::Bytes;
@@ -27,6 +27,12 @@ pub(super) struct AuthorityScan {
 
 /// If `bytes[start..]` begins with `//`, parse an authority. Otherwise
 /// signal opaque-path form (no authority).
+///
+/// # Safety-usable invariant
+///
+/// On `Ok(scan)`, `bytes[start..scan.path_start]` is valid UTF-8: it is
+/// empty, or the ASCII `//` followed by a range [`parse_authority`]
+/// accepted.
 pub(super) fn parse_optional_authority(
     bytes: &Bytes,
     start: usize,
@@ -84,6 +90,10 @@ pub(super) fn find_optional_authority(bytes: &[u8], start: usize) -> Option<(usi
 /// Exposed to the parser module so [`super::parse_authority_form`] can
 /// drive it directly for HTTP CONNECT's authority-form request-target,
 /// which is an authority *without* the leading `//`.
+///
+/// # Safety-usable invariant
+///
+/// On `Ok`, `bytes[start..end]` is valid UTF-8 (from [`scan_authority`]).
 pub(super) fn parse_authority(
     bytes: &Bytes,
     start: usize,
@@ -91,25 +101,32 @@ pub(super) fn parse_authority(
     mode: ParserMode,
 ) -> Result<LazyAuthority, ParseError> {
     let scanned = scan_authority(bytes, start, end, mode)?;
+    let region = &bytes[start..end];
+    // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8. `scan_authority`
+    // returned `Ok` for `bytes[start..end]`, which its safety-usable invariant
+    // makes valid UTF-8; `bytes` is immutable for the borrow.
+    let region = unsafe { core::str::from_utf8_unchecked(region) };
+    // Scanned positions are absolute; checked `str` slicing of `region`.
+    let sub = |s: usize, e: usize| byte_str_slice(bytes, &region[s - start..e - start]);
     let host = match scanned.host {
-        ScannedHost::Empty { at } => Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
-            bytes.slice(at..at),
-            false,
-        )),
+        ScannedHost::Empty { at } => {
+            Host::Uninterpreted(UninterpretedHost::from_validated(sub(at, at), false))
+        }
         ScannedHost::Ipv4(address) => Host::Address(IpAddr::V4(address)),
         ScannedHost::Ipv6(address) => Host::Address(IpAddr::V6(address)),
-        ScannedHost::IpvFuture { start, end } => Host::Uninterpreted(
-            UninterpretedHost::from_validated_bytes(bytes.slice(start..end), true),
-        ),
-        ScannedHost::Domain { start, end } => {
-            let domain_bytes = bytes.slice(start..end);
-            // Safety: `scan_host_and_port` classified this exact range by
-            // successfully constructing a `DomainRef`.
-            Host::Name(unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) })
+        ScannedHost::IpvFuture { start, end } => {
+            Host::Uninterpreted(UninterpretedHost::from_validated(sub(start, end), true))
         }
-        ScannedHost::RegName { start, end } => Host::Uninterpreted(
-            UninterpretedHost::from_validated_bytes(bytes.slice(start..end), false),
-        ),
+        ScannedHost::Domain { start, end } => {
+            // SAFETY: `Domain::from_maybe_borrowed_unchecked` requires valid
+            // UTF-8 (a `ByteStr` is) and, as a semantic precondition, a valid
+            // domain: `scan_host_and_port` classified this range by
+            // constructing a `DomainRef` from it.
+            Host::Name(unsafe { Domain::from_maybe_borrowed_unchecked(sub(start, end)) })
+        }
+        ScannedHost::RegName { start, end } => {
+            Host::Uninterpreted(UninterpretedHost::from_validated(sub(start, end), false))
+        }
     };
 
     Ok(LazyAuthority {
@@ -127,11 +144,12 @@ pub(super) struct ScannedAuthority {
 }
 
 impl ScannedAuthority {
-    pub(super) fn as_ref<'a>(&self, bytes: &'a [u8]) -> AuthorityRef<'a> {
+    /// `source` is the buffer this authority was scanned from.
+    pub(super) fn as_ref<'a>(&self, source: &'a str) -> AuthorityRef<'a> {
         let userinfo = self
             .userinfo_range
-            .map(|(start, end)| UserInfoRef::new(&bytes[usize::from(start)..usize::from(end)]));
-        AuthorityRef::new(userinfo, self.host.as_ref(bytes), self.port)
+            .map(|(start, end)| UserInfoRef::new(&source[usize::from(start)..usize::from(end)]));
+        AuthorityRef::new(userinfo, self.host.as_ref(source), self.port)
     }
 
     pub(super) fn absolute_host(&self) -> AbsoluteHost {
@@ -161,23 +179,23 @@ impl ScannedHost {
         matches!(self, Self::Empty { .. })
     }
 
-    fn as_ref<'a>(&self, bytes: &'a [u8]) -> HostRef<'a> {
+    fn as_ref<'a>(&self, source: &'a str) -> HostRef<'a> {
         match *self {
-            Self::Empty { at } => HostRef::Uninterpreted(
-                UninterpretedHostRef::from_validated_bytes(&bytes[at..at], false),
-            ),
+            Self::Empty { at } => {
+                HostRef::Uninterpreted(UninterpretedHostRef::from_validated(&source[at..at], false))
+            }
             Self::Ipv4(address) => HostRef::Address(IpAddr::V4(address)),
             Self::Ipv6(address) => HostRef::Address(IpAddr::V6(address)),
             Self::IpvFuture { start, end } => HostRef::Uninterpreted(
-                UninterpretedHostRef::from_validated_bytes(&bytes[start..end], true),
+                UninterpretedHostRef::from_validated(&source[start..end], true),
             ),
             Self::Domain { start, end } => {
                 // This variant is only constructed after successful borrowed
                 // domain validation of the same byte range.
-                HostRef::Name(DomainRef::from_validated_bytes(&bytes[start..end]))
+                HostRef::Name(DomainRef::from_validated_str(&source[start..end]))
             }
             Self::RegName { start, end } => HostRef::Uninterpreted(
-                UninterpretedHostRef::from_validated_bytes(&bytes[start..end], false),
+                UninterpretedHostRef::from_validated(&source[start..end], false),
             ),
         }
     }
@@ -202,33 +220,46 @@ fn parse_authority_ref(bytes: &[u8], mode: ParserMode) -> Result<AuthorityRef<'_
     if authority.host.is_empty() {
         return Err(ParseError::InvalidComponent(Component::Host));
     }
-    Ok(authority.as_ref(bytes))
+    // SAFETY: `str::from_utf8_unchecked` requires valid UTF-8. `scan_authority`
+    // returned `Ok` for `bytes[0..bytes.len()]`, which its safety-usable
+    // invariant makes valid UTF-8.
+    let source = unsafe { core::str::from_utf8_unchecked(bytes) };
+    Ok(authority.as_ref(source))
 }
 
 /// Scan and validate an authority without retaining or allocating bytes.
 /// Parsing and borrowed request-target validation both use this grammar pass;
 /// only the parser materializes the resulting typed host.
+///
+/// # Safety-usable invariant
+///
+/// On `Ok`, `bytes[start..end]` is valid UTF-8, and every range in the
+/// result lies within it. `end` is at most [`super::MAX_URI_LEN`], so every
+/// offset fits the `u16` ranges without truncation.
 pub(super) fn scan_authority(
     bytes: &[u8],
     start: usize,
     end: usize,
     mode: ParserMode,
 ) -> Result<ScannedAuthority, ParseError> {
+    // Bounds every offset cast to `u16` below.
+    if end > super::MAX_URI_LEN {
+        return Err(ParseError::TooLong { len: end });
+    }
     // Walk authority bytes. Two invariants per byte:
     //   1. No control bytes (smuggling / header-injection vector).
-    //   2. In graceful mode, non-ASCII bytes must form well-formed
-    //      UTF-8 sequences — the `from_utf8_unchecked` derives in
-    //      every userinfo / host accessor would otherwise be UB.
-    //      Strict mode rejects non-ASCII outright in the host
-    //      validators below, so the UTF-8 path is graceful-only.
+    //   2. Non-ASCII bytes form well-formed UTF-8 sequences that end
+    //      within the authority (this fn's safety-usable invariant).
+    //      Strict mode rejects non-ASCII again in the host validators.
+    let region = &bytes[..end];
     let mut k = start;
     while k < end {
-        let b = bytes[k];
+        let b = region[k];
         if is_control_byte(b) {
             return Err(ParseError::ControlCharInUri { at: k, byte: b });
         }
-        if mode == ParserMode::Graceful && b >= 0x80 {
-            let seq_len = super::check_utf8_sequence(bytes, k)?;
+        if b >= 0x80 {
+            let seq_len = super::check_utf8_sequence(region, k)?;
             k += seq_len;
             continue;
         }
@@ -499,4 +530,18 @@ fn parse_port(bytes: &[u8]) -> Result<crate::address::OptPort, ParseError> {
     parse_utils::parse_port_bytes(bytes)
         .map(crate::address::OptPort::Set)
         .ok_or(ParseError::InvalidComponent(Component::Port))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParseError, ParserMode, scan_authority};
+
+    #[test]
+    fn scan_authority_rejects_offsets_beyond_u16_ranges() {
+        let bytes = vec![b'a'; usize::from(u16::MAX) + 2];
+        let err = scan_authority(&bytes, bytes.len() - 1, bytes.len(), ParserMode::Graceful)
+            .err()
+            .unwrap();
+        assert!(matches!(err, ParseError::TooLong { len } if len == bytes.len()));
+    }
 }

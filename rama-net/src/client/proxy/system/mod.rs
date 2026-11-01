@@ -237,7 +237,8 @@ impl SystemProxyConfig {
     /// - Windows uses the active user's WinINET/Internet Options settings;
     /// - macOS and iOS use CFNetwork's system proxy dictionary;
     /// - Android uses `ConnectivityManager.getDefaultProxy()`, with the legacy
-    ///   `Proxy` API on Android versions before API 23;
+    ///   `Proxy` API on Android versions before API 23 (see
+    ///   [Android setup](#android-setup));
     /// - Linux and BSD prefer KDE's `kioslaverc` on KDE desktops, otherwise
     ///   reading GNOME `gsettings` before falling back to KDE.
     ///
@@ -254,6 +255,16 @@ impl SystemProxyConfig {
     /// Platform operations that have asynchronous APIs are awaited directly.
     /// Native platforms that only expose a synchronous snapshot call keep that
     /// call narrowly isolated inside their platform reader.
+    ///
+    /// # Android setup
+    ///
+    /// The Android reader finds the JVM and an `android.content.Context`
+    /// through [`ndk-context`](https://docs.rs/ndk-context). The embedder must
+    /// call `ndk_context::initialize_android_context` with the process
+    /// `JavaVM` and a `Context` that is a JNI global reference valid for the
+    /// rest of the process (an Application context fits), and must not call
+    /// `ndk_context::release_android_context` or delete that reference while
+    /// rama may read the system proxy.
     pub async fn try_from_system() -> Result<Self, BoxError> {
         Self::try_from_system_with_invalid_bypass_rule_policy(
             SystemProxyInvalidBypassRulePolicy::Ignore,
@@ -879,6 +890,9 @@ impl Service<SystemProxyPacRequest> for SystemProxyPacDisabledResolver {
 /// fixed proxy from the same system snapshot when available, or leaves the
 /// request unchanged. Factory, fetch, or evaluation errors fail the request
 /// instead of silently bypassing the system proxy.
+///
+/// On Android the "Android setup" requirement of
+/// [`SystemProxyConfig::try_from_system`] applies.
 #[derive(Clone)]
 pub struct SystemProxyLayer<P = SystemProxyPacDisabled> {
     config: Arc<SystemProxyConfigCache>,

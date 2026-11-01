@@ -221,9 +221,9 @@ dependencies = [
 
 [[package]]
 name = "boring"
-version = "5.3.0"
+version = "5.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15483e6dd58f7de5b506198a8f33c2bd1e030beed2c2b5425be057f5e0e4a8ec"
+checksum = "7227623e47342428b893b9401d85cae09c4656aecaae524206652e8f6a6246c4"
 dependencies = [
  "bitflags 2.13.2",
  "boring-sys",
@@ -234,9 +234,9 @@ dependencies = [
 
 [[package]]
 name = "boring-sys"
-version = "5.3.0"
+version = "5.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ebc865c335508b2eb7bdcfd35e644ce00ddf385a8feda9b5b9031d8b0b49c35"
+checksum = "4986392770df40d11d0d6294b0dd8399570f4a6e76d6953c7a34f7dd1defbd76"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -1199,9 +1199,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.34"
+version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "loom"
@@ -1718,6 +1718,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-appender",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, os::fd::RawFd};
+use std::{
+    collections::BTreeMap,
+    os::fd::{AsRawFd, OwnedFd},
+    sync::Arc,
+};
 
 use crate::endpoint::XpcEndpoint;
 
@@ -10,8 +14,8 @@ use crate::endpoint::XpcEndpoint;
 ///
 /// ## Notes on specific variants
 ///
-/// - **`Fd`** — file descriptors are duplicated when received; the caller owns the fd
-///   and is responsible for closing it.
+/// - **`Fd`** — file descriptors are duplicated when sent and when received; the
+///   descriptor is closed when the last clone of the `Arc` is dropped.
 /// - **`Date`** — stored as nanoseconds since the Unix epoch, matching
 ///   `xpc_date_get_value` / `xpc_date_create`.
 /// - **`Endpoint`** — wraps a kernel endpoint object. Pass one in a message to let the
@@ -19,7 +23,7 @@ use crate::endpoint::XpcEndpoint;
 ///   without knowing a service name.
 /// - **Reply messages** — [`ReceivedXpcMessage::reply`](crate::ReceivedXpcMessage::reply)
 ///   requires the reply to be a `Dictionary`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum XpcMessage {
     Null,
     Bool(bool),
@@ -35,8 +39,13 @@ pub enum XpcMessage {
     /// character for invalid sequences).
     String(String),
     Data(Vec<u8>),
-    /// File descriptor. Duplicated on receipt; the caller owns it and must close it.
-    Fd(RawFd),
+    /// File descriptor.
+    ///
+    /// Sending boxes a duplicate (`xpc_fd_create`), so this value keeps its descriptor.
+    /// A received descriptor is a new duplicate (`xpc_fd_dup`) owned by this value and
+    /// closed when the last clone is dropped. Two `Fd` values are equal when they hold
+    /// the same descriptor.
+    Fd(Arc<OwnedFd>),
     /// Raw 16-byte UUID bytes.
     ///
     /// XPC does not assign meaning to UUID values — they are opaque identifiers chosen
@@ -70,4 +79,25 @@ pub enum XpcMessage {
     /// deterministic serialisation, though XPC itself does not guarantee key order on
     /// the wire.
     Dictionary(BTreeMap<String, Self>),
+}
+
+impl PartialEq for XpcMessage {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Null, Self::Null) => true,
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Int64(a), Self::Int64(b)) | (Self::Date(a), Self::Date(b)) => a == b,
+            (Self::Uint64(a), Self::Uint64(b)) => a == b,
+            (Self::Double(a), Self::Double(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Data(a), Self::Data(b)) => a == b,
+            // an open descriptor number has one owner, so equal numbers mean the same fd
+            (Self::Fd(a), Self::Fd(b)) => a.as_raw_fd() == b.as_raw_fd(),
+            (Self::Uuid(a), Self::Uuid(b)) => a == b,
+            (Self::Endpoint(a), Self::Endpoint(b)) => a == b,
+            (Self::Array(a), Self::Array(b)) => a == b,
+            (Self::Dictionary(a), Self::Dictionary(b)) => a == b,
+            _ => false,
+        }
+    }
 }

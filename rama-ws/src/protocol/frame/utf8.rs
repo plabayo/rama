@@ -4,7 +4,10 @@ use std::fmt::Display;
 
 /// Utf8 payload.
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
-pub struct Utf8Bytes(Bytes);
+pub struct Utf8Bytes(
+    // Safety invariant: the bytes are valid UTF-8.
+    Bytes,
+);
 
 impl Utf8Bytes {
     /// Creates from a static str.
@@ -17,7 +20,8 @@ impl Utf8Bytes {
     /// Returns as a string slice.
     #[inline]
     pub fn as_str(&self) -> &str {
-        // SAFETY: is valid uft8
+        // SAFETY: `from_utf8_unchecked` requires valid UTF-8: the safety invariant of
+        // `self.0`, which still holds because `Bytes` content is immutable.
         unsafe { str::from_utf8_unchecked(&self.0) }
     }
 
@@ -25,8 +29,9 @@ impl Utf8Bytes {
     ///
     /// # Safety
     ///
-    /// The bytes passed in must be valid UTF-8.
+    /// The caller must ensure that `bytes` is valid UTF-8.
     pub unsafe fn from_bytes_unchecked(bytes: Bytes) -> Self {
+        // invariant (valid UTF-8) holds by this fn's `# Safety` precondition
         Self(bytes)
     }
 }
@@ -126,6 +131,7 @@ impl TryFrom<Bytes> for Utf8Bytes {
 
     #[inline]
     fn try_from(bytes: Bytes) -> Result<Self, Self::Error> {
+        // validation upholds the field invariant
         str::from_utf8(&bytes)?;
         Ok(Self(bytes))
     }

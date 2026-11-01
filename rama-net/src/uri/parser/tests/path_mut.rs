@@ -436,3 +436,28 @@ fn strip_prefix_ignore_ascii_case_matches_mixed_case() {
         );
     }
 }
+
+#[test]
+fn partial_strip_never_splits_a_utf8_character() {
+    let partial = PathMatchOptions {
+        partial: true,
+        ..Default::default()
+    };
+
+    // `é` is `C3 A9`: a raw byte pattern matching only one half of it must
+    // not cut the path mid-character.
+    let mut uri: Uri = parse_graceful("/caf\u{e9}").unwrap();
+    let mut path = uri.path_mut();
+    assert!(!path.strip_suffix_with_opts(rama_core::bytes::Bytes::from_static(b"\xA9"), partial));
+    assert!(format!("{path:?}").contains("caf\u{e9}"));
+
+    let mut uri: Uri = parse_graceful("/\u{e9}x").unwrap();
+    let mut path = uri.path_mut();
+    assert!(!path.strip_prefix_with_opts(rama_core::bytes::Bytes::from_static(b"\xC3"), partial));
+    assert!(format!("{path:?}").contains("\u{e9}x"));
+
+    // Whole-character partial matches still strip.
+    let mut uri: Uri = parse_graceful("/caf\u{e9}").unwrap();
+    assert!(uri.path_mut().strip_suffix_with_opts("\u{e9}", partial));
+    assert_eq!(uri.path().unwrap().as_encoded_str(), "/caf");
+}

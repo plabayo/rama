@@ -23,6 +23,9 @@ use super::*;
 
 #[link(name = "CFNetwork", kind = "framework")]
 unsafe extern "C" {
+    /// CFProxySupport.h: no preconditions; returns null or a dictionary the
+    /// caller must release (Copy rule), whose `ExceptionsList`
+    /// (`kCFNetworkProxiesExceptionsList`) value is a "CFArray of CFStrings".
     fn CFNetworkCopySystemProxySettings() -> CFDictionaryRef;
 }
 
@@ -53,6 +56,7 @@ type SCDynamicStoreRef = *mut c_void;
 type SCDynamicStoreCallBack =
     Option<unsafe extern "C" fn(SCDynamicStoreRef, CFArrayRef, *mut c_void)>;
 
+/// Mirrors `SCDynamicStoreContext` from SystemConfiguration/SCDynamicStore.h.
 #[repr(C)]
 #[cfg(target_os = "macos")]
 struct SCDynamicStoreContext {
@@ -73,12 +77,21 @@ pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result
         copy_description: None,
     };
     let name = CFString::new("rama system proxy watcher");
-    // SAFETY: the allocator and CFString are valid Core Foundation objects;
-    // `context` and its monitor pointer remain live until the run-loop source
-    // is removed and dropped below.
+    // SAFETY: reading an extern static that CFBase.h declares `const`, so no
+    // write can race this read.
+    let allocator = unsafe { kCFAllocatorDefault };
+    // SAFETY: SCDynamicStore.h `SCDynamicStoreCreate`: `allocator` and `name`
+    // are a valid allocator and a live CFString, `&raw mut context` is a live,
+    // aligned context read during the call, and the result follows the Create
+    // rule. `system_proxy_config_changed` contract: its callout is delivered
+    // only by the run-loop source of `store`, which is scheduled on this
+    // thread's run loop solely during `CFRunLoop::run_current()` below, while
+    // `monitor` (the `info` pointee, shared-only) is still borrowed. Nothing
+    // between `add_source` and `remove_source` can unwind: `CFRunLoopRun`
+    // returns normally and the callout is a non-unwinding `extern "C"` fn.
     let store = unsafe {
         SCDynamicStoreCreate(
-            kCFAllocatorDefault,
+            allocator,
             name.as_concrete_TypeRef(),
             Some(system_proxy_config_changed),
             &raw mut context,
@@ -92,40 +105,44 @@ pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result
 
     let proxy_key = CFString::new("State:/Network/Global/Proxies");
     let keys = CFArray::from_CFTypes(&[proxy_key]);
-    // SAFETY: `store` is a live SCDynamicStore and `keys` is a live CFArray;
-    // a null patterns argument means that no pattern keys are registered.
+    // SAFETY: SCDynamicStore.h `SCDynamicStoreSetNotificationKeys`: `store`
+    // is the non-null store created above and still owned here, `keys` is a
+    // live CFArray of CFStrings, and `patterns` is nullable.
     if unsafe { SCDynamicStoreSetNotificationKeys(store, keys.as_concrete_TypeRef(), ptr::null()) }
         == 0
     {
-        // SAFETY: this balances the create-owned `store` reference exactly
-        // once on this error path.
+        // SAFETY: `CFRelease` gives up one owned reference to a non-null CF
+        // object: `store` is our +1 reference (Create rule), unused after.
         unsafe { CFRelease(store.cast()) };
         return Err(BoxError::from_static_str(
             "register Apple system proxy configuration notification",
         ));
     }
-    // SAFETY: `store` remains live and the default allocator is valid.
-    let source = unsafe { SCDynamicStoreCreateRunLoopSource(kCFAllocatorDefault, store, 0) };
+    // SAFETY: SCDynamicStore.h `SCDynamicStoreCreateRunLoopSource`: valid
+    // allocator, `store` still owned here; the result follows the Create rule.
+    let source = unsafe { SCDynamicStoreCreateRunLoopSource(allocator, store, 0) };
     if source.is_null() {
-        // SAFETY: this balances the create-owned `store` reference exactly
-        // once on this error path.
+        // SAFETY: `CFRelease` gives up one owned reference to a non-null CF
+        // object: `store` is our +1 reference (Create rule), unused after.
         unsafe { CFRelease(store.cast()) };
         return Err(BoxError::from_static_str(
             "create Apple system proxy configuration run-loop source",
         ));
     }
-    // SAFETY: the null case was rejected and the create call transferred one
-    // owned source reference to the caller.
+    // SAFETY: `wrap_under_create_rule` takes over one owned reference to a
+    // valid CFRunLoopSource: `source` is non-null (checked) and +1 (Create rule).
     let source = unsafe { CFRunLoopSource::wrap_under_create_rule(source) };
     let run_loop = CFRunLoop::get_current();
-    // SAFETY: Core Foundation exports this as a process-lifetime CFStringRef.
+    // SAFETY: reading an extern static that CFRunLoop.h declares `const`, so
+    // no write can race this read.
     let default_mode = unsafe { kCFRunLoopDefaultMode };
     run_loop.add_source(&source, default_mode);
     CFRunLoop::run_current();
     run_loop.remove_source(&source, default_mode);
     drop(source);
-    // SAFETY: the source no longer retains the store; this balances the
-    // create-owned `store` reference exactly once on the success path.
+    // SAFETY: `CFRelease` gives up one owned reference to a non-null CF
+    // object: `store` is our +1 reference (Create rule), unused after, and the
+    // callout can no longer fire since its source left the run loop.
     unsafe { CFRelease(store.cast()) };
     Err(BoxError::from_static_str(
         "Apple system proxy configuration run loop stopped",
@@ -133,14 +150,20 @@ pub(super) fn run_config_change_monitor(monitor: &ConfigChangeMonitor) -> Result
 }
 
 #[cfg(target_os = "macos")]
+/// # Safety
+///
+/// The caller must ensure `info` is null or points to a live, aligned
+/// `ConfigChangeMonitor` that is not mutably aliased for the duration of the
+/// call.
 unsafe extern "C" fn system_proxy_config_changed(
     _store: SCDynamicStoreRef,
     _keys: CFArrayRef,
     info: *mut c_void,
 ) {
     if !info.is_null() {
-        // SAFETY: `info` was initialized from the borrowed monitor reference;
-        // the run-loop source is removed before that reference can expire.
+        // SAFETY: creating `&ConfigChangeMonitor` needs a non-null, aligned
+        // pointer to a live, not mutably aliased value for the borrow: this
+        // fn's precondition plus the null check; the borrow ends in this call.
         let monitor = unsafe { &*info.cast::<ConfigChangeMonitor>() };
         monitor.notify_change();
     }
@@ -149,20 +172,29 @@ unsafe extern "C" fn system_proxy_config_changed(
 pub(super) fn read(
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<SystemProxyConfig, BoxError> {
-    // SAFETY: CFNetwork takes no arguments and returns either null or a
-    // create-owned proxy-settings dictionary.
+    // SAFETY: no preconditions; see the declaration for the return contract.
     let raw = unsafe { CFNetworkCopySystemProxySettings() };
     if raw.is_null() {
         return Ok(SystemProxyConfig::default());
     }
-    // SAFETY: the null case was rejected and the copy call returned one owned
-    // dictionary reference with the documented CFString/CFType shape.
+    // SAFETY: `wrap_under_create_rule` takes over one owned reference to a
+    // valid CFDictionary: `raw` is non-null (checked) and +1 (Copy rule). The
+    // `CFString`/`CFType` parameters are sound for any CF dictionary contents:
+    // keys are only used as lookup input, and values are only exposed as
+    // `CFType` and then type-checked by `downcast`.
     let settings: CFDictionary<CFString, CFType> =
         unsafe { CFDictionary::wrap_under_create_rule(raw) };
-    parse_settings(&settings, policy)
+    // SAFETY: `parse_settings` contract: CFProxySupport.h documents the
+    // `ExceptionsList` array as holding CFStrings, kept alive by `settings`.
+    unsafe { parse_settings(&settings, policy) }
 }
 
-fn parse_settings(
+/// # Safety
+///
+/// The caller must ensure that a `CFArray` stored under `ExceptionsList` in
+/// `settings` holds only valid CF object references for the duration of the
+/// call (`CFArray::from_copyable` can safely build arrays of arbitrary pointers).
+unsafe fn parse_settings(
     settings: &CFDictionary<CFString, CFType>,
     policy: SystemProxyInvalidBypassRulePolicy,
 ) -> Result<SystemProxyConfig, BoxError> {
@@ -204,7 +236,8 @@ fn parse_settings(
     // descendants. Do not parse them using Rama's subtree shorthand because
     // that would incorrectly add the domain apex.
     config.try_set_bypass_with_dialect(
-        string_array(settings, "ExceptionsList"),
+        // SAFETY: `string_array` contract: this fn's `ExceptionsList` precondition.
+        unsafe { string_array(settings, "ExceptionsList") },
         policy,
         BypassRuleDialect::FlatGlob,
     )?;
@@ -253,7 +286,11 @@ fn required_string(
         })
 }
 
-fn string_array(settings: &CFDictionary<CFString, CFType>, key: &str) -> Vec<String> {
+/// # Safety
+///
+/// The caller must ensure that a `CFArray` stored under `key` in `settings`
+/// holds only valid CF object references for the duration of the call.
+unsafe fn string_array(settings: &CFDictionary<CFString, CFType>, key: &str) -> Vec<String> {
     let Some(array) = value(settings, key).and_then(|value| value.downcast::<CFArray>()) else {
         return Vec::new();
     };
@@ -264,8 +301,9 @@ fn string_array(settings: &CFDictionary<CFString, CFType>, key: &str) -> Vec<Str
             if value.is_null() {
                 return None;
             }
-            // SAFETY: each non-null pointer comes from the live CFArray and is
-            // borrowed under Core Foundation's get rule for this expression.
+            // SAFETY: `wrap_under_get_rule` needs a valid CF object; it retains
+            // it. `value` is a non-null element of `array`, a CF object by this
+            // fn's precondition, kept alive by `array` during the retain.
             unsafe { CFType::wrap_under_get_rule(value as CFTypeRef) }
                 .downcast::<CFString>()
                 .map(|value| value.to_string())
@@ -299,8 +337,11 @@ mod tests {
             ("HTTPPort", CFNumber::from(8080_i32).as_CFType()),
             ("HTTPSEnable", CFNumber::from(0_i32).as_CFType()),
         ]);
+        // SAFETY: `parse_settings` contract: the only arrays here come from
+        // `CFArray::from_CFTypes`, so they hold live CF objects.
         let config =
-            parse_settings(&http_only, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+            unsafe { parse_settings(&http_only, SystemProxyInvalidBypassRulePolicy::Ignore) }
+                .unwrap();
         assert_eq!(
             config.http.unwrap().to_string(),
             "http://proxy.example:8080"
@@ -318,7 +359,10 @@ mod tests {
             ),
             ("HTTPSPort", CFNumber::from(8443_i32).as_CFType()),
         ]);
-        let config = parse_settings(&both, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+        // SAFETY: `parse_settings` contract: the only arrays here come from
+        // `CFArray::from_CFTypes`, so they hold live CF objects.
+        let config =
+            unsafe { parse_settings(&both, SystemProxyInvalidBypassRulePolicy::Ignore) }.unwrap();
         assert_eq!(
             config.https.unwrap().to_string(),
             "http://secure-proxy.example:8443"
@@ -334,8 +378,11 @@ mod tests {
         ] {
             let exceptions = CFArray::from_CFTypes(&[CFString::new(pattern)]);
             let settings = settings(vec![("ExceptionsList", exceptions.as_CFType())]);
+            // SAFETY: `parse_settings` contract: the only arrays here come from
+            // `CFArray::from_CFTypes`, so they hold live CF objects.
             let config =
-                parse_settings(&settings, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+                unsafe { parse_settings(&settings, SystemProxyInvalidBypassRulePolicy::Ignore) }
+                    .unwrap();
             let protocol = Protocol::HTTP;
 
             assert_eq!(
@@ -370,7 +417,11 @@ mod tests {
             ),
             ("ExceptionsList", exceptions.as_CFType()),
         ]);
-        let config = parse_settings(&settings, SystemProxyInvalidBypassRulePolicy::Ignore).unwrap();
+        // SAFETY: `parse_settings` contract: the only arrays here come from
+        // `CFArray::from_CFTypes`, so they hold live CF objects.
+        let config =
+            unsafe { parse_settings(&settings, SystemProxyInvalidBypassRulePolicy::Ignore) }
+                .unwrap();
 
         assert!(config.bypass_before_pac);
         assert_matches!(
@@ -393,20 +444,26 @@ mod tests {
             ],
             vec![("ProxyAutoConfigEnable", CFNumber::from(1_i32).as_CFType())],
         ] {
-            parse_settings(
-                &settings(entries),
-                SystemProxyInvalidBypassRulePolicy::Ignore,
-            )
+            // SAFETY: `parse_settings` contract: `entries` holds no array.
+            unsafe {
+                parse_settings(
+                    &settings(entries),
+                    SystemProxyInvalidBypassRulePolicy::Ignore,
+                )
+            }
             .unwrap_err();
         }
 
-        let config = parse_settings(
-            &settings(vec![(
-                "ProxyAutoDiscoveryEnable",
-                CFNumber::from(1_i32).as_CFType(),
-            )]),
-            SystemProxyInvalidBypassRulePolicy::Ignore,
-        )
+        // SAFETY: `parse_settings` contract: the dictionary holds no array.
+        let config = unsafe {
+            parse_settings(
+                &settings(vec![(
+                    "ProxyAutoDiscoveryEnable",
+                    CFNumber::from(1_i32).as_CFType(),
+                )]),
+                SystemProxyInvalidBypassRulePolicy::Ignore,
+            )
+        }
         .unwrap();
         assert!(config.auto_detect());
         assert!(!config.is_empty());

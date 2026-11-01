@@ -1010,7 +1010,10 @@ async fn explicit_egress_sessions_are_rejected_and_ingress_issues_no_auth_sessio
             )),
         ] {
             let mut data = context.configure().unwrap();
-            // Same client context and server identity as the original session.
+            // SAFETY: `set_session` requires the session to belong to this `Ssl`'s
+            // `SslContext`. It was issued, through `context`'s new-session callback, to
+            // an `Ssl` built by `context.configure()`, as this one is, so both use
+            // `context`'s one `SslContext`.
             unsafe {
                 data.config.set_session(&session).unwrap();
             }
@@ -1052,7 +1055,10 @@ async fn explicit_egress_sessions_are_rejected_and_ingress_issues_no_auth_sessio
             for round in 0..2 {
                 let mut guest_data = context.configure().unwrap();
                 if let Some(session) = &previous {
-                    // Same client SSL_CTX and relay server as the original session.
+                    // SAFETY: `set_session` requires the session to belong to this `Ssl`'s
+                    // `SslContext`. It was issued, through `context`'s new-session callback, to
+                    // an `Ssl` built by `context.configure()`, as this one is, so both use
+                    // `context`'s one `SslContext`.
                     unsafe {
                         guest_data.config.set_session(session).unwrap();
                     }
@@ -1088,7 +1094,10 @@ async fn explicit_egress_sessions_are_rejected_and_ingress_issues_no_auth_sessio
             }
             if let Some(session) = previous {
                 let mut guest_data = context.configure().unwrap();
-                // The client context is unchanged; switch the server's flow policy.
+                // SAFETY: `set_session` requires the session to belong to this `Ssl`'s
+                // `SslContext`. It was issued, through `context`'s new-session callback, to
+                // an `Ssl` built by `context.configure()`, as this one is, so both use
+                // `context`'s one `SslContext`.
                 unsafe {
                     guest_data.config.set_session(&session).unwrap();
                 }

@@ -16,6 +16,9 @@ use crate::tproxy::{
 };
 
 /// Borrowed Swift establishment diagnostics; see the C header for ownership.
+///
+/// Every `*_utf8` pointer + length pair follows the
+/// [byte-range contract](crate::ffi::BytesView#byte-range-contract).
 #[repr(C)]
 pub struct TcpEgressReport {
     pub ready: bool,
@@ -34,7 +37,10 @@ pub struct TcpEgressReport {
 
 impl TcpEgressReport {
     /// # Safety
-    /// Non-null string pointers must be readable for their lengths for the lifetime of the returned report.
+    ///
+    /// The caller must ensure both `*_utf8` pairs meet the
+    /// [byte-range contract](crate::ffi::BytesView#byte-range-contract) for as
+    /// long as the returned report is used. Non-UTF-8 text decodes as `None`.
     pub unsafe fn to_rust_type(&self) -> crate::tproxy::TcpEgressReport<'_> {
         crate::tproxy::TcpEgressReport {
             ready: self.ready,
@@ -44,22 +50,32 @@ impl TcpEgressReport {
             report_duration_ms: self.report_available.then_some(self.report_duration_ms),
             used_proxy: self.report_available.then_some(self.used_proxy),
             proxy_configured: self.report_available.then_some(self.proxy_configured),
-            // SAFETY: the caller guarantees the borrowed string ranges.
+            // SAFETY: `opt_utf8_borrowed` needs the pair to meet the byte-range
+            // contract for the returned borrow, tied here to the report's
+            // lifetime; this fn's precondition covers exactly that.
             proxy_endpoint: unsafe {
                 opt_utf8_borrowed(self.proxy_endpoint_utf8, self.proxy_endpoint_utf8_len)
             },
-            // SAFETY: the caller guarantees the borrowed string ranges.
+            // SAFETY: as for `proxy_endpoint` above.
             error: unsafe { opt_utf8_borrowed(self.error_utf8, self.error_utf8_len) },
         }
     }
 }
 
 // Unlike retained flow metadata, these strings only live through a synchronous log.
+/// # Safety
+///
+/// The caller must ensure `(ptr, len)` meets the
+/// [byte-range contract](crate::ffi::BytesView#byte-range-contract) for all
+/// of `'a`.
 unsafe fn opt_utf8_borrowed<'a>(ptr: *const c_char, len: usize) -> Option<&'a str> {
     if ptr.is_null() || len == 0 {
         return None;
     }
-    // SAFETY: the caller guarantees readable bytes for the returned borrow.
+    // SAFETY: `slice::from_raw_parts` needs a non-null pointer aligned for
+    // `u8` (`c_char` has the same size), valid for reads of `len` initialized
+    // bytes in one allocation, `len <= isize::MAX`, unmutated for `'a`.
+    // Non-null and `len > 0` are checked above; the rest is the precondition.
     std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr.cast(), len) }).ok()
 }
 
@@ -73,14 +89,17 @@ pub struct TransparentFlowEndpoint {
 impl TransparentFlowEndpoint {
     /// # Safety
     ///
-    /// `self.host_utf8` must either be null, or point to at least
-    /// `self.host_utf8_len` bytes of valid UTF-8 for the duration of this call.
+    /// The caller must ensure `(host_utf8, host_utf8_len)` meets the
+    /// [byte-range contract](crate::ffi::BytesView#byte-range-contract) for
+    /// the duration of this call. The result owns a copy; non-UTF-8 or
+    /// unparsable hosts yield `None`.
     pub unsafe fn as_optional_host_with_port(&self) -> Option<HostWithPort> {
         if self.port == 0 {
             return None;
         }
 
-        // SAFETY: pointer + length validity is guaranteed by caller contract.
+        // SAFETY: `opt_utf8_to_host` needs the byte-range contract for this
+        // call, which is this fn's precondition.
         let host = unsafe { opt_utf8_to_host(self.host_utf8, self.host_utf8_len) }?;
         Some(HostWithPort::new(host, self.port))
     }
@@ -146,8 +165,10 @@ impl From<RustTransparentProxyFlowAction> for TransparentProxyFlowAction {
 impl TransparentProxyFlowMeta {
     /// # Safety
     ///
-    /// All pointer + length fields in `self` must be valid for reads during
-    /// this call.
+    /// The caller must ensure every pointer + length pair in `self`
+    /// (including both endpoints) meets the
+    /// [byte-range contract](crate::ffi::BytesView#byte-range-contract) for
+    /// the duration of this call. The result owns copies of all data.
     ///
     /// Returns `Err(invalid_protocol_code)` when `self.protocol` is not
     /// a known [`TransparentProxyFlowProtocol`] discriminant. The FFI
@@ -156,7 +177,9 @@ impl TransparentProxyFlowMeta {
     pub unsafe fn as_owned_rust_type(&self) -> Result<tproxy::TransparentProxyFlowMeta, u32> {
         let protocol = TransparentProxyFlowProtocol::from_raw_strict(self.protocol)?;
 
-        // SAFETY: pointer + length validity is guaranteed by caller contract.
+        // SAFETY: each `opt_*` / `as_optional_host_with_port` call below
+        // needs its pair to meet the byte-range contract for this call; the
+        // precondition gives that for every pair of `self`.
         let source_app_audit_token = unsafe {
             opt_audit_token(
                 self.source_app_audit_token_bytes,
@@ -181,15 +204,15 @@ impl TransparentProxyFlowMeta {
 
         Ok(tproxy::TransparentProxyFlowMeta::new(protocol)
             .maybe_with_remote_endpoint(
-                // SAFETY: pointer + length validity is guaranteed by caller contract.
+                // SAFETY: see `source_app_audit_token` above.
                 unsafe { self.remote_endpoint.as_optional_host_with_port() },
             )
             .maybe_with_local_endpoint(
-                // SAFETY: pointer + length validity is guaranteed by caller contract.
+                // SAFETY: see `source_app_audit_token` above.
                 unsafe { self.local_endpoint.as_optional_host_with_port() },
             )
             .maybe_with_source_app_signing_identifier(
-                // SAFETY: pointer + length validity is guaranteed by caller contract.
+                // SAFETY: see `source_app_audit_token` above.
                 unsafe {
                     opt_utf8_to_non_empty_str(
                         self.source_app_signing_identifier_utf8,
@@ -198,7 +221,7 @@ impl TransparentProxyFlowMeta {
                 },
             )
             .maybe_with_source_app_bundle_identifier(
-                // SAFETY: pointer + length validity is guaranteed by caller contract.
+                // SAFETY: see `source_app_audit_token` above.
                 unsafe {
                     opt_utf8_to_non_empty_str(
                         self.source_app_bundle_identifier_utf8,
@@ -209,13 +232,13 @@ impl TransparentProxyFlowMeta {
             .maybe_with_source_app_audit_token(source_app_audit_token)
             .maybe_with_source_app_pid(source_app_pid)
             .maybe_with_remote_hostname(
-                // SAFETY: pointer + length validity is guaranteed by caller contract.
+                // SAFETY: see `source_app_audit_token` above.
                 unsafe {
                     opt_utf8_to_boxed_str(self.remote_hostname_utf8, self.remote_hostname_utf8_len)
                 },
             )
             .maybe_with_local_interface_name(
-                // SAFETY: pointer + length validity is guaranteed by caller contract.
+                // SAFETY: see `source_app_audit_token` above.
                 unsafe {
                     opt_utf8_to_boxed_str(
                         self.local_interface_name_utf8,
@@ -311,33 +334,43 @@ pub struct TransparentProxyInitConfig {
 }
 
 impl TransparentProxyInitConfig {
+    /// Decode into the owned [`tproxy::TransparentProxyInitConfig`].
+    ///
     /// # Safety
     ///
-    /// Pointer + length pairs in `self` must be valid for reads during this call.
-    pub unsafe fn storage_dir(&self) -> Option<PathBuf> {
-        // SAFETY: pointer + length validity is guaranteed by caller contract.
-        unsafe { opt_utf8(self.storage_dir_utf8, self.storage_dir_utf8_len) }.map(PathBuf::from)
-    }
-
-    /// # Safety
-    ///
-    /// Pointer + length pairs in `self` must be valid for reads during this call.
-    pub unsafe fn app_group_dir(&self) -> Option<PathBuf> {
-        // SAFETY: pointer + length validity is guaranteed by caller contract.
-        unsafe { opt_utf8(self.app_group_dir_utf8, self.app_group_dir_utf8_len) }.map(PathBuf::from)
-    }
-
-    /// # Safety
-    ///
-    /// Pointer + length pairs in `self` must be valid for reads during this call.
-    pub unsafe fn bundle_identifier(&self) -> Option<&str> {
-        // SAFETY: pointer + length validity is guaranteed by caller contract.
-        unsafe { opt_utf8(self.bundle_identifier_utf8, self.bundle_identifier_utf8_len) }
+    /// The caller must ensure every pointer + length pair in `self` meets the
+    /// [byte-range contract](crate::ffi::BytesView#byte-range-contract) for
+    /// the duration of this call. The result owns copies of all data;
+    /// non-UTF-8 or blank fields decode as `None`.
+    #[must_use]
+    pub unsafe fn as_owned_rust_type(&self) -> tproxy::TransparentProxyInitConfig {
+        // SAFETY: `opt_utf8` needs its pair to meet the byte-range contract
+        // for the borrow, which ends at the copy below; the precondition gives
+        // that for every pair of `self` (also for the two blocks below).
+        let storage_dir = unsafe { opt_utf8(self.storage_dir_utf8, self.storage_dir_utf8_len) };
+        // SAFETY: see above.
+        let app_group_dir =
+            unsafe { opt_utf8(self.app_group_dir_utf8, self.app_group_dir_utf8_len) };
+        // SAFETY: see above.
+        let bundle_identifier =
+            unsafe { opt_utf8(self.bundle_identifier_utf8, self.bundle_identifier_utf8_len) };
+        tproxy::TransparentProxyInitConfig {
+            storage_dir: storage_dir.map(PathBuf::from),
+            app_group_dir: app_group_dir.map(PathBuf::from),
+            bundle_identifier: bundle_identifier.map(Box::from),
+        }
     }
 }
 
 impl TransparentProxyConfig {
     /// Build an owned FFI representation from typed Rust config.
+    ///
+    /// # Safety-usable invariant
+    ///
+    /// Each `*_utf8` pair is `(null, 0)` or the `alloc_vec_utf8` output for a
+    /// non-empty buffer, and `rules` is null with `rules_len == 0` or the
+    /// `Box::into_raw` pointer of a `Box<[TransparentProxyNetworkRule]>` of
+    /// length `rules_len > 0`. Release it once with [`Self::free`].
     #[must_use]
     pub fn from_rust_type(config: &tproxy::TransparentProxyConfig) -> Self {
         let (tunnel_remote_address_utf8, tunnel_remote_address_utf8_len) =
@@ -399,10 +432,12 @@ impl TransparentProxyConfig {
 
     /// # Safety
     ///
-    /// `self` must have been created by [`TransparentProxyConfig::from_rust_type`]
-    /// exactly once. Calling this twice on the same allocations is undefined behavior.
+    /// The caller must ensure `self` holds, unmodified, the fields returned by
+    /// [`TransparentProxyConfig::from_rust_type`], and that no other copy of
+    /// them is freed or used afterwards. Every allocation is then freed once.
     pub unsafe fn free(self) {
-        // SAFETY: this pointer/len pair came from `alloc_utf8` in `from_rust_type`.
+        // SAFETY: `free_utf8` needs an `alloc_vec_utf8` pair (or null/0) freed
+        // once; the precondition and `from_rust_type`'s invariant give that.
         unsafe {
             free_utf8(
                 self.tunnel_remote_address_utf8,
@@ -414,17 +449,21 @@ impl TransparentProxyConfig {
             return;
         }
 
-        let rules_ptr = self.rules as *mut TransparentProxyNetworkRule;
+        let rules_ptr = self.rules.cast_mut();
         let boxed_rules = {
             let raw_slice = ptr::slice_from_raw_parts_mut(rules_ptr, self.rules_len);
-            // SAFETY: `raw_slice` was produced via `Box::into_raw` in `from_rust_type`.
+            // SAFETY: `Box::from_raw` needs a pointer from `Box::into_raw` of the
+            // same type, not yet freed. Non-null here, so by the precondition and
+            // `from_rust_type`'s invariant it is the boxed rules slice of length
+            // `rules_len`, with no other owner. The new `Box` frees it on drop.
             unsafe { Box::from_raw(raw_slice) }
         };
 
         for rule in boxed_rules.iter() {
-            // SAFETY: these pointer/len pairs came from `alloc_opt_utf8` in `from_rust_type`.
+            // SAFETY: as for the tunnel address above; each rule pair is an
+            // unfreed `alloc_vec_utf8` output (or null/0) owned by this config.
             unsafe { free_utf8(rule.remote_network_utf8, rule.remote_network_utf8_len) };
-            // SAFETY: these pointer/len pairs came from `alloc_opt_utf8` in `from_rust_type`.
+            // SAFETY: as above.
             unsafe { free_utf8(rule.local_network_utf8, rule.local_network_utf8_len) };
         }
     }
@@ -432,11 +471,17 @@ impl TransparentProxyConfig {
 
 /// Callbacks Swift provides for Rust TCP session events.
 ///
-/// # Lifetime / threading contract for `context`
+/// # Callback contract
 ///
-/// * `context` must remain valid (and the pointee must not move) until the
-///   corresponding session is freed via
-///   `rama_transparent_proxy_tcp_session_free`.
+/// The foreign caller handing these callbacks to Rust must ensure:
+///
+/// * each `Some` entry is an `extern "C"` function with exactly this
+///   signature that does not unwind, and may be called with `context` from
+///   any thread, concurrently with the other entries of the same session;
+/// * `context` (and whatever the callbacks reach through it) stays valid
+///   from the registering call until `rama_transparent_proxy_tcp_session_free`
+///   returns for this session. If the registering call yields no session,
+///   Rust keeps no reference once that call returns.
 ///   `rama_transparent_proxy_tcp_session_cancel` guarantees no further
 ///   callbacks fire after it returns, but `context` must still outlive the
 ///   `_free` call — concurrent callbacks already in flight may still observe
@@ -473,8 +518,8 @@ pub struct TransparentProxyTcpSessionCallbacks {
 
 /// Callbacks Swift provides for Rust UDP session events.
 ///
-/// `context` lifetime / threading contract: see
-/// [`TransparentProxyTcpSessionCallbacks`] above. Same rules apply.
+/// The [callback contract](TransparentProxyTcpSessionCallbacks#callback-contract)
+/// applies, with `rama_transparent_proxy_udp_session_free` ending it.
 ///
 /// `on_server_datagram` receives each Rust→Swift datagram along
 /// with its peer — the source the reply arrived from, used as the
@@ -719,12 +764,11 @@ pub struct TcpEgressConnectOptions {
 /// Swift queue-hops, returns from the callback, completes the cutover, then ACKs by calling
 /// `rama_transparent_proxy_tcp_session_confirm_promoted`.
 ///
-/// `context` lifetime / threading contract: see
-/// [`TransparentProxyTcpSessionCallbacks`] above. The pointee must
-/// outlive the `_session_free` call, callbacks may run on any
-/// Tokio worker thread (the Swift side is responsible for any
-/// synchronization the pointee needs — e.g. hopping to its
-/// flow-private dispatch queue).
+/// The [callback contract](TransparentProxyTcpSessionCallbacks#callback-contract)
+/// applies: the pointee must outlive the `_session_free` call, callbacks may
+/// run on any Tokio worker thread (the Swift side is responsible for any
+/// synchronization the pointee needs — e.g. hopping to its flow-private
+/// dispatch queue).
 #[repr(C)]
 pub struct TransparentProxyTcpPromoteCallbacks {
     pub context: *mut c_void,
@@ -771,10 +815,10 @@ impl PromoteConfirmStatus {
 /// These are Rust→Swift channels: Rust calls these when it has data for the
 /// egress `NWConnection`.
 ///
-/// `context` lifetime / threading contract: see
-/// [`TransparentProxyTcpSessionCallbacks`] above. The pointee must outlive the
-/// corresponding `_session_free` call, callbacks may run on any thread, and
-/// `BytesView` is borrowed for the call's duration.
+/// The [callback contract](TransparentProxyTcpSessionCallbacks#callback-contract)
+/// applies: the pointee must outlive the corresponding `_session_free` call,
+/// callbacks may run on any thread, and `BytesView` is borrowed for the
+/// call's duration.
 #[repr(C)]
 pub struct TransparentProxyTcpEgressCallbacks {
     pub context: *mut c_void,
@@ -805,33 +849,43 @@ fn alloc_str_utf8(value: &str) -> (*const c_char, usize) {
     alloc_vec_utf8(value.as_bytes().to_vec())
 }
 
+/// # Safety-usable invariant
+///
+/// Returns `(null, 0)` for empty input, else the `Box::into_raw` pointer of a
+/// `Box<[u8]>` holding the input and its length, owned by the caller.
 fn alloc_vec_utf8(value: Vec<u8>) -> (*const c_char, usize) {
     let boxed: Box<[u8]> = value.into_boxed_slice();
     let len = boxed.len();
     if len == 0 {
         return (ptr::null(), 0);
     }
-    (Box::into_raw(boxed) as *const u8 as *const c_char, len)
+    (Box::into_raw(boxed).cast::<c_char>().cast_const(), len)
 }
 
 /// # Safety
 ///
-/// `ptr/len` must come from `alloc_utf8` and must not be freed more than once.
+/// The caller must ensure `(ptr, len)` is `(null, 0)` or an unmodified
+/// [`alloc_vec_utf8`] output that is freed only here and not used afterwards.
 unsafe fn free_utf8(ptr: *const c_char, len: usize) {
     if ptr.is_null() || len == 0 {
         return;
     }
 
     let raw_slice = ptr::slice_from_raw_parts_mut(ptr as *mut u8, len);
-    // SAFETY: caller guarantees this points to memory allocated via `alloc_utf8`.
+    // SAFETY: `Box::from_raw` needs a `Box::into_raw` pointer of the same type,
+    // not yet freed. By the precondition and `alloc_vec_utf8`'s invariant,
+    // `(ptr, len)` is the raw `Box<[u8]>` of length `len`, with no other owner.
     _ = unsafe { Box::from_raw(raw_slice) };
 }
 
 /// # Safety
 ///
-/// `ptr` must be null or readable for `len` bytes and contain UTF-8.
+/// The caller must ensure `(ptr, len)` meets the
+/// [byte-range contract](crate::ffi::BytesView#byte-range-contract) for the
+/// duration of this call. The result owns a copy.
 unsafe fn opt_utf8_to_non_empty_str(ptr: *const c_char, len: usize) -> Option<NonEmptyStr> {
-    // SAFETY: pointer + length validity is guaranteed by caller contract.
+    // SAFETY: `opt_utf8` needs the byte-range contract for the borrow, which
+    // ends at the copy below; the precondition covers this call.
     let raw = unsafe { opt_utf8(ptr, len) }?;
     raw.try_into().ok()
 }
@@ -843,65 +897,252 @@ unsafe fn opt_utf8_to_non_empty_str(ptr: *const c_char, len: usize) -> Option<No
 ///
 /// # Safety
 ///
-/// `ptr` must be null or readable for `len` bytes and contain UTF-8.
+/// Same as [`opt_utf8_to_non_empty_str`].
 unsafe fn opt_utf8_to_boxed_str(ptr: *const c_char, len: usize) -> Option<Box<str>> {
-    // SAFETY: pointer + length validity is guaranteed by caller contract.
+    // SAFETY: `opt_utf8` needs the byte-range contract for the borrow, which
+    // ends at the copy below; the precondition covers this call.
     let raw = unsafe { opt_utf8(ptr, len) }?;
     Some(Box::from(raw))
 }
 
 /// # Safety
 ///
-/// `ptr` must be null or readable for `len` bytes and contain UTF-8.
+/// Same as [`opt_utf8_to_non_empty_str`].
 unsafe fn opt_utf8_to_host(ptr: *const c_char, len: usize) -> Option<Host> {
-    // SAFETY: pointer + length validity is guaranteed by caller contract.
+    // SAFETY: `opt_utf8` needs the byte-range contract for the borrow, which
+    // ends at the copy below; the precondition covers this call.
     let raw = unsafe { opt_utf8(ptr, len) }?;
     Host::try_from(raw).ok()
 }
 
 /// # Safety
 ///
-/// `ptr` must be null or readable for `len` bytes and contain UTF-8.
+/// The caller must ensure `(ptr, len)` meets the
+/// [byte-range contract](crate::ffi::BytesView#byte-range-contract) for all
+/// of `'a`. Non-UTF-8 or blank text yields `None`.
 unsafe fn opt_utf8<'a>(ptr: *const c_char, len: usize) -> Option<&'a str> {
     if ptr.is_null() || len == 0 {
         return None;
     }
 
-    // SAFETY: pointer + length validity is guaranteed by caller contract.
-    let raw = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+    // SAFETY: `slice::from_raw_parts` needs a non-null pointer aligned for
+    // `u8` (`c_char` has the same size), valid for reads of `len` initialized
+    // bytes in one allocation, `len <= isize::MAX`, unmutated for `'a`.
+    // Non-null and `len > 0` are checked above; the rest is the precondition.
+    let raw = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
     let text = std::str::from_utf8(raw).ok()?.trim();
     (!text.is_empty()).then_some(text)
 }
 
 /// # Safety
 ///
-/// `ptr` must be null or readable for `len` bytes.
+/// The caller must ensure `(ptr, len)` meets the
+/// [byte-range contract](crate::ffi::BytesView#byte-range-contract) for the
+/// duration of this call. The result owns a copy.
 unsafe fn opt_audit_token(ptr: *const u8, len: usize) -> Option<AuditToken> {
     if ptr.is_null() || len == 0 {
         return None;
     }
 
-    // SAFETY: pointer + length validity is guaranteed by caller contract.
+    // SAFETY: `slice::from_raw_parts` needs a non-null `u8` pointer valid for
+    // reads of `len` initialized bytes in one allocation, `len <= isize::MAX`,
+    // unmutated for the borrow. Non-null and `len > 0` are checked above; the
+    // rest is the precondition, and the borrow ends at the copy below.
     let raw = unsafe { std::slice::from_raw_parts(ptr, len) };
     AuditToken::from_bytes(raw)
 }
 
+// ABI pins: every `repr(C)` type above must match its twin in
+// `rama_apple_ne_ffi.h` field for field (sizes, alignment and offsets as the
+// header compiles on 64-bit Apple targets).
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    use crate::ffi::{BytesOwned, BytesOwnedView, BytesView, UdpPeerView};
+    use std::mem::{align_of, offset_of, size_of};
+
+    macro_rules! pin {
+        ($ty:ty, $size:literal, $align:literal; $($field:ident = $off:literal),+ $(,)?) => {
+            assert!(size_of::<$ty>() == $size);
+            assert!(align_of::<$ty>() == $align);
+            $(assert!(offset_of!($ty, $field) == $off);)+
+        };
+    }
+
+    pin!(BytesView, 16, 8;
+        ptr = 0,
+        len = 8);
+    pin!(BytesOwned, 24, 8;
+        ptr = 0,
+        len = 8,
+        cap = 16);
+    pin!(BytesOwnedView, 32, 8;
+        ptr = 0,
+        len = 8,
+        owner = 16,
+        release = 24);
+    pin!(TransparentFlowEndpoint, 24, 8;
+        host_utf8 = 0,
+        host_utf8_len = 8,
+        port = 16);
+    pin!(TransparentProxyFlowMeta, 160, 8;
+        protocol = 0,
+        remote_endpoint = 8,
+        local_endpoint = 32,
+        source_app_signing_identifier_utf8 = 56,
+        source_app_signing_identifier_utf8_len = 64,
+        source_app_bundle_identifier_utf8 = 72,
+        source_app_bundle_identifier_utf8_len = 80,
+        source_app_audit_token_bytes = 88,
+        source_app_audit_token_bytes_len = 96,
+        source_app_pid = 104,
+        source_app_pid_is_set = 108,
+        remote_hostname_utf8 = 112,
+        remote_hostname_utf8_len = 120,
+        local_interface_name_utf8 = 128,
+        local_interface_name_utf8_len = 136,
+        local_interface_index = 144,
+        local_interface_index_is_set = 148,
+        local_interface_type = 149,
+        local_interface_type_is_set = 150,
+        is_bound = 151,
+        is_bound_is_set = 152);
+    pin!(TransparentProxyNetworkRule, 56, 8;
+        remote_network_utf8 = 0,
+        remote_network_utf8_len = 8,
+        remote_prefix = 16,
+        remote_prefix_is_set = 17,
+        remote_port = 18,
+        remote_port_is_set = 20,
+        local_network_utf8 = 24,
+        local_network_utf8_len = 32,
+        local_prefix = 40,
+        local_prefix_is_set = 41,
+        protocol = 44,
+        exclude = 48);
+    pin!(TransparentProxyConfig, 88, 8;
+        tunnel_remote_address_utf8 = 0,
+        tunnel_remote_address_utf8_len = 8,
+        rules = 16,
+        rules_len = 24,
+        tcp_write_pump_max_pending_bytes = 32,
+        flow_pressure_soft_cap = 40,
+        flow_pressure_low_water = 44,
+        flow_pressure_idle_floor_ms = 48,
+        tcp_start_in_flight_hard_cap = 52,
+        tcp_start_in_flight_soft_cap = 56,
+        tcp_start_latency_breaker_p95_ms = 60,
+        tcp_start_latency_breaker_close_p95_ms = 64,
+        tcp_pressure_connect_timeout_ms = 68,
+        tcp_breaker_connect_timeout_ms = 72,
+        flow_refusal_action = 76,
+        live_flow_hard_cap = 80);
+    pin!(TransparentProxyInitConfig, 48, 8;
+        storage_dir_utf8 = 0,
+        storage_dir_utf8_len = 8,
+        app_group_dir_utf8 = 16,
+        app_group_dir_utf8_len = 24,
+        bundle_identifier_utf8 = 32,
+        bundle_identifier_utf8_len = 40);
+    pin!(TransparentProxyTcpSessionCallbacks, 32, 8;
+        context = 0,
+        on_server_bytes = 8,
+        on_server_closed = 16,
+        on_client_read_demand = 24);
+    pin!(UdpPeerView, 32, 8;
+        present = 0,
+        host_utf8 = 8,
+        host_utf8_len = 16,
+        port = 24,
+        scope_id = 28);
+    pin!(TransparentProxyUdpSessionCallbacks, 32, 8;
+        context = 0,
+        on_server_datagram = 8,
+        on_client_read_demand = 16,
+        on_server_closed = 24);
+    pin!(NwEgressParameters, 11, 1;
+        has_service_class = 0,
+        service_class = 1,
+        has_multipath_service_type = 2,
+        multipath_service_type = 3,
+        has_required_interface_type = 4,
+        required_interface_type = 5,
+        has_attribution = 6,
+        attribution = 7,
+        prohibited_interface_types_mask = 8,
+        preserve_original_meta_data = 9,
+        allow_proxy = 10);
+    pin!(TcpEgressConnectOptions, 92, 4;
+        parameters = 0,
+        has_connect_timeout_ms = 11,
+        connect_timeout_ms = 12,
+        has_linger_close_ms = 16,
+        linger_close_ms = 20,
+        has_egress_eof_grace_ms = 24,
+        egress_eof_grace_ms = 28,
+        tcp_keepalive_enabled = 32,
+        has_tcp_keepalive_idle_secs = 33,
+        tcp_keepalive_idle_secs = 36,
+        has_tcp_keepalive_interval_secs = 40,
+        tcp_keepalive_interval_secs = 44,
+        has_tcp_keepalive_count = 48,
+        tcp_keepalive_count = 52,
+        tcp_no_delay = 56,
+        has_tcp_no_push = 57,
+        tcp_no_push = 58,
+        has_tcp_no_options = 59,
+        tcp_no_options = 60,
+        has_tcp_retransmit_fin_drop = 61,
+        tcp_retransmit_fin_drop = 62,
+        has_tcp_disable_ack_stretching = 63,
+        tcp_disable_ack_stretching = 64,
+        has_tcp_enable_fast_open = 65,
+        tcp_enable_fast_open = 66,
+        has_tcp_disable_ecn = 67,
+        tcp_disable_ecn = 68,
+        has_tcp_maximum_segment_size = 69,
+        tcp_maximum_segment_size = 72,
+        has_tcp_connection_drop_time_secs = 76,
+        tcp_connection_drop_time_secs = 80,
+        has_tcp_persist_timeout_secs = 84,
+        tcp_persist_timeout_secs = 88);
+    pin!(TransparentProxyTcpEgressCallbacks, 32, 8;
+        context = 0,
+        on_write_to_egress = 8,
+        on_close_egress = 16,
+        on_egress_read_demand = 24);
+    pin!(TransparentProxyTcpPromoteCallbacks, 16, 8;
+        context = 0,
+        on_promote_request = 8);
+    pin!(TcpEgressReport, 56, 8;
+        ready = 0,
+        report_available = 1,
+        used_proxy = 2,
+        proxy_configured = 3,
+        allow_proxy = 4,
+        proxy_policy = 5,
+        connect_duration_ms = 8,
+        report_duration_ms = 16,
+        proxy_endpoint_utf8 = 24,
+        proxy_endpoint_utf8_len = 32,
+        error_utf8 = 40,
+        error_utf8_len = 48);
+    assert!(size_of::<TransparentProxyFlowAction>() == 4);
+    assert!(size_of::<PromoteConfirmStatus>() == 1);
+};
+
 #[cfg(test)]
 mod tests {
-    use std::mem::{align_of, offset_of, size_of};
     use std::ptr;
 
-    use crate::ffi::{BytesOwned, BytesOwnedView, BytesView, UdpPeerView};
     use crate::tproxy::{
         self, NwInterfaceType, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
         TransparentProxyRuleProtocol,
     };
 
     use super::{
-        NwEgressParameters, PromoteConfirmStatus, TcpEgressConnectOptions, TcpEgressReport,
-        TransparentFlowEndpoint, TransparentProxyConfig, TransparentProxyFlowMeta,
-        TransparentProxyInitConfig as FfiTransparentProxyInitConfig,
-        TransparentProxyNetworkRule as FfiTransparentProxyNetworkRule, interface_type_from_u8,
+        NwEgressParameters, PromoteConfirmStatus, TcpEgressReport, TransparentFlowEndpoint,
+        TransparentProxyConfig, TransparentProxyFlowMeta,
+        TransparentProxyInitConfig as FfiTransparentProxyInitConfig, interface_type_from_u8,
     };
 
     #[test]
@@ -1036,6 +1277,8 @@ mod tests {
             error_utf8: error.as_ptr().cast(),
             error_utf8_len: error.len(),
         };
+        // SAFETY: both pairs point into `endpoint`/`error`, which outlive
+        // every report below and are not written.
         let report = unsafe { ffi.to_rust_type() };
         assert!(!report.ready);
         assert_eq!(report.connect_duration_ms, 123);
@@ -1054,6 +1297,7 @@ mod tests {
         ffi.proxy_endpoint_utf8 = std::ptr::null();
         ffi.error_utf8 = std::ptr::null();
         ffi.report_available = false;
+        // SAFETY: both pointers are null.
         let report = unsafe { ffi.to_rust_type() };
         assert_eq!(report.used_proxy, None);
         assert_eq!(report.proxy_configured, None);
@@ -1064,143 +1308,11 @@ mod tests {
         ffi.report_available = true;
         ffi.used_proxy = false;
         ffi.proxy_configured = false;
+        // SAFETY: both pointers are null.
         let report = unsafe { ffi.to_rust_type() };
         assert!(report.ready);
         assert_eq!(report.used_proxy, Some(false));
         assert_eq!(report.proxy_configured, Some(false));
-    }
-
-    #[test]
-    fn ffi_struct_layout_matches_c_header_on_64_bit_targets() {
-        if size_of::<usize>() != 8 {
-            return;
-        }
-
-        assert_eq!(size_of::<TcpEgressReport>(), 56);
-        assert_eq!(offset_of!(TcpEgressReport, allow_proxy), 4);
-        assert_eq!(offset_of!(TcpEgressReport, proxy_policy), 5);
-        assert_eq!(align_of::<TcpEgressReport>(), 8);
-        assert_eq!(offset_of!(TcpEgressReport, connect_duration_ms), 8);
-        assert_eq!(offset_of!(TcpEgressReport, report_duration_ms), 16);
-        assert_eq!(offset_of!(TcpEgressReport, proxy_endpoint_utf8), 24);
-        assert_eq!(offset_of!(TcpEgressReport, error_utf8), 40);
-        assert_eq!(size_of::<BytesView>(), 16);
-        assert_eq!(align_of::<BytesView>(), 8);
-        assert_eq!(size_of::<BytesOwned>(), 24);
-        assert_eq!(align_of::<BytesOwned>(), 8);
-        assert_eq!(size_of::<BytesOwnedView>(), 32);
-        assert_eq!(align_of::<BytesOwnedView>(), 8);
-
-        assert_eq!(size_of::<TransparentFlowEndpoint>(), 24);
-        assert_eq!(offset_of!(TransparentFlowEndpoint, host_utf8), 0);
-        assert_eq!(offset_of!(TransparentFlowEndpoint, host_utf8_len), 8);
-        assert_eq!(offset_of!(TransparentFlowEndpoint, port), 16);
-
-        assert_eq!(size_of::<TransparentProxyFlowMeta>(), 160);
-        assert_eq!(offset_of!(TransparentProxyFlowMeta, protocol), 0);
-        assert_eq!(offset_of!(TransparentProxyFlowMeta, remote_endpoint), 8);
-        assert_eq!(offset_of!(TransparentProxyFlowMeta, source_app_pid), 104);
-        assert_eq!(
-            offset_of!(TransparentProxyFlowMeta, source_app_pid_is_set),
-            108
-        );
-        assert_eq!(
-            offset_of!(TransparentProxyFlowMeta, remote_hostname_utf8),
-            112
-        );
-        assert_eq!(
-            offset_of!(TransparentProxyFlowMeta, local_interface_name_utf8),
-            128
-        );
-        assert_eq!(
-            offset_of!(TransparentProxyFlowMeta, local_interface_index),
-            144
-        );
-        assert_eq!(offset_of!(TransparentProxyFlowMeta, is_bound), 151);
-
-        assert_eq!(size_of::<FfiTransparentProxyNetworkRule>(), 56);
-        assert_eq!(
-            offset_of!(FfiTransparentProxyNetworkRule, remote_network_utf8),
-            0
-        );
-        assert_eq!(
-            offset_of!(FfiTransparentProxyNetworkRule, remote_prefix),
-            16
-        );
-        assert_eq!(
-            offset_of!(FfiTransparentProxyNetworkRule, local_network_utf8),
-            24
-        );
-        assert_eq!(offset_of!(FfiTransparentProxyNetworkRule, protocol), 44);
-        assert_eq!(offset_of!(FfiTransparentProxyNetworkRule, exclude), 48);
-
-        assert_eq!(size_of::<TransparentProxyConfig>(), 88);
-        assert_eq!(offset_of!(TransparentProxyConfig, rules), 16);
-        assert_eq!(
-            offset_of!(TransparentProxyConfig, tcp_write_pump_max_pending_bytes),
-            32
-        );
-        assert_eq!(
-            offset_of!(TransparentProxyConfig, flow_pressure_soft_cap),
-            40
-        );
-        assert_eq!(
-            offset_of!(TransparentProxyConfig, tcp_breaker_connect_timeout_ms),
-            72
-        );
-        assert_eq!(offset_of!(TransparentProxyConfig, flow_refusal_action), 76);
-        // Appended for source compatibility; the eight-byte struct alignment
-        // rounds the new 84-byte payload up to 88 bytes.
-        assert_eq!(offset_of!(TransparentProxyConfig, live_flow_hard_cap), 80);
-
-        assert_eq!(size_of::<FfiTransparentProxyInitConfig>(), 48);
-        assert_eq!(
-            offset_of!(FfiTransparentProxyInitConfig, app_group_dir_utf8),
-            16
-        );
-        assert_eq!(
-            offset_of!(FfiTransparentProxyInitConfig, bundle_identifier_utf8),
-            32
-        );
-
-        assert_eq!(size_of::<UdpPeerView>(), 32);
-        assert_eq!(align_of::<UdpPeerView>(), 8);
-        assert_eq!(offset_of!(UdpPeerView, host_utf8), 8);
-        assert_eq!(offset_of!(UdpPeerView, host_utf8_len), 16);
-        assert_eq!(offset_of!(UdpPeerView, port), 24);
-        assert_eq!(offset_of!(UdpPeerView, scope_id), 28);
-
-        assert_eq!(size_of::<NwEgressParameters>(), 11);
-        assert_eq!(align_of::<NwEgressParameters>(), 1);
-        assert_eq!(
-            offset_of!(NwEgressParameters, prohibited_interface_types_mask),
-            8
-        );
-
-        assert_eq!(size_of::<TcpEgressConnectOptions>(), 92);
-        assert_eq!(align_of::<TcpEgressConnectOptions>(), 4);
-        assert_eq!(
-            offset_of!(TcpEgressConnectOptions, has_connect_timeout_ms),
-            11
-        );
-        assert_eq!(offset_of!(TcpEgressConnectOptions, connect_timeout_ms), 12);
-        assert_eq!(offset_of!(TcpEgressConnectOptions, linger_close_ms), 20);
-        assert_eq!(offset_of!(TcpEgressConnectOptions, egress_eof_grace_ms), 28);
-        assert_eq!(offset_of!(TcpEgressConnectOptions, tcp_keepalive_count), 52);
-        assert_eq!(offset_of!(TcpEgressConnectOptions, tcp_no_delay), 56);
-        assert_eq!(offset_of!(TcpEgressConnectOptions, tcp_disable_ecn), 68);
-        assert_eq!(
-            offset_of!(TcpEgressConnectOptions, tcp_maximum_segment_size),
-            72
-        );
-        assert_eq!(
-            offset_of!(TcpEgressConnectOptions, tcp_connection_drop_time_secs),
-            80
-        );
-        assert_eq!(
-            offset_of!(TcpEgressConnectOptions, tcp_persist_timeout_secs),
-            88
-        );
     }
 
     #[test]
@@ -1215,10 +1327,15 @@ mod tests {
             bundle_identifier_utf8_len: bundle_identifier.len(),
         };
 
+        // SAFETY: the pair points into the static `bundle_identifier`; the
+        // other pairs are null.
+        let owned = unsafe { config.as_owned_rust_type() };
         assert_eq!(
-            unsafe { config.bundle_identifier() },
+            owned.bundle_identifier.as_deref(),
             Some("com.example.proxy.provider")
         );
+        assert_eq!(owned.storage_dir, None);
+        assert_eq!(owned.app_group_dir, None);
     }
 
     /// Verify the `exclude` field round-trips through the FFI

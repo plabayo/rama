@@ -2084,6 +2084,7 @@ fn verify_windows_device(name: &str, is_positive: bool) {
     use std::fs::OpenOptions;
     use std::os::windows::io::AsRawHandle;
 
+    // Declaration matches the kernel32 prototype `DWORD GetFileType(HANDLE)` (`fileapi.h`).
     unsafe extern "system" {
         fn GetFileType(hFile: *mut std::ffi::c_void) -> u32;
     }
@@ -2092,7 +2093,9 @@ fn verify_windows_device(name: &str, is_positive: bool) {
     let file_res = OpenOptions::new().read(true).open(name);
     if let Ok(file) = file_res {
         let handle = file.as_raw_handle();
-        let file_type = unsafe { GetFileType(handle as _) };
+        // SAFETY: `GetFileType` reads no caller memory and needs a valid file handle:
+        // `handle` belongs to `file`, which stays open for the call.
+        let file_type = unsafe { GetFileType(handle) };
         if is_positive {
             assert_eq!(
                 file_type, FILE_TYPE_CHAR,

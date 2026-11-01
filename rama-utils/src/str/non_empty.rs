@@ -9,14 +9,16 @@ pub struct NonEmptyStr(ArcStr);
 impl NonEmptyStr {
     /// Create a new [`NonEmptyStr`] without checking if it's empty or not.
     ///
-    /// # Safety
-    ///
-    /// Callee guarantees the given ArcStr is empty.
-    ///
-    /// Usually this is not what you want, but it can be userful to have
+    /// Usually this is not what you want, but it can be useful to have
     /// in cases where you already have an [`ArcStr`] and have checked that
     /// it is not empty. Examples are cases where you decoded data from the wire,
     /// or constructed it at compile time with a literal that you length checked.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `s` is not empty. This is a type invariant
+    /// that code may rely on for correctness; no `unsafe` code in this crate
+    /// relies on it for memory safety.
     #[must_use]
     pub const unsafe fn new_unchecked(s: ArcStr) -> Self {
         Self(s)
@@ -55,7 +57,8 @@ macro_rules! __non_empty_str {
         if ($text).is_empty() {
             panic!("literal is empty");
         }
-        // SAFETY: above check satisfied the contract
+        // SAFETY: `new_unchecked` requires a non-empty string: the check
+        // above panics for an empty `$text`, and `arcstr!` holds its bytes.
         unsafe { $crate::str::NonEmptyStr::new_unchecked($crate::str::arcstr::arcstr!($text)) }
     }};
 }

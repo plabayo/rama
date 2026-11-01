@@ -167,6 +167,8 @@ fn test_from_into_raw() {
     drop(v);
     let back = v2
         .iter()
+        // SAFETY: each pointer in `v2` comes from one `into_raw` call and is
+        // passed to `from_raw` once.
         .map(|s| unsafe { ArcStr::from_raw(*s) })
         .collect::<Vec<_>>();
 
@@ -345,6 +347,13 @@ fn test_leaking() {
     assert!(ArcStr::as_static(&s).is_none());
 
     let leaked: &'static str = s.leak();
+    // Keep the leaked string reachable, so Miri's leak check accepts it.
+    static LEAKED: std::sync::atomic::AtomicPtr<u8> =
+        std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+    LEAKED.store(
+        leaked.as_ptr().cast_mut(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     assert_eq!(leaked, s);
     assert!(ArcStr::is_static(&s));
     assert_eq!(ArcStr::as_static(&s), Some("foobar"));

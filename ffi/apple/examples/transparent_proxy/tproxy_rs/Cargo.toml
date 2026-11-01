@@ -11,6 +11,7 @@ crate-type = ["staticlib"]
 
 [features]
 default = ["jemallocator"]
+# Rust FFI e2e harness build: e2e-only UDP diagnostics, and no dial9 recorder.
 e2e = []
 jemallocator = ["dep:jemallocator", "dep:tikv-jemalloc-sys"]
 
@@ -30,6 +31,7 @@ tokio = { version = "1.54", features = ["net", "time"] }
 [lints.rust]
 unused_imports = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
+unsafe_op_in_unsafe_fn = "warn"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -38,6 +40,19 @@ empty_enums = "warn"
 enum_glob_use = "warn"
 equatable_if_let = "warn"
 mem_forget = "warn"
+# Unsafe hygiene, as in the rama workspace lint table.
+unnecessary_safety_doc = "warn"
+unnecessary_safety_comment = "warn"
+multiple_unsafe_ops_per_block = "warn"
+undocumented_unsafe_blocks = "warn"
+default_union_representation = "warn"
+ptr_as_ptr = "warn"
+ptr_cast_constness = "warn"
+as_ptr_cast_mut = "warn"
+borrow_as_ptr = "warn"
+ref_as_ptr = "warn"
+cast_ptr_alignment = "warn"
+transmute_ptr_to_ptr = "warn"
 unused_self = "warn"
 filter_map_next = "warn"
 needless_continue = "warn"

@@ -5,7 +5,10 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::{
+    extensions::{Extensions, ExtensionsRef},
+    io::poll_read_limited,
+};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use super::{ThrottleBudget, ThrottleMode};
@@ -121,20 +124,14 @@ where
 
         let reserved = ready!(state.poll_admit(cx, buf.remaining() as u64));
         let cap = (reserved as usize).min(buf.remaining());
-        let mut limited = buf.take(cap);
-        match this.stream.poll_read(cx, &mut limited) {
+        match poll_read_limited(this.stream, cx, buf, cap) {
             Poll::Pending => {
                 // An idle reader must not pin aggregate capacity. The inner
                 // reader registered this task's waker, so retry when it wakes.
                 state.settle(0);
                 Poll::Pending
             }
-            Poll::Ready(Ok(())) => {
-                let n = limited.filled().len();
-                // SAFETY: `limited` borrows the unfilled part of `buf` and the
-                // inner reader initialized+filled `n` bytes of it.
-                unsafe { buf.assume_init(n) };
-                buf.advance(n);
+            Poll::Ready(Ok(n)) => {
                 state.settle(n as u64);
                 Poll::Ready(Ok(()))
             }
@@ -314,6 +311,51 @@ mod tests {
         ) -> Poll<io::Result<()>> {
             Poll::Pending
         }
+    }
+
+    /// Keeps the replacement buffers reachable, so leak checkers do not report them.
+    static REPLACEMENT: std::sync::atomic::AtomicPtr<u8> =
+        std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+    /// an inner reader that replaces its `ReadBuf` with one over 16 filled
+    /// bytes of its own
+    struct Replacer;
+
+    impl AsyncRead for Replacer {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let own: &'static mut [u8] = Box::leak(vec![7u8; 64].into_boxed_slice());
+            REPLACEMENT.store(own.as_mut_ptr(), std::sync::atomic::Ordering::Relaxed);
+            let mut other = ReadBuf::new(own);
+            other.advance(16);
+            *buf = other;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    // A runtime without an IO driver, so Miri can run this test.
+    #[test]
+    #[should_panic(expected = "replaced the ReadBuf")]
+    fn read_rejects_replaced_read_buf() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let limiter = RateLimiter::new(Rate::per_sec(1_000_000), 1_000_000);
+            let mut throttled =
+                ThrottledIo::new(Replacer).with_read_mode(ThrottleMode::shared(limiter));
+            let mut storage = [std::mem::MaybeUninit::<u8>::uninit(); 64];
+            let mut buf = ReadBuf::uninit(&mut storage);
+            std::future::poll_fn(|cx| Pin::new(&mut throttled).poll_read(cx, &mut buf))
+                .await
+                .unwrap();
+            let sum: u32 = buf.filled().iter().copied().map(u32::from).sum();
+            assert!(sum < u32::MAX);
+        });
     }
 
     #[tokio::test(start_paused = true)]

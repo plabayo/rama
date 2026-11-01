@@ -26,6 +26,9 @@ typedef struct {
     size_t   len;
 } RamaSeBytes;
 
+// `RamaSeAccessibility` has only non-negative enumerators, so the C enum type is
+// `unsigned int`; the stubs take it as `uint32_t`.
+
 // Matches `RAMA_SE_ERR_UNAVAILABLE` on the real bridge.
 #define RAMA_SE_ERR_UNAVAILABLE (-1)
 
@@ -33,7 +36,7 @@ bool rama_apple_se_is_available(void) {
     return false;
 }
 
-int32_t rama_apple_se_p256_create(int32_t accessibility, RamaSeBytes* out_blob) {
+int32_t rama_apple_se_p256_create(uint32_t accessibility, RamaSeBytes* out_blob) {
     (void)accessibility;
     if (out_blob != NULL) {
         out_blob->ptr = NULL;

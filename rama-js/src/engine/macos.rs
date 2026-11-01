@@ -17,6 +17,8 @@ const EXECUTABLE_MEMORY_ENTITLEMENT: &str =
 type SecTaskRef = *const c_void;
 
 unsafe extern "C" {
+    /// XNU `<sys/codesign.h>`: for `CS_OPS_STATUS`, copies the `u32`
+    /// code-signing flags to `user_address`, writing at most `user_size` bytes.
     fn csops(pid: c_int, ops: c_uint, user_address: *mut c_void, user_size: usize) -> c_int;
 }
 
@@ -54,8 +56,8 @@ fn hardened_runtime_enabled() -> Result<bool, JsError> {
             format!("the current process ID is invalid on macOS: {err}"),
         )
     })?;
-    // SAFETY: `status` is a writable `u32` matching CS_OPS_STATUS's output,
-    // and its exact size is supplied to the kernel.
+    // SAFETY: `csops` writes at most `user_size` bytes to `user_address`:
+    // `&mut status` is an exclusive, aligned `u32` and `user_size` is its size.
     let result = unsafe {
         csops(
             pid,
@@ -77,8 +79,12 @@ fn hardened_runtime_enabled() -> Result<bool, JsError> {
 }
 
 fn has_executable_memory_entitlement() -> Result<bool, JsError> {
-    // SAFETY: the default allocator is valid for SecTaskCreateFromSelf.
-    let task = unsafe { SecTaskCreateFromSelf(kCFAllocatorDefault) };
+    // SAFETY: reading an extern static that CFBase.h declares `const`, so no
+    // write can race this read.
+    let allocator = unsafe { kCFAllocatorDefault };
+    // SAFETY: SecTask.h `SecTaskCreateFromSelf` takes a nullable allocator and
+    // returns null or a SecTask the caller must release (Create rule).
+    let task = unsafe { SecTaskCreateFromSelf(allocator) };
     if task.is_null() {
         return Err(JsError::new(
             JsErrorKind::Setup,
@@ -87,18 +93,21 @@ fn has_executable_memory_entitlement() -> Result<bool, JsError> {
     }
 
     let entitlement = CFString::new(EXECUTABLE_MEMORY_ENTITLEMENT);
-    // SAFETY: `task` and `entitlement` are live Core Foundation objects. The
-    // null error pointer opts out of a detailed CFError.
+    // SAFETY: SecTask.h `SecTaskCopyValueForEntitlement`: `task` is the
+    // non-null SecTask still owned here, `entitlement` a live CFString, and
+    // `error` is nullable. The result is null or +1 (Copy rule).
     let value = unsafe {
         SecTaskCopyValueForEntitlement(task, entitlement.as_concrete_TypeRef(), ptr::null_mut())
     };
-    // SAFETY: SecTaskCreateFromSelf returned this owned Core Foundation object.
+    // SAFETY: `CFRelease` needs a non-null CF object with a reference to
+    // give up: `task` is the +1 SecTask from above, released once, unused after.
     unsafe { core_foundation::base::CFRelease(task.cast()) };
 
     if value.is_null() {
         return Ok(false);
     }
-    // SAFETY: SecTaskCopyValueForEntitlement follows the Create Rule.
+    // SAFETY: `wrap_under_create_rule` takes over one owned reference to a
+    // valid CF object: `value` is non-null (checked) and +1 (Copy rule).
     let value = unsafe { CFType::wrap_under_create_rule(value) };
     Ok(value.downcast::<CFBoolean>().is_some_and(bool::from))
 }

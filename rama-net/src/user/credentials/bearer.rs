@@ -60,7 +60,8 @@ macro_rules! __bearer {
             i += 1;
         }
 
-        // SAFETY: the above algorithm guarantees bearer is valid
+        // SAFETY: the loop above rejected every byte outside the alphabet
+        // that `Bearer::new_unchecked`'s contract requires.
         unsafe {
             $crate::user::credentials::Bearer::new_unchecked(
                 $crate::__private::utils::str::non_empty_str!(__BEARER_TEXT),
@@ -85,9 +86,12 @@ impl Bearer {
     ///
     /// # Safety
     ///
-    /// Callee guarantees the given NonEmptyStr is a valid Bearer token.
-    /// This can be useful in case you create the bearer token from
-    /// a pre-validated non-empty str (e.g. in a macro at compile time).
+    /// The caller must ensure that `s` contains only bytes accepted by
+    /// [`Self::try_new`] (visible ASCII `0x21..=0x7E` minus `,`). This is a
+    /// semantic precondition (header framing), not a memory-safety one: no
+    /// unsafe code relies on it, and violating it cannot cause undefined
+    /// behaviour. Intended for a pre-validated str, such as the `bearer!`
+    /// macro's compile-time checked literal.
     pub const unsafe fn new_unchecked(s: NonEmptyStr) -> Self {
         Self(s)
     }

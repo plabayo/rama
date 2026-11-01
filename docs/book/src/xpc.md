@@ -174,9 +174,9 @@ peer verification, typed serde codecs (`xpc_serde`), a selector-based
 
 Contributions are appreciated and welcome.
 
-**`suspend` and `resume` must be balanced.** Calling `conn.suspend()` without a matching
-`conn.resume()` before the connection is released will crash the process. Imbalanced
-suspends are a programming error, not a runtime error.
+**`suspend` and `resume` are counted.** Pair every `conn.suspend()` with a `conn.resume()`.
+A `resume()` without a matching `suspend()` is ignored, and suspends still outstanding when the
+connection is dropped are resumed for you, because libxpc crashes the process on an imbalance.
 
 **`cancel` is idempotent.** Calling `conn.cancel()` multiple times is safe. The connection
 is also cancelled automatically when it is dropped.

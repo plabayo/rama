@@ -23,14 +23,21 @@ struct TcpServerCallbackContext {
     client_read_demand: Arc<Notify>,
 }
 
+/// # Safety
+///
+/// The caller must ensure `ctx` points to a live `TcpServerCallbackContext` and a
+/// non-empty `bytes` view is readable for its length, both for the call.
 unsafe extern "C" fn on_tcp_server_bytes(
     ctx: *mut c_void,
     bytes: bindings::RamaBytesView,
 ) -> bindings::RamaTcpDeliverStatus {
+    // SAFETY: live context by precondition; it is only ever shared (`&`).
     let ctx = unsafe { &*(ctx as *const TcpServerCallbackContext) };
     let payload = if bytes.ptr.is_null() || bytes.len == 0 {
         Vec::new()
     } else {
+        // SAFETY: non-null (checked) and readable for `len` bytes for this call by
+        // precondition; `u8` needs no alignment, and the bytes are copied here.
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
     _ = ctx.sender.send(Some(payload));
@@ -39,7 +46,11 @@ unsafe extern "C" fn on_tcp_server_bytes(
     bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED
 }
 
+/// # Safety
+///
+/// The caller must ensure `ctx` points to a live `TcpServerCallbackContext` for the call.
 unsafe extern "C" fn on_tcp_server_closed(ctx: *mut c_void) {
+    // SAFETY: live context by precondition; it is only ever shared (`&`).
     let ctx = unsafe { &*(ctx as *const TcpServerCallbackContext) };
     // The close marker shares the byte queue, so all accepted chunks drain first.
     _ = ctx.sender.send(None);
@@ -48,12 +59,21 @@ unsafe extern "C" fn on_tcp_server_closed(ctx: *mut c_void) {
 /// Resume signal from Rust: the per-flow ingress channel has space again.
 /// Wakes the harness's ingress reader, which is parked waiting to retry a
 /// chunk Rust rejected with `Paused`.
+///
+/// # Safety
+///
+/// The caller must ensure `ctx` points to a live `TcpServerCallbackContext` for the call.
 unsafe extern "C" fn on_tcp_client_read_demand(ctx: *mut c_void) {
+    // SAFETY: live context by precondition; it is only ever shared (`&`).
     let ctx = unsafe { &*(ctx as *const TcpServerCallbackContext) };
     ctx.client_read_demand.notify_one();
 }
 
+/// # Safety
+///
+/// The caller must ensure `ctx` points to a live `TcpEgressCallbackContext` for the call.
 unsafe extern "C" fn on_tcp_egress_read_demand(ctx: *mut c_void) {
+    // SAFETY: live context by precondition; it is only ever shared (`&`).
     let ctx = unsafe { &*(ctx as *const TcpEgressCallbackContext) };
     ctx.egress_read_demand.notify_one();
 }
@@ -67,21 +87,32 @@ struct TcpEgressCallbackContext {
     egress_read_demand: Arc<Notify>,
 }
 
+/// # Safety
+///
+/// The caller must ensure `ctx` points to a live `TcpEgressCallbackContext` and a
+/// non-empty `bytes` view is readable for its length, both for the call.
 unsafe extern "C" fn on_tcp_write_to_egress(
     ctx: *mut c_void,
     bytes: bindings::RamaBytesView,
 ) -> bindings::RamaTcpDeliverStatus {
+    // SAFETY: live context by precondition; it is only ever shared (`&`).
     let ctx = unsafe { &*(ctx as *const TcpEgressCallbackContext) };
     let payload = if bytes.ptr.is_null() || bytes.len == 0 {
         Vec::new()
     } else {
+        // SAFETY: non-null (checked) and readable for `len` bytes for this call by
+        // precondition; `u8` needs no alignment, and the bytes are copied here.
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
     _ = ctx.sender.send(Some(payload));
     bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED
 }
 
+/// # Safety
+///
+/// The caller must ensure `ctx` points to a live `TcpEgressCallbackContext` for the call.
 unsafe extern "C" fn on_tcp_close_egress(ctx: *mut c_void) {
+    // SAFETY: live context by precondition; it is only ever shared (`&`).
     let ctx = unsafe { &*(ctx as *const TcpEgressCallbackContext) };
     // The close marker shares the byte queue, so all accepted chunks drain first.
     _ = ctx.sender.send(None);
@@ -90,8 +121,11 @@ unsafe extern "C" fn on_tcp_close_egress(ctx: *mut c_void) {
 /// The connection task exclusively owns the session. Its pump futures are
 /// polled together, so calls that borrow the FFI session mutably cannot overlap.
 struct TcpSessionGuard {
+    // Safety invariant: 0 or a live TCP session owned by this guard, whose
+    // callbacks use the two contexts below.
     raw: usize,
-    // Keep the callback allocations stable and live through `session_free`.
+    // Safety invariant: not moved out of or dropped before `raw` is freed, so the
+    // registered context pointers stay live through `session_free`.
     server_context: Box<TcpServerCallbackContext>,
     egress_context: Box<TcpEgressCallbackContext>,
 }
@@ -100,6 +134,8 @@ impl Drop for TcpSessionGuard {
     fn drop(&mut self) {
         // Free first: it cancels the session and waits for callbacks already
         // holding the lifetime gate. Only then may the boxed contexts drop.
+        // SAFETY: `raw` is 0 (a no-op for `_free`) or the live session this guard
+        // owns (field invariant); the guard drops once, so it is freed once.
         unsafe {
             bindings::rama_transparent_proxy_tcp_session_free(
                 self.raw as *mut bindings::RamaTransparentProxyTcpSession,
@@ -285,10 +321,14 @@ async fn serve_one_ingress_connection(
             is_bound_is_set: false,
         };
 
+        // SAFETY: `engine.raw()` is live while `engine` is held; `meta` and
+        // the `remote_host` bytes are only read during the call; the server context
+        // is boxed in `session_guard`, which outlives the session (field invariant),
+        // and the callbacks meet their `# Safety` contracts for it.
         let result = unsafe {
             bindings::rama_transparent_proxy_engine_new_tcp_session(
-                engine.raw,
-                &meta,
+                engine.raw(),
+                &raw const meta,
                 bindings::RamaTransparentProxyTcpSessionCallbacks {
                     context: ptr::from_mut(session_guard.server_context.as_mut()).cast(),
                     on_server_bytes: Some(on_tcp_server_bytes),
@@ -312,6 +352,9 @@ async fn serve_one_ingress_connection(
     // Activate the session. Until this is called, bytes pushed via
     // `on_client_bytes` queue up in the engine's pending state and never
     // reach the service.
+    // SAFETY: `session` is the live session `session_guard` owns; the egress context
+    // is boxed in `session_guard` and outlives it (field invariant), and the
+    // callbacks meet their `# Safety` contracts for it.
     unsafe {
         bindings::rama_transparent_proxy_tcp_session_activate(
             session as *mut bindings::RamaTransparentProxyTcpSession,
@@ -358,6 +401,7 @@ async fn serve_one_ingress_connection(
         'outer: loop {
             // Replay any pending rejected chunk before reading new data.
             while let Some(chunk) = pending.take() {
+                // SAFETY: see `SESSION_CALLS` below.
                 let status = unsafe {
                     bindings::rama_transparent_proxy_tcp_session_on_egress_bytes(
                         egress_session as *mut bindings::RamaTransparentProxyTcpSession,
@@ -379,6 +423,7 @@ async fn serve_one_ingress_connection(
 
             match reader.read(&mut buf).await {
                 Ok(0) | Err(_) => {
+                    // SAFETY: see `SESSION_CALLS` below.
                     unsafe {
                         bindings::rama_transparent_proxy_tcp_session_on_egress_eof(
                             egress_session as *mut bindings::RamaTransparentProxyTcpSession,
@@ -387,6 +432,7 @@ async fn serve_one_ingress_connection(
                     break;
                 }
                 Ok(n) => {
+                    // SAFETY: see `SESSION_CALLS` below.
                     let status = unsafe {
                         bindings::rama_transparent_proxy_tcp_session_on_egress_bytes(
                             egress_session as *mut bindings::RamaTransparentProxyTcpSession,
@@ -419,6 +465,7 @@ async fn serve_one_ingress_connection(
         let mut pending: Option<Vec<u8>> = None;
         'ingress: loop {
             while let Some(chunk) = pending.take() {
+                // SAFETY: see `SESSION_CALLS` below.
                 let status = unsafe {
                     bindings::rama_transparent_proxy_tcp_session_on_client_bytes(
                         session as *mut bindings::RamaTransparentProxyTcpSession,
@@ -440,6 +487,7 @@ async fn serve_one_ingress_connection(
 
             match reader.read(&mut buf).await {
                 Ok(0) | Err(_) => {
+                    // SAFETY: see `SESSION_CALLS` below.
                     unsafe {
                         bindings::rama_transparent_proxy_tcp_session_on_client_eof(
                             session as *mut bindings::RamaTransparentProxyTcpSession,
@@ -448,6 +496,7 @@ async fn serve_one_ingress_connection(
                     break;
                 }
                 Ok(n) => {
+                    // SAFETY: see `SESSION_CALLS` below.
                     let status = unsafe {
                         bindings::rama_transparent_proxy_tcp_session_on_client_bytes(
                             session as *mut bindings::RamaTransparentProxyTcpSession,
@@ -470,6 +519,11 @@ async fn serve_one_ingress_connection(
         }
     };
 
+    // SESSION_CALLS: every pump FFI call passes the live session `session_guard`
+    // owns, plus (for `*_bytes`) a borrowed view of a live local buffer of exactly
+    // `len` bytes that the engine copies or reports `Paused` on. All four pumps are
+    // polled by the one `select!` loop below in this task, so no two calls on the
+    // session overlap, and they drop before `session_guard` frees the session.
     let mut server_writer = std::pin::pin!(server_writer);
     let mut egress_writer = std::pin::pin!(egress_writer);
     let mut egress_reader = std::pin::pin!(egress_reader);

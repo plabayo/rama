@@ -523,7 +523,7 @@ final class PromotedBulkTransferTests: XCTestCase {
         XCTAssertEqual(h.budget.snapshot().retainedBytes, 0)
     }
 
-    func testNativeNetworkBackpressureRetriesWithoutDroppingUpload() {
+    func testNativeNetworkSendErrorEndsUploadWithoutResend() {
         XCTAssertTrue(isTransientWriteBackpressure(NWError.posix(.ENOBUFS)))
         XCTAssertTrue(isTransientWriteBackpressure(NWError.posix(.EAGAIN)))
         XCTAssertFalse(isTransientWriteBackpressure(NWError.dns(ENOBUFS)))
@@ -532,13 +532,14 @@ final class PromotedBulkTransferTests: XCTestCase {
         let payload = pattern(1_024)
         h.flow.base.completeReadSynchronously(data: payload, error: nil)
         h.drain()
+        // The stack may already have sent part of an errored chunk.
         XCTAssertTrue(h.connection.completePendingSend(error: .posix(.ENOBUFS)))
         h.drain()
         h.advance(10_000)
-        XCTAssertFalse(h.done)
-        XCTAssertEqual(h.connection.sentChunks.compactMap(\.content), [payload, payload])
-        XCTAssertTrue(h.connection.completePendingSend())
-        h.drain()
+        XCTAssertTrue(h.done)
+        XCTAssertEqual(h.connection.sentChunks.compactMap(\.content), [payload])
+        XCTAssertGreaterThan(h.connection.forceCancelCount, 0, "an abnormal end resets the egress")
+        XCTAssertNotNil(h.flow.base.lastCloseReadError)
         XCTAssertEqual(h.budget.snapshot().retainedBytes, 0)
     }
 

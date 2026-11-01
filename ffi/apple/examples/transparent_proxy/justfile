@@ -237,6 +237,12 @@ test-e2e-sanitizers: test-e2e-asan run-tproxy-ffi-e2e-swift-tsan
 stress-traffic *ARGS:
     uv run --frozen --project ../../../../scripts/ci python ./scripts/stress_traffic.py {{ARGS}}
 
+# Opt-in: bulk uploads over a loopback port with dummynet loss and delay (needs sudo).
+[working-directory: '.']
+test-lossy-link *ARGS: build-tproxy-rs-debug
+    sudo -v
+    ./scripts/lossy_link_tests.sh {{ARGS}}
+
 # Private symbol exports and runtime calls with the newest installed Xcode.
 test-private-api-availability *ARGS:
     uv run --frozen --project ../../../../scripts/ci python ./scripts/private_api_availability.py {{ARGS}}

@@ -10,8 +10,9 @@
 //!
 //! # Buffers: [`IoBuf`] / [`IoBufMut`]
 //! An owned buffer is an [`IoBuf`] (its initialized bytes via `as_init() -> &[u8]`);
-//! a read *target* is an [`IoBufMut`] (writable backing via
-//! `as_uninit() -> &mut [MaybeUninit<u8>]`, with [`SetLen`] split out to declare the
+//! a read *target* is an [`IoBufMut`] (its initialized bytes via
+//! `as_mut_slice() -> &mut [u8]` and its writable spare via
+//! `spare_mut() -> &mut [MaybeUninit<u8>]`, with [`SetLen`] split out to declare the
 //! initialized length).
 //!
 //! **Reads overwrite from offset 0** (the compio/tokio-uring semantic), they fill
@@ -35,7 +36,10 @@ use std::io;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::bytes::{Bytes, BytesMut};
+use crate::{
+    bytes::{Bytes, BytesMut},
+    io::poll_read_limited,
+};
 
 /// Result of an owned-buffer IO operation: the [`io::Result`] plus the buffer
 /// handed back to the caller (ownership round-trips through the operation).
@@ -44,15 +48,18 @@ pub type BufResult<T, B> = (io::Result<T>, B);
 /// An owned, stable byte buffer that can back an IO read or write.
 ///
 /// # Safety
-/// The backing storage must stay valid and at a **fixed address for as long as a
-/// backend owns the buffer during an in-flight op**: from when the backend reads
-/// [`buf_ptr`](IoBuf::buf_ptr) / [`buf_mut_ptr`](IoBufMut::buf_mut_ptr) until the
-/// op completes (the kernel may read/write it after the call returns). A heap
-/// buffer (`Vec`/`BytesMut`/`Bytes`) satisfies this trivially, moving the handle
-/// moves a header, not the allocation. An **inline** (stack) buffer ([`ArrayBuf`])
-/// satisfies it too if: a completion backend moves the buffer into its op-slab
-/// *before* taking the pointer and does not move it again until the CQE, so the
-/// address the kernel sees stays fixed for the op.
+/// Implementors must ensure that the backing storage stays valid and at a **fixed
+/// address for as long as a backend owns the buffer during an in-flight op**: from
+/// when the backend takes a pointer ([`buf_ptr`](IoBuf::buf_ptr), or that of
+/// [`spare_mut`](IoBufMut::spare_mut)) until the op completes (the kernel may
+/// read/write it after the call returns). A heap buffer (`Vec`/`BytesMut`/`Bytes`)
+/// satisfies this trivially, moving the handle moves a header, not the allocation.
+/// An **inline** (stack) buffer ([`ArrayBuf`]) satisfies it too if: a completion
+/// backend moves the buffer into its op-slab *before* taking the pointer and does
+/// not move it again until the CQE, so the address the kernel sees stays fixed for
+/// the op.
+///
+/// An override of a provided method must return what the provided method returns.
 pub unsafe trait IoBuf: Send + 'static {
     /// The initialized (readable / already-written) bytes.
     ///
@@ -128,58 +135,58 @@ pub trait SetLen {
     /// Set the initialized length to `len`.
     ///
     /// # Safety
-    /// The first `len` bytes must actually be initialized and `len` must be `<=`
-    /// the buffer's total capacity.
+    /// The caller must ensure that the first `len` bytes of the buffer's backing
+    /// storage are initialized and that `len` is at most the buffer's total
+    /// capacity.
     unsafe fn set_len(&mut self, len: usize);
 }
 
 /// An [`IoBuf`] that can also be written into (i.e. used as a read destination).
 ///
+/// The backing storage `S` is the initialized prefix `S[..buf_len]` followed by
+/// the writable, possibly uninitialized spare `S[buf_len..]`. Safe access is split
+/// along that line, so safe code cannot write uninitialized bytes over the prefix:
+/// [`as_mut_slice`](IoBufMut::as_mut_slice) for the prefix,
+/// [`spare_mut`](IoBufMut::spare_mut) for the spare.
+///
+/// A backend that reads from offset 0 first calls `set_len(0)`, which makes the
+/// spare all of `S`; a kernel read target uses `spare_mut()`'s pointer and length.
+///
+/// ```compile_fail
+/// use core::mem::MaybeUninit;
+/// use rama_core::io::IoBufMut;
+///
+/// // There is no safe whole-storage view to de-initialize the prefix through.
+/// fn deinit(b: &mut impl IoBufMut) {
+///     b.as_uninit()[0] = MaybeUninit::uninit();
+/// }
+/// ```
+///
 /// # Safety
-/// [`as_uninit`](IoBufMut::as_uninit) must expose the buffer's full backing storage
-/// — the initialized prefix `[0, buf_len)` followed by writable spare
-/// `[buf_len, capacity)` — and the spare must be safe to write. Same address
-/// stability contract as [`IoBuf`].
+/// Implementors must ensure that the value has one backing storage `S`, with the
+/// address stability contract of [`IoBuf`], such that while the value is used only
+/// through this trait and its supertraits:
+///
+/// 1. `S[..buf_len()]` is initialized; [`as_init`](IoBuf::as_init) and
+///    [`as_mut_slice`](IoBufMut::as_mut_slice) return that range of `S`, and
+///    [`spare_mut`](IoBufMut::spare_mut) returns `S[buf_len()..]` (views of `S`,
+///    not copies).
+/// 2. [`set_len(n)`](SetLen::set_len), called within its contract, makes `buf_len()`
+///    return `n` and leaves the bytes of `S` unchanged.
+/// 3. No other method changes `buf_len()`, the address of `S`, or its length.
 pub unsafe trait IoBufMut: IoBuf + SetLen {
-    /// The full backing storage as possibly-uninitialized bytes: the initialized
-    /// prefix `[0, buf_len)` plus the writable spare `[buf_len, capacity)`.
-    ///
-    /// The core accessor: capacity, the raw pointer, and the read-target spare
-    /// all derive from it, and a reader fills [`spare_mut`](IoBufMut::spare_mut)
-    /// (a safe `&mut [MaybeUninit<u8>]`) instead of doing raw pointer arithmetic.
-    fn as_uninit(&mut self) -> &mut [MaybeUninit<u8>];
-
-    /// Total capacity (`as_uninit().len()`).
-    #[inline]
-    fn buf_capacity(&mut self) -> usize {
-        self.as_uninit().len()
-    }
-
-    /// Raw mutable pointer to the start of the backing storage: for a kernel/FFI
-    /// read target (io_uring recv). Most code should prefer
-    /// [`spare_mut`](IoBufMut::spare_mut).
-    ///
-    /// Warning: make sure to read SAFETY rules of [`IoBufMut`]
-    #[inline]
-    fn buf_mut_ptr(&mut self) -> *mut u8 {
-        self.as_uninit().as_mut_ptr().cast()
-    }
-
-    /// The writable spare tail `[buf_len, capacity)` — the read destination.
-    #[inline]
-    fn spare_mut(&mut self) -> &mut [MaybeUninit<u8>] {
-        let len = self.buf_len();
-        &mut self.as_uninit()[len..]
-    }
-
     /// The **initialized** region `[0, buf_len)` as a mutable slice, for an
     /// in-place transform (e.g. decrypting a TLS record inside the very buffer it
     /// arrived in, no copy).
+    fn as_mut_slice(&mut self) -> &mut [u8];
+
+    /// The writable spare tail `[buf_len, capacity)`: the read destination.
+    fn spare_mut(&mut self) -> &mut [MaybeUninit<u8>];
+
+    /// Total capacity (`buf_len() + spare_mut().len()`).
     #[inline]
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        let len = self.buf_len();
-        // SAFETY: `[0, buf_len)` is initialized.
-        unsafe { self.as_uninit()[..len].assume_init_mut() }
+    fn buf_capacity(&mut self) -> usize {
+        self.buf_len() + self.spare_mut().len()
     }
 
     /// A read-target view of just the writable spare `[buf_len, capacity)`.
@@ -192,6 +199,7 @@ pub unsafe trait IoBufMut: IoBuf + SetLen {
     where
         Self: Sized,
     {
+        // Establishes `Uninit`'s field invariant: `begin == buf.buf_len()`.
         let begin = self.buf_len();
         Uninit { buf: self, begin }
     }
@@ -216,9 +224,9 @@ impl<B> Slice<B> {
     }
 }
 
-// SAFETY: the view points into `buf`'s stable storage and `[begin, end)` was
-// checked to be within `buf`'s initialized region in `IoBuf::slice`, so it's a
-// valid write source. (A read *target* is a [`Uninit`], not a [`Slice`].)
+// SAFETY: the storage is `buf`'s, so `B: IoBuf` gives the address stability, and
+// the provided methods are not overridden. `as_init` only reslices `buf.as_init()`
+// (bounds-checked). (A read *target* is a [`Uninit`], not a [`Slice`].)
 unsafe impl<B: IoBuf> IoBuf for Slice<B> {
     #[inline]
     fn as_init(&self) -> &[u8] {
@@ -230,8 +238,13 @@ unsafe impl<B: IoBuf> IoBuf for Slice<B> {
 /// into it **appends** to the underlying (the view's offset 0 is the underlying's
 /// `buf_len`). Created by [`IoBufMut::uninit`]; recover the buffer with
 /// [`into_inner`](Uninit::into_inner).
+///
+/// The view's own initialized region is what was read into it since
+/// [`uninit`](IoBufMut::uninit).
 #[derive(Debug)]
 pub struct Uninit<B> {
+    // Safety invariant: `begin <= buf.buf_len()`, so by `B`'s [`IoBufMut`] law 1
+    // the first `begin` bytes of `buf`'s storage are initialized.
     buf: B,
     begin: usize,
 }
@@ -245,30 +258,49 @@ impl<B> Uninit<B> {
     }
 }
 
-// SAFETY: a spare view exposes no readable bytes, `as_init` is empty.
+// SAFETY: the storage is part of `buf`'s, so `B: IoBuf` gives the address
+// stability, and the provided methods are not overridden. `as_init` only reslices
+// `buf.as_init()` (bounds-checked).
 unsafe impl<B: IoBuf> IoBuf for Uninit<B> {
     #[inline]
     fn as_init(&self) -> &[u8] {
-        &[]
+        &self.buf.as_init()[self.begin..]
     }
 }
 
-impl<B: SetLen + IoBuf> SetLen for Uninit<B> {
+impl<B: IoBufMut> SetLen for Uninit<B> {
     #[inline]
     unsafe fn set_len(&mut self, len: usize) {
-        // `len` is relative to the spare's start, declare `begin + len` init on the
-        // underlying buffer.
+        // SAFETY: `B::set_len(begin + len)` needs the first `begin + len` bytes of
+        // `buf`'s storage initialized and `begin + len <= buf.buf_capacity()`.
+        // - This fn's contract: the view's first `len` bytes, i.e. `buf`'s bytes
+        //   `[begin, begin + len)`, are initialized, and `len <= self.buf_capacity()`,
+        //   which is `buf.buf_capacity() - begin` (so the sum cannot overflow).
+        // - `buf`'s first `begin` bytes are initialized by the field invariant.
+        // Keeps the field invariant: by `B`'s law 2, `buf.buf_len()` becomes `begin + len`.
         unsafe { self.buf.set_len(self.begin + len) };
     }
 }
 
-// SAFETY: `[begin, capacity)` of `buf`'s backing is owned, writable spare: same
-// stability contract as `buf`.
+// SAFETY: the view's storage `V` is `buf`'s storage `S` from `begin`, and with the
+// field invariant (`begin <= buf.buf_len()`) the laws follow from `B`'s:
+// 1. `as_init`/`as_mut_slice` return `S[begin..buf.buf_len()]`, which is
+//    `V[..self.buf_len()]` and initialized; `spare_mut` returns
+//    `S[buf.buf_len()..]`, which is `V[self.buf_len()..]`.
+// 2. `set_len(n)` sets `buf.buf_len()` to `begin + n`, so `self.buf_len() == n`,
+//    and leaves the bytes unchanged.
+// 3. Nothing else changes `buf.buf_len()`, `begin`, or `S`.
+// Address stability is `B`'s; the provided methods are not overridden.
 unsafe impl<B: IoBufMut> IoBufMut for Uninit<B> {
     #[inline]
-    fn as_uninit(&mut self) -> &mut [MaybeUninit<u8>] {
+    fn as_mut_slice(&mut self) -> &mut [u8] {
         let begin = self.begin;
-        &mut self.buf.as_uninit()[begin..]
+        &mut self.buf.as_mut_slice()[begin..]
+    }
+
+    #[inline]
+    fn spare_mut(&mut self) -> &mut [MaybeUninit<u8>] {
+        self.buf.spare_mut()
     }
 }
 
@@ -552,26 +584,30 @@ impl<T: AsyncRead + Unpin + Send + ?Sized> AsyncReadOwned for T {
             .take()
             .expect("poll_read_owned: slot empty (readiness never moves the buffer to a leaf)");
 
-        // overwrite-from-0: read into the whole buffer from offset 0 (the ecosystem
-        // semantic). Accumulate via `buf.uninit()`, which passes a spare-view here.
-        let (res, n) = {
-            let mut rb = ReadBuf::uninit(buf.as_uninit());
-            let res = Pin::new(&mut *self).poll_read(cx, &mut rb);
-            let n = rb.filled().len();
-            (res, n)
+        // overwrite-from-0: empty the buffer, so its spare is all of it, and read
+        // there (the ecosystem semantic). Accumulate via `buf.uninit()`, which passes
+        // a spare-view here.
+        // SAFETY: `set_len(0)` needs zero initialized bytes and `0 <= capacity`.
+        unsafe { buf.set_len(0) };
+        let res = {
+            let mut rb = ReadBuf::uninit(buf.spare_mut());
+            poll_read_limited(Pin::new(&mut *self), cx, &mut rb, usize::MAX)
         };
 
-        // SAFETY: `poll_read` initialized the first `n` bytes of the buffer.
-        unsafe { buf.set_len(n) };
+        if let Poll::Ready(Ok(n)) = res {
+            // SAFETY: `set_len(n)` needs the first `n` bytes of the storage `S`
+            // initialized and `n <= capacity`. `buf_len()` is 0 since `set_len(0)`
+            // ([`IoBufMut`] law 2), so `spare_mut()` was all of `S` (law 1). `rb`
+            // wrapped it with nothing filled, so by `poll_read_limited`'s
+            // safety-usable invariant its first `n` bytes are initialized and `n`
+            // is at most its length.
+            unsafe { buf.set_len(n) };
+        }
 
         match res {
-            Poll::Ready(Ok(())) => {
+            Poll::Ready(res) => {
                 slot.fill(buf);
-                Poll::Ready(Ok(n))
-            }
-            Poll::Ready(Err(e)) => {
-                slot.fill(buf);
-                Poll::Ready(Err(e))
+                Poll::Ready(res)
             }
             // readiness parks the buffer in the slot across `Pending`.
             Poll::Pending => {
@@ -626,9 +662,9 @@ impl<T: AsyncWrite + Unpin + Send + ?Sized> AsyncWriteOwned for T {
     }
 }
 
-// SAFETY: a `Vec`'s heap allocation is stable across moves of the `Vec` handle,
-// `len`/`capacity` bound the initialized and total regions; `set_len` is the
-// canonical way to declare initialized bytes.
+// SAFETY: the storage is the `Vec`'s heap buffer, which a move of the
+// `(pointer, capacity, length)` handle does not move (`Vec` "Guarantees").
+// Provided methods are not overridden.
 unsafe impl IoBuf for Vec<u8> {
     #[inline]
     fn as_init(&self) -> &[u8] {
@@ -639,24 +675,32 @@ unsafe impl IoBuf for Vec<u8> {
 impl SetLen for Vec<u8> {
     #[inline]
     unsafe fn set_len(&mut self, len: usize) {
-        // SAFETY: forwarded contract: caller guarantees `len` bytes are
-        // initialized and `len <= capacity()`.
+        // SAFETY: `Vec::set_len` needs `len <= capacity()` and the elements up to
+        // `len` initialized: this fn's contract, as the storage is the `Vec`'s buffer.
         unsafe { Self::set_len(self, len) };
     }
 }
 
+// SAFETY: `S` is the `Vec`'s buffer of `capacity()` bytes, of which the first
+// `len()` are initialized (`Vec` "Guarantees").
+// 1. `as_init`/`as_mut_slice` are `S[..len()]`; `spare_capacity_mut` is
+//    `S[len()..capacity()]` (std docs).
+// 2. `Vec::set_len` only sets the length.
+// 3. None of these methods reallocate or change the length.
 unsafe impl IoBufMut for Vec<u8> {
     #[inline]
-    fn as_uninit(&mut self) -> &mut [MaybeUninit<u8>] {
-        let cap = self.capacity();
-        let ptr = self.as_mut_ptr().cast::<MaybeUninit<u8>>();
-        // SAFETY: `[0, cap)` is the Vec's allocation, the init prefix stays valid
-        // and the spare is writable.
-        unsafe { std::slice::from_raw_parts_mut(ptr, cap) }
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        Self::as_mut_slice(self)
+    }
+
+    #[inline]
+    fn spare_mut(&mut self) -> &mut [MaybeUninit<u8>] {
+        self.spare_capacity_mut()
     }
 }
 
-// SAFETY: `BytesMut`'s allocation is stable across moves of the handle.
+// SAFETY: the storage is the heap region the `BytesMut` handle refers to, which a
+// move of the handle does not move. Provided methods are not overridden.
 unsafe impl IoBuf for BytesMut {
     #[inline]
     fn as_init(&self) -> &[u8] {
@@ -667,26 +711,34 @@ unsafe impl IoBuf for BytesMut {
 impl SetLen for BytesMut {
     #[inline]
     unsafe fn set_len(&mut self, len: usize) {
-        // SAFETY: forwarded contract: caller guarantees `len` bytes are
-        // initialized and `len <= capacity()`.
+        // SAFETY: `BytesMut::set_len` needs the first `len` bytes initialized and
+        // `len <= capacity()`: this fn's contract.
         unsafe { Self::set_len(self, len) };
     }
 }
 
+// SAFETY: `S` is the `BytesMut`'s region of `capacity()` bytes, whose first
+// `len()` are initialized.
+// 1. `as_init`/`as_mut_slice` deref to `S[..len()]`; `spare_capacity_mut` is
+//    `S[len()..capacity()]` (bytes docs).
+// 2. `BytesMut::set_len` only sets the length.
+// 3. None of these methods reallocate or change the length.
 unsafe impl IoBufMut for BytesMut {
     #[inline]
-    fn as_uninit(&mut self) -> &mut [MaybeUninit<u8>] {
-        let cap = self.capacity();
-        let ptr = self.as_mut_ptr().cast::<MaybeUninit<u8>>();
-        // SAFETY: `[0, cap)` is `BytesMut`'s contiguous allocation, init prefix
-        // stays valid and the spare is writable.
-        unsafe { std::slice::from_raw_parts_mut(ptr, cap) }
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        self
+    }
+
+    #[inline]
+    fn spare_mut(&mut self) -> &mut [MaybeUninit<u8>] {
+        self.spare_capacity_mut()
     }
 }
 
 // `Bytes` is immutable shared storage: readable but not a valid read target
 //
-// SAFETY: `Bytes`'s backing storage is stable across moves of the handle.
+// SAFETY: the storage is the static or heap region the `Bytes` handle refers to,
+// which a move of the handle does not move. Provided methods are not overridden.
 unsafe impl IoBuf for Bytes {
     #[inline]
     fn as_init(&self) -> &[u8] {
@@ -703,6 +755,7 @@ unsafe impl IoBuf for Bytes {
 /// io_uring-safe: like any [`IoBuf`] it is moved into the backend's op-slab for the
 /// duration of an in-flight op, which pins its address for the kernel.
 pub struct ArrayBuf<const N: usize> {
+    // Safety invariant: `init <= N` and `buf[..init]` is initialized.
     buf: [MaybeUninit<u8>; N],
     init: usize,
 }
@@ -724,8 +777,12 @@ impl<const N: usize> ArrayBuf<N> {
             return Err(self);
         }
 
-        // SAFETY: `init == N`, so every element is initialized.
-        Ok(self.buf.map(|b| unsafe { b.assume_init() }))
+        Ok(self.buf.map(|b| {
+            // SAFETY: `assume_init` needs `b` initialized. `b` is an element of
+            // `buf`, all of which is initialized: `init == N` (checked above) and
+            // the field invariant.
+            unsafe { b.assume_init() }
+        }))
     }
 }
 
@@ -736,12 +793,13 @@ impl<const N: usize> Default for ArrayBuf<N> {
     }
 }
 
-// SAFETY: the inline `[u8; N]` is the backing storage and `init <= N`. Address
-// stability across an in-flight op is provided by the op-slab (see `IoBuf`).
+// SAFETY: the storage is the inline `buf`; address stability across an in-flight
+// op comes from the op-slab (see `IoBuf`). Provided methods are not overridden.
 unsafe impl<const N: usize> IoBuf for ArrayBuf<N> {
     #[inline]
     fn as_init(&self) -> &[u8] {
-        // SAFETY: `[0, init)` is initialized (upheld by `SetLen::set_len`).
+        // SAFETY: `assume_init_ref` needs `buf[..init]` initialized: the field
+        // invariant (the slice index is also bounds-checked).
         unsafe { self.buf[..self.init].assume_init_ref() }
     }
 }
@@ -750,14 +808,30 @@ impl<const N: usize> SetLen for ArrayBuf<N> {
     #[inline]
     unsafe fn set_len(&mut self, len: usize) {
         debug_assert!(len <= N);
+        // Keeps the field invariant: this fn's contract gives `len <= N` (the
+        // capacity) and `buf[..len]` initialized.
         self.init = len;
     }
 }
 
+// SAFETY: `S` is `buf`, of `N` bytes.
+// 1. `as_init`/`as_mut_slice` are `buf[..init]`, initialized by the field
+//    invariant; `spare_mut` is `buf[init..]`.
+// 2. `set_len(n)` sets `init = n` and does not touch `buf`.
+// 3. Only `set_len` writes `init`.
 unsafe impl<const N: usize> IoBufMut for ArrayBuf<N> {
     #[inline]
-    fn as_uninit(&mut self) -> &mut [MaybeUninit<u8>] {
-        &mut self.buf
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `assume_init_mut` needs `buf[..init]` initialized: the field
+        // invariant (the slice index is also bounds-checked). The `&mut [u8]` lets
+        // safe code write only initialized bytes, which keeps the invariant.
+        unsafe { self.buf[..self.init].assume_init_mut() }
+    }
+
+    #[inline]
+    fn spare_mut(&mut self) -> &mut [MaybeUninit<u8>] {
+        // Writes here never reach `buf[..init]`, which keeps the field invariant.
+        &mut self.buf[self.init..]
     }
 }
 
@@ -810,23 +884,107 @@ mod tests {
     #[test]
     fn array_buf_try_into_array_requires_full_init() {
         let mut partial = ArrayBuf::<4>::new();
+        partial.spare_mut()[..2].copy_from_slice(&[MaybeUninit::new(b't'), MaybeUninit::new(b'e')]);
+        // SAFETY: the first 2 bytes were just written and 2 <= 4.
         unsafe { partial.set_len(2) };
         let partial = partial.try_into_array().unwrap_err();
-        assert_eq!(partial.buf_len(), 2);
+        assert_eq!(partial.as_init(), b"te");
 
         let mut full = ArrayBuf::<4>::new();
-        full.as_uninit()[..4].copy_from_slice(&[
+        full.spare_mut()[..4].copy_from_slice(&[
             MaybeUninit::new(b't'),
             MaybeUninit::new(b'e'),
             MaybeUninit::new(b's'),
             MaybeUninit::new(b't'),
         ]);
+        // SAFETY: all 4 bytes were just written.
         unsafe { full.set_len(4) };
 
         let Ok(full) = full.try_into_array() else {
             panic!("fully initialized ArrayBuf should convert to an array")
         };
         assert_eq!(full, *b"test");
+    }
+
+    /// Checks the [`IoBufMut`] views of a buffer holding the initialized bytes `init`.
+    fn assert_views<B: IoBufMut>(buf: &mut B, init: &[u8], cap: usize) {
+        assert_eq!(buf.as_init(), init);
+        assert_eq!(buf.as_mut_slice(), init);
+        assert_eq!(buf.buf_capacity(), cap);
+        let prefix_end = buf.as_mut_slice().as_mut_ptr_range().end;
+        let spare = buf.spare_mut();
+        assert_eq!(spare.len(), cap - init.len());
+        if !spare.is_empty() {
+            assert_eq!(spare.as_mut_ptr().cast::<u8>(), prefix_end);
+        }
+        // the spare is the only `MaybeUninit` view: de-initializing all of it
+        // leaves the prefix readable
+        spare.fill(MaybeUninit::uninit());
+        assert_eq!(buf.as_init(), init);
+    }
+
+    #[test]
+    fn io_buf_mut_views_split_at_buf_len() {
+        let mut vec = Vec::with_capacity(8);
+        vec.extend_from_slice(b"abc");
+        let cap = vec.capacity();
+        assert_views(&mut vec, b"abc", cap);
+
+        let mut bytes = BytesMut::with_capacity(8);
+        bytes.extend_from_slice(b"abc");
+        let cap = bytes.capacity();
+        assert_views(&mut bytes, b"abc", cap);
+
+        let mut array = ArrayBuf::<8>::new();
+        array.spare_mut()[..3].copy_from_slice(&[
+            MaybeUninit::new(b'a'),
+            MaybeUninit::new(b'b'),
+            MaybeUninit::new(b'c'),
+        ]);
+        // SAFETY: the first 3 bytes were just written and 3 <= 8.
+        unsafe { array.set_len(3) };
+        assert_views(&mut array, b"abc", 8);
+
+        let mut view = vec.uninit();
+        assert_views(&mut view, b"", cap - 3);
+        view.spare_mut()[..2].copy_from_slice(&[MaybeUninit::new(b'x'), MaybeUninit::new(b'y')]);
+        // SAFETY: the view's first 2 bytes were just written and 2 <= cap - 3.
+        unsafe { view.set_len(2) };
+        assert_views(&mut view, b"xy", cap - 3);
+        assert_eq!(view.into_inner(), b"abcxy");
+    }
+
+    /// Keeps the replacement buffers reachable, so leak checkers do not report them.
+    static REPLACEMENT: std::sync::atomic::AtomicPtr<u8> =
+        std::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+    /// A reader that replaces its `ReadBuf` with one over 16 filled bytes of its own.
+    struct Replacer;
+
+    impl AsyncRead for Replacer {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let own: &'static mut [u8] = Box::leak(vec![7u8; 64].into_boxed_slice());
+            REPLACEMENT.store(own.as_mut_ptr(), std::sync::atomic::Ordering::Relaxed);
+            let mut other = ReadBuf::new(own);
+            other.advance(16);
+            *buf = other;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "replaced the ReadBuf")]
+    fn owned_read_rejects_replaced_read_buf() {
+        let mut slot = BufSlot::new(Vec::<u8>::with_capacity(64));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let res = Replacer.poll_read_owned(&mut cx, &mut slot);
+        assert!(res.is_ready());
+        let sum: u32 = slot.reclaim().unwrap().into_iter().map(u32::from).sum();
+        assert!(sum < u32::MAX);
     }
 
     #[tokio::test]
