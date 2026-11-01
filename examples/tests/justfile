@@ -65,7 +65,13 @@ http3-interop PEER BACKEND="boring":
     uv sync --frozen --project rama-quic/e2e/aioquic-interop
     cargo fmt --manifest-path rama-quic/e2e/http-interop/Cargo.toml -- --check
     cargo clippy --manifest-path rama-quic/e2e/http-interop/Cargo.toml --locked --features {{BACKEND}} --all-targets -- -D warnings
-    RAMA_HTTP_INTEROP_PEER={{quote(PEER)}} cargo test --manifest-path rama-quic/e2e/http-interop/Cargo.toml --locked --features {{BACKEND}} -- --include-ignored
+    RAMA_HTTP_INTEROP_PEER={{quote(PEER)}} cargo test --manifest-path rama-quic/e2e/http-interop/Cargo.toml --locked --features {{BACKEND}} --test external --test dynamic_qpack -- --include-ignored
+
+# CONNECT-IP uses its own pinned Go library and in-memory IP packet endpoints.
+connect-ip-interop PEER BACKEND="boring":
+    cargo fmt --manifest-path rama-quic/e2e/http-interop/Cargo.toml -- --check
+    cargo clippy --manifest-path rama-quic/e2e/http-interop/Cargo.toml --locked --features {{BACKEND}} --test connect_ip -- -D warnings
+    RAMA_CONNECT_IP_INTEROP_PEER={{quote(PEER)}} cargo test --manifest-path rama-quic/e2e/http-interop/Cargo.toml --locked --features {{BACKEND}} --test connect_ip -- --include-ignored
 
 # Recompute golden reports from checked-in traffic; review the resulting diff.
 native-relay-snapshots:

@@ -93,6 +93,23 @@ here; see the cross-references at the bottom.
 
 ### IP
 
+Packet parsing and construction in [`src/ip/`](../src/ip/):
+
+* [rfc791.txt](./ip/rfc791.txt) — IPv4 headers, options and fragmentation.
+  Traffic class remains raw DSCP/ECN bits; identification is caller-owned.
+* [rfc8200.txt](./ip/rfc8200.txt) — IPv6 base/extension headers and fragments.
+  Structural parsing is bounded; there is no reassembly or option execution.
+  RFC 9673 changes router Hop-by-Hop processing, not these wire layouts.
+* [rfc1071.txt](./ip/rfc1071.txt) — one's-complement Internet checksum.
+  Edits recompute the header checksum rather than using the incremental formula
+  corrected by RFC 1624.
+* [rfc792.txt](./ip/rfc792.txt) and [rfc4443.txt](./ip/rfc4443.txt) — ICMPv4/v6
+  forwarding errors, bounded quotations and checksums. No deprecated Source
+  Quench generation or RFC 4884 extension objects.
+* [rfc1812.txt](./ip/rfc1812.txt) and [rfc8201.txt](./ip/rfc8201.txt) — hop limits,
+  error suppression and Packet Too Big metadata; route/PMTU state belongs to callers.
+
+
 Specifications enumerated by
 [`src/stream/matcher/private_ip.rs`](../src/stream/matcher/private_ip.rs):
 

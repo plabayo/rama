@@ -1023,7 +1023,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: examples/tests/masque_interop/peer/go.mod
-          cache-dependency-path: examples/tests/masque_interop/peer/go.sum
+          cache-dependency-path: |
+            examples/tests/masque_interop/peer/go.sum
+            examples/tests/masque_interop/ip-peer/go.sum
       - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: just
@@ -1048,7 +1050,21 @@ jobs:
               | tee "$RUNNER_TEMP/http3-interop-$backend.log" || failed=1
           done
           exit "$failed"
-      - name: Retain HTTP/3 and CONNECT-UDP diagnostics
+      - name: Build independent CONNECT-IP peer
+        id: ip-peer
+        if: ${{ !cancelled() }}
+        run: go -C examples/tests/masque_interop/ip-peer build -o "$RUNNER_TEMP/connect-ip-peer" .
+      - name: CONNECT-IP carriers and independent dual-stack packet exchange
+        if: ${{ !cancelled() && steps.ip-peer.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          failed=0
+          for backend in boring rustls-ring rustls-aws-lc; do
+            just examples/tests/connect-ip-interop "$RUNNER_TEMP/connect-ip-peer" "$backend" 2>&1 \
+              | tee "$RUNNER_TEMP/connect-ip-interop-$backend.log" || failed=1
+          done
+          exit "$failed"
+      - name: Retain HTTP/3 and MASQUE diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -1056,6 +1072,7 @@ jobs:
           path: |
             ${{ runner.temp }}/masque-interop
             ${{ runner.temp }}/http3-interop-*.log
+            ${{ runner.temp }}/connect-ip-interop-*.log
           if-no-files-found: warn
           retention-days: 7
 

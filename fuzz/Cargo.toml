@@ -344,6 +344,20 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ip_packet"
+path = "fuzz_targets/ip_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "masque_connect_ip"
+path = "fuzz_targets/masque_connect_ip.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 arbitrary = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }

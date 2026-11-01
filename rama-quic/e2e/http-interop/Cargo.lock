@@ -2384,6 +2384,7 @@ name = "rama-http3-independent-interop"
 version = "0.0.0"
 dependencies = [
  "rama",
+ "rama-masque",
  "rama-quic-interop-common",
  "serde_json",
  "sha2",
@@ -2437,6 +2438,7 @@ dependencies = [
  "rama-http",
  "rama-net",
  "rama-quic-proto",
+ "rama-tls",
  "rama-udp",
  "rama-utils",
  "tokio",

@@ -4,6 +4,9 @@ MASQUE is a set of IETF protocols for proxying traffic other than TCP through HT
 implements CONNECT-UDP ([RFC 9298]): a client asks the proxy for a UDP tunnel to a target,
 and the UDP payloads travel inside that HTTP request. Its main use is HTTP/3, whose QUIC
 connections run over UDP and so cannot go through an ordinary `CONNECT` tunnel.
+Rama also provides CONNECT-IP ([RFC 9484](https://www.rfc-editor.org/rfc/rfc9484.html))
+for complete IPv4/IPv6 packets, address assignments and route advertisements.
+This is a library packet API; the CLI examples below continue to use CONNECT-UDP.
 
 <div class="book-article-image-center">
 
@@ -296,3 +299,64 @@ carrier HTTP-version translation are outside this adapter's scope.
 [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 [RFC 9297]: https://datatracker.ietf.org/doc/html/rfc9297
 [example]: https://github.com/plabayo/rama/blob/main/examples/src/masque_connect_udp_proxy.rs
+
+
+## CONNECT-IP packet sessions
+
+`rama::proxy::masque::connect_ip` provides `ConnectIpTemplate`, the `connect_ip`
+client helper, and `ConnectIpService`. It uses the same H1/H2/H3 carrier machinery
+as CONNECT-UDP. A service has two application components: admission authorizes the
+request and supplies `ConnectIpSessionConfig`; a handler receives the accepted
+`ConnectIpSession` and exchanges complete IP packets and control messages.
+Authentication layers run before admission. The local packet policy defaults to
+deny all and intersects configured sources/destinations with the requested scope
+and, when enabled, peer assignments/routes. Advertising a route does not authorize it.
+Hostname targets resolve once during admission, are bounded and filtered by policy,
+and remain pinned for the session. The handler can inspect `session.policy()` to
+advertise the approved routes; it owns address allocation.
+
+`send_control` sends address requests, complete assignment snapshots or complete
+route snapshots. Empty assignments/routes withdraw prior state. `recv` reports
+validated control changes, authorized packets and packet drop reasons. The state
+and packet counters are available without exposing payloads in telemetry. A split
+session supports independent send/receive tasks; cancellation or dropping either
+half closes the tunnel and the service releases its admission slot.
+
+Use `IpPacketOrigin::Forwarded` when Rama routes between links. It decrements the
+hop count once immediately before encapsulation and repairs the IPv4 checksum.
+Use `Local` for packets prepared by a local IP stack that already owns routing.
+Decapsulation does not decrement it. The independent `rama::net::ip` module offers
+checked borrowed views, header encoders, extension/fragment metadata, traffic-class
+edits, checksums and bounded ICMP error helpers. It also works without `std`.
+Applications can use those helpers to report forwarding failures with an authorized
+source address and a rate limit; malformed/unauthorized inbound packets are dropped.
+
+IPv6 starts disabled. Set `ipv6_link_mtu` only with an end-to-end guarantee, or call
+`probe_ipv6_mtu` before splitting the session. The probe sends a 1280-byte ICMPv6
+Echo Request, verifies the reply, and enables a 1280-byte IPv6 link. Supply a fresh
+nonce and authorized local/peer addresses; the peer must answer echo requests.
+The method has a deadline, bounds control updates, and closes on failure or
+cancellation. A direct QUIC connection can instead establish the guarantee with
+sufficiently padded Initial packets when intermediaries are known to be absent.
+The current carrier limit is exposed by `max_packet_size()`. If native datagrams
+shrink below the IPv6 minimum, the session aborts; it does not conceal that failure
+by switching the oversized packet to reliable delivery.
+
+H1/H2 and H3 without native datagrams use reliable DATAGRAM Capsules, with the
+associated head-of-line blocking. All modes apply packet/byte budgets, bounded
+control state, admission limits, idle and write deadlines. This layer does not
+install TUN interfaces or host routes, configure DNS, reassemble IP fragments,
+or implement NAT and a full IP stack. Platform adapters can consume the packet API.
+
+The independent fixture uses `connect-ip-go` in both H3 roles, without TUN or root:
+
+```sh
+go -C examples/tests/masque_interop/ip-peer build -o /tmp/rama-ip-peer .
+just examples/tests/connect-ip-interop /tmp/rama-ip-peer rustls-ring
+just examples/tests/connect-ip-interop /tmp/rama-ip-peer boring
+```
+
+It checks dual-stack packet bytes, address requests and route withdrawal. The Go
+peer only accepts fixed endpoint templates, so scoped requests are covered by Rama
+conformance tests, not claimed as independent peer coverage. The same Rust harness
+checks H1, H2, H3 Capsules and native H3, including IPv6 path probing.

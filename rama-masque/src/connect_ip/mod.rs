@@ -1,0 +1,86 @@
+//! IP proxying over HTTP (RFC 9484), using `rama_net::ip` packet primitives.
+//!
+//! [`ConnectIpTemplate`] builds H1 Upgrade and H2/H3 Extended CONNECT requests.
+//! [`connect_ip`] accepts an existing HTTP client; [`ConnectIpService`] combines
+//! a request admission service with a packet-session handler. Admission returns
+//! [`ConnectIpSessionConfig`]; its [`ConnectIpPolicy`] defaults to deny all.
+//! Authenticate before admission and explicitly authorize source/destination
+//! prefixes. Peer address assignments and routes never grant local permission.
+//!
+//! [`ConnectIpSession`] is the application packet boundary: send/receive entire
+//! IP packets, exchange control snapshots, or split it into send/receive halves.
+//! No host interface, route, DNS configuration or privileges are changed. Route
+//! and address capsules replace complete snapshots; the caller owns allocation
+//! and any administrative installation. Resolved hostname scope is pinned for
+//! the tunnel lifetime and visible through [`ConnectIpSession::policy`].
+//!
+//! # Construct a scoped request
+//!
+//! ```
+//! use rama_masque::connect_ip::{ConnectIpScope, ConnectIpTemplate};
+//! use rama_http::Version;
+//!
+//! let template = ConnectIpTemplate::try_new(
+//!     "https://proxy.example/.well-known/masque/ip/{target}/{ipproto}/",
+//! )?;
+//! let scope = ConnectIpScope::from_template_values(Some("192.0.2.0/24"), Some("17"))?;
+//! let request = template.request(&scope, Version::HTTP_3)?;
+//! assert_eq!(template.match_request(&request)?, scope);
+//! # Ok::<(), rama_masque::connect_ip::ConnectIpRequestError>(())
+//! ```
+//!
+//! # Forwarding and MTU
+//!
+//! [`IpPacketOrigin::Forwarded`] decrements TTL/hop limit once on encapsulation;
+//! [`IpPacketOrigin::Local`] preserves packets already prepared by a local stack.
+//! Receipt does not decrement it. Link-local traffic cannot be forwarded across
+//! links. Use `rama_net::ip::icmp::encode_icmp_error` for bounded forwarding-error
+//! replies, choosing an authorized source and applying a rate limit. Invalid or
+//! unauthorized incoming packets are dropped before delivery to the handler.
+//!
+//! IPv6 is disabled until an end-to-end link MTU is guaranteed in configuration
+//! or [`ConnectIpSession::probe_ipv6_mtu`] succeeds. A local QUIC datagram limit
+//! alone does not prove an intermediary path. Native shrink below 1280 aborts
+//! the tunnel; oversized native packets do not silently switch to Capsules.
+//! H1/H2 and H3 without negotiated datagrams use reliable Capsule delivery and
+//! inherit its head-of-line blocking. Packet/byte budgets and send deadlines
+//! apply to both carriers. Dropping either split half aborts the whole tunnel.
+//!
+//! No IP reassembly, jumbograms, NAT, DHCP, platform TUN, context compression,
+//! or DNS/PREF64 protocol extensions are implemented here.
+
+mod wire;
+pub use wire::{
+    ADDRESS_ASSIGN, ADDRESS_REQUEST, AddressAssignment, AddressRequest, ConnectIpCapsule,
+    ConnectIpProtocolError, IpRoute, ROUTE_ADVERTISEMENT, decode_ip_datagram, encode_ip_datagram,
+    validate_routes,
+};
+
+mod state;
+pub use state::{ConnectIpState, ConnectIpStateLimits};
+
+mod request;
+pub use request::{
+    ConnectIpRequestError, ConnectIpScope, ConnectIpTemplate, IpTarget,
+    validate_connect_ip_response,
+};
+
+mod policy;
+pub use policy::{ConnectIpPolicy, ConnectIpRole, IpDirectionPolicy, IpPacketDrop, IpSourcePolicy};
+
+mod session;
+pub use session::{
+    ConnectIpBudget, ConnectIpError, ConnectIpEvent, ConnectIpReceiver, ConnectIpSender,
+    ConnectIpSession, ConnectIpSessionConfig, ConnectIpStats, IpBudgetConfig, IpPacketOrigin,
+    IpPacketSend,
+};
+
+mod limits;
+pub use limits::{ConnectIpLimits, IpAdmissionLimits};
+mod client;
+pub use client::connect_ip;
+mod server;
+pub use server::{ConnectIpRequest, ConnectIpService};
+
+#[cfg(test)]
+mod tests;

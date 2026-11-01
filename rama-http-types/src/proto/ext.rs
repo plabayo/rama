@@ -47,6 +47,9 @@ impl Protocol {
     /// It upgrades an HTTP/1.1 `GET` and names Extended CONNECT on HTTP/2 and HTTP/3.
     pub const CONNECT_UDP: Self = Self::from_static("connect-udp");
 
+    /// `connect-ip`, the token registered by RFC 9484 for proxying IP in HTTP.
+    pub const CONNECT_IP: Self = Self::from_static("connect-ip");
+
     /// Converts a static string to a protocol name.
     ///
     /// # Panics
