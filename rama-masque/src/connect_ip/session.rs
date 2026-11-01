@@ -80,7 +80,7 @@ impl ConnectIpBudget {
     pub(super) fn charge(&self, bytes: u64) -> bool {
         if let Some(remaining) = &self.remaining
             && remaining
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                     v.checked_sub(bytes)
                 })
                 .is_err()
