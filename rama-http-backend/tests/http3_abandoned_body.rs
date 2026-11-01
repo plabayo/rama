@@ -1,5 +1,6 @@
 //! A pooled HTTP/3 connection survives its response bodies being dropped unread:
 //! only the stream is cancelled, HTTP/1 body draining is not involved.
+#![cfg(feature = "quic")]
 
 use rama_core::{
     Service,

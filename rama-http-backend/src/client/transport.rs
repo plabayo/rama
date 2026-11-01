@@ -1,23 +1,28 @@
 //! Established transports accepted by the common HTTP handshake.
 
-use super::conn::resolve_input_target_http_version;
 use rama_core::{
-    Service, ServiceInput,
     extensions::{Extensions, ExtensionsRef},
     io::Io,
 };
-use rama_http_core::h3::{connection::Config, transport::BoxedConnection};
 use rama_http_types::Version;
-use rama_net::{
-    HttpVersionInputExt, TargetHttpVersionInputExt,
-    client::{ConnectionError, ConnectorService, EstablishedClientConnection},
+#[cfg(feature = "quic")]
+use {
+    super::conn::resolve_input_target_http_version,
+    rama_core::{Service, ServiceInput},
+    rama_http_core::h3::{connection::Config, transport::BoxedConnection},
+    rama_net::{
+        HttpVersionInputExt, TargetHttpVersionInputExt,
+        client::{ConnectionError, ConnectorService, EstablishedClientConnection},
+    },
+    std::sync::Arc,
 };
-use std::sync::Arc;
 
 /// An established QUIC transport and the HTTP/3 settings to apply during handshake.
 ///
 /// Custom connectors supply authenticated-origin and established-proxy metadata
 /// when required by the service selector. ALPN alone does not establish these facts.
+#[cfg(feature = "quic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
 #[derive(Debug)]
 pub struct Http3Transport {
     pub connection: BoxedConnection,
@@ -25,6 +30,7 @@ pub struct Http3Transport {
     pub config: Arc<Config>,
 }
 
+#[cfg(feature = "quic")]
 impl ExtensionsRef for Http3Transport {
     fn extensions(&self) -> &Extensions {
         self.connection.extensions()
@@ -35,13 +41,26 @@ impl ExtensionsRef for Http3Transport {
 #[derive(Debug)]
 pub enum HttpTransport<IO> {
     Stream(IO),
+    #[cfg(feature = "quic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
     Quic(Http3Transport),
+}
+
+impl<IO> HttpTransport<IO> {
+    pub(super) fn is_quic(&self) -> bool {
+        match self {
+            Self::Stream(_) => false,
+            #[cfg(feature = "quic")]
+            Self::Quic(_) => true,
+        }
+    }
 }
 
 impl<IO: ExtensionsRef> ExtensionsRef for HttpTransport<IO> {
     fn extensions(&self) -> &Extensions {
         match self {
             Self::Stream(io) => io.extensions(),
+            #[cfg(feature = "quic")]
             Self::Quic(quic) => quic.extensions(),
         }
     }
@@ -83,12 +102,8 @@ impl<IO: Io + Unpin + ExtensionsRef> IntoHttpTransport for HttpTransport<IO> {
     fn supports_http_version(version: Version) -> bool {
         matches!(
             version,
-            Version::HTTP_09
-                | Version::HTTP_10
-                | Version::HTTP_11
-                | Version::HTTP_2
-                | Version::HTTP_3
-        )
+            Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+        ) || (version == Version::HTTP_3 && cfg!(feature = "quic"))
     }
 
     fn into_http_transport(self) -> Self {
@@ -96,6 +111,7 @@ impl<IO: Io + Unpin + ExtensionsRef> IntoHttpTransport for HttpTransport<IO> {
     }
 }
 
+#[cfg(feature = "quic")]
 impl IntoHttpTransport for Http3Transport {
     // This stream variant is never constructed for a QUIC-only connector.
     type Stream = ServiceInput<Box<dyn Io + Unpin>>;
@@ -111,18 +127,22 @@ impl IntoHttpTransport for Http3Transport {
 
 /// Select a stream or QUIC transport before the common HTTP handshake.
 /// Each connector owns its transport capabilities, including proxy support.
+#[cfg(feature = "quic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
 #[derive(Clone, Debug)]
 pub struct HttpTransportConnector<S, Q> {
     stream: S,
     quic: Q,
 }
 
+#[cfg(feature = "quic")]
 impl<S, Q> HttpTransportConnector<S, Q> {
     pub const fn new(stream: S, quic: Q) -> Self {
         Self { stream, quic }
     }
 }
 
+#[cfg(feature = "quic")]
 impl<S, Q, Input> Service<Input> for HttpTransportConnector<S, Q>
 where
     S: ConnectorService<Input, Connection: IntoHttpTransport>,
@@ -157,6 +177,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mixed_transport_supports_http3_only_with_quic() {
+        type Stream = rama_core::ServiceInput<tokio::io::DuplexStream>;
+
+        for version in [
+            Version::HTTP_09,
+            Version::HTTP_10,
+            Version::HTTP_11,
+            Version::HTTP_2,
+        ] {
+            assert!(HttpTransport::<Stream>::supports_http_version(version));
+        }
+        assert_eq!(
+            HttpTransport::<Stream>::supports_http_version(Version::HTTP_3),
+            cfg!(feature = "quic")
+        );
+    }
+
+    #[cfg(feature = "quic")]
+    #[test]
     fn transport_support_matches_understood_http_versions() {
         type Stream = ServiceInput<tokio::io::DuplexStream>;
 
@@ -177,7 +216,6 @@ mod tests {
                 quic,
                 "{version:?}"
             );
-            assert!(HttpTransport::<Stream>::supports_http_version(version));
         }
     }
 }

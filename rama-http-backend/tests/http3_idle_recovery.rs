@@ -1,5 +1,5 @@
 //! A pooled HTTP/3 client replaces connections retired by the server's idle timer.
-
+#![cfg(feature = "quic")]
 #![expect(
     clippy::expect_used,
     reason = "integration test failures identify the failed handshake or request"

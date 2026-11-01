@@ -4,7 +4,7 @@
 //! HTTP/1.1 and HTTP/2 run over in-memory byte streams, HTTP/3 over in-memory QUIC. A raw
 //! RFC 6455 origin records the relayed handshake and checks how the relay ends its stream;
 //! the client checks the relayed response and the relay's end of its own stream.
-
+#![cfg(feature = "quic")]
 #![expect(
     clippy::expect_used,
     reason = "integration tests use expectation messages to identify failed stages"

@@ -12,6 +12,12 @@ pub mod http_security;
 pub mod ip;
 pub mod wire_names;
 
+#[cfg(feature = "quic")]
+use {
+    crate::{Service, quic},
+    std::convert::Infallible,
+};
+
 use crate::{
     cli::ForwardKind,
     combinators::Either7,
@@ -22,6 +28,17 @@ use crate::{
         layer::forwarded::GetForwardedHeaderLayer,
     },
 };
+
+/// What the echo and ip builders produce next to their TCP service: an HTTP/3 service for
+/// accepted QUIC connections, or nothing without the `quic` feature.
+#[cfg(feature = "quic")]
+trait MaybeHttp3Service: Service<quic::Connection, Output = (), Error = Infallible> {}
+#[cfg(feature = "quic")]
+impl<S: Service<quic::Connection, Output = (), Error = Infallible>> MaybeHttp3Service for S {}
+#[cfg(not(feature = "quic"))]
+trait MaybeHttp3Service {}
+#[cfg(not(feature = "quic"))]
+impl<T> MaybeHttp3Service for T {}
 
 /// The forwarded-header extraction layer selected by a [`ForwardKind`].
 ///

@@ -45,7 +45,7 @@ use {
 #[cfg(feature = "socks5")]
 use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
 
-#[cfg(feature = "masque")]
+#[cfg(all(feature = "masque", feature = "quic"))]
 use crate::{
     proxy::masque::connect_udp::ConnectUdpConnector, quic::client::QuicEndpointConnector,
     udp::proxy::UdpConnector,
@@ -630,6 +630,8 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
     }
 }
 
+#[cfg(feature = "quic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
 impl<T, Body, D, const PROXY: bool>
     EasyHttpConnectorBuilder<HttpConnector<T, Body>, HttpStage<PROXY>, D>
 {
@@ -710,8 +712,8 @@ impl<T, Body, D, const PROXY: bool>
     }
 }
 
-#[cfg(feature = "masque")]
-#[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+#[cfg(all(feature = "masque", feature = "quic"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "masque", feature = "quic"))))]
 /// The QUIC endpoints of [`EasyHttpConnectorBuilder::with_http3_masque_support`]: a UDP socket
 /// per connection, or a CONNECT-UDP tunnel opened with `S` on a MASQUE proxy route.
 pub type MasqueQuicEndpoints<S> = QuicEndpointConnector<ConnectUdpConnector<S, UdpConnector>>;
@@ -1134,22 +1136,16 @@ impl<T, S, D> EasyHttpConnectorBuilder<T, S, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{Body, client::HttpConnIdentifier};
-    use rama_net::{
-        Protocol,
-        address::HostWithPort,
-        client::{
-            ConnectRequest,
-            pool::{ConnID as _, ReqToConnID},
-        },
-    };
-    use rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify};
+    use crate::http::Body;
     use rama_utils::octets::kib;
 
     use rama_core::layer::layer_fn;
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    #[cfg(all(
+        feature = "quic",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+        )
     ))]
     use {
         crate::http::client::Http3Connector,
@@ -1171,13 +1167,23 @@ mod tests {
     };
     #[cfg(feature = "tls")]
     use {
+        crate::http::client::HttpConnIdentifier,
         crate::http::{
             HeaderMap, Version,
             conn::{HttpOrigin, SelectedHttpService},
             header::ALT_SVC,
         },
         rama_core::{ServiceInput, service::service_fn},
+        rama_net::{
+            Protocol,
+            address::HostWithPort,
+            client::{
+                ConnectRequest,
+                pool::{ConnID as _, ReqToConnID},
+            },
+        },
         rama_net::{http::TargetHttpVersion, tls::ApplicationProtocol},
+        rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify},
         rama_tls::{
             ProtocolVersion,
             client::{NegotiatedTlsParameters, TlsServerAuthentication},
@@ -1315,6 +1321,7 @@ mod tests {
             .build_connector();
     }
 
+    #[cfg(feature = "tls")]
     #[test]
     fn custom_fixed_policy_pool_respects_explicit_override_identity() {
         let identifier = HttpConnIdentifier::default();
@@ -1334,9 +1341,12 @@ mod tests {
         assert!(!identifier.id(&input).unwrap().is_reusable());
     }
 
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    #[cfg(all(
+        feature = "quic",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+        )
     ))]
     #[derive(Clone)]
     struct RecordingResolver {
@@ -1344,9 +1354,12 @@ mod tests {
         loopback: bool,
     }
 
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    #[cfg(all(
+        feature = "quic",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+        )
     ))]
     impl DnsAddressResolver for RecordingResolver {
         type Error = Infallible;
@@ -1370,18 +1383,24 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    #[cfg(all(
+        feature = "quic",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+        )
     ))]
     struct RecordingDnsLayer {
         resolver: RecordingResolver,
         applied: Arc<AtomicUsize>,
     }
 
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    #[cfg(all(
+        feature = "quic",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+        )
     ))]
     impl<S> Layer<S> for RecordingDnsLayer {
         type Service = DnsConnector<S, RecordingResolver>;
@@ -1392,9 +1411,12 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    #[cfg(all(
+        feature = "quic",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+        )
     ))]
     #[tokio::test]
     async fn built_in_quic_uses_the_configured_dns_resolver() {
@@ -1433,9 +1455,12 @@ mod tests {
         );
     }
 
-    #[cfg(any(
-        feature = "boring",
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    #[cfg(all(
+        feature = "quic",
+        any(
+            feature = "boring",
+            all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+        )
     ))]
     #[tokio::test]
     async fn ipv4_quic_endpoint_skips_ipv6_candidates_without_terminal_failure() {
