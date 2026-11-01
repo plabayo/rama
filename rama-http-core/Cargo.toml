@@ -31,7 +31,7 @@ quic = ["dep:rama-quic", "dep:rama-quic-proto"]
 # OpenTelemetry metrics for HTTP/3 datagram drops ([`h3::H3Metrics`]), recorded only when set.
 opentelemetry = ["rama-core/opentelemetry", "rama-http/opentelemetry", "rama-quic?/opentelemetry"]
 # Synchronous bounded harnesses for the HTTP/3 state machines.
-fuzz-utils = ["quic"]
+fuzz-utils = []
 tls = ["rama-http-types/tls"]
 
 # Enables **unstable** APIs. Any API exposed by this feature has no backwards

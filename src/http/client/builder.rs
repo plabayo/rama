@@ -1136,16 +1136,7 @@ impl<T, S, D> EasyHttpConnectorBuilder<T, S, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{Body, client::HttpConnIdentifier};
-    use rama_net::{
-        Protocol,
-        address::HostWithPort,
-        client::{
-            ConnectRequest,
-            pool::{ConnID as _, ReqToConnID},
-        },
-    };
-    use rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify};
+    use crate::http::Body;
     use rama_utils::octets::kib;
 
     use rama_core::layer::layer_fn;
@@ -1176,13 +1167,23 @@ mod tests {
     };
     #[cfg(feature = "tls")]
     use {
+        crate::http::client::HttpConnIdentifier,
         crate::http::{
             HeaderMap, Version,
             conn::{HttpOrigin, SelectedHttpService},
             header::ALT_SVC,
         },
         rama_core::{ServiceInput, service::service_fn},
+        rama_net::{
+            Protocol,
+            address::HostWithPort,
+            client::{
+                ConnectRequest,
+                pool::{ConnID as _, ReqToConnID},
+            },
+        },
         rama_net::{http::TargetHttpVersion, tls::ApplicationProtocol},
+        rama_tls::client::{ServerVerifyMode, TlsPoolId, TlsServerVerify},
         rama_tls::{
             ProtocolVersion,
             client::{NegotiatedTlsParameters, TlsServerAuthentication},
@@ -1320,6 +1321,7 @@ mod tests {
             .build_connector();
     }
 
+    #[cfg(feature = "tls")]
     #[test]
     fn custom_fixed_policy_pool_respects_explicit_override_identity() {
         let identifier = HttpConnIdentifier::default();

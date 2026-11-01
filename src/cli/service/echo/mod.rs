@@ -5,6 +5,7 @@
 //! [`Request`]: crate::http::Request
 //! [`tls`]: crate::tls
 
+#[cfg(feature = "quic")]
 mod quic_view;
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -14,6 +15,7 @@ use rama_http::layer::upgrade::UpgradeLayer;
 use serde::Serialize;
 use serde_json::json;
 
+#[cfg(feature = "quic")]
 use self::quic_view::{EchoH3, EchoQuic, EchoQuicConnection};
 use crate::{
     Layer, Service,
@@ -33,10 +35,7 @@ use crate::{
             required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
             trace::TraceLayer,
         },
-        proto::{
-            h2::PseudoHeaderOrder,
-            h3::observation::{H3RequestObservation, ObservationLimits, SettingsStatus},
-        },
+        proto::h2::PseudoHeaderOrder,
         server::HttpServer,
         service::web::{extract::Json, response::IntoResponse},
         ws::handshake::{
@@ -58,7 +57,6 @@ use crate::{
         },
     },
     proxy::haproxy::server::HaProxyLayer,
-    quic::{self, QuicConnectionInfo, proto::capture::QuicObservation},
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
@@ -71,6 +69,11 @@ use crate::{
         },
     },
     utils::{octets::mib, rate::Rate},
+};
+#[cfg(feature = "quic")]
+use crate::{
+    http::proto::h3::observation::{H3RequestObservation, ObservationLimits, SettingsStatus},
+    quic::{self, QuicConnectionInfo, proto::capture::QuicObservation},
 };
 
 core::cfg_select! {
@@ -107,6 +110,7 @@ pub struct EchoServiceBuilder<H> {
 
     http_version: Option<Version>,
     http2_observation: bool,
+    #[cfg(feature = "quic")]
     http3_observation: Option<ObservationLimits>,
 
     ws_support: bool,
@@ -135,6 +139,7 @@ impl Default for EchoServiceBuilder<()> {
 
             http_version: None,
             http2_observation: false,
+            #[cfg(feature = "quic")]
             http3_observation: None,
 
             ws_support: false,
@@ -249,6 +254,7 @@ impl<H> EchoServiceBuilder<H> {
         }
     }
 
+    #[cfg(feature = "quic")]
     crate::utils::macros::generate_set_and_with! {
         /// Retain bounded HTTP/3 metadata for echo responses. Disabled by default.
         pub fn http3_observation(mut self, limits: Option<ObservationLimits>) -> Self {
@@ -280,6 +286,7 @@ impl<H> EchoServiceBuilder<H> {
 
             http_version: self.http_version,
             http2_observation: self.http2_observation,
+            #[cfg(feature = "quic")]
             http3_observation: self.http3_observation,
 
             ws_support: self.ws_support,
@@ -336,7 +343,7 @@ where
         self,
         exec: Executor,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
-        self.build_with_http3(exec).map(|(tcp, _)| tcp)
+        self.build_services(exec).map(|(tcp, _)| tcp)
     }
 
     /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
@@ -345,6 +352,8 @@ where
     /// Both serve one http service: they share its rate limit, the connection limit,
     /// the connection timeout and the per-connection throttle. TLS for QUIC is
     /// configured on its endpoint.
+    #[cfg(feature = "quic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
     pub fn build_with_http3(
         self,
         exec: Executor,
@@ -352,6 +361,19 @@ where
         (
             impl Service<TcpStream, Output = (), Error = Infallible>,
             impl Service<quic::Connection, Output = (), Error = Infallible>,
+        ),
+        BoxError,
+    > {
+        self.build_services(exec)
+    }
+
+    fn build_services(
+        self,
+        exec: Executor,
+    ) -> Result<
+        (
+            impl Service<TcpStream, Output = (), Error = Infallible>,
+            impl super::MaybeHttp3Service,
         ),
         BoxError,
     > {
@@ -417,18 +439,29 @@ where
             }),
         };
 
-        let mut http3 = HttpServer::new_http3(exec);
-        // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT.
-        http3.http3_mut().observation = self.http3_observation.map(Box::new);
-        http3.http3_mut().extended_connect = self.ws_support;
+        #[cfg(feature = "quic")]
+        let http3_service = {
+            let mut http3 = HttpServer::new_http3(exec);
+            // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT.
+            http3.http3_mut().observation = self.http3_observation.map(Box::new);
+            http3.http3_mut().extended_connect = self.ws_support;
+            (
+                ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+                connection_limit,
+                connection_timeout,
+                throttle,
+                BodyLimitLayer::request_only(self.body_limit),
+            )
+                .into_layer(http3.service(http_service))
+        };
+        #[cfg(not(feature = "quic"))]
         let http3_service = (
-            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             connection_limit,
             connection_timeout,
             throttle,
-            BodyLimitLayer::request_only(self.body_limit),
-        )
-            .into_layer(http3.service(http_service));
+            http_service,
+            exec,
+        );
 
         Ok((
             tcp_service_builder.into_layer(http_transport_service),
@@ -664,6 +697,14 @@ impl Service<Request> for EchoService {
 
         let body = crate::utils::fmt::hex(&body).to_string();
 
+        #[cfg(all(feature = "quic", any(feature = "rustls", feature = "boring")))]
+        let quic_completeness = parts
+            .extensions
+            .get_ref::<QuicObservation>()
+            .map(|value| value.completeness);
+        #[cfg(all(not(feature = "quic"), any(feature = "rustls", feature = "boring")))]
+        let quic_completeness = serde_json::Value::Null;
+
         #[cfg(any(feature = "rustls", feature = "boring"))]
         let tls_info = parts
             .extensions
@@ -739,7 +780,7 @@ impl Service<Request> for EchoService {
 
                 json!({
                     "transport": if parts.version == Version::HTTP_3 { "quic" } else { "tcp" },
-                    "completeness": parts.extensions.get_ref::<QuicObservation>().map(|value| value.completeness),
+                    "completeness": quic_completeness,
                     "header": {
                         "version": hello.protocol_version().to_string(),
                         "cipher_suites": hello
@@ -852,6 +893,7 @@ impl Service<Request> for EchoService {
             }));
         }
 
+        #[cfg(feature = "quic")]
         let h3 = parts
             .extensions
             .get_ref::<H3RequestObservation>()
@@ -862,6 +904,22 @@ impl Service<Request> for EchoService {
                     parts.extensions.get_ref::<PseudoHeaderOrder>(),
                 ))
             });
+        #[cfg(feature = "quic")]
+        let quic = parts
+            .extensions
+            .get_ref::<QuicObservation>()
+            .map(EchoQuic::from);
+        #[cfg(feature = "quic")]
+        let quic_connection = parts
+            .extensions
+            .get_ref::<QuicConnectionInfo>()
+            .map(EchoQuicConnection::from);
+        #[cfg(not(feature = "quic"))]
+        let (h3, quic, quic_connection) = (
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
 
         // attribution rides in the x-geo-attribution response header, not the body
         let geo = self
@@ -891,8 +949,8 @@ impl Service<Request> for EchoService {
                 "curl": curl_request,
             },
             "tls": tls_info,
-            "quic": parts.extensions.get_ref::<QuicObservation>().map(EchoQuic::from),
-            "quic_connection": parts.extensions.get_ref::<QuicConnectionInfo>().map(EchoQuicConnection::from),
+            "quic": quic,
+            "quic_connection": quic_connection,
             "socket_addr": parts.extensions.forwarded_client_socket_addr()
                 .map(|addr| addr.to_string())
                 .or_else(|| parts.extensions.forwarded_client_ip().map(|ip| ip.to_string()))
@@ -905,10 +963,9 @@ impl Service<Request> for EchoService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        http::{Body, StatusCode},
-        quic::proto::Version as QuicVersion,
-    };
+    use crate::http::{Body, StatusCode};
+    #[cfg(feature = "quic")]
+    use crate::quic::proto::Version as QuicVersion;
 
     #[tokio::test]
     async fn binary_request_body_is_echoed_with_lossless_platform_curl_scripts() {
@@ -949,6 +1006,7 @@ mod tests {
         assert!(powershell.contains("--data-binary ('@' + $__ramaCurlPayload)"));
     }
 
+    #[cfg(feature = "quic")]
     #[tokio::test]
     async fn negotiated_quic_versions_are_echoed_without_capture() {
         let request = Request::builder()
@@ -983,6 +1041,7 @@ mod tests {
         assert!(value["quic"].is_null());
     }
 
+    #[cfg(feature = "quic")]
     #[tokio::test]
     async fn observation_schema_distinguishes_absent_and_incomplete_h3() {
         for captured in [false, true] {

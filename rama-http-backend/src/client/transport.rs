@@ -102,12 +102,8 @@ impl<IO: Io + Unpin + ExtensionsRef> IntoHttpTransport for HttpTransport<IO> {
     fn supports_http_version(version: Version) -> bool {
         matches!(
             version,
-            Version::HTTP_09
-                | Version::HTTP_10
-                | Version::HTTP_11
-                | Version::HTTP_2
-                | Version::HTTP_3
-        )
+            Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+        ) || (version == Version::HTTP_3 && cfg!(feature = "quic"))
     }
 
     fn into_http_transport(self) -> Self {
@@ -177,10 +173,28 @@ where
 }
 
 #[cfg(test)]
-#[cfg(feature = "quic")]
 mod tests {
     use super::*;
 
+    #[test]
+    fn mixed_transport_supports_http3_only_with_quic() {
+        type Stream = rama_core::ServiceInput<tokio::io::DuplexStream>;
+
+        for version in [
+            Version::HTTP_09,
+            Version::HTTP_10,
+            Version::HTTP_11,
+            Version::HTTP_2,
+        ] {
+            assert!(HttpTransport::<Stream>::supports_http_version(version));
+        }
+        assert_eq!(
+            HttpTransport::<Stream>::supports_http_version(Version::HTTP_3),
+            cfg!(feature = "quic")
+        );
+    }
+
+    #[cfg(feature = "quic")]
     #[test]
     fn transport_support_matches_understood_http_versions() {
         type Stream = ServiceInput<tokio::io::DuplexStream>;
@@ -202,7 +216,6 @@ mod tests {
                 quic,
                 "{version:?}"
             );
-            assert!(HttpTransport::<Stream>::supports_http_version(version));
         }
     }
 }

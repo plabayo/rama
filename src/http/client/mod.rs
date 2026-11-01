@@ -44,7 +44,14 @@ use {crate::tls::boring::client::TlsClientSessionCache, std::sync::Arc};
 #[cfg(all(feature = "boring", feature = "quic"))]
 use crate::quic::tls::BoringTlsProvider;
 
-#[cfg(feature = "quic")]
+#[cfg(all(
+    feature = "quic",
+    any(
+        feature = "boring",
+        feature = "masque",
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    )
+))]
 use crate::quic::TransportConfig;
 
 #[cfg(all(feature = "masque", feature = "quic"))]

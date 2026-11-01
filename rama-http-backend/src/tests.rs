@@ -81,7 +81,7 @@ async fn byte_stream_transport_rejects_http3_before_dialing() {
 }
 
 #[tokio::test]
-async fn mixed_transport_rejects_a_byte_stream_for_required_http3_after_dialing() {
+async fn mixed_transport_rejects_a_byte_stream_for_required_http3() {
     let dials = Arc::new(AtomicUsize::new(0));
     let transport = service_fn({
         let dials = dials.clone();
@@ -105,9 +105,15 @@ async fn mixed_transport_rejects_a_byte_stream_for_required_http3_after_dialing(
         .await
         .err()
         .expect("a byte stream cannot carry HTTP/3");
-    assert_eq!(dials.load(Ordering::SeqCst), 1);
-    assert_eq!(error.domain(), ConnectionErrorDomain::Application);
-    assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+    if cfg!(feature = "quic") {
+        assert_eq!(dials.load(Ordering::SeqCst), 1);
+        assert_eq!(error.domain(), ConnectionErrorDomain::Application);
+        assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+    } else {
+        assert_eq!(dials.load(Ordering::SeqCst), 0);
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
 }
 
 #[tokio::test]

@@ -6,11 +6,10 @@ use std::{borrow::Cow, fmt};
 
 use serde::{Serialize, Serializer};
 
-use crate::{
-    http::proto::h3::{Code, FrameType as H3FrameType, SettingId, StreamType},
-    quic::proto::{
-        Version, frame::FrameType as QuicFrameType, transport_parameters::TransportParameterId,
-    },
+use crate::http::proto::h3::{Code, FrameType as H3FrameType, SettingId, StreamType};
+#[cfg(feature = "quic")]
+use crate::quic::proto::{
+    Version, frame::FrameType as QuicFrameType, transport_parameters::TransportParameterId,
 };
 
 /// The display name of one protocol codepoint.
@@ -77,6 +76,7 @@ pub struct Named<R> {
 }
 
 /// A QUIC version: `v1`, `v2`, `grease` for `0x?a?a?a?a` (RFC 9000 §15) or `unknown`.
+#[cfg(feature = "quic")]
 #[must_use]
 pub fn quic_version_name(version: Version) -> CodepointName {
     match version {
@@ -88,6 +88,7 @@ pub fn quic_version_name(version: Version) -> CodepointName {
 }
 
 /// A QUIC version with its 32-bit wire value as hex text.
+#[cfg(feature = "quic")]
 #[must_use]
 pub fn named_quic_version(version: Version) -> Named<String> {
     Named {
@@ -97,6 +98,7 @@ pub fn named_quic_version(version: Version) -> Named<String> {
 }
 
 /// A transport parameter by its registry name, such as `initial_max_streams_bidi`.
+#[cfg(feature = "quic")]
 #[must_use]
 pub fn transport_parameter_name(id: TransportParameterId) -> CodepointName {
     match id {
@@ -107,6 +109,7 @@ pub fn transport_parameter_name(id: TransportParameterId) -> CodepointName {
 }
 
 /// A transport parameter identifier with its name.
+#[cfg(feature = "quic")]
 #[must_use]
 pub fn named_transport_parameter(id: TransportParameterId) -> Named<u64> {
     Named {
@@ -116,6 +119,7 @@ pub fn named_transport_parameter(id: TransportParameterId) -> Named<u64> {
 }
 
 /// A QUIC frame type (RFC 9000 §19).
+#[cfg(feature = "quic")]
 #[must_use]
 pub fn quic_frame_name(frame_type: u64) -> CodepointName {
     CodepointName::from_parts(QuicFrameType::from_u64(frame_type).name(), false, false)
@@ -158,6 +162,7 @@ pub fn named(raw: u64, name_of: fn(u64) -> CodepointName) -> Named<u64> {
     }
 }
 
+#[cfg(feature = "quic")]
 fn snake_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 8);
     for (index, c) in name.chars().enumerate() {
@@ -178,8 +183,9 @@ mod tests {
     use super::*;
     use serde_json::{json, to_value};
 
+    #[cfg(feature = "quic")]
     #[test]
-    fn names_cover_known_grease_reserved_and_unknown_codepoints() {
+    fn names_cover_quic_codepoints() {
         assert_eq!(quic_version_name(Version::V1).as_str(), "v1");
         assert_eq!(quic_version_name(Version::V2).as_str(), "v2");
         assert_eq!(
@@ -209,7 +215,10 @@ mod tests {
         assert_eq!(quic_frame_name(0x06).as_str(), "CRYPTO");
         assert_eq!(quic_frame_name(0x0a).as_str(), "STREAM");
         assert_eq!(quic_frame_name(0x4243).as_str(), "unknown");
+    }
 
+    #[test]
+    fn names_cover_known_grease_reserved_and_unknown_h3_codepoints() {
         assert_eq!(h3_setting_name(0x06).as_str(), "MAX_FIELD_SECTION_SIZE");
         assert_eq!(h3_setting_name(0x21).as_str(), "grease");
         assert_eq!(h3_setting_name(0x02).as_str(), "reserved");
@@ -232,6 +241,7 @@ mod tests {
             to_value(named(8, h3_setting_name)).unwrap(),
             json!({"raw": 8, "name": "ENABLE_CONNECT_PROTOCOL"})
         );
+        #[cfg(feature = "quic")]
         assert_eq!(
             to_value(named_quic_version(Version::V1)).unwrap(),
             json!({"raw": "0x00000001", "name": "v1"})
