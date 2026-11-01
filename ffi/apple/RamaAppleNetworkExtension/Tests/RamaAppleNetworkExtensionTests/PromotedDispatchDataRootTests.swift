@@ -77,9 +77,11 @@ final class PromotedDispatchDataRootTests: XCTestCase {
             let bytes = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
             UploadPattern.fill(bytes, offset: offset + done, count: size)
             tracking.withLock { $0.created += 1 }
+            // Keep destruction concurrent, but name its queue: TSan does not
+            // track captured-state publication for a nil dispatch_data queue.
             let piece = DispatchData(
                 bytesNoCopy: UnsafeRawBufferPointer(start: bytes, count: size),
-                deallocator: .custom(nil) {
+                deallocator: .custom(.global()) {
                     bytes.update(repeating: 0xEE, count: size)
                     bytes.deallocate()
                     tracking.withLock { $0.destroyed += 1 }
