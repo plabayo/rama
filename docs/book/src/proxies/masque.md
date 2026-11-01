@@ -87,8 +87,10 @@ checksums and ICMP helpers. It can also be used independently of MASQUE.
 
 ## How traffic travels
 
-Both protocols can use HTTP/1.1, HTTP/2 or HTTP/3. The HTTP layer handles the
-handshake and chooses the available delivery mechanism:
+Both protocols can use HTTP/1.1, HTTP/2 or HTTP/3. When using Rama as a library,
+enable `masque` for the tunnel APIs and `http-backend` for the HTTP engines;
+HTTP/3 also requires `quic` (`http-full` includes all three). The HTTP layer
+handles the handshake and chooses the available delivery mechanism:
 
 | Delivery | What it means |
 |---|---|

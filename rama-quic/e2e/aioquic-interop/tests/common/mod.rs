@@ -7,7 +7,7 @@
 //! that covers the protocol work.
 //!
 //! Prerequisite: `uv` on PATH. `uv sync --frozen` in this directory builds `.venv` from
-//! `uv.lock`; [`prepare`] runs the same command if the interpreter is missing. uv keeps its
+//! `uv.lock`; [`prepare`] runs the same command once per test binary. uv keeps its
 //! download cache and its managed interpreters outside this directory, so what is project-local
 //! is the environment and the resolution, not everything uv touches.
 #![allow(
@@ -52,10 +52,6 @@ pub const ALPN: &str = match str::from_utf8(interop_common::ALPN) {
     Ok(text) => text,
     Err(_) => panic!("the shared protocol name is text"),
 };
-/// The interpreter this project pins, matching `.python-version` and `requires-python`.
-pub const PYTHON: &str = "3.12";
-/// The peer library this project pins, matching `pyproject.toml` and `uv.lock`.
-pub const AIOQUIC: &str = "1.2.0";
 /// How long a scenario's protocol work may take. Every await inside one shares this deadline,
 /// so a stall anywhere fails the test instead of extending it. Building the peer's environment
 /// is not part of it; see [`prepare`].
@@ -373,8 +369,8 @@ fn trimmed(mut text: String, cap: usize) -> String {
 ///
 /// The frozen sync runs every time rather than only when `.venv` is missing: an environment
 /// left over from an older `uv.lock` would otherwise be used against the current one. The
-/// versions are then read back from the interpreter itself, so a wrong or broken environment
-/// fails here with what it actually is.
+/// import probe catches a broken environment and reports the selected versions for diagnostics.
+/// Version selection belongs to uv's project files, not duplicated Rust constants.
 pub async fn prepare() {
     if std::env::var_os("RUST_LOG").is_some() {
         let _ = rama::telemetry::tracing::subscriber::fmt()
@@ -429,11 +425,7 @@ pub async fn prepare() {
                 "the environment cannot import aioquic: {}",
                 asked.stderr
             );
-            assert_eq!(
-                asked.stdout.trim(),
-                format!("{PYTHON} {AIOQUIC}"),
-                "the environment is the one this project pins"
-            );
+            eprintln!("aioquic peer (Python, aioquic): {}", asked.stdout.trim());
             interpreter
         })
         .await;

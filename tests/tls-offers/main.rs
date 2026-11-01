@@ -15,4 +15,5 @@ mod tcp;
         all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
     )
 ))]
+#[cfg(feature = "quic")]
 mod quic;

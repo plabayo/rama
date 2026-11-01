@@ -366,6 +366,11 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: >-
           cargo test -p rama-examples --no-default-features --features http-full,boring --test integration http3_client_server:: --locked -- --include-ignored
+      - name: HTTP/3 engine and WebSocket suites (boring)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
+        run: |
+          cargo test -p rama-http-core --features quic,rama-quic/boring --lib h3:: --locked
+          cargo test -p rama-ws --features rama-quic/boring,compression --test h3 --locked
       - name: HTTP client protocol and TLS reuse behavior (boring)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'boring') }}
         run: >-
@@ -417,6 +422,11 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: >-
           cargo test -p rama-examples --no-default-features --features http-full,rustls,ring --test integration http3_client_server:: --locked -- --include-ignored
+      - name: HTTP/3 engine and WebSocket suites (rustls-ring)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
+        run: |
+          cargo test -p rama-http-core --features quic --lib h3:: --locked
+          cargo test -p rama-ws --features compression --test h3 --locked
       - name: HTTP client protocol and TLS reuse behavior (rustls-ring)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && (matrix.backends == 'all' || matrix.backends == 'rustls-ring') }}
         run: >-

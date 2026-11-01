@@ -39,14 +39,22 @@ use rama_http::{
 use crate::tls::client::TlsClientConfig;
 
 #[cfg(feature = "boring")]
-use {
-    crate::{quic::tls::BoringTlsProvider, tls::boring::client::TlsClientSessionCache},
-    std::sync::Arc,
-};
+use {crate::tls::boring::client::TlsClientSessionCache, std::sync::Arc};
 
+#[cfg(all(feature = "boring", feature = "quic"))]
+use crate::quic::tls::BoringTlsProvider;
+
+#[cfg(all(
+    feature = "quic",
+    any(
+        feature = "boring",
+        feature = "masque",
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    )
+))]
 use crate::quic::TransportConfig;
 
-#[cfg(feature = "masque")]
+#[cfg(all(feature = "masque", feature = "quic"))]
 use crate::{
     proxy::masque::connect_udp::{OUTER_IDLE_TIMEOUT, OUTER_INITIAL_MTU},
     quic::{IdleTimeout, proto::VarInt},
@@ -55,7 +63,7 @@ use crate::{
 pub mod builder;
 #[doc(inline)]
 pub use builder::EasyHttpConnectorBuilder;
-#[cfg(feature = "masque")]
+#[cfg(all(feature = "masque", feature = "quic"))]
 #[doc(inline)]
 pub use builder::MasqueQuicEndpoints;
 
@@ -180,7 +188,7 @@ where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     core::cfg_select! {
-        feature = "boring" => {
+        all(feature = "boring", feature = "quic") => {
             pub fn default_with_executor(exec: Executor) -> Self {
                 #[expect(
                     clippy::expect_used,
@@ -294,7 +302,7 @@ where
                     .build_client())
             }
         }
-        all(feature = "rustls", any(feature = "ring", feature = "aws-lc")) => {
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"), feature = "quic") => {
             pub fn default_with_executor(exec: Executor) -> Self {
                 #[expect(
                     clippy::expect_used,
@@ -404,6 +412,20 @@ where
                     .build_client())
             }
         }
+        feature = "boring" => {
+            pub fn default_with_executor(exec: Executor) -> Self {
+                EasyHttpConnectorBuilder::new()
+                    .with_default_transport_connector()
+                    .with_default_dns_connector()
+                    .with_tls_proxy_support_using_boringssl()
+                    .with_proxy_support()
+                    .with_tls_support_using_boringssl(TlsClientConfig::default_http())
+                    .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
+                    .with_default_http_connector(exec)
+                    .with_default_connection_pool()
+                    .build_client()
+            }
+        }
         feature = "rustls" => {
             pub fn default_with_executor(exec: Executor) -> Self {
                 EasyHttpConnectorBuilder::new()
@@ -433,8 +455,8 @@ where
     }
 }
 
-#[cfg(feature = "masque")]
-#[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
+#[cfg(all(feature = "masque", feature = "quic"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "masque", feature = "quic"))))]
 /// The QUIC transport for HTTP/3 connections that carry MASQUE tunnels, for both the proxy
 /// and its clients: room for a tunneled QUIC packet in each datagram ([`OUTER_INITIAL_MTU`]),
 /// and an idle timeout that leaves quiet tunnels to their own policy

@@ -64,6 +64,8 @@ impl Representation {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum InsertionNameEncoding {
     /// Use a static name reference when available, otherwise a literal name.
+    /// With no explicit Huffman choices, an identical entry already in the table
+    /// may instead use Duplicate when it fits the encoder's output reservation.
     #[default]
     Automatic,
     Literal,

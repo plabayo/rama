@@ -478,6 +478,7 @@ impl ConnTimer {
         self.deadlines.start_drain();
     }
 
+    #[cfg(feature = "quic")]
     pub(crate) fn drain_budget(&self) -> Duration {
         self.deadlines.drain_budget()
     }

@@ -62,6 +62,10 @@ relied upon by rama-http-core or related to.
   `proto::h3::qpack` (in `rama-http-types`); the connection-scoped dynamic table,
   encoder/decoder and blocked-section accounting are in `h3::qpack`. The Huffman
   code is shared with HPACK ([rfc7541.txt](./rfc7541.txt)); it is not duplicated.
+  [Verified erratum 8410](https://www.rfc-editor.org/errata/eid8410) corrects
+  Appendix C's sample encoder: Required Insert Count is one greater than the
+  largest referenced absolute index. Rama already uses that rule in
+  `h3::qpack::encoder::Encoder::reference`; the vendored RFC retains its original text.
 
 * [rfc9218.txt](./rfc9218.txt): Extensible Prioritization Scheme for HTTP.
 

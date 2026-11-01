@@ -2268,6 +2268,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(feature = "quic")]
 pub(crate) mod test_util {
     use super::*;
 

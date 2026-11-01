@@ -1,5 +1,5 @@
 //! A server dispatch loop must let HTTP/3 drain received datagrams after a clean close.
-
+#![cfg(feature = "quic")]
 #![expect(
     clippy::unwrap_used,
     reason = "integration fixture setup and protocol assertions"

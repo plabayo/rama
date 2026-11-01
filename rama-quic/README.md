@@ -52,7 +52,7 @@ map below says where to shape or turn any of that off.
 ### Where things live
 
 - **`driver`** — the async `Endpoint`, `Connection` and streams you actually build on.
-- **`version`** — which versions are offered and how negotiation resolves, through
+- **`rama-quic-proto::version`** — which versions are offered and how negotiation resolves, through
   `ClientVersionPolicy` / `ServerVersionPolicy`. (Only BoringSSL can switch version
   mid-handshake; a Rustls client offers just its first-flight version.)
 - **`profile`** — the wire image a client presents (version offer, transport-parameter

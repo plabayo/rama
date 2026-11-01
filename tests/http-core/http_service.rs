@@ -3,6 +3,8 @@
 mod coalescing;
 mod connect_aborts;
 mod deployment;
+#[cfg(feature = "boring")]
+mod derived_tls;
 mod discovery_outcomes;
 #[cfg(feature = "icap")]
 mod icap_h3;

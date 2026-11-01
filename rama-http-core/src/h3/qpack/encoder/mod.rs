@@ -790,6 +790,7 @@ impl Encoder {
 
     fn reference(&mut self, abs: u64, refs: &mut Vec<u64>, ric: &mut u64) {
         refs.push(abs);
+        // RFC 9204 §2.1.4 and Appendix C erratum 8410: a count, not an index.
         *ric = (*ric).max(abs + 1);
         self.table.add_ref(abs);
         self.reference_count += 1;

@@ -3,7 +3,9 @@
 mod svc;
 #[doc(inline)]
 pub use svc::HttpClientService;
-pub(crate) use svc::{SendAttempts, classify_http3_error, note_http3_unprocessed};
+pub(crate) use svc::SendAttempts;
+#[cfg(feature = "quic")]
+pub(crate) use svc::{classify_http3_error, note_http3_unprocessed};
 
 mod connect_request;
 #[doc(inline)]
@@ -29,10 +31,16 @@ pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledCo
 
 pub mod proxy;
 
+#[cfg(feature = "quic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
 pub mod h3;
+#[cfg(feature = "quic")]
 #[doc(inline)]
 pub use h3::{Http3Connector, Http3ConnectorBuilder};
 
 mod transport;
+#[cfg(feature = "quic")]
 #[doc(inline)]
-pub use transport::{Http3Transport, HttpTransport, HttpTransportConnector, IntoHttpTransport};
+pub use transport::{Http3Transport, HttpTransportConnector};
+#[doc(inline)]
+pub use transport::{HttpTransport, IntoHttpTransport};

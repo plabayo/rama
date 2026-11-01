@@ -74,11 +74,20 @@ impl Pair {
                 .unwrap();
             Arc::new(transport)
         };
-        let mut server_config =
-            rama_quic::ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap();
+        let (client_provider, server_provider) = rama_quic::test_utils::tls_providers().unwrap();
+        let mut server_config = rama_quic::ServerConfig::try_from_rama_tls_with_provider(
+            &server_tls,
+            TlsOptions::default(),
+            server_provider.as_ref(),
+        )
+        .unwrap();
         server_config.set_transport_config(transport());
-        let mut client_config =
-            rama_quic::ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default()).unwrap();
+        let mut client_config = rama_quic::ClientConfig::try_from_rama_tls_with_provider(
+            &client_tls,
+            TlsOptions::default(),
+            client_provider.as_ref(),
+        )
+        .unwrap();
         client_config.set_transport_config(transport());
         let (server_socket, client_socket) = MemoryDatagramSocket::pair(
             SocketAddress::local_ipv4(443),

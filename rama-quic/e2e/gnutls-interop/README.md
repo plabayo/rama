@@ -1,6 +1,6 @@
 # GnuTLS QUIC interoperability
 
-Tests Rama's public custom-provider API with **GnuTLS** against **aioquic 1.2.0**
+Tests Rama's public custom-provider API with **GnuTLS** against **aioquic 1.7.1**
 over UDP in both roles. Rama enables only `quic`; no Rustls, ring, AWS-LC, or
 Boring backend is enabled. GnuTLS handles TLS and packet cryptography.
 

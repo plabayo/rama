@@ -1,5 +1,6 @@
 //! rama's HTTP server and client over QUIC connections with reversed roles: the QUIC client
 //! serves HTTP/3 and the QUIC server sends the requests.
+#![cfg(feature = "quic")]
 #![expect(clippy::expect_used, reason = "test assertions identify failed stages")]
 
 use rama_core::{

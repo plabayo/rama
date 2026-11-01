@@ -10,9 +10,6 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
@@ -27,8 +24,9 @@ targets = [
 [features]
 dial9 = ["rama-http/dial9"]
 default = []
+quic = ["dep:rama-quic", "dep:rama-quic-proto"]
 # OpenTelemetry metrics for HTTP/3 datagram drops ([`h3::H3Metrics`]), recorded only when set.
-opentelemetry = ["rama-core/opentelemetry", "rama-http/opentelemetry", "rama-quic/opentelemetry"]
+opentelemetry = ["rama-core/opentelemetry", "rama-http/opentelemetry", "rama-quic?/opentelemetry"]
 # Synchronous bounded harnesses for the HTTP/3 state machines.
 fuzz-utils = []
 tls = ["rama-http-types/tls"]
@@ -53,8 +51,8 @@ rama-core = { workspace = true, features = ["std"] }
 rama-http = { workspace = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
-rama-quic = { workspace = true }
-rama-quic-proto = { workspace = true }
+rama-quic = { workspace = true, optional = true }
+rama-quic-proto = { workspace = true, optional = true }
 rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive"] }
 slab = { workspace = true }

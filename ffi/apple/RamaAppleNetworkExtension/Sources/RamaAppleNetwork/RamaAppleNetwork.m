@@ -15,7 +15,11 @@ void rama_nw_tcp_send(nw_connection_t connection, NSData *data, bool final, bool
     // doc (WriterMemoryBudget.swift) lists why that is safe. Network.framework
     // reads the bytes after the send completion fires, so the destructor keeps
     // `data` alive until it releases them.
-    dispatch_data_t content = data ? dispatch_data_create(data.bytes, data.length, NULL,
+    // Name the concurrent destructor queue so TSan tracks publication of the
+    // captured data and its Swift backing storage. A NULL queue bypasses that
+    // tracking in the dispatch_data_create interceptor.
+    dispatch_data_t content = data ? dispatch_data_create(data.bytes, data.length,
+                                                          dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0),
                                                           ^{
                                                             (void)data;
                                                           })
