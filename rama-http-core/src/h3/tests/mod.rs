@@ -97,13 +97,24 @@ impl Pair {
             .with_store_server_cert_chain(true)
             .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
             .unwrap();
-        let mut server_config =
-            rama_quic::ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap();
+        // Select explicitly: dev-dependencies also enable Rustls, whose default
+        // would otherwise silently make the Boring test run exercise Rustls.
+        let (client_provider, server_provider) = rama_quic::test_utils::tls_providers().unwrap();
+        let mut server_config = rama_quic::ServerConfig::try_from_rama_tls_with_provider(
+            &server_tls,
+            TlsOptions::default(),
+            server_provider.as_ref(),
+        )
+        .unwrap();
         if capture {
             server_config.set_capture(Default::default());
         }
-        let mut client_config =
-            rama_quic::ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default()).unwrap();
+        let mut client_config = rama_quic::ClientConfig::try_from_rama_tls_with_provider(
+            &client_tls,
+            TlsOptions::default(),
+            client_provider.as_ref(),
+        )
+        .unwrap();
         let default_transport = || {
             let mut transport = TransportConfig::default();
             Config::default()

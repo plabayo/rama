@@ -3,7 +3,8 @@
 
 Every implementation in the public QUIC interop runner ships an endpoint image with one
 contract: `ROLE`, `TESTCASE`, `REQUESTS`, files under `/www`, downloads under `/downloads`,
-certificates under `/certs`, HTTP/0.9 over ALPN `hq-interop`. Rama's image follows it too. So
+certificates under `/certs`, HTTP/0.9 over ALPN `hq-interop` or HTTP/3 for `http3`.
+Rama's image follows it too. So
 the matrix costs no peer code: one image serves, another fetches, the fetch is timed.
 
 The simulator is left out. The endpoint base image still routes everything through a `.2`
@@ -185,7 +186,7 @@ def heatmap_svg(case_name, case, clients, servers, cells, meta):
         f'<rect width="{width}" height="{height}" fill="#ffffff"/>',
         '<defs><pattern id="na" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
         '<line x1="0" y1="0" x2="0" y2="8" stroke="#c8c8c8" stroke-width="2"/></pattern></defs>',
-        f'<text x="16" y="30" font-size="20" font-weight="bold">QUIC {svg_escape(case_name)}: '
+        f'<text x="16" y="30" font-size="20" font-weight="bold">QUIC {svg_escape(meta.get("protocol", "hq-interop"))} {svg_escape(case_name)}: '
         f'{svg_escape(case["description"])} [{svg_escape(case["unit"])}]</text>',
     ]
     header = [
@@ -272,8 +273,21 @@ def apply_overrides(lock, overrides):
     return lock
 
 
-def load_lock(overrides=None):
+def load_lock(overrides=None, protocol="hq-interop"):
     lock = apply_overrides(json.loads(LOCK.read_text()), overrides)
+    if protocol == "h3":
+        # Share reviewed peer pins with interoperability; never substitute a
+        # moving peer tag when comparing H3 runs.
+        runner = json.loads((HERE.parent / "interop-runner/runner.lock.json").read_text())
+        lock["implementations"] = {
+            name: spec for name, spec in lock["implementations"].items()
+            if "rama_backend" in spec or name in runner["peers"]
+        }
+        for name, image in runner["peers"].items():
+            lock["implementations"][name]["image"] = image
+        for case in lock["cases"].values():
+            case["testcase"] = "http3"
+            case["alpn"] = "h3"
     for name, case in lock["cases"].items():
         case["description"] = {
             "bulk": "one stream, one large file",
@@ -373,7 +387,22 @@ def prepare_content(lock, args, workdir):
             script.append(f"for f in {' '.join(names)}; do ln .seed-{name} $f; done")
     print("generating served files", flush=True)
     docker("run", "--rm", "-v", f"{volume}:/www", "alpine:3", "sh", "-c", "\n".join(script), capture=False)
+    for files in expected.values():
+        hashes = docker("run", "--rm", "-v", f"{volume}:/www:ro", "alpine:3", "sh", "-c",
+                        "cd /www && sha256sum " + " ".join(files["names"])).stdout
+        files["hashes"] = parse_hashes(hashes)
     return certs, volume, expected
+
+
+def parse_hashes(output):
+    result = {}
+    for line in output.splitlines():
+        digest, name = line.split(maxsplit=1)
+        name = name.lstrip("*")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or name in result:
+            raise BenchError("invalid or duplicate content hash")
+        result[name] = digest
+    return result
 
 
 def occupied_subnets():
@@ -459,7 +488,7 @@ def save_logs(args, label):
     (args.logs / f"{label}.log").write_text((logs.stdout or "") + (logs.stderr or ""))
 
 
-def run_client(spec, certs, testcase, names, args, expect_bytes, label="client"):
+def run_client(spec, certs, testcase, names, args, expected, label="client"):
     """One client run: its process lifetime from the container's own timestamps, the bytes it
     downloaded, and whether they were the right ones."""
     downloads = f"{PREFIX}-downloads"
@@ -501,21 +530,29 @@ def run_client(spec, certs, testcase, names, args, expect_bytes, label="client")
                    "cd /downloads && for f in *; do if [ -f \"$f\" ]; then stat -c '%s' \"$f\" || exit; fi; done").stdout.split()
     total = sum(int(s) for s in sizes)
     sample["bytes"] = total
-    if len(sizes) != len(names) or total != expect_bytes:
-        sample["error"] = f"downloaded {len(sizes)} files, {total} bytes; expected {len(names)} files, {expect_bytes} bytes"
+    if len(sizes) != len(names) or total != expected["bytes"]:
+        sample["error"] = f"downloaded {len(sizes)} files, {total} bytes; expected {len(names)} files, {expected['bytes']} bytes"
         return sample
+    hashes = docker("run", "--rm", "-v", f"{downloads}:/downloads:ro", "alpine:3", "sh", "-c",
+                    "cd /downloads && sha256sum *").stdout
+    if parse_hashes(hashes) != expected["hashes"]:
+        sample["error"] = "download contents differ from the served files"
+        return sample
+    sample["content_verified"] = True
     sample["ok"] = True
     return sample
 
 
 def run_matrix(args):
-    lock = load_lock(args.set)
+    lock = load_lock(args.set, args.protocol)
     names = args.implementations or list(lock["implementations"])
     unknown = [n for n in names if n not in lock["implementations"]]
     if unknown:
         raise BenchError(f"unknown implementations: {unknown}")
     cases = {n: lock["cases"][n] for n in args.cases}
     meta = host_meta(args, args.repeat)
+    meta["protocol"] = args.protocol
+    meta["alpn_validation"] = "endpoint http3 contract" if args.protocol == "h3" else "endpoint hq-interop contract"
     images, emulated = {}, []
     for name in names:
         spec = lock["implementations"][name]
@@ -552,7 +589,7 @@ def run_matrix(args):
                         runs = args.handshake_runs + 1
                     for index in range(runs):
                         sample = run_client(images[client], certs, case["testcase"], files["names"],
-                                            args, files["bytes"], label=f"client.{previous}.{index}")
+                                            args, files, label=f"client.{previous}.{index}")
                         if index > 0:
                             samples.append(sample)
                         if sample.get("error") == "unsupported" or (index == 0 and not sample["ok"]):
@@ -595,6 +632,8 @@ def render(report, svg_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--protocol", choices=["hq-interop", "h3"], default="hq-interop",
+                        help="wire protocol; H3 uses the independent runner's pinned peers")
     parser.add_argument("--implementations", type=lambda s: s.split(","), help="comma-separated subset of bench.lock.json")
     parser.add_argument("--cases", type=lambda s: s.split(","), default=["handshake", "bulk", "parallel", "small"])
     parser.add_argument("--set", action="append", metavar="CASE.KEY=VALUE",
@@ -613,6 +652,10 @@ def main():
                         help="directory for the SVG heat-maps; pass 'none' to write no charts")
     parser.add_argument("--report", type=Path, help="render this saved JSON report instead of running")
     args = parser.parse_args()
+    if args.protocol == "h3" and not args.report:
+        args.out = args.out / "h3"
+        if args.svg not in ("", "none"):
+            args.svg = str(Path(args.svg) / "h3")
     if args.platform is None:
         info = json.loads(docker("info", "--format", "{{json .}}").stdout)
         args.platform = f"linux/{docker_arch(info.get('Architecture'))}"

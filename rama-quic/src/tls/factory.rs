@@ -140,6 +140,11 @@ pub struct RustlsTlsProvider {
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 impl RustlsTlsProvider {
+    /// Select Rustls's native cryptographic provider for this adapter.
+    ///
+    /// This backend-specific constructor intentionally accepts the Rustls type
+    /// re-exported by `rama_tls_rustls::dep::rustls`. Backend-neutral callers use
+    /// [`default_tls_provider`] or [`QuicClientConfigProvider`] instead.
     pub fn new(crypto: Arc<CryptoProvider>) -> Self {
         Self { crypto }
     }

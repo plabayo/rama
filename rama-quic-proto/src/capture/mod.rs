@@ -9,7 +9,9 @@
 //!
 //! Most callers hand a client's first datagrams (the ones sent before it hears from the server)
 //! and a [`KeyProvider`] to [`first_flight`], which runs the whole pipeline and returns a
-//! [`FirstFlight`] summary to fingerprint or turn into a [`crate::profile::QuicProfile`]. The
+//! [`FirstFlight`] summary for fingerprinting and inspection. It is observational data,
+//! not a replayable [`crate::profile::QuicProfile`]: choosing supported transport limits,
+//! TLS settings and an Initial layout requires the engine's profile or relay policy. The
 //! steps are also public for finer control: [`observe`] splits one datagram with no keys;
 //! [`ObservedDatagram::unprotect_initials`] opens that datagram's Initial packets into
 //! [`InitialPacket`]s; [`client_hello`] takes those `InitialPacket`s from across the whole flight

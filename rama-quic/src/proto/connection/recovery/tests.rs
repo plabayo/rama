@@ -651,11 +651,11 @@ impl super::Connection {
 impl super::Connection {
     /// Exercise real ACK processing after the fixture handshake, with sent packet
     /// numbers chosen explicitly so random optimistic-ACK skips cannot mask the case.
-    pub(crate) fn assert_ecn_counts_packets(
+    pub(crate) fn assert_ecn_feedback(
         &mut self,
         now: Instant,
         offsets: &[u64],
-        ect0_increase: u64,
+        counts: Option<EcnCounts>,
         expected_enabled: bool,
     ) {
         self.skip_no_packet_number();
@@ -687,20 +687,11 @@ impl super::Connection {
             ranges.insert_one(number);
         }
 
-        let ack = frame::Ack::from_ranges(
-            0,
-            &ranges,
-            Some(EcnCounts {
-                ect0: ect0_increase,
-                ect1: 0,
-                ce: 0,
-            }),
-        )
-        .unwrap();
+        let ack = frame::Ack::from_ranges(0, &ranges, counts).unwrap();
         self.on_ack_received(now, SpaceId::Data, &ack).unwrap();
         assert_eq!(
             self.path.sending_ecn, expected_enabled,
-            "offsets={offsets:?}, ECT(0) increase={ect0_increase}"
+            "offsets={offsets:?}, feedback={counts:?}"
         );
 
         // A duplicate ACK has no newly acknowledged packets. It must not require

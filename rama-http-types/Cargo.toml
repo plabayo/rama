@@ -10,9 +10,6 @@ categories = ["web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

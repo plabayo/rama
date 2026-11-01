@@ -22,6 +22,7 @@ pub(super) struct Insertion<'a> {
     value: &'a [u8],
     name_wire: Name<'a>,
     value_wire: StringEncoder<'a>,
+    allow_duplicate: bool,
 }
 
 impl<'a> Insertion<'a> {
@@ -54,6 +55,9 @@ impl<'a> Insertion<'a> {
                 None => Name::Literal(encoder.literal_string(name, 5, preferences.name_huffman)),
             },
             value_wire: encoder.literal_string(value, 7, preferences.value_huffman),
+            allow_duplicate: preferences.name_encoding == InsertionNameEncoding::Automatic
+                && preferences.name_huffman.is_none()
+                && preferences.value_huffman.is_none(),
         }
     }
 
@@ -77,11 +81,31 @@ impl<'a> Insertion<'a> {
     }
 
     fn apply(self, encoder: &mut Encoder) -> Result<(), InsertError> {
+        // Resolve against the live table, after earlier insertions in this batch.
+        // Reserving the literal encoding above is conservative: only substitute a
+        // Duplicate when it fits that reservation. Explicit wire choices stay literal.
+        let duplicate = self
+            .allow_duplicate
+            .then(|| encoder.table.find(self.name, self.value))
+            .flatten()
+            .map(|absolute| encoder.table.insert_count() - absolute - 1)
+            .filter(|relative| {
+                self.wire_len()
+                    .is_ok_and(|reserved| int_encoded_len(*relative, 5) <= reserved)
+            });
         encoder.table.insert(
             Bytes::copy_from_slice(self.name),
             Bytes::copy_from_slice(self.value),
             Some(encoder.known_received_count),
         )?;
+        if let Some(index) = duplicate {
+            encode_int(&mut encoder.encoder_output, index, 5, 0);
+            encoder.record_instruction(
+                "rama_qpack:instruction_created",
+                Instruction::Duplicate { index },
+            );
+            return Ok(());
+        }
         let metadata = encoder.qlog.as_ref().map(|_| match &self.name_wire {
             Name::Static(index) => Instruction::InsertNameReference {
                 is_static: true,

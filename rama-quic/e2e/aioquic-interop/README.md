@@ -30,15 +30,12 @@ the peer's key phase read back so the counter is not the only witness, and a con
 update is asked for. quiche exposes no key update at all. Neither peer exposes a TLS
 keying-material exporter, so exporters stay covered against Quinn.
 
-`tests/version_cases.rs` reports v2 first-flight, compatible-upgrade and version-restart
-cases as unsupported by the pinned aioquic 1.2.0. Its `next_key_phase` uses `quic ku`
-for v2, where RFC 9369 §3.3.2 requires `quicv2 ku`. Rama's randomized early key update
-can expose this even in a short exchange. A probe against the RFC's Appendix A.5 vector
-checks the limitation and requires revisiting the exclusions when the peer is fixed.
-The peer's cryptography and Rama's production key-update policy remain unmodified.
-V1 negotiation and key-update cases still run. The pinned Quinn and quiche peers also
-lack v2 support; Rama's v2 vectors, negotiation and forced key-update tests run in
-`rama-quic` for each TLS provider. External v2 interoperability remains a coverage gap.
+`tests/version_cases.rs` exercises v2 first-flight, compatible-upgrade and
+version-restart cases in both roles against aioquic 1.7.1. Its v2 key-update
+implementation is checked against RFC 9369 Appendix A.5 before running the
+matrix. The old 1.2.0 exclusion is removed: neither the peer cryptography nor
+Rama's randomized early key-update policy is patched for these tests.
+Rustls's inability to switch version mid-handshake is reported separately.
 
 Set `RUST_LOG=rama_quic=trace` to capture Rama's packet and recovery traces when
 investigating an interoperability failure.
@@ -75,9 +72,9 @@ cargo test --locked --features rustls-ring
 
 The test harness runs `uv sync --frozen` itself, once per test binary and under a five-minute
 bound of its own, so the second form works either way; running it explicitly only keeps a cold
-install out of the test run. It then asks the interpreter for its own version and aioquic's and
-requires them to be the pinned ones, so an environment left from an older lockfile fails with
-what it actually is. Nothing is skipped when a prerequisite is absent: a missing `uv` fails the
+install out of the test run. The frozen sync reconciles stale environments against the lockfile;
+an import probe then reports Python and aioquic's versions for diagnostics. The harness does
+not duplicate those version pins in Rust. Nothing is skipped when a prerequisite is absent: a missing `uv` fails the
 run with the command to fix it.
 
 CI runs these for each backend through `just rama-quic/qa-interop-aioquic BACKEND`, in the

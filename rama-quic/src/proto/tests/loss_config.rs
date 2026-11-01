@@ -895,18 +895,89 @@ fn ecn_validation_counts_packets_instead_of_contiguous_runs() {
             let (client, server) = pair.connect();
             pair.drive();
             let now = pair.time;
-            pair.client_conn_mut(client).assert_ecn_counts_packets(
+            let counts = Some(rama_quic_proto::frame::EcnCounts {
+                ect0: reported,
+                ect1: 0,
+                ce: 0,
+            });
+            pair.client_conn_mut(client).assert_ecn_feedback(
                 now,
                 offsets,
-                reported,
+                counts,
                 expected_enabled,
             );
-            pair.server_conn_mut(server).assert_ecn_counts_packets(
+            pair.server_conn_mut(server).assert_ecn_feedback(
                 now,
                 offsets,
-                reported,
+                counts,
                 expected_enabled,
             );
         }
+    }
+}
+
+#[test]
+fn current_path_ecn_rejects_bleaching_corruption_and_missing_feedback() {
+    use rama_quic_proto::frame::EcnCounts;
+
+    for counts in [
+        None,
+        Some(EcnCounts::ZERO),
+        Some(EcnCounts {
+            ect0: 1,
+            ect1: 0,
+            ce: 0,
+        }),
+        Some(EcnCounts {
+            ect0: 0,
+            ect1: 2,
+            ce: 0,
+        }),
+        Some(EcnCounts {
+            ect0: 2,
+            ect1: 1,
+            ce: 0,
+        }),
+    ] {
+        let mut pair = Pair::default();
+        let (client, server) = pair.connect();
+        pair.drive();
+        let now = pair.time;
+        pair.client_conn_mut(client)
+            .assert_ecn_feedback(now, &[0, 1], counts, false);
+        pair.server_conn_mut(server)
+            .assert_ecn_feedback(now, &[0, 1], counts, false);
+    }
+}
+
+#[test]
+fn current_path_ecn_accepts_congestion_marks_and_lost_ack_counts() {
+    use rama_quic_proto::frame::EcnCounts;
+
+    for counts in [
+        EcnCounts {
+            ect0: 1,
+            ect1: 0,
+            ce: 1,
+        },
+        EcnCounts {
+            ect0: 0,
+            ect1: 0,
+            ce: 2,
+        },
+        EcnCounts {
+            ect0: 4,
+            ect1: 0,
+            ce: 2,
+        },
+    ] {
+        let mut pair = Pair::default();
+        let (client, server) = pair.connect();
+        pair.drive();
+        let now = pair.time;
+        pair.client_conn_mut(client)
+            .assert_ecn_feedback(now, &[0, 1], Some(counts), true);
+        pair.server_conn_mut(server)
+            .assert_ecn_feedback(now, &[0, 1], Some(counts), true);
     }
 }

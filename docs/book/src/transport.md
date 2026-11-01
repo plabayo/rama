@@ -41,7 +41,7 @@ Rama's QUIC is the transport itself. HTTP/3 is not part of it.
 
 It speaks QUIC v1 ([RFC 9000][rfc-9000]) and v2 ([RFC 9369][rfc-9369]) and negotiates
 between them per [RFC 9368][rfc-9368], with downgrade protection. A connection starts in v1
-and accepts both by default; `rama::quic::version::ClientVersionPolicy` and
+and accepts both by default; `rama::quic::proto::version::ClientVersionPolicy` and
 `ServerVersionPolicy` change what is offered and accepted. A BoringSSL client can switch
 version mid-handshake, a Rustls one cannot. Address tokens and TLS tickets are scoped to the
 version that issued them.

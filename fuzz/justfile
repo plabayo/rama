@@ -94,6 +94,11 @@ http-deadlines SECONDS="0": (_run "http_deadlines" SECONDS "-max_len=8192 -timeo
 
 quic SECONDS="0": (quic-packet SECONDS) (quic-capture SECONDS) (quic-frame SECONDS) (quic-params SECONDS) (quic-streamid SECONDS) (quic-streams SECONDS) (quic-tokens SECONDS) (quic-admission SECONDS) (quic-datagram-sequence SECONDS)
 
+# Sustained manual release campaign. Keep the corpus between runs and retain the
+# command logs and fuzz/artifacts; a nonzero exit stops the campaign for triage.
+# This is independent of the short CI smoke runs and does not run benchmarks.
+quic-h3-release SECONDS="3600": (quic SECONDS) (h3 SECONDS) (http-capsule SECONDS)
+
 # HTTP/3 frame/settings codecs and QPACK instruction/field-section decoding.
 http-capsule SECONDS="0": (_run "http_capsule" SECONDS "-max_len=65536 -timeout=10")
 
