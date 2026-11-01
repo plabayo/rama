@@ -2906,6 +2906,7 @@ dependencies = [
  "rama-http",
  "rama-net",
  "rama-quic-proto",
+ "rama-tls",
  "rama-udp",
  "rama-utils",
  "tokio",
