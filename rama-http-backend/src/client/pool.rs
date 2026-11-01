@@ -3,7 +3,7 @@
 use std::{
     hash::{BuildHasher as _, RandomState},
     num::NonZeroUsize,
-    sync::{Arc, LazyLock},
+    sync::LazyLock,
     time::Duration,
 };
 
@@ -28,17 +28,22 @@ use rama_net::client::pool::{
     BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
     ReqToConnID, SaturationPolicy,
 };
-use rama_net::client::{ConnectRequest, ConnectorService, ConnectorTarget, ProxyRoute};
+use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
 use rama_net::http::HttpRequestVersion;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
-use rama_quic_proto::profile::QuicProfile;
 use rama_tls::client::TlsPoolId;
 
 use super::{
     BindBodyToConnLayer, BindBodyToConnector, Http1BodyDrainConfig,
     h2_preferences::H2WirePreferences,
-    h3::{Http3Coalescing, coalescing::pool_group},
+};
+#[cfg(feature = "quic")]
+use {
+    super::h3::{Http3Coalescing, coalescing::pool_group},
+    rama_net::client::ConnectorTarget,
+    rama_quic_proto::profile::QuicProfile,
+    std::sync::Arc,
 };
 
 /// Default HTTP pooled connector assembled by
@@ -82,13 +87,14 @@ impl HttpConnIdentifier {
 /// It also keeps
 /// plaintext forward-proxy connections separate from plaintext CONNECT
 /// tunnels. Those connections address the same proxy socket but use different
-/// HTTP request semantics. Origins of one [`Http3Coalescing`] set share an
+/// HTTP request semantics. Origins of one `Http3Coalescing` set share an
 /// identity per endpoint instead of per authority.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpConnId {
     reusable: bool,
     tls: Option<TlsPoolId>,
     wire: Option<WireDigest>,
+    #[cfg(feature = "quic")]
     coalescing: Option<Arc<Http3Coalescing>>,
     network: BasicConnId,
     required_version: Option<Version>,
@@ -109,8 +115,12 @@ static WIRE_HASHERS: LazyLock<[RandomState; 2]> =
     LazyLock::new(|| [RandomState::new(), RandomState::new()]);
 
 fn wire_digest(extensions: &Extensions) -> Option<WireDigest> {
+    #[cfg(feature = "quic")]
+    let quic_profile = extensions.get_ref::<QuicProfile>();
+    #[cfg(not(feature = "quic"))]
+    let quic_profile: Option<&()> = None;
     let preferences = (
-        extensions.get_ref::<QuicProfile>(),
+        quic_profile,
         H2WirePreferences::from_extensions(extensions),
         extensions.get_ref::<ClientSettingsProfile>(),
         extensions.get_ref::<CriticalStreamPreferences>(),
@@ -161,7 +171,9 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
                 .as_ref()
                 .map(|protocol| extended_connect_pseudo_scheme(protocol).clone());
         }
+        #[cfg(feature = "quic")]
         let coalescing = pool_group(input);
+        #[cfg(feature = "quic")]
         if coalescing.is_some()
             && let Some(ConnectorTarget(target)) = &network.connector_target
         {
@@ -171,6 +183,7 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
             reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
             wire: wire_digest(input.extensions()),
+            #[cfg(feature = "quic")]
             coalescing,
             network,
             required_version: connection_version_requirement(input),
@@ -519,6 +532,7 @@ mod tests {
     use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
     use rama_net::test_utils::client::MockConnectorService;
     use rama_net::{HttpVersionInputExt, Protocol, transport::TransportProtocol};
+    #[cfg(feature = "quic")]
     use rama_quic_proto::profile::QuicProfile;
     use rama_tls::{
         TlsTunnel,
@@ -2037,6 +2051,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "quic")]
     #[tokio::test]
     async fn explicit_quic_profiles_partition_http_pool_connections_by_value() {
         let attempts = Arc::new(AtomicUsize::new(0));

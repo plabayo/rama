@@ -9,4 +9,5 @@ pub use service::HttpServer;
 
 mod core_conn;
 
+#[cfg(feature = "quic")]
 mod h3;

@@ -1644,6 +1644,7 @@ dependencies = [
  "rama-crypto",
  "rama-http",
  "rama-http-backend",
+ "rama-http-core",
  "rama-icap",
  "rama-json",
  "rama-net",

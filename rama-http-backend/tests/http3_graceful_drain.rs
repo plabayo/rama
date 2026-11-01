@@ -1,6 +1,6 @@
 //! A graceful HTTP/3 shutdown closes a connection whose peer stopped acknowledging, once its
 //! requests ended, after `goaway_drain_timeout` instead of waiting for acknowledgements.
-
+#![cfg(feature = "quic")]
 #![expect(
     clippy::expect_used,
     reason = "integration test failures identify the failed step"

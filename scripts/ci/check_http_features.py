@@ -36,7 +36,29 @@ def check(package, features=None, *, manifest=None, ua=False, embedded=False):
     print(f"PASS {package} [{features}]: ua={ua}, embedded={embedded}")
 
 
+def check_quic(features, expected):
+    graph = subprocess.run(
+        [
+            "cargo", "tree", "--locked", "-p", "rama",
+            "--edges", "normal", "--prefix", "none",
+            "--no-default-features", "--features", features,
+        ],
+        cwd=ROOT, check=True, text=True, capture_output=True,
+    ).stdout
+    found = any(line.startswith("rama-quic ") for line in graph.splitlines())
+
+    if found != expected:
+        raise RuntimeError(f"rama [{features}]: rama-quic present={found}, expected={expected}")
+
+    print(f"PASS rama [{features}]: quic={expected}")
+
+
 def main():
+    check_quic("http-backend", False)
+    check_quic("http-backend,boring", False)
+    check_quic("http-backend,quic", True)
+    check_quic("http-full", True)
+
     # Both HTTP tiers and the actual relay example must remain UA-independent.
     for features in ("http", "http,boring", "http-full,boring"):
         check("rama", features)

@@ -2,7 +2,6 @@ use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorExt, error_chain},
     extensions::{Egress, Extension, Extensions, ExtensionsRef},
-    rt::Executor,
     telemetry::tracing,
 };
 use rama_http::{
@@ -12,32 +11,39 @@ use rama_http_core::{
     Error as HttpError,
     client::conn::{http1, http2},
     h2::{Error as Http2Error, Reason as Http2Reason},
-    h3::{
-        Error as Http3Error, client as http3, connection::Config as Http3Config,
-        transport::BoxedConnection as BoxedQuicConnection,
-    },
 };
 use rama_http_types::{
-    Body as ResponseBody, Method, Request, Response, StatusCode, Version,
+    Body as ResponseBody, Method, Request, Response, Version,
     body::{OnIncompleteBody, util::BodyExt as _},
     proto::h1::ext::ConnectionClose,
 };
 use rama_net::{
     client::{ConnectionError, ConnectionErrorKind},
-    conn::{ConnectionHealthWatcher, MaxConcurrency, is_connection_error},
+    conn::{ConnectionHealthWatcher, is_connection_error},
 };
-use rama_tls::client::TlsServerAuthenticatedAliases;
 use rama_utils::guard::DropGuard;
 use std::{
     fmt, io,
-    pin::pin,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::Mutex;
+#[cfg(feature = "quic")]
+use {
+    rama_core::rt::Executor,
+    rama_http_core::h3::{
+        Error as Http3Error, client as http3, connection::Config as Http3Config,
+        transport::BoxedConnection as BoxedQuicConnection,
+    },
+    rama_http_types::StatusCode,
+    rama_net::conn::MaxConcurrency,
+    rama_tls::client::TlsServerAuthenticatedAliases,
+    std::pin::pin,
+};
 
 pub(super) enum SendRequest<Body> {
     Http1(Mutex<http1::SendRequest<Body>>),
     Http2(http2::SendRequest<Body>),
+    #[cfg(feature = "quic")]
     Http3(http3::SendRequest<Body, BoxedQuicConnection>),
 }
 
@@ -47,6 +53,7 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
         match self {
             Self::Http1(send_request) => f.field(send_request).finish(),
             Self::Http2(send_request) => f.field(send_request).finish(),
+            #[cfg(feature = "quic")]
             Self::Http3(send_request) => f.field(send_request).finish(),
         }
     }
@@ -93,6 +100,7 @@ fn note_unprocessed(attempts: Option<&SendAttempts>, err: &HttpError) {
     }
 }
 
+#[cfg(feature = "quic")]
 pub(crate) fn note_http3_unprocessed(attempts: Option<&SendAttempts>, err: &Http3Error) {
     // Only rejection guarantees no processing; a closed connection may have sent it.
     if let Some(attempts) = attempts
@@ -151,12 +159,14 @@ where
         // Check if this http connection can actually be used for this request version
         match (&self.sender, req.version()) {
             (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
-            | (SendRequest::Http2(_), Version::HTTP_2)
-            | (SendRequest::Http3(_), Version::HTTP_3) => (),
+            | (SendRequest::Http2(_), Version::HTTP_2) => (),
+            #[cfg(feature = "quic")]
+            (SendRequest::Http3(_), Version::HTTP_3) => (),
             (SendRequest::Http1(_), version) => Err(BoxError::from_static_str(
                 "Http1 connector cannot send request with version",
             )
             .context_debug_field("version", version))?,
+            #[cfg(feature = "quic")]
             (SendRequest::Http3(_), version) => Err(BoxError::from_static_str(
                 "Http3 connector cannot send request with version",
             )
@@ -175,6 +185,7 @@ where
         ensure_valid_request_for_version(&mut req)?;
 
         let resp = match &self.sender {
+            #[cfg(feature = "quic")]
             SendRequest::Http3(sender) => {
                 let mut sender = sender.clone();
                 match Box::pin(sender.send_request(req)).await {
@@ -252,6 +263,7 @@ where
         };
 
         // RFC 9110 §15.5.20: stop coalescing onto a connection that misdirects; never replay.
+        #[cfg(feature = "quic")]
         if resp.status() == StatusCode::MISDIRECTED_REQUEST
             && matches!(&self.sender, SendRequest::Http3(_))
             && self.extensions.contains::<TlsServerAuthenticatedAliases>()
@@ -282,7 +294,9 @@ where
                 }))
             }
             // h2 recovers per stream: an abandoned body resets only its stream.
-            SendRequest::Http2(_) | SendRequest::Http3(_) => Ok(resp.map(ResponseBody::new)),
+            SendRequest::Http2(_) => Ok(resp.map(ResponseBody::new)),
+            #[cfg(feature = "quic")]
+            SendRequest::Http3(_) => Ok(resp.map(ResponseBody::new)),
         }
     }
 }
@@ -324,6 +338,7 @@ fn classify_http_error(error: HttpError) -> BoxError {
                     error.get_io().and_then(remote_io_failure)
                 };
             }
+            #[cfg(feature = "quic")]
             if let Some(error) = cause.downcast_ref::<Http3Error>() {
                 return error
                     .is_remote_failure()
@@ -350,6 +365,7 @@ fn remote_io_failure(error: &io::Error) -> Option<ConnectionErrorKind> {
     }
 }
 
+#[cfg(feature = "quic")]
 pub(crate) fn classify_http3_error(error: Http3Error) -> BoxError {
     if error.is_remote_failure() {
         ConnectionError::application(error, ConnectionErrorKind::Unavailable).into_box_error()
@@ -376,6 +392,7 @@ impl<B> ExtensionsRef for HttpClientService<B> {
     }
 }
 
+#[cfg(feature = "quic")]
 impl<Body> HttpClientService<Body> {
     /// Build an HTTP/3 service on an established QUIC connection and drive its critical streams.
     pub(super) fn http3(
@@ -410,34 +427,41 @@ impl<Body> HttpClientService<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::{ServiceInput, bytes::Bytes, futures::stream, rt::spawn};
-    use rama_http_core::{h2::server as http2_server, h3::server as http3_server};
+    use rama_core::{ServiceInput, bytes::Bytes, futures::stream, rt::Executor};
+    use rama_http_core::h2::server as http2_server;
     use rama_http_types::{
         Body,
         body::{Frame, util::StreamBody},
-        proto::h3::Code,
     };
-    use rama_net::address::SocketAddress;
     use rama_net::{
         address::ProxyAddress,
         client::{ConnectionErrorDomain, EstablishedProxyRoute, ProxyRoute},
         conn::ConnectionHealth,
     };
-    use rama_quic::{
-        ClientConfig, Connection as QuicConnection, Endpoint, ServerConfig, tls::TlsOptions,
-    };
-    use rama_quic_proto::VarInt;
-    use rama_tls::{
-        client::TlsClientConfig,
-        server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
-    };
-    use rama_udp::test_utils::MemoryDatagramSocket;
     use rama_utils::octets::kib;
-    use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+    use std::time::Duration;
     use tokio::{
         io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, copy, duplex, sink},
         sync::oneshot,
         time::timeout,
+    };
+
+    #[cfg(feature = "quic")]
+    use {
+        rama_core::rt::spawn,
+        rama_http_core::h3::server as http3_server,
+        rama_http_types::proto::h3::Code,
+        rama_net::address::SocketAddress,
+        rama_quic::{
+            ClientConfig, Connection as QuicConnection, Endpoint, ServerConfig, tls::TlsOptions,
+        },
+        rama_quic_proto::VarInt,
+        rama_tls::{
+            client::TlsClientConfig,
+            server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+        },
+        rama_udp::test_utils::MemoryDatagramSocket,
+        std::{num::NonZeroUsize, sync::Arc},
     };
 
     #[cfg(feature = "tls")]
@@ -447,6 +471,7 @@ mod tests {
         rama_tls::SecureTransport,
     };
 
+    #[cfg(feature = "quic")]
     #[test]
     fn http3_only_explicit_request_rejection_is_unprocessed() {
         for (error, unprocessed) in [
@@ -853,6 +878,7 @@ mod tests {
         assert_eq!(req.protocol(), Some(&Protocol::HTTPS));
     }
 
+    #[cfg(feature = "quic")]
     async fn h3_replay_pair() -> (Endpoint, Endpoint, QuicConnection, QuicConnection) {
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let server_tls = TlsServerConfig::new()
@@ -896,6 +922,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "quic")]
     #[tokio::test(start_paused = true)]
     async fn h3_replay_attempts_require_explicit_stream_rejection_for_every_attempt() {
         timeout(Duration::from_secs(20), async {

@@ -1,5 +1,6 @@
 //! Every ordered HTTP/1.1, HTTP/2 and HTTP/3 relay pair over memory transports.
 //! Real wire engines exercise version adaptation, framing and streaming together.
+#![cfg(feature = "quic")]
 #![expect(clippy::expect_used, reason = "test assertions identify failed stages")]
 
 use rama_core::{

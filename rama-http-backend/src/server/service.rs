@@ -9,6 +9,7 @@ use rama_core::graceful::ShutdownGuard;
 use rama_core::io::Io;
 use rama_core::rt::Executor;
 use rama_http::service::web::response::IntoResponse;
+#[cfg(feature = "quic")]
 use rama_http_core::h3::transport;
 use rama_http_core::server::conn::auto::Builder as AutoConnBuilder;
 use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
@@ -25,7 +26,7 @@ use ::{rama_unix::server::UnixListener, std::path::Path};
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
 ///
-/// Supported protocols: HTTP/1, H2, Auto (HTTP/1 + H2), and H3 over QUIC.
+/// Supported protocols: HTTP/1, H2, Auto (HTTP/1 + H2), and with the `quic` feature H3 over QUIC.
 ///
 /// [`Service`]: rama_core::Service
 #[derive(Debug, Clone)]
@@ -271,6 +272,8 @@ where
     }
 }
 
+#[cfg(feature = "quic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
 impl HttpServer<rama_http_core::h3::connection::Config> {
     /// Create an HTTP/3 server for QUIC connections negotiated with the `h3` ALPN.
     #[must_use]
@@ -320,6 +323,7 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
     }
 }
 
+#[cfg(feature = "quic")]
 impl<C, S, Response> Service<C> for HttpService<rama_http_core::h3::connection::Config, S>
 where
     C: transport::Connection,

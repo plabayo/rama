@@ -1,7 +1,8 @@
 use super::{
-    HttpClientService, HttpTransport, HttpTransportConnector, IntoHttpTransport,
-    drain::Http1DrainRuntime, h3::coalescing, svc::SendRequest,
+    HttpClientService, HttpTransport, IntoHttpTransport, drain::Http1DrainRuntime, svc::SendRequest,
 };
+#[cfg(feature = "quic")]
+use super::{HttpTransportConnector, h3::coalescing};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
@@ -11,7 +12,7 @@ use rama_core::{
     rt::Executor,
 };
 use rama_http::{StreamingBody, opentelemetry::version_as_protocol_version};
-use rama_http_core::{client::conn::http2::H2PeerSettingsHandle, h3::transport::Connection as _};
+use rama_http_core::client::conn::http2::H2PeerSettingsHandle;
 use rama_http_types::{
     Version,
     conn::{
@@ -26,14 +27,15 @@ use rama_net::client::{
 use rama_net::conn::is_connection_error;
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt,
-    tls::AlpnPolicy,
 };
 use rama_tls::client::NegotiatedTlsParameters;
 use tokio::sync::Mutex;
+#[cfg(feature = "quic")]
+use {rama_http_core::h3::transport::Connection as _, rama_net::tls::AlpnPolicy, std::sync::Arc};
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{error::Error as StdError, marker::PhantomData, sync::Arc};
+use std::{error::Error as StdError, marker::PhantomData};
 
 pub(super) fn resolve_input_target_http_version<Input>(input: &Input) -> Option<Version>
 where
@@ -380,6 +382,8 @@ impl<S, Body> HttpConnector<S, Body> {
 }
 
 impl<S, Body> HttpConnector<S, Body> {
+    #[cfg(feature = "quic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
     /// Add a QUIC transport connector below the common HTTP handshake.
     /// The connector returns [`super::Http3Transport`], without starting HTTP/3.
     pub fn with_http3_connector<Q>(
@@ -423,7 +427,7 @@ impl ConnectionReusePolicy for UnclassifiedSecureTransport {
 /// need bounded establishment must wrap their connector in a timeout, including
 /// the TLS/QUIC handshake and this readiness wait. Cancellation drops the pending
 /// HTTP connection.
-/// Custom QUIC transports can publish [`AlpnPolicy::OutOfBandAgreement`] in
+/// Custom QUIC transports can publish [`rama_net::tls::AlpnPolicy::OutOfBandAgreement`] in
 /// connection extensions when HTTP/3 was agreed through another mechanism.
 pub async fn http_connect<T, Input, BodyConnection>(
     transport: T,
@@ -448,8 +452,7 @@ where
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
     // A secure (or unknown) origin needs rules from its own TLS connector;
     // proxy-leg rules alone cannot establish whether origin TLS can be reused.
-    let endpoint_policy_required =
-        matches!(&transport, HttpTransport::Quic(_)) || !plaintext_origin;
+    let endpoint_policy_required = transport.is_quic() || !plaintext_origin;
     let reuse = transport.extensions().get_ref::<ConnectionReuse>();
     let classified = if endpoint_policy_required {
         reuse.is_some_and(ConnectionReuse::is_complete)
@@ -466,6 +469,7 @@ where
     }
     let version = match &transport {
         HttpTransport::Stream(io) => resolve_target_http_version(io, &input),
+        #[cfg(feature = "quic")]
         HttpTransport::Quic(_) => Some(Version::HTTP_3),
     };
     let required = required_transport_http_version(&input);
@@ -486,6 +490,7 @@ where
             }
             http_stream_connect(io, input, exec).await
         }
+        #[cfg(feature = "quic")]
         HttpTransport::Quic(quic) => {
             quic.connection
                 .handshake_confirmed()
@@ -831,6 +836,7 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "quic")]
 mod http3_dispatch_tests {
     use super::*;
     use crate::client::Http3Transport;
@@ -1130,6 +1136,7 @@ mod h2_client_params_tests {
         proto::h2::frame::{Setting, SettingId, Settings},
     };
     use rama_net::client::ConnectRequest;
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt as _, DuplexStream};
 
