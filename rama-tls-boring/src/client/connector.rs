@@ -560,11 +560,8 @@ impl<S, K> TlsConnector<S, K> {
             return Ok(());
         };
         let request = BoringTlsConnectorConfig::from_extensions(input.extensions());
-        let scope = if !request.is_empty() {
-            ConnectionPolicyScope::Request
-        } else {
-            ConnectionPolicyScope::Connector
-        };
+        let scope = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions())
+            .policy_scope();
         if !secure {
             return attempt.check_policy(scope, None);
         }
@@ -602,11 +599,8 @@ impl<S, K> TlsConnector<S, K> {
         server_name: Option<&Host>,
         server_host: &Host,
     ) -> Result<ConnectionPolicyScope, ConnectionError> {
-        let scope = if !BoringTlsConnectorConfig::from_extensions(input.extensions()).is_empty() {
-            ConnectionPolicyScope::Request
-        } else {
-            ConnectionPolicyScope::Connector
-        };
+        let scope = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions())
+            .policy_scope();
         if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() {
             let peer = (verify_mode != ServerVerifyMode::Disable)
                 .then_some(server_name.unwrap_or(server_host));
@@ -1064,6 +1058,13 @@ mod tests {
             );
             let connector = TlsConnector::auto(transport).with_base_config(base);
             let input = origin_attempt();
+            let caller = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
+            input
+                .extensions()
+                .insert(TlsAlpn([ApplicationProtocol::HTTP_2].into_iter().collect()));
+            input
+                .extensions()
+                .insert(caller.for_derived_settings(input.extensions()).unwrap());
             let attempt = input.extensions().get_arc::<ConnectionAttempt>().unwrap();
             let error = connector.serve(input).await.expect_err("policy rejection");
             assert_eq!(error.domain(), ConnectionErrorDomain::Local);
@@ -1088,6 +1089,64 @@ mod tests {
             .expect_err("plaintext rejection");
         assert_eq!(error.domain(), ConnectionErrorDomain::Local);
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn discovery_preserves_validated_derived_tls_policy_scope() {
+        let connector = TlsConnector::secure(()).with_base_config(TlsClientConfig::default_http());
+        for caller_override in [false, true] {
+            let input = origin_attempt();
+            if caller_override {
+                input
+                    .extensions()
+                    .insert(TlsServerVerify(ServerVerifyMode::Auto));
+            }
+            let caller = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
+            input
+                .extensions()
+                .insert(TlsAlpn([ApplicationProtocol::HTTP_2].into_iter().collect()));
+            let derived = caller.for_derived_settings(input.extensions()).unwrap();
+            input.extensions().insert(derived);
+            let expected = if caller_override {
+                ConnectionPolicyScope::Request
+            } else {
+                ConnectionPolicyScope::Connector
+            };
+            connector.check_attempt_policy(&input, true).unwrap();
+            assert_eq!(
+                input
+                    .extensions()
+                    .get_ref::<ConnectionAttempt>()
+                    .unwrap()
+                    .policy_scope(),
+                expected
+            );
+            assert_eq!(
+                TlsConnector::<(), ConnectorKindSecure>::check_connection_identity(
+                    &input,
+                    ServerVerifyMode::Auto,
+                    None,
+                    &Host::from_static("origin.example"),
+                )
+                .unwrap(),
+                expected
+            );
+            // A later TLS override invalidates the derived-policy token.
+            input
+                .extensions()
+                .insert(TlsServerVerify(ServerVerifyMode::Auto));
+            if !caller_override {
+                connector.check_attempt_policy(&input, true).unwrap();
+                assert_eq!(
+                    input
+                        .extensions()
+                        .get_ref::<ConnectionAttempt>()
+                        .unwrap()
+                        .policy_scope(),
+                    ConnectionPolicyScope::Request
+                );
+            }
+        }
     }
 
     #[test]
@@ -1139,6 +1198,13 @@ mod tests {
             });
             let connector = TlsConnector::secure(transport);
             let input = origin_attempt();
+            let caller = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
+            input
+                .extensions()
+                .insert(TlsAlpn([ApplicationProtocol::HTTP_2].into_iter().collect()));
+            input
+                .extensions()
+                .insert(caller.for_derived_settings(input.extensions()).unwrap());
             let attempt = input.extensions().get_arc::<ConnectionAttempt>().unwrap();
             let error = connector
                 .serve(input)

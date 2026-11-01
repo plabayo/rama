@@ -254,6 +254,14 @@ async fn established_with_store(
         .publish(request.extensions());
     let client = async {
         let mut connection = connector.serve(request).await.unwrap();
+        assert_eq!(
+            connection
+                .conn
+                .extensions()
+                .get_ref::<rama_net::client::ConnectionPolicyScope>(),
+            Some(&rama_net::client::ConnectionPolicyScope::Connector),
+            "authenticated compiled profiles retain the connector trust scope",
+        );
         assert!(
             connection
                 .conn
