@@ -26,8 +26,14 @@ fuzz_target!(|bytes: &[u8]| {
         rest = &rest[3 + n..];
         let ty = [ADDRESS_ASSIGN, ADDRESS_REQUEST, ROUTE_ADVERTISEMENT][usize::from(operation % 3)];
         if let Ok(capsule) = ConnectIpCapsule::decode(ty, raw, 16) {
-            let encoded = capsule.encode(16).unwrap();
-            assert_eq!(ConnectIpCapsule::decode(ty, &encoded, 16).unwrap(), capsule);
+            let roundtrip = capsule
+                .encode(16)
+                .and_then(|encoded| ConnectIpCapsule::decode(ty, &encoded, 16));
+            assert_eq!(
+                roundtrip.as_ref(),
+                Ok(&capsule),
+                "accepted capsules must round-trip within the same entry limit",
+            );
             let before = format!("{state:?}");
             let result = if operation & 4 == 0 {
                 state.receive(&capsule)

@@ -16,14 +16,24 @@ fuzz_target!(|bytes: &[u8]| {
         let mut edited = packet.as_bytes().to_vec();
         let old_hop = packet.hop_limit();
         if decrement_hop_limit(&mut edited).is_ok() {
-            assert_eq!(IpPacket::parse(&edited).unwrap().hop_limit(), old_hop - 1);
+            assert_eq!(
+                IpPacket::parse(&edited).map(|p| p.hop_limit()),
+                Ok(old_hop - 1),
+                "decrementing the hop limit must preserve a valid IP packet",
+            );
         } else {
             assert_eq!(edited, packet.as_bytes());
         }
-        set_traffic_class(&mut edited, bytes.last().copied().unwrap_or(0)).unwrap();
-        let again = IpPacket::parse(&edited).unwrap();
-        assert_eq!(again.source(), packet.source());
-        assert_eq!(again.destination(), packet.destination());
+        assert_eq!(
+            set_traffic_class(&mut edited, bytes.last().copied().unwrap_or(0)),
+            Ok(()),
+            "setting the traffic class on a valid packet must succeed",
+        );
+        assert_eq!(
+            IpPacket::parse(&edited).map(|p| (p.source(), p.destination())),
+            Ok((packet.source(), packet.destination())),
+            "header edits must preserve a valid packet and its addresses",
+        );
         if let IpPacket::V6(p) = packet {
             assert!(p.extensions().count() <= 32);
         }
@@ -34,7 +44,11 @@ fuzz_target!(|bytes: &[u8]| {
             IcmpErrorKind::HopLimitExceeded,
             &mut output,
         ) {
-            assert!(IpPacket::parse(&output[..n]).is_ok());
+            assert_eq!(
+                IpPacket::parse(&output[..n]).map(|_| ()),
+                Ok(()),
+                "encoded ICMP errors must contain a valid IP packet",
+            );
         }
     }
 });
