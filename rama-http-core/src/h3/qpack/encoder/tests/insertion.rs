@@ -44,6 +44,154 @@ fn deferred() -> EncoderConfig {
 }
 
 #[test]
+fn automatic_reinsertion_emits_duplicate_against_the_live_table() {
+    let mut encoder = Encoder::new(EncoderConfig::default());
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    let preferences = FieldPreferences {
+        representation: Representation::LiteralName,
+        insertion: Some(InsertionPreferences::default()),
+        ..FieldPreferences::default()
+    };
+    let first = encoder
+        .encode(0, [field("x-repeat", "value", &preferences)])
+        .unwrap();
+    decoder
+        .feed_encoder_stream(&encoder.take_encoder_stream())
+        .unwrap();
+    decoder.decode_field_section(0, first).unwrap().unwrap();
+    encoder
+        .feed_decoder_stream(&decoder.take_decoder_stream())
+        .unwrap();
+
+    // The intervening field moves the source's relative index from zero to one.
+    // The next duplicate must resolve after the previous duplicate was inserted.
+    let section = encoder
+        .encode(
+            4,
+            [
+                field("x-other", "other", &preferences),
+                field("x-repeat", "value", &preferences),
+                field("x-repeat", "value", &preferences),
+            ],
+        )
+        .unwrap();
+    let instructions = encoder.take_encoder_stream();
+    let mut cursor = instructions.as_ref();
+    assert_matches!(
+        EncoderInstruction::decode(&mut cursor, 4096).unwrap(),
+        EncoderInstruction::InsertWithLiteralName { .. }
+    );
+    assert_matches!(
+        EncoderInstruction::decode(&mut cursor, 4096).unwrap(),
+        EncoderInstruction::Duplicate { index: 1 }
+    );
+    assert_matches!(
+        EncoderInstruction::decode(&mut cursor, 4096).unwrap(),
+        EncoderInstruction::Duplicate { index: 0 }
+    );
+    assert!(cursor.is_empty());
+    decoder.feed_encoder_stream(&instructions).unwrap();
+    let fields = decoder.decode_field_section(4, section).unwrap().unwrap();
+    assert_eq!(fields.len(), 3);
+    assert_eq!(fields[1].value.as_ref(), b"value");
+    assert_eq!(fields[2].value.as_ref(), b"value");
+    // A subsequent indexed section proves both tables assigned the same indexes.
+    encoder
+        .feed_decoder_stream(&decoder.take_decoder_stream())
+        .unwrap();
+    let indexed = encoder.encode(8, [("x-repeat", "value")]).unwrap();
+    decoder
+        .feed_encoder_stream(&encoder.take_encoder_stream())
+        .unwrap();
+    assert_eq!(
+        decoder.decode_field_section(8, indexed).unwrap().unwrap()[0]
+            .value
+            .as_ref(),
+        b"value"
+    );
+}
+
+#[test]
+fn duplicate_can_replace_its_acknowledged_source_at_capacity() {
+    let mut encoder = Encoder::new(EncoderConfig {
+        target_capacity: 45, // Exactly one x-repeat: value entry.
+        ..EncoderConfig::default()
+    });
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    let preferences = FieldPreferences {
+        representation: Representation::LiteralName,
+        insertion: Some(InsertionPreferences::default()),
+        ..FieldPreferences::default()
+    };
+    let first = encoder
+        .encode(0, [field("x-repeat", "value", &preferences)])
+        .unwrap();
+    decoder
+        .feed_encoder_stream(&encoder.take_encoder_stream())
+        .unwrap();
+    decoder.decode_field_section(0, first).unwrap().unwrap();
+    encoder
+        .feed_decoder_stream(&decoder.take_decoder_stream())
+        .unwrap();
+
+    let section = encoder
+        .encode(4, [field("x-repeat", "value", &preferences)])
+        .unwrap();
+    let instructions = encoder.take_encoder_stream();
+    let mut cursor = instructions.as_ref();
+    assert_matches!(
+        EncoderInstruction::decode(&mut cursor, 4096).unwrap(),
+        EncoderInstruction::Duplicate { index: 0 }
+    );
+    assert!(cursor.is_empty());
+    decoder.feed_encoder_stream(&instructions).unwrap();
+    assert_eq!(encoder.insert_count(), 2);
+    assert_eq!(
+        decoder.decode_field_section(4, section).unwrap().unwrap()[0]
+            .value
+            .as_ref(),
+        b"value"
+    );
+}
+
+#[test]
+fn explicit_insertion_wire_choices_do_not_become_duplicates() {
+    for insertion in [
+        InsertionPreferences {
+            name_encoding: InsertionNameEncoding::Literal,
+            ..Default::default()
+        },
+        InsertionPreferences {
+            name_huffman: Some(false),
+            ..Default::default()
+        },
+        InsertionPreferences {
+            value_huffman: Some(true),
+            ..Default::default()
+        },
+    ] {
+        let mut encoder = Encoder::new(EncoderConfig::default());
+        let preferences = FieldPreferences {
+            representation: Representation::LiteralName,
+            insertion: Some(insertion),
+            ..Default::default()
+        };
+        encoder
+            .encode(0, [field("x-repeat", "value", &preferences)])
+            .unwrap();
+        encoder.take_encoder_stream();
+        encoder
+            .encode(4, [field("x-repeat", "value", &preferences)])
+            .unwrap();
+        let instructions = encoder.take_encoder_stream();
+        assert_matches!(
+            EncoderInstruction::decode(&mut instructions.as_ref(), 4096).unwrap(),
+            EncoderInstruction::InsertWithLiteralName { .. }
+        );
+    }
+}
+
+#[test]
 fn explicit_insertions_use_current_values_while_the_first_field_section_stays_literal() {
     for (representation, blocked) in [
         (Representation::LiteralName, 0),

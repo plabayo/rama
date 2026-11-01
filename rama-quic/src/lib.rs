@@ -30,6 +30,9 @@
 #[doc(hidden)]
 pub mod benchmarks;
 pub mod client;
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
+pub mod test_utils;
 
 #[cfg(all(
     test,

@@ -7,9 +7,11 @@
 //! reproduce another implementation's first flight but never an invalid one; there is no raw
 //! byte hook.
 //!
-//! [`QuicProfile::standard()`] is what this crate does on its own. The browser profiles were
-//! taken from captures of the named browser versions and are verified against those captures
-//! in this crate's tests; [`crate::capture`] is the parser that reads a first flight back.
+//! [`QuicProfile::standard()`] supplies the standard descriptor. Browser-specific constructors
+//! in `rama-quic` are internal test fixtures, not a public profile catalogue. Applications
+//! construct a descriptor with the checked setters or use Rama's UA selection and replay
+//! support. [`crate::capture`] reads a first flight for inspection; it does not automatically
+//! convert observed peer behaviour into a supported replay configuration.
 
 pub mod initial;
 

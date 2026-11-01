@@ -442,6 +442,13 @@ fn mirroring_lowers_limits_and_drops_datagrams_one_relay_transport_lacks() {
             None
         );
         assert_eq!(profile.limits().datagram_receive_buffer_size, None);
+        assert!(
+            !matches!(
+                profile.packetization().layout(),
+                InitialFlightLayout::Recorded(_)
+            ),
+            "lowered transport parameters cannot replay the captured Initial layout"
+        );
     }
     let profile = mirrored_profile(&base, true, &QuicMirrorCeiling::default(), &peeked).unwrap();
     assert!(

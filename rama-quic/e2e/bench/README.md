@@ -48,6 +48,25 @@ just rama-quic/bench-matrix --implementations rama-boring --cases parallel --log
 
 ## Cases
 
+### HTTP/3 (manual)
+
+Use `--protocol h3` to run the same workloads through the runner's `http3` contract:
+
+```sh
+just rama-quic/bench-matrix --protocol h3 --implementations rama-boring,quic-go,ngtcp2 --set bulk.size=64M --repeat 3
+```
+
+H3 uses the peer image digests from `../interop-runner/runner.lock.json`. Reports
+and charts go into separate `h3/` subdirectories and record the selected protocol.
+The `http3` endpoints negotiate `h3`; Rama checks the negotiated ALPN before
+transferring files. Unsupported peer cells remain `n/a`. Each measured sample must
+match the served filenames, sizes and SHA-256 hashes; content checks occur after
+the timed client exits. A one-file case includes connection establishment; the
+multi-file cases reuse that connection with bounded concurrent streams. These are
+manual comparisons, not CI benchmarks or release performance thresholds.
+
+### Workloads
+
 | case | the client fetches | reported |
 | --- | --- | --- |
 | `handshake` | one 1-byte file, many runs | ms per run: process start plus one connection plus the fetch |
