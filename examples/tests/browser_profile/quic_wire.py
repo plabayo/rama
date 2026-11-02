@@ -10,6 +10,7 @@ from capture_fields import connection_user_agents
 from collections import Counter, defaultdict
 from connection_fields import check_variant_flow_matrix, integer
 from dataclasses import dataclass, field as data_field
+import json
 from flows import FLOWS, operation_flow
 from pdml import field, identity, one, pdml_packets
 from qpack_bootstrap_wire import verify_bootstrap
@@ -505,27 +506,44 @@ def compare_quic_captures(
         ):
             raise ValueError("missing or ambiguous QUIC connection evidence")
         flight = flights[connection][0]
-        matches = [
-            index
-            for index, (identity, _variant, slots, _profile, _scope) in enumerate(
-                candidates
-            )
-            if identity == agent
-            and slots["QuicTls"] == tls[connection][0]
-            and slots["QuicFirstFlight"]
-            == {"completeness": "Complete", "flight": flight.flight}
-            and parameters_match(slots["QuicParameters"], flight.parameters)
-            and slots["Http3Settings"] == settings[connection]
-            and sequences[connection].matches(slots["Http3Sequence"])
-            and (
-                native_sequences is None
-                or connection not in native_sequences
-                or slots["Http3Sequence"] == native_sequences[connection]
-            )
-        ]
+        matches, mismatches = [], []
+        for index, (identity, _variant, slots, _profile, _scope) in enumerate(candidates):
+            if identity != agent:
+                continue
+            checks = {
+                "QuicTls": slots["QuicTls"] == tls[connection][0],
+                "QuicFirstFlight": slots["QuicFirstFlight"]
+                == {"completeness": "Complete", "flight": flight.flight},
+                "QuicParameters": parameters_match(slots["QuicParameters"], flight.parameters),
+                "Http3Settings": slots["Http3Settings"] == settings[connection],
+                "Http3Sequence": sequences[connection].matches(slots["Http3Sequence"]),
+                "NativeHttp3Sequence": (
+                    native_sequences is None
+                    or connection not in native_sequences
+                    or slots["Http3Sequence"] == native_sequences[connection]
+                ),
+            }
+            failed = [name for name, matched in checks.items() if not matched]
+            if failed:
+                # Component names only: never expose TLS, parameter or request values.
+                detail = f"candidate {index}: {', '.join(failed)}"
+                if not checks["QuicFirstFlight"]:
+                    # First-flight metadata contains shapes/counts, not packet payloads
+                    # or connection IDs. Keep these differences for intermittent flights.
+                    retained = slots["QuicFirstFlight"]["flight"]
+                    differences = {
+                        key: {"retained": retained.get(key), "observed": value}
+                        for key, value in flight.flight.items()
+                        if retained.get(key) != value
+                    }
+                    detail += " flight differences=" + json.dumps(differences, sort_keys=True)
+                mismatches.append(detail)
+            else:
+                matches.append(index)
         if not matches:
+            detail = "; ".join(mismatches) or "no candidate for observed user agent"
             raise ValueError(
-                "QUIC TLS/parameters/first flight have no matching retained joint"
+                "QUIC TLS/parameters/first flight have no matching retained joint: " + detail
             )
         if len(matches) != 1:
             raise ValueError("ambiguous retained QUIC joint projection")
