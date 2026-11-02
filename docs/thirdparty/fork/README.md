@@ -64,23 +64,25 @@ as a distant relative.
 
 ### quinn-rs
 
-- <https://github.com/quinn-rs/quinn/tree/48854d48635875d259a95973cc0575db8c1792a4>
+- <https://github.com/quinn-rs/quinn/tree/2c5750139fa09aab588bf0f939c83f521d658baf>
   - QUIC transport adapted into `rama-quic`, reusing Rama's UDP, TLS, runtime and
     utilities while preserving useful upstream structure.
-  - reviewed against upstream `main` (`48854d4`, 2026-10-12): every quinn-proto security
+  - reviewed against upstream `main` (`2c57501`, 2026-11-02): every quinn-proto security
     advisory through that date (the latest being GHSA-53rm-773f-4q8c and GHSA-wppq-2f6r-wfvm)
     and every behavioural fix are present or ported; not carried over are
     DATA_BLOCKED/STREAM_DATA_BLOCKED emission, the pending-incoming server-config snapshot, the
     DATAGRAM-instead-of-PING tail-loss probe, the assembler's sorted `VecDeque` storage,
     lazily allocated remote stream slots, buffering 1-RTT packets that arrive before the
-    handshake completes, and padding Initial datagrams to `min_mtu` (the profile decides the
-    Initial size), which are functional or performance choices rather than fixes.
+    handshake completes, padding Initial datagrams to `min_mtu` (the profile decides the
+    Initial size), and the batched `Connection::read_datagrams` (rama's per-datagram admission
+    gates release the connection lock per datagram), which are functional or performance choices
+    rather than fixes.
   - the three-phase accept is carried over and runs TLS setup outside the endpoint lock,
     including Initials that arrive before or during the accept (a ClientHello spanning
     several datagrams), so the handshake signature never holds the lock.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
-      and <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-APACHE>
+    - Original: <https://github.com/quinn-rs/quinn/blob/2c5750139fa09aab588bf0f939c83f521d658baf/LICENSE-MIT>
+      and <https://github.com/quinn-rs/quinn/blob/2c5750139fa09aab588bf0f939c83f521d658baf/LICENSE-APACHE>
     - Type: MIT OR Apache-2.0 (Copyright (c) 2018 The quinn Developers)
     - Copy: [./licenses/quinn/LICENSE-MIT](./licenses/quinn/LICENSE-MIT),
       [./licenses/quinn/LICENSE-APACHE](./licenses/quinn/LICENSE-APACHE)

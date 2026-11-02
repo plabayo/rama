@@ -106,8 +106,9 @@ impl EndpointBuilder {
     /// Bind an outbound endpoint with the client's best-effort dual-stack policy.
     ///
     /// This retains the endpoint configuration selected on this builder. IPv6
-    /// bindings request a dual-stack socket; unsupported platforms retain their
-    /// system policy. Callers can retry with an IPv4 address if binding fails.
+    /// wildcard and IPv4-mapped bindings request a dual-stack socket; unsupported
+    /// platforms retain their system policy. Callers can retry with an IPv4 address
+    /// if binding fails.
     pub async fn bind_client_address(
         self,
         address: impl Into<SocketAddress>,

@@ -4281,6 +4281,22 @@ fn migrate_detects_new_mtu_and_respects_original_peer_max_udp_payload_size() {
 }
 
 #[test]
+fn zero_idle_timeout_disables_it_and_still_accepts() {
+    let _guard = subscribe();
+    let mut server_config = server_config();
+    let transport = Arc::get_mut(&mut server_config.transport).unwrap();
+    transport.set_max_idle_timeout(VarInt::from_u32(0).into());
+    assert_eq!(transport.get_max_idle_timeout(), None);
+
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
+    // An accept gated on a zero timeout would abandon every Initial as stale.
+    pair.connect();
+}
+
+#[test]
 fn connect_runs_mtud_again_after_600_seconds() {
     let _guard = subscribe();
     let mut server_config = server_config();

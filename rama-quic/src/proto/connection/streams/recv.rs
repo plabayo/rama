@@ -106,8 +106,11 @@ impl Recv {
         }
 
         self.stopped = true;
-        // Credit unread bytes, including discarded buffers, exactly once.
-        let read_credits = self.end - self.assembler.bytes_read();
+        // Credit unread bytes, including discarded buffers, exactly once: a reset already did.
+        let read_credits = match self.state {
+            RecvState::ResetRecvd { .. } => 0,
+            RecvState::Recv { .. } => self.end - self.assembler.bytes_read(),
+        };
         let complete = if let Some(final_offset) = self.final_offset() {
             self.assembler.discard_received_to(final_offset)
         } else {

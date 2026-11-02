@@ -112,13 +112,20 @@ async fn ipv6_only_requests_strict_or_best_effort_skip_ipv4() {
     endpoint.shutdown().await;
 }
 
-/// The client asks for a dual-stack socket only where that means something, and never as a strict
-/// option; a server asks for nothing beyond the platform's defaults.
+/// The client asks for a dual-stack socket only on the IPv6 wildcard or an IPv4-mapped address,
+/// and never as a strict option; a server asks for nothing beyond the platform's defaults.
 #[test]
 fn the_dual_stack_request_belongs_to_an_ipv6_client() {
-    let v6 = client_socket_config(SocketAddress::new(Ipv6Addr::LOCALHOST.into(), 0));
-    assert_eq!(v6.socket_options().only_v6_best_effort, Some(false));
-    assert_eq!(v6.socket_options().only_v6, None);
+    for ip in [Ipv6Addr::UNSPECIFIED, Ipv4Addr::LOCALHOST.to_ipv6_mapped()] {
+        let v6 = client_socket_config(SocketAddress::new(ip.into(), 0));
+        assert_eq!(v6.socket_options().only_v6_best_effort, Some(false));
+        assert_eq!(v6.socket_options().only_v6, None);
+    }
+
+    // A specific IPv6 address keeps the platform default.
+    let specific = client_socket_config(SocketAddress::new(Ipv6Addr::LOCALHOST.into(), 0));
+    assert_eq!(specific.socket_options().only_v6_best_effort, None);
+    assert_eq!(specific.socket_options().only_v6, None);
 
     let v4 = client_socket_config(SocketAddress::new(Ipv4Addr::LOCALHOST.into(), 0));
     assert_eq!(v4.socket_options().only_v6_best_effort, None);
@@ -164,9 +171,8 @@ async fn a_required_feature_is_refused_only_when_the_socket_lacks_it() {
     }
 }
 
-/// An IPv6 client and server, bound through the same construction, carry data. The client's
-/// dual-stack request is best effort, so a platform that refuses it leaves an endpoint that still
-/// works over IPv6.
+/// An IPv6 client and server, bound to a specific address through the same construction, carry
+/// data; the client keeps the platform's `IPV6_V6ONLY` default there.
 #[tokio::test]
 async fn ipv6_bindings_carry_data() {
     let (client_config, server_config) = configs();
