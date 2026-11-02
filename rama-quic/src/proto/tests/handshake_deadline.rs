@@ -277,6 +277,35 @@ fn a_valid_retry_token_extends_only_after_acceptance_and_keeps_the_arrival_origi
 }
 
 #[test]
+fn a_cached_new_token_grants_the_same_bounded_extension() {
+    let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(30));
+    let (first, _) = pair.connect_with(config.clone());
+    let now = pair.time;
+    pair.client_conn_mut(first)
+        .close(now, VarInt::from_u32(0), Bytes::new());
+    pair.drive();
+    pair.server.handle_incoming = Box::new(|incoming| {
+        assert!(incoming.remote_address_validated());
+        IncomingConnectionBehavior::Wait
+    });
+    let _client = pair.begin_connect(config);
+    pair.drive_client();
+    pair.drive_server();
+    let arrived = pair.time;
+    let incoming = pair.server.waiting_incoming.pop().unwrap();
+    let server = pair.server.try_accept(incoming, pair.time).unwrap();
+    pair.time = arrived + Duration::from_secs(11);
+    pair.drive_server();
+    assert!(pair.server_conn_mut(server).is_handshaking());
+    pair.time = arrived + Duration::from_secs(30);
+    pair.drive_server();
+    assert_matches!(
+        pair.server_conn_mut(server).ended_because(),
+        Some(ConnectionError::TimedOut)
+    );
+}
+
+#[test]
 fn proof_at_the_initial_deadline_cannot_revive_the_attempt() {
     let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(30));
     let started = pair.time;
