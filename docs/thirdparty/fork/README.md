@@ -235,10 +235,10 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/rust-utf8](./licenses/rust-utf8)
-- <https://github.com/snapview/tungstenite-rs/tree/16ca0fc87e0a39f66548e24a08ab0961e592324f>
+- <https://github.com/snapview/tungstenite-rs/tree/2f20dc53e2a8d09bba02970d7ba15c5f33fbc17a>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tungstenite-rs/blob/16ca0fc87e0a39f66548e24a08ab0961e592324f/LICENSE-MIT>
+    - Original: <https://github.com/snapview/tungstenite-rs/blob/2f20dc53e2a8d09bba02970d7ba15c5f33fbc17a/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
 - <https://github.com/snapview/tokio-tungstenite/tree/76e10f08c488eb0032f136c7c56a437cd30164c2>
