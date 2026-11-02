@@ -32,6 +32,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::{env, fmt, fs, io};
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt as _;
+
 use rama_core::telemetry::tracing::{debug, warn};
 
 use crate::pki_types::CertificateDer;
@@ -253,6 +256,10 @@ impl CertPaths {
 /// If `dir` is defined, a directory must exist at this path. The directory is
 /// not scanned recursively and may be empty; entries that are not readable
 /// (e.g. root-only files) are skipped.
+///
+/// On Unix, each file is read at most once: directory entries that resolve to a file
+/// already read (for example the symlinks created by `openssl rehash`, or a link to
+/// `file`) are skipped.
 pub fn load_certs_from_paths(file: Option<&Path>, dir: Option<&Path>) -> CertificateResult {
     let dir = match dir {
         Some(d) => vec![d],
@@ -271,13 +278,17 @@ fn load_certs_from_paths_internal(
         return out;
     }
 
+    let mut seen = SeenFiles::default();
     if let Some(cert_file) = file {
+        if let Ok(metadata) = fs::metadata(cert_file) {
+            seen.first_visit(&metadata);
+        }
         // An explicit file is expected to exist and be readable: surface errors.
         load_pem_certs(cert_file, &mut out, false);
     }
 
     for cert_dir in dir.iter() {
-        load_pem_certs_from_dir(cert_dir.as_ref(), &mut out);
+        load_pem_certs_from_dir(cert_dir.as_ref(), &mut out, &mut seen);
     }
 
     out.certs.sort_unstable_by(|a, b| a.cmp(b));
@@ -285,8 +296,42 @@ fn load_certs_from_paths_internal(
     out
 }
 
+/// Files already read, by identity: certificate directories hold several links per
+/// certificate (hash names, readable names) and often one to the bundle file too.
+#[derive(Default)]
+struct SeenFiles {
+    /// `(device, inode)` of each file read.
+    #[cfg(unix)]
+    ids: std::collections::BTreeSet<(u64, u64)>,
+}
+
+impl SeenFiles {
+    /// Records the file and returns whether it was not seen before.
+    ///
+    /// Always `true` where std exposes no stable file identity.
+    #[cfg_attr(
+        not(unix),
+        expect(
+            clippy::unused_self,
+            clippy::needless_pass_by_ref_mut,
+            reason = "only Unix exposes a stable file identity to record"
+        )
+    )]
+    fn first_visit(&mut self, metadata: &fs::Metadata) -> bool {
+        #[cfg(unix)]
+        {
+            self.ids.insert((metadata.dev(), metadata.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            true
+        }
+    }
+}
+
 /// Load certificates from a certificate directory (what OpenSSL calls CAdir).
-fn load_pem_certs_from_dir(dir: &Path, out: &mut CertificateResult) {
+fn load_pem_certs_from_dir(dir: &Path, out: &mut CertificateResult, seen: &mut SeenFiles) {
     let dir_reader = match fs::read_dir(dir) {
         Ok(reader) => reader,
         Err(err) => {
@@ -320,7 +365,7 @@ fn load_pem_certs_from_dir(dir: &Path, out: &mut CertificateResult) {
             }
         };
 
-        if metadata.is_file() {
+        if metadata.is_file() && seen.first_visit(&metadata) {
             // When scanning a directory, skip over files that are not readable
             // (usually `chown root` or `chmod -r`), rather than failing the
             // whole load. See <https://github.com/rustls/rustls-native-certs/pull/228>.
@@ -427,10 +472,82 @@ mod tests {
         }
     }
 
+    /// Each read of this file records one PEM error, which makes reads countable.
+    #[cfg(unix)]
+    const MALFORMED_PEM: &str = "-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n";
+
+    /// A fresh directory under the system temp dir, removed on drop.
+    #[cfg(unix)]
+    struct TestDir(PathBuf);
+
+    #[cfg(unix)]
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let path = env::temp_dir().join(format!(
+                "rama-crypto-native-certs-{}-{name}",
+                std::process::id()
+            ));
+            _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dir_symlinks_to_same_file_read_once() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TestDir::new("symlinks");
+        fs::write(dir.0.join("Example_Root.pem"), MALFORMED_PEM).unwrap();
+        symlink("Example_Root.pem", dir.0.join("01234567.0")).unwrap();
+        symlink(dir.0.join("Example_Root.pem"), dir.0.join("89abcdef.0")).unwrap();
+
+        let result = load_certs_from_paths_internal(None, &[&dir.0]);
+        assert_eq!(result.errors.len(), 1, "{:?}", result.errors);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dir_entry_for_cert_file_skipped() {
+        use std::os::unix::fs::symlink;
+
+        let file_dir = TestDir::new("bundle");
+        let cert_dir = TestDir::new("bundle-links");
+        let file = file_dir.0.join("ca-bundle.crt");
+        fs::write(&file, MALFORMED_PEM).unwrap();
+        symlink(&file, cert_dir.0.join("ca-bundle.crt")).unwrap();
+
+        let result = load_certs_from_paths_internal(Some(&file), &[&cert_dir.0]);
+        assert_eq!(result.errors.len(), 1, "{:?}", result.errors);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dir_copies_with_same_content_all_read() {
+        let dir = TestDir::new("copies");
+        fs::write(dir.0.join("a.pem"), MALFORMED_PEM).unwrap();
+        fs::write(dir.0.join("b.pem"), MALFORMED_PEM).unwrap();
+
+        let result = load_certs_from_paths_internal(None, &[&dir.0]);
+        assert_eq!(result.errors.len(), 2, "{:?}", result.errors);
+    }
+
     #[test]
     fn from_env_missing_dir() {
         let mut result = CertificateResult::default();
-        load_pem_certs_from_dir(Path::new("no/such/directory"), &mut result);
+        load_pem_certs_from_dir(
+            Path::new("no/such/directory"),
+            &mut result,
+            &mut SeenFiles::default(),
+        );
         match &result.errors.first().unwrap().kind {
             ErrorKind::Io { inner, .. } => assert_eq!(inner.kind(), io::ErrorKind::NotFound),
             other => panic!("unexpected error {other:?}"),

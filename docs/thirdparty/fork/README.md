@@ -298,7 +298,7 @@ of the rama ecosystem.
     - Original: <https://github.com/thomcc/arcstr/blob/faa7692b0d6662bb177b3aefa80a6a13f897554d/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/arcstr](./licenses/arcstr)
-- <https://github.com/rustls/rustls-native-certs/tree/da7d23de157a16b3643efc0073e9e8e65d0eb1b8>
+- <https://github.com/rustls/rustls-native-certs/tree/61437e0ce7803161778424c3fbc667148ba011d8>
   - Forked into [`rama-crypto::native_certs`](https://github.com/plabayo/rama/tree/main/rama-crypto/src/native_certs)
     as rama's tls-implementation agnostic native trust store loader, used by
     both the rustls and boring client connectors.
@@ -311,7 +311,7 @@ of the rama ecosystem.
     - Broaden the Windows reader to both the current-user and local-machine
       ROOT + CA stores (carried over from rama's previous boring-only logic).
   - License:
-    - Original: <https://github.com/rustls/rustls-native-certs/blob/da7d23de157a16b3643efc0073e9e8e65d0eb1b8/LICENSE-MIT>
+    - Original: <https://github.com/rustls/rustls-native-certs/blob/61437e0ce7803161778424c3fbc667148ba011d8/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR ISC OR MIT)
     - Copy: [../licenses/rustls-native-certs](../licenses/rustls-native-certs)
 - <https://github.com/rustls/rustls-platform-verifier/tree/6e4c1c4fbb9ec5355fcf505995724d6aa9ebf84b>
