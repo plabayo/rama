@@ -304,6 +304,8 @@ pub(crate) struct Connection {
     /// to be sending, so a time threshold is used instead.
     next_bundled_ack_time: Option<Instant>,
     timers: TimerTable,
+    /// The one-time handshake extension, anchored to connection initiation/first arrival.
+    handshake_max_deadline: Option<Instant>,
     /// Number of packets received which could not be authenticated
     authentication_failures: u64,
     /// Packets received before the handshake produced their keys.
@@ -391,6 +393,11 @@ impl Connection {
     ) -> Result<Self, TransportError> {
         let pref_addr_cid = side_args.pref_addr_cid();
         let path_validated = side_args.path_validated();
+        let (handshake_deadline, handshake_max_deadline) = now
+            .checked_add(endpoint_config.handshake_timeout)
+            .zip(now.checked_add(endpoint_config.handshake_max_duration))
+            .filter(|(initial, maximum)| now < *initial && initial <= maximum)
+            .ok_or_else(|| TransportError::INTERNAL_ERROR("invalid QUIC handshake timeouts"))?;
         let trace_cid = side_args.trace_cid(init_cid);
         let original_version = side_args.original_version(version);
         let connection_side = ConnectionSide::from(side_args);
@@ -489,6 +496,7 @@ impl Connection {
                 Some(dur) => Some(Duration::from_millis(dur)),
             },
             timers: TimerTable::default(),
+            handshake_max_deadline: Some(handshake_max_deadline),
             authentication_failures: 0,
             early_packets: Default::default(),
             error: None,
@@ -559,17 +567,14 @@ impl Connection {
         this.qlog_init_negotiation(now);
         this.qlog_init_recovery(now);
         this.qlog_assign_current_tuple(now);
-        if let Some(deadline) = now.checked_add(this.endpoint_config.handshake_timeout) {
-            this.timers.set(Timer::Handshake, deadline);
-        } else {
-            this.kill(
-                now,
-                TransportError::INTERNAL_ERROR("handshake timeout exceeds clock range").into(),
-            );
-            return Ok(this);
-        }
+        this.timers.set(Timer::Handshake, handshake_deadline);
         if path_validated {
             this.on_path_validated();
+            // A client's path is trusted for sending from the start, which does not prove
+            // that the server has replied. Only a server's validated token earns this here.
+            if side.is_server() {
+                this.extend_handshake_deadline();
+            }
         }
         if side.is_client() {
             // Kick off the connection

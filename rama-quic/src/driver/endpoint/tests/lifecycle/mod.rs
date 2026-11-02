@@ -868,8 +868,18 @@ async fn invalid_handshake_deadlines_fail_before_spawning() {
     config
         .handshake_timeout(Duration::ZERO)
         .expect_err("a zero handshake timeout is refused");
-    for duration in [Duration::ZERO, Duration::MAX] {
-        config.handshake_timeout = duration;
+    config
+        .handshake_max_duration(Duration::ZERO)
+        .expect_err("a zero maximum handshake duration is refused");
+    for (initial, maximum) in [
+        (Duration::ZERO, Duration::from_secs(30)),
+        (Duration::MAX, Duration::MAX),
+        (Duration::from_secs(10), Duration::ZERO),
+        (Duration::from_secs(10), Duration::MAX),
+        (Duration::from_secs(30), Duration::from_secs(10)),
+    ] {
+        config.handshake_timeout = initial;
+        config.handshake_max_duration = maximum;
         let socket =
             Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
         let error = Endpoint::new_with_advertised(
@@ -2220,6 +2230,61 @@ async fn handshake_deadline_holds_while_the_receive_queue_is_saturated() {
     .unwrap();
     client_conn.unwrap();
     drop(server_conn);
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// A token-validated peer still occupies admission while its longer handshake budget runs.
+/// Refusing the server flight at the client's receive queue keeps Finished off the wire.
+#[tokio::test]
+async fn validated_handshake_retains_admission_until_the_extended_deadline() {
+    let (client_config, server_config) = configs();
+    let server_config = server_config.with_admission(
+        crate::AdmissionConfig::default()
+            .with_retry_threshold_min(0)
+            .with_retry_threshold_max(0)
+            .with_max_in_progress(1),
+    );
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
+    config
+        .handshake_timeout(Duration::from_secs(1))
+        .unwrap()
+        .handshake_max_duration(Duration::from_secs(3))
+        .unwrap();
+    let server = endpoint_with(config, Some(server_config), loopback_socket());
+    let (connection, endpoint_limits) = small_limits();
+    let client = endpoint_with(
+        limited_config(Duration::from_secs(5), connection, endpoint_limits),
+        None,
+        loopback_socket(),
+    );
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(incoming.remote_address_validated());
+    let budget = connection_budget(&client);
+    let held = saturate(&budget);
+    tokio::time::pause();
+    let accepting = incoming.accept().unwrap();
+    tokio::time::advance(Duration::from_secs(2)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(server.stats().handshakes_in_progress, 1);
+    assert_eq!(server.open_connections(), 1);
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert_matches!(
+        tokio::time::timeout(Duration::from_secs(1), accepting)
+            .await
+            .unwrap(),
+        Err(ConnectionError::TimedOut)
+    );
+    assert_eq!(server.stats().handshakes_in_progress, 0);
+    drop(held);
+    drop(connecting);
     tokio::join!(client.shutdown(), server.shutdown());
 }
 

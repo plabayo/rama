@@ -259,7 +259,9 @@ impl Endpoint {
             return Err(io::Error::other("no async runtime found"));
         }
         if config.handshake_timeout.is_zero()
+            || config.handshake_max_duration < config.handshake_timeout
             || now().checked_add(config.handshake_timeout).is_none()
+            || now().checked_add(config.handshake_max_duration).is_none()
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

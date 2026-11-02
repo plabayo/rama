@@ -141,6 +141,11 @@ impl Connection {
         partial_decode: PartialDecode,
     ) {
         let info = DropInfo::partial(&partial_decode);
+        // Also enforce expiry for callers of the protocol engine that deliver a datagram
+        // before polling its timer. A late proof must not revive or complete the attempt.
+        if self.state.is_handshake() {
+            self.expire_handshake(now);
+        }
         if self.state.is_drained() {
             // Nothing is left to do with a packet, and one that failed to authenticate would be
             // counted against a limit that already ended the connection (RFC 9001 §6.6).
@@ -651,6 +656,7 @@ impl Connection {
                     self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     return Ok(());
                 }
+                self.extend_handshake_deadline();
                 self.on_path_validated();
 
                 self.process_early_payload(now, packet)?;
@@ -1079,6 +1085,7 @@ impl Connection {
         }
 
         self.timers.stop(Timer::Handshake);
+        self.handshake_max_deadline = None;
         self.events.push_back(Event::Connected);
         self.state = State::Established;
         trace!("established");

@@ -246,7 +246,11 @@ fn a_configured_client_deadline_allows_recovery_after_an_initial_blackout() {
         for extended in [false, true] {
             let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
             if extended {
-                endpoint.handshake_timeout(Duration::from_secs(60)).unwrap();
+                endpoint
+                    .handshake_timeout(Duration::from_secs(60))
+                    .unwrap()
+                    .handshake_max_duration(Duration::from_secs(60))
+                    .unwrap();
             }
             let mut pair = Pair::new(Arc::new(endpoint), server_config());
             let mut config = client_config();
@@ -290,7 +294,11 @@ fn a_configured_server_deadline_allows_a_delayed_client_finished() {
         for extended in [false, true] {
             let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
             if extended {
-                endpoint.handshake_timeout(Duration::from_secs(60)).unwrap();
+                endpoint
+                    .handshake_timeout(Duration::from_secs(60))
+                    .unwrap()
+                    .handshake_max_duration(Duration::from_secs(60))
+                    .unwrap();
             }
             let mut pair = Pair::new(Arc::new(endpoint), server_config());
             let mut config = client_config();

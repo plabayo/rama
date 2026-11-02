@@ -115,7 +115,9 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let mut builder = Endpoint::build(executor).with_server_config(config);
     if testcase == TestCase::MultiConnect {
         let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
-        endpoint_config.handshake_timeout(MULTICONNECT_HANDSHAKE_TIMEOUT)?;
+        endpoint_config
+            .handshake_timeout(MULTICONNECT_HANDSHAKE_TIMEOUT)?
+            .handshake_max_duration(MULTICONNECT_HANDSHAKE_TIMEOUT)?;
         builder = builder.with_config(endpoint_config);
     }
     let endpoint = builder
