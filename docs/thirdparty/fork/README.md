@@ -42,9 +42,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/tonic/blob/a88b919bd872f20e29d40aa05a88b19574037358/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
-- http: <https://github.com/hyperium/http/tree/c6af28bfd8ef171a7f8c61e551d3ee68db4ca577>
+- http: <https://github.com/hyperium/http/tree/3dd9f5e1c3c228c26e6836ee60b36129351bfd3b>
   - License:
-    - Original: <https://github.com/hyperium/http/blob/c6af28bfd8ef171a7f8c61e551d3ee68db4ca577/LICENSE-MIT>
+    - Original: <https://github.com/hyperium/http/blob/3dd9f5e1c3c228c26e6836ee60b36129351bfd3b/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
 - http-body: <https://github.com/hyperium/http-body/tree/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c>
