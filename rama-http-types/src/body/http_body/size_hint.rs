@@ -41,7 +41,10 @@ impl SizeHint {
     /// The function panics if `value` is greater than `upper`.
     #[inline]
     pub fn set_lower(&mut self, value: u64) {
-        assert!(value <= self.upper.unwrap_or(u64::MAX));
+        assert!(
+            value <= self.upper.unwrap_or(u64::MAX),
+            "`value` is greater than `upper`"
+        );
         self.lower = value;
     }
 
@@ -59,7 +62,7 @@ impl SizeHint {
     /// This function panics if `value` is less than `lower`.
     #[inline]
     pub fn set_upper(&mut self, value: u64) {
-        assert!(value >= self.lower, "`value` is less than than `lower`");
+        assert!(value >= self.lower, "`value` is less than `lower`");
 
         self.upper = Some(value);
     }
