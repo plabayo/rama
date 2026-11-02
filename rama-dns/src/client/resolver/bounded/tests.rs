@@ -132,7 +132,7 @@ async fn expect_limits(
 
 #[tokio::test]
 async fn individual_limits_cover_every_resolver_trait_and_stop_polling() {
-    let resolver = BoundedDnsResolver::new(Arc::new(RepeatingResolver::default()), limit(20))
+    let resolver = BoundedDnsResolver::bounded(Arc::new(RepeatingResolver::default()), limit(20))
         .with_ipv4_limit(limit(1))
         .with_ipv6_limit(limit(2))
         .with_cname_limit(limit(3))
@@ -160,12 +160,12 @@ async fn individual_limits_cover_every_resolver_trait_and_stop_polling() {
 
 #[tokio::test]
 async fn category_settings_replace_only_their_members_and_allow_overrides() {
-    let resolver = BoundedDnsResolver::new(Arc::new(RepeatingResolver::default()), limit(1))
-        .with_address_limit(limit(2))
+    let resolver = BoundedDnsResolver::bounded(Arc::new(RepeatingResolver::default()), limit(1))
+        .with_ip_limit(limit(2))
         .with_service_binding_limit(limit(3));
     expect_limits(&resolver, [2, 2, 1, 1, 3, 3]).await;
-    let resolver = BoundedDnsResolver::new(Arc::new(RepeatingResolver::default()), limit(1))
-        .with_address_limit(limit(2))
+    let resolver = BoundedDnsResolver::bounded(Arc::new(RepeatingResolver::default()), limit(1))
+        .with_ip_limit(limit(2))
         .with_ipv6_limit(limit(4))
         .with_service_binding_limit(limit(3))
         .with_https_limit(limit(5));
@@ -174,7 +174,7 @@ async fn category_settings_replace_only_their_members_and_allow_overrides() {
 
 #[tokio::test]
 async fn partial_resolvers_and_first_address_helpers_stay_supported() {
-    let resolver = BoundedDnsResolver::new(Ipv6Addr::LOCALHOST, NonZeroUsize::MIN);
+    let resolver = BoundedDnsResolver::bounded(Ipv6Addr::LOCALHOST, NonZeroUsize::MIN);
     let domain = || Domain::from_static("example.com");
     assert!(resolver.lookup_ipv4_first(domain()).await.is_none());
     assert_eq!(
@@ -192,7 +192,7 @@ async fn exact_limit_empty_stream_and_largest_limit_end_cleanly() {
     for max in [1, 2, usize::MAX] {
         for count in [0, max.min(2)] {
             let source = stream::iter((0..count).map(Ok::<_, Infallible>));
-            let results = bounded(source, max).collect::<Vec<_>>().await;
+            let results = bounded(source, Some(limit(max))).collect::<Vec<_>>().await;
             assert_eq!(results.len(), count);
             assert!(results.iter().all(Result::is_ok));
         }
@@ -206,7 +206,7 @@ async fn errors_count_and_keep_the_original_error_until_the_limit() {
         Ok(42),
         Ok(43),
     ]);
-    let mut answers = std::pin::pin!(bounded(source, 2));
+    let mut answers = std::pin::pin!(bounded(source, Some(limit(2))));
     let error = answers.next().await.unwrap().unwrap_err();
     assert_eq!(
         error.downcast_ref::<std::io::Error>().unwrap().kind(),
@@ -236,7 +236,7 @@ fn pending_does_not_spend_an_answer_and_end_is_fused() {
             _ => panic!("polled after end"),
         }
     });
-    let mut answers = std::pin::pin!(bounded(source, 1));
+    let mut answers = std::pin::pin!(bounded(source, Some(limit(1))));
     let mut cx = Context::from_waker(std::task::Waker::noop());
     assert!(answers.as_mut().poll_next(&mut cx).is_pending());
     assert!(matches!(
@@ -251,4 +251,121 @@ fn pending_does_not_spend_an_answer_and_end_is_fused() {
         answers.as_mut().poll_next(&mut cx),
         Poll::Ready(None)
     ));
+}
+
+async fn expect_optional_limit<T>(
+    answers: impl Stream<Item = Result<T, BoxError>>,
+    allowed: Option<usize>,
+) {
+    if let Some(allowed) = allowed {
+        expect_limit(answers, allowed).await;
+    } else {
+        // Sample a repeating source past every finite bound used in these tests.
+        let mut answers = std::pin::pin!(answers);
+        for _ in 0..16 {
+            _ = answers.next().await.unwrap().unwrap();
+        }
+    }
+}
+
+async fn expect_optional_limits(
+    resolver: &BoundedDnsResolver<Arc<RepeatingResolver>>,
+    expected: [Option<usize>; 6],
+) {
+    let domain = || Domain::from_static("example.com");
+    expect_optional_limit(resolver.lookup_ipv4(domain()), expected[0]).await;
+    expect_optional_limit(resolver.lookup_ipv6(domain()), expected[1]).await;
+    expect_optional_limit(resolver.lookup_cname(domain()), expected[2]).await;
+    expect_optional_limit(resolver.lookup_txt(domain()), expected[3]).await;
+    expect_optional_limit(resolver.lookup_svcb(domain()), expected[4]).await;
+    expect_optional_limit(resolver.lookup_https(domain()), expected[5]).await;
+    for (counter, allowed) in resolver.inner().polls.iter().zip(expected) {
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            allowed.map_or(16, |n| n + 1)
+        );
+    }
+}
+
+#[tokio::test]
+async fn unbounded_constructor_and_selective_type_limits() {
+    let resolver = BoundedDnsResolver::unbounded(Arc::new(RepeatingResolver::default()));
+    expect_optional_limits(&resolver, [None; 6]).await;
+    let resolver = BoundedDnsResolver::unbounded(Arc::new(RepeatingResolver::default()))
+        .with_ip_limit(limit(2))
+        .with_txt_limit(limit(3))
+        .maybe_with_ipv6_limit(None);
+    expect_optional_limits(&resolver, [Some(2), None, None, Some(3), None, None]).await;
+}
+
+#[tokio::test]
+async fn every_type_limit_can_be_removed_independently() {
+    for slot in 0..6 {
+        let mut resolver =
+            BoundedDnsResolver::bounded(Arc::new(RepeatingResolver::default()), limit(1));
+        match slot {
+            0 => {
+                resolver.maybe_set_ipv4_limit(None);
+            }
+            1 => {
+                resolver.maybe_set_ipv6_limit(None);
+            }
+            2 => {
+                resolver.maybe_set_cname_limit(None);
+            }
+            3 => {
+                resolver.maybe_set_txt_limit(None);
+            }
+            4 => {
+                resolver.maybe_set_svcb_limit(None);
+            }
+            _ => {
+                resolver.maybe_set_https_limit(None);
+            }
+        }
+        let mut expected = [Some(1); 6];
+        expected[slot] = None;
+        expect_optional_limits(&resolver, expected).await;
+    }
+}
+
+#[tokio::test]
+async fn aggregate_setters_can_bound_and_unbound_their_categories() {
+    let mut resolver = BoundedDnsResolver::unbounded(Arc::new(RepeatingResolver::default()));
+    resolver.set_limit(limit(2));
+    expect_optional_limits(&resolver, [Some(2); 6]).await;
+
+    let resolver = BoundedDnsResolver::bounded(Arc::new(RepeatingResolver::default()), limit(1))
+        .maybe_with_limit(None);
+    expect_optional_limits(&resolver, [None; 6]).await;
+
+    let mut resolver =
+        BoundedDnsResolver::bounded(Arc::new(RepeatingResolver::default()), limit(1));
+    resolver.maybe_set_ip_limit(None);
+    resolver.maybe_set_service_binding_limit(None);
+    expect_optional_limits(&resolver, [None, None, Some(1), Some(1), None, None]).await;
+
+    let mut resolver = BoundedDnsResolver::unbounded(Arc::new(RepeatingResolver::default()));
+    resolver.set_ip_limit(limit(2));
+    resolver.set_service_binding_limit(limit(3));
+    resolver.maybe_set_limit(None);
+    resolver.set_ipv6_limit(limit(4));
+    expect_optional_limits(&resolver, [None, Some(4), None, None, None, None]).await;
+}
+
+#[tokio::test]
+async fn unbounded_stream_preserves_errors_and_finite_end() {
+    let source = stream::iter([
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),
+        Ok(42),
+    ]);
+    let mut answers = std::pin::pin!(bounded(source, None));
+    let error = answers.next().await.unwrap().unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(answers.next().await.unwrap().unwrap(), 42);
+    assert!(answers.next().await.is_none());
+    assert!(answers.next().await.is_none());
 }

@@ -256,7 +256,7 @@ pub(super) async fn resolve_scope<R: DnsAddressResolver>(
         IpTarget::Hostname(name) => {
             // Bound raw answers before Happy Eyeballs deduplicates them: even a
             // resolver repeatedly yielding the same answer must finish polling.
-            let resolver = BoundedDnsResolver::new(
+            let resolver = BoundedDnsResolver::bounded(
                 resolver.clone(),
                 const { std::num::NonZeroUsize::new(256).unwrap() },
             );
