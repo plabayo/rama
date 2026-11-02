@@ -76,10 +76,26 @@ async fn idle_window_is_earned_by_a_request() {
     let mut response = [0; 1024];
     assert!(client.read(&mut response).await.unwrap() > 0);
     settle().await;
-    advance(Duration::from_secs(29)).await;
+    // A client can reuse the same connection after a minute between requests.
+    advance(Duration::from_secs(60)).await;
+    settle().await;
+    assert!(!task.is_finished());
+    client
+        .write_all(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+        .await
+        .unwrap();
+    assert!(client.read(&mut response).await.unwrap() > 0);
+    settle().await;
+    // Completing another request grants a fresh 90-second idle window.
+    advance(Duration::from_secs(89)).await;
+    settle().await;
     assert!(!task.is_finished());
     advance(Duration::from_secs(1)).await;
     settle().await;
+    assert!(
+        task.is_finished(),
+        "the renewed idle window expires at 90 seconds"
+    );
     task.await.unwrap().unwrap();
 }
 
