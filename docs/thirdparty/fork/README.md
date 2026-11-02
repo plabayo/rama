@@ -27,9 +27,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/hyper/blob/2b454af2127561a447214a11ac3a498ee868062c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
-- hyper-util: <https://github.com/hyperium/hyper-util/tree/7539356138b918bbb033f52d81703131cd7bf587>
+- hyper-util: <https://github.com/hyperium/hyper-util/tree/64855f6c6cac998255ae7776bd22a6eb7bb5f1bb>
   - License:
-    - Original: <https://github.com/hyperium/hyper-util/blob/7539356138b918bbb033f52d81703131cd7bf587/LICENSE>
+    - Original: <https://github.com/hyperium/hyper-util/blob/64855f6c6cac998255ae7776bd22a6eb7bb5f1bb/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
 - headers: <https://github.com/hyperium/headers/tree/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5>
@@ -94,13 +94,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/df06d70dbea345facbffb5881fe8647f53bf424d/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/659adab07278c8fc8ebd960067030e5e1f024df4>
+- <https://github.com/tower-rs/tower-http/tree/8569ec8b99f661eb0a4406a2e032504188d9f3fd>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/659adab07278c8fc8ebd960067030e5e1f024df4/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/8569ec8b99f661eb0a4406a2e032504188d9f3fd/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
@@ -212,13 +212,13 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/quinn-udp](./licenses/quinn-udp)
-- <https://github.com/tokio-rs/axum/tree/e57b547eb95de74b73b34719dd5926254a085634>
+- <https://github.com/tokio-rs/axum/tree/40d061fdacd468217c7a609bede16357276b6c40>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code
   - License:
-    - Original: <https://github.com/tokio-rs/axum/blob/e57b547eb95de74b73b34719dd5926254a085634/LICENSE>
+    - Original: <https://github.com/tokio-rs/axum/blob/40d061fdacd468217c7a609bede16357276b6c40/LICENSE>
     - Type: MIT
     - Copy: [./licenses/axum](./licenses/axum)
 - <https://github.com/dtolnay/paste/tree/6a302522990cbfd9de4e0c61d91854622f7b2999>
@@ -239,10 +239,10 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/snapview/tungstenite-rs/blob/16ca0fc87e0a39f66548e24a08ab0961e592324f/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
-- <https://github.com/snapview/tokio-tungstenite/tree/753ca72690919485a1aa1f0f69a336b1152fb0ae>
+- <https://github.com/snapview/tokio-tungstenite/tree/76e10f08c488eb0032f136c7c56a437cd30164c2>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tokio-tungstenite/blob/753ca72690919485a1aa1f0f69a336b1152fb0ae/LICENSE>
+    - Original: <https://github.com/snapview/tokio-tungstenite/blob/76e10f08c488eb0032f136c7c56a437cd30164c2/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tokio-tungstenite](./licenses/tokio-tungstenite)
 - <https://github.com/Michael-F-Bryan/include_dir/tree/d742c6fffce99ee89da91b934e7ce6fb2a82680c>
@@ -312,12 +312,12 @@ of the rama ecosystem.
     - Original: <https://github.com/rustls/rustls-native-certs/blob/da7d23de157a16b3643efc0073e9e8e65d0eb1b8/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR ISC OR MIT)
     - Copy: [../licenses/rustls-native-certs](../licenses/rustls-native-certs)
-- <https://github.com/rustls/rustls-platform-verifier/tree/v/0.7.1>
+- <https://github.com/rustls/rustls-platform-verifier/tree/6e4c1c4fbb9ec5355fcf505995724d6aa9ebf84b>
   - Forked into [`rama-crypto::platform_verifier`](https://github.com/plabayo/rama/tree/main/rama-crypto/src/platform_verifier)
   - Reasons for forking: usable by both TLS backends (not only rustls), returns
     the verified chain, and verifies on Android without a separate app component.
   - License:
-    - Original: <https://github.com/rustls/rustls-platform-verifier/blob/v/0.7.1/LICENSE-MIT>
+    - Original: <https://github.com/rustls/rustls-platform-verifier/blob/6e4c1c4fbb9ec5355fcf505995724d6aa9ebf84b/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR MIT)
     - Copy: [../licenses/rustls-platform-verifier](../licenses/rustls-platform-verifier)
 
