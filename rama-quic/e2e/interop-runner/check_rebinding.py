@@ -27,7 +27,7 @@ def require(condition, message):
 
 
 def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=False,
-                             lost_challenges=frozenset()):
+                             lost_challenges=frozenset(), ack_first_reported=False):
     """Check both sides of the NAT; frame numbers are local to each capture."""
     handshakes = []
     for trace in (client_trace, server_trace):
@@ -160,6 +160,7 @@ def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=Fa
                     for p in client_trace), "no delivered stream progress after validation")
         proofs.append({"client": path, "ack_prefix_packets": len(prefix),
                        "challenge_at": outgoing[first_probe]["number"], "validated_at": completed})
+    require(not ack_first_reported or ack_first, "reported ACK-first failure has no capture proof")
     require(ack_first or replaced, "capture does not exhibit a reviewed ACK-first or lost-probe limitation")
     return {"classification": "checker-incompatible", "paths": proofs,
             "server_challenges_answered": len(validated),
@@ -203,7 +204,8 @@ def verify_rebinding(artifacts, role, peer, exits, *, peer_image, case="rebind-p
     result = verify_rebinding_packets(read_packets(directory / "sim/trace_node_left.pcap", keys),
                                       read_packets(directory / "sim/trace_node_right.pcap", keys),
                                       address_rebinding=CASES[case],
-                                      lost_challenges=lost_challenges)
+                                      lost_challenges=lost_challenges,
+                                      ack_first_reported=bool(ack_first))
     result.update(verify_files(directory, expected_size=10 * 1024 * 1024))
     result.update(role=role, peer=peer, case=case, upstream_result="failed", peer_image=peer_image)
     return result

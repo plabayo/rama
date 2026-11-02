@@ -117,6 +117,22 @@ class RebindingEvidenceTests(unittest.TestCase):
                 proof = verify_rebinding(root, "client", "ngtcp2", EXITS, peer_image=PINNED_PEERS["ngtcp2"])
             self.assertEqual(proof["undelivered_replaced_path_probes"][0]["token"], B)
             self.assertEqual(proof["bytes"], 10 * 1024 * 1024)
+            # Each console failure needs its own capture proof. A proven lost
+            # probe must not stand in for an unproven ACK-first report.
+            both = ("Check of downloaded files succeeded.\n" + message + "\n"
+                    "First server packet on new path tuple did not contain a PATH_CHALLENGE frame")
+            output.write_text(both)
+            with patch("check_rebinding.read_packets", side_effect=lost_probe_traces()):
+                verify_rebinding(root, "client", "ngtcp2", EXITS, peer_image=PINNED_PEERS["ngtcp2"])
+            client, server = lost_probe_traces()
+            for trace in (client, server):
+                trace[:] = [p for p in trace if p["number"] != 40]
+            # Lost-probe-only evidence is valid even with no ACK prefix.
+            proof = verify_rebinding_packets(client, server, lost_challenges={B})
+            self.assertEqual([p["ack_prefix_packets"] for p in proof["paths"]], [0, 0])
+            with patch("check_rebinding.read_packets", side_effect=(client, server)):
+                with self.assertRaisesRegex(InvalidResults, "ACK-first failure has no capture proof"):
+                    verify_rebinding(root, "client", "ngtcp2", EXITS, peer_image=PINNED_PEERS["ngtcp2"])
             for report in ("[]", "['invalid']", repr([B]), "None", "not a literal"):
                 output.write_text("Check of downloaded files succeeded.\nPATH_CHALLENGE without a PATH_RESPONSE: " + report)
                 with self.subTest(report=report), self.assertRaises(InvalidResults):
