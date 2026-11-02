@@ -6,9 +6,19 @@ use rama_quic_proto::packet::{FixedLengthConnectionIdParser, PartialDecode, Spac
 
 use super::*;
 
-fn pair(gso: bool, version: Version, maximum: Duration) -> (Pair, ClientConfig) {
+fn pair(gso: bool, version: Version, allowance: Duration) -> (Pair, ClientConfig) {
+    pair_with_timeout(gso, version, Duration::from_secs(10), allowance)
+}
+
+fn pair_with_timeout(
+    gso: bool,
+    version: Version,
+    timeout: Duration,
+    allowance: Duration,
+) -> (Pair, ClientConfig) {
     let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
-    endpoint.handshake_max_duration(maximum).unwrap();
+    endpoint.handshake_timeout(timeout).unwrap();
+    endpoint.set_handshake_allowance(allowance);
     // Isolate the handshake deadline from the independent transport idle timer.
     let mut transport = TransportConfig::default();
     transport
@@ -55,15 +65,15 @@ fn prove_client_address(pair: &mut Pair, client: ConnectionHandle, server: Conne
 fn validated_server_completes_after_the_initial_budget() {
     for gso in [false, true] {
         for version in [Version::V1, Version::V2] {
-            for maximum in [10, 30] {
-                let (mut pair, config) = pair(gso, version, Duration::from_secs(maximum));
+            for allowance in [0, 20] {
+                let (mut pair, config) = pair(gso, version, Duration::from_secs(allowance));
                 let started = pair.time;
                 let (client, server, mut finished) = awaiting_finished(&mut pair, config);
                 pair.time = started + Duration::from_secs(1);
                 prove_client_address(&mut pair, client, server);
                 pair.time = started + Duration::from_millis(11_250);
                 pair.drive_server();
-                if maximum == 10 {
+                if allowance == 0 {
                     assert_matches!(
                         pair.server_conn_mut(server).ended_because(),
                         Some(ConnectionError::TimedOut)
@@ -84,9 +94,32 @@ fn validated_server_completes_after_the_initial_budget() {
 }
 
 #[test]
+fn allowance_adds_to_a_longer_initial_budget_without_restarting_at_proof() {
+    let (mut pair, config) = pair_with_timeout(
+        false,
+        Version::V1,
+        Duration::from_secs(60),
+        Duration::from_secs(20),
+    );
+    let started = pair.time;
+    let (client, server, _) = awaiting_finished(&mut pair, config);
+    pair.time = started + Duration::from_secs(1);
+    prove_client_address(&mut pair, client, server);
+    for seconds in [61, 79, 80] {
+        pair.time = started + Duration::from_secs(seconds);
+        pair.drive_server();
+        assert_eq!(pair.server_conn_mut(server).is_closed(), seconds == 80);
+    }
+    assert_matches!(
+        pair.server_conn_mut(server).ended_because(),
+        Some(ConnectionError::TimedOut)
+    );
+}
+
+#[test]
 fn silence_and_repeated_proof_both_expire_at_the_original_ceiling() {
     for active in [false, true] {
-        let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(30));
+        let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(20));
         let started = pair.time;
         let (client, server, _) = awaiting_finished(&mut pair, config);
         pair.time = started + Duration::from_secs(1);
@@ -112,7 +145,7 @@ fn silence_and_repeated_proof_both_expire_at_the_original_ceiling() {
 #[test]
 fn corrupted_handshake_and_buffered_one_rtt_do_not_grant_an_extension() {
     for corrupt in [false, true] {
-        let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(30));
+        let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(20));
         let started = pair.time;
         let (client, server, _) = awaiting_finished(&mut pair, config);
         let authenticated = pair.server_conn_mut(server).authenticated_packets();
@@ -188,7 +221,7 @@ fn initial_only(pair: &mut Pair) -> VecDeque<Inbound> {
 fn client_requires_handshake_keys_not_its_prevalidated_path_or_initial_packets() {
     for proof in [false, true] {
         for version in [Version::V1, Version::V2] {
-            let (mut pair, config) = pair(false, version, Duration::from_secs(30));
+            let (mut pair, config) = pair(false, version, Duration::from_secs(20));
             let started = pair.time;
             let client = pair.begin_connect(config);
             assert!(pair.client_conn_mut(client).path_validated());
@@ -235,7 +268,7 @@ fn client_requires_handshake_keys_not_its_prevalidated_path_or_initial_packets()
 #[test]
 fn a_valid_retry_token_extends_only_after_acceptance_and_keeps_the_arrival_origin() {
     for accept in [false, true] {
-        let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(30));
+        let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(20));
         pair.server.handle_incoming = Box::new(|incoming| {
             if incoming.remote_address_validated() {
                 IncomingConnectionBehavior::Wait
@@ -278,7 +311,7 @@ fn a_valid_retry_token_extends_only_after_acceptance_and_keeps_the_arrival_origi
 
 #[test]
 fn a_cached_new_token_grants_the_same_bounded_extension() {
-    let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(30));
+    let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(20));
     let (first, _) = pair.connect_with(config.clone());
     let now = pair.time;
     pair.client_conn_mut(first)
@@ -307,7 +340,7 @@ fn a_cached_new_token_grants_the_same_bounded_extension() {
 
 #[test]
 fn proof_at_the_initial_deadline_cannot_revive_the_attempt() {
-    let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(30));
+    let (mut pair, config) = pair(false, Version::V1, Duration::from_secs(20));
     let started = pair.time;
     let (client, server, _) = awaiting_finished(&mut pair, config);
     let now = started + Duration::from_secs(10);

@@ -393,11 +393,21 @@ impl Connection {
     ) -> Result<Self, TransportError> {
         let pref_addr_cid = side_args.pref_addr_cid();
         let path_validated = side_args.path_validated();
-        let (handshake_deadline, handshake_max_deadline) = now
+        if endpoint_config.handshake_timeout.is_zero() {
+            return Err(TransportError::INTERNAL_ERROR(
+                "zero QUIC handshake timeout",
+            ));
+        }
+        let handshake_deadline = now
             .checked_add(endpoint_config.handshake_timeout)
-            .zip(now.checked_add(endpoint_config.handshake_max_duration))
-            .filter(|(initial, maximum)| now < *initial && initial <= maximum)
-            .ok_or_else(|| TransportError::INTERNAL_ERROR("invalid QUIC handshake timeouts"))?;
+            .ok_or_else(|| {
+                TransportError::INTERNAL_ERROR("handshake timeout exceeds clock range")
+            })?;
+        let handshake_max_deadline = handshake_deadline
+            .checked_add(endpoint_config.handshake_allowance)
+            .ok_or_else(|| {
+                TransportError::INTERNAL_ERROR("handshake allowance exceeds clock range")
+            })?;
         let trace_cid = side_args.trace_cid(init_cid);
         let original_version = side_args.original_version(version);
         let connection_side = ConnectionSide::from(side_args);

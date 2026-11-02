@@ -117,7 +117,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
         endpoint_config
             .handshake_timeout(MULTICONNECT_HANDSHAKE_TIMEOUT)?
-            .handshake_max_duration(MULTICONNECT_HANDSHAKE_TIMEOUT)?;
+            .set_handshake_allowance(Duration::ZERO);
         builder = builder.with_config(endpoint_config);
     }
     let endpoint = builder

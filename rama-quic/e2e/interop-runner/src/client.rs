@@ -120,7 +120,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         let budget = Duration::from_secs(args.timeout_seconds).min(MULTICONNECT_HANDSHAKE_TIMEOUT);
         endpoint_config
             .handshake_timeout(budget)?
-            .handshake_max_duration(budget)?;
+            .set_handshake_allowance(Duration::ZERO);
         builder = builder.with_config(endpoint_config);
     }
     let endpoint = builder.bind_address(bind).await?;

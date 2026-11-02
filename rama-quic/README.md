@@ -76,15 +76,17 @@ crate, enable the `quic` feature.
 initiation on clients and the first datagram's arrival on servers. Application
 acceptance consumes that same budget. After acceptance, a valid server-side
 address-validation token or an authenticated Handshake packet grants the remaining
-time up to `handshake_max_duration` (30 seconds by default), measured from the same
-origin. Traffic never renews that absolute ceiling. Initials, Retry packets and
+time up to `handshake_timeout + handshake_allowance`, measured from the same origin.
+The allowance defaults to 20 seconds, giving a 30-second total by default. Traffic
+never renews that absolute ceiling. Initials, Retry packets and
 buffered early 1-RTT packets do not grant an extension.
 
-Set both durations to the same value for a strict absolute deadline. Both must be
-nonzero and fit the runtime clock, with `handshake_timeout <= handshake_max_duration`;
-the relationship is checked when constructing the endpoint, so setters can be
-called in either order. Existing configurations above 30 seconds must also set
-`handshake_max_duration` to at least their initial budget.
+Set the allowance to zero for a strict absolute deadline, using
+`EndpointConfig::set_handshake_allowance` or `with_handshake_allowance`.
+The initial timeout must be nonzero, and the combined deadline must fit the runtime
+clock; this is checked when constructing the endpoint. Existing longer initial
+timeouts keep working: a 60-second timeout gets a total of 80 seconds after proof
+with the default allowance, or stays strict at 60 seconds with a zero allowance.
 
 Transport idle timeouts and application deadlines still apply independently. For
 example, a MASQUE tunnel opening or QUIC MITM relay with a shorter setup budget can

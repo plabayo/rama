@@ -249,8 +249,7 @@ fn a_configured_client_deadline_allows_recovery_after_an_initial_blackout() {
                 endpoint
                     .handshake_timeout(Duration::from_secs(60))
                     .unwrap()
-                    .handshake_max_duration(Duration::from_secs(60))
-                    .unwrap();
+                    .set_handshake_allowance(Duration::ZERO);
             }
             let mut pair = Pair::new(Arc::new(endpoint), server_config());
             let mut config = client_config();
@@ -297,8 +296,7 @@ fn a_configured_server_deadline_allows_a_delayed_client_finished() {
                 endpoint
                     .handshake_timeout(Duration::from_secs(60))
                     .unwrap()
-                    .handshake_max_duration(Duration::from_secs(60))
-                    .unwrap();
+                    .set_handshake_allowance(Duration::ZERO);
             }
             let mut pair = Pair::new(Arc::new(endpoint), server_config());
             let mut config = client_config();
