@@ -286,6 +286,11 @@ jobs:
             profile: release
             # The 4-core runner had 13 GiB free while two rustc jobs timed out.
             cargo_build_args: --build-jobs 4
+          - os: macos-latest
+            profile: debug
+            # Three test rustc processes exceeded 10 GiB on the 7 GiB runner,
+            # causing sustained swapping until the 150-minute build timeout.
+            cargo_build_args: --build-jobs 1
     needs: precheck
     runs-on: ${{ matrix.os }}
     concurrency:
