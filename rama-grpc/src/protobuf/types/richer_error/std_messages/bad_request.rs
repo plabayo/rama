@@ -52,7 +52,8 @@ impl From<FieldViolation> for pb::bad_request::FieldViolation {
         Self {
             field: value.field,
             description: value.description,
-            ..Default::default()
+            reason: value.reason,
+            localized_message: value.localized_message.map(Into::into),
         }
     }
 }
@@ -151,8 +152,11 @@ impl From<BadRequest> for pb::BadRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::BadRequest;
-    use crate::protobuf::types::richer_error::{FromAny, IntoAny};
+    use super::{BadRequest, FieldViolation};
+    use crate::protobuf::types::{
+        LocalizedMessage,
+        richer_error::{FromAny, IntoAny},
+    };
 
     #[test]
     fn gen_bad_request() {
@@ -210,5 +214,25 @@ mod tests {
             formatted.eq(expected_filled),
             "BadRequest from Any differs from expected result"
         );
+    }
+
+    #[test]
+    fn field_violation_reason_and_localized_message_survive_any() {
+        let br_details = BadRequest::new(vec![FieldViolation {
+            field: "field_a".into(),
+            description: "description_a".into(),
+            reason: "INVALID_FORMAT".into(),
+            localized_message: Some(LocalizedMessage::new("en-US", "field_a is malformed")),
+        }]);
+
+        let br_details = BadRequest::from_any(br_details.into_any()).unwrap();
+
+        let [violation] = br_details.field_violations.as_slice() else {
+            panic!("expected one field violation");
+        };
+        assert_eq!(violation.reason, "INVALID_FORMAT");
+        let localized = violation.localized_message.as_ref().unwrap();
+        assert_eq!(localized.locale, "en-US");
+        assert_eq!(localized.message, "field_a is malformed");
     }
 }

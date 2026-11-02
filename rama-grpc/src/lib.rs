@@ -4,7 +4,7 @@
 //!
 //! This crate provides a Rust implementation of [gRPC], an RPC framework built
 //! on HTTP/2. `rama-grpc` is a fork of
-//! [`tonic`](https://github.com/hyperium/tonic), adapted to integrate with
+//! [`tonic`](https://github.com/grpc/grpc-rust), adapted to integrate with
 //! the Rama ecosystem.
 //!
 //! ## Examples

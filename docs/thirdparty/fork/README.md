@@ -37,9 +37,12 @@ as a distant relative.
     - Original: <https://github.com/hyperium/headers/blob/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
-- tonic: <https://github.com/hyperium/tonic/tree/a88b919bd872f20e29d40aa05a88b19574037358>
+- tonic: <https://github.com/grpc/grpc-rust/tree/864d4d11f563c79fe2d51bd15867d1ec6d2e16dc>
+  - developed upstream as `grpc/grpc-rust` (formerly `hyperium/tonic`); rama tracks the `tonic`,
+    `tonic-prost`, `tonic-types`, `tonic-web`, `tonic-health` and build crates, not the new
+    `grpc` crates
   - License:
-    - Original: <https://github.com/hyperium/tonic/blob/a88b919bd872f20e29d40aa05a88b19574037358/LICENSE>
+    - Original: <https://github.com/grpc/grpc-rust/blob/864d4d11f563c79fe2d51bd15867d1ec6d2e16dc/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
 - http: <https://github.com/hyperium/http/tree/3dd9f5e1c3c228c26e6836ee60b36129351bfd3b>

@@ -406,6 +406,7 @@ impl Status {
                 | rama_http_core::h2::Reason::INTERNAL_ERROR
                 | rama_http_core::h2::Reason::FLOW_CONTROL_ERROR
                 | rama_http_core::h2::Reason::SETTINGS_TIMEOUT
+                | rama_http_core::h2::Reason::FRAME_SIZE_ERROR
                 | rama_http_core::h2::Reason::COMPRESSION_ERROR
                 | rama_http_core::h2::Reason::CONNECT_ERROR,
             ) => Code::Internal,
@@ -1024,6 +1025,15 @@ mod tests {
             .and_then(|err| err.downcast_ref::<rama_http_core::h2::Error>())
             .unwrap();
         assert_eq!(source.reason(), Some(rama_http_core::h2::Reason::CANCEL));
+    }
+
+    #[test]
+    #[cfg(feature = "transport")]
+    fn from_error_h2_frame_size_error_is_internal() {
+        let orig = rama_http_core::h2::Error::from(rama_http_core::h2::Reason::FRAME_SIZE_ERROR);
+        let found = Status::from_error(Box::new(orig));
+
+        assert_eq!(found.code(), Code::Internal);
     }
 
     #[test]
