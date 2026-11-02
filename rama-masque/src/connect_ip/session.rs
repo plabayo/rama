@@ -3,7 +3,7 @@ use super::{
     ConnectIpState, ConnectIpStateLimits, IpPacketDrop, ROUTE_ADVERTISEMENT, decode_ip_datagram,
     wire::encode_ip_datagram_mut,
 };
-use crate::budget::{DatagramRate, RateLimiters};
+use crate::budget::{Charge, TunnelAccount, TunnelBudget};
 use parking_lot::Mutex;
 use rama_core::{bytes::Bytes, extensions::ExtensionsRef};
 use rama_http::{
@@ -29,48 +29,6 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
-/// Optional packet/byte allowance and lifetime byte quota for a tunnel.
-/// Both directions share the allowance. By default neither is limited.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct IpBudgetConfig {
-    /// Packet and byte rates. Unknown contexts and malformed packets count too.
-    pub rate: Option<DatagramRate>,
-    /// Total bytes over the tunnel lifetime; zero refuses every nonempty packet.
-    pub byte_quota: Option<u64>,
-}
-
-/// A shared principal/connection budget. Clones spend the same counters/buckets.
-#[derive(Debug, Clone)]
-pub struct ConnectIpBudget {
-    rate: Option<RateLimiters>,
-    remaining: Option<Arc<AtomicU64>>,
-}
-
-impl ConnectIpBudget {
-    /// Construct a shared budget from valid rates and an optional byte quota.
-    #[must_use]
-    pub fn new(config: IpBudgetConfig) -> Self {
-        Self {
-            rate: config.rate.map(DatagramRate::limiters),
-            remaining: config.byte_quota.map(|q| Arc::new(AtomicU64::new(q))),
-        }
-    }
-
-    pub(super) fn charge(&self, bytes: u64) -> bool {
-        if let Some(remaining) = &self.remaining
-            && remaining
-                .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    v.checked_sub(bytes)
-                })
-                .is_err()
-        {
-            return false;
-        }
-        // Failed attempts retain their charge: a malformed flood cannot gain free work.
-        self.rate.as_ref().is_none_or(|rate| rate.try_spend(bytes))
-    }
-}
-
 /// Configuration shared by a tunnel's send and receive halves.
 #[derive(Debug, Clone)]
 pub struct ConnectIpSessionConfig {
@@ -92,9 +50,7 @@ pub struct ConnectIpSessionConfig {
     /// Maximum time a reliable send/close may remain blocked.
     write_timeout: Duration,
     /// Per-tunnel rate/quota configuration; instantiated for each new session.
-    pub budget: IpBudgetConfig,
-    /// Optional shared principal/connection budgets, charged before the tunnel budget.
-    pub shared_budgets: Vec<ConnectIpBudget>,
+    pub budget: TunnelBudget,
     pub(super) principal_budget: Option<Arc<crate::budget::PrincipalSpend>>,
 }
 
@@ -109,8 +65,7 @@ impl ConnectIpSessionConfig {
             ipv6_link_mtu: None,
             idle_timeout: Duration::from_secs(120),
             write_timeout: Duration::from_secs(5),
-            budget: IpBudgetConfig::default(),
-            shared_budgets: Vec::new(),
+            budget: TunnelBudget::new(),
             principal_budget: None,
         }
     }
@@ -305,7 +260,7 @@ struct Shared {
     snapshot: arc_swap::ArcSwap<super::ConnectIpStateSnapshot>,
     native: Option<NativeDatagrams>,
     ipv6_mtu: AtomicU16,
-    budget: ConnectIpBudget,
+    budget: TunnelAccount,
     closed: AtomicBool,
     notify: Notify,
     epoch: Instant,
@@ -352,12 +307,7 @@ impl Shared {
 
     pub(super) fn charge(&self, bytes: u64, sending: bool) -> bool {
         let to_client = sending == (self.role == super::ConnectIpRole::Server);
-        self.config
-            .principal_budget
-            .as_ref()
-            .is_none_or(|b| b.charge(to_client, bytes) == crate::budget::Charge::Paid)
-            && self.config.shared_budgets.iter().all(|b| b.charge(bytes))
-            && self.budget.charge(bytes)
+        self.budget.charge(to_client, bytes) == Charge::Paid
     }
 
     fn touch(&self) {
@@ -458,7 +408,9 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
         let http = HttpDatagramSession::with_config(io, config.http_config());
         let native = http.native().cloned();
         let state = ConnectIpState::new(config.state);
-        let budget = ConnectIpBudget::new(config.budget);
+        let budget = config
+            .budget
+            .account_for(config.principal_budget.clone(), u64::MAX);
         let shared = Arc::new(Shared {
             ipv6_mtu: AtomicU16::new(config.ipv6_link_mtu.unwrap_or(0)),
             policy_index: super::policy::PolicyIndex::new(&config.policy),
@@ -740,9 +692,6 @@ impl<T> ConnectIpSender<T> {
 impl<T: AsyncWrite> ConnectIpSender<T> {
     /// Send control state. Cancellation after state reservation closes both halves.
     pub async fn send_control(&mut self, capsule: ConnectIpCapsule) -> Result<(), ConnectIpError> {
-        if self.finished {
-            return Err(ConnectIpError::Closed);
-        }
         if self.finished {
             return Err(ConnectIpError::Closed);
         }

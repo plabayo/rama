@@ -1,4 +1,3 @@
-use crate::budget::RateLimiters;
 pub(crate) use crate::budget::{Charge, PrincipalSpend};
 pub use crate::budget::{DatagramRate, PrincipalBudget};
 use std::sync::{
@@ -27,12 +26,9 @@ use super::MAX_UDP_PAYLOAD;
 /// which the per-principal limits of a proxy bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TunnelBudget {
-    to_target: Option<DatagramRate>,
-    to_client: Option<DatagramRate>,
-    quota: Option<u64>,
+    traffic: crate::budget::TunnelBudget,
     unanswered_packets: u64,
     unanswered_bytes: u64,
-    min_charge: u64,
 }
 
 impl Default for TunnelBudget {
@@ -47,19 +43,16 @@ impl TunnelBudget {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            to_target: None,
-            to_client: None,
-            quota: None,
+            traffic: crate::budget::TunnelBudget::new(),
             unanswered_packets: 64,
             unanswered_bytes: 64 * 1024,
-            min_charge: 64,
         }
     }
 
     generate_set_and_with! {
         /// The rate of datagrams from the client to the target.
         pub fn to_target(mut self, rate: Option<DatagramRate>) -> Self {
-            self.to_target = rate;
+            self.traffic.maybe_set_to_target(rate);
             self
         }
     }
@@ -67,7 +60,7 @@ impl TunnelBudget {
     generate_set_and_with! {
         /// The rate of datagrams from the target to the client.
         pub fn to_client(mut self, rate: Option<DatagramRate>) -> Self {
-            self.to_client = rate;
+            self.traffic.maybe_set_to_client(rate);
             self
         }
     }
@@ -76,7 +69,7 @@ impl TunnelBudget {
         /// The most bytes, both ways together, a tunnel is charged in its lifetime. Only what the
         /// rates admitted counts: a datagram a rate refused is not charged to the quota.
         pub fn quota(mut self, bytes: Option<u64>) -> Self {
-            self.quota = bytes;
+            self.traffic.maybe_set_quota(bytes);
             self
         }
     }
@@ -94,14 +87,9 @@ impl TunnelBudget {
         /// The least a datagram is charged in bytes, so small and empty ones still cost; no
         /// datagram is charged more than one UDP payload, whatever this says.
         pub fn min_charge(mut self, bytes: u64) -> Self {
-            self.min_charge = bytes;
+            self.traffic.set_min_charge(bytes);
             self
         }
-    }
-
-    /// What `len` payload bytes cost: at least the minimum, never more than one payload.
-    fn cost(&self, len: u64) -> u64 {
-        len.max(self.min_charge).min(MAX_CHARGE)
     }
 
     /// No limit of the tunnel's own: what a principal's budget charges through.
@@ -112,13 +100,10 @@ impl TunnelBudget {
     /// The account of one tunnel, charging `principal` first when it has a budget.
     pub(crate) fn account_for(self, principal: Option<Arc<PrincipalSpend>>) -> TunnelAccount {
         TunnelAccount {
-            to_target: self.to_target.map(DatagramRate::limiters),
-            to_client: self.to_client.map(DatagramRate::limiters),
-            charged: AtomicU64::new(0),
+            traffic: self.traffic.account_for(principal, MAX_CHARGE),
             answered: AtomicBool::new(false),
             unanswered_packets: AtomicU64::new(0),
             unanswered_bytes: AtomicU64::new(0),
-            principal,
             budget: self,
         }
     }
@@ -130,20 +115,17 @@ const MAX_CHARGE: u64 = MAX_UDP_PAYLOAD as u64 + 1;
 /// One tunnel's spending against its [`TunnelBudget`].
 pub(crate) struct TunnelAccount {
     budget: TunnelBudget,
-    to_target: Option<RateLimiters>,
-    to_client: Option<RateLimiters>,
-    charged: AtomicU64,
+    traffic: crate::budget::TunnelAccount,
     answered: AtomicBool,
     unanswered_packets: AtomicU64,
     unanswered_bytes: AtomicU64,
-    principal: Option<Arc<PrincipalSpend>>,
 }
 
 impl std::fmt::Debug for TunnelAccount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TunnelAccount")
             .field("budget", &self.budget)
-            .field("charged", &self.charged)
+            .field("traffic", &self.traffic)
             .field("answered", &self.answered)
             .finish_non_exhaustive()
     }
@@ -162,41 +144,7 @@ impl TunnelAccount {
     }
 
     fn charge(&self, to_client: bool, len: u64) -> Charge {
-        let cost = self.budget.cost(len);
-        // The principal first: its budget is shared by every tunnel it opens.
-        if let Some(principal) = &self.principal {
-            let charge = principal.charge(to_client, cost);
-            if charge != Charge::Paid {
-                return charge;
-            }
-        }
-        let rate = if to_client {
-            self.to_client.as_ref()
-        } else {
-            self.to_target.as_ref()
-        };
-        if rate.is_some_and(|rate| !rate.try_spend(cost)) {
-            return Charge::RateLimited;
-        }
-        let Some(quota) = self.budget.quota else {
-            return Charge::Paid;
-        };
-        // Saturating, so a spent quota stays spent however much more is charged.
-        let previous = self
-            .charged
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |charged| {
-                Some(charged.saturating_add(cost))
-            })
-            .unwrap_or_else(|charged| charged);
-        // Past the counter's limit is past any quota, even an unbounded one.
-        if previous
-            .checked_add(cost)
-            .is_none_or(|charged| charged > quota)
-        {
-            Charge::OverQuota
-        } else {
-            Charge::Paid
-        }
+        self.traffic.charge(to_client, len)
     }
 
     /// Whether a paid datagram of `len` bytes may go to the target, which counts it

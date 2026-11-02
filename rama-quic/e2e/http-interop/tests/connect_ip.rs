@@ -104,7 +104,9 @@ async fn echo(mut session: ConnectIpSession) -> Result<(), BoxError> {
                 {
                     let echo = rama::net::ip::icmp::Icmpv6Echo::parse(ip)?;
                     let mut reply = [0; 1280];
-                    let n = echo.reply().encode(ip.destination(), ip.source(), &mut reply)?;
+                    let n = echo
+                        .reply()
+                        .encode(ip.destination(), ip.source(), &mut reply)?;
                     assert!(matches!(
                         session
                             .send_packet(Bytes::copy_from_slice(&reply[..n]), IpPacketOrigin::Local)
@@ -140,7 +142,9 @@ async fn echo(mut session: ConnectIpSession) -> Result<(), BoxError> {
             _ => (),
         }
     }
-    session.send_control(ConnectIpCapsule::RouteAdvertisement(vec![])).await?;
+    session
+        .send_control(ConnectIpCapsule::RouteAdvertisement(vec![]))
+        .await?;
     session.close().await?;
     Ok(())
 }
@@ -195,7 +199,9 @@ async fn exercise(mut session: ConnectIpSession, native: bool) -> Result<(), Box
         assert_eq!(received, packet);
     }
     session.close().await?;
-    assert!(matches!(session.recv().await?, Some(ConnectIpEvent::Control(ConnectIpCapsule::RouteAdvertisement(routes))) if routes.is_empty()));
+    assert!(
+        matches!(session.recv().await?, Some(ConnectIpEvent::Control(ConnectIpCapsule::RouteAdvertisement(routes))) if routes.is_empty())
+    );
     assert!(session.recv().await?.is_none());
     Ok(())
 }
@@ -214,9 +220,7 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
             let (finished, mut completion) = tokio::sync::mpsc::unbounded_channel();
             let service = ConnectIpService::new(
                 template.clone(),
-                service_fn(async |_: ConnectIpRequest| {
-                    Ok::<_, Infallible>(config())
-                }),
+                service_fn(async |_: ConnectIpRequest| Ok::<_, Infallible>(config())),
                 service_fn(move |s: ConnectIpSession| {
                     let finished = finished.clone();
                     async move {
@@ -280,7 +284,9 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                     session_config = session_config.try_with_ipv6_link_mtu(None).unwrap();
                 }
                 exercise(
-                    ConnectIpRequestBuilder::try_from_request(&template, request, session_config)?.connect(&client_http).await?,
+                    ConnectIpRequestBuilder::try_from_request(&template, request, session_config)?
+                        .connect(&client_http)
+                        .await?,
                     native,
                 )
                 .await?;
@@ -315,7 +321,9 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                 let client_http = established.conn;
                 let request = established.input;
                 exercise(
-                    ConnectIpRequestBuilder::try_from_request(&template, request, config())?.connect(&client_http).await?,
+                    ConnectIpRequestBuilder::try_from_request(&template, request, config())?
+                        .connect(&client_http)
+                        .await?,
                     false,
                 )
                 .await?;
@@ -458,12 +466,10 @@ async fn rama_ip_client_against_connect_ip_go() -> Result<(), BoxError> {
             exec,
         )
         .await?;
-        let mut session = ConnectIpRequestBuilder::try_from_request(
-            &template,
-            established.input,
-            config(),
-        )?
-        .connect(&established.conn).await?;
+        let mut session =
+            ConnectIpRequestBuilder::try_from_request(&template, established.input, config())?
+                .connect(&established.conn)
+                .await?;
         while session.state().local_addresses().len() != 2
             || session.state().peer_routes().len() != 2
         {
@@ -531,7 +537,9 @@ async fn independent_responder(mut session: ConnectIpSession) -> Result<(), BoxE
     for assignment in &mut initial {
         assignment.request_id = None;
     }
-    session.send_control(ConnectIpCapsule::AddressAssign(initial)).await?;
+    session
+        .send_control(ConnectIpCapsule::AddressAssign(initial))
+        .await?;
     session.send_control(peer_routes()).await?;
     let mut count = 0;
     let mut requested = false;
@@ -613,9 +621,7 @@ async fn rama_ip_server_against_connect_ip_go() -> Result<(), BoxError> {
         let (finished, mut completion) = tokio::sync::mpsc::unbounded_channel();
         let service = ConnectIpService::new(
             template,
-            service_fn(async |_: ConnectIpRequest| {
-                Ok::<_, Infallible>(config())
-            }),
+            service_fn(async |_: ConnectIpRequest| Ok::<_, Infallible>(config())),
             service_fn(move |s: ConnectIpSession| {
                 let finished = finished.clone();
                 async move {

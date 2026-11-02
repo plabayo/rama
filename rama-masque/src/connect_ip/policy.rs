@@ -72,7 +72,13 @@ impl IpSourcePolicy {
 /// Local permissions for a packet direction; defaults to deny all.
 #[derive(Debug, Clone)]
 pub struct IpDirectionPolicy {
-    /// Permitted packet sources.
+    /// Permitted packet sources, including the outer source of ICMP errors.
+    ///
+    /// A client's receive policy must include the routers whose Packet Too Big
+    /// and unreachable messages it wants to receive: those routers can be outside
+    /// the requested target scope. The quoted flow remains checked separately.
+    /// Restricting receive sources to the target alone can therefore block PMTUD.
+    /// This never relaxes the server's source-address checks on client packets.
     pub sources: IpSourcePolicy,
     /// Permitted destinations/protocols, independent of peer declarations.
     pub destinations: Vec<IpRoute>,

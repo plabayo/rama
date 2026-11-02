@@ -9,16 +9,15 @@ use rama_dns::client::{
     resolver::{DnsAddressResolver, HappyEyeballAddressResolverExt as _},
 };
 use rama_http::{
-    Body, HeaderValue, Request, Response, StatusCode, Version,
+    Body, Request, Response, StatusCode,
     datagram::{HttpDatagramSession, handshake::capsule_response},
-    header,
-    headers::{HeaderMapExt as _, ProxyErrorType, ProxyStatus, ProxyStatusEntry},
+    headers::ProxyErrorType,
     io::upgrade::handle_upgrade,
     proto::ext::{HttpDatagrams, Protocol},
 };
 use rama_net::{
     address::{
-        HostWithOptPort, HostWithPort, ProxyPathTemplate, SocketAddress,
+        HostWithPort, ProxyPathTemplate, SocketAddress,
         ip::{IntoCanonicalIpAddr as _, TranslationPrefix},
     },
     client::{ConnectRequest, ConnectionErrorKind, ConnectorService, ConnectorTarget},
@@ -394,23 +393,13 @@ where
         let lease = match self.limits.admit(&request) {
             Ok(lease) => lease,
             Err(refused) => {
-                let (status, error) = match refused {
-                    Refused::LimitReached => (
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        ProxyErrorType::ConnectionLimitReached,
-                    ),
-                    Refused::NoPrincipal => {
-                        (StatusCode::FORBIDDEN, ProxyErrorType::HttpRequestDenied)
-                    }
-                    // The keyer's error may quote what it read from the request: never logged.
-                    Refused::Keyer => {
-                        tracing::debug!(%target, "connect-udp principal keyer failed");
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            ProxyErrorType::ProxyInternalError,
-                        )
-                    }
-                };
+                if matches!(refused, Refused::Keyer) {
+                    tracing::debug!(%target, "connect-udp principal keyer failed");
+                }
+                let error = crate::refusal::admission_error(&refused);
+                let status = error
+                    .recommended_status()
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                 tracing::debug!(%target, error = error.as_str(), "connect-udp tunnel not admitted");
                 self.telemetry.refused(&telemetry::Refused {
                     reason: telemetry::refusal_reason(&error),
@@ -599,33 +588,12 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
         status: StatusCode,
         error: Option<ProxyErrorType>,
     ) -> Response {
-        let mut response = Response::new(Body::empty());
-        *response.status_mut() = status;
-        if let Some(error) = error
-            && let Some(name) = self.proxy_name.clone().or_else(|| addressed_host(request))
-        {
-            response
-                .headers_mut()
-                .typed_insert(ProxyStatus::new(ProxyStatusEntry::error(&*name, error)));
-        }
-        if request.version() == Version::HTTP_11 {
-            // Bytes a client sent after its upgrade request are never read as a request.
-            response
-                .headers_mut()
-                .insert(header::CONNECTION, HeaderValue::from_static("close"));
-        }
-        response
+        let name = self
+            .proxy_name
+            .clone()
+            .or_else(|| crate::refusal::addressed_host(request));
+        crate::refusal::response(request.version(), status, error, name.as_deref())
     }
-}
-
-/// The host a request addressed: its URI authority (HTTP/2, HTTP/3) or `Host` header.
-fn addressed_host(request: &Request) -> Option<Arc<str>> {
-    if let Some(host) = request.uri().host() {
-        return Some(host.to_string().into());
-    }
-    let host = request.headers().get(header::HOST)?.to_str().ok()?;
-    let host = HostWithOptPort::try_from(host).ok()?.host;
-    Some(host.to_string().into())
 }
 
 /// The default relay of a [`ConnectUdpService`]: forwards UDP payloads between two connected

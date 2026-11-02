@@ -14,10 +14,9 @@ use rama_dns::client::{
     },
 };
 use rama_http::{
-    Body, HeaderValue, Request, Response, StatusCode, Version,
+    Body, Request, Response, StatusCode, Version,
     datagram::handshake::capsule_response,
-    header,
-    headers::{HeaderMapExt as _, ProxyErrorType, ProxyStatus, ProxyStatusEntry},
+    headers::ProxyErrorType,
     io::upgrade::handle_upgrade,
     proto::ext::{HttpDatagrams, Protocol},
 };
@@ -55,6 +54,7 @@ pub struct ConnectIpService<A, H, R = GlobalDnsResolver, L = ConnectIpLimits> {
     exec: Executor,
     limits: L,
     open_timeout: Duration,
+    proxy_name: Option<Arc<str>>,
 }
 
 impl<A, H, R: fmt::Debug, L: fmt::Debug> fmt::Debug for ConnectIpService<A, H, R, L> {
@@ -77,6 +77,7 @@ impl<A, H, R, L: Clone> Clone for ConnectIpService<A, H, R, L> {
             exec: self.exec.clone(),
             limits: self.limits.clone(),
             open_timeout: self.open_timeout,
+            proxy_name: self.proxy_name.clone(),
         }
     }
 }
@@ -93,6 +94,7 @@ impl<A, H> ConnectIpService<A, H> {
             exec,
             limits: ConnectIpLimits::default(),
             open_timeout: Duration::from_secs(10),
+            proxy_name: None,
         }
     }
 }
@@ -108,6 +110,7 @@ impl<A, H, R, L> ConnectIpService<A, H, R, L> {
             exec: self.exec,
             limits,
             open_timeout: self.open_timeout,
+            proxy_name: self.proxy_name,
         }
     }
 
@@ -115,6 +118,14 @@ impl<A, H, R, L> ConnectIpService<A, H, R, L> {
         /// Total opening deadline (zero rejects immediately).
         pub fn open_timeout(mut self, timeout: Duration) -> Self {
             self.open_timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Proxy-Status service identifier; defaults to the host addressed by the request.
+        pub fn proxy_name(mut self, name: Option<Arc<str>>) -> Self {
+            self.proxy_name = name;
             self
         }
     }
@@ -129,6 +140,7 @@ impl<A, H, R, L> ConnectIpService<A, H, R, L> {
             exec: self.exec,
             limits: self.limits,
             open_timeout: self.open_timeout,
+            proxy_name: self.proxy_name,
         }
     }
 }
@@ -146,47 +158,71 @@ where
 
     async fn serve(&self, request: Request<B>) -> Result<Response, Infallible> {
         let version = request.version();
+        let proxy_name = self
+            .proxy_name
+            .clone()
+            .or_else(|| crate::refusal::addressed_host(&request));
+        let refuse = |error: ProxyErrorType| {
+            crate::refusal::response(
+                version,
+                if error == ProxyErrorType::HttpRequestError {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    error
+                        .recommended_status()
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+                },
+                Some(error),
+                proxy_name.as_deref(),
+            )
+        };
         if version != Version::HTTP_3
             && !request.extensions().contains::<rama_tls::SecureTransport>()
         {
-            return Ok(refuse(version, StatusCode::FORBIDDEN));
+            return Ok(refuse(ProxyErrorType::HttpRequestDenied));
         }
         let Ok(scope) = self.template.match_request(&request) else {
-            return Ok(refuse(version, StatusCode::BAD_REQUEST));
+            return Ok(refuse(ProxyErrorType::HttpRequestError));
         };
-        let Ok(lease) = self.limits.admit(&request) else {
-            return Ok(refuse(version, StatusCode::SERVICE_UNAVAILABLE));
+        let lease = match self.limits.admit(&request) {
+            Ok(lease) => lease,
+            Err(error) => return Ok(refuse(crate::refusal::admission_error(&error))),
         };
         let deadline = crate::time::expiration_at(tokio::time::Instant::now(), self.open_timeout);
         let upgrade = handle_upgrade(&request);
         let extensions = request.extensions().clone();
-        let open = async {
-            let mut config = self
-                .admission
-                .serve(ConnectIpRequest {
-                    request,
-                    scope: scope.clone(),
-                })
-                .await
-                .map_err(|_error| StatusCode::FORBIDDEN)?;
-            config.policy.scope_protocol = scope.protocol;
-            config.policy.scope_targets = resolve_scope(
+        let mut config = match tokio::time::timeout_at(
+            deadline,
+            self.admission.serve(ConnectIpRequest {
+                request,
+                scope: scope.clone(),
+            }),
+        )
+        .await
+        {
+            Ok(Ok(config)) => config,
+            Ok(Err(_error)) => return Ok(refuse(ProxyErrorType::HttpRequestDenied)),
+            Err(_elapsed) => return Ok(refuse(ProxyErrorType::HttpResponseTimeout)),
+        };
+        config.policy.scope_protocol = scope.protocol;
+        config.policy.scope_targets = match tokio::time::timeout_at(
+            deadline,
+            resolve_scope(
                 &self.resolver,
                 scope.target,
                 &extensions,
                 &config.policy.receive.destinations,
-            )
-            .await?;
-            config.principal_budget = lease.principal_spend();
-            Ok(config)
+            ),
+        )
+        .await
+        {
+            Ok(Ok(addresses)) => addresses,
+            Ok(Err(error)) => return Ok(refuse(error)),
+            Err(_elapsed) => return Ok(refuse(ProxyErrorType::DnsTimeout)),
         };
-        let config = match tokio::time::timeout_at(deadline, open).await {
-            Ok(Ok(v)) => v,
-            Ok(Err(status)) => return Ok(refuse(version, status)),
-            Err(_) => return Ok(refuse(version, StatusCode::GATEWAY_TIMEOUT)),
-        };
+        config.principal_budget = lease.principal_spend();
         let Ok(response) = capsule_response::<Body>(version, &Protocol::CONNECT_IP) else {
-            return Ok(refuse(version, StatusCode::BAD_REQUEST));
+            return Ok(refuse(ProxyErrorType::HttpRequestError));
         };
         response.extensions().insert(HttpDatagrams);
         let handler = self.handler.clone();
@@ -206,27 +242,6 @@ where
     }
 }
 
-fn refuse(version: Version, status: StatusCode) -> Response {
-    let mut response = Response::new(Body::empty());
-    *response.status_mut() = status;
-    let error = match status {
-        StatusCode::BAD_GATEWAY => ProxyErrorType::DnsError,
-        StatusCode::GATEWAY_TIMEOUT => ProxyErrorType::ConnectionTimeout,
-        StatusCode::SERVICE_UNAVAILABLE => ProxyErrorType::ConnectionLimitReached,
-        StatusCode::FORBIDDEN => ProxyErrorType::DestinationIpProhibited,
-        _ => ProxyErrorType::HttpRequestError,
-    };
-    response
-        .headers_mut()
-        .typed_insert(ProxyStatus::new(ProxyStatusEntry::error("rama", error)));
-    if version == Version::HTTP_11 {
-        response
-            .headers_mut()
-            .insert(header::CONNECTION, HeaderValue::from_static("close"));
-    }
-    response
-}
-
 // Resolution is performed once at admission. The immutable result is passed to
 // the packet policy; no per-packet DNS lookup can change the authorized target.
 pub(super) async fn resolve_scope<R: DnsAddressResolver>(
@@ -234,7 +249,7 @@ pub(super) async fn resolve_scope<R: DnsAddressResolver>(
     target: IpTarget,
     extensions: &rama_core::extensions::Extensions,
     destinations: &[super::IpRoute],
-) -> Result<Vec<IpNet>, StatusCode> {
+) -> Result<Vec<IpNet>, ProxyErrorType> {
     match target {
         IpTarget::Any => Ok(Vec::new()),
         IpTarget::Prefix(prefix) => Ok(vec![prefix]),
@@ -257,13 +272,13 @@ pub(super) async fn resolve_scope<R: DnsAddressResolver>(
             while let Some(result) = addresses.next().await {
                 count += 1;
                 if count > 256 {
-                    return Err(StatusCode::BAD_GATEWAY);
+                    return Err(ProxyErrorType::DnsError);
                 }
                 let address = match result {
                     Ok(address) => address,
                     Err(error) => {
                         if error.into_box_error().is::<DnsAnswerLimitReached>() {
-                            return Err(StatusCode::BAD_GATEWAY);
+                            return Err(ProxyErrorType::DnsError);
                         }
                         continue;
                     }
@@ -277,9 +292,9 @@ pub(super) async fn resolve_scope<R: DnsAddressResolver>(
             }
             if approved.is_empty() {
                 Err(if resolved {
-                    StatusCode::FORBIDDEN
+                    ProxyErrorType::DestinationIpProhibited
                 } else {
-                    StatusCode::BAD_GATEWAY
+                    ProxyErrorType::DnsError
                 })
             } else {
                 Ok(approved)

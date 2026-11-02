@@ -250,7 +250,7 @@ fn templates_cover_http_versions_scopes_and_erratum_8444() {
         ConnectIpScope::from_template_values(None, Some(p)).unwrap_err();
     }
     assert_eq!(
-        ConnectIpScope::from_template_values(None, Some("0"))
+        ConnectIpScope::from_template_values(Some("192.0.2.0/24"), Some("0"))
             .unwrap()
             .protocol,
         Some(IpProtocol::HOP_BY_HOP)
@@ -606,6 +606,19 @@ fn icmp_errors_are_bound_to_the_authorized_quoted_flow() {
     )
     .unwrap()
     .unwrap();
+    // Authorizing only the scoped target excludes an intermediate router's
+    // errors. The client's explicit source policy can include that router.
+    let mut target_only = p.clone();
+    target_only.receive.sources = IpSourcePolicy::Static(p.scope_targets.clone());
+    assert_eq!(
+        target_only.check(
+            IpPacket::parse(&bytes[..n]).unwrap(),
+            false,
+            ConnectIpRole::Client,
+            &state,
+        ),
+        Err(IpPacketDrop::Source)
+    );
     p.check(
         IpPacket::parse(&bytes[..n]).unwrap(),
         false,
@@ -781,6 +794,7 @@ struct Resolver {
 
 impl rama_dns::client::resolver::DnsAddressResolver for Resolver {
     type Error = Infallible;
+
     fn lookup_ipv4(
         &self,
         _: rama_net::address::Domain,
@@ -833,20 +847,20 @@ async fn hostname_resolution_is_bounded_filtered_and_pinned() {
     .unwrap();
     assert_eq!(
         super::server::resolve_scope(&resolver, target(), &ext, &destinations).await,
-        Err(StatusCode::FORBIDDEN)
+        Err(rama_http::headers::ProxyErrorType::DestinationIpProhibited)
     );
     Arc::get_mut(&mut resolver).unwrap().results = (0..257)
         .map(|i| Ipv4Addr::new(192, 0, (2 + i / 256) as u8, (i % 256) as u8))
         .collect();
     assert_eq!(
         super::server::resolve_scope(&resolver, target(), &ext, &destinations).await,
-        Err(StatusCode::BAD_GATEWAY)
+        Err(rama_http::headers::ProxyErrorType::DnsError)
     );
     Arc::get_mut(&mut resolver).unwrap().results.clear();
     Arc::get_mut(&mut resolver).unwrap().repeat = true;
     assert_eq!(
         super::server::resolve_scope(&resolver, target(), &ext, &destinations).await,
-        Err(StatusCode::BAD_GATEWAY)
+        Err(rama_http::headers::ProxyErrorType::DnsError)
     );
     Arc::get_mut(&mut resolver).unwrap().repeat = false;
     Arc::get_mut(&mut resolver).unwrap().pending = true;
@@ -1752,7 +1766,7 @@ async fn generic_request_bodies_and_custom_principals_reach_admission() {
 async fn unknown_control_capsules_consume_budget_without_protocol_errors() {
     let (a, b) = tokio::io::duplex(4096);
     let mut cfg = config();
-    cfg.budget.byte_quota = Some(1);
+    cfg.budget = crate::budget::TunnelBudget::new().with_quota(1);
     let mut receiver =
         ConnectIpSession::new(ServiceInput::new(b), ConnectIpRole::Server, cfg).unwrap();
     let mut raw = HttpDatagramSession::new(ServiceInput::new(a));
@@ -1978,4 +1992,298 @@ async fn unfinished_halves_abort_but_received_eof_preserves_sender() {
     ));
     sender.close().await.unwrap();
     assert!(b.recv().await.unwrap().is_none());
+}
+
+fn assert_refusal(
+    response: &rama_http::Response,
+    error: rama_http::headers::ProxyErrorType,
+    name: &str,
+) {
+    use rama_http::headers::{HeaderMapExt as _, ProxyStatus, ProxyStatusEntry};
+    let expected = if error == rama_http::headers::ProxyErrorType::HttpRequestError {
+        StatusCode::BAD_REQUEST
+    } else {
+        error.recommended_status().unwrap()
+    };
+    assert_eq!(response.status(), expected);
+    let status: ProxyStatus = response.headers().typed_get().unwrap();
+    assert_eq!(status.entries(), &[ProxyStatusEntry::error(name, error)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn refusal_reasons_distinguish_admission_dns_and_destination_policy() {
+    use rama_core::error::BoxError;
+    use rama_http::headers::ProxyErrorType;
+    let template = ConnectIpTemplate::try_new("https://proxy.example/{target}/{ipproto}/").unwrap();
+    let request = || {
+        template
+            .request(&ConnectIpScope::default(), Version::HTTP_3)
+            .unwrap()
+    };
+    let service = ConnectIpService::new(
+        template.clone(),
+        service_fn(async |_: ConnectIpRequest| Ok::<_, Infallible>(config())),
+        service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
+        Executor::new(),
+    );
+
+    let insecure = template
+        .request(&ConnectIpScope::default(), Version::HTTP_11)
+        .unwrap();
+    let response = service.serve(insecure).await.unwrap();
+    assert_refusal(
+        &response,
+        ProxyErrorType::HttpRequestDenied,
+        "proxy.example",
+    );
+    assert_eq!(response.headers()[rama_http::header::CONNECTION], "close");
+
+    let mut malformed = request();
+    *malformed.method_mut() = rama_http::Method::POST;
+    assert_refusal(
+        &service
+            .clone()
+            .with_proxy_name(Arc::from("edge-7"))
+            .serve(malformed)
+            .await
+            .unwrap(),
+        ProxyErrorType::HttpRequestError,
+        "edge-7",
+    );
+
+    let missing = ConnectIpLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::MIN)
+        .with_keyer(|_: &Request| Ok::<Option<u64>, BoxError>(None));
+    assert_refusal(
+        &service
+            .clone()
+            .with_limits(missing)
+            .serve(request())
+            .await
+            .unwrap(),
+        ProxyErrorType::HttpRequestDenied,
+        "proxy.example",
+    );
+    let failing = ConnectIpLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::MIN)
+        .with_keyer(|_: &Request| Err::<Option<u64>, BoxError>("key-store secret".into()));
+    let response = service
+        .clone()
+        .with_limits(failing)
+        .serve(request())
+        .await
+        .unwrap();
+    assert_refusal(
+        &response,
+        ProxyErrorType::ProxyInternalError,
+        "proxy.example",
+    );
+    assert!(!format!("{response:?}").contains("key-store secret"));
+    let limits = ConnectIpLimits::new().with_max_tunnels(std::num::NonZeroUsize::MIN);
+    let held = limits
+        .try_acquire(crate::limits::PrincipalKey::ANONYMOUS)
+        .unwrap();
+    assert_refusal(
+        &service
+            .clone()
+            .with_limits(limits)
+            .serve(request())
+            .await
+            .unwrap(),
+        ProxyErrorType::ConnectionLimitReached,
+        "proxy.example",
+    );
+    drop(held);
+
+    for (resolver, error) in [
+        (
+            Resolver {
+                results: vec![],
+                pending: false,
+                repeat: false,
+            },
+            ProxyErrorType::DnsError,
+        ),
+        (
+            Resolver {
+                results: vec![Ipv4Addr::LOCALHOST],
+                pending: false,
+                repeat: false,
+            },
+            ProxyErrorType::DestinationIpProhibited,
+        ),
+        (
+            Resolver {
+                results: vec![],
+                pending: false,
+                repeat: true,
+            },
+            ProxyErrorType::DnsError,
+        ),
+        (
+            Resolver {
+                results: vec![],
+                pending: true,
+                repeat: false,
+            },
+            ProxyErrorType::DnsTimeout,
+        ),
+    ] {
+        let scope = ConnectIpScope::new(
+            IpTarget::Hostname(rama_net::address::Domain::from_static("target.example")),
+            None,
+        );
+        let request = template.request(&scope, Version::HTTP_3).unwrap();
+        let response = service
+            .clone()
+            .with_resolver(resolver)
+            .with_open_timeout(Duration::from_secs(1))
+            .serve(request)
+            .await
+            .unwrap();
+        assert_refusal(&response, error, "proxy.example");
+    }
+
+    let pending = ConnectIpService::new(
+        template.clone(),
+        service_fn(async |_: ConnectIpRequest| {
+            std::future::pending::<Result<ConnectIpSessionConfig, Infallible>>().await
+        }),
+        service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
+        Executor::new(),
+    )
+    .with_open_timeout(Duration::from_secs(1));
+    assert_refusal(
+        &pending.serve(request()).await.unwrap(),
+        ProxyErrorType::HttpResponseTimeout,
+        "proxy.example",
+    );
+    let denied = ConnectIpService::new(
+        template,
+        service_fn(async |_: ConnectIpRequest| {
+            Err::<ConnectIpSessionConfig, BoxError>("auth secret".into())
+        }),
+        service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
+        Executor::new(),
+    );
+    let denied_request = ConnectIpTemplate::try_new("https://proxy.example/{target}/{ipproto}/")
+        .unwrap()
+        .request(&ConnectIpScope::default(), Version::HTTP_3)
+        .unwrap();
+    assert_refusal(
+        &denied.serve(denied_request).await.unwrap(),
+        ProxyErrorType::HttpRequestDenied,
+        "proxy.example",
+    );
+}
+
+#[tokio::test]
+async fn extension_protocol_scopes_require_an_explicit_ipv4_target() {
+    use rama_http::headers::ProxyErrorType;
+    let template = ConnectIpTemplate::try_new("https://proxy.example/{target}/{ipproto}/").unwrap();
+    let service = ConnectIpService::new(
+        template.clone(),
+        service_fn(
+            async |_: ConnectIpRequest| -> Result<ConnectIpSessionConfig, Infallible> {
+                panic!("invalid scope reached admission")
+            },
+        ),
+        service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
+        Executor::new(),
+    );
+    for protocol in [IpProtocol::ESP, IpProtocol::DESTINATION_OPTIONS] {
+        for target in [
+            IpTarget::Any,
+            IpTarget::Prefix(prefix("2001:db8::/32")),
+            IpTarget::Hostname(rama_net::address::Domain::from_static("target.example")),
+        ] {
+            let scope = ConnectIpScope::new(target, Some(protocol));
+            assert_eq!(
+                ConnectIpScope::from_template_values(
+                    Some(&scope.target.to_string()),
+                    Some(&protocol.value().to_string())
+                ),
+                Err(ConnectIpRequestError::Scope)
+            );
+            for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+                assert!(matches!(
+                    template.request(&scope, version),
+                    Err(ConnectIpRequestError::Scope)
+                ));
+                let mut request = template
+                    .request(
+                        &ConnectIpScope::new(scope.target.clone(), Some(IpProtocol::UDP)),
+                        version,
+                    )
+                    .unwrap();
+                // Keep the template's escaping but bypass its typed protocol validation.
+                let uri = request
+                    .uri()
+                    .to_string()
+                    .replace("/17/", &format!("/{}/", protocol.value()));
+                *request.uri_mut() = uri.parse().unwrap();
+                request
+                    .extensions()
+                    .insert(rama_tls::SecureTransport::default());
+                assert_refusal(
+                    &service.serve(request).await.unwrap(),
+                    ProxyErrorType::HttpRequestError,
+                    "proxy.example",
+                );
+            }
+        }
+        let scope = ConnectIpScope::new(IpTarget::Prefix(prefix("192.0.2.0/24")), Some(protocol));
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let request = template.request(&scope, version).unwrap();
+            assert_eq!(template.match_request(&request).unwrap(), scope);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn directional_session_rate_refusal_preserves_quota() {
+    use crate::budget::{DatagramRate, TunnelBudget};
+    use rama_utils::rate::Rate;
+    for role in [ConnectIpRole::Client, ConnectIpRole::Server] {
+        let (a, b) = tokio::io::duplex(65536);
+        let mut cfg = config();
+        let rate = DatagramRate::new(Rate::per_sec(1), Rate::per_sec(1000));
+        let budget = TunnelBudget::new().with_quota(128);
+        cfg.budget = match role {
+            ConnectIpRole::Client => budget.with_to_target(rate),
+            ConnectIpRole::Server => budget.with_to_client(rate),
+        };
+        let mut session = ConnectIpSession::new(ServiceInput::new(a), role, cfg).unwrap();
+        let _peer = b;
+        assert!(matches!(
+            session
+                .send_packet(packet(), IpPacketOrigin::Local)
+                .await
+                .unwrap(),
+            IpPacketSend::Sent(_)
+        ));
+        assert!(matches!(
+            session
+                .send_packet(packet(), IpPacketOrigin::Local)
+                .await
+                .unwrap(),
+            IpPacketSend::Dropped(IpPacketDrop::Budget)
+        ));
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(matches!(
+            session
+                .send_packet(packet(), IpPacketOrigin::Local)
+                .await
+                .unwrap(),
+            IpPacketSend::Sent(_)
+        ));
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(matches!(
+            session
+                .send_packet(packet(), IpPacketOrigin::Local)
+                .await
+                .unwrap(),
+            IpPacketSend::Dropped(IpPacketDrop::Budget)
+        ));
+    }
 }

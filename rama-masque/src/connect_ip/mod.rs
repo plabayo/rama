@@ -40,6 +40,10 @@
 //! links. Use `rama_net::ip::icmp::encode_icmp_error` for bounded forwarding-error
 //! replies, choosing an authorized source and applying a rate limit. Invalid or
 //! unauthorized incoming packets are dropped before delivery to the handler.
+//! A client's receive-source policy must also authorize intermediate routers
+//! whose ICMP errors it needs (including Packet Too Big for path MTU discovery).
+//! Router addresses may lie outside the target scope; the quoted flow is still
+//! checked against that scope and local permissions.
 //!
 //! IPv6 is disabled until an end-to-end link MTU is guaranteed in configuration
 //! or [`ConnectIpSession::probe_ipv6_mtu`] succeeds. A local QUIC datagram limit
@@ -74,9 +78,8 @@ pub use policy::{ConnectIpPolicy, ConnectIpRole, IpDirectionPolicy, IpPacketDrop
 
 mod session;
 pub use session::{
-    ConnectIpBudget, ConnectIpError, ConnectIpEvent, ConnectIpReceiver, ConnectIpSender,
-    ConnectIpSession, ConnectIpSessionConfig, ConnectIpStats, IpBudgetConfig, IpPacketOrigin,
-    IpPacketSend,
+    ConnectIpError, ConnectIpEvent, ConnectIpReceiver, ConnectIpSender, ConnectIpSession,
+    ConnectIpSessionConfig, ConnectIpStats, IpPacketOrigin, IpPacketSend,
 };
 
 mod limits;

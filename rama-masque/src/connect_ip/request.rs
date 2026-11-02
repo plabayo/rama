@@ -43,6 +43,8 @@ pub struct ConnectIpScope {
     /// Requested destination range/name.
     pub target: IpTarget,
     /// `None` means wildcard; `Some(0)` is a real next-header number, not wildcard.
+    /// IPv6 extension-header numbers require an explicit IPv4 prefix target;
+    /// IPv6 scopes select the protocol after the extension chain (RFC 9484 section 4.8).
     pub protocol: Option<IpProtocol>,
 }
 
@@ -103,7 +105,18 @@ impl ConnectIpScope {
             ),
             _ => return Err(ConnectIpRequestError::Scope),
         };
-        Ok(Self { target, protocol })
+        let scope = Self { target, protocol };
+        scope.check_protocol_scope()?;
+        Ok(scope)
+    }
+
+    fn check_protocol_scope(&self) -> Result<(), ConnectIpRequestError> {
+        if self.protocol.is_some_and(IpProtocol::is_ipv6_extension)
+            && !matches!(self.target, IpTarget::Prefix(IpNet::V4(_)))
+        {
+            return Err(ConnectIpRequestError::Scope);
+        }
+        Ok(())
     }
 }
 
@@ -223,6 +236,7 @@ impl ConnectIpTemplate {
         version: Version,
         variable: impl Fn(&str) -> Option<&'v str>,
     ) -> Result<Request, ConnectIpRequestError> {
+        scope.check_protocol_scope()?;
         if self.template.variable("target").is_none() && scope.target != IpTarget::Any
             || self.template.variable("ipproto").is_none() && scope.protocol.is_some()
         {

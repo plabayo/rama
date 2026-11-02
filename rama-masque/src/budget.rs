@@ -268,3 +268,144 @@ pub(crate) enum Charge {
     RateLimited,
     OverQuota,
 }
+
+/// Directional rates and a lifetime quota for one MASQUE tunnel.
+///
+/// Defaults to no rates or quota and a minimum charge of 64 bytes. Charging runs
+/// principal first, then tunnel rate, then tunnel quota. A rate-refused attempt
+/// does not spend the tunnel quota. Earlier stages are not refunded if a later
+/// stage refuses; malformed packets and unknown contexts still count as attempts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TunnelBudget {
+    to_target: Option<DatagramRate>,
+    to_client: Option<DatagramRate>,
+    quota: Option<u64>,
+    min_charge: u64,
+}
+
+impl Default for TunnelBudget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TunnelBudget {
+    /// No rates or quota; each packet/control attempt costs at least 64 bytes.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            to_target: None,
+            to_client: None,
+            quota: None,
+            min_charge: 64,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Packet and byte rates toward the target network.
+        pub fn to_target(mut self, rate: Option<DatagramRate>) -> Self {
+            self.to_target = rate;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Packet and byte rates toward the HTTP client.
+        pub fn to_client(mut self, rate: Option<DatagramRate>) -> Self {
+            self.to_client = rate;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Lifetime byte quota shared by both directions. Only attempts admitted
+        /// by the tunnel rate spend this quota. Zero refuses every positive charge.
+        pub fn quota(mut self, bytes: Option<u64>) -> Self {
+            self.quota = bytes;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Minimum byte charge per attempt, bounded by the carrier's charge cap.
+        pub fn min_charge(mut self, bytes: u64) -> Self {
+            self.min_charge = bytes;
+            self
+        }
+    }
+
+    pub(crate) fn cost(&self, len: u64, max_charge: u64) -> u64 {
+        len.max(self.min_charge).min(max_charge)
+    }
+
+    pub(crate) fn account_for(
+        self,
+        principal: Option<std::sync::Arc<PrincipalSpend>>,
+        max_charge: u64,
+    ) -> TunnelAccount {
+        TunnelAccount {
+            budget: self,
+            to_target: self.to_target.map(DatagramRate::limiters),
+            to_client: self.to_client.map(DatagramRate::limiters),
+            charged: std::sync::atomic::AtomicU64::new(0),
+            principal,
+            max_charge,
+        }
+    }
+}
+
+/// Shared accounting engine; protocol wrappers own forwarding-specific limits.
+#[derive(Debug)]
+pub(crate) struct TunnelAccount {
+    budget: TunnelBudget,
+    to_target: Option<RateLimiters>,
+    to_client: Option<RateLimiters>,
+    charged: std::sync::atomic::AtomicU64,
+    principal: Option<std::sync::Arc<PrincipalSpend>>,
+    max_charge: u64,
+}
+
+impl TunnelAccount {
+    pub(crate) fn charge(&self, to_client: bool, len: u64) -> Charge {
+        let cost = self.budget.cost(len, self.max_charge);
+        // The principal first: its budget is shared by every tunnel it opens.
+        if let Some(principal) = &self.principal {
+            let charge = principal.charge(to_client, cost);
+            if charge != Charge::Paid {
+                return charge;
+            }
+        }
+        let rate = if to_client {
+            self.to_client.as_ref()
+        } else {
+            self.to_target.as_ref()
+        };
+        if rate.is_some_and(|rate| !rate.try_spend(cost)) {
+            return Charge::RateLimited;
+        }
+        let Some(quota) = self.budget.quota else {
+            return Charge::Paid;
+        };
+        // Saturating, so a spent quota stays spent however much more is charged.
+        let previous = self
+            .charged
+            .try_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |charged| Some(charged.saturating_add(cost)),
+            )
+            .unwrap_or_else(|charged| charged);
+        // Past the counter's limit is past any quota, even an unbounded one.
+        if previous
+            .checked_add(cost)
+            .is_none_or(|charged| charged > quota)
+        {
+            Charge::OverQuota
+        } else {
+            Charge::Paid
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

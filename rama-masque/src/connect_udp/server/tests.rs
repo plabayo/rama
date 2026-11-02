@@ -7,7 +7,10 @@ use std::{
 use parking_lot::Mutex;
 use rama_core::futures::{Stream, stream};
 use rama_dns::client::{DenyAllDnsResolver, EmptyDnsResolver};
-use rama_http::{Method, headers::ProxyStatusEntry};
+use rama_http::{
+    HeaderValue, Method, Version, header,
+    headers::{HeaderMapExt as _, ProxyStatus, ProxyStatusEntry},
+};
 use rama_net::{
     address::{Domain, Host, ProxyAddress},
     client::{ConnectionError, EstablishedClientConnection},

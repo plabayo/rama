@@ -8,10 +8,16 @@ use super::*;
 #[test]
 fn a_charge_is_at_least_the_minimum_and_at_most_one_udp_payload() {
     let budget = TunnelBudget::new().with_min_charge(64);
-    assert_eq!(budget.cost(0), 64);
-    assert_eq!(budget.cost(100), 100);
-    assert_eq!(budget.cost(u64::MAX), MAX_CHARGE);
-    assert_eq!(TunnelBudget::new().with_min_charge(0).cost(0), 0);
+    assert_eq!(budget.traffic.cost(0, MAX_CHARGE), 64);
+    assert_eq!(budget.traffic.cost(100, MAX_CHARGE), 100);
+    assert_eq!(budget.traffic.cost(u64::MAX, MAX_CHARGE), MAX_CHARGE);
+    assert_eq!(
+        TunnelBudget::new()
+            .with_min_charge(0)
+            .traffic
+            .cost(0, MAX_CHARGE),
+        0
+    );
 }
 
 #[test]
@@ -66,39 +72,12 @@ async fn a_rate_needs_a_packet_and_the_bytes() {
 #[test]
 fn a_large_minimum_never_charges_more_than_one_payload() {
     assert_eq!(
-        TunnelBudget::new().with_min_charge(u64::MAX).cost(0),
+        TunnelBudget::new()
+            .with_min_charge(u64::MAX)
+            .traffic
+            .cost(0, MAX_CHARGE),
         MAX_CHARGE
     );
-}
-
-#[test]
-fn a_spent_quota_stays_spent_at_the_counters_limit() {
-    let account = TunnelBudget::new()
-        .with_min_charge(u64::MAX)
-        .with_quota(MAX_CHARGE)
-        .account_for(None);
-    assert_eq!(account.charge_to_target(0), Charge::Paid);
-    for _ in 0..4 {
-        assert_eq!(account.charge_to_target(0), Charge::OverQuota);
-    }
-    // The counter itself saturates instead of wrapping back below the quota.
-    let account = TunnelBudget::new()
-        .with_quota(u64::MAX - 1)
-        .account_for(None);
-    account.charged.store(u64::MAX - 10, Ordering::Relaxed);
-    assert_eq!(account.charge_to_client(1_000), Charge::OverQuota);
-    assert_eq!(account.charge_to_client(1_000), Charge::OverQuota);
-    assert_eq!(account.charged.load(Ordering::Relaxed), u64::MAX);
-
-    // The largest quota is spent too once the counter cannot go further.
-    let account = TunnelBudget::new()
-        .with_min_charge(0)
-        .with_quota(u64::MAX)
-        .account_for(None);
-    account.charged.store(u64::MAX - 10, Ordering::Relaxed);
-    assert_eq!(account.charge_to_target(10), Charge::Paid);
-    assert_eq!(account.charge_to_target(1), Charge::OverQuota);
-    assert_eq!(account.charge_to_target(1), Charge::OverQuota);
 }
 
 fn shared(budget: PrincipalBudget) -> Arc<PrincipalSpend> {
@@ -122,20 +101,6 @@ async fn a_principals_tunnels_spend_one_budget() {
     assert_eq!(first.charge_to_target(10), Charge::RateLimited);
     // The other direction has no principal rate.
     assert_eq!(second.charge_to_client(10), Charge::Paid);
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_principals_refusal_leaves_the_tunnel_uncharged() {
-    let principal = shared(PrincipalBudget::new().with_to_target(packets(1)));
-    let account = TunnelBudget::new()
-        .with_min_charge(0)
-        .with_to_target(packets(2))
-        .account_for(Some(principal));
-    assert_eq!(account.charge_to_target(1), Charge::Paid);
-    // Refused by the principal: the tunnel's second packet is still there, right away.
-    assert_eq!(account.charge_to_target(1), Charge::RateLimited);
-    let tunnel = account.to_target.as_ref().unwrap();
-    assert!(tunnel.try_spend(0));
 }
 
 #[tokio::test(start_paused = true)]
