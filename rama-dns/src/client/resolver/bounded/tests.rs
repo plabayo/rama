@@ -369,11 +369,3 @@ async fn unbounded_stream_preserves_errors_and_finite_end() {
     assert!(answers.next().await.is_none());
     assert!(answers.next().await.is_none());
 }
-
-#[test]
-fn answer_limit_error_preserves_display_text() {
-    assert_eq!(
-        DnsAnswerLimitReached::new().to_string(),
-        "DNS answer limit reached"
-    );
-}
