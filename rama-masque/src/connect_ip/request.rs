@@ -10,7 +10,7 @@ use rama_http::{
     proto::ext::{HttpDatagrams, Protocol},
 };
 use rama_net::{
-    address::{Domain, ip::ipnet::IpNet},
+    address::{Authority, AuthorityRef, Domain, ip::ipnet::IpNet},
     ip::IpProtocol,
     uri::{TemplateOperator, Uri, UriTemplate, UriTemplateMatcher},
 };
@@ -56,6 +56,17 @@ impl Default for ConnectIpScope {
 }
 
 impl ConnectIpScope {
+    /// Request a typed destination and optional IP protocol.
+    /// Prefixes are normalized to their network address.
+    #[must_use]
+    pub fn new(target: IpTarget, protocol: Option<IpProtocol>) -> Self {
+        let target = match target {
+            IpTarget::Prefix(prefix) => IpTarget::Prefix(prefix.trunc()),
+            target => target,
+        };
+        Self { target, protocol }
+    }
+
     /// Parse decoded URI-template values. Missing variables are wildcards;
     /// present-but-empty values are invalid.
     pub fn from_template_values(
@@ -134,7 +145,7 @@ impl std::error::Error for ConnectIpRequestError {}
 pub struct ConnectIpTemplate {
     template: UriTemplate,
     matcher: UriTemplateMatcher,
-    authority: String,
+    authority: Authority,
 }
 
 impl ConnectIpTemplate {
@@ -159,7 +170,7 @@ impl ConnectIpTemplate {
         let authority = endpoint
             .authority()
             .ok_or(ConnectIpRequestError::Template)?
-            .to_string();
+            .into_owned();
         let path = &rest[slash..];
         if path.contains('#') {
             return Err(ConnectIpRequestError::Template);
@@ -221,8 +232,11 @@ impl ConnectIpTemplate {
         let protocol = scope
             .protocol
             .map_or_else(|| "*".to_owned(), |p| p.to_string());
-        // Validate public, directly constructed scope values as well.
-        ConnectIpScope::from_template_values(Some(&target), Some(&protocol))?;
+        if let IpTarget::Prefix(prefix) = scope.target
+            && prefix.addr() != prefix.network()
+        {
+            return Err(ConnectIpRequestError::Scope);
+        }
         let expanded = self
             .template
             .expand(|v| match self.template.variable_name(v) {
@@ -239,7 +253,7 @@ impl ConnectIpTemplate {
         if version == Version::HTTP_11 {
             request.headers_mut().insert(
                 header::HOST,
-                HeaderValue::try_from(self.authority.as_str())
+                HeaderValue::try_from(self.authority.to_string())
                     .map_err(|_error| ConnectIpRequestError::Template)?,
             );
         }
@@ -255,6 +269,28 @@ impl ConnectIpTemplate {
         &self,
         request: &Request<B>,
     ) -> Result<ConnectIpScope, ConnectIpRequestError> {
+        self.validate_request_head(request)?;
+        let uri = request.uri();
+        let path = uri
+            .path()
+            .ok_or(ConnectIpRequestError::Mismatch)?
+            .as_encoded_str();
+        let query = uri.query().map(|q| q.as_encoded_str());
+        let captures = self
+            .matcher
+            .captures(&path, query.as_deref())
+            .ok_or(ConnectIpRequestError::Mismatch)?;
+        let template = self.matcher.template();
+        let get = |name| template.variable(name).and_then(|v| captures.get(v));
+        ConnectIpScope::from_template_values(get("target"), get("ipproto"))
+    }
+
+    // Headers/extensions can be customized after template expansion. Check that
+    // they still describe this endpoint without reparsing its typed scope.
+    pub(super) fn validate_request_head<B>(
+        &self,
+        request: &Request<B>,
+    ) -> Result<(), ConnectIpRequestError> {
         let protocol = validate_capsule_request(request, ViolationPolicy::Reject)
             .map_err(|_error| ConnectIpRequestError::Handshake)?;
         if !protocol.as_str().eq_ignore_ascii_case("connect-ip") {
@@ -274,39 +310,29 @@ impl ConnectIpTemplate {
         {
             return Err(ConnectIpRequestError::Mismatch);
         }
-        let authority = uri.authority().map(|a| a.to_string());
         let host = request
             .headers()
             .get(header::HOST)
-            .and_then(|h| h.to_str().ok());
-        let actual = authority
-            .as_deref()
+            .and_then(|h| AuthorityRef::parse_strict(h.as_bytes()).ok());
+        let actual = uri
+            .authority()
             .or(host)
             .ok_or(ConnectIpRequestError::Mismatch)?;
-        if !same_authority(actual, &self.authority)
-            || h1 && !host.is_some_and(|h| same_authority(h, &self.authority))
+        let expected = self.authority.view();
+        if !same_authority(actual, expected)
+            || h1 && !host.is_some_and(|h| same_authority(h, expected))
         {
             return Err(ConnectIpRequestError::Mismatch);
         }
-        let path = uri
-            .path()
-            .ok_or(ConnectIpRequestError::Mismatch)?
-            .as_encoded_str();
-        let query = uri.query().map(|q| q.as_encoded_str());
-        let captures = self
-            .matcher
-            .captures(&path, query.as_deref())
-            .ok_or(ConnectIpRequestError::Mismatch)?;
-        let template = self.matcher.template();
-        let get = |name| template.variable(name).and_then(|v| captures.get(v));
-        ConnectIpScope::from_template_values(get("target"), get("ipproto"))
+        Ok(())
     }
 }
 
-fn same_authority(a: &str, b: &str) -> bool {
-    a.strip_suffix(":443")
-        .unwrap_or(a)
-        .eq_ignore_ascii_case(b.strip_suffix(":443").unwrap_or(b))
+fn same_authority(a: AuthorityRef<'_>, b: AuthorityRef<'_>) -> bool {
+    a.userinfo().is_none()
+        && b.userinfo().is_none()
+        && a.host() == b.host()
+        && a.port_u16().unwrap_or(443) == b.port_u16().unwrap_or(443)
 }
 
 /// Validate the proxy's response before exposing packet I/O.

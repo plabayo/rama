@@ -1,3 +1,4 @@
+use crate::context::ContextId;
 use rama_core::bytes::{BufMut, Bytes, BytesMut};
 use rama_http::proto::capsule::CapsuleType;
 use rama_net::{address::ip::ipnet::IpNet, ip::IpProtocol};
@@ -8,22 +9,13 @@ use std::{
 };
 
 /// ADDRESS_ASSIGN (RFC 9484 §4.7.1).
-pub const ADDRESS_ASSIGN: CapsuleType = match CapsuleType::new(1) {
-    Ok(v) => v,
-    Err(_) => panic!("invalid capsule constant"),
-};
+pub const ADDRESS_ASSIGN: CapsuleType = CapsuleType::from_static(1);
 
 /// ADDRESS_REQUEST (RFC 9484 §4.7.2).
-pub const ADDRESS_REQUEST: CapsuleType = match CapsuleType::new(2) {
-    Ok(v) => v,
-    Err(_) => panic!("invalid capsule constant"),
-};
+pub const ADDRESS_REQUEST: CapsuleType = CapsuleType::from_static(2);
 
 /// ROUTE_ADVERTISEMENT (RFC 9484 §4.7.3).
-pub const ROUTE_ADVERTISEMENT: CapsuleType = match CapsuleType::new(3) {
-    Ok(v) => v,
-    Err(_) => panic!("invalid capsule constant"),
-};
+pub const ROUTE_ADVERTISEMENT: CapsuleType = CapsuleType::from_static(3);
 
 /// Invalid CONNECT-IP control state or framing. No peer data is included in errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,11 +56,45 @@ impl fmt::Display for ConnectIpProtocolError {
 
 impl std::error::Error for ConnectIpProtocolError {}
 
+/// A nonzero address request identifier in the QUIC variable-length range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AddressRequestId(VarInt);
+
+impl AddressRequestId {
+    /// Validate a dynamic request identifier at construction.
+    pub fn new(value: u64) -> Result<Self, ConnectIpProtocolError> {
+        if value == 0 {
+            return Err(ConnectIpProtocolError::RequestId);
+        }
+        VarInt::from_u64(value)
+            .map(Self)
+            .map_err(|_error| ConnectIpProtocolError::RequestId)
+    }
+
+    /// Construct a statically known request ID.
+    ///
+    /// # Panics
+    /// Panics when zero or outside the QUIC variable-length range.
+    pub const fn from_static(value: u64) -> Self {
+        assert!(value != 0, "address request ID must be nonzero");
+        Self(VarInt::from_static(value))
+    }
+
+    /// The numeric identifier.
+    pub const fn value(self) -> u64 {
+        self.0.into_inner()
+    }
+
+    const fn varint(self) -> VarInt {
+        self.0
+    }
+}
+
 /// One source prefix assigned to the peer. An assignment capsule is a full snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddressAssignment {
-    /// Zero for an unsolicited assignment; otherwise the corresponding request ID.
-    pub request_id: u64,
+    /// `None` for an unsolicited assignment; otherwise the corresponding request ID.
+    pub request_id: Option<AddressRequestId>,
     /// Canonical assigned prefix, or 0.0.0.0/32 or ::/128 to reject a request.
     pub prefix: IpNet,
 }
@@ -86,7 +112,7 @@ impl AddressAssignment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddressRequest {
     /// Nonzero identifier, unique for the lifetime of this endpoint's request stream.
-    pub request_id: u64,
+    pub request_id: AddressRequestId,
     /// All-zero address indicates no address preference; prefix length remains meaningful.
     pub prefix: IpNet,
 }
@@ -98,23 +124,54 @@ pub struct AddressRequest {
 /// RFC 9484 even when another specific protocol is selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpRoute {
-    /// Inclusive first address.
-    pub start: IpAddr,
-    /// Inclusive last address, of the same family.
-    pub end: IpAddr,
-    /// Restricted protocol, or all protocols.
-    pub protocol: Option<IpProtocol>,
+    pub(super) start: IpAddr,
+    pub(super) end: IpAddr,
+    pub(super) protocol: Option<IpProtocol>,
 }
 
 impl IpRoute {
-    /// Route all addresses in a prefix, without allocating individual addresses.
-    #[must_use]
-    pub fn from_prefix(prefix: IpNet, protocol: Option<IpProtocol>) -> Self {
-        Self {
-            start: prefix.network(),
-            end: prefix.broadcast(),
-            protocol,
+    /// Construct an inclusive range. Both addresses must have the same family,
+    /// the end must not precede the start, and protocol zero is represented by `None`.
+    pub fn new(
+        start: IpAddr,
+        end: IpAddr,
+        protocol: Option<IpProtocol>,
+    ) -> Result<Self, ConnectIpProtocolError> {
+        if start.is_ipv4() != end.is_ipv4()
+            || start > end
+            || protocol == Some(IpProtocol::HOP_BY_HOP)
+        {
+            return Err(ConnectIpProtocolError::Route);
         }
+        Ok(Self {
+            start,
+            end,
+            protocol,
+        })
+    }
+
+    /// Route all addresses in a prefix, without allocating individual addresses.
+    /// Protocol zero is represented by `None` (all protocols).
+    pub fn from_prefix(
+        prefix: IpNet,
+        protocol: Option<IpProtocol>,
+    ) -> Result<Self, ConnectIpProtocolError> {
+        Self::new(prefix.network(), prefix.broadcast(), protocol)
+    }
+
+    /// Inclusive first address.
+    pub const fn start(&self) -> IpAddr {
+        self.start
+    }
+
+    /// Inclusive last address, of the same family.
+    pub const fn end(&self) -> IpAddr {
+        self.end
+    }
+
+    /// Restricted protocol, or all protocols.
+    pub const fn protocol(&self) -> Option<IpProtocol> {
+        self.protocol
     }
 
     /// Whether the address is in this range, irrespective of protocol.
@@ -177,6 +234,11 @@ impl ConnectIpCapsule {
                     let request_id = VarInt::decode(&mut value)
                         .map_err(|_error| ConnectIpProtocolError::Truncated)?
                         .into_inner();
+                    let request_id = if request_id == 0 {
+                        None
+                    } else {
+                        Some(AddressRequestId::new(request_id)?)
+                    };
                     let version = take_byte(&mut value)?;
                     let address = take_address(&mut value, version)?;
                     let prefix = IpNet::new(address, take_byte(&mut value)?)
@@ -190,17 +252,21 @@ impl ConnectIpCapsule {
                     if entries.is_empty() {
                         return Err(ConnectIpProtocolError::EmptyRequest);
                     }
-                    if entries.iter().any(|e| e.request_id == 0) {
+                    if entries.iter().any(|e| e.request_id.is_none()) {
                         return Err(ConnectIpProtocolError::RequestId);
                     }
                     Ok(Self::AddressRequest(
                         entries
                             .into_iter()
-                            .map(|e| AddressRequest {
-                                request_id: e.request_id,
-                                prefix: e.prefix,
+                            .map(|e| {
+                                Ok(AddressRequest {
+                                    request_id: e
+                                        .request_id
+                                        .ok_or(ConnectIpProtocolError::RequestId)?,
+                                    prefix: e.prefix,
+                                })
                             })
-                            .collect(),
+                            .collect::<Result<_, ConnectIpProtocolError>>()?,
                     ))
                 }
             }
@@ -217,11 +283,7 @@ impl ConnectIpCapsule {
                         0 => None,
                         v => Some(IpProtocol::new(v)),
                     };
-                    routes.push(IpRoute {
-                        start,
-                        end,
-                        protocol,
-                    });
+                    routes.push(IpRoute::new(start, end, protocol)?);
                 }
                 validate_routes(&routes)?;
                 Ok(Self::RouteAdvertisement(routes))
@@ -238,7 +300,12 @@ impl ConnectIpCapsule {
                     return Err(ConnectIpProtocolError::Limit);
                 }
                 entries.iter().try_fold(0, |len, e| {
-                    Ok(len + prefix_encoded_len(e.request_id, e.prefix)?)
+                    Ok(len
+                        + prefix_encoded_len(
+                            e.request_id
+                                .map_or(VarInt::from_u32(0), AddressRequestId::varint),
+                            e.prefix,
+                        )?)
                 })
             }
             Self::AddressRequest(entries) => {
@@ -249,10 +316,7 @@ impl ConnectIpCapsule {
                     return Err(ConnectIpProtocolError::Limit);
                 }
                 entries.iter().try_fold(0, |len, e| {
-                    if e.request_id == 0 {
-                        return Err(ConnectIpProtocolError::RequestId);
-                    }
-                    Ok(len + prefix_encoded_len(e.request_id, e.prefix)?)
+                    Ok(len + prefix_encoded_len(e.request_id.varint(), e.prefix)?)
                 })
             }
             Self::RouteAdvertisement(routes) => {
@@ -271,27 +335,51 @@ impl ConnectIpCapsule {
     /// Encode the value (the generic HTTP layer writes the capsule header).
     pub fn encode(&self, max_entries: usize) -> Result<Bytes, ConnectIpProtocolError> {
         let mut out = BytesMut::with_capacity(self.encoded_len(max_entries)?);
+        self.encode_validated(&mut out);
+        Ok(out.freeze())
+    }
+
+    /// Append a validated capsule value to a reusable caller-owned buffer.
+    /// Invalid values leave the buffer untouched.
+    pub fn encode_into<B: BufMut>(
+        &self,
+        out: &mut B,
+        max_entries: usize,
+    ) -> Result<(), ConnectIpProtocolError> {
+        let size = self.encoded_len(max_entries)?;
+        if out.remaining_mut() < size {
+            return Err(ConnectIpProtocolError::Limit);
+        }
+        self.encode_validated(out);
+        Ok(())
+    }
+
+    fn encode_validated<B: BufMut>(&self, out: &mut B) {
         match self {
             Self::AddressAssign(entries) => {
                 for e in entries {
-                    put_prefix(&mut out, e.request_id, e.prefix)?;
+                    put_prefix(
+                        out,
+                        e.request_id
+                            .map_or(VarInt::from_u32(0), AddressRequestId::varint),
+                        e.prefix,
+                    );
                 }
             }
             Self::AddressRequest(entries) => {
                 for e in entries {
-                    put_prefix(&mut out, e.request_id, e.prefix)?;
+                    put_prefix(out, e.request_id.varint(), e.prefix);
                 }
             }
             Self::RouteAdvertisement(routes) => {
                 for r in routes {
                     out.put_u8(if r.start.is_ipv4() { 4 } else { 6 });
-                    put_address(&mut out, r.start);
-                    put_address(&mut out, r.end);
+                    put_address(out, r.start);
+                    put_address(out, r.end);
                     out.put_u8(r.protocol.map_or(0, IpProtocol::value));
                 }
             }
         }
-        Ok(out.freeze())
     }
 }
 
@@ -374,36 +462,33 @@ fn take_address(input: &mut &[u8], version: u8) -> Result<IpAddr, ConnectIpProto
     Ok(address)
 }
 
-fn put_address(out: &mut BytesMut, address: IpAddr) {
+fn put_address<B: BufMut>(out: &mut B, address: IpAddr) {
     match address {
-        IpAddr::V4(a) => out.extend_from_slice(&a.octets()),
-        IpAddr::V6(a) => out.extend_from_slice(&a.octets()),
+        IpAddr::V4(a) => out.put_slice(&a.octets()),
+        IpAddr::V6(a) => out.put_slice(&a.octets()),
     }
 }
 
-fn prefix_encoded_len(id: u64, prefix: IpNet) -> Result<usize, ConnectIpProtocolError> {
+fn prefix_encoded_len(id: VarInt, prefix: IpNet) -> Result<usize, ConnectIpProtocolError> {
     validate_prefix(prefix)?;
-    let id = VarInt::from_u64(id).map_err(|_error| ConnectIpProtocolError::RequestId)?;
     Ok(id.size() + 2 + if prefix.addr().is_ipv4() { 4 } else { 16 })
 }
 
-fn put_prefix(out: &mut BytesMut, id: u64, prefix: IpNet) -> Result<(), ConnectIpProtocolError> {
-    validate_prefix(prefix)?;
-    VarInt::from_u64(id)
-        .map_err(|_error| ConnectIpProtocolError::RequestId)?
-        .encode(out);
+// Called only after encoded_len has validated the prefixes and output capacity.
+fn put_prefix<B: BufMut>(out: &mut B, id: VarInt, prefix: IpNet) {
+    id.encode(out);
     out.put_u8(if prefix.addr().is_ipv4() { 4 } else { 6 });
     put_address(out, prefix.addr());
     out.put_u8(prefix.prefix_len());
-    Ok(())
 }
 
 /// Decode a datagram's context ID without imposing a UDP payload limit.
 /// Unknown context IDs are returned so the session can discard them.
-pub fn decode_ip_datagram(mut datagram: &[u8]) -> Result<(u64, &[u8]), ConnectIpProtocolError> {
-    let id = VarInt::decode(&mut datagram)
-        .map_err(|_error| ConnectIpProtocolError::Truncated)?
-        .into_inner();
+pub fn decode_ip_datagram(
+    mut datagram: &[u8],
+) -> Result<(ContextId, &[u8]), ConnectIpProtocolError> {
+    let id =
+        ContextId::decode(&mut datagram).map_err(|_error| ConnectIpProtocolError::Truncated)?;
     Ok((id, datagram))
 }
 

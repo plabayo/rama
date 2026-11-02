@@ -2422,6 +2422,7 @@ name = "rama-masque"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "arc-swap",
  "parking_lot 0.13.0",
  "rama-core",
  "rama-dns",

@@ -37,20 +37,20 @@ fn prefix(s: &str) -> IpNet {
     s.parse().unwrap()
 }
 
-fn config(role: ConnectIpRole) -> ConnectIpSessionConfig {
-    let mut policy = ConnectIpPolicy::new(role);
+fn config() -> ConnectIpSessionConfig {
+    let mut policy = ConnectIpPolicy::new();
     let direction = IpDirectionPolicy {
         sources: IpSourcePolicy::Static(vec![prefix("192.0.2.0/24"), prefix("2001:db8::/32")]),
         destinations: vec![
-            IpRoute::from_prefix(prefix("192.0.2.0/24"), None),
-            IpRoute::from_prefix(prefix("2001:db8::/32"), None),
+            IpRoute::from_prefix(prefix("192.0.2.0/24"), None).unwrap(),
+            IpRoute::from_prefix(prefix("2001:db8::/32"), None).unwrap(),
         ],
         require_advertised_route: false,
     };
     policy.send = direction.clone();
     policy.receive = direction;
     let mut config = ConnectIpSessionConfig::new(policy);
-    config.ipv6_link_mtu = Some(1350);
+    config = config.try_with_ipv6_link_mtu(Some(1350)).unwrap();
     config
 }
 
@@ -79,13 +79,13 @@ fn packets() -> Vec<Bytes> {
 async fn echo(mut session: ConnectIpSession) -> Result<(), BoxError> {
     session
         .send_control(ConnectIpCapsule::AddressAssign(vec![AddressAssignment {
-            request_id: 0,
+            request_id: None,
             prefix: prefix("192.0.2.1/32"),
         }]))
         .await?;
     session
         .send_control(ConnectIpCapsule::RouteAdvertisement(vec![
-            IpRoute::from_prefix(prefix("192.0.2.0/24"), None),
+            IpRoute::from_prefix(prefix("192.0.2.0/24"), None).unwrap(),
         ]))
         .await?;
     let mut echoed = 0;
@@ -102,17 +102,9 @@ async fn echo(mut session: ConnectIpSession) -> Result<(), BoxError> {
                     && ip.protocol() == Some(IpProtocol::ICMPV6)
                     && ip.payload()[0] == 128
                 {
-                    let body = ip.payload();
+                    let echo = rama::net::ip::icmp::Icmpv6Echo::parse(ip)?;
                     let mut reply = [0; 1280];
-                    let n = rama::net::ip::icmp::encode_icmpv6_echo(
-                        ip.destination(),
-                        ip.source(),
-                        u16::from_be_bytes([body[4], body[5]]),
-                        u16::from_be_bytes([body[6], body[7]]),
-                        &body[8..],
-                        true,
-                        &mut reply,
-                    )?;
+                    let n = echo.reply().encode(ip.destination(), ip.source(), &mut reply)?;
                     assert!(matches!(
                         session
                             .send_packet(Bytes::copy_from_slice(&reply[..n]), IpPacketOrigin::Local)
@@ -133,7 +125,7 @@ async fn echo(mut session: ConnectIpSession) -> Result<(), BoxError> {
                         requests
                             .into_iter()
                             .map(|r| AddressAssignment {
-                                request_id: r.request_id,
+                                request_id: Some(r.request_id),
                                 prefix: if r.prefix.addr().is_ipv4() {
                                     prefix("192.0.2.1/32")
                                 } else {
@@ -148,6 +140,8 @@ async fn echo(mut session: ConnectIpSession) -> Result<(), BoxError> {
             _ => (),
         }
     }
+    session.send_control(ConnectIpCapsule::RouteAdvertisement(vec![])).await?;
+    session.close().await?;
     Ok(())
 }
 
@@ -160,7 +154,7 @@ async fn exercise(mut session: ConnectIpSession, native: bool) -> Result<(), Box
     }
     session
         .send_control(ConnectIpCapsule::AddressRequest(vec![AddressRequest {
-            request_id: 1,
+            request_id: AddressRequestId::from_static(1),
             prefix: prefix("::/128"),
         }]))
         .await?;
@@ -201,6 +195,8 @@ async fn exercise(mut session: ConnectIpSession, native: bool) -> Result<(), Box
         assert_eq!(received, packet);
     }
     session.close().await?;
+    assert!(matches!(session.recv().await?, Some(ConnectIpEvent::Control(ConnectIpCapsule::RouteAdvertisement(routes))) if routes.is_empty()));
+    assert!(session.recv().await?.is_none());
     Ok(())
 }
 
@@ -219,7 +215,7 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
             let service = ConnectIpService::new(
                 template.clone(),
                 service_fn(async |_: ConnectIpRequest| {
-                    Ok::<_, Infallible>(config(ConnectIpRole::Proxy))
+                    Ok::<_, Infallible>(config())
                 }),
                 service_fn(move |s: ConnectIpSession| {
                     let finished = finished.clone();
@@ -279,12 +275,12 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                 let established = http_connect(transport, request, exec.clone()).await?;
                 let client_http = established.conn;
                 let request = established.input;
-                let mut session_config = config(ConnectIpRole::Client);
+                let mut session_config = config();
                 if native {
-                    session_config.ipv6_link_mtu = None;
+                    session_config = session_config.try_with_ipv6_link_mtu(None).unwrap();
                 }
                 exercise(
-                    connect_ip(&client_http, request, session_config).await?,
+                    ConnectIpRequestBuilder::try_from_request(&template, request, session_config)?.connect(&client_http).await?,
                     native,
                 )
                 .await?;
@@ -319,7 +315,7 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                 let client_http = established.conn;
                 let request = established.input;
                 exercise(
-                    connect_ip(&client_http, request, config(ConnectIpRole::Client)).await?,
+                    ConnectIpRequestBuilder::try_from_request(&template, request, config())?.connect(&client_http).await?,
                     false,
                 )
                 .await?;
@@ -368,7 +364,7 @@ fn assignments(requests: &[AddressRequest]) -> ConnectIpCapsule {
         requests
             .iter()
             .map(|r| AddressAssignment {
-                request_id: r.request_id,
+                request_id: Some(r.request_id),
                 prefix: prefix(if r.prefix.addr().is_ipv4() {
                     "192.0.2.1/32"
                 } else {
@@ -381,19 +377,19 @@ fn assignments(requests: &[AddressRequest]) -> ConnectIpCapsule {
 
 fn peer_routes() -> ConnectIpCapsule {
     ConnectIpCapsule::RouteAdvertisement(vec![
-        IpRoute::from_prefix(prefix("192.0.2.2/32"), None),
-        IpRoute::from_prefix(prefix("2001:db8::2/128"), None),
+        IpRoute::from_prefix(prefix("192.0.2.2/32"), None).unwrap(),
+        IpRoute::from_prefix(prefix("2001:db8::2/128"), None).unwrap(),
     ])
 }
 
 fn address_requests() -> Vec<AddressRequest> {
     vec![
         AddressRequest {
-            request_id: 1,
+            request_id: AddressRequestId::from_static(1),
             prefix: prefix("0.0.0.0/32"),
         },
         AddressRequest {
-            request_id: 2,
+            request_id: AddressRequestId::from_static(2),
             prefix: prefix("::/128"),
         },
     ]
@@ -462,12 +458,12 @@ async fn rama_ip_client_against_connect_ip_go() -> Result<(), BoxError> {
             exec,
         )
         .await?;
-        let mut session = connect_ip(
-            &established.conn,
+        let mut session = ConnectIpRequestBuilder::try_from_request(
+            &template,
             established.input,
-            config(ConnectIpRole::Client),
-        )
-        .await?;
+            config(),
+        )?
+        .connect(&established.conn).await?;
         while session.state().local_addresses().len() != 2
             || session.state().peer_routes().len() != 2
         {
@@ -488,8 +484,8 @@ async fn rama_ip_client_against_connect_ip_go() -> Result<(), BoxError> {
             if state
                 .local_addresses()
                 .iter()
-                .map(|a| a.request_id)
-                .eq([1, 2])
+                .map(|a| a.request_id.map(AddressRequestId::value))
+                .eq([Some(1), Some(2)])
             {
                 break;
             }
@@ -529,11 +525,13 @@ async fn rama_ip_client_against_connect_ip_go() -> Result<(), BoxError> {
 }
 
 async fn independent_responder(mut session: ConnectIpSession) -> Result<(), BoxError> {
-    let mut initial = address_requests();
-    for r in &mut initial {
-        r.request_id = 0;
+    let ConnectIpCapsule::AddressAssign(mut initial) = assignments(&address_requests()) else {
+        unreachable!("assignment helper returns assignments");
+    };
+    for assignment in &mut initial {
+        assignment.request_id = None;
     }
-    session.send_control(assignments(&initial)).await?;
+    session.send_control(ConnectIpCapsule::AddressAssign(initial)).await?;
     session.send_control(peer_routes()).await?;
     let mut count = 0;
     let mut requested = false;
@@ -616,7 +614,7 @@ async fn rama_ip_server_against_connect_ip_go() -> Result<(), BoxError> {
         let service = ConnectIpService::new(
             template,
             service_fn(async |_: ConnectIpRequest| {
-                Ok::<_, Infallible>(config(ConnectIpRole::Proxy))
+                Ok::<_, Infallible>(config())
             }),
             service_fn(move |s: ConnectIpSession| {
                 let finished = finished.clone();

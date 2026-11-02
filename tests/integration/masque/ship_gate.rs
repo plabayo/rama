@@ -184,7 +184,7 @@ async fn a_reflecting_target_reaches_the_client_only_within_its_rate_on_every_ca
         // Ten packets at once, refilled one per second: the test reads well within one second.
         let limited = TunnelBudget::new().with_to_client(
             DatagramRate::new(Rate::per_sec(1), Rate::per_sec(mib(1) as u64))
-                .with_packet_burst(BURST),
+                .with_packet_burst(std::num::NonZeroU64::new(BURST).unwrap()),
         );
         for carrier in Carrier::ALL {
             for (budget, limited) in [(TunnelBudget::new(), false), (limited, true)] {
@@ -255,7 +255,8 @@ async fn a_tunnel_dropped_mid_flood_frees_its_place_and_socket_on_every_carrier(
     timeout(DEADLINE, async {
         let (target, received, _target) = counting_target(Answer::Echo).await;
         for carrier in Carrier::ALL {
-            let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+            let limits =
+                ConnectUdpLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
             let (proxy, fixture) = proxy_for(carrier, limits.clone(), TunnelBudget::new()).await;
             let egress = fixture.proxy.clone().unwrap();
             let mut socket = tunnel(&proxy, target, carrier).await;
@@ -433,8 +434,8 @@ async fn sustained_load_on_every_carrier_moves_every_payload_and_frees_everythin
         let lengths = [4, 32, 200, 512, 1200, 64, 900, 8];
         let runs = Carrier::ALL.map(|carrier| async move {
             let limits = ConnectUdpLimits::new()
-                .with_max_tunnels(TUNNELS)
-                .with_max_tunnels_per_principal(TUNNELS);
+                .with_max_tunnels(std::num::NonZeroUsize::new(TUNNELS).unwrap())
+                .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(TUNNELS).unwrap());
             let (proxy, fixture) = proxy_for(carrier, limits.clone(), TunnelBudget::new()).await;
             let egress = fixture.proxy.clone().unwrap();
             let mut sockets = Vec::new();
@@ -581,12 +582,13 @@ async fn measure(
     } else {
         1
     };
-    let limits = ConnectUdpLimits::new().with_max_tunnels_per_principal(per_principal);
+    let limits = ConnectUdpLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(per_principal).unwrap());
     let limits = match scenario {
         Flood::OtherPrincipalLimited => limits.with_principal_budget(
             PrincipalBudget::new().with_to_target(
                 DatagramRate::new(Rate::per_sec(LIMITED_PACKETS), Rate::per_sec(LIMITED_BYTES))
-                    .with_packet_burst(LIMITED_BURST),
+                    .with_packet_burst(std::num::NonZeroU64::new(LIMITED_BURST).unwrap()),
             ),
         ),
         _ => limits,

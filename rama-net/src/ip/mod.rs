@@ -29,8 +29,8 @@ mod checksum;
 pub use checksum::{InternetChecksum, internet_checksum};
 mod packet;
 pub use packet::{
-    IpFragment, IpPacket, IpPacketError, Ipv4Header, Ipv4Packet, Ipv6Extension, Ipv6Extensions,
-    Ipv6Header, Ipv6Packet, decrement_hop_limit, set_traffic_class,
+    IpFragment, IpPacket, IpPacketError, Ipv4Header, Ipv4Option, Ipv4Options, Ipv4Packet,
+    Ipv6Extension, Ipv6Extensions, Ipv6Header, Ipv6Packet, decrement_hop_limit, set_traffic_class,
 };
 
 /// Explicit Congestion Notification codepoint from the low two IP traffic-class bits.
@@ -68,19 +68,6 @@ impl EcnCodepoint {
     #[must_use]
     pub const fn bits(self) -> u8 {
         self as u8
-    }
-}
-
-#[cfg(test)]
-mod ecn_tests {
-    use super::*;
-
-    #[test]
-    fn ecn_ignores_dscp_bits() {
-        assert_eq!(EcnCodepoint::from_bits(0b1111_1100), EcnCodepoint::NotEct);
-        assert_eq!(EcnCodepoint::from_bits(0b1111_1101), EcnCodepoint::Ect1);
-        assert_eq!(EcnCodepoint::from_bits(0b1111_1110), EcnCodepoint::Ect0);
-        assert_eq!(EcnCodepoint::from_bits(0b1111_1111), EcnCodepoint::Ce);
     }
 }
 

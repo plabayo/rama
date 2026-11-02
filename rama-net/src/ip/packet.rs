@@ -2,6 +2,7 @@ use super::{EcnCodepoint, IpProtocol, internet_checksum};
 use core::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    num::NonZeroUsize,
 };
 
 /// An invalid packet or an operation that cannot be represented on the wire.
@@ -75,6 +76,10 @@ pub struct Ipv4Packet<'a> {
 impl<'a> Ipv4Packet<'a> {
     /// Validate lengths, options, fragmentation and the IPv4 header checksum.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, IpPacketError> {
+        Self::parse_inner(bytes, false)
+    }
+
+    pub(super) fn parse_inner(bytes: &'a [u8], quoted: bool) -> Result<Self, IpPacketError> {
         if bytes.len() < 20 {
             return Err(IpPacketError::Truncated);
         }
@@ -86,13 +91,21 @@ impl<'a> Ipv4Packet<'a> {
         if header_len < 20 || total < header_len {
             return Err(IpPacketError::Length);
         }
-        let bytes = bytes.get(..total).ok_or(IpPacketError::Truncated)?;
+        let length = if quoted {
+            bytes.len().min(total)
+        } else {
+            total
+        };
+        let bytes = bytes
+            .get(..length)
+            .filter(|bytes| bytes.len() >= header_len)
+            .ok_or(IpPacketError::Truncated)?;
         if internet_checksum(&bytes[..header_len]) != 0 {
             return Err(IpPacketError::Checksum);
         }
         validate_ipv4_options(&bytes[20..header_len])?;
         let flags = word(bytes, 6);
-        if flags & 0x8000 != 0 || (flags & 0x4000 != 0 && flags & 0x3fff != 0) {
+        if flags & 0x8000 != 0 {
             return Err(IpPacketError::Header);
         }
         if flags & 0x2000 != 0 && (total == header_len || !(total - header_len).is_multiple_of(8)) {
@@ -120,6 +133,13 @@ impl<'a> Ipv4Packet<'a> {
     #[must_use]
     pub fn options(self) -> &'a [u8] {
         &self.bytes[20..self.header_len]
+    }
+
+    /// Iterate over validated options without re-decoding lengths in callers.
+    pub fn option_iter(self) -> Ipv4Options<'a> {
+        Ipv4Options {
+            remaining: self.options(),
+        }
     }
 
     /// Payload (a fragment's payload if fragmented).
@@ -176,6 +196,37 @@ impl<'a> Ipv4Packet<'a> {
     }
 }
 
+/// A borrowed IPv4 option. Single-byte padding options have empty data.
+#[derive(Debug, Clone, Copy)]
+pub struct Ipv4Option<'a> {
+    /// Wire option kind, preserving unknown options.
+    pub kind: u8,
+    /// Option bytes following the kind and length.
+    pub data: &'a [u8],
+}
+
+/// Iterator over the options of a validated IPv4 header.
+#[derive(Debug, Clone)]
+pub struct Ipv4Options<'a> {
+    remaining: &'a [u8],
+}
+
+impl<'a> Iterator for Ipv4Options<'a> {
+    type Item = Ipv4Option<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (&kind, rest) = self.remaining.split_first()?;
+        if kind <= 1 {
+            self.remaining = if kind == 0 { &[] } else { rest };
+            return Some(Ipv4Option { kind, data: &[] });
+        }
+        let length = usize::from(*rest.first()?);
+        let data = self.remaining.get(2..length)?;
+        self.remaining = self.remaining.get(length..)?;
+        Some(Ipv4Option { kind, data })
+    }
+}
+
 fn validate_ipv4_options(mut options: &[u8]) -> Result<(), IpPacketError> {
     while let Some((&kind, rest)) = options.split_first() {
         match kind {
@@ -206,7 +257,7 @@ fn validate_ipv4_options(mut options: &[u8]) -> Result<(), IpPacketError> {
 #[derive(Debug, Clone, Copy)]
 pub struct Ipv6Packet<'a> {
     bytes: &'a [u8],
-    upper_offset: usize,
+    upper_offset: Option<NonZeroUsize>,
     protocol: Option<IpProtocol>,
     fragment: Option<IpFragment>,
 }
@@ -214,6 +265,10 @@ pub struct Ipv6Packet<'a> {
 impl<'a> Ipv6Packet<'a> {
     /// Validate base length and the structure of known extension headers.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, IpPacketError> {
+        Self::parse_inner(bytes, false)
+    }
+
+    pub(super) fn parse_inner(bytes: &'a [u8], quoted: bool) -> Result<Self, IpPacketError> {
         if bytes.len() < 40 {
             return Err(IpPacketError::Truncated);
         }
@@ -224,9 +279,13 @@ impl<'a> Ipv6Packet<'a> {
         if payload_len == 0 && bytes.len() > 40 && bytes[6] == 0 {
             return Err(IpPacketError::Jumbogram);
         }
-        let bytes = bytes
-            .get(..40 + payload_len)
-            .ok_or(IpPacketError::Truncated)?;
+        let total = 40 + payload_len;
+        let length = if quoted {
+            bytes.len().min(total)
+        } else {
+            total
+        };
+        let bytes = bytes.get(..length).ok_or(IpPacketError::Truncated)?;
         let mut offset = 40;
         let mut next = bytes[6];
         let mut fragment = None;
@@ -244,7 +303,7 @@ impl<'a> Ipv6Packet<'a> {
                 validate_ipv6_options(&ext[2..])?;
             }
             if next == 44 {
-                if fragment.is_some() || ext[1] != 0 || word(ext, 2) & 6 != 0 {
+                if fragment.is_some() {
                     return Err(IpPacketError::Header);
                 }
                 let bits = word(ext, 2);
@@ -253,7 +312,7 @@ impl<'a> Ipv6Packet<'a> {
                     offset: bits & 0xfff8,
                     more: bits & 1 != 0,
                 };
-                let remaining = bytes.len() - offset - 8;
+                let remaining = total - offset - 8;
                 if f.more && (remaining == 0 || !remaining.is_multiple_of(8)) {
                     return Err(IpPacketError::Length);
                 }
@@ -265,8 +324,8 @@ impl<'a> Ipv6Packet<'a> {
                     // The next extension header might be in a different fragment.
                     return Ok(Self {
                         bytes,
-                        upper_offset: offset + 8,
-                        protocol: if is_extension(ext[0]) {
+                        upper_offset: None,
+                        protocol: if IpProtocol::new(ext[0]).is_ipv6_extension() {
                             None
                         } else {
                             Some(IpProtocol::new(ext[0]))
@@ -280,8 +339,14 @@ impl<'a> Ipv6Packet<'a> {
         }
         Ok(Self {
             bytes,
-            upper_offset: offset,
-            protocol: Some(IpProtocol::new(next)),
+            upper_offset: if next == IpProtocol::ESP.value()
+                || next == IpProtocol::NO_NEXT_HEADER.value()
+            {
+                None
+            } else {
+                NonZeroUsize::new(offset)
+            },
+            protocol: (next != IpProtocol::ESP.value()).then_some(IpProtocol::new(next)),
             fragment,
         })
     }
@@ -340,16 +405,10 @@ impl<'a> Ipv6Packet<'a> {
         &self.bytes[40..]
     }
 
-    /// Upper-layer bytes, absent for non-initial fragments and No Next Header.
+    /// Upper-layer bytes, absent for non-initial fragments, ESP and No Next Header.
     #[must_use]
     pub fn upper_layer_payload(self) -> Option<&'a [u8]> {
-        if self.fragment.is_some_and(|f| f.offset != 0)
-            || self.protocol == Some(IpProtocol::NO_NEXT_HEADER)
-        {
-            None
-        } else {
-            Some(&self.bytes[self.upper_offset..])
-        }
+        self.upper_offset.map(|offset| &self.bytes[offset.get()..])
     }
 
     /// Fragment metadata, including atomic fragments.
@@ -390,6 +449,7 @@ pub struct Ipv6Extensions<'a> {
 
 impl<'a> Iterator for Ipv6Extensions<'a> {
     type Item = Ipv6Extension<'a>;
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.done || !is_extension(self.next) {
             return None;
@@ -406,7 +466,7 @@ impl<'a> Iterator for Ipv6Extensions<'a> {
 }
 
 fn is_extension(value: u8) -> bool {
-    matches!(value, 0 | 43 | 44 | 51 | 60)
+    IpProtocol::new(value).is_ipv6_extension() && value != IpProtocol::ESP.value()
 }
 
 fn extension(bytes: &[u8], offset: usize, kind: u8) -> Result<&[u8], IpPacketError> {
@@ -419,7 +479,7 @@ fn extension(bytes: &[u8], offset: usize, kind: u8) -> Result<&[u8], IpPacketErr
         51 => (usize::from(rest[1]) + 2) * 4,
         _ => (usize::from(rest[1]) + 1) * 8,
     };
-    if kind == 51 && (len < 12 || rest.get(2..4) != Some(&[0, 0])) {
+    if kind == 51 && len < 12 {
         return Err(IpPacketError::Header);
     }
     rest.get(..len).ok_or(IpPacketError::Truncated)
@@ -467,6 +527,42 @@ impl<'a> IpPacket<'a> {
             Self::V4(p) => p.as_bytes(),
             Self::V6(p) => p.as_bytes(),
         }
+    }
+
+    /// Append this validated packet and decrement its hop count.
+    /// The IPv4 checksum is updated incrementally (RFC 1624); options need no reparse.
+    /// An exhausted hop count or short output leaves the output untouched.
+    pub fn encode_forwarded(
+        self,
+        mut output: impl rama_core::bytes::BufMut,
+    ) -> Result<usize, IpPacketError> {
+        if self.hop_limit() <= 1 {
+            return Err(IpPacketError::HopLimit);
+        }
+        let bytes = self.as_bytes();
+        if output.remaining_mut() < bytes.len() {
+            return Err(IpPacketError::Truncated);
+        }
+        match self {
+            Self::V4(_) => {
+                let old = word(bytes, 8);
+                let new = old - 256;
+                let sum = u32::from(!word(bytes, 10)) + u32::from(!old) + u32::from(new);
+                // Decrementing TTL changes this word by exactly -256, so the
+                // unfolded sum is at most 0x1fefe and one carry fold suffices.
+                let checksum = !(((sum & 0xffff) + (sum >> 16)) as u16);
+                output.put_slice(&bytes[..8]);
+                output.put_u16(new);
+                output.put_u16(checksum);
+                output.put_slice(&bytes[12..]);
+            }
+            Self::V6(_) => {
+                output.put_slice(&bytes[..7]);
+                output.put_u8(bytes[7] - 1);
+                output.put_slice(&bytes[8..]);
+            }
+        }
+        Ok(bytes.len())
     }
 
     /// Source address.
@@ -554,7 +650,7 @@ pub struct Ipv4Header {
     /// DSCP and ECN.
     pub traffic_class: u8,
     /// Packet identification and fragmentation metadata.
-    pub fragment: IpFragment,
+    fragment: IpFragment,
     /// Don't Fragment flag.
     pub dont_fragment: bool,
 }
@@ -578,6 +674,33 @@ impl Ipv4Header {
         }
     }
 
+    /// Set the IPv4 identification, whose wire width is sixteen bits.
+    #[must_use]
+    pub const fn with_identification(mut self, identification: u16) -> Self {
+        self.fragment.identification = identification as u32;
+        self
+    }
+
+    /// Set a fragment's byte offset and More Fragments flag.
+    /// Offsets must be aligned to eight bytes; payload-dependent checks occur on encoding.
+    pub const fn try_with_fragment(
+        mut self,
+        offset: u16,
+        more: bool,
+    ) -> Result<Self, IpPacketError> {
+        if offset & 7 != 0 {
+            return Err(IpPacketError::Field);
+        }
+        self.fragment.offset = offset;
+        self.fragment.more = more;
+        Ok(self)
+    }
+
+    /// Identification and fragment metadata.
+    pub const fn fragment(&self) -> IpFragment {
+        self.fragment
+    }
+
     /// Serialize a complete packet. Options must include zero padding to a four-byte boundary.
     /// The output is untouched when any input is invalid.
     pub fn encode(
@@ -586,23 +709,30 @@ impl Ipv4Header {
         payload: &[u8],
         output: &mut [u8],
     ) -> Result<usize, IpPacketError> {
+        self.encode_header(options, payload.len(), output)?
+            .copy_from_slice(payload);
+        Ok(20 + options.len() + payload.len())
+    }
+
+    /// Write the header and return the caller-owned payload region to fill.
+    /// Lengths and options are checked before touching the output.
+    pub fn encode_header<'b>(
+        &self,
+        options: &[u8],
+        payload_len: usize,
+        output: &'b mut [u8],
+    ) -> Result<&'b mut [u8], IpPacketError> {
         if options.len() > 40 || !options.len().is_multiple_of(4) {
             return Err(IpPacketError::Length);
         }
         validate_ipv4_options(options)?;
         let f = self.fragment;
-        if f.identification > 65535
-            || !f.offset.is_multiple_of(8)
-            || (self.dont_fragment && f.is_fragmented())
-        {
-            return Err(IpPacketError::Field);
-        }
         let header_len = 20 + options.len();
         let total = header_len
-            .checked_add(payload.len())
+            .checked_add(payload_len)
             .filter(|n| *n <= 65535)
             .ok_or(IpPacketError::Length)?;
-        if (f.more && (payload.is_empty() || !payload.len().is_multiple_of(8)))
+        if (f.more && (payload_len == 0 || !payload_len.is_multiple_of(8)))
             || usize::from(f.offset) + total > 65535
         {
             return Err(IpPacketError::Length);
@@ -623,8 +753,7 @@ impl Ipv4Header {
         out[20..header_len].copy_from_slice(options);
         let checksum = internet_checksum(&out[..header_len]);
         out[10..12].copy_from_slice(&checksum.to_be_bytes());
-        out[header_len..].copy_from_slice(payload);
-        Ok(total)
+        Ok(&mut out[header_len..])
     }
 }
 
@@ -642,7 +771,7 @@ pub struct Ipv6Header {
     /// DSCP and ECN bits.
     pub traffic_class: u8,
     /// Twenty-bit Flow Label.
-    pub flow_label: u32,
+    flow_label: u32,
 }
 
 impl Ipv6Header {
@@ -659,15 +788,37 @@ impl Ipv6Header {
         }
     }
 
+    /// Set the twenty-bit IPv6 flow label.
+    pub const fn try_with_flow_label(mut self, flow_label: u32) -> Result<Self, IpPacketError> {
+        if flow_label > 0xfffff {
+            return Err(IpPacketError::Field);
+        }
+        self.flow_label = flow_label;
+        Ok(self)
+    }
+
+    /// The configured IPv6 flow label.
+    pub const fn flow_label(&self) -> u32 {
+        self.flow_label
+    }
+
     /// Serialize a base header and payload. This does not validate extension bytes:
     /// use [`Ipv6Packet::parse`] to validate a complete packet built from raw extensions.
     /// The output is untouched when the base fields or buffer length are invalid.
     pub fn encode(&self, payload: &[u8], output: &mut [u8]) -> Result<usize, IpPacketError> {
-        if self.flow_label > 0xfffff {
-            return Err(IpPacketError::Field);
-        }
-        let len = u16::try_from(payload.len()).map_err(|_error| IpPacketError::Length)?;
-        let total = 40 + payload.len();
+        self.encode_header(payload.len(), output)?
+            .copy_from_slice(payload);
+        Ok(40 + payload.len())
+    }
+
+    /// Write the IPv6 base header and return its payload region for in-place encoding.
+    pub fn encode_header<'b>(
+        &self,
+        payload_len: usize,
+        output: &'b mut [u8],
+    ) -> Result<&'b mut [u8], IpPacketError> {
+        let len = u16::try_from(payload_len).map_err(|_error| IpPacketError::Length)?;
+        let total = 40 + payload_len;
         let out = output.get_mut(..total).ok_or(IpPacketError::Truncated)?;
         let first = (6u32 << 28) | (u32::from(self.traffic_class) << 20) | self.flow_label;
         out[..4].copy_from_slice(&first.to_be_bytes());
@@ -676,8 +827,7 @@ impl Ipv6Header {
         out[7] = self.hop_limit;
         out[8..24].copy_from_slice(&self.source.octets());
         out[24..40].copy_from_slice(&self.destination.octets());
-        out[40..].copy_from_slice(payload);
-        Ok(total)
+        Ok(&mut out[40..])
     }
 }
 

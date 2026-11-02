@@ -24,6 +24,18 @@ fuzz_target!(|bytes: &[u8]| {
         } else {
             assert_eq!(edited, packet.as_bytes());
         }
+        let mut forwarded = Vec::with_capacity(packet.as_bytes().len());
+        let result = packet.encode_forwarded(&mut forwarded);
+        if old_hop > 1 {
+            assert_eq!(result, Ok(packet.as_bytes().len()));
+            assert_eq!(
+                forwarded, edited,
+                "forwarding a validated packet agrees with checked in-place editing"
+            );
+        } else {
+            assert_eq!(result, Err(rama::net::ip::IpPacketError::HopLimit));
+            assert!(forwarded.is_empty());
+        }
         assert_eq!(
             set_traffic_class(&mut edited, bytes.last().copied().unwrap_or(0)),
             Ok(()),

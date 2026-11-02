@@ -828,7 +828,8 @@ async fn a_tunnel_holds_its_place_until_it_ends_on_every_carrier() {
     timeout(DEADLINE, async {
         let (target, _echo) = udp_echo().await;
         for carrier in Carrier::ALL {
-            let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+            let limits =
+                ConnectUdpLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
             let (proxy, _proxy) = masque_proxy_limited(
                 None,
                 DestinationScopePolicy::allow_private(),
@@ -930,7 +931,8 @@ async fn a_principals_tunnels_share_its_budget_across_connections_on_every_carri
         });
         // Six packets, refilled one per second: the test sends well within one second.
         let budget = PrincipalBudget::new().with_to_target(
-            DatagramRate::new(Rate::per_sec(1), Rate::per_sec(mib(1) as u64)).with_packet_burst(6),
+            DatagramRate::new(Rate::per_sec(1), Rate::per_sec(mib(1) as u64))
+                .with_packet_burst(std::num::NonZeroU64::new(6).unwrap()),
         );
         // With a tunnel budget of its own and with only the principal's.
         let cases = Carrier::ALL

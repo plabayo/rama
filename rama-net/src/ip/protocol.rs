@@ -32,6 +32,23 @@ impl IpProtocol {
     /// IPv6 Destination Options.
     pub const DESTINATION_OPTIONS: Self = Self(60);
 
+    /// Mobility Header.
+    pub const MOBILITY: Self = Self(135);
+    /// Host Identity Protocol.
+    pub const HIP: Self = Self(139);
+    /// Shim6 Protocol.
+    pub const SHIM6: Self = Self(140);
+
+    /// Whether IANA classifies this number as an IPv6 extension header.
+    /// ESP cannot be walked without decrypting its payload.
+    #[must_use]
+    pub const fn is_ipv6_extension(self) -> bool {
+        matches!(
+            self.0,
+            0 | 43 | 44 | 50 | 51 | 60 | 135 | 139 | 140 | 253 | 254
+        )
+    }
+
     /// Preserve a wire number, including unassigned and experimental numbers.
     #[must_use]
     pub const fn new(value: u8) -> Self {

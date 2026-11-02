@@ -1,7 +1,7 @@
 //! IP proxying over HTTP (RFC 9484), using `rama_net::ip` packet primitives.
 //!
 //! [`ConnectIpTemplate`] builds H1 Upgrade and H2/H3 Extended CONNECT requests.
-//! [`connect_ip`] accepts an existing HTTP client; [`ConnectIpService`] combines
+//! [`ConnectIpConnector`] wraps an existing HTTP client; [`ConnectIpService`] combines
 //! a request admission service with a packet-session handler. Admission returns
 //! [`ConnectIpSessionConfig`]; its [`ConnectIpPolicy`] defaults to deny all.
 //! Authenticate before admission and explicitly authorize source/destination
@@ -11,8 +11,8 @@
 //! IP packets, exchange control snapshots, or split it into send/receive halves.
 //! No host interface, route, DNS configuration or privileges are changed. Route
 //! and address capsules replace complete snapshots; the caller owns allocation
-//! and any administrative installation. Resolved hostname scope is pinned for
-//! the tunnel lifetime and visible through [`ConnectIpSession::policy`].
+//! and any administrative installation. The server pins resolved hostname scope
+//! for the tunnel lifetime, visible through [`ConnectIpSession::policy`].
 //!
 //! # Construct a scoped request
 //!
@@ -23,10 +23,13 @@
 //! let template = ConnectIpTemplate::try_new(
 //!     "https://proxy.example/.well-known/masque/ip/{target}/{ipproto}/",
 //! )?;
-//! let scope = ConnectIpScope::from_template_values(Some("192.0.2.0/24"), Some("17"))?;
+//! let scope = ConnectIpScope::new(
+//!     rama_masque::connect_ip::IpTarget::Prefix("192.0.2.0/24".parse()?),
+//!     Some(rama_net::ip::IpProtocol::UDP),
+//! );
 //! let request = template.request(&scope, Version::HTTP_3)?;
 //! assert_eq!(template.match_request(&request)?, scope);
-//! # Ok::<(), rama_masque::connect_ip::ConnectIpRequestError>(())
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! # Forwarding and MTU
@@ -44,20 +47,21 @@
 //! the tunnel; oversized native packets do not silently switch to Capsules.
 //! H1/H2 and H3 without negotiated datagrams use reliable Capsule delivery and
 //! inherit its head-of-line blocking. Packet/byte budgets and send deadlines
-//! apply to both carriers. Dropping either split half aborts the whole tunnel.
+//! apply to both carriers. Closing the send half leaves reception active. Dropping
+//! an unfinished half aborts the tunnel; completed halves can be dropped independently.
 //!
 //! No IP reassembly, jumbograms, NAT, DHCP, platform TUN, context compression,
 //! or DNS/PREF64 protocol extensions are implemented here.
 
 mod wire;
 pub use wire::{
-    ADDRESS_ASSIGN, ADDRESS_REQUEST, AddressAssignment, AddressRequest, ConnectIpCapsule,
-    ConnectIpProtocolError, IpRoute, ROUTE_ADVERTISEMENT, decode_ip_datagram, encode_ip_datagram,
-    validate_routes,
+    ADDRESS_ASSIGN, ADDRESS_REQUEST, AddressAssignment, AddressRequest, AddressRequestId,
+    ConnectIpCapsule, ConnectIpProtocolError, IpRoute, ROUTE_ADVERTISEMENT, decode_ip_datagram,
+    encode_ip_datagram, validate_routes,
 };
 
 mod state;
-pub use state::{ConnectIpState, ConnectIpStateLimits};
+pub use state::{ConnectIpState, ConnectIpStateLimits, ConnectIpStateSnapshot};
 
 mod request;
 pub use request::{
@@ -76,9 +80,11 @@ pub use session::{
 };
 
 mod limits;
-pub use limits::{ConnectIpLimits, IpAdmissionLimits};
+pub use limits::{ConnectIpLimits, PrincipalKey, UserOrClientIpKey};
+
 mod client;
-pub use client::connect_ip;
+pub use client::{ConnectIpConnector, ConnectIpRequestBuilder};
+
 mod server;
 pub use server::{ConnectIpRequest, ConnectIpService};
 

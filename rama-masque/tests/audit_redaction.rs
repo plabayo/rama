@@ -223,12 +223,15 @@ async fn audit_events_and_metrics_never_name_a_principal() {
     let target = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let target = target.local_addr().unwrap();
     let users = with_metrics(
-        proxy().with_limits(ConnectUdpLimits::new().with_max_tunnels_per_principal(1)),
+        proxy().with_limits(
+            ConnectUdpLimits::new()
+                .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap()),
+        ),
     );
     let tenants = with_metrics(
         proxy().with_limits(
             ConnectUdpLimits::new()
-                .with_max_tunnels_per_principal(1)
+                .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
                 .with_keyer(|request: &Request| {
                     let tenant = request.headers().get("x-tenant").unwrap().to_str()?;
                     Ok::<_, BoxError>(Some(Tenant(tenant.to_owned())))

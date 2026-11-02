@@ -11,8 +11,9 @@ use rama_net::address::Domain;
 use crate::wire::{Name, ServiceBinding, Txt};
 
 pub use self::address::{
-    BoxDnsAddressResolver, DnsAddressResolver, DnsAddresssResolverOverwrite,
-    HappyEyeballAddressResolver, HappyEyeballAddressResolverExt,
+    BoundedDnsAddressResolver, BoxDnsAddressResolver, DnsAddressResolver,
+    DnsAddresssResolverOverwrite, DnsAnswerLimitReached, HappyEyeballAddressResolver,
+    HappyEyeballAddressResolverExt,
 };
 
 mod cname;

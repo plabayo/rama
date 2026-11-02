@@ -40,7 +40,7 @@ async fn a_keyers_error_never_reaches_the_logs() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
     let limits = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(1)
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
         .with_keyer(|_: &Request| Err::<Option<u64>, BoxError>(CREDENTIAL.into()));
     let service = ConnectUdpService::try_new(Executor::default(), None)
         .unwrap()

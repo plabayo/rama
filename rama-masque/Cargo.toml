@@ -30,6 +30,7 @@ opentelemetry = [
 
 [dependencies]
 ahash = { workspace = true }
+arc-swap = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-dns = { workspace = true }

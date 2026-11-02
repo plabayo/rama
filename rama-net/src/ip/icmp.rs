@@ -4,7 +4,7 @@ use super::{
     InternetChecksum, IpPacket, IpPacketError, IpProtocol, Ipv4Header, Ipv6Header,
     internet_checksum,
 };
-use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::net::{IpAddr, Ipv6Addr};
 
 /// A forwarding error that can be returned to the source of an IP packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,8 +111,18 @@ pub fn encode_icmp_error(
     }
     let v4 = source.is_ipv4();
     let quote_len = invoking.as_bytes().len().min(if v4 { 548 } else { 1232 });
-    let mut body = [0; 1240];
-    let body = &mut body[..8 + quote_len];
+    let payload_len = 8 + quote_len;
+    let size = payload_len + if v4 { 20 } else { 40 };
+    let body = match (source, destination) {
+        (IpAddr::V4(src), IpAddr::V4(dst)) => {
+            Ipv4Header::new(src, dst, IpProtocol::ICMP).encode_header(&[], payload_len, output)?
+        }
+        (IpAddr::V6(src), IpAddr::V6(dst)) => {
+            Ipv6Header::new(src, dst, IpProtocol::ICMPV6).encode_header(payload_len, output)?
+        }
+        _ => return Err(IpPacketError::Field),
+    };
+    body[..8].fill(0);
     match (v4, kind) {
         (true, IcmpErrorKind::NoRoute) => {
             body[0] = 3;
@@ -144,19 +154,12 @@ pub fn encode_icmp_error(
         (false, IcmpErrorKind::HopLimitExceeded) => body[0] = 3,
     }
     body[8..].copy_from_slice(&invoking.as_bytes()[..quote_len]);
-    let size = match (source, destination) {
-        (IpAddr::V4(source), IpAddr::V4(destination)) => {
-            let sum = internet_checksum(body);
-            body[2..4].copy_from_slice(&sum.to_be_bytes());
-            Ipv4Header::new(source, destination, IpProtocol::ICMP).encode(&[], body, output)?
-        }
-        (IpAddr::V6(source), IpAddr::V6(destination)) => {
-            let sum = icmpv6_checksum(source, destination, body)?;
-            body[2..4].copy_from_slice(&sum.to_be_bytes());
-            Ipv6Header::new(source, destination, IpProtocol::ICMPV6).encode(body, output)?
-        }
+    let checksum = match (source, destination) {
+        (IpAddr::V4(_), IpAddr::V4(_)) => internet_checksum(body),
+        (IpAddr::V6(src), IpAddr::V6(dst)) => icmpv6_checksum(src, dst, body)?,
         _ => return Err(IpPacketError::Field),
     };
+    body[2..4].copy_from_slice(&checksum.to_be_bytes());
     Ok(Some(size))
 }
 
@@ -178,105 +181,106 @@ pub struct IpPacketQuote {
 impl IpPacketQuote {
     /// Parse the header of an invoking packet quoted by an ICMP error.
     pub fn parse(bytes: &[u8]) -> Result<Self, IpPacketError> {
-        match bytes.first().map(|b| b >> 4) {
-            Some(4) => {
-                if bytes.len() < 20 {
-                    return Err(IpPacketError::Truncated);
-                }
-                let len = usize::from(bytes[0] & 15) * 4;
-                if len < 20 || usize::from(u16::from_be_bytes([bytes[2], bytes[3]])) < len {
-                    return Err(IpPacketError::Length);
-                }
-                let header = bytes.get(..len).ok_or(IpPacketError::Truncated)?;
-                if internet_checksum(header) != 0 {
-                    return Err(IpPacketError::Checksum);
-                }
-                Ok(Self {
-                    source: Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]).into(),
-                    destination: Ipv4Addr::new(bytes[16], bytes[17], bytes[18], bytes[19]).into(),
-                    protocol: Some(IpProtocol::new(bytes[9])),
-                })
-            }
-            Some(6) => {
-                if bytes.len() < 40 {
-                    return Err(IpPacketError::Truncated);
-                }
-                let mut source = [0; 16];
-                source.copy_from_slice(&bytes[8..24]);
-                let mut destination = [0; 16];
-                destination.copy_from_slice(&bytes[24..40]);
-                let mut offset = 40;
-                let mut next = bytes[6];
-                let declared = 40 + usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
-                let bytes = &bytes[..bytes.len().min(declared)];
-                let mut count = 0;
-                let protocol = loop {
-                    if !matches!(next, 0 | 43 | 44 | 51 | 60) {
-                        break Some(IpProtocol::new(next));
-                    }
-                    if count == 32 {
-                        return Err(IpPacketError::ExtensionLimit);
-                    }
-                    count += 1;
-                    let rest = bytes.get(offset..).ok_or(IpPacketError::Truncated)?;
-                    if rest.len() < 2 {
-                        return Err(IpPacketError::Truncated);
-                    }
-                    let len = match next {
-                        44 => 8,
-                        51 => (usize::from(rest[1]) + 2) * 4,
-                        _ => (usize::from(rest[1]) + 1) * 8,
-                    };
-                    if len > rest.len() {
-                        return Err(IpPacketError::Truncated);
-                    }
-                    if next == 44 && u16::from_be_bytes([rest[2], rest[3]]) & 0xfff8 != 0 {
-                        break None;
-                    }
-                    offset += len;
-                    next = rest[0];
-                };
-                Ok(Self {
-                    source: Ipv6Addr::from(source).into(),
-                    destination: Ipv6Addr::from(destination).into(),
-                    protocol,
-                })
-            }
-            None => Err(IpPacketError::Truncated),
-            _ => Err(IpPacketError::Version),
-        }
+        let packet = match bytes.first().map(|b| b >> 4) {
+            Some(4) => IpPacket::V4(super::Ipv4Packet::parse_inner(bytes, true)?),
+            Some(6) => IpPacket::V6(super::Ipv6Packet::parse_inner(bytes, true)?),
+            None => return Err(IpPacketError::Truncated),
+            _ => return Err(IpPacketError::Version),
+        };
+        Ok(Self {
+            source: packet.source(),
+            destination: packet.destination(),
+            protocol: packet.protocol(),
+        })
     }
 }
 
-/// Encode an ICMPv6 Echo Request or Reply, including its IPv6 header/checksum.
-/// The caller chooses addresses, identifier, sequence and data (RFC 4443 §4).
-/// No extension headers or fragmentation are generated.
-pub fn encode_icmpv6_echo(
-    source: Ipv6Addr,
-    destination: Ipv6Addr,
-    identifier: u16,
-    sequence: u16,
-    data: &[u8],
-    reply: bool,
-    output: &mut [u8],
-) -> Result<usize, IpPacketError> {
-    let payload_len = data
-        .len()
-        .checked_add(8)
-        .filter(|n| *n <= 65535)
-        .ok_or(IpPacketError::Length)?;
-    let total = 40 + payload_len;
-    let output = output.get_mut(..total).ok_or(IpPacketError::Truncated)?;
-    // Write the base header without a temporary packet-sized allocation.
-    Ipv6Header::new(source, destination, IpProtocol::ICMPV6).encode(&[], output)?;
-    output[4..6].copy_from_slice(&(payload_len as u16).to_be_bytes());
-    let body = &mut output[40..];
-    body[..8].fill(0);
-    body[0] = if reply { 129 } else { 128 };
-    body[4..6].copy_from_slice(&identifier.to_be_bytes());
-    body[6..8].copy_from_slice(&sequence.to_be_bytes());
-    body[8..].copy_from_slice(data);
-    let checksum = icmpv6_checksum(source, destination, body)?;
-    body[2..4].copy_from_slice(&checksum.to_be_bytes());
-    Ok(total)
+/// The two ICMPv6 echo message kinds used by link-MTU verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Icmpv6EchoKind {
+    /// Echo Request.
+    Request,
+    /// Echo Reply.
+    Reply,
+}
+
+/// A borrowed ICMPv6 echo message, independent of transport or probe tracking.
+#[derive(Debug, Clone, Copy)]
+pub struct Icmpv6Echo<'a> {
+    /// Request or reply.
+    pub kind: Icmpv6EchoKind,
+    /// Identifier chosen by the sender.
+    pub identifier: u16,
+    /// Sequence number chosen by the sender.
+    pub sequence: u16,
+    /// Echoed bytes; parsing does not copy them.
+    pub data: &'a [u8],
+}
+
+impl<'a> Icmpv6Echo<'a> {
+    /// Decode a complete, unfragmented echo and verify its code and checksum.
+    pub fn parse(packet: super::Ipv6Packet<'a>) -> Result<Self, IpPacketError> {
+        if packet.protocol() != Some(IpProtocol::ICMPV6)
+            || packet.fragment().is_some_and(|f| f.is_fragmented())
+        {
+            return Err(IpPacketError::Field);
+        }
+        let body = packet
+            .upper_layer_payload()
+            .ok_or(IpPacketError::Truncated)?;
+        let header = body.get(..8).ok_or(IpPacketError::Truncated)?;
+        let kind = match header[0] {
+            128 => Icmpv6EchoKind::Request,
+            129 => Icmpv6EchoKind::Reply,
+            _ => return Err(IpPacketError::Field),
+        };
+        if header[1] != 0 {
+            return Err(IpPacketError::Field);
+        }
+        if icmpv6_checksum(packet.source(), packet.destination(), body)? != 0 {
+            return Err(IpPacketError::Checksum);
+        }
+        Ok(Self {
+            kind,
+            identifier: u16::from_be_bytes([header[4], header[5]]),
+            sequence: u16::from_be_bytes([header[6], header[7]]),
+            data: &body[8..],
+        })
+    }
+
+    /// Construct the matching reply without copying its data.
+    #[must_use]
+    pub fn reply(self) -> Self {
+        Self {
+            kind: Icmpv6EchoKind::Reply,
+            ..self
+        }
+    }
+
+    /// Encode directly into the caller's packet buffer, including the IPv6 header.
+    pub fn encode(
+        self,
+        source: Ipv6Addr,
+        destination: Ipv6Addr,
+        output: &mut [u8],
+    ) -> Result<usize, IpPacketError> {
+        let payload_len = self
+            .data
+            .len()
+            .checked_add(8)
+            .ok_or(IpPacketError::Length)?;
+        let body = Ipv6Header::new(source, destination, IpProtocol::ICMPV6)
+            .encode_header(payload_len, output)?;
+        body[..8].fill(0);
+        body[0] = match self.kind {
+            Icmpv6EchoKind::Request => 128,
+            Icmpv6EchoKind::Reply => 129,
+        };
+        body[4..6].copy_from_slice(&self.identifier.to_be_bytes());
+        body[6..8].copy_from_slice(&self.sequence.to_be_bytes());
+        body[8..].copy_from_slice(self.data);
+        let checksum = icmpv6_checksum(source, destination, body)?;
+        body[2..4].copy_from_slice(&checksum.to_be_bytes());
+        Ok(40 + payload_len)
+    }
 }

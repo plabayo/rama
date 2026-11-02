@@ -32,19 +32,19 @@ fn prefix(s: &str) -> IpNet {
 }
 
 fn route(s: &str) -> IpRoute {
-    IpRoute::from_prefix(prefix(s), None)
+    IpRoute::from_prefix(prefix(s), None).unwrap()
 }
 
 fn assignment(s: &str, id: u64) -> AddressAssignment {
     AddressAssignment {
-        request_id: id,
+        request_id: (id != 0).then(|| AddressRequestId::new(id).unwrap()),
         prefix: prefix(s),
     }
 }
 
 fn request(s: &str, id: u64) -> AddressRequest {
     AddressRequest {
-        request_id: id,
+        request_id: AddressRequestId::new(id).unwrap(),
         prefix: prefix(s),
     }
 }
@@ -59,7 +59,7 @@ fn control_wire_vectors_and_nonminimal_varints() {
     );
     assert_eq!(
         decode_ip_datagram(&[0x40, 0, 0x45]).unwrap(),
-        (0, &[0x45][..])
+        (crate::context::ContextId::IP, &[0x45][..])
     );
     for capsule in [
         capsule,
@@ -96,14 +96,14 @@ fn route_ranges_ordering_and_all_protocol_overlap() {
     let a = route("192.0.2.0/25");
     let b = route("192.0.2.128/25");
     validate_routes(&[a, b]).unwrap();
-    assert!(validate_routes(&[b, a]).is_err());
-    assert!(validate_routes(&[a, a]).is_err());
+    validate_routes(&[b, a]).unwrap_err();
+    validate_routes(&[a, a]).unwrap_err();
     let mut tcp = a;
     tcp.protocol = Some(IpProtocol::TCP);
     let mut udp = a;
     udp.protocol = Some(IpProtocol::UDP);
     validate_routes(&[tcp, udp]).unwrap();
-    assert!(validate_routes(&[a, tcp]).is_err());
+    validate_routes(&[a, tcp]).unwrap_err();
     let range = IpRoute {
         start: "192.0.2.3".parse().unwrap(),
         end: "192.0.2.19".parse().unwrap(),
@@ -112,7 +112,7 @@ fn route_ranges_ordering_and_all_protocol_overlap() {
     validate_routes(&[range]).unwrap();
     assert!(range.contains("192.0.2.17".parse().unwrap()));
     assert!(!range.contains("192.0.2.20".parse().unwrap()));
-    assert!(validate_routes(&[route("::/0"), a]).is_err());
+    validate_routes(&[route("::/0"), a]).unwrap_err();
 }
 
 #[test]
@@ -177,8 +177,8 @@ fn state_snapshots_withdraw_and_reject_atomically() {
 #[test]
 fn request_id_history_is_bounded_and_duplicate_batches_are_atomic() {
     let mut state = ConnectIpState::new(ConnectIpStateLimits {
-        max_entries: 4,
-        max_request_ids: 2,
+        max_entries: std::num::NonZeroU16::new(4).unwrap(),
+        max_request_ids: std::num::NonZeroU32::new(2).unwrap(),
     });
     assert!(
         state
@@ -264,8 +264,8 @@ fn templates_cover_http_versions_scopes_and_erratum_8444() {
         .unwrap_err();
 }
 
-fn policy(role: ConnectIpRole) -> ConnectIpPolicy {
-    let mut p = ConnectIpPolicy::new(role);
+fn policy() -> ConnectIpPolicy {
+    let mut p = ConnectIpPolicy::new();
     let direction = IpDirectionPolicy {
         sources: IpSourcePolicy::Static(vec![prefix("192.0.2.0/24"), prefix("2001:db8::/32")]),
         destinations: vec![route("192.0.2.0/24"), route("2001:db8::/32")],
@@ -276,9 +276,9 @@ fn policy(role: ConnectIpRole) -> ConnectIpPolicy {
     p
 }
 
-fn config(role: ConnectIpRole) -> ConnectIpSessionConfig {
-    let mut c = ConnectIpSessionConfig::new(policy(role));
-    c.ipv6_link_mtu = Some(1400);
+fn config() -> ConnectIpSessionConfig {
+    let mut c = ConnectIpSessionConfig::new(policy());
+    c = c.try_with_ipv6_link_mtu(Some(1400)).unwrap();
     c
 }
 
@@ -288,8 +288,8 @@ fn pair() -> (
 ) {
     let (a, b) = tokio::io::duplex(65536);
     (
-        ConnectIpSession::new(ServiceInput::new(a), config(ConnectIpRole::Client)).unwrap(),
-        ConnectIpSession::new(ServiceInput::new(b), config(ConnectIpRole::Proxy)).unwrap(),
+        ConnectIpSession::new(ServiceInput::new(a), ConnectIpRole::Client, config()).unwrap(),
+        ConnectIpSession::new(ServiceInput::new(b), ConnectIpRole::Server, config()).unwrap(),
     )
 }
 
@@ -341,11 +341,13 @@ async fn reliable_packet_and_bidirectional_control_exchange() {
 #[tokio::test]
 async fn invalid_packets_drop_without_killing_control() {
     let (a, b) = tokio::io::duplex(65536);
-    let mut cfg = config(ConnectIpRole::Proxy);
-    cfg.idle_timeout = Duration::from_millis(100);
-    let mut raw =
-        HttpDatagramSession::with_config(ServiceInput::new(a), cfg.http_config().unwrap());
-    let mut session = ConnectIpSession::new(ServiceInput::new(b), cfg).unwrap();
+    let mut cfg = config();
+    cfg = cfg
+        .try_with_idle_timeout(Duration::from_millis(100))
+        .unwrap();
+    let mut raw = HttpDatagramSession::with_config(ServiceInput::new(a), cfg.http_config());
+    let mut session =
+        ConnectIpSession::new(ServiceInput::new(b), ConnectIpRole::Client, cfg).unwrap();
     for (payload, expected) in [
         (Bytes::from_static(&[1, 0x45]), IpPacketDrop::UnknownContext),
         (Bytes::from_static(&[0, 0x45]), IpPacketDrop::Invalid),
@@ -386,31 +388,31 @@ async fn cancellation_deadlines_and_principal_quotas() {
     ));
     let (a, _b) = tokio::io::duplex(1);
     let session =
-        ConnectIpSession::new(ServiceInput::new(a), config(ConnectIpRole::Client)).unwrap();
+        ConnectIpSession::new(ServiceInput::new(a), ConnectIpRole::Client, config()).unwrap();
     let (mut send, mut recv) = session.split();
     let capsule = ConnectIpCapsule::RouteAdvertisement(vec![route("192.0.2.0/24")]);
     timeout(Duration::from_millis(1), send.send_control(capsule))
         .await
         .unwrap_err();
     assert!(matches!(recv.recv().await, Err(ConnectIpError::Closed)));
-    let cfg = IpAdmissionLimits {
-        max_tunnels_per_principal: 1,
-        budget: IpBudgetConfig {
-            byte_quota: Some(10),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let limits = ConnectIpLimits::try_new(cfg).unwrap();
+    let limits = ConnectIpLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
+        .with_principal_budget(crate::budget::PrincipalBudget::new().with_lifetime_quota(10));
     let req = Request::new(rama_http::Body::empty());
     let lease = limits.admit(&req).unwrap();
     assert_eq!(limits.live_tunnels(), 1);
     limits.admit(&req).unwrap_err();
-    assert!(lease.budget.charge(10));
+    assert_eq!(
+        lease.principal_spend().unwrap().charge(false, 10),
+        crate::budget::Charge::Paid
+    );
     drop(lease);
     assert_eq!(limits.live_tunnels(), 0);
     let lease = limits.admit(&req).unwrap();
-    assert!(!lease.budget.charge(1));
+    assert_eq!(
+        lease.principal_spend().unwrap().charge(false, 1),
+        crate::budget::Charge::OverQuota
+    );
 }
 
 #[derive(Debug)]
@@ -459,7 +461,7 @@ async fn native_ipv6_mtu_shrink_is_terminal_not_reliable_fallback() {
         mtu: mtu.clone(),
         send_error: None,
     }));
-    let mut session = ConnectIpSession::new(io, config(ConnectIpRole::Client)).unwrap();
+    let mut session = ConnectIpSession::new(io, ConnectIpRole::Client, config()).unwrap();
     assert_eq!(
         session
             .send_packet(packet(), IpPacketOrigin::Local)
@@ -484,20 +486,35 @@ fn peer_claims_never_override_local_authorization() {
         )]))
         .unwrap();
     assert!(
-        ConnectIpPolicy::new(ConnectIpRole::Client)
-            .check(IpPacket::parse(&p).unwrap(), true, &state)
+        ConnectIpPolicy::new()
+            .check(
+                IpPacket::parse(&p).unwrap(),
+                true,
+                ConnectIpRole::Client,
+                &state
+            )
             .is_err()
     );
-    let mut policy = policy(ConnectIpRole::Client);
+    let mut policy = policy();
     policy.scope_protocol = Some(IpProtocol::TCP);
     assert_eq!(
-        policy.check(IpPacket::parse(&p).unwrap(), true, &state),
+        policy.check(
+            IpPacket::parse(&p).unwrap(),
+            true,
+            ConnectIpRole::Client,
+            &state
+        ),
         Err(IpPacketDrop::Scope)
     );
     policy.scope_protocol = None;
     policy.send.sources = IpSourcePolicy::Assigned(vec![prefix("192.0.2.0/24")]);
     assert_eq!(
-        policy.check(IpPacket::parse(&p).unwrap(), true, &state),
+        policy.check(
+            IpPacket::parse(&p).unwrap(),
+            true,
+            ConnectIpRole::Client,
+            &state
+        ),
         Err(IpPacketDrop::Source)
     );
     state
@@ -507,13 +524,23 @@ fn peer_claims_never_override_local_authorization() {
         )]))
         .unwrap();
     policy
-        .check(IpPacket::parse(&p).unwrap(), true, &state)
+        .check(
+            IpPacket::parse(&p).unwrap(),
+            true,
+            ConnectIpRole::Client,
+            &state,
+        )
         .unwrap();
     state
         .receive(&ConnectIpCapsule::AddressAssign(vec![]))
         .unwrap();
     assert_eq!(
-        policy.check(IpPacket::parse(&p).unwrap(), true, &state),
+        policy.check(
+            IpPacket::parse(&p).unwrap(),
+            true,
+            ConnectIpRole::Client,
+            &state
+        ),
         Err(IpPacketDrop::Source)
     );
 }
@@ -530,7 +557,7 @@ async fn authentication_and_secure_transport_are_checked_before_acceptance() {
             async move {
                 seen.fetch_add(1, Ordering::Relaxed);
                 if r.request.extensions().contains::<UserId>() {
-                    Ok(config(ConnectIpRole::Proxy))
+                    Ok(config())
                 } else {
                     Err(std::io::Error::new(
                         std::io::ErrorKind::PermissionDenied,
@@ -564,8 +591,9 @@ async fn authentication_and_secure_transport_are_checked_before_acceptance() {
 #[test]
 fn icmp_errors_are_bound_to_the_authorized_quoted_flow() {
     use rama_net::ip::icmp::{IcmpErrorKind, encode_icmp_error};
-    let mut p = policy(ConnectIpRole::Client);
+    let mut p = policy();
     p.scope_targets = vec![prefix("192.0.2.2/32")];
+    p.receive.sources = IpSourcePolicy::Static(vec![prefix("198.51.100.1/32")]);
     p.scope_protocol = Some(IpProtocol::UDP);
     let state = ConnectIpState::default();
     let invoking = packet();
@@ -578,17 +606,32 @@ fn icmp_errors_are_bound_to_the_authorized_quoted_flow() {
     )
     .unwrap()
     .unwrap();
-    p.check(IpPacket::parse(&bytes[..n]).unwrap(), false, &state)
-        .unwrap();
+    p.check(
+        IpPacket::parse(&bytes[..n]).unwrap(),
+        false,
+        ConnectIpRole::Client,
+        &state,
+    )
+    .unwrap();
     let mut other_tenant = p.clone();
     other_tenant.scope_targets = vec![prefix("192.0.2.3/32")];
     assert_eq!(
-        other_tenant.check(IpPacket::parse(&bytes[..n]).unwrap(), false, &state),
+        other_tenant.check(
+            IpPacket::parse(&bytes[..n]).unwrap(),
+            false,
+            ConnectIpRole::Client,
+            &state
+        ),
         Err(IpPacketDrop::Scope)
     );
     bytes[n - 1] ^= 1;
     assert_eq!(
-        p.check(IpPacket::parse(&bytes[..n]).unwrap(), false, &state),
+        p.check(
+            IpPacket::parse(&bytes[..n]).unwrap(),
+            false,
+            ConnectIpRole::Client,
+            &state
+        ),
         Err(IpPacketDrop::Invalid)
     );
     // A protocol from the wrong address family is not an ICMP exception.
@@ -601,14 +644,19 @@ fn icmp_errors_are_bound_to_the_authorized_quoted_flow() {
         .encode(&[], &[128, 0, 0, 0, 0, 0, 0, 0], &mut bytes)
         .unwrap();
     assert_eq!(
-        p.check(IpPacket::parse(&bytes[..n]).unwrap(), true, &state),
+        p.check(
+            IpPacket::parse(&bytes[..n]).unwrap(),
+            true,
+            ConnectIpRole::Client,
+            &state
+        ),
         Err(IpPacketDrop::Scope)
     );
 }
 
 #[test]
 fn extension_and_fragment_policy_cannot_hide_a_different_protocol() {
-    let mut p = policy(ConnectIpRole::Client);
+    let mut p = policy();
     p.scope_protocol = Some(IpProtocol::UDP);
     let state = ConnectIpState::default();
     let mut bytes = [0; 256];
@@ -622,7 +670,12 @@ fn extension_and_fragment_policy_cannot_hide_a_different_protocol() {
             .encode(&[proto, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4], &mut bytes)
             .unwrap();
         assert_eq!(
-            p.check(IpPacket::parse(&bytes[..n]).unwrap(), true, &state),
+            p.check(
+                IpPacket::parse(&bytes[..n]).unwrap(),
+                true,
+                ConnectIpRole::Client,
+                &state
+            ),
             expected
         );
     }
@@ -633,19 +686,34 @@ fn extension_and_fragment_policy_cannot_hide_a_different_protocol() {
         .encode(&[60, 0, 0, 8, 0, 0, 0, 1, 1, 2, 3, 4], &mut bytes)
         .unwrap();
     assert_eq!(
-        p.check(IpPacket::parse(&bytes[..n]).unwrap(), true, &state),
+        p.check(
+            IpPacket::parse(&bytes[..n]).unwrap(),
+            true,
+            ConnectIpRole::Client,
+            &state
+        ),
         Err(IpPacketDrop::Scope)
     );
     // A directly identifiable UDP fragment remains usable without reassembly.
     bytes[40] = 17;
-    p.check(IpPacket::parse(&bytes[..n]).unwrap(), true, &state)
-        .unwrap();
+    p.check(
+        IpPacket::parse(&bytes[..n]).unwrap(),
+        true,
+        ConnectIpRole::Client,
+        &state,
+    )
+    .unwrap();
     header.next_header = IpProtocol::ROUTING;
     let n = header
         .encode(&[17, 0, 2, 1, 0, 0, 0, 0], &mut bytes)
         .unwrap();
     assert_eq!(
-        p.check(IpPacket::parse(&bytes[..n]).unwrap(), true, &state),
+        p.check(
+            IpPacket::parse(&bytes[..n]).unwrap(),
+            true,
+            ConnectIpRole::Client,
+            &state
+        ),
         Err(IpPacketDrop::Destination)
     );
     let h = Ipv4Header::new(
@@ -658,7 +726,12 @@ fn extension_and_fragment_policy_cannot_hide_a_different_protocol() {
             .encode(&[kind, 7, 4, 198, 51, 100, 1, 0], &[1, 2], &mut bytes)
             .unwrap();
         assert_eq!(
-            p.check(IpPacket::parse(&bytes[..n]).unwrap(), true, &state),
+            p.check(
+                IpPacket::parse(&bytes[..n]).unwrap(),
+                true,
+                ConnectIpRole::Client,
+                &state
+            ),
             Err(IpPacketDrop::Destination)
         );
     }
@@ -668,7 +741,7 @@ fn extension_and_fragment_policy_cannot_hide_a_different_protocol() {
 async fn slow_consumers_and_principals_remain_isolated() {
     let (io, _blocked_peer) = tokio::io::duplex(1);
     let mut blocked =
-        ConnectIpSession::new(ServiceInput::new(io), config(ConnectIpRole::Client)).unwrap();
+        ConnectIpSession::new(ServiceInput::new(io), ConnectIpRole::Client, config()).unwrap();
     let (mut a, mut b) = pair();
     let (stalled, healthy) = tokio::join!(
         blocked.send_packet(packet(), IpPacketOrigin::Local),
@@ -681,12 +754,9 @@ async fn slow_consumers_and_principals_remain_isolated() {
     );
     assert!(matches!(stalled, Err(ConnectIpError::Timeout)));
     assert!(matches!(healthy, Some(ConnectIpEvent::Packet { .. })));
-    let limits = ConnectIpLimits::try_new(IpAdmissionLimits {
-        max_tunnels_per_principal: 1,
-        max_principals: 1,
-        ..Default::default()
-    })
-    .unwrap();
+    let limits = ConnectIpLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
+        .with_max_principals(std::num::NonZeroUsize::new(1).unwrap());
     let first = Request::new(rama_http::Body::empty());
     first.extensions().insert(UserId::Username("alice".into()));
     let second = Request::new(rama_http::Body::empty());
@@ -752,11 +822,12 @@ async fn hostname_resolution_is_bounded_filtered_and_pinned() {
         .unwrap();
     assert_eq!(pinned, [prefix("192.0.2.2/32")]);
     Arc::get_mut(&mut resolver).unwrap().results = vec![Ipv4Addr::LOCALHOST];
-    let mut p = policy(ConnectIpRole::Client);
+    let mut p = policy();
     p.scope_targets = pinned;
     p.check(
         IpPacket::parse(&packet()).unwrap(),
         true,
+        ConnectIpRole::Client,
         &ConnectIpState::default(),
     )
     .unwrap();
@@ -774,10 +845,8 @@ async fn hostname_resolution_is_bounded_filtered_and_pinned() {
     Arc::get_mut(&mut resolver).unwrap().results.clear();
     Arc::get_mut(&mut resolver).unwrap().repeat = true;
     assert_eq!(
-        super::server::resolve_scope(&resolver, target(), &ext, &destinations)
-            .await
-            .unwrap(),
-        [prefix("192.0.2.2/32")]
+        super::server::resolve_scope(&resolver, target(), &ext, &destinations).await,
+        Err(StatusCode::BAD_GATEWAY)
     );
     Arc::get_mut(&mut resolver).unwrap().repeat = false;
     Arc::get_mut(&mut resolver).unwrap().pending = true;
@@ -785,7 +854,7 @@ async fn hostname_resolution_is_bounded_filtered_and_pinned() {
     let limits = ConnectIpLimits::default();
     let service = ConnectIpService::new(
         template.clone(),
-        service_fn(async |_: ConnectIpRequest| Ok::<_, Infallible>(config(ConnectIpRole::Proxy))),
+        service_fn(async |_: ConnectIpRequest| Ok::<_, Infallible>(config())),
         service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
         Executor::new(),
     )
@@ -811,11 +880,12 @@ async fn hostname_resolution_is_bounded_filtered_and_pinned() {
 #[tokio::test(start_paused = true)]
 async fn ipv6_mtu_requires_a_guarantee_or_a_successful_full_size_probe() {
     let (a, b) = tokio::io::duplex(65536);
-    let mut cfg = config(ConnectIpRole::Client);
-    cfg.ipv6_link_mtu = None;
-    let mut client = ConnectIpSession::new(ServiceInput::new(a), cfg.clone()).unwrap();
-    cfg.policy.role = ConnectIpRole::Proxy;
-    let mut proxy = ConnectIpSession::new(ServiceInput::new(b), cfg.clone()).unwrap();
+    let mut cfg = config();
+    cfg = cfg.try_with_ipv6_link_mtu(None).unwrap();
+    let mut client =
+        ConnectIpSession::new(ServiceInput::new(a), ConnectIpRole::Client, cfg.clone()).unwrap();
+    let mut proxy =
+        ConnectIpSession::new(ServiceInput::new(b), ConnectIpRole::Server, cfg.clone()).unwrap();
     let source = "2001:db8::1".parse().unwrap();
     let peer = "2001:db8::2".parse().unwrap();
     let mut bytes = [0; 1280];
@@ -847,7 +917,8 @@ async fn ipv6_mtu_requires_a_guarantee_or_a_successful_full_size_probe() {
         Some(ConnectIpEvent::Packet { .. })
     ));
     let (a, _silent_peer) = tokio::io::duplex(65536);
-    let mut session = ConnectIpSession::new(ServiceInput::new(a), cfg).unwrap();
+    let mut session =
+        ConnectIpSession::new(ServiceInput::new(a), ConnectIpRole::Client, cfg).unwrap();
     assert!(matches!(
         session.probe_ipv6_mtu(source, peer, [3; 16]).await,
         Err(ConnectIpError::Timeout)
@@ -861,10 +932,11 @@ async fn ipv6_mtu_requires_a_guarantee_or_a_successful_full_size_probe() {
 #[tokio::test]
 async fn forwarding_keeps_link_local_and_limited_broadcast_on_the_link() {
     let (io, _peer) = tokio::io::duplex(65536);
-    let mut cfg = config(ConnectIpRole::Client);
+    let mut cfg = config();
     cfg.policy.send.sources = IpSourcePolicy::Static(vec![prefix("0.0.0.0/0")]);
     cfg.policy.send.destinations = vec![route("0.0.0.0/0")];
-    let mut session = ConnectIpSession::new(ServiceInput::new(io), cfg).unwrap();
+    let mut session =
+        ConnectIpSession::new(ServiceInput::new(io), ConnectIpRole::Client, cfg).unwrap();
     for destination in [
         Ipv4Addr::BROADCAST,
         Ipv4Addr::new(169, 254, 1, 2),
@@ -953,20 +1025,13 @@ fn invalid_control_updates_preserve_previous_snapshots() {
     let mut state = ConnectIpState::default();
     let good = ConnectIpCapsule::AddressAssign(vec![assignment("192.0.2.1/32", 0)]);
     state.receive(&good).unwrap();
-    for invalid in [
-        ConnectIpCapsule::AddressAssign(vec![
-            assignment("192.0.2.2/32", 0),
-            assignment("192.0.2.3/32", 1 << 62),
-        ]),
-        ConnectIpCapsule::AddressAssign(vec![
-            assignment("192.0.2.2/32", 0),
-            assignment("192.0.2.3/24", 0),
-        ]),
-    ] {
-        invalid.encode(10).unwrap_err();
-        state.receive(&invalid).unwrap_err();
-        assert_eq!(state.local_addresses(), &[assignment("192.0.2.1/32", 0)]);
-    }
+    let invalid = ConnectIpCapsule::AddressAssign(vec![
+        assignment("192.0.2.2/32", 0),
+        assignment("192.0.2.3/24", 0),
+    ]);
+    invalid.encode(10).unwrap_err();
+    state.receive(&invalid).unwrap_err();
+    assert_eq!(state.local_addresses(), &[assignment("192.0.2.1/32", 0)]);
     let routes = ConnectIpCapsule::RouteAdvertisement(vec![route("192.0.2.0/24")]);
     state.receive(&routes).unwrap();
     let bad_routes =
@@ -1004,7 +1069,7 @@ fn control_encoding_accepts_exact_limits_and_sizes_mixed_entries() {
     let requests = assignments
         .iter()
         .map(|a| AddressRequest {
-            request_id: a.request_id,
+            request_id: a.request_id.unwrap(),
             prefix: a.prefix,
         })
         .collect();
@@ -1138,36 +1203,38 @@ async fn site_to_site_routes_are_bidirectional_and_withdrawable() {
         let corporate = prefix("203.0.113.0/24");
         let direction = |source, destination| IpDirectionPolicy {
             sources: IpSourcePolicy::Static(vec![source]),
-            destinations: vec![IpRoute::from_prefix(destination, None)],
+            destinations: vec![IpRoute::from_prefix(destination, None).unwrap()],
             require_advertised_route: true,
         };
-        let mut client_policy = ConnectIpPolicy::new(ConnectIpRole::Client);
+        let mut client_policy = ConnectIpPolicy::new();
         client_policy.send = direction(branch, corporate);
         client_policy.receive = direction(corporate, branch);
-        let mut proxy_policy = ConnectIpPolicy::new(ConnectIpRole::Proxy);
+        let mut proxy_policy = ConnectIpPolicy::new();
         proxy_policy.send = direction(corporate, branch);
         proxy_policy.receive = direction(branch, corporate);
         let (a, b) = tokio::io::duplex(4096);
         let mut client = ConnectIpSession::new(
             ServiceInput::new(a),
+            ConnectIpRole::Client,
             ConnectIpSessionConfig::new(client_policy),
         )
         .unwrap();
         let mut proxy = ConnectIpSession::new(
             ServiceInput::new(b),
+            ConnectIpRole::Server,
             ConnectIpSessionConfig::new(proxy_policy),
         )
         .unwrap();
         client
             .send_control(ConnectIpCapsule::RouteAdvertisement(vec![
-                IpRoute::from_prefix(branch, None),
+                IpRoute::from_prefix(branch, None).unwrap(),
             ]))
             .await
             .unwrap();
         proxy.recv().await.unwrap();
         proxy
             .send_control(ConnectIpCapsule::RouteAdvertisement(vec![
-                IpRoute::from_prefix(corporate, None),
+                IpRoute::from_prefix(corporate, None).unwrap(),
             ]))
             .await
             .unwrap();
@@ -1232,9 +1299,9 @@ async fn native_send_errors_respect_ipv6_mtu_and_queue_policy() {
                 mtu: Arc::new(AtomicUsize::new(1401)),
                 send_error: Some(error),
             }));
-            let mut cfg = config(ConnectIpRole::Client);
-            cfg.ipv6_link_mtu = ipv6_link_mtu;
-            let mut session = ConnectIpSession::new(io, cfg).unwrap();
+            let mut cfg = config();
+            cfg = cfg.try_with_ipv6_link_mtu(ipv6_link_mtu).unwrap();
+            let mut session = ConnectIpSession::new(io, ConnectIpRole::Client, cfg).unwrap();
             let result = session.send_packet(packet(), IpPacketOrigin::Local).await;
             if ipv6_link_mtu.is_some()
                 && matches!(error, NativeSendError::TooLarge { max } if max < 1281)
@@ -1266,10 +1333,10 @@ async fn native_send_errors_respect_ipv6_mtu_and_queue_policy() {
 #[tokio::test(start_paused = true)]
 async fn reliable_sender_waits_for_room_within_its_deadline() {
     let (a, b) = tokio::io::duplex(1);
-    let cfg = config(ConnectIpRole::Client);
-    let mut raw =
-        HttpDatagramSession::with_config(ServiceInput::new(b), cfg.http_config().unwrap());
-    let mut session = ConnectIpSession::new(ServiceInput::new(a), cfg).unwrap();
+    let cfg = config();
+    let mut raw = HttpDatagramSession::with_config(ServiceInput::new(b), cfg.http_config());
+    let mut session =
+        ConnectIpSession::new(ServiceInput::new(a), ConnectIpRole::Client, cfg).unwrap();
     let start = tokio::time::Instant::now();
     let (sent, received) = tokio::join!(
         session.send_packet(packet(), IpPacketOrigin::Local),
@@ -1342,7 +1409,7 @@ async fn blocked_send_releases_the_original_packet_owner() {
     });
     let (a, _blocked_peer) = tokio::io::duplex(1);
     let mut session =
-        ConnectIpSession::new(ServiceInput::new(a), config(ConnectIpRole::Client)).unwrap();
+        ConnectIpSession::new(ServiceInput::new(a), ConnectIpRole::Client, config()).unwrap();
     let mut send = Box::pin(session.send_packet(input, IpPacketOrigin::Forwarded));
     std::future::poll_fn(|cx| {
         assert!(std::future::Future::poll(send.as_mut(), cx).is_pending());
@@ -1351,4 +1418,564 @@ async fn blocked_send_releases_the_original_packet_owner() {
     .await;
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     drop(send);
+}
+
+#[test]
+fn icmp_outer_sources_remain_subject_to_assignment_and_local_policy() {
+    use rama_net::ip::icmp::{IcmpErrorKind, encode_icmp_error};
+    for ipv6 in [false, true] {
+        let client = if ipv6 { "2001:db8::1" } else { "192.0.2.1" };
+        let target = if ipv6 { "2001:db8::2" } else { "192.0.2.2" };
+        let spoofed = if ipv6 {
+            "2001:db8:ffff::1"
+        } else {
+            "203.0.113.66"
+        };
+        let client_prefix = format!("{client}/{}", if ipv6 { 128 } else { 32 });
+        let mut original = [0; 128];
+        let n = if ipv6 {
+            Ipv6Header::new(
+                target.parse().unwrap(),
+                client.parse().unwrap(),
+                IpProtocol::UDP,
+            )
+            .encode(b"quoted", &mut original)
+            .unwrap()
+        } else {
+            Ipv4Header::new(
+                target.parse().unwrap(),
+                client.parse().unwrap(),
+                IpProtocol::UDP,
+            )
+            .encode(&[], b"quoted", &mut original)
+            .unwrap()
+        };
+        for role in [ConnectIpRole::Client, ConnectIpRole::Server] {
+            for outgoing in [false, true] {
+                for assigned in [false, true] {
+                    let mut policy = policy();
+                    let sources = if assigned {
+                        IpSourcePolicy::Assigned(vec![prefix(&client_prefix)])
+                    } else {
+                        IpSourcePolicy::Static(vec![prefix(&client_prefix)])
+                    };
+                    if outgoing {
+                        policy.send.sources = sources;
+                    } else {
+                        policy.receive.sources = sources;
+                    }
+                    let mut state = ConnectIpState::default();
+                    let assignment =
+                        ConnectIpCapsule::AddressAssign(vec![assignment(&client_prefix, 0)]);
+                    if outgoing {
+                        state.receive(&assignment).unwrap();
+                    } else {
+                        state.sent(&assignment).unwrap();
+                    }
+                    for (source, expected) in
+                        [(spoofed, Err(IpPacketDrop::Source)), (client, Ok(()))]
+                    {
+                        let mut error = [0; 1280];
+                        let len = encode_icmp_error(
+                            IpPacket::parse(&original[..n]).unwrap(),
+                            source.parse().unwrap(),
+                            IcmpErrorKind::NoRoute,
+                            &mut error,
+                        )
+                        .unwrap()
+                        .unwrap();
+                        assert_eq!(
+                            policy.check(
+                                IpPacket::parse(&error[..len]).unwrap(),
+                                outgoing,
+                                role,
+                                &state
+                            ),
+                            expected,
+                            "ipv6={ipv6} role={role:?} outgoing={outgoing} assigned={assigned}"
+                        );
+                        let index = super::policy::PolicyIndex::new(&policy);
+                        assert_eq!(
+                            policy.check_indexed(
+                                IpPacket::parse(&error[..len]).unwrap(),
+                                outgoing,
+                                role,
+                                &state,
+                                Some(&index)
+                            ),
+                            expected
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn graceful_half_close_preserves_the_opposite_direction() {
+    let (a, mut b) = pair();
+    let (mut sender, mut receiver) = a.split();
+    sender.close().await.unwrap();
+    assert!(matches!(
+        sender.send_packet(packet(), IpPacketOrigin::Local).await,
+        Err(ConnectIpError::Closed)
+    ));
+    drop(sender); // A completed send half must not reset the receive half.
+    assert!(b.recv().await.unwrap().is_none());
+    b.send_packet(packet(), IpPacketOrigin::Local)
+        .await
+        .unwrap();
+    assert!(matches!(
+        receiver.recv().await.unwrap(),
+        Some(ConnectIpEvent::Packet { .. })
+    ));
+    b.send_control(ConnectIpCapsule::RouteAdvertisement(vec![route(
+        "192.0.2.0/24",
+    )]))
+    .await
+    .unwrap();
+    assert!(matches!(
+        receiver.recv().await.unwrap(),
+        Some(ConnectIpEvent::Control(_))
+    ));
+    b.close().await.unwrap();
+    assert!(receiver.recv().await.unwrap().is_none());
+    assert!(receiver.recv().await.unwrap().is_none());
+    drop(receiver);
+    drop(b);
+}
+
+#[test]
+fn session_configuration_preserves_cross_field_invariants() {
+    config().try_with_max_packet_size(19).unwrap_err();
+    config().try_with_max_packet_size(65576).unwrap_err();
+    config().try_with_max_packet_size(1399).unwrap_err();
+    config().try_with_ipv6_link_mtu(Some(1279)).unwrap_err();
+    config().try_with_idle_timeout(Duration::ZERO).unwrap_err();
+    config().try_with_write_timeout(Duration::ZERO).unwrap_err();
+    let small = config()
+        .try_with_ipv6_link_mtu(None)
+        .unwrap()
+        .try_with_max_packet_size(20)
+        .unwrap();
+    assert_eq!(small.max_packet_size(), 20);
+    small.try_with_ipv6_link_mtu(Some(1280)).unwrap_err();
+    AddressRequestId::new(0).unwrap_err();
+    AddressRequestId::new(1 << 62).unwrap_err();
+    assert_eq!(
+        AddressRequestId::from_static((1 << 62) - 1).value(),
+        (1 << 62) - 1
+    );
+}
+
+#[tokio::test]
+async fn client_builder_checks_endpoint_after_header_customization() {
+    let endpoint = ConnectIpTemplate::try_new("https://proxy.example/vpn").unwrap();
+    let mut builder = ConnectIpRequestBuilder::new(
+        &endpoint,
+        &ConnectIpScope::default(),
+        Version::HTTP_11,
+        config(),
+    )
+    .unwrap();
+    builder.headers_mut().insert(
+        rama_http::header::HOST,
+        rama_http::HeaderValue::from_static("elsewhere.example"),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let client = service_fn(move |_: Request| {
+        seen.fetch_add(1, Ordering::Relaxed);
+        async { Ok::<_, Infallible>(rama_http::Response::new(())) }
+    });
+    builder.connect(&client).await.unwrap_err();
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    let mut request = endpoint
+        .request(&ConnectIpScope::default(), Version::HTTP_2)
+        .unwrap();
+    *request.body_mut() = rama_http::Body::from("optimistic tunnel bytes");
+    ConnectIpRequestBuilder::try_from_request(&endpoint, request, config()).unwrap_err();
+}
+
+#[test]
+fn typed_authority_matches_ipv6_spellings_and_https_default_port() {
+    let endpoint = ConnectIpTemplate::try_new("https://[2001:db8::1]/vpn").unwrap();
+    let mut request = endpoint
+        .request(&ConnectIpScope::default(), Version::HTTP_11)
+        .unwrap();
+    request.headers_mut().insert(
+        rama_http::header::HOST,
+        rama_http::HeaderValue::from_static("[2001:0db8:0:0:0:0:0:1]:443"),
+    );
+    assert_eq!(
+        endpoint.match_request(&request).unwrap(),
+        ConnectIpScope::default()
+    );
+    request.headers_mut().insert(
+        rama_http::header::HOST,
+        rama_http::HeaderValue::from_static("[2001:db8::1]:444"),
+    );
+    endpoint.match_request(&request).unwrap_err();
+}
+
+#[test]
+fn immutable_routing_views_survive_later_control_updates() {
+    let mut state = ConnectIpState::default();
+    state
+        .receive(&ConnectIpCapsule::RouteAdvertisement(vec![route(
+            "192.0.2.0/24",
+        )]))
+        .unwrap();
+    let before = state.snapshot();
+    state
+        .receive(&ConnectIpCapsule::RouteAdvertisement(vec![]))
+        .unwrap();
+    assert_eq!(before.peer_routes(), &[route("192.0.2.0/24")]);
+    assert!(state.snapshot().peer_routes().is_empty());
+}
+
+#[test]
+fn route_index_matches_linear_authorization_for_overlapping_protocols() {
+    let mut routes = Vec::new();
+    for family in [false, true] {
+        for protocol in [Some(IpProtocol::TCP), Some(IpProtocol::UDP)] {
+            for suffix in (0..=240).step_by(16) {
+                let network = if family {
+                    format!("2001:db8::{suffix:x}/128")
+                } else {
+                    format!("192.0.2.{suffix}/32")
+                };
+                routes.push(IpRoute::from_prefix(prefix(&network), protocol).unwrap());
+            }
+        }
+    }
+    let mut state = ConnectIpState::default();
+    state
+        .receive(&ConnectIpCapsule::RouteAdvertisement(routes.clone()))
+        .unwrap();
+    let snapshot = state.snapshot();
+    let (_, index) = snapshot.destination_index(true);
+    for family in [false, true] {
+        for suffix in 0..=255 {
+            let address = if family {
+                format!("2001:db8::{suffix:x}")
+            } else {
+                format!("192.0.2.{suffix}")
+            }
+            .parse()
+            .unwrap();
+            for protocol in [
+                None,
+                Some(IpProtocol::TCP),
+                Some(IpProtocol::UDP),
+                Some(IpProtocol::ICMP),
+                Some(IpProtocol::ICMPV6),
+            ] {
+                assert_eq!(
+                    index.allows(address, protocol),
+                    routes.iter().any(|r| r.allows(address, protocol))
+                );
+            }
+        }
+    }
+    let addresses = vec![
+        assignment("192.0.2.0/24", 0),
+        assignment("192.0.2.0/25", 0),
+        assignment("2001:db8::/32", 0),
+    ];
+    state
+        .receive(&ConnectIpCapsule::AddressAssign(addresses.clone()))
+        .unwrap();
+    for raw in [
+        "192.0.2.0",
+        "192.0.2.127",
+        "192.0.2.255",
+        "192.0.3.0",
+        "2001:db8::1",
+        "2001:db9::",
+    ] {
+        let address = raw.parse().unwrap();
+        assert_eq!(
+            state.snapshot().source_index(true).contains(address),
+            addresses.iter().any(|a| a.prefix.contains(&address))
+        );
+    }
+}
+
+#[tokio::test]
+async fn generic_request_bodies_and_custom_principals_reach_admission() {
+    let template = ConnectIpTemplate::try_new("https://proxy.example/vpn").unwrap();
+    let seen = Arc::new(AtomicUsize::new(0));
+    let admission_seen = seen.clone();
+    let limits = ConnectIpLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::MIN)
+        .with_keyer_for::<Request<std::cell::Cell<u8>>, _>(
+            |request: &Request<std::cell::Cell<u8>>| {
+                Ok::<_, rama_core::error::BoxError>(
+                    request
+                        .headers()
+                        .get("x-tenant")
+                        .map(|h| h.to_str().unwrap().to_owned()),
+                )
+            },
+        );
+    let service = ConnectIpService::new(
+        template.clone(),
+        service_fn(move |request: ConnectIpRequest<std::cell::Cell<u8>>| {
+            assert_eq!(request.request.headers()["x-tenant"], "test");
+            admission_seen.fetch_add(1, Ordering::Relaxed);
+            async { Ok::<_, Infallible>(config()) }
+        }),
+        service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
+        Executor::new(),
+    )
+    .with_limits(limits.clone());
+    let mut request = template
+        .request(&ConnectIpScope::default(), Version::HTTP_2)
+        .unwrap()
+        .map(|_| std::cell::Cell::new(0));
+    request
+        .headers_mut()
+        .insert("x-tenant", rama_http::HeaderValue::from_static("test"));
+    request
+        .extensions()
+        .insert(rama_tls::SecureTransport::default());
+    assert_eq!(
+        service.serve(request).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(seen.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn unknown_control_capsules_consume_budget_without_protocol_errors() {
+    let (a, b) = tokio::io::duplex(4096);
+    let mut cfg = config();
+    cfg.budget.byte_quota = Some(1);
+    let mut receiver =
+        ConnectIpSession::new(ServiceInput::new(b), ConnectIpRole::Server, cfg).unwrap();
+    let mut raw = HttpDatagramSession::new(ServiceInput::new(a));
+    raw.send_capsule(
+        rama_http::proto::capsule::CapsuleType::from_static(71),
+        Bytes::from_static(b"ignored"),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(receiver.recv().await, Err(ConnectIpError::Budget)));
+}
+
+#[test]
+fn compiled_local_policy_matches_unindexed_checks() {
+    use super::policy::PolicyIndex;
+    for ipv6 in [false, true] {
+        for scoped in [false, true] {
+            for assigned in [false, true] {
+                let network = if ipv6 {
+                    "2001:db8::/120"
+                } else {
+                    "192.0.2.0/24"
+                };
+                let mut policy = policy();
+                if scoped {
+                    policy.scope_targets = vec![prefix(network)];
+                    policy.scope_protocol = Some(IpProtocol::UDP);
+                }
+                let direction = IpDirectionPolicy {
+                    sources: if assigned {
+                        IpSourcePolicy::Assigned(vec![prefix(network)])
+                    } else {
+                        IpSourcePolicy::Static(vec![prefix(network)])
+                    },
+                    destinations: vec![
+                        IpRoute::from_prefix(prefix(network), Some(IpProtocol::UDP)).unwrap(),
+                    ],
+                    require_advertised_route: assigned,
+                };
+                policy.send = direction.clone();
+                policy.receive = direction;
+                let mut state = ConnectIpState::default();
+                let addresses = ConnectIpCapsule::AddressAssign(vec![assignment(network, 0)]);
+                state.sent(&addresses).unwrap();
+                state.receive(&addresses).unwrap();
+                let index = PolicyIndex::new(&policy);
+                for source_inside in [false, true] {
+                    for destination_inside in [false, true] {
+                        for protocol in [IpProtocol::TCP, IpProtocol::UDP, IpProtocol::ICMPV6] {
+                            let mut bytes = [0; 64];
+                            let n = if ipv6 {
+                                let address = |inside| {
+                                    if inside {
+                                        "2001:db8::1"
+                                    } else {
+                                        "2001:db8:1::1"
+                                    }
+                                    .parse()
+                                    .unwrap()
+                                };
+                                Ipv6Header::new(
+                                    address(source_inside),
+                                    address(destination_inside),
+                                    protocol,
+                                )
+                                .encode(&[128; 8], &mut bytes)
+                                .unwrap()
+                            } else {
+                                let address = |inside| {
+                                    if inside { "192.0.2.1" } else { "192.0.3.1" }
+                                        .parse()
+                                        .unwrap()
+                                };
+                                Ipv4Header::new(
+                                    address(source_inside),
+                                    address(destination_inside),
+                                    protocol,
+                                )
+                                .encode(&[], &[128; 8], &mut bytes)
+                                .unwrap()
+                            };
+                            let packet = IpPacket::parse(&bytes[..n]).unwrap();
+                            for role in [ConnectIpRole::Client, ConnectIpRole::Server] {
+                                for outgoing in [false, true] {
+                                    assert_eq!(
+                                        policy.check_indexed(
+                                            packet,
+                                            outgoing,
+                                            role,
+                                            &state,
+                                            Some(&index)
+                                        ),
+                                        policy.check(packet, outgoing, role, &state)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn public_route_construction_rejects_invalid_ranges() {
+    for (start, end) in [
+        ("192.0.2.2", "192.0.2.1"),
+        ("2001:db8::2", "2001:db8::1"),
+        ("192.0.2.1", "2001:db8::1"),
+    ] {
+        assert_eq!(
+            IpRoute::new(start.parse().unwrap(), end.parse().unwrap(), None),
+            Err(ConnectIpProtocolError::Route)
+        );
+    }
+    assert_eq!(
+        IpRoute::from_prefix(prefix("192.0.2.0/24"), Some(IpProtocol::HOP_BY_HOP)),
+        Err(ConnectIpProtocolError::Route)
+    );
+}
+
+#[test]
+fn icmp_quoted_flow_requires_either_assignment_or_advertised_route() {
+    use rama_net::ip::icmp::{IcmpErrorKind, encode_icmp_error};
+    let mut policy = policy();
+    policy.send.require_advertised_route = true;
+    policy.receive.sources = IpSourcePolicy::Static(vec![prefix("198.51.100.1/32")]);
+    let original = packet();
+    let mut bytes = [0; 1280];
+    let n = encode_icmp_error(
+        IpPacket::parse(&original).unwrap(),
+        "198.51.100.1".parse().unwrap(),
+        IcmpErrorKind::HopLimitExceeded,
+        &mut bytes,
+    )
+    .unwrap()
+    .unwrap();
+    let error = IpPacket::parse(&bytes[..n]).unwrap();
+    let index = super::policy::PolicyIndex::new(&policy);
+    for assigned in [false, true] {
+        for routed in [false, true] {
+            let mut state = ConnectIpState::default();
+            if assigned {
+                state
+                    .sent(&ConnectIpCapsule::AddressAssign(vec![assignment(
+                        "192.0.2.2/32",
+                        0,
+                    )]))
+                    .unwrap();
+            }
+            if routed {
+                state
+                    .receive(&ConnectIpCapsule::RouteAdvertisement(vec![route(
+                        "192.0.2.2/32",
+                    )]))
+                    .unwrap();
+            }
+            let expected = if assigned || routed {
+                Ok(())
+            } else {
+                Err(IpPacketDrop::Destination)
+            };
+            for compiled in [None, Some(&index)] {
+                assert_eq!(
+                    policy.check_indexed(error, false, ConnectIpRole::Client, &state, compiled),
+                    expected,
+                    "assigned={assigned} routed={routed}"
+                );
+                assert_eq!(
+                    policy.check_indexed(
+                        IpPacket::parse(&original).unwrap(),
+                        true,
+                        ConnectIpRole::Client,
+                        &state,
+                        compiled
+                    ),
+                    expected
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn unfinished_halves_abort_but_received_eof_preserves_sender() {
+    let (a, _b) = pair();
+    let (sender, mut receiver) = a.split();
+    drop(sender);
+    assert!(matches!(
+        timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap(),
+        Err(ConnectIpError::Closed)
+    ));
+
+    let (a, _b) = pair();
+    let (mut sender, receiver) = a.split();
+    drop(receiver);
+    assert!(matches!(
+        sender.send_packet(packet(), IpPacketOrigin::Local).await,
+        Err(ConnectIpError::Closed)
+    ));
+
+    let (a, mut b) = pair();
+    let (mut sender, mut receiver) = a.split();
+    b.close().await.unwrap();
+    assert!(receiver.recv().await.unwrap().is_none());
+    drop(receiver);
+    assert!(matches!(
+        sender
+            .send_packet(packet(), IpPacketOrigin::Local)
+            .await
+            .unwrap(),
+        IpPacketSend::Sent(_)
+    ));
+    assert!(matches!(
+        timeout(Duration::from_millis(100), b.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        Some(ConnectIpEvent::Packet { .. })
+    ));
+    sender.close().await.unwrap();
+    assert!(b.recv().await.unwrap().is_none());
 }

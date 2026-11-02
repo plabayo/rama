@@ -212,7 +212,7 @@ impl Default for ClientIpRateKey {
 
 impl<Input> InputToRateKey<Input> for ClientIpRateKey
 where
-    Input: ExtensionsRef + Send + Sync + 'static,
+    Input: ExtensionsRef,
 {
     type Key = IpAddr;
 

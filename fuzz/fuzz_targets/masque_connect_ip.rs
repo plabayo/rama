@@ -12,8 +12,8 @@ fuzz_target!(|bytes: &[u8]| {
         _ = ConnectIpScope::from_template_values(Some(s), Some(s));
     }
     let mut state = ConnectIpState::new(ConnectIpStateLimits {
-        max_entries: 16,
-        max_request_ids: 32,
+        max_entries: const { std::num::NonZeroU16::new(16).unwrap() },
+        max_request_ids: const { std::num::NonZeroU32::new(32).unwrap() },
     });
     let mut rest = bytes;
     for _ in 0..64 {

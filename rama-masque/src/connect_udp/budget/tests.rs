@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use crate::budget::QuotaWindowState;
+use rama_utils::rate::Rate;
+use std::{sync::Arc, time::Duration};
+use tokio::time::Instant;
 
 use super::*;
 
@@ -46,7 +49,8 @@ fn the_unanswered_allowance_ends_at_either_bound_or_an_answer() {
 
 #[tokio::test(start_paused = true)]
 async fn a_rate_needs_a_packet_and_the_bytes() {
-    let rate = DatagramRate::new(Rate::per_sec(2), Rate::per_sec(1000)).with_byte_burst(150);
+    let rate = DatagramRate::new(Rate::per_sec(2), Rate::per_sec(1000))
+        .with_byte_burst(std::num::NonZeroU64::new(150).unwrap());
     let account = TunnelBudget::new()
         .with_min_charge(0)
         .with_to_target(rate)
@@ -102,7 +106,8 @@ fn shared(budget: PrincipalBudget) -> Arc<PrincipalSpend> {
 }
 
 fn packets(burst: u64) -> DatagramRate {
-    DatagramRate::new(Rate::per_sec(1), Rate::per_sec(1_000_000)).with_packet_burst(burst)
+    DatagramRate::new(Rate::per_sec(1), Rate::per_sec(1_000_000))
+        .with_packet_burst(std::num::NonZeroU64::new(burst).unwrap())
 }
 
 #[tokio::test(start_paused = true)]
@@ -130,7 +135,7 @@ async fn a_principals_refusal_leaves_the_tunnel_uncharged() {
     // Refused by the principal: the tunnel's second packet is still there, right away.
     assert_eq!(account.charge_to_target(1), Charge::RateLimited);
     let tunnel = account.to_target.as_ref().unwrap();
-    assert_eq!(tunnel.packets.try_acquire(1), Acquire::Granted);
+    assert!(tunnel.try_spend(0));
 }
 
 #[tokio::test(start_paused = true)]

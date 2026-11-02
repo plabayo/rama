@@ -3,6 +3,7 @@ use super::{
     ConnectIpState, ConnectIpStateLimits, IpPacketDrop, ROUTE_ADVERTISEMENT, decode_ip_datagram,
     wire::encode_ip_datagram_mut,
 };
+use crate::budget::{DatagramRate, RateLimiters};
 use parking_lot::Mutex;
 use rama_core::{bytes::Bytes, extensions::ExtensionsRef};
 use rama_http::{
@@ -13,8 +14,7 @@ use rama_http::{
     },
     io::upgrade::Upgraded,
 };
-use rama_net::ip::{IpPacket, decrement_hop_limit};
-use rama_utils::rate::{Acquire, Rate, RateLimiter};
+use rama_net::ip::IpPacket;
 use std::{
     fmt,
     sync::{
@@ -29,52 +29,31 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
-/// Packet/byte rates and a lifetime byte quota, shared by both tunnel directions.
-#[derive(Debug, Clone, Copy)]
+/// Optional packet/byte allowance and lifetime byte quota for a tunnel.
+/// Both directions share the allowance. By default neither is limited.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct IpBudgetConfig {
-    /// Packet rate (also charges control messages and unknown contexts).
-    pub packets: Rate,
-    /// Maximum packet burst.
-    pub packet_burst: u64,
-    /// Byte rate, before validation; unknown/oversized packets are charged too.
-    pub bytes: Rate,
-    /// Maximum byte burst.
-    pub byte_burst: u64,
-    /// Lifetime byte quota. `None` leaves lifetime bytes unlimited, but rates apply.
+    /// Packet and byte rates. Unknown contexts and malformed packets count too.
+    pub rate: Option<DatagramRate>,
+    /// Total bytes over the tunnel lifetime; zero refuses every nonempty packet.
     pub byte_quota: Option<u64>,
-}
-
-impl Default for IpBudgetConfig {
-    fn default() -> Self {
-        Self {
-            packets: Rate::per_sec(10000),
-            packet_burst: 1000,
-            bytes: Rate::per_sec(16 * 1024 * 1024),
-            byte_burst: 1024 * 1024,
-            byte_quota: None,
-        }
-    }
 }
 
 /// A shared principal/connection budget. Clones spend the same counters/buckets.
 #[derive(Debug, Clone)]
 pub struct ConnectIpBudget {
-    packets: RateLimiter,
-    bytes: RateLimiter,
+    rate: Option<RateLimiters>,
     remaining: Option<Arc<AtomicU64>>,
 }
 
 impl ConnectIpBudget {
-    /// Construct a budget; zero bursts are refused.
-    pub fn new(config: IpBudgetConfig) -> Result<Self, ConnectIpError> {
-        if config.packet_burst == 0 || config.byte_burst == 0 {
-            return Err(ConnectIpError::Config);
-        }
-        Ok(Self {
-            packets: RateLimiter::new(config.packets, config.packet_burst),
-            bytes: RateLimiter::new(config.bytes, config.byte_burst),
+    /// Construct a shared budget from valid rates and an optional byte quota.
+    #[must_use]
+    pub fn new(config: IpBudgetConfig) -> Self {
+        Self {
+            rate: config.rate.map(DatagramRate::limiters),
             remaining: config.byte_quota.map(|q| Arc::new(AtomicU64::new(q))),
-        })
+        }
     }
 
     pub(super) fn charge(&self, bytes: u64) -> bool {
@@ -88,9 +67,7 @@ impl ConnectIpBudget {
             return false;
         }
         // Failed attempts retain their charge: a malformed flood cannot gain free work.
-        let packet = self.packets.try_acquire(1) == Acquire::Granted;
-        let bytes = self.bytes.try_acquire(bytes) == Acquire::Granted;
-        packet && bytes
+        self.rate.as_ref().is_none_or(|rate| rate.try_spend(bytes))
     }
 }
 
@@ -100,24 +77,25 @@ pub struct ConnectIpSessionConfig {
     /// Locally authorized packet permissions; peer declarations cannot extend them.
     pub policy: ConnectIpPolicy,
     /// Bounded control state.
-    pub state: ConnectIpStateLimits,
+    state: ConnectIpStateLimits,
     /// Largest accepted IP packet, excluding the Context ID; up to 65575 bytes.
-    pub max_packet_size: usize,
+    max_packet_size: usize,
     /// IPv6 link MTU guaranteed out of band, or `None` to disable IPv6.
     ///
     /// Set only after verifying the complete tunnel path (including intermediaries),
     /// or an RFC 9484 §7.2 probe. Merely assuming the outer QUIC MTU is insufficient.
     /// Otherwise leave this unset and call [`ConnectIpSession::probe_ipv6_mtu`].
     /// Native path shrink below 1280 aborts an IPv6-enabled tunnel.
-    pub ipv6_link_mtu: Option<u16>,
+    ipv6_link_mtu: Option<u16>,
     /// Maximum time without accepted packet/control activity.
-    pub idle_timeout: Duration,
+    idle_timeout: Duration,
     /// Maximum time a reliable send/close may remain blocked.
-    pub write_timeout: Duration,
+    write_timeout: Duration,
     /// Per-tunnel rate/quota configuration; instantiated for each new session.
     pub budget: IpBudgetConfig,
     /// Optional shared principal/connection budgets, charged before the tunnel budget.
     pub shared_budgets: Vec<ConnectIpBudget>,
+    pub(super) principal_budget: Option<Arc<crate::budget::PrincipalSpend>>,
 }
 
 impl ConnectIpSessionConfig {
@@ -133,41 +111,95 @@ impl ConnectIpSessionConfig {
             write_timeout: Duration::from_secs(5),
             budget: IpBudgetConfig::default(),
             shared_budgets: Vec::new(),
+            principal_budget: None,
         }
     }
 
-    fn validate(&self) -> Result<(), ConnectIpError> {
-        if self.max_packet_size < 20
-            || self.max_packet_size > 65575
-            || self.state.max_entries == 0
-            || self.state.max_entries > 4096
-            || self.state.max_request_ids == 0
-            || self.state.max_request_ids > 65536
-            || self.idle_timeout.is_zero()
-            || self.write_timeout.is_zero()
+    /// The configured control-state bounds.
+    pub fn state_limits(&self) -> ConnectIpStateLimits {
+        self.state
+    }
+
+    /// Set already-valid control-state bounds.
+    #[must_use]
+    pub fn with_state_limits(mut self, state: ConnectIpStateLimits) -> Self {
+        self.state = state;
+        self
+    }
+
+    /// Largest packet accepted from either carrier.
+    pub fn max_packet_size(&self) -> usize {
+        self.max_packet_size
+    }
+
+    /// Set the packet bound, retaining the guaranteed IPv6 MTU if configured.
+    pub fn try_with_max_packet_size(mut self, size: usize) -> Result<Self, ConnectIpError> {
+        if !(20..=65575).contains(&size)
             || self
                 .ipv6_link_mtu
-                .is_some_and(|n| n < 1280 || usize::from(n) > self.max_packet_size)
+                .is_some_and(|mtu| usize::from(mtu) > size)
         {
             return Err(ConnectIpError::Config);
         }
-        Ok(())
+        self.max_packet_size = size;
+        Ok(self)
     }
 
-    /// HTTP framing configuration, also used when constructing external test carriers.
-    pub fn http_config(&self) -> Result<SessionConfig, ConnectIpError> {
-        self.validate()?;
-        Ok(SessionConfig {
+    /// IPv6 MTU guaranteed for the complete path, when known.
+    pub fn ipv6_link_mtu(&self) -> Option<u16> {
+        self.ipv6_link_mtu
+    }
+
+    /// Configure a verified IPv6 MTU, or disable IPv6 until a successful probe.
+    pub fn try_with_ipv6_link_mtu(mut self, mtu: Option<u16>) -> Result<Self, ConnectIpError> {
+        if mtu.is_some_and(|mtu| mtu < 1280 || usize::from(mtu) > self.max_packet_size) {
+            return Err(ConnectIpError::Config);
+        }
+        self.ipv6_link_mtu = mtu;
+        Ok(self)
+    }
+
+    /// Maximum idle time without accepted packet or control activity.
+    pub fn idle_timeout(&self) -> Duration {
+        self.idle_timeout
+    }
+
+    /// Set a positive idle timeout.
+    pub fn try_with_idle_timeout(mut self, timeout: Duration) -> Result<Self, ConnectIpError> {
+        if timeout.is_zero() {
+            return Err(ConnectIpError::Config);
+        }
+        self.idle_timeout = timeout;
+        Ok(self)
+    }
+
+    /// Maximum time for a packet/control send or graceful close.
+    pub fn write_timeout(&self) -> Duration {
+        self.write_timeout
+    }
+
+    /// Set a positive write timeout.
+    pub fn try_with_write_timeout(mut self, timeout: Duration) -> Result<Self, ConnectIpError> {
+        if timeout.is_zero() {
+            return Err(ConnectIpError::Config);
+        }
+        self.write_timeout = timeout;
+        Ok(self)
+    }
+
+    /// HTTP framing configuration; construction preserves all size invariants.
+    pub fn http_config(&self) -> SessionConfig {
+        SessionConfig {
             capsules: CapsuleConfig {
                 max_datagram_size: self.max_packet_size + 8,
-                max_capsule_size: self.state.max_entries * 40,
+                max_capsule_size: usize::from(self.state.max_entries.get()) * 40,
                 capsule_types: Box::new([ADDRESS_ASSIGN, ADDRESS_REQUEST, ROUTE_ADVERTISEMENT]),
-                unknown: UnknownCapsules::Skip,
+                unknown: UnknownCapsules::Forward,
                 oversized_datagram_prefix: 8,
             },
             native_send: NativeSendPolicy::RejectWhenFull,
             ..SessionConfig::default()
-        })
+        }
     }
 }
 
@@ -175,8 +207,8 @@ impl ConnectIpSessionConfig {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ConnectIpError {
-    /// Total or principal tunnel admission capacity was reached.
-    Admission,
+    /// A control-message budget was exhausted; the stream is aborted without a protocol error.
+    Budget,
     /// Invalid local configuration.
     Config,
     /// Malformed control state/framing.
@@ -194,7 +226,7 @@ pub enum ConnectIpError {
 impl fmt::Display for ConnectIpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Admission => f.write_str("CONNECT-IP admission limit reached"),
+            Self::Budget => f.write_str("CONNECT-IP control budget exhausted"),
             Self::Config => f.write_str("invalid CONNECT-IP configuration"),
             Self::Protocol(e) => e.fmt(f),
             Self::Carrier(e) => e.fmt(f),
@@ -267,13 +299,17 @@ pub struct ConnectIpStats {
 #[derive(Debug)]
 struct Shared {
     config: ConnectIpSessionConfig,
+    role: super::ConnectIpRole,
+    policy_index: super::policy::PolicyIndex,
     state: Mutex<ConnectIpState>,
+    snapshot: arc_swap::ArcSwap<super::ConnectIpStateSnapshot>,
     native: Option<NativeDatagrams>,
     ipv6_mtu: AtomicU16,
     budget: ConnectIpBudget,
     closed: AtomicBool,
     notify: Notify,
-    last_activity: Mutex<Instant>,
+    epoch: Instant,
+    last_activity: AtomicU64,
     sent: AtomicU64,
     received: AtomicU64,
     dropped: AtomicU64,
@@ -314,12 +350,41 @@ impl Shared {
         Ok(())
     }
 
-    pub(super) fn charge(&self, bytes: u64) -> bool {
-        self.config.shared_budgets.iter().all(|b| b.charge(bytes)) && self.budget.charge(bytes)
+    pub(super) fn charge(&self, bytes: u64, sending: bool) -> bool {
+        let to_client = sending == (self.role == super::ConnectIpRole::Server);
+        self.config
+            .principal_budget
+            .as_ref()
+            .is_none_or(|b| b.charge(to_client, bytes) == crate::budget::Charge::Paid)
+            && self.config.shared_budgets.iter().all(|b| b.charge(bytes))
+            && self.budget.charge(bytes)
     }
 
     fn touch(&self) {
-        *self.last_activity.lock() = Instant::now();
+        let elapsed = u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.last_activity.fetch_max(elapsed, Ordering::Relaxed);
+    }
+
+    fn idle_deadline(&self) -> Instant {
+        crate::time::expiration_at(
+            self.epoch + Duration::from_nanos(self.last_activity.load(Ordering::Relaxed)),
+            self.config.idle_timeout,
+        )
+    }
+
+    fn update_state(
+        &self,
+        capsule: &ConnectIpCapsule,
+        received: bool,
+    ) -> Result<(), ConnectIpProtocolError> {
+        let mut state = self.state.lock();
+        if received {
+            state.receive(capsule)?;
+        } else {
+            state.sent(capsule)?;
+        }
+        self.snapshot.store(state.snapshot());
+        Ok(())
     }
 
     fn stats(&self) -> ConnectIpStats {
@@ -347,9 +412,13 @@ impl Shared {
                 return Err(IpPacketDrop::TooLarge);
             }
         }
-        self.config
-            .policy
-            .check(packet, outgoing, &self.state.lock())?;
+        self.config.policy.check_indexed(
+            packet,
+            outgoing,
+            self.role,
+            &self.snapshot.load(),
+            Some(&self.policy_index),
+        )?;
         Ok(packet)
     }
 
@@ -381,20 +450,28 @@ pub struct ConnectIpSession<T = Upgraded> {
 
 impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
     /// Wrap an accepted HTTP upgrade. Handshake and admission must happen first.
-    pub fn new(io: T, config: ConnectIpSessionConfig) -> Result<Self, ConnectIpError> {
-        let http = HttpDatagramSession::with_config(io, config.http_config()?);
+    pub fn new(
+        io: T,
+        role: super::ConnectIpRole,
+        config: ConnectIpSessionConfig,
+    ) -> Result<Self, ConnectIpError> {
+        let http = HttpDatagramSession::with_config(io, config.http_config());
         let native = http.native().cloned();
         let state = ConnectIpState::new(config.state);
-        let budget = ConnectIpBudget::new(config.budget)?;
+        let budget = ConnectIpBudget::new(config.budget);
         let shared = Arc::new(Shared {
             ipv6_mtu: AtomicU16::new(config.ipv6_link_mtu.unwrap_or(0)),
+            policy_index: super::policy::PolicyIndex::new(&config.policy),
             config,
+            role,
+            snapshot: arc_swap::ArcSwap::from(state.snapshot()),
             state: Mutex::new(state),
             native,
             budget,
             closed: AtomicBool::new(false),
             notify: Notify::new(),
-            last_activity: Mutex::new(Instant::now()),
+            epoch: Instant::now(),
+            last_activity: AtomicU64::new(0),
             sent: AtomicU64::new(0),
             received: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -403,10 +480,12 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
         let (sender, receiver) = http.split();
         Ok(Self {
             sender: ConnectIpSender {
+                finished: false,
                 http: sender,
                 shared: shared.clone(),
             },
             receiver: ConnectIpReceiver {
+                finished: false,
                 http: receiver,
                 shared,
             },
@@ -434,7 +513,7 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
     ) -> Result<Vec<ConnectIpCapsule>, ConnectIpError> {
         use rama_net::ip::{
             IpProtocol,
-            icmp::{encode_icmpv6_echo, icmpv6_checksum},
+            icmp::{Icmpv6Echo, Icmpv6EchoKind},
         };
         if self.sender.shared.ipv6_mtu.load(Ordering::Relaxed) != 0
             || self.sender.shared.config.max_packet_size < 1280
@@ -453,9 +532,16 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
         let mut data = [0; 1232];
         data[..16].copy_from_slice(&nonce);
         let mut packet = [0; 1280];
-        encode_icmpv6_echo(source, peer, 0, 0, &data, false, &mut packet)
-            .map_err(|_error| ConnectIpError::Config)?;
-        let deadline = Instant::now() + self.sender.shared.config.write_timeout;
+        Icmpv6Echo {
+            kind: Icmpv6EchoKind::Request,
+            identifier: 0,
+            sequence: 0,
+            data: &data,
+        }
+        .encode(source, peer, &mut packet)
+        .map_err(|_error| ConnectIpError::Config)?;
+        let deadline =
+            crate::time::expiration_at(Instant::now(), self.sender.shared.config.write_timeout);
         let result = timeout_at(deadline, async {
             if !matches!(
                 self.send_packet(Bytes::copy_from_slice(&packet), IpPacketOrigin::Local)
@@ -482,31 +568,22 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
                         {
                             continue;
                         }
-                        let body = ip.payload();
-                        if body[1] != 0
-                            || icmpv6_checksum(ip.source(), ip.destination(), body) != Ok(0)
-                        {
+                        let Ok(echo) = Icmpv6Echo::parse(ip) else {
                             continue;
-                        }
-                        if body[0] == 129
+                        };
+                        if echo.kind == Icmpv6EchoKind::Reply
                             && (peer.is_multicast() || ip.source() == peer)
-                            && body[4..8] == [0; 4]
-                            && body[8..] == data
+                            && echo.identifier == 0
+                            && echo.sequence == 0
+                            && echo.data == data
                         {
                             return Ok(controls);
                         }
-                        if body[0] == 128 {
+                        if echo.kind == Icmpv6EchoKind::Request {
                             let mut reply = [0; 1280];
-                            encode_icmpv6_echo(
-                                source,
-                                ip.source(),
-                                u16::from_be_bytes([body[4], body[5]]),
-                                u16::from_be_bytes([body[6], body[7]]),
-                                &body[8..],
-                                true,
-                                &mut reply,
-                            )
-                            .map_err(|_error| ConnectIpError::Config)?;
+                            echo.reply()
+                                .encode(source, ip.source(), &mut reply)
+                                .map_err(|_error| ConnectIpError::Config)?;
                             if !matches!(
                                 self.send_packet(
                                     Bytes::copy_from_slice(&reply),
@@ -526,7 +603,8 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
                             ConnectIpCapsule::RouteAdvertisement(v) => v.len(),
                         };
                         if controls.len() == 16
-                            || entries > self.sender.shared.config.state.max_entries
+                            || entries
+                                > usize::from(self.sender.shared.config.state.max_entries.get())
                         {
                             return Err(ConnectIpProtocolError::Limit.into());
                         }
@@ -552,7 +630,9 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
         }
     }
 
-    /// Separate packet/control sending from reception; dropping either half aborts the tunnel.
+    /// Separate packet/control sending from reception.
+    /// Dropping an unfinished half aborts the tunnel; a successfully closed send
+    /// half or receive half that reached EOF can be dropped independently.
     pub fn split(self) -> (ConnectIpSender<T>, ConnectIpReceiver<T>) {
         (self.sender, self.receiver)
     }
@@ -577,13 +657,13 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
     }
 
     /// Reserve an unused local address request ID.
-    pub fn next_request_id(&self) -> Result<u64, ConnectIpError> {
+    pub fn next_request_id(&self) -> Result<super::AddressRequestId, ConnectIpError> {
         self.sender.next_request_id()
     }
 
     /// Current state snapshot.
     #[must_use]
-    pub fn state(&self) -> ConnectIpState {
+    pub fn state(&self) -> Arc<super::ConnectIpStateSnapshot> {
         self.sender.state()
     }
 
@@ -617,13 +697,14 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
 pub struct ConnectIpSender<T = Upgraded> {
     http: SessionSender<T>,
     shared: Arc<Shared>,
+    finished: bool,
 }
 
 impl<T> ConnectIpSender<T> {
     /// Current directional control state.
     #[must_use]
-    pub fn state(&self) -> ConnectIpState {
-        self.shared.state.lock().clone()
+    pub fn state(&self) -> Arc<super::ConnectIpStateSnapshot> {
+        self.shared.snapshot.load_full()
     }
 
     /// Locally authorized policy, including the pinned resolved scope.
@@ -650,7 +731,7 @@ impl<T> ConnectIpSender<T> {
     }
 
     /// Reserve an address request ID.
-    pub fn next_request_id(&self) -> Result<u64, ConnectIpError> {
+    pub fn next_request_id(&self) -> Result<super::AddressRequestId, ConnectIpError> {
         self.shared.active()?;
         Ok(self.shared.state.lock().next_request_id()?)
     }
@@ -659,23 +740,29 @@ impl<T> ConnectIpSender<T> {
 impl<T: AsyncWrite> ConnectIpSender<T> {
     /// Send control state. Cancellation after state reservation closes both halves.
     pub async fn send_control(&mut self, capsule: ConnectIpCapsule) -> Result<(), ConnectIpError> {
+        if self.finished {
+            return Err(ConnectIpError::Closed);
+        }
+        if self.finished {
+            return Err(ConnectIpError::Closed);
+        }
         if let Err(error) = self.shared.active() {
             self.http.abort();
             return Err(error);
         }
-        let value = capsule.encode(self.shared.config.state.max_entries)?;
-        if !self.shared.charge(value.len() as u64) {
+        let value = capsule.encode(usize::from(self.shared.config.state.max_entries.get()))?;
+        if !self.shared.charge(value.len() as u64, true) {
             self.shared.close();
             self.http.abort();
-            return Err(ConnectIpError::Protocol(ConnectIpProtocolError::Limit));
+            return Err(ConnectIpError::Budget);
         }
-        self.shared.state.lock().sent(&capsule)?;
+        self.shared.update_state(&capsule, false)?;
         let mut guard = SendGuard {
             shared: self.shared.clone(),
             complete: false,
         };
         let result = timeout_at(
-            Instant::now() + self.shared.config.write_timeout,
+            crate::time::expiration_at(Instant::now(), self.shared.config.write_timeout),
             self.http.send_capsule(capsule.capsule_type(), value),
         )
         .await;
@@ -702,11 +789,14 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
         packet: Bytes,
         origin: IpPacketOrigin,
     ) -> Result<IpPacketSend, ConnectIpError> {
+        if self.finished {
+            return Err(ConnectIpError::Closed);
+        }
         if let Err(error) = self.shared.active() {
             self.http.abort();
             return Err(error);
         }
-        if !self.shared.charge(packet.len() as u64) {
+        if !self.shared.charge(packet.len() as u64, true) {
             return Ok(self.shared.drop_packet(IpPacketDrop::Budget));
         }
         let parsed = match self.shared.check(&packet, true) {
@@ -724,18 +814,24 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
         }
         // One copy supplies context-ID headroom and mutable forwarding headers.
         // Never mutate the caller's potentially shared Bytes storage.
-        let mut datagram = encode_ip_datagram_mut(&packet);
+        let datagram = if origin == IpPacketOrigin::Forwarded {
+            let mut datagram = rama_core::bytes::BytesMut::with_capacity(packet.len() + 1);
+            crate::context::ContextId::IP.encode(&mut datagram);
+            parsed
+                .encode_forwarded(&mut datagram)
+                .map_err(|_error| ConnectIpError::Config)?;
+            datagram
+        } else {
+            encode_ip_datagram_mut(&packet)
+        };
         // A blocked carrier only needs the framed buffer, not the original owner too.
         drop(packet);
-        if origin == IpPacketOrigin::Forwarded {
-            decrement_hop_limit(&mut datagram[1..]).map_err(|_error| ConnectIpError::Config)?;
-        }
         let mut guard = SendGuard {
             shared: self.shared.clone(),
             complete: false,
         };
         let result = timeout_at(
-            Instant::now() + self.shared.config.write_timeout,
+            crate::time::expiration_at(Instant::now(), self.shared.config.write_timeout),
             self.http.send_datagram(datagram.freeze()),
         )
         .await;
@@ -769,32 +865,42 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
         }
     }
 
-    /// Close the stream and wake any pending receive.
+    /// Finish the send direction. Receiving continues until the peer finishes.
+    /// Cancellation or failure aborts both directions.
     pub async fn close(&mut self) -> Result<(), ConnectIpError> {
         let mut guard = SendGuard {
             shared: self.shared.clone(),
             complete: false,
         };
         let result = timeout_at(
-            Instant::now() + self.shared.config.write_timeout,
+            crate::time::expiration_at(Instant::now(), self.shared.config.write_timeout),
             self.http.close(),
         )
         .await;
-        self.shared.close();
-        guard.complete = true;
-        if let Ok(v) = result {
-            v.map_err(Into::into)
-        } else {
-            self.http.abort();
-            Err(ConnectIpError::Timeout)
+        match result {
+            Ok(Ok(())) => {
+                self.finished = true;
+                guard.complete = true;
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                self.http.abort();
+                Err(error.into())
+            }
+            Err(_) => {
+                self.http.abort();
+                Err(ConnectIpError::Timeout)
+            }
         }
     }
 }
 
 impl<T> Drop for ConnectIpSender<T> {
     fn drop(&mut self) {
-        self.shared.close();
-        self.http.abort();
+        if !self.finished {
+            self.shared.close();
+            self.http.abort();
+        }
     }
 }
 
@@ -803,13 +909,14 @@ impl<T> Drop for ConnectIpSender<T> {
 pub struct ConnectIpReceiver<T = Upgraded> {
     http: SessionReceiver<T>,
     shared: Arc<Shared>,
+    finished: bool,
 }
 
 impl<T> ConnectIpReceiver<T> {
     /// Current directional control state after the latest received update.
     #[must_use]
-    pub fn state(&self) -> ConnectIpState {
-        self.shared.state.lock().clone()
+    pub fn state(&self) -> Arc<super::ConnectIpStateSnapshot> {
+        self.shared.snapshot.load_full()
     }
 
     /// Locally authorized policy, including the pinned resolved scope.
@@ -828,13 +935,21 @@ impl<T> ConnectIpReceiver<T> {
 impl<T: AsyncRead> ConnectIpReceiver<T> {
     /// Receive one event. Invalid packets are observable drops, not protocol errors.
     pub async fn recv(&mut self) -> Result<Option<ConnectIpEvent>, ConnectIpError> {
+        if self.finished {
+            return Ok(None);
+        }
         if let Err(error) = self.shared.active() {
             self.http.abort();
             return Err(error);
         }
-        tokio::task::consume_budget().await;
         loop {
-            let deadline = *self.shared.last_activity.lock() + self.shared.config.idle_timeout;
+            tokio::task::consume_budget().await;
+            let deadline = self.shared.idle_deadline();
+            if Instant::now() >= deadline {
+                self.shared.close();
+                self.http.abort();
+                return Err(ConnectIpError::Timeout);
+            }
             let event = tokio::select! {
                 _ = self.shared.cancelled() => {
                     self.http.abort();
@@ -848,7 +963,7 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
                         return Err(error.into());
                     }
                     Err(_) => {
-                        if Instant::now() < *self.shared.last_activity.lock() + self.shared.config.idle_timeout {
+                        if Instant::now() < self.shared.idle_deadline() {
                             continue;
                         }
                         self.shared.close();
@@ -858,7 +973,7 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
                 }
             };
             let Some(event) = event else {
-                self.shared.close();
+                self.finished = true;
                 return Ok(None);
             };
             if let Err(error) = self.shared.active() {
@@ -867,12 +982,14 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
             }
             match event {
                 SessionEvent::Datagram { payload, transport } => {
-                    let reason = if !self.shared.charge(payload.len() as u64) {
+                    let reason = if !self.shared.charge(payload.len() as u64, false) {
                         Some(IpPacketDrop::Budget)
                     } else {
                         match decode_ip_datagram(&payload) {
                             Err(_) => Some(IpPacketDrop::Invalid),
-                            Ok((id, _)) if id != 0 => Some(IpPacketDrop::UnknownContext),
+                            Ok((id, _)) if id != crate::context::ContextId::IP => {
+                                Some(IpPacketDrop::UnknownContext)
+                            }
                             Ok((_, packet)) => match self.shared.check(packet, false) {
                                 Ok(_) => {
                                     let offset = payload.len() - packet.len();
@@ -893,11 +1010,16 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
                     }
                 }
                 SessionEvent::Capsule { ty, value } => {
-                    let result = if !self.shared.charge(value.len() as u64) {
-                        Err(ConnectIpProtocolError::Limit)
-                    } else {
-                        ConnectIpCapsule::decode(ty, &value, self.shared.config.state.max_entries)
-                    };
+                    if !self.shared.charge(value.len() as u64, false) {
+                        self.http.abort();
+                        self.shared.close();
+                        return Err(ConnectIpError::Budget);
+                    }
+                    let result = ConnectIpCapsule::decode(
+                        ty,
+                        &value,
+                        usize::from(self.shared.config.state.max_entries.get()),
+                    );
                     let capsule = match result {
                         Ok(v) => v,
                         Err(e) => {
@@ -906,7 +1028,7 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
                             return Err(e.into());
                         }
                     };
-                    if let Err(e) = self.shared.state.lock().receive(&capsule) {
+                    if let Err(e) = self.shared.update_state(&capsule, true) {
                         self.http.abort_malformed();
                         self.shared.close();
                         return Err(e.into());
@@ -915,7 +1037,7 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
                     return Ok(Some(ConnectIpEvent::Control(capsule)));
                 }
                 SessionEvent::OversizedDatagram { length, .. } => {
-                    let reason = if self.shared.charge(length) {
+                    let reason = if self.shared.charge(length, false) {
                         IpPacketDrop::TooLarge
                     } else {
                         IpPacketDrop::Budget
@@ -923,7 +1045,16 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
                     self.shared.dropped.fetch_add(1, Ordering::Relaxed);
                     return Ok(Some(ConnectIpEvent::Dropped(reason)));
                 }
-                SessionEvent::UnknownCapsule(_) | SessionEvent::UnknownCapsuleData(_) => (),
+                SessionEvent::UnknownCapsule(header) => {
+                    // Charge once from the declared length, then discard bounded chunks.
+                    // Unknown extensions never count as accepted activity.
+                    if !self.shared.charge(header.length.into_inner(), false) {
+                        self.shared.close();
+                        self.http.abort();
+                        return Err(ConnectIpError::Budget);
+                    }
+                }
+                SessionEvent::UnknownCapsuleData(_) => (),
             }
         }
     }
@@ -931,8 +1062,10 @@ impl<T: AsyncRead> ConnectIpReceiver<T> {
 
 impl<T> Drop for ConnectIpReceiver<T> {
     fn drop(&mut self) {
-        self.shared.close();
-        self.http.abort();
+        if !self.finished {
+            self.shared.close();
+            self.http.abort();
+        }
     }
 }
 

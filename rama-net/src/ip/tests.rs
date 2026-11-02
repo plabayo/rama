@@ -38,7 +38,7 @@ fn ipv4_edits_preserve_options_payload_and_checksum() {
     let mut bytes = [0; 128];
     let mut h = ipv4();
     h.traffic_class = 0xa2;
-    h.fragment.identification = 1234;
+    h = h.with_identification(1234);
     let len = h
         .encode(&[1, 1, 0, 0], b"some payload", &mut bytes)
         .unwrap();
@@ -73,10 +73,8 @@ fn encoding_and_exhausted_hop_limit_do_not_partially_mutate() {
         .unwrap_err();
     assert_eq!(output, saved);
     let mut h = ipv4();
-    h.fragment.offset = 1;
-    h.encode(&[], b"data", &mut output).unwrap_err();
+    h.try_with_fragment(1, false).unwrap_err();
     assert_eq!(output, saved);
-    h.fragment.offset = 0;
     h.hop_limit = 1;
     h.encode(&[], b"data", &mut output).unwrap();
     let saved = output;
@@ -85,9 +83,9 @@ fn encoding_and_exhausted_hop_limit_do_not_partially_mutate() {
         Err(IpPacketError::HopLimit)
     );
     assert_eq!(output, saved);
-    let mut h = ipv6(IpProtocol::UDP);
-    h.flow_label = 1 << 20;
-    assert_eq!(h.encode(b"data", &mut output), Err(IpPacketError::Field));
+    ipv6(IpProtocol::UDP)
+        .try_with_flow_label(1 << 20)
+        .unwrap_err();
     assert_eq!(output, saved);
 }
 
@@ -99,7 +97,7 @@ fn ipv6_extensions_and_non_initial_fragments_are_explicit() {
         44, 0, 0, 0, 0, 0, 0, 0, 17, 0, 0, 1, 0, 0, 0, 42, 1, 2, 3, 4, 5, 6, 7, 8,
     ];
     let mut h = ipv6(IpProtocol::DESTINATION_OPTIONS);
-    h.flow_label = 0xabcde;
+    h = h.try_with_flow_label(0xabcde).unwrap();
     h.traffic_class = 0x89;
     h.encode(&payload, &mut bytes).unwrap();
     let p = Ipv6Packet::parse(&bytes).unwrap();
@@ -174,14 +172,14 @@ fn malformed_lengths_never_reach_packet_accessors() {
     for len in 0..n {
         IpPacket::parse(&packet[..len]).unwrap_err();
     }
-    let n = ipv6(IpProtocol::new(253))
+    let n = ipv6(IpProtocol::new(252))
         .encode(b"payload", &mut packet)
         .unwrap();
     for len in 0..n {
         IpPacket::parse(&packet[..len]).unwrap_err();
     }
     let p = IpPacket::parse(&packet[..n]).unwrap();
-    assert_eq!(p.protocol(), Some(IpProtocol::new(253)));
+    assert_eq!(p.protocol(), Some(IpProtocol::new(252)));
 }
 
 #[test]
@@ -284,10 +282,10 @@ fn arbitrary_inputs_and_single_byte_mutations_are_panic_free() {
 #[test]
 fn fragment_size_includes_the_reconstructed_header() {
     let mut h = ipv4();
-    h.fragment.offset = 65512;
+    h = h.try_with_fragment(65512, false).unwrap();
     let mut bytes = [0; 128];
     h.encode(&[], &[0; 8], &mut bytes).unwrap_err();
-    h.fragment.offset = 65504;
+    h = h.try_with_fragment(65504, false).unwrap();
     let n = h.encode(&[], &[0; 8], &mut bytes).unwrap();
     Ipv4Packet::parse(&bytes[..n]).unwrap();
     let mut payload = [0; 32];
@@ -336,5 +334,230 @@ fn checksum_matches_independent_odd_length_and_carry_vectors() {
             incremental.update(&[]);
         }
         assert_eq!(incremental.finish(), expected);
+    }
+}
+
+#[test]
+fn ecn_ignores_dscp_bits() {
+    assert_eq!(EcnCodepoint::from_bits(0b1111_1100), EcnCodepoint::NotEct);
+    assert_eq!(EcnCodepoint::from_bits(0b1111_1101), EcnCodepoint::Ect1);
+    assert_eq!(EcnCodepoint::from_bits(0b1111_1110), EcnCodepoint::Ect0);
+    assert_eq!(EcnCodepoint::from_bits(0b1111_1111), EcnCodepoint::Ce);
+}
+
+#[test]
+fn extension_registry_and_reserved_bits_are_shared_with_quotes() {
+    for extension in [0, 43, 44, 51, 60, 135, 139, 140, 253, 254] {
+        let length = if extension == 51 { 12 } else { 8 };
+        let mut payload = [0; 24];
+        payload[0] = IpProtocol::UDP.value();
+        if extension == 51 {
+            payload[1] = 1;
+            payload[2..4].fill(0xff); // AH reserved bits are ignored on receipt.
+        }
+        if extension == 44 {
+            payload[1] = 0xff;
+            payload[3] = 6; // Fragment reserved bits are ignored on receipt.
+        }
+        let mut bytes = [0; 80];
+        let size = ipv6(IpProtocol::new(extension))
+            .encode(&payload[..length + 8], &mut bytes)
+            .unwrap();
+        let packet = Ipv6Packet::parse(&bytes[..size]).unwrap();
+        assert_eq!(
+            packet.protocol(),
+            Some(IpProtocol::UDP),
+            "extension {extension}"
+        );
+        assert_eq!(packet.extensions().count(), 1);
+        let quote = icmp::IpPacketQuote::parse(&bytes[..40 + length]).unwrap();
+        assert_eq!(quote.protocol, packet.protocol());
+        icmp::IpPacketQuote::parse(&bytes[..40 + length - 1]).unwrap_err();
+    }
+    let mut bytes = [0; 80];
+    let size = ipv6(IpProtocol::ESP).encode(&[0; 8], &mut bytes).unwrap();
+    assert_eq!(Ipv6Packet::parse(&bytes[..size]).unwrap().protocol(), None);
+}
+
+#[test]
+fn forwarded_ipv4_checksum_matches_reencoding_including_zero_boundaries() {
+    let mut input = [0; 32];
+    let mut output = [0; 32];
+    let mut expected = [0; 32];
+    for id in 0..=u16::MAX {
+        let mut header = ipv4().with_identification(id);
+        header.hop_limit = 2;
+        let size = header
+            .encode(&[1, 1, 0, 0], b"payload", &mut input)
+            .unwrap();
+        let packet = IpPacket::parse(&input[..size]).unwrap();
+        assert_eq!(
+            packet.encode_forwarded(output.as_mut_slice()).unwrap(),
+            size
+        );
+        header.hop_limit -= 1;
+        header
+            .encode(&[1, 1, 0, 0], b"payload", &mut expected)
+            .unwrap();
+        assert_eq!(output[..size], expected[..size], "identification {id}");
+    }
+}
+
+#[test]
+fn quoted_header_validation_does_not_accept_malformed_options() {
+    let mut bytes = [0; 64];
+    ipv4()
+        .encode(&[1, 1, 0, 0], b"payload", &mut bytes)
+        .unwrap();
+    bytes[20..24].copy_from_slice(&[3, 1, 0, 0]);
+    bytes[10..12].fill(0);
+    let checksum = internet_checksum(&bytes[..24]);
+    bytes[10..12].copy_from_slice(&checksum.to_be_bytes());
+    assert_eq!(
+        icmp::IpPacketQuote::parse(&bytes[..24]),
+        Err(IpPacketError::Header)
+    );
+}
+
+#[test]
+fn typed_echo_checks_checksum_code_and_fragmentation_without_copying() {
+    use icmp::{Icmpv6Echo, Icmpv6EchoKind};
+    let header = ipv6(IpProtocol::ICMPV6);
+    let echo = Icmpv6Echo {
+        kind: Icmpv6EchoKind::Request,
+        identifier: 32,
+        sequence: 7,
+        data: b"payload!",
+    };
+    let mut bytes = [0; 128];
+    let size = echo
+        .encode(header.source, header.destination, &mut bytes)
+        .unwrap();
+    let parsed = Icmpv6Echo::parse(Ipv6Packet::parse(&bytes[..size]).unwrap()).unwrap();
+    assert_eq!(parsed.kind, Icmpv6EchoKind::Request);
+    assert_eq!(parsed.identifier, 32);
+    assert_eq!(parsed.sequence, 7);
+    assert_eq!(parsed.data, b"payload!");
+    assert_eq!(parsed.data.as_ptr(), bytes[48..].as_ptr());
+    let mut reply = [0; 128];
+    parsed
+        .reply()
+        .encode(header.destination, header.source, &mut reply)
+        .unwrap();
+    assert_eq!(
+        Icmpv6Echo::parse(Ipv6Packet::parse(&reply[..size]).unwrap())
+            .unwrap()
+            .kind,
+        Icmpv6EchoKind::Reply
+    );
+    bytes[6] = IpProtocol::UDP.value();
+    assert_eq!(
+        Icmpv6Echo::parse(Ipv6Packet::parse(&bytes[..size]).unwrap()).unwrap_err(),
+        IpPacketError::Field
+    );
+    bytes[6] = IpProtocol::ICMPV6.value();
+    let mut fragment_body = vec![IpProtocol::ICMPV6.value(), 0, 0, 1, 0, 0, 0, 1];
+    fragment_body.extend_from_slice(&bytes[40..size]);
+    let mut fragmented = [0; 128];
+    let fragment_size = ipv6(IpProtocol::FRAGMENT)
+        .encode(&fragment_body, &mut fragmented)
+        .unwrap();
+    assert_eq!(
+        Icmpv6Echo::parse(Ipv6Packet::parse(&fragmented[..fragment_size]).unwrap()).unwrap_err(),
+        IpPacketError::Field
+    );
+    bytes[size - 1] ^= 1;
+    Icmpv6Echo::parse(Ipv6Packet::parse(&bytes[..size]).unwrap()).unwrap_err();
+    bytes[41] = 1;
+    Icmpv6Echo::parse(Ipv6Packet::parse(&bytes[..size]).unwrap()).unwrap_err();
+}
+
+#[test]
+fn ipv6_forwarding_preserves_extensions_and_input() {
+    let mut bytes = [0; 128];
+    let payload = [17, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4];
+    let mut header = ipv6(IpProtocol::DESTINATION_OPTIONS);
+    header.hop_limit = 3;
+    let n = header.encode(&payload, &mut bytes).unwrap();
+    let original = bytes;
+    let mut forwarded = [0; 128];
+    assert_eq!(
+        IpPacket::parse(&bytes[..n])
+            .unwrap()
+            .encode_forwarded(forwarded.as_mut_slice())
+            .unwrap(),
+        n
+    );
+    assert_eq!(bytes, original);
+    assert_eq!(forwarded[7], 2);
+    forwarded[7] = 3;
+    assert_eq!(&forwarded[..n], &bytes[..n]);
+    header.hop_limit = 1;
+    let n = header.encode(&payload, &mut bytes).unwrap();
+    let before = forwarded;
+    assert_eq!(
+        IpPacket::parse(&bytes[..n])
+            .unwrap()
+            .encode_forwarded(forwarded.as_mut_slice()),
+        Err(IpPacketError::HopLimit)
+    );
+    assert_eq!(forwarded, before);
+}
+
+#[test]
+fn ipv6_fragment_bounds_exclude_the_fragment_header() {
+    let mut output = [0; 128];
+    // An empty non-final fragment is invalid, regardless of its Next Header.
+    let empty_fragment = [17, 0, 0, 1, 0, 0, 0, 1];
+    let n = ipv6(IpProtocol::FRAGMENT)
+        .encode(&empty_fragment, &mut output)
+        .unwrap();
+    assert_eq!(
+        Ipv6Packet::parse(&output[..n]).unwrap_err(),
+        IpPacketError::Length
+    );
+    // Eight bytes before Fragment, eight bytes after it. Reassembly counts the
+    // unfragmentable header but excludes Fragment itself (RFC 8200 section 4.5).
+    for (offset, valid) in [(65512u16, true), (65520, false)] {
+        let mut body = [0; 24];
+        body[0] = IpProtocol::FRAGMENT.value();
+        body[8] = IpProtocol::UDP.value();
+        body[10..12].copy_from_slice(&offset.to_be_bytes());
+        let n = ipv6(IpProtocol::DESTINATION_OPTIONS)
+            .encode(&body, &mut output)
+            .unwrap();
+        if valid {
+            Ipv6Packet::parse(&output[..n]).unwrap();
+        } else {
+            assert_eq!(
+                Ipv6Packet::parse(&output[..n]).unwrap_err(),
+                IpPacketError::Length
+            );
+        }
+    }
+}
+
+#[test]
+fn opaque_and_absent_ipv6_payloads_are_not_upper_layer_messages() {
+    let mut bytes = [0; 64];
+    for protocol in [IpProtocol::ESP, IpProtocol::NO_NEXT_HEADER, IpProtocol::UDP] {
+        let n = ipv6(protocol).encode(b"opaque!!", &mut bytes).unwrap();
+        let packet = Ipv6Packet::parse(&bytes[..n]).unwrap();
+        assert_eq!(
+            packet.upper_layer_payload(),
+            if protocol == IpProtocol::UDP {
+                Some(&b"opaque!!"[..])
+            } else {
+                None
+            }
+        );
+        assert_eq!(
+            packet.protocol(),
+            if protocol == IpProtocol::ESP {
+                None
+            } else {
+                Some(protocol)
+            }
+        );
     }
 }

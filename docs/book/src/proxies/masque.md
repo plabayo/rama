@@ -71,11 +71,10 @@ exchange address assignments and advertise which destinations they can reach.
 Those advertisements describe connectivity; local policy still decides what
 traffic is allowed.
 
-[`rama::proxy::masque::connect_ip`][connect-ip] provides the `connect_ip` client
-helper and `ConnectIpService` server. Your application supplies admission policy
-and a handler that sends and receives packets through a `ConnectIpSession`.
-This supports applications with their own packet engine as well as future
-platform adapters.
+[`rama::proxy::masque::connect_ip`][connect-ip] provides `ConnectIpRequestBuilder` and
+`ConnectIpConnector` for clients, and `ConnectIpService` for servers. Your
+application supplies admission policy and a handler that sends and receives packets through a `ConnectIpSession`.
+Your application owns the packet engine and chooses where packets go.
 
 Connecting ordinary applications to such a tunnel also needs an OS packet
 interface, such as Linux TUN, plus routing configuration. Rama's CONNECT-IP

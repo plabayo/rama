@@ -8,50 +8,7 @@ use rama_quic_proto::{VarInt, coding::Codec};
 /// [RFC 9298 §5]: https://datatracker.ietf.org/doc/html/rfc9298#section-5
 pub const MAX_UDP_PAYLOAD: usize = 65527;
 
-/// A CONNECT-UDP Context ID ([RFC 9298 §4]).
-///
-/// Context ID 0 carries UDP payloads. Non-zero IDs are allocated by extensions
-/// (even by the client, odd by the proxy); this crate defines none, so it drops
-/// datagrams carrying them.
-///
-/// [RFC 9298 §4]: https://datatracker.ietf.org/doc/html/rfc9298#section-4
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ContextId(VarInt);
-
-impl ContextId {
-    /// Context ID 0: UDP payloads.
-    pub const UDP: Self = Self(VarInt::from_u32(0));
-
-    /// A Context ID from its value, if it fits a variable-length integer.
-    #[must_use]
-    pub fn new(value: u64) -> Option<Self> {
-        VarInt::from_u64(value).ok().map(Self)
-    }
-
-    /// The raw value.
-    #[must_use]
-    pub fn value(self) -> u64 {
-        self.0.into_inner()
-    }
-
-    /// Whether the client allocates this ID (non-zero and even).
-    #[must_use]
-    pub fn is_client_allocated(self) -> bool {
-        self.value() != 0 && self.value().is_multiple_of(2)
-    }
-
-    /// Whether the proxy allocates this ID (odd).
-    #[must_use]
-    pub fn is_proxy_allocated(self) -> bool {
-        !self.value().is_multiple_of(2)
-    }
-}
-
-impl fmt::Display for ContextId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.value().fmt(f)
-    }
-}
+pub use crate::context::ContextId;
 
 /// Why an HTTP Datagram payload is not a valid CONNECT-UDP payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,17 +40,13 @@ impl std::error::Error for ContextPayloadError {}
 /// [RFC 9298 §5]: https://datatracker.ietf.org/doc/html/rfc9298#section-5
 pub fn decode_context_payload(datagram: &[u8]) -> Result<(ContextId, &[u8]), ContextPayloadError> {
     let mut rest = datagram;
-    let context = VarInt::decode(&mut rest).map_err(|_error| ContextPayloadError::Truncated)?;
-    let context = ContextId(context);
+    let context = ContextId::decode(&mut rest).map_err(|_error| ContextPayloadError::Truncated)?;
     if context == ContextId::UDP && rest.len() > MAX_UDP_PAYLOAD {
         return Err(ContextPayloadError::UdpPayloadTooLarge);
     }
     Ok((context, rest))
 }
 
-/// Append a context-0 HTTP Datagram payload carrying `payload`.
-///
-/// Payloads above [`MAX_UDP_PAYLOAD`] are refused and nothing is written.
 /// How many bytes `datagram`'s Context ID takes, or `None` when it ends inside it.
 pub(crate) fn context_id_len(datagram: &[u8]) -> Option<usize> {
     let mut rest = datagram;
@@ -101,6 +54,9 @@ pub(crate) fn context_id_len(datagram: &[u8]) -> Option<usize> {
     Some(datagram.len() - rest.len())
 }
 
+/// Append a context-0 HTTP Datagram payload carrying `payload`.
+///
+/// Payloads above [`MAX_UDP_PAYLOAD`] are refused and nothing is written.
 pub fn encode_udp_payload<B: BufMut>(
     out: &mut B,
     payload: &[u8],
@@ -108,7 +64,7 @@ pub fn encode_udp_payload<B: BufMut>(
     if payload.len() > MAX_UDP_PAYLOAD {
         return Err(ContextPayloadError::UdpPayloadTooLarge);
     }
-    ContextId::UDP.0.encode(out);
+    ContextId::UDP.encode(out);
     out.put_slice(payload);
     Ok(())
 }

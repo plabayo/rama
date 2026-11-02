@@ -1,4 +1,7 @@
-use super::{ConnectIpState, IpRoute};
+use super::{
+    ConnectIpStateSnapshot, IpRoute,
+    state::{AddressRanges, RouteIndex},
+};
 use rama_net::{
     address::ip::ipnet::IpNet,
     ip::{
@@ -50,13 +53,19 @@ impl Default for IpSourcePolicy {
 }
 
 impl IpSourcePolicy {
-    fn allows(&self, address: IpAddr, assigned: &[super::AddressAssignment]) -> bool {
+    fn allows(
+        &self,
+        address: IpAddr,
+        assigned: &AddressRanges,
+        compiled: Option<&AddressRanges>,
+    ) -> bool {
         let prefixes = match self {
             Self::Assigned(p) | Self::Static(p) => p,
         };
-        prefixes.iter().any(|p| p.contains(&address))
-            && (matches!(self, Self::Static(_))
-                || assigned.iter().any(|a| a.prefix.contains(&address)))
+        compiled.map_or_else(
+            || prefixes.iter().any(|p| p.contains(&address)),
+            |index| index.contains(address),
+        ) && (matches!(self, Self::Static(_)) || assigned.contains(address))
     }
 }
 
@@ -82,13 +91,43 @@ impl Default for IpDirectionPolicy {
     }
 }
 
+#[derive(Debug)]
+pub(super) struct PolicyIndex {
+    sources: [AddressRanges; 2],
+    destinations: [RouteIndex; 2],
+    scope: AddressRanges,
+}
+
+impl PolicyIndex {
+    pub(super) fn new(policy: &ConnectIpPolicy) -> Self {
+        let sources = |direction: &IpDirectionPolicy| {
+            let (IpSourcePolicy::Assigned(prefixes) | IpSourcePolicy::Static(prefixes)) =
+                &direction.sources;
+            AddressRanges::new(prefixes.iter().map(|p| (p.network(), p.broadcast())))
+        };
+        Self {
+            sources: [sources(&policy.receive), sources(&policy.send)],
+            destinations: [
+                RouteIndex::new(&policy.receive.destinations),
+                RouteIndex::new(&policy.send.destinations),
+            ],
+            scope: AddressRanges::new(
+                policy
+                    .scope_targets
+                    .iter()
+                    .map(|p| (p.network(), p.broadcast())),
+            ),
+        }
+    }
+}
+
 /// Which endpoint originated the HTTP request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectIpRole {
     /// HTTP client.
     Client,
     /// HTTP proxy/server.
-    Proxy,
+    Server,
 }
 
 /// Packet policy evaluated after decoding and before delivery/transmission.
@@ -98,8 +137,6 @@ pub enum ConnectIpRole {
 /// the tunnel lifetime. A new resolution requires a new policy/tunnel.
 #[derive(Debug, Clone)]
 pub struct ConnectIpPolicy {
-    /// Which side of the HTTP request this endpoint represents.
-    pub role: ConnectIpRole,
     /// Outgoing packet permissions.
     pub send: IpDirectionPolicy,
     /// Incoming packet permissions.
@@ -107,17 +144,16 @@ pub struct ConnectIpPolicy {
     /// Requested target after resolution; empty means wildcard, still constrained
     /// by send/receive destination policy. A hostname resolving to no addresses
     /// must fail admission, not be represented by an empty list.
-    pub scope_targets: Vec<IpNet>,
+    pub(super) scope_targets: Vec<IpNet>,
     /// Requested upper-layer protocol (None for wildcard).
-    pub scope_protocol: Option<IpProtocol>,
+    pub(super) scope_protocol: Option<IpProtocol>,
 }
 
 impl ConnectIpPolicy {
     /// Deny all packet traffic until local permissions are configured.
     #[must_use]
-    pub fn new(role: ConnectIpRole) -> Self {
+    pub fn new() -> Self {
         Self {
-            role,
             send: IpDirectionPolicy::default(),
             receive: IpDirectionPolicy::default(),
             scope_targets: Vec::new(),
@@ -125,41 +161,46 @@ impl ConnectIpPolicy {
         }
     }
 
+    /// Resolved scope imposed by the handshake, in addition to local permissions.
+    pub fn scope_targets(&self) -> &[IpNet] {
+        &self.scope_targets
+    }
+
+    /// Requested upper-layer protocol; `None` means wildcard.
+    pub fn scope_protocol(&self) -> Option<IpProtocol> {
+        self.scope_protocol
+    }
+
     /// Check a packet against local policy and current control state.
     pub fn check(
         &self,
         packet: IpPacket<'_>,
         outgoing: bool,
-        state: &ConnectIpState,
+        role: ConnectIpRole,
+        state: &ConnectIpStateSnapshot,
+    ) -> Result<(), IpPacketDrop> {
+        self.check_indexed(packet, outgoing, role, state, None)
+    }
+
+    pub(super) fn check_indexed(
+        &self,
+        packet: IpPacket<'_>,
+        outgoing: bool,
+        role: ConnectIpRole,
+        state: &ConnectIpStateSnapshot,
+        index: Option<&PolicyIndex>,
     ) -> Result<(), IpPacketDrop> {
         let direction = if outgoing { &self.send } else { &self.receive };
-        let (source_assignments, dest_assignments, routes) = if outgoing {
-            (
-                state.local_addresses(),
-                state.peer_addresses(),
-                state.peer_routes(),
-            )
-        } else {
-            (
-                state.peer_addresses(),
-                state.local_addresses(),
-                state.local_routes(),
-            )
-        };
+        let source_assignments = state.source_index(outgoing);
+        let (dest_assignments, routes) = state.destination_index(outgoing);
         let src = packet.source();
         let dst = packet.destination();
         let proto = packet.protocol();
-        if let IpPacket::V4(p) = packet {
-            let mut options = p.options();
-            while let Some((&kind, rest)) = options.split_first() {
-                match kind {
-                    0 => break,
-                    1 => options = rest,
-                    // Loose/strict source routing can redirect after this check.
-                    131 | 137 => return Err(IpPacketDrop::Destination),
-                    _ => options = &options[usize::from(options[1])..],
-                }
-            }
+        if let IpPacket::V4(p) = packet
+            && p.option_iter()
+                .any(|option| matches!(option.kind, 131 | 137))
+        {
+            return Err(IpPacketDrop::Destination);
         }
         // A routing header with Segments Left can change the final destination;
         // this proxy does not authorize that additional forwarding instruction.
@@ -169,9 +210,17 @@ impl ConnectIpPolicy {
         {
             return Err(IpPacketDrop::Destination);
         }
-        // ICMP errors can originate at intermediate routers. Authorize their quoted
-        // flow in the reverse direction instead of requiring the router's address
-        // to be an assigned client address.
+        // ICMP routers may be outside the requested target scope, but their outer
+        // source must still satisfy local anti-spoofing policy in this direction.
+        if !direction.sources.allows(
+            src,
+            source_assignments,
+            index.map(|i| &i.sources[usize::from(outgoing)]),
+        ) {
+            return Err(IpPacketDrop::Source);
+        }
+        // Authorize the quoted flow in reverse; scope alone is relaxed for the
+        // outer router address (RFC 9484 section 7.2.1).
         if is_icmp_error(packet) {
             if packet.fragment().is_some_and(|f| f.is_fragmented()) {
                 return Err(IpPacketDrop::Invalid);
@@ -191,65 +240,57 @@ impl ConnectIpPolicy {
             if quoted.source != dst {
                 return Err(IpPacketDrop::Destination);
             }
-            self.check_flow(
-                quoted.source,
-                quoted.destination,
-                quoted.protocol,
-                !outgoing,
-                state,
-            )?;
+            self.check_flow(quoted, !outgoing, role, state, index)?;
             return Ok(());
         }
-        if !direction.sources.allows(src, source_assignments) {
-            return Err(IpPacketDrop::Source);
-        }
-        if !direction.destinations.iter().any(|r| r.allows(dst, proto)) {
+        if !index.map_or_else(
+            || direction.destinations.iter().any(|r| r.allows(dst, proto)),
+            |i| i.destinations[usize::from(outgoing)].allows(dst, proto),
+        ) {
             return Err(IpPacketDrop::Destination);
         }
         if direction.require_advertised_route
-            && !dest_assignments.iter().any(|a| a.prefix.contains(&dst))
-            && !routes.iter().any(|r| r.allows(dst, proto))
+            && !dest_assignments.contains(dst)
+            && !routes.allows(dst, proto)
         {
             return Err(IpPacketDrop::Destination);
         }
-        self.check_scope(src, dst, proto, outgoing)
+        self.check_scope(src, dst, proto, outgoing, role, index)
     }
 
     fn check_flow(
         &self,
-        src: IpAddr,
-        dst: IpAddr,
-        proto: Option<IpProtocol>,
+        flow: IpPacketQuote,
         outgoing: bool,
-        state: &ConnectIpState,
+        role: ConnectIpRole,
+        state: &ConnectIpStateSnapshot,
+        index: Option<&PolicyIndex>,
     ) -> Result<(), IpPacketDrop> {
+        let IpPacketQuote {
+            source: src,
+            destination: dst,
+            protocol: proto,
+        } = flow;
         let d = if outgoing { &self.send } else { &self.receive };
-        let (sources, destinations, routes) = if outgoing {
-            (
-                state.local_addresses(),
-                state.peer_addresses(),
-                state.peer_routes(),
-            )
-        } else {
-            (
-                state.peer_addresses(),
-                state.local_addresses(),
-                state.local_routes(),
-            )
-        };
-        if !d.sources.allows(src, sources) {
+        let sources = state.source_index(outgoing);
+        let (destinations, routes) = state.destination_index(outgoing);
+        if !d.sources.allows(
+            src,
+            sources,
+            index.map(|i| &i.sources[usize::from(outgoing)]),
+        ) {
             return Err(IpPacketDrop::Source);
         }
-        if !d.destinations.iter().any(|r| r.allows(dst, proto)) {
+        if !index.map_or_else(
+            || d.destinations.iter().any(|r| r.allows(dst, proto)),
+            |i| i.destinations[usize::from(outgoing)].allows(dst, proto),
+        ) {
             return Err(IpPacketDrop::Destination);
         }
-        if d.require_advertised_route
-            && !destinations.iter().any(|a| a.prefix.contains(&dst))
-            && !routes.iter().any(|r| r.allows(dst, proto))
-        {
+        if d.require_advertised_route && !destinations.contains(dst) && !routes.allows(dst, proto) {
             return Err(IpPacketDrop::Destination);
         }
-        self.check_scope(src, dst, proto, outgoing)
+        self.check_scope(src, dst, proto, outgoing, role, index)
     }
 
     fn check_scope(
@@ -258,10 +299,16 @@ impl ConnectIpPolicy {
         dst: IpAddr,
         proto: Option<IpProtocol>,
         outgoing: bool,
+        role: ConnectIpRole,
+        index: Option<&PolicyIndex>,
     ) -> Result<(), IpPacketDrop> {
-        let toward_target = (self.role == ConnectIpRole::Client) == outgoing;
+        let toward_target = (role == ConnectIpRole::Client) == outgoing;
         let target = if toward_target { dst } else { src };
-        if !self.scope_targets.is_empty() && !self.scope_targets.iter().any(|p| p.contains(&target))
+        if !self.scope_targets.is_empty()
+            && !index.map_or_else(
+                || self.scope_targets.iter().any(|p| p.contains(&target)),
+                |i| i.scope.contains(target),
+            )
         {
             return Err(IpPacketDrop::Scope);
         }
@@ -278,5 +325,11 @@ impl ConnectIpPolicy {
             return Err(IpPacketDrop::Scope);
         }
         Ok(())
+    }
+}
+
+impl Default for ConnectIpPolicy {
+    fn default() -> Self {
+        Self::new()
     }
 }
