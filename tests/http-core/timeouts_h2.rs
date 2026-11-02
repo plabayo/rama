@@ -232,12 +232,26 @@ async fn bytes_before_a_frame_type_are_head_progress_on_an_idle_connection() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn completed_request_earns_longer_idle_window() {
+async fn completed_request_earns_90s_idle_window_despite_pings() {
     let (mut peer, task) = server(http2::Builder::new(Executor::new()), false).await;
     request(&mut peer, true).await;
+    settle().await;
     let start = Instant::now();
+    // PINGs prove liveness, but do not restart the HTTP idle budget.
+    for seconds in [30, 30, 29] {
+        advance(SECOND * seconds).await;
+        frame(&mut peer, 6, 0, 0, b"idleping").await;
+        loop {
+            let (kind, flags, body) = read_frame(&mut peer).await;
+            assert_ne!(kind, 7, "connection must remain reusable before 90 seconds");
+            if kind == 6 && flags == 1 {
+                assert_eq!(body, b"idleping");
+                break;
+            }
+        }
+    }
     assert_eq!(goaway(&mut peer).await, 0);
-    elapsed_at_deadline(start, SECOND * 30);
+    elapsed_at_deadline(start, SECOND * 90);
     task.await.unwrap();
 }
 
