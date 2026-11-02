@@ -8,6 +8,8 @@
 //! The html5lib conformance corpus is wired in a later slice (alongside
 //! streaming); anything a fuzzer surfaces should land here as a regression.
 
+use quickcheck_macros::quickcheck;
+
 use super::{
     Cdata, Comment, Doctype, EndTag, LocalNameHash, StartTag, Text, TokenSink, Tokenizer, tokenize,
 };
@@ -432,6 +434,109 @@ fn streaming_many_small_writes() {
     }
     tk.end(&mut sink).expect("not ambiguous");
     assert_eq!(coalesce(sink.events), coalesce(events(input)));
+}
+
+/// Events and re-serialized bytes of `input` fed in writes of `sizes`
+/// (cycled; each at least one byte).
+fn chunked(input: &[u8], sizes: &[usize]) -> (Vec<Event>, Vec<u8>) {
+    let mut collect = Collect::default();
+    let mut identity = Identity::default();
+    let mut collect_tk = Tokenizer::new();
+    let mut identity_tk = Tokenizer::new();
+    let mut rest = input;
+    for size in sizes.iter().cycle() {
+        if rest.is_empty() {
+            break;
+        }
+        let (chunk, tail) = rest.split_at((*size).clamp(1, rest.len()));
+        collect_tk.write(chunk, &mut collect).expect("lenient");
+        identity_tk.write(chunk, &mut identity).expect("lenient");
+        rest = tail;
+    }
+    collect_tk.end(&mut collect).expect("lenient");
+    identity_tk.end(&mut identity).expect("lenient");
+    (coalesce(collect.events), identity.out)
+}
+
+#[test]
+fn incomplete_constructs_survive_any_chunking() {
+    let constructs: &[&[u8]] = &[
+        b"<div a b=c d='e' f=\"g",
+        b"<div a b=c d",
+        b"<div a = ",
+        b"<div a /",
+        b"<div a/ b",
+        b"<divvvvvvvvvvvvvvvvv",
+        b"<div a b='>' c=d>x</div a='>' b",
+        b"<!-- comment -",
+        b"<!-- comment --",
+        b"<svg><![CDATA[ x ]]",
+        b"<!doctype html",
+        b"<!bogus",
+        b"<?pi",
+        b"<script>a<!--<script>x</script",
+        b"<script>a<!--<script>x</script>--",
+        b"<script>abc</scrip",
+        b"<script>x</script a='>'",
+        b"<script>x</script a='>' b",
+        b"<textarea>a</textare",
+        b"<textarea>a</textarea",
+        b"<style>a</style b=\"",
+        b"<title>x",
+        b"<plaintext>abc</plaintext>",
+        b"<a b=\"x>y\" c='",
+    ];
+    for construct in constructs {
+        for prefix in [&b""[..], b"<p>prefix</p>"] {
+            let input = [prefix, construct].concat();
+            let expected = (coalesce(oneshot_events(&input)), input.clone());
+            for size in [1, 2, 3, 7, 64, 4096] {
+                assert_eq!(
+                    chunked(&input, &[size]),
+                    expected,
+                    "{:?} in writes of {size}",
+                    String::from_utf8_lossy(&input)
+                );
+            }
+        }
+    }
+}
+
+#[quickcheck]
+fn chunked_writes_match_one_shot(pieces: Vec<u8>, sizes: Vec<u8>) -> bool {
+    const PIECES: &[&str] = &[
+        "<",
+        ">",
+        "/",
+        "!",
+        "-",
+        "=",
+        "\"",
+        "'",
+        " ",
+        "a",
+        "div",
+        "script",
+        "style",
+        "textarea",
+        "plaintext",
+        "svg",
+        "[CDATA[",
+        "]]",
+        "--",
+        "doctype",
+        "?",
+    ];
+    let input: Vec<u8> = pieces
+        .into_iter()
+        .flat_map(|piece| PIECES[usize::from(piece) % PIECES.len()].bytes())
+        .collect();
+    let sizes: Vec<usize> = sizes
+        .into_iter()
+        .map(|size| usize::from(size % 16))
+        .collect();
+    let expected = (coalesce(oneshot_events(&input)), input.clone());
+    chunked(&input, if sizes.is_empty() { &[1] } else { &sizes }) == expected
 }
 
 #[test]

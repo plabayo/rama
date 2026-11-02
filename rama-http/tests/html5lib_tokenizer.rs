@@ -143,7 +143,7 @@ fn html5lib_tokenizer_identity() {
             .get("tests")
             .or_else(|| json.get("xmlViolationTests"))
             .and_then(Value::as_array);
-        let Some(tests) = tests else { continue };
+        let tests = tests.unwrap_or_else(|| panic!("{origin} has no test list"));
 
         for test in tests {
             let Some(input) = test.get("input").and_then(Value::as_str) else {
@@ -163,7 +163,9 @@ fn html5lib_tokenizer_identity() {
         }
     }
 
-    assert!(files > 0, "no html5lib .test files found in corpus dir");
-    assert!(cases > 0, "no test cases found in html5lib corpus");
+    // Floors at the vendored corpus size, so a loader that silently skips
+    // files or cases fails here instead of passing on a fraction of them.
+    assert!(files >= 14, "only {files} html5lib .test files loaded");
+    assert!(cases >= 6_800, "only {cases} html5lib test cases loaded");
     eprintln!("html5lib tokenizer identity: {cases} inputs across {files} files");
 }

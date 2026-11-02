@@ -5080,6 +5080,7 @@ dependencies = [
  "const_format",
  "csv",
  "dial9-trace-format",
+ "divan",
  "flate2",
  "http-range-header",
  "httpdate",

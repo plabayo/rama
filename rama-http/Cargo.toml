@@ -86,6 +86,7 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 brotli = { workspace = true }
+divan = { workspace = true }
 flate2 = { workspace = true }
 itertools = { workspace = true, default-features = true }
 parking_lot = { workspace = true }
@@ -97,6 +98,11 @@ tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
 zstd = { workspace = true }
+
+[[bench]]
+name = "html"
+required-features = ["html"]
+harness = false
 
 [lints]
 workspace = true
