@@ -9,7 +9,7 @@ use rama_core::{
 use rama_dns::client::{
     GlobalDnsResolver,
     resolver::{
-        BoundedDnsAddressResolver, DnsAddressResolver, DnsAnswerLimitReached,
+        BoundedDnsResolver, DnsAddressResolver, DnsAnswerLimitReached,
         HappyEyeballAddressResolverExt as _,
     },
 };
@@ -256,7 +256,7 @@ pub(super) async fn resolve_scope<R: DnsAddressResolver>(
         IpTarget::Hostname(name) => {
             // Bound raw answers before Happy Eyeballs deduplicates them: even a
             // resolver repeatedly yielding the same answer must finish polling.
-            let resolver = BoundedDnsAddressResolver::new(
+            let resolver = BoundedDnsResolver::new(
                 resolver.clone(),
                 const { std::num::NonZeroUsize::new(256).unwrap() },
             );

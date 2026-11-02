@@ -2129,10 +2129,9 @@ async fn refusal_reasons_distinguish_admission_dns_and_destination_policy() {
             ProxyErrorType::DnsTimeout,
         ),
     ] {
-        let scope = ConnectIpScope::new(
-            IpTarget::Hostname(rama_net::address::Domain::from_static("target.example")),
-            None,
-        );
+        let scope = ConnectIpScope::new(IpTarget::Hostname(
+            rama_net::address::Domain::from_static("target.example"),
+        ));
         let request = template.request(&scope, Version::HTTP_3).unwrap();
         let response = service
             .clone()
@@ -2197,7 +2196,7 @@ async fn extension_protocol_scopes_require_an_explicit_ipv4_target() {
             IpTarget::Prefix(prefix("2001:db8::/32")),
             IpTarget::Hostname(rama_net::address::Domain::from_static("target.example")),
         ] {
-            let scope = ConnectIpScope::new(target, Some(protocol));
+            let scope = ConnectIpScope::new(target).with_protocol(protocol);
             assert_eq!(
                 ConnectIpScope::from_template_values(
                     Some(&scope.target.to_string()),
@@ -2212,7 +2211,7 @@ async fn extension_protocol_scopes_require_an_explicit_ipv4_target() {
                 ));
                 let mut request = template
                     .request(
-                        &ConnectIpScope::new(scope.target.clone(), Some(IpProtocol::UDP)),
+                        &ConnectIpScope::new(scope.target.clone()).with_protocol(IpProtocol::UDP),
                         version,
                     )
                     .unwrap();
@@ -2232,7 +2231,8 @@ async fn extension_protocol_scopes_require_an_explicit_ipv4_target() {
                 );
             }
         }
-        let scope = ConnectIpScope::new(IpTarget::Prefix(prefix("192.0.2.0/24")), Some(protocol));
+        let scope =
+            ConnectIpScope::new(IpTarget::Prefix(prefix("192.0.2.0/24"))).with_protocol(protocol);
         for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
             let request = template.request(&scope, version).unwrap();
             assert_eq!(template.match_request(&request).unwrap(), scope);
@@ -2286,4 +2286,18 @@ async fn directional_session_rate_refusal_preserves_quota() {
             IpPacketSend::Dropped(IpPacketDrop::Budget)
         ));
     }
+}
+
+#[test]
+fn typed_scope_normalizes_target_and_protocol_is_optional() {
+    let mut scope = ConnectIpScope::new(IpTarget::Prefix(prefix("192.0.2.17/24")));
+    assert_eq!(scope.target, IpTarget::Prefix(prefix("192.0.2.0/24")));
+    assert_eq!(scope.protocol, None);
+    scope.set_protocol(IpProtocol::UDP);
+    assert_eq!(scope.protocol, Some(IpProtocol::UDP));
+    scope.maybe_set_protocol(None);
+    assert_eq!(scope.protocol, None);
+    let scope = scope.with_protocol(IpProtocol::new(0));
+    assert_eq!(scope.protocol, Some(IpProtocol::new(0)));
+    assert_eq!(scope.maybe_with_protocol(None).protocol, None);
 }

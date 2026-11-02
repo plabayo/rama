@@ -11,10 +11,12 @@ use rama_net::address::Domain;
 use crate::wire::{Name, ServiceBinding, Txt};
 
 pub use self::address::{
-    BoundedDnsAddressResolver, BoxDnsAddressResolver, DnsAddressResolver,
-    DnsAddresssResolverOverwrite, DnsAnswerLimitReached, HappyEyeballAddressResolver,
-    HappyEyeballAddressResolverExt,
+    BoxDnsAddressResolver, DnsAddressResolver, DnsAddresssResolverOverwrite,
+    HappyEyeballAddressResolver, HappyEyeballAddressResolverExt,
 };
+
+mod bounded;
+pub use self::bounded::{BoundedDnsResolver, DnsAnswerLimitReached};
 
 mod cname;
 pub use self::cname::{BoxDnsCnameResolver, DnsCnameResolver};

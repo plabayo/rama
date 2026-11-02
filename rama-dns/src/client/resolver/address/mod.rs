@@ -790,6 +790,3 @@ mod tests {
         );
     }
 }
-
-mod bounded;
-pub use bounded::{BoundedDnsAddressResolver, DnsAnswerLimitReached};

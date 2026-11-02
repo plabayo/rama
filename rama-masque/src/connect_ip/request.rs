@@ -14,6 +14,7 @@ use rama_net::{
     ip::IpProtocol,
     uri::{TemplateOperator, Uri, UriTemplate, UriTemplateMatcher},
 };
+use rama_utils::macros::generate_set_and_with;
 use std::{fmt, net::IpAddr};
 
 /// Requested destination scope. A name is resolved once under server policy.
@@ -58,15 +59,27 @@ impl Default for ConnectIpScope {
 }
 
 impl ConnectIpScope {
-    /// Request a typed destination and optional IP protocol.
+    /// Request a typed destination with no protocol restriction.
     /// Prefixes are normalized to their network address.
     #[must_use]
-    pub fn new(target: IpTarget, protocol: Option<IpProtocol>) -> Self {
+    pub fn new(target: IpTarget) -> Self {
         let target = match target {
             IpTarget::Prefix(prefix) => IpTarget::Prefix(prefix.trunc()),
             target => target,
         };
-        Self { target, protocol }
+        Self {
+            target,
+            protocol: None,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Restrict the requested IP protocol; `None` restores wildcard matching.
+        /// IPv6 extension-header numbers require an explicit IPv4 target.
+        pub fn protocol(mut self, protocol: Option<IpProtocol>) -> Self {
+            self.protocol = protocol;
+            self
+        }
     }
 
     /// Parse decoded URI-template values. Missing variables are wildcards;

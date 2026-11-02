@@ -25,8 +25,7 @@
 //! )?;
 //! let scope = ConnectIpScope::new(
 //!     rama_masque::connect_ip::IpTarget::Prefix("192.0.2.0/24".parse()?),
-//!     Some(rama_net::ip::IpProtocol::UDP),
-//! );
+//! ).with_protocol(rama_net::ip::IpProtocol::UDP);
 //! let request = template.request(&scope, Version::HTTP_3)?;
 //! assert_eq!(template.match_request(&request)?, scope);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
