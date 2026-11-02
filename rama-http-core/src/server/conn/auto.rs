@@ -1010,6 +1010,6 @@ mod timeout_tests {
         assert!(response[..n].starts_with(b"HTTP/1.1 200"));
         let idle = Instant::now();
         task.await.unwrap().unwrap();
-        assert_eq!(idle.elapsed(), SECOND * 30);
+        assert_eq!(idle.elapsed(), SECOND * 90);
     }
 }

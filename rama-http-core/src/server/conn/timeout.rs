@@ -77,11 +77,17 @@ impl Default for HeaderReadTimeout {
 ///
 /// A connection is idle while it has no open request, no request head in
 /// progress and no tunnel; a WebSocket, a CONNECT tunnel or a streamed response
-/// keeps its request open. A connection that never received a complete request
-/// head gets one [`first_request`](Self::first_request) window, counted from when
+/// keeps its request open, even while no bytes are transferred. HTTP/2 PINGs and
+/// other connection-level control traffic do not restart this HTTP idle budget.
+/// Transport timeouts (including QUIC's idle timeout) apply independently.
+///
+/// A connection that never received a complete request head gets one
+/// [`first_request`](Self::first_request) window, counted from when
 /// it first went idle: requests and heads in progress pause it but never restart
 /// it. Once a complete head arrived, the connection earns the full
-/// [`idle`](Self::idle) budget after every request.
+/// [`idle`](Self::idle) budget whenever it becomes idle again. This allows a
+/// client to reuse the connection between requests, including through an HTTP
+/// interception proxy.
 ///
 /// HTTP/1 closes the connection; HTTP/2 and HTTP/3 send a graceful `GOAWAY`
 /// and close once requests that raced it are done.
@@ -92,19 +98,24 @@ pub struct IdleTimeout {
     /// Extended by four round trips, at most doubled, when the connection
     /// measured its round-trip time.
     pub first_request: Duration,
-    /// Budget for a connection that received a complete request head.
+    /// Budget while idle after at least one complete request head was received.
+    ///
+    /// Starts when no request, response, tunnel or request head remains open,
+    /// rather than when the last byte was transferred. Defaults to 90 seconds.
+    /// Increase this for clients with longer gaps between requests using, for
+    /// example, `IdleTimeout { idle: Duration::from_secs(300), ..IdleTimeout::DEFAULT }`.
     pub idle: Duration,
 }
 
 impl IdleTimeout {
-    /// 10 s for the first request and 30 s once a request was received.
+    /// 10 s before the first request and 90 s idle after receiving a request head.
     ///
-    /// Established browsers discard preconnected sockets they did not use within
-    /// about ten seconds, and 30 s keeps a connection for the next navigation
-    /// or API poll without hoarding sockets.
+    /// The shorter initial window limits unused connections. The longer window
+    /// allows reuse across minute-spaced requests, reducing reconnects and TLS
+    /// handshakes for clients and HTTP interception proxies.
     pub const DEFAULT: Self = Self {
         first_request: Duration::from_secs(10),
-        idle: Duration::from_secs(30),
+        idle: Duration::from_secs(90),
     };
 }
 
@@ -709,7 +720,7 @@ mod tests {
             IdleTimeout::default(),
             IdleTimeout {
                 first_request: SEC * 10,
-                idle: SEC * 30,
+                idle: SEC * 90,
             }
         );
     }
@@ -829,7 +840,7 @@ mod tests {
         let after = now + SEC * 2;
         assert_eq!(
             deadlines.observe(Activity::Idle, || after),
-            Some((after + SEC * 30, Expired::Idle)),
+            Some((after + SEC * 90, Expired::Idle)),
             "earned budget"
         );
         assert_eq!(
@@ -840,7 +851,7 @@ mod tests {
         let next = after + SEC * 5;
         assert_eq!(
             deadlines.observe(Activity::Idle, || next),
-            Some((next + SEC * 30, Expired::Idle)),
+            Some((next + SEC * 90, Expired::Idle)),
             "an earned budget restarts after every phase"
         );
     }
@@ -917,7 +928,7 @@ mod tests {
         let idle = now + SEC * 12;
         assert_eq!(
             deadlines.observe(Activity::Idle, || idle),
-            Some((idle + SEC * 30, Expired::Idle))
+            Some((idle + SEC * 90, Expired::Idle))
         );
     }
 
@@ -1251,7 +1262,7 @@ mod tests {
             poll_fn(|cx| timer.poll(cx, Activity::Idle)).await,
             Expired::Idle
         );
-        assert_eq!(Instant::now(), idle + SEC * 30);
+        assert_eq!(Instant::now(), idle + SEC * 90);
 
         timer.start_drain();
         let drain = Instant::now();
