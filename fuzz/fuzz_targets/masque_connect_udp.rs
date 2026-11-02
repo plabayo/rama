@@ -32,9 +32,7 @@ fuzz_target!(|input: Input| {
         let displayed = address.to_string();
         let again = displayed.parse::<ProxyAddress>();
         assert!(again.is_ok(), "{displayed:?} does not parse back");
-        if let Ok(again) = again
-            && address.credential.is_none()
-        {
+        if let Ok(again) = again {
             assert_eq!(again, address, "{displayed:?}");
         }
     }

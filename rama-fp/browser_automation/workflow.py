@@ -25,18 +25,22 @@ from selenium.webdriver.support import expected_conditions as conditions
 from selenium.webdriver.support.ui import WebDriverWait
 
 
-def submit_form(driver, form_selector, attempts=3):
-    """Press Enter on a form's submit button, found afresh: the page script
-    can re-render the form after it became visible (stale element)."""
-    for attempt in range(attempts):
-        try:
-            driver.find_element(
-                By.CSS_SELECTOR, form_selector + ' button[type="submit"]'
-            ).send_keys(Keys.ENTER)
-            return
-        except StaleElementReferenceException:
-            if attempt + 1 == attempts:
-                raise
+def submit_form(driver, form_selector, timeout=30):
+    """Wait for a fresh submit button while the page replaces its form DOM."""
+    def activate(browser):
+        browser.find_element(
+            By.CSS_SELECTOR, form_selector + ' button[type="submit"]'
+        ).send_keys(Keys.ENTER)
+        return True
+
+    try:
+        WebDriverWait(
+            driver, timeout,
+            ignored_exceptions=(StaleElementReferenceException, NoSuchWindowException),
+        ).until(activate)
+    except TimeoutException as error:
+        # Keep our own bounded diagnostic; provider messages may contain secrets.
+        raise ValueError("form submit button unavailable: " + form_selector) from error
 
 
 def get_form_navigation_complete(browser):
@@ -524,7 +528,7 @@ def run_capture_flow(
 
     # Native keyboard activation avoids SafariDriver's intermittent
     # click no-op on the long report page. The browser still submits the form.
-    submit_form(driver, 'form[action="/form"]')
+    submit_form(driver, 'form[action="/form"]', timeout=timeout)
     wait.until(
         lambda browser: urlsplit(browser.current_url).path == "/form"
         and browser.execute_script(
@@ -546,7 +550,7 @@ def run_capture_flow(
         "POST form response never showed the GET form",
     )
     form_html = driver.page_source
-    submit_form(driver, 'form[method="GET"][action="/form"]')
+    submit_form(driver, 'form[method="GET"][action="/form"]', timeout=timeout)
     wait.until(get_form_navigation_complete, "GET form submission did not navigate")
     get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'

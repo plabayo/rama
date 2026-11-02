@@ -39,7 +39,11 @@ def values(value):
 
 
 def read_packets(capture, keys):
-    command = ["tshark", "-r", str(capture), "-o", f"tls.keylog_file:{keys}",
+    # An ephemeral peer port can select another dissector (for example,
+    # Manolito on 41170). Decode both the original and preferred QUIC ports.
+    command = ["tshark", "-r", str(capture),
+               "-d", "udp.port==443,quic", "-d", "udp.port==4433,quic",
+               "-o", f"tls.keylog_file:{keys}",
                "-Y", "quic && !icmp && !icmpv6", "-T", "fields", "-E", "occurrence=a"]
     for field in FIELDS:
         command += ["-e", field]

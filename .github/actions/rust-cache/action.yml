@@ -21,6 +21,10 @@ inputs:
     description: Conditional save (forwarded to rust-cache)
     required: false
     default: "true"
+  save-scheduled:
+    description: Save main's scheduled runs for a cache family unused by push/PR jobs
+    required: false
+    default: "false"
   cache-bin:
     description: Whether to cache ~/.cargo/bin (forwarded to rust-cache)
     required: false
@@ -42,8 +46,9 @@ runs:
         key: ${{ inputs.key }}
         shared-key: ${{ inputs.shared-key }}
         env-vars: ${{ inputs.env-vars }}
-        # Only main pushes write: scheduled and manual runs would evict the caches PRs restore.
-        save-if: ${{ inputs.save-if == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        # Scheduled-only families (such as beta release) otherwise never get a warm cache.
+        # Opt-in is limited to isolated families; shared PR families stay push-only.
+        save-if: ${{ inputs.save-if == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (inputs.save-scheduled == 'true' && github.event_name == 'schedule')) }}
         cache-bin: ${{ inputs.cache-bin }}
         workspaces: ${{ inputs.workspaces }}
     # Activate the wrapper after restore to preserve dependency-cache keys.
