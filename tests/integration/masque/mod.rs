@@ -100,8 +100,8 @@ use std::{
 use tokio::{net::UdpSocket, task::JoinHandle, time::timeout};
 
 mod matrix;
-mod ship_gate;
 mod transparent;
+mod tunnel_resilience;
 
 const DEADLINE: Duration = Duration::from_secs(30);
 

@@ -67,6 +67,52 @@ fn ipv4_edits_preserve_options_payload_and_checksum() {
 }
 
 #[test]
+fn public_ipv4_fragment_fields_are_checked_before_encoding() {
+    let mut header = ipv4();
+    let mut output = [0xa5; 64];
+    let original = output;
+    for fragment in [
+        IpFragment {
+            identification: 65536,
+            offset: 0,
+            more: false,
+        },
+        IpFragment {
+            identification: 0,
+            offset: 1,
+            more: false,
+        },
+        IpFragment {
+            identification: u32::MAX,
+            offset: 65535,
+            more: true,
+        },
+    ] {
+        header.fragment = fragment;
+        assert_eq!(
+            header.encode(&[], &[0; 8], &mut output),
+            Err(IpPacketError::Field)
+        );
+        assert_eq!(output, original);
+        assert_eq!(
+            header.encode_header(&[], 8, &mut output),
+            Err(IpPacketError::Field)
+        );
+        assert_eq!(output, original);
+    }
+    header.fragment = IpFragment {
+        identification: 65535,
+        offset: 8,
+        more: true,
+    };
+    let len = header.encode(&[], &[0; 8], &mut output).unwrap();
+    assert_eq!(
+        Ipv4Packet::parse(&output[..len]).unwrap().fragment(),
+        header.fragment
+    );
+}
+
+#[test]
 fn encoding_and_exhausted_hop_limit_do_not_partially_mutate() {
     let mut output = [0xa5; 64];
     let saved = output;

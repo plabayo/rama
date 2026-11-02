@@ -650,7 +650,8 @@ pub struct Ipv4Header {
     /// DSCP and ECN.
     pub traffic_class: u8,
     /// Packet identification and fragmentation metadata.
-    fragment: IpFragment,
+    /// Encoding requires a sixteen-bit identification and an eight-byte-aligned offset.
+    pub fragment: IpFragment,
     /// Don't Fragment flag.
     pub dont_fragment: bool,
 }
@@ -727,6 +728,9 @@ impl Ipv4Header {
         }
         validate_ipv4_options(options)?;
         let f = self.fragment;
+        if f.identification > u32::from(u16::MAX) || f.offset & 7 != 0 {
+            return Err(IpPacketError::Field);
+        }
         let header_len = 20 + options.len();
         let total = header_len
             .checked_add(payload_len)

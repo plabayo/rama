@@ -1,5 +1,5 @@
-//! The CONNECT-UDP ship gate, end to end through the proxy on every carrier: amplification,
-//! cancellation, sustained load and flood fairness.
+//! CONNECT-UDP tunnel resilience through the proxy on every carrier:
+//! amplification limits, cancellation, shutdown, sustained load and flood fairness.
 
 use super::{
     Carrier, DEADLINE, ProxyAuth, QuicTls, Tasks, assert_carrier, echo, http_client,
