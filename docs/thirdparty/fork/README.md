@@ -338,12 +338,12 @@ Third-party test data vendored verbatim and used only by the test suite
     - Type: MIT
     - Copy: [./licenses/html5lib-tests](./licenses/html5lib-tests)
 
-- <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/tree/9d1a415a53f5dfb291bc874823892e49174e38eb>
+- <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/tree/20ebdcce5008c8a777ee9c80ad853ecf606950b5>
   - The generated `cts.json` corpus and schema, vendored under
     [`rama-json/tests/jsonpath-compliance`](https://github.com/plabayo/rama/tree/main/rama-json/tests/jsonpath-compliance)
     and used to exercise the RFC 9535 JSONPath selectors supported by
     rama-json's streaming matcher.
   - License:
-    - Original: <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/blob/9d1a415a53f5dfb291bc874823892e49174e38eb/LICENSE>
+    - Original: <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/blob/20ebdcce5008c8a777ee9c80ad853ecf606950b5/LICENSE>
     - Type: BSD-2-Clause
     - Copy: [./licenses/jsonpath-compliance-test-suite](./licenses/jsonpath-compliance-test-suite)
