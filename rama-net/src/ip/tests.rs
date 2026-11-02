@@ -561,3 +561,41 @@ fn opaque_and_absent_ipv6_payloads_are_not_upper_layer_messages() {
         );
     }
 }
+
+#[test]
+fn forwarding_accepts_exact_buffers_and_preserves_short_buffers() {
+    let mut input = [0; 128];
+    for ipv6_packet in [false, true] {
+        let n = if ipv6_packet {
+            ipv6(IpProtocol::UDP)
+                .encode(b"payload", &mut input)
+                .unwrap()
+        } else {
+            ipv4().encode(&[], b"payload", &mut input).unwrap()
+        };
+        let packet = IpPacket::parse(&input[..n]).unwrap();
+        let mut output = [0xa5; 128];
+        assert_eq!(packet.encode_forwarded(&mut output[..n]), Ok(n));
+        let forwarded = IpPacket::parse(&output[..n]).unwrap();
+        assert_eq!(forwarded.hop_limit(), packet.hop_limit() - 1);
+        assert_eq!(forwarded.source(), packet.source());
+        assert_eq!(forwarded.destination(), packet.destination());
+        assert!(output[n..].iter().all(|byte| *byte == 0xa5));
+        for capacity in [0, n - 1] {
+            output.fill(0xa5);
+            assert_eq!(
+                packet.encode_forwarded(&mut output[..capacity]),
+                Err(IpPacketError::Truncated)
+            );
+            assert_eq!(output, [0xa5; 128]);
+        }
+        let mut appended = Vec::from([0xaa]);
+        assert_eq!(packet.encode_forwarded(&mut appended), Ok(n));
+        assert_eq!(appended[0], 0xaa);
+        assert_eq!(appended.len(), n + 1);
+        assert_eq!(
+            IpPacket::parse(&appended[1..]).unwrap().hop_limit(),
+            packet.hop_limit() - 1
+        );
+    }
+}
