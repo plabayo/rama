@@ -115,6 +115,11 @@ control_payload_struct! {
     libc::in_pktinfo => libc::c_int, libc::in_addr, libc::in_addr;
 }
 
+#[cfg(target_vendor = "apple")]
+control_payload_struct! {
+    libc::in_pktinfo => libc::c_uint, libc::in_addr, libc::in_addr;
+}
+
 #[cfg(target_os = "android")]
 control_payload_struct! {
     libc::in6_pktinfo => libc::in6_addr, libc::c_int;
