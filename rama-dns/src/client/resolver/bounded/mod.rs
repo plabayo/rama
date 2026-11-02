@@ -4,7 +4,7 @@ use super::{
 use crate::wire::{Name, ServiceBinding, Txt};
 use rama_core::{error::BoxError, futures::Stream};
 use rama_net::address::Domain;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{error::static_str_error, generate_set_and_with};
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     num::NonZeroUsize,
@@ -153,17 +153,11 @@ impl<R> BoundedDnsResolver<R> {
     }
 }
 
-/// A resolver produced more raw results than the caller permits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DnsAnswerLimitReached;
-
-impl std::fmt::Display for DnsAnswerLimitReached {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("DNS answer limit reached")
-    }
+static_str_error! {
+    /// DNS answer limit reached
+    #[derive(Copy)]
+    pub struct DnsAnswerLimitReached;
 }
-
-impl std::error::Error for DnsAnswerLimitReached {}
 
 impl<R: DnsAddressResolver> DnsAddressResolver for BoundedDnsResolver<R> {
     type Error = BoxError;

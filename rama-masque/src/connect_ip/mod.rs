@@ -81,9 +81,6 @@ pub use session::{
     ConnectIpSessionConfig, ConnectIpStats, IpPacketOrigin, IpPacketSend,
 };
 
-mod limits;
-pub use limits::{ConnectIpLimits, PrincipalKey, UserOrClientIpKey};
-
 mod client;
 pub use client::{ConnectIpConnector, ConnectIpRequestBuilder};
 

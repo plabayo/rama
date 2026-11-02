@@ -3,6 +3,7 @@ use super::{
     IpRoute,
 };
 use ahash::{HashMap, HashSet};
+use rama_net::ip::IpProtocol;
 use std::{
     num::{NonZeroU16, NonZeroU32},
     sync::Arc,
@@ -94,7 +95,6 @@ impl RouteIndex {
         address: std::net::IpAddr,
         protocol: Option<rama_net::ip::IpProtocol>,
     ) -> bool {
-        use rama_net::ip::IpProtocol;
         if protocol
             == Some(if address.is_ipv4() {
                 IpProtocol::ICMP

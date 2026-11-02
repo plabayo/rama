@@ -1,3 +1,4 @@
+use crate::limits::{AdmitTunnel, Refused, TunnelLimits};
 use std::{convert::Infallible, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use rama_core::{
@@ -34,10 +35,9 @@ use rama_udp::{
 use rama_utils::{macros::generate_set_and_with, octets::kib};
 
 use super::{
-    ConnectUdpDestination, ConnectUdpLimits, ConnectUdpPolicy, ConnectUdpRequestError,
-    ConnectUdpRequestMatcher, ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget,
-    DestinationScopePolicy, TunnelBudget,
-    limits::{AdmitTunnel, Refused},
+    ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRequestError, ConnectUdpRequestMatcher,
+    ConnectUdpSocket, ConnectUdpSocketConfig, ConnectUdpTarget, DestinationScopePolicy,
+    TunnelBudget,
     policy::embedded_destinations,
     session_config,
     socket::{TunnelAccounting, TunnelReport},
@@ -140,7 +140,7 @@ impl ConnectUdpService {
             dns_timeout: Duration::from_secs(5),
             socket: ConnectUdpSocketConfig::default(),
             translation_prefixes: Arc::default(),
-            limits: Arc::new(ConnectUdpLimits::new()),
+            limits: Arc::new(TunnelLimits::new()),
             tunnel_budget: Some(TunnelBudget::new()),
             telemetry: TunnelTelemetry::default(),
         })
@@ -256,7 +256,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
     /// How many tunnels run at once, in total and per principal, and how principals are keyed;
     /// clones of this service, and of `limits`, share them. No limits by default.
     #[must_use]
-    pub fn with_limits<X, K>(mut self, limits: ConnectUdpLimits<X, K>) -> Self
+    pub fn with_limits<X, K>(mut self, limits: TunnelLimits<X, K>) -> Self
     where
         X: InputToRateKey<Request, Key = K>,
         K: RateKey,

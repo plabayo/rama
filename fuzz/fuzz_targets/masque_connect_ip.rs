@@ -3,13 +3,37 @@
 use libfuzzer_sys::fuzz_target;
 use rama::proxy::masque::connect_ip::{
     ADDRESS_ASSIGN, ADDRESS_REQUEST, ConnectIpCapsule, ConnectIpScope, ConnectIpState,
-    ConnectIpStateLimits, ROUTE_ADVERTISEMENT, decode_ip_datagram,
+    ConnectIpStateLimits, ConnectIpTemplate, ROUTE_ADVERTISEMENT, decode_ip_datagram,
 };
+use rama::{http::Version, net::uri::UriTemplate};
+use std::sync::LazyLock;
+
+static TEMPLATE: LazyLock<Result<(ConnectIpTemplate, UriTemplate), &'static str>> =
+    LazyLock::new(|| {
+        let pattern = "https://proxy.example/proxy{?target,ipproto}";
+        Ok((
+            ConnectIpTemplate::try_new(pattern).map_err(|_error| "static CONNECT-IP template")?,
+            UriTemplate::try_new(pattern).map_err(|_error| "static URI template")?,
+        ))
+    });
 
 fuzz_target!(|bytes: &[u8]| {
     _ = decode_ip_datagram(bytes);
-    if let Ok(s) = std::str::from_utf8(bytes) {
-        _ = ConnectIpScope::from_template_values(Some(s), Some(s));
+    assert_eq!(TEMPLATE.as_ref().map(|_| ()), Ok(()));
+    if let (Ok(s), Ok((template, wire_template))) = (std::str::from_utf8(bytes), &*TEMPLATE) {
+        let request = template.request(&ConnectIpScope::default(), Version::HTTP_3);
+        assert_eq!(
+            request.as_ref().map(|_| ()),
+            Ok(()),
+            "static wildcard request"
+        );
+        if let Ok(mut request) = request {
+            let uri = wire_template.expand(|_| Some(s));
+            if let Ok(uri) = uri.parse() {
+                *request.uri_mut() = uri;
+                _ = template.match_request(&request);
+            }
+        }
     }
     let mut state = ConnectIpState::new(ConnectIpStateLimits {
         max_entries: const { std::num::NonZeroU16::new(16).unwrap() },

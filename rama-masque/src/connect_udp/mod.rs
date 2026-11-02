@@ -4,7 +4,7 @@
 
 mod budget;
 #[doc(inline)]
-pub use budget::{ConnectUdpStats, DatagramRate, PrincipalBudget, TunnelBudget};
+pub use budget::{ConnectUdpStats, TunnelBudget};
 
 mod client;
 #[doc(inline)]
@@ -16,13 +16,7 @@ pub use client::{
 mod context;
 #[doc(inline)]
 pub use context::{
-    ContextId, ContextPayloadError, MAX_UDP_PAYLOAD, decode_context_payload, encode_udp_payload,
-};
-
-mod limits;
-#[doc(inline)]
-pub use limits::{
-    ConnectUdpLimits, PrincipalKey, TunnelLease, TunnelLimitReached, UserOrClientIpKey,
+    ContextPayloadError, MAX_UDP_PAYLOAD, decode_context_payload, encode_udp_payload,
 };
 
 pub mod mitm;

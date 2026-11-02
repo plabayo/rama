@@ -5,6 +5,8 @@
 
 use parking_lot::Mutex;
 use rama::futures::future::join_all;
+use rama::proxy::masque::budget::{DatagramRate, PrincipalBudget};
+use rama::proxy::masque::limits::TunnelLimits;
 use rama::{
     Layer as _, Service,
     crypto::cert::boring::generate_certificate_authority_x509,
@@ -43,10 +45,9 @@ use rama::{
         user::{UserId, credentials::basic},
     },
     proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpDestination, ConnectUdpLimits, ConnectUdpPolicy,
-        ConnectUdpRelay, ConnectUdpService, ConnectUdpSocket, ConnectUdpTarget, DatagramRate,
-        DestinationScopePolicy, MAX_UDP_PAYLOAD, MaybeTunneledSocket, PrincipalBudget,
-        TunnelBudget, connect_udp_request,
+        ConnectUdpConnector, ConnectUdpDestination, ConnectUdpPolicy, ConnectUdpRelay,
+        ConnectUdpService, ConnectUdpSocket, ConnectUdpTarget, DestinationScopePolicy,
+        MAX_UDP_PAYLOAD, MaybeTunneledSocket, TunnelBudget, connect_udp_request,
     },
     quic::{
         Endpoint, MIN_UDP_PAYLOAD, ServerConfig, SocketCapacityError, TransportConfig,
@@ -347,7 +348,7 @@ where
         h3_datagrams,
         auth,
         quic,
-        ConnectUdpLimits::new(),
+        TunnelLimits::new(),
         Some(TunnelBudget::new()),
     )
     .await
@@ -359,7 +360,7 @@ async fn masque_proxy_limited<P>(
     h3_datagrams: bool,
     auth: ProxyAuth,
     quic: QuicTls,
-    limits: ConnectUdpLimits,
+    limits: TunnelLimits,
     budget: Option<TunnelBudget>,
 ) -> (SocketAddress, Tasks)
 where
@@ -390,7 +391,7 @@ async fn masque_proxy_on<P>(
     h3_datagrams: bool,
     auth: ProxyAuth,
     quic: QuicTls,
-    limits: ConnectUdpLimits,
+    limits: TunnelLimits,
     budget: Option<TunnelBudget>,
 ) -> (SocketAddress, Tasks)
 where
@@ -829,7 +830,7 @@ async fn a_tunnel_holds_its_place_until_it_ends_on_every_carrier() {
         let (target, _echo) = udp_echo().await;
         for carrier in Carrier::ALL {
             let limits =
-                ConnectUdpLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
+                TunnelLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
             let (proxy, _proxy) = masque_proxy_limited(
                 None,
                 DestinationScopePolicy::allow_private(),
@@ -889,7 +890,7 @@ async fn a_silent_target_receives_only_the_first_reply_allowance_on_every_carrie
                 carrier != Carrier::Http3Capsule,
                 ProxyAuth::Anonymous,
                 QuicTls::Boring,
-                ConnectUdpLimits::new(),
+                TunnelLimits::new(),
                 Some(TunnelBudget::new().with_unanswered(3, kib(64) as u64)),
             )
             .await;
@@ -945,7 +946,7 @@ async fn a_principals_tunnels_share_its_budget_across_connections_on_every_carri
                 carrier != Carrier::Http3Capsule,
                 ProxyAuth::Anonymous,
                 QuicTls::Boring,
-                ConnectUdpLimits::new().with_principal_budget(budget),
+                TunnelLimits::new().with_principal_budget(budget),
                 tunnel_budget,
             )
             .await;

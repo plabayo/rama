@@ -7,7 +7,10 @@ use rama_core::{
     error::{BoxError, ErrorContext as _},
     extensions::{Extensions, ExtensionsRef as _},
 };
-use rama_http::{HeaderMap, Request, Response, Version, io::upgrade::handle_upgrade};
+use rama_http::{
+    HeaderMap, Request, Response, StreamingBody as _, Version, io::upgrade::handle_upgrade,
+};
+use rama_net::Protocol;
 use rama_utils::macros::generate_set_and_with;
 
 /// Prepare a CONNECT-IP handshake from a configured endpoint and typed scope.
@@ -59,15 +62,10 @@ impl ConnectIpRequestBuilder {
         request: Request,
         config: ConnectIpSessionConfig,
     ) -> Result<Self, ConnectIpRequestError> {
-        if !request
-            .uri()
-            .scheme_str()
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https"))
-        {
+        if request.uri().scheme() != Some(&Protocol::HTTPS) {
             return Err(ConnectIpRequestError::Template);
         }
         let scope = template.match_request(&request)?;
-        use rama_http::StreamingBody as _;
         if !request.body().is_end_stream() {
             return Err(ConnectIpRequestError::Handshake);
         }
@@ -109,8 +107,8 @@ impl ConnectIpRequestBuilder {
         B: Send + 'static,
     {
         self.template.validate_request_head(&self.request)?;
-        self.config.policy.scope_protocol = self.scope.protocol;
-        self.config.policy.scope_targets = match self.scope.target {
+        self.config.policy_mut().scope_protocol = self.scope.protocol;
+        self.config.policy_mut().scope_targets = match self.scope.target {
             super::IpTarget::Prefix(prefix) => vec![prefix],
             super::IpTarget::Any | super::IpTarget::Hostname(_) => Vec::new(),
         };

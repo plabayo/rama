@@ -1,7 +1,8 @@
 use super::{
-    ConnectIpLimits, ConnectIpRole, ConnectIpScope, ConnectIpSession, ConnectIpSessionConfig,
-    ConnectIpTemplate, IpTarget,
+    ConnectIpRole, ConnectIpScope, ConnectIpSession, ConnectIpSessionConfig, ConnectIpTemplate,
+    IpTarget,
 };
+use crate::limits::TunnelLimits;
 use rama_core::{
     Service, error::BoxError, extensions::ExtensionsRef as _, futures::StreamExt as _,
     rt::Executor, telemetry::tracing,
@@ -46,7 +47,7 @@ pub struct ConnectIpRequest<B = Body> {
 /// marker after verifying the upstream transport; this is the same metadata
 /// contract used by Rama HTTP connection services. Admission and DNS run before the success response;
 /// the capacity lease survives until the handler or its task ends.
-pub struct ConnectIpService<A, H, R = GlobalDnsResolver, L = ConnectIpLimits> {
+pub struct ConnectIpService<A, H, R = GlobalDnsResolver, L = TunnelLimits> {
     template: ConnectIpTemplate,
     admission: Arc<A>,
     handler: Arc<H>,
@@ -92,7 +93,7 @@ impl<A, H> ConnectIpService<A, H> {
             handler: Arc::new(handler),
             resolver: Arc::new(GlobalDnsResolver::default()),
             exec,
-            limits: ConnectIpLimits::default(),
+            limits: TunnelLimits::default(),
             open_timeout: Duration::from_secs(10),
             proxy_name: None,
         }
@@ -204,14 +205,14 @@ where
             Ok(Err(_error)) => return Ok(refuse(ProxyErrorType::HttpRequestDenied)),
             Err(_elapsed) => return Ok(refuse(ProxyErrorType::HttpResponseTimeout)),
         };
-        config.policy.scope_protocol = scope.protocol;
-        config.policy.scope_targets = match tokio::time::timeout_at(
+        config.policy_mut().scope_protocol = scope.protocol;
+        config.policy_mut().scope_targets = match tokio::time::timeout_at(
             deadline,
             resolve_scope(
                 &self.resolver,
                 scope.target,
                 &extensions,
-                &config.policy.receive.destinations,
+                &config.policy().receive.destinations,
             ),
         )
         .await

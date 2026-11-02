@@ -1,12 +1,10 @@
+use crate::budget::{DatagramRate, PrincipalBudget};
 use rama_core::extensions::Extensions;
 use rama_net::stream::SocketInfo;
 use rama_utils::rate::Rate;
 
 use super::*;
-use crate::{
-    budget::Charge,
-    connect_udp::{DatagramRate, TunnelBudget},
-};
+use crate::{budget::Charge, connect_udp::TunnelBudget};
 
 fn user(name: &str) -> PrincipalKey {
     PrincipalKey::user(&UserId::Username(name.to_owned()))

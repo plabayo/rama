@@ -6,6 +6,7 @@ use interop_common::{
 use rama::{
     ServiceInput,
     bytes::Bytes,
+    crypto::pem::PemEncode as _,
     error::BoxError,
     extensions::ExtensionsRef as _,
     http::{
@@ -23,15 +24,20 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tls::{SecureTransport, client::TlsClientConfig, server::TlsServerConfig},
+    utils::fs::tempdir,
 };
 use rama_masque::connect_ip::*;
 use std::{
     convert::Infallible,
     net::{Ipv4Addr, SocketAddr},
+    process::Stdio,
     sync::Arc,
     time::Duration,
 };
-use tokio::time::timeout;
+use tokio::{
+    io::{AsyncBufReadExt as _, BufReader},
+    time::timeout,
+};
 
 fn prefix(s: &str) -> IpNet {
     s.parse().unwrap()
@@ -50,7 +56,7 @@ fn config() -> ConnectIpSessionConfig {
     policy.send = direction.clone();
     policy.receive = direction;
     let mut config = ConnectIpSessionConfig::new(policy);
-    config = config.try_with_ipv6_link_mtu(Some(1350)).unwrap();
+    config = config.try_with_ipv6_link_mtu(1350).unwrap();
     config
 }
 
@@ -281,7 +287,7 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                 let request = established.input;
                 let mut session_config = config();
                 if native {
-                    session_config = session_config.try_with_ipv6_link_mtu(None).unwrap();
+                    session_config = session_config.try_without_ipv6_link_mtu().unwrap();
                 }
                 exercise(
                     ConnectIpRequestBuilder::try_from_request(&template, request, session_config)?
@@ -406,9 +412,6 @@ fn address_requests() -> Vec<AddressRequest> {
 #[tokio::test]
 #[ignore = "requires the independent CONNECT-IP Go peer"]
 async fn rama_ip_client_against_connect_ip_go() -> Result<(), BoxError> {
-    use rama::{crypto::pem::PemEncode as _, utils::fs::tempdir};
-    use std::process::Stdio;
-    use tokio::io::{AsyncBufReadExt as _, BufReader};
     timeout(Duration::from_secs(40), async {
         let directory = tempdir()?;
         let auth = identity::server_identity();
@@ -585,8 +588,6 @@ async fn independent_responder(mut session: ConnectIpSession) -> Result<(), BoxE
 #[tokio::test]
 #[ignore = "requires the independent CONNECT-IP Go peer"]
 async fn rama_ip_server_against_connect_ip_go() -> Result<(), BoxError> {
-    use rama::{crypto::pem::PemEncode as _, utils::fs::tempdir};
-    use std::process::Stdio;
     timeout(Duration::from_secs(40), async {
         let directory = tempdir()?;
         let auth = identity::server_identity();

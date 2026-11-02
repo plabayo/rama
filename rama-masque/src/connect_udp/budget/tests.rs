@@ -1,3 +1,4 @@
+use crate::budget::PrincipalBudget;
 use crate::budget::QuotaWindowState;
 use rama_utils::rate::Rate;
 use std::{sync::Arc, time::Duration};

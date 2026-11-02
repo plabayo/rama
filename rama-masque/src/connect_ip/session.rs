@@ -14,7 +14,11 @@ use rama_http::{
     },
     io::upgrade::Upgraded,
 };
-use rama_net::ip::IpPacket;
+use rama_net::ip::{
+    IpPacket, IpProtocol,
+    icmp::{Icmpv6Echo, Icmpv6EchoKind},
+};
+use rama_utils::macros::generate_set_and_with;
 use std::{
     fmt,
     sync::{
@@ -33,7 +37,7 @@ use tokio::{
 #[derive(Debug, Clone)]
 pub struct ConnectIpSessionConfig {
     /// Locally authorized packet permissions; peer declarations cannot extend them.
-    pub policy: ConnectIpPolicy,
+    policy: ConnectIpPolicy,
     /// Bounded control state.
     state: ConnectIpStateLimits,
     /// Largest accepted IP packet, excluding the Context ID; up to 65575 bytes.
@@ -50,7 +54,7 @@ pub struct ConnectIpSessionConfig {
     /// Maximum time a reliable send/close may remain blocked.
     write_timeout: Duration,
     /// Per-tunnel rate/quota configuration; instantiated for each new session.
-    pub budget: TunnelBudget,
+    budget: TunnelBudget,
     pub(super) principal_budget: Option<Arc<crate::budget::PrincipalSpend>>,
 }
 
@@ -70,16 +74,48 @@ impl ConnectIpSessionConfig {
         }
     }
 
+    /// Locally authorized packet permissions.
+    pub fn policy(&self) -> &ConnectIpPolicy {
+        &self.policy
+    }
+
+    /// Edit local permissions before opening the session.
+    pub fn policy_mut(&mut self) -> &mut ConnectIpPolicy {
+        &mut self.policy
+    }
+
+    generate_set_and_with! {
+        /// Replace locally authorized packet permissions.
+        pub fn policy(mut self, policy: ConnectIpPolicy) -> Self {
+            self.policy = policy;
+            self
+        }
+    }
+
+    /// Per-tunnel rate and quota configuration.
+    pub fn budget(&self) -> &TunnelBudget {
+        &self.budget
+    }
+
+    generate_set_and_with! {
+        /// Set the budget instantiated for each new session.
+        pub fn budget(mut self, budget: TunnelBudget) -> Self {
+            self.budget = budget;
+            self
+        }
+    }
+
     /// The configured control-state bounds.
     pub fn state_limits(&self) -> ConnectIpStateLimits {
         self.state
     }
 
-    /// Set already-valid control-state bounds.
-    #[must_use]
-    pub fn with_state_limits(mut self, state: ConnectIpStateLimits) -> Self {
-        self.state = state;
-        self
+    generate_set_and_with! {
+        /// Set already-valid control-state bounds.
+        pub fn state_limits(mut self, state: ConnectIpStateLimits) -> Self {
+            self.state = state;
+            self
+        }
     }
 
     /// Largest packet accepted from either carrier.
@@ -87,17 +123,19 @@ impl ConnectIpSessionConfig {
         self.max_packet_size
     }
 
-    /// Set the packet bound, retaining the guaranteed IPv6 MTU if configured.
-    pub fn try_with_max_packet_size(mut self, size: usize) -> Result<Self, ConnectIpError> {
-        if !(20..=65575).contains(&size)
-            || self
-                .ipv6_link_mtu
-                .is_some_and(|mtu| usize::from(mtu) > size)
-        {
-            return Err(ConnectIpError::Config);
+    generate_set_and_with! {
+        /// Set the packet bound, retaining the guaranteed IPv6 MTU if configured.
+        pub fn max_packet_size(mut self, size: usize) -> Result<Self, ConnectIpError> {
+            if !(20..=65575).contains(&size)
+                || self
+                    .ipv6_link_mtu
+                    .is_some_and(|mtu| usize::from(mtu) > size)
+            {
+                return Err(ConnectIpError::Config);
+            }
+            self.max_packet_size = size;
+            Ok(self)
         }
-        self.max_packet_size = size;
-        Ok(self)
     }
 
     /// IPv6 MTU guaranteed for the complete path, when known.
@@ -105,13 +143,15 @@ impl ConnectIpSessionConfig {
         self.ipv6_link_mtu
     }
 
-    /// Configure a verified IPv6 MTU, or disable IPv6 until a successful probe.
-    pub fn try_with_ipv6_link_mtu(mut self, mtu: Option<u16>) -> Result<Self, ConnectIpError> {
-        if mtu.is_some_and(|mtu| mtu < 1280 || usize::from(mtu) > self.max_packet_size) {
-            return Err(ConnectIpError::Config);
+    generate_set_and_with! {
+        /// Configure a verified IPv6 MTU, or disable IPv6 until a successful probe.
+        pub fn ipv6_link_mtu(mut self, mtu: Option<u16>) -> Result<Self, ConnectIpError> {
+            if mtu.is_some_and(|mtu| mtu < 1280 || usize::from(mtu) > self.max_packet_size) {
+                return Err(ConnectIpError::Config);
+            }
+            self.ipv6_link_mtu = mtu;
+            Ok(self)
         }
-        self.ipv6_link_mtu = mtu;
-        Ok(self)
     }
 
     /// Maximum idle time without accepted packet or control activity.
@@ -119,13 +159,15 @@ impl ConnectIpSessionConfig {
         self.idle_timeout
     }
 
-    /// Set a positive idle timeout.
-    pub fn try_with_idle_timeout(mut self, timeout: Duration) -> Result<Self, ConnectIpError> {
-        if timeout.is_zero() {
-            return Err(ConnectIpError::Config);
+    generate_set_and_with! {
+        /// Set a positive idle timeout.
+        pub fn idle_timeout(mut self, timeout: Duration) -> Result<Self, ConnectIpError> {
+            if timeout.is_zero() {
+                return Err(ConnectIpError::Config);
+            }
+            self.idle_timeout = timeout;
+            Ok(self)
         }
-        self.idle_timeout = timeout;
-        Ok(self)
     }
 
     /// Maximum time for a packet/control send or graceful close.
@@ -133,13 +175,15 @@ impl ConnectIpSessionConfig {
         self.write_timeout
     }
 
-    /// Set a positive write timeout.
-    pub fn try_with_write_timeout(mut self, timeout: Duration) -> Result<Self, ConnectIpError> {
-        if timeout.is_zero() {
-            return Err(ConnectIpError::Config);
+    generate_set_and_with! {
+        /// Set a positive write timeout.
+        pub fn write_timeout(mut self, timeout: Duration) -> Result<Self, ConnectIpError> {
+            if timeout.is_zero() {
+                return Err(ConnectIpError::Config);
+            }
+            self.write_timeout = timeout;
+            Ok(self)
         }
-        self.write_timeout = timeout;
-        Ok(self)
     }
 
     /// HTTP framing configuration; construction preserves all size invariants.
@@ -463,10 +507,6 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
         peer: std::net::Ipv6Addr,
         nonce: [u8; 16],
     ) -> Result<Vec<ConnectIpCapsule>, ConnectIpError> {
-        use rama_net::ip::{
-            IpProtocol,
-            icmp::{Icmpv6Echo, Icmpv6EchoKind},
-        };
         if self.sender.shared.ipv6_mtu.load(Ordering::Relaxed) != 0
             || self.sender.shared.config.max_packet_size < 1280
             || source.is_unspecified()

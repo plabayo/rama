@@ -12,11 +12,10 @@ use libfuzzer_sys::{
     arbitrary::{self, Arbitrary},
     fuzz_target,
 };
+use rama::proxy::masque::context::ContextId;
 use rama::{
     net::address::ProxyAddress,
-    proxy::masque::connect_udp::{
-        ConnectUdpTarget, ContextId, MAX_UDP_PAYLOAD, decode_context_payload,
-    },
+    proxy::masque::connect_udp::{ConnectUdpTarget, MAX_UDP_PAYLOAD, decode_context_payload},
 };
 
 #[derive(Arbitrary, Debug)]

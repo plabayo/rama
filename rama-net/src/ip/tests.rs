@@ -1,6 +1,8 @@
 use super::*;
 use crate::std::vec::Vec;
 use core::net::Ipv4Addr;
+use icmp::*;
+use icmp::{Icmpv6Echo, Icmpv6EchoKind};
 
 #[test]
 fn checksum_preserves_odd_slice_boundaries() {
@@ -184,7 +186,6 @@ fn malformed_lengths_never_reach_packet_accessors() {
 
 #[test]
 fn icmp_errors_have_valid_checksums_and_bounded_quotations() {
-    use icmp::*;
     let mut original = [0; 1800];
     let mut reply = [0; 1280];
     let n = ipv4().encode(&[], &[7; 1700], &mut original).unwrap();
@@ -421,7 +422,6 @@ fn quoted_header_validation_does_not_accept_malformed_options() {
 
 #[test]
 fn typed_echo_checks_checksum_code_and_fragmentation_without_copying() {
-    use icmp::{Icmpv6Echo, Icmpv6EchoKind};
     let header = ipv6(IpProtocol::ICMPV6);
     let echo = Icmpv6Echo {
         kind: Icmpv6EchoKind::Request,

@@ -10,9 +10,10 @@ use rama_http::{
     proto::ext::{HttpDatagrams, Protocol},
 };
 use rama_net::{
-    address::{Authority, AuthorityRef, Domain, ip::ipnet::IpNet},
+    Protocol as TransportProtocol,
+    address::{Authority, AuthorityRef, Domain, DomainRef, ip::ipnet::IpNet},
     ip::IpProtocol,
-    uri::{TemplateOperator, Uri, UriTemplate, UriTemplateMatcher},
+    uri::{TemplateOperator, Uri, UriTemplate, UriTemplateCaptures, UriTemplateMatcher},
 };
 use rama_utils::macros::generate_set_and_with;
 use std::{fmt, net::IpAddr};
@@ -80,47 +81,6 @@ impl ConnectIpScope {
             self.protocol = protocol;
             self
         }
-    }
-
-    /// Parse decoded URI-template values. Missing variables are wildcards;
-    /// present-but-empty values are invalid.
-    pub fn from_template_values(
-        target: Option<&str>,
-        protocol: Option<&str>,
-    ) -> Result<Self, ConnectIpRequestError> {
-        let target = match target.unwrap_or("*") {
-            "*" => IpTarget::Any,
-            "" => return Err(ConnectIpRequestError::Scope),
-            s if s.contains('/') => {
-                let p: IpNet = s.parse().map_err(|_error| ConnectIpRequestError::Scope)?;
-                if p.addr() != p.network() {
-                    return Err(ConnectIpRequestError::Scope);
-                }
-                IpTarget::Prefix(p)
-            }
-            s => {
-                if !s.is_ascii() || s.contains('%') || s.contains('[') || s.contains(']') {
-                    return Err(ConnectIpRequestError::Scope);
-                }
-                if let Ok(ip) = s.parse::<IpAddr>() {
-                    IpTarget::Prefix(IpNet::from(ip))
-                } else {
-                    IpTarget::Hostname(
-                        Domain::try_from(s).map_err(|_error| ConnectIpRequestError::Scope)?,
-                    )
-                }
-            }
-        };
-        let protocol = match protocol.unwrap_or("*") {
-            "*" => None,
-            s if !s.is_empty() && s.len() <= 3 && s.bytes().all(|c| c.is_ascii_digit()) => Some(
-                IpProtocol::new(s.parse().map_err(|_error| ConnectIpRequestError::Scope)?),
-            ),
-            _ => return Err(ConnectIpRequestError::Scope),
-        };
-        let scope = Self { target, protocol };
-        scope.check_protocol_scope()?;
-        Ok(scope)
     }
 
     fn check_protocol_scope(&self) -> Result<(), ConnectIpRequestError> {
@@ -307,9 +267,50 @@ impl ConnectIpTemplate {
             .matcher
             .captures(&path, query.as_deref())
             .ok_or(ConnectIpRequestError::Mismatch)?;
+        self.scope_from_captures(&captures)
+    }
+
+    // Decode the peer's URI captures at the wire boundary. Application callers
+    // construct ConnectIpScope from typed targets and protocols instead.
+    fn scope_from_captures(
+        &self,
+        captures: &UriTemplateCaptures<'_>,
+    ) -> Result<ConnectIpScope, ConnectIpRequestError> {
         let template = self.matcher.template();
         let get = |name| template.variable(name).and_then(|v| captures.get(v));
-        ConnectIpScope::from_template_values(get("target"), get("ipproto"))
+        let target = get("target");
+        let protocol = get("ipproto");
+        let target = match target.unwrap_or("*") {
+            "*" => IpTarget::Any,
+            s if s.contains('/') => {
+                let p: IpNet = s.parse().map_err(|_error| ConnectIpRequestError::Scope)?;
+                if p.addr() != p.network() {
+                    return Err(ConnectIpRequestError::Scope);
+                }
+                IpTarget::Prefix(p)
+            }
+            s => {
+                if let Ok(ip) = s.parse::<IpAddr>() {
+                    IpTarget::Prefix(IpNet::from(ip))
+                } else {
+                    IpTarget::Hostname(
+                        DomainRef::try_from(s)
+                            .map_err(|_error| ConnectIpRequestError::Scope)?
+                            .into_owned(),
+                    )
+                }
+            }
+        };
+        let protocol = match protocol.unwrap_or("*") {
+            "*" => None,
+            s if s.len() <= 3 && s.bytes().all(|c| c.is_ascii_digit()) => Some(IpProtocol::new(
+                s.parse().map_err(|_error| ConnectIpRequestError::Scope)?,
+            )),
+            _ => return Err(ConnectIpRequestError::Scope),
+        };
+        let scope = ConnectIpScope { target, protocol };
+        scope.check_protocol_scope()?;
+        Ok(scope)
     }
 
     // Headers/extensions can be customized after template expansion. Check that
@@ -332,8 +333,8 @@ impl ConnectIpTemplate {
         }
         let uri = request.uri();
         if uri
-            .scheme_str()
-            .is_some_and(|s| !s.eq_ignore_ascii_case("https"))
+            .scheme()
+            .is_some_and(|scheme| scheme != &TransportProtocol::HTTPS)
         {
             return Err(ConnectIpRequestError::Mismatch);
         }

@@ -1,3 +1,4 @@
+use crate::context::ContextId;
 use std::fmt;
 
 use rama_core::bytes::BufMut;
@@ -7,8 +8,6 @@ use rama_quic_proto::{VarInt, coding::Codec};
 ///
 /// [RFC 9298 §5]: https://datatracker.ietf.org/doc/html/rfc9298#section-5
 pub const MAX_UDP_PAYLOAD: usize = 65527;
-
-pub use crate::context::ContextId;
 
 /// Why an HTTP Datagram payload is not a valid CONNECT-UDP payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

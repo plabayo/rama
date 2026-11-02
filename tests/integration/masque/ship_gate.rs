@@ -5,6 +5,8 @@ use super::{
     Carrier, DEADLINE, ProxyAuth, QuicTls, Tasks, assert_carrier, echo, http_client,
     masque_proxy_limited, masque_proxy_on, open_tunnel, proxy_address, udp_echo,
 };
+use rama::proxy::masque::budget::{DatagramRate, PrincipalBudget};
+use rama::proxy::masque::limits::TunnelLimits;
 use rama::{
     Service as _,
     futures::future::join_all,
@@ -15,8 +17,8 @@ use rama::{
         stream::Socket as _,
     },
     proxy::masque::connect_udp::{
-        ConnectUdpConnector, ConnectUdpLimits, ConnectUdpSocket, DatagramRate,
-        DestinationScopePolicy, MaybeTunneledSocket, PrincipalBudget, TunnelBudget,
+        ConnectUdpConnector, ConnectUdpSocket, DestinationScopePolicy, MaybeTunneledSocket,
+        TunnelBudget,
     },
     rt::Executor,
     udp::{
@@ -92,7 +94,7 @@ async fn counting_target(answer: Answer) -> (SocketAddress, Arc<Received>, Tasks
 /// A proxy for `carrier` with `limits` and `budget`.
 async fn proxy_for(
     carrier: Carrier,
-    limits: ConnectUdpLimits,
+    limits: TunnelLimits,
     budget: TunnelBudget,
 ) -> (ProxyAddress, Tasks) {
     let (proxy, tasks) = masque_proxy_limited(
@@ -152,7 +154,7 @@ async fn a_target_receives_exactly_what_the_client_sent_on_every_carrier() {
         for carrier in Carrier::ALL {
             let (target, received, _target) = counting_target(Answer::Echo).await;
             let (proxy, _proxy) =
-                proxy_for(carrier, ConnectUdpLimits::new(), TunnelBudget::new()).await;
+                proxy_for(carrier, TunnelLimits::new(), TunnelBudget::new()).await;
             let mut socket = tunnel(&proxy, target, carrier).await;
             let mut sent = 0;
             for (index, len) in [0, 1, 64, 700, 1200]
@@ -188,7 +190,7 @@ async fn a_reflecting_target_reaches_the_client_only_within_its_rate_on_every_ca
         );
         for carrier in Carrier::ALL {
             for (budget, limited) in [(TunnelBudget::new(), false), (limited, true)] {
-                let (proxy, _proxy) = proxy_for(carrier, ConnectUdpLimits::new(), budget).await;
+                let (proxy, _proxy) = proxy_for(carrier, TunnelLimits::new(), budget).await;
                 let mut socket = tunnel(&proxy, target, carrier).await;
                 let peer = socket.peer_addr().unwrap();
                 socket
@@ -218,7 +220,7 @@ async fn a_stranger_writing_to_the_egress_socket_never_reaches_the_client_on_eve
         let stranger = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         for carrier in Carrier::ALL {
             let (proxy, fixture) =
-                proxy_for(carrier, ConnectUdpLimits::new(), TunnelBudget::new()).await;
+                proxy_for(carrier, TunnelLimits::new(), TunnelBudget::new()).await;
             let mut socket = tunnel(&proxy, target, carrier).await;
             echo(&mut socket, b"answered").await;
             let egress = *fixture
@@ -256,7 +258,7 @@ async fn a_tunnel_dropped_mid_flood_frees_its_place_and_socket_on_every_carrier(
         let (target, received, _target) = counting_target(Answer::Echo).await;
         for carrier in Carrier::ALL {
             let limits =
-                ConnectUdpLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
+                TunnelLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
             let (proxy, fixture) = proxy_for(carrier, limits.clone(), TunnelBudget::new()).await;
             let egress = fixture.proxy.clone().unwrap();
             let mut socket = tunnel(&proxy, target, carrier).await;
@@ -310,7 +312,7 @@ async fn a_graceful_proxy_shutdown_ends_every_tunnel_on_every_carrier() {
             let shutdown = Shutdown::new(async move {
                 _ = stopped.await;
             });
-            let limits = ConnectUdpLimits::new();
+            let limits = TunnelLimits::new();
             let (proxy, fixture) = masque_proxy_on(
                 Executor::graceful(shutdown.guard()),
                 None,
@@ -433,7 +435,7 @@ async fn sustained_load_on_every_carrier_moves_every_payload_and_frees_everythin
         let (target, received, _target) = counting_target(Answer::Echo).await;
         let lengths = [4, 32, 200, 512, 1200, 64, 900, 8];
         let runs = Carrier::ALL.map(|carrier| async move {
-            let limits = ConnectUdpLimits::new()
+            let limits = TunnelLimits::new()
                 .with_max_tunnels(std::num::NonZeroUsize::new(TUNNELS).unwrap())
                 .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(TUNNELS).unwrap());
             let (proxy, fixture) = proxy_for(carrier, limits.clone(), TunnelBudget::new()).await;
@@ -582,7 +584,7 @@ async fn measure(
     } else {
         1
     };
-    let limits = ConnectUdpLimits::new()
+    let limits = TunnelLimits::new()
         .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(per_principal).unwrap());
     let limits = match scenario {
         Flood::OtherPrincipalLimited => limits.with_principal_budget(
