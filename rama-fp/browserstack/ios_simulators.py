@@ -49,7 +49,9 @@ def run_device(version, udid, output):
     try:
         transition("boot", udid, "Booted")
         simctl("bootstatus", udid, "-b", timeout=900)
-        simctl("launch", udid, "com.apple.mobilesafari")
+        # First launch after runtime migration can exceed two minutes on
+        # hosted macOS, even after bootstatus finishes. Keep a separate bound.
+        simctl("launch", udid, "com.apple.mobilesafari", timeout=600)
         # Safari's first launch can outlast safaridriver's connect timeout.
         time.sleep(15)
         simctl("terminate", udid, "com.apple.mobilesafari")
