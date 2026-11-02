@@ -2,7 +2,6 @@ use super::*;
 use crate::std::vec::Vec;
 use core::net::Ipv4Addr;
 use icmp::*;
-use icmp::{Icmpv6Echo, Icmpv6EchoKind};
 
 #[test]
 fn checksum_preserves_odd_slice_boundaries() {

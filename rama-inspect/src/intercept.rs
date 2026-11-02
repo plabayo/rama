@@ -27,7 +27,7 @@ impl Default for QueueLimits {
 }
 
 static_str_error! {
-    /// interception queue is full
+    #[doc = "interception queue is full"]
     #[derive(Copy)]
     pub struct QueueFull;
 }

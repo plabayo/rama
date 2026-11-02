@@ -154,7 +154,7 @@ impl<R> BoundedDnsResolver<R> {
 }
 
 static_str_error! {
-    /// DNS answer limit reached
+    #[doc = "DNS answer limit reached"]
     #[derive(Copy)]
     pub struct DnsAnswerLimitReached;
 }

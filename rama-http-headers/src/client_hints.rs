@@ -67,7 +67,7 @@ macro_rules! client_hint {
         }
 
         rama_utils::macros::error::static_str_error! {
-            /// Client Hint Parsing Error
+            #[doc = "Client Hint Parsing Error"]
             pub struct ClientHintParsingError;
         }
 

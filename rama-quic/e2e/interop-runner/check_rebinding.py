@@ -1,10 +1,11 @@
-"""Prove the pinned ngtcp2 ACK-first NAT-rebinding result independently.
+"""Prove pinned ngtcp2 NAT-rebinding checker limitations independently.
 
 RFC 9000 section 9.3 requires path validation, not a PATH_CHALLENGE in the
-first datagram. Keep the upstream failure visible; accept only an ACK/PADDING
-prefix followed by verified validation and transfer on every new NAT tuple.
+first datagram or a response to a probe lost before delivery. Keep upstream
+failures visible; prove matched validation and transfer on every new NAT tuple.
 """
 from pathlib import Path
+import ast
 import ipaddress
 import re
 
@@ -25,7 +26,8 @@ def require(condition, message):
         raise InvalidResults(f"NAT-rebinding evidence: {message}")
 
 
-def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=False):
+def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=False,
+                             lost_challenges=frozenset()):
     """Check both sides of the NAT; frame numbers are local to each capture."""
     handshakes = []
     for trace in (client_trace, server_trace):
@@ -103,8 +105,26 @@ def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=Fa
             validated.setdefault(token, p["number"])
     require(set(validated) == set(received), "response did not reach the server")
 
+    # RFC 9000 sections 8.2.1-8.2.4 allow a later challenge to validate a path
+    # when an earlier probe was lost. Only classify tokens named by the pinned
+    # checker, absent from the client capture, and replaced on that same path.
+    require(lost_challenges <= set(sent) - set(received),
+            "reported lost challenge was delivered or never sent")
+    replaced = []
+    for token in sorted(lost_challenges):
+        probe = sent[token]
+        index = paths.index(probe["dst"])
+        end = starts[paths[index + 1]] if index + 1 < len(paths) else float("inf")
+        replacements = [t for t in validated
+                        if sent[t]["dst"] == probe["dst"]
+                        and probe["number"] < sent[t]["number"] < validated[t] < end]
+        require(index > 0 and bool(replacements), "lost probe has no later same-path validation")
+        replacement = min(replacements, key=lambda t: validated[t])
+        replaced.append({"token": token, "path": probe["dst"], "sent_at": probe["number"],
+                         "replacement": replacement, "validated_at": validated[replacement]})
+
     dropped = []
-    for token in set(sent) - set(received):
+    for token in set(sent) - set(received) - lost_challenges:
         p = sent[token]
         index = paths.index(p["dst"])
         require(index + 1 < len(paths) and p["number"] > starts[paths[index + 1]],
@@ -123,22 +143,28 @@ def verify_rebinding_packets(client_trace, server_trace, *, address_rebinding=Fa
                     for p in prefix), "new path has more than ACK/PADDING before validation starts")
         require(outgoing[0]["number"] > starts[path], "server used a path before observing rebinding")
         ack_first |= bool(prefix)
-        first_tokens = outgoing[first_probe]["challenges"]
+        # Every delivered challenge must still be answered. A reported, proven
+        # lost first probe can be followed by the independently matched replacement.
+        delivered_probe = next((p for p in outgoing if set(p["challenges"]) & set(received)), None)
+        require(delivered_probe is not None, "no challenge reached the client on the new path")
+        first_tokens = tuple(t for t in delivered_probe["challenges"] if t in received)
         require(all(token in validated for token in first_tokens), "first new-path probe not answered")
-        completed = max(validated[token] for token in first_tokens)
+        path_tokens = (*first_tokens, *(p["replacement"] for p in replaced if p["path"] == path))
+        completed = max(validated[token] for token in path_tokens)
         require(any(p["src"] == path and p["number"] > completed and has_non_probing_frame(p)
                     for p in incoming), "no client non-probing progress after validation")
         require(any(has_stream(p) and p["number"] > completed for p in outgoing),
                 "no stream progress after new-path validation")
-        client_answered = max(answers[token]["number"] for token in first_tokens)
+        client_answered = max(answers[token]["number"] for token in path_tokens)
         require(any(p["src"] == SERVER and has_stream(p) and p["number"] > client_answered
                     for p in client_trace), "no delivered stream progress after validation")
         proofs.append({"client": path, "ack_prefix_packets": len(prefix),
                        "challenge_at": outgoing[first_probe]["number"], "validated_at": completed})
-    require(ack_first, "capture does not exhibit the ACK-first checker limitation")
+    require(ack_first or replaced, "capture does not exhibit a reviewed ACK-first or lost-probe limitation")
     return {"classification": "checker-incompatible", "paths": proofs,
             "server_challenges_answered": len(validated),
-            "undelivered_obsolete_path_probes": sorted(dropped, key=lambda p: p["token"])}
+            "undelivered_obsolete_path_probes": sorted(dropped, key=lambda p: p["token"]),
+            "undelivered_replaced_path_probes": replaced}
 
 
 def verify_rebinding(artifacts, role, peer, exits, *, peer_image, case="rebind-port"):
@@ -152,17 +178,32 @@ def verify_rebinding(artifacts, role, peer, exits, *, peer_image, case="rebind-p
             "client failed or server exited unexpectedly")
     directory = Path(artifacts) / "logs-rama-client/ngtcp2_rama" / case
     console = (directory / "output.txt").read_text()
-    require(re.search(r"First server packet on new path .* did not contain a PATH_CHALLENGE frame", console),
-            "unexpected upstream failure")
+    ack_first = re.search(r"First server packet on new path .* did not contain a PATH_CHALLENGE frame", console)
+    lost_challenges = set()
+    for line in console.splitlines():
+        if "PATH_CHALLENGE without a PATH_RESPONSE" not in line:
+            continue
+        match = re.search(r"(?:^|\s)PATH_CHALLENGE without a PATH_RESPONSE: (.+)$", line)
+        require(match is not None, "malformed missing-response report")
+        try:
+            tokens = ast.literal_eval(match[1])
+        except (SyntaxError, ValueError) as error:
+            raise InvalidResults("NAT-rebinding evidence: malformed missing-response tokens") from error
+        require(isinstance(tokens, list) and bool(tokens)
+                and all(isinstance(t, str) and re.fullmatch(r"(?:[0-9a-f]{2}:){7}[0-9a-f]{2}", t)
+                        for t in tokens), "invalid missing-response tokens")
+        lost_challenges.update(t.replace(":", "") for t in tokens)
+    require(ack_first or lost_challenges, "unexpected upstream failure")
     require("Check of downloaded files succeeded" in console, "upstream did not verify the download")
     require(not re.search(r"Expected |Wrong version|File size of |Could not compare files|"
-                          r"PATH_CHALLENGE without a PATH_RESPONSE|First client packet during active migration",
+                          r"First client packet during active migration",
                           console), "console contains another upstream failure")
     keys = directory / "client/keys.log"
     require(bool(keys.read_text().strip()), "missing TLS keys")
     result = verify_rebinding_packets(read_packets(directory / "sim/trace_node_left.pcap", keys),
                                       read_packets(directory / "sim/trace_node_right.pcap", keys),
-                                      address_rebinding=CASES[case])
+                                      address_rebinding=CASES[case],
+                                      lost_challenges=lost_challenges)
     result.update(verify_files(directory, expected_size=10 * 1024 * 1024))
     result.update(role=role, peer=peer, case=case, upstream_result="failed", peer_image=peer_image)
     return result
