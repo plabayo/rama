@@ -13,11 +13,15 @@ Modes:
 """
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 TOOLCHAIN = os.environ.get("RUST_TOOLCHAIN_NIGHTLY", "nightly")
 
@@ -88,8 +92,7 @@ def ensure_targets(packages, host):
 
 def docsrs_command(package, target_dir, native_target):
     command = [
-        "cargo",
-        f"+{TOOLCHAIN}",
+        "cargo-docs-rs",
         "docs-rs",
         "--package",
         package["name"],
@@ -103,11 +106,43 @@ def docsrs_command(package, target_dir, native_target):
     return command
 
 
-def run_package(package, target_dir, native_target):
+def compiler_arguments(arguments):
+    # cargo-docs-rs 1.0.4 checks target availability with an empty no_std binary.
+    # Current nightly expansion checks its missing panic handler.
+    # This probe is a library, not an executable. Leave real builds untouched.
+    # https://github.com/syphar/cargo-docs-rs/blob/1.0.4/src/main.rs
+    if (len(arguments) == 3 and arguments[0] == "-"
+            and arguments[1].startswith("--target=")
+            and arguments[2] == "-Zunpretty=expanded"):
+        return [*arguments, "--crate-type=lib"]
+    return arguments
+
+
+@contextmanager
+def docsrs_environment():
+    environment = dict(os.environ)
+    environment["RUSTUP_TOOLCHAIN"] = TOOLCHAIN
+    # Native Windows jobs do not run the cross-target probe.
+    if os.name == "nt":
+        yield environment
+        return
+    rustc = shutil.which("rustc")
+    if rustc is None:
+        raise RuntimeError("rustc is required")
+    with tempfile.TemporaryDirectory(prefix="rama-docsrs-") as directory:
+        wrapper = Path(directory) / "rustc"
+        command = shlex.join([sys.executable, str(Path(__file__).resolve()), "--rustc", rustc])
+        wrapper.write_text('#!/bin/sh\nexec ' + command + ' "$@"\n')
+        wrapper.chmod(0o700)
+        environment["PATH"] = directory + os.pathsep + environment.get("PATH", "")
+        yield environment
+
+
+def run_package(package, target_dir, native_target, environment=None):
     command = docsrs_command(package, target_dir, native_target)
     target_label = native_target or "metadata targets"
     print(f"==> {package['name']} [{target_label}]", flush=True)
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(command, capture_output=True, text=True, env=environment)
     if result.returncode == 0:
         print(f"PASS: {package['name']}", flush=True)
         return True
@@ -159,11 +194,12 @@ def main():
         flush=True,
     )
 
-    failures = [
-        package["name"]
-        for package in packages
-        if not run_package(package, target_dir, native_target)
-    ]
+    with docsrs_environment() as environment:
+        failures = [
+            package["name"]
+            for package in packages
+            if not run_package(package, target_dir, native_target, environment)
+        ]
 
     print("\n================ SUMMARY ================", flush=True)
     if failures:
@@ -176,4 +212,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "--rustc":
+        os.execv(sys.argv[2], [sys.argv[2], *compiler_arguments(sys.argv[3:])])
     sys.exit(main())
