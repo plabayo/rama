@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
 
 from browser_automation import workflow
 from browser_automation.workflow import (
@@ -326,7 +326,7 @@ class H3BootstrapTests(unittest.TestCase):
             self.assertEqual(failure.exception.msg, "fixture timeout: no page state")
 
     def test_failure_after_report_loaded_is_never_reclassified(self):
-        with self.assertRaises(TimeoutException) as failure:
+        with self.assertRaisesRegex(ValueError, "form submit button unavailable") as failure:
             self.capture(STAYED, form_visible=True)
         self.assertNotIsInstance(failure.exception, UnsupportedFlow)
 
@@ -339,6 +339,25 @@ class ChromeWebSocketOverH2Tests(unittest.TestCase):
         self.assertFalse(websocket_over_h2_unsupported(current, "h2"))
         self.assertFalse(websocket_over_h2_unsupported(old, "h1"))
         self.assertFalse(websocket_over_h2_unsupported(None, "h2"))
+
+
+class FormSubmissionTests(unittest.TestCase):
+    def test_replaced_form_is_found_again_and_submitted_once(self):
+        driver = Mock()
+        stale, current = Mock(), Mock()
+        stale.send_keys.side_effect = StaleElementReferenceException()
+        driver.find_element.side_effect = [NoSuchElementException(), stale, current]
+        with patch("selenium.webdriver.support.wait.time.sleep"):
+            workflow.submit_form(driver, 'form[action="/form"]')
+        self.assertEqual(driver.find_element.call_count, 3)
+        current.send_keys.assert_called_once_with(workflow.Keys.ENTER)
+
+    def test_missing_button_fails_with_safe_phase_diagnostic(self):
+        driver = Mock()
+        driver.find_element.side_effect = NoSuchElementException("private provider data")
+        with self.assertRaisesRegex(ValueError, "form submit button unavailable") as caught:
+            workflow.submit_form(driver, 'form[action="/form"]', timeout=0)
+        self.assertNotIn("private provider data", str(caught.exception))
 
 
 if __name__ == "__main__":

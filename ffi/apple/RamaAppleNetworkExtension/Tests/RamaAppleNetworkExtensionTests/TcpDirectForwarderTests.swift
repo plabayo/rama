@@ -1264,13 +1264,16 @@ final class TcpDirectForwarderTests: XCTestCase {
         h.flow.completeRead(data: nil, error: nil)
         waitFor("upload FIN sent", timeout: 1.0) { h.c2sPhase == .finished }
 
-        XCTAssertTrue(h.queue.sync { h.forwarder.failConnection(NWError.posix(.ENETDOWN)) })
         let tail = Data([0x01, 0x02, 0x03])
-        XCTAssertTrue(h.conn.completePendingReceive(data: tail, isComplete: false, error: nil))
-        waitFor("reads continue after the failure", timeout: 1.0) {
-            h.conn.pendingReceiveCount == 1
+        // Deliver this immediate failure/tail/EOF sequence on the connection
+        // queue, as Network.framework does. Off-queue polling can consume the
+        // 100 ms receive grace and accidentally test a silent receive instead.
+        h.queue.sync {
+            XCTAssertTrue(h.forwarder.failConnection(NWError.posix(.ENETDOWN)))
+            XCTAssertTrue(h.conn.completePendingReceive(data: tail, isComplete: false, error: nil))
+            XCTAssertEqual(h.conn.pendingReceiveCount, 1, "reads continue after the failure")
+            XCTAssertTrue(h.conn.completePendingReceive(data: nil, isComplete: true, error: nil))
         }
-        XCTAssertTrue(h.conn.completePendingReceive(data: nil, isComplete: true, error: nil))
         waitFor("tail enters client writer", timeout: 1.0) {
             h.flow.pendingWriteCompletionCount == 1
         }

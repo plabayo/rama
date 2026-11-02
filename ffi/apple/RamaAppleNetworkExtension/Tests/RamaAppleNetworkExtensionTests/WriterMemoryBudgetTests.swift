@@ -102,10 +102,15 @@ final class WriterMemoryBudgetTests: XCTestCase {
         let events = TestValue<[String]>([])
         let original = Data(repeating: 0xA7, count: byteCount)
         let mutations: [(String, (inout Data) -> Void)] = [
-            ("subscript", { $0[0] = 0x11 }),
-            ("replaceSubrange", { $0.replaceSubrange(0..<1, with: [0x11]) }),
-            ("resetBytes", { $0.resetBytes(in: 0..<1) }),
-            ("range subscript", { $0[0..<2] = Data([0x11, 0x22]) }),
+            ("subscript", { $0[$0.startIndex] = 0x11 }),
+            ("replaceSubrange", { $0.replaceSubrange($0.startIndex..<$0.startIndex + 1, with: [0x11]) }),
+            ("resetBytes", { $0.resetBytes(in: $0.startIndex..<$0.startIndex + 1) }),
+            ("mutable bytes", { data in
+                data.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
+                    bytes[0] = 0x11
+                }
+            }),
+            ("range subscript", { $0[$0.startIndex..<$0.startIndex + 2] = Data([0x11, 0x22]) }),
         ]
         autoreleasepool {
             XCTAssertTrue(budget.tryReserve(bytes: byteCount))
@@ -126,6 +131,45 @@ final class WriterMemoryBudgetTests: XCTestCase {
         XCTAssertEqual(events.get(), ["payload destroyed"])
     }
 
+    func testRawPayloadReadsDoNotDelayPhysicalRelease() {
+        let budget = WriterMemoryBudget()
+        let events = TestValue<[String]>([])
+        var cursor: TcpPayloadCursor? = autoreleasepool {
+            budget.makeTcpTransitCursor(observedNoCopyPayload(count: 96, events: events))
+        }
+        // Read outside a local autorelease pool, as a long-lived pump does.
+        XCTAssertEqual(cursor!.prefix(maxBytes: 96).bytes.pointee, 0xA7)
+        cursor = nil
+        XCTAssertEqual(events.get(), ["payload destroyed"])
+        XCTAssertEqual(budget.testTcpTransitSnapshot.retainedBytes, 0)
+    }
+
+    func testPartialTransportViewSharesBytesAndRetainsTheWholeCharge() {
+        let budget = WriterMemoryBudget()
+        let events = TestValue<[String]>([])
+        var view: Data? = autoreleasepool {
+            var cursor = budget.makeTcpTransitCursor(
+                observedNoCopyPayload(count: 192, events: events))!
+            cursor.advance(by: 32)
+            let slice = cursor.prefix(maxBytes: 96)
+            let data = slice.data
+            XCTAssertEqual(data.count, 96)
+            XCTAssertTrue(data.withUnsafeBytes { $0.baseAddress == UnsafeRawPointer(slice.bytes) })
+            var mutated = data
+            mutated.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
+                bytes[0] = 0x11
+            }
+            XCTAssertEqual(data.first, 0xA7)
+            XCTAssertEqual(slice.bytes.pointee, 0xA7)
+            return data
+        }
+        XCTAssertEqual(view?.first, 0xA7)
+        XCTAssertEqual(events.get(), [])
+        XCTAssertEqual(budget.testTcpTransitSnapshot.retainedBytes, 192)
+        view = nil
+        XCTAssertEqual(events.get(), ["payload destroyed"])
+        XCTAssertEqual(budget.testTcpTransitSnapshot.retainedBytes, 0)
+    }
 
     func testTransportViewsHoldFifoCapacityUntilTheirLastRelease() {
         let budget = WriterMemoryBudget(policy: WriterMemoryPolicy(
@@ -151,7 +195,7 @@ final class WriterMemoryBudgetTests: XCTestCase {
             delivered.fulfill()
         }
         XCTAssertFalse(budget.tryReserve(bytes: 1))
-        autoreleasepool { views.removeLast() }
+        autoreleasepool { _ = views.removeLast() }
         XCTAssertEqual(budget.snapshot().retainedBytes, 192)
         XCTAssertEqual(budget.testWaiterCount, 2)
         views.removeAll()

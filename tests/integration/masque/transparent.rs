@@ -62,7 +62,12 @@ async fn transparent(proxy: SocketAddress, intercepted: bool) -> (SocketAddress,
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         match UdpPacketSocket::bind(SocketAddress::from(listener.local_addr().unwrap())).await {
             Ok(socket) => break (listener, socket),
-            Err(DatagramError::Io(error)) if error.kind() == ErrorKind::AddrInUse => {}
+            // Windows can reserve a UDP port that TCP's ephemeral allocator chose.
+            Err(DatagramError::Io(error))
+                if matches!(
+                    error.kind(),
+                    ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+                ) => {}
             Err(error) => panic!("{error}"),
         }
     };

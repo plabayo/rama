@@ -759,6 +759,16 @@ jobs:
           tool: just
       - name: Load root recipes on every platform
         run: just --list
+      # This job restores six target directories from a ~5 GiB compressed cache.
+      # The archive and expanded targets coexist during restore. These preinstalled
+      # SDKs are unused by the Rust/C/Python peers and can exhaust the runner's disk.
+      - name: Make room for the QUIC dependency cache
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          df -h .
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h .
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-quic-interop-peers-${{ matrix.backends }}

@@ -10,7 +10,7 @@ use super::Authority;
 mod template;
 use crate::{
     Protocol,
-    address::{HostWithOptPort, HostWithPort},
+    address::{HostWithOptPort, HostWithPort, UserInfo},
     proto::try_to_extract_protocol_from_uri_scheme,
     std::string::String,
     user::ProxyCredential,
@@ -130,12 +130,9 @@ impl Display for ProxyAddress {
         if let Some(credential) = &self.credential {
             match credential {
                 ProxyCredential::Basic(basic) => {
-                    let username = basic.username();
-                    if let Some(password) = basic.password() {
-                        write!(f, "{username}:{password}@")?;
-                    } else {
-                        write!(f, "{username}@")?;
-                    }
+                    // Basic contains decoded credentials; URI delimiters must
+                    // be encoded before placing them back in the authority.
+                    write!(f, "{}@", UserInfo::from(basic.clone()))?;
                 }
                 ProxyCredential::Bearer(_) => {
                     tracing::trace!(
@@ -376,6 +373,22 @@ mod tests {
             let out = addr.to_string();
             let expected = expected.unwrap_or(s);
             assert_eq!(expected, out, "addr: {addr}");
+        }
+    }
+
+    #[test]
+    fn credentials_with_uri_delimiters_round_trip() {
+        for input in [
+            "@1%2f@.010:0;A767@559@2072070:6",
+            "http://u%2Fser:p%40ss%25word%23%3F@proxy.example:8080",
+            "socks5://user%3Aname:p%3A%2F%2Fword@[::1]:1080",
+            "masque://user%2Fname:p%2Fword@proxy.example:443/x/{target_host}/{target_port}",
+        ] {
+            let address: ProxyAddress = input.parse().unwrap();
+            assert!(address.credential.is_some());
+            let displayed = address.to_string();
+            let reparsed: ProxyAddress = displayed.parse().expect("displayed proxy must parse");
+            assert_eq!(reparsed, address, "{input}");
         }
     }
 

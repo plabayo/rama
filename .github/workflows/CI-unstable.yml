@@ -282,6 +282,15 @@ jobs:
             cargo_profile_args: --release --config profile.release.codegen-units=16
             # Match regular Release CI's cap on concurrent rustc processes.
             cargo_build_args: --build-jobs 2
+          - os: windows-latest
+            profile: release
+            # The 4-core runner had 13 GiB free while two rustc jobs timed out.
+            cargo_build_args: --build-jobs 4
+          - os: macos-latest
+            profile: debug
+            # Three test rustc processes exceeded 10 GiB on the 7 GiB runner,
+            # causing sustained swapping until the 150-minute build timeout.
+            cargo_build_args: --build-jobs 1
     needs: precheck
     runs-on: ${{ matrix.os }}
     concurrency:
@@ -312,12 +321,13 @@ jobs:
         with:
           env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-test-${{ matrix.profile }}
+          save-scheduled: ${{ matrix.os == 'windows-latest' && matrix.profile == 'release' }}
           # Match CI.yml: beta's per-crate build dirs overflow sccache's rustc argv (os error 206).
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: Build tests (${{ matrix.profile }})
         id: build_tests
         # Cold-cache builds on slow runners need this much; macOS release is the slowest.
-        timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 200 || 150 }}
+        timeout-minutes: ${{ matrix.profile == 'release' && 200 || 150 }}
         shell: bash
         run: |
           # Keep resource evidence in the log even if compilation times out.

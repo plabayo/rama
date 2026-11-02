@@ -47,6 +47,15 @@ def cleanup_dir(directory):
     )
 
 
+def capture_quic_ports(*args, **kwargs):
+    # Upstream forces only port 443. A client port assigned to another
+    # dissector (e.g. Manolito's 41170) then hides preferred-address traffic
+    # on 4433, making a completed migration look like a single-path transfer.
+    kwargs["decode_as"] = {**(kwargs.get("decode_as") or {}),
+                           "udp.port==443": "quic", "udp.port==4433": "quic"}
+    return _file_capture(*args, **kwargs)
+
+
 def close_ignoring_tshark_exit(self):
     # Upstream tolerates pyshark dying mid-iteration on a pcap cut short
     # (`trace.py::_get_packets`, pyshark#390), but the `cap.close()` right
@@ -74,6 +83,8 @@ interop.InteropRunner._copy_logs = copy_logs
 _run_test = interop.InteropRunner._run_test
 interop.InteropRunner._run_test = run_test_with_evidence
 testcase.docker_cleanup_dir = cleanup_dir
+_file_capture = pyshark.FileCapture
+pyshark.FileCapture = capture_quic_ports
 _pyshark_close = pyshark.capture.capture.Capture.close
 pyshark.capture.capture.Capture.close = close_ignoring_tshark_exit
 sys.exit(run_with_completion(run.main, os.environ["RAMA_RUNNER_COMPLETION"]))
