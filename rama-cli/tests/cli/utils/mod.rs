@@ -16,7 +16,10 @@ use std::{
 
 use base64::Engine;
 use parking_lot::Mutex;
-use rama::net::{process::listening_sockets, transport::TransportProtocol};
+use rama::net::{
+    process::{ProcessSocket, listening_sockets},
+    transport::TransportProtocol,
+};
 use rama::telemetry::tracing::{
     level_filters::LevelFilter,
     subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
@@ -193,6 +196,16 @@ impl RamaService {
         exclude: Option<SocketAddr>,
         port: u16,
     ) -> SocketAddr {
+        self.find_endpoint_with(protocol, exclude, port, listening_sockets)
+    }
+
+    fn find_endpoint_with(
+        &mut self,
+        protocol: TransportProtocol,
+        exclude: Option<SocketAddr>,
+        port: u16,
+        mut inspect: impl FnMut(u32) -> io::Result<Vec<ProcessSocket>>,
+    ) -> SocketAddr {
         let deadline = self.startup_deadline;
         let mut delay = Duration::from_millis(25);
 
@@ -202,16 +215,34 @@ impl RamaService {
 
         loop {
             self.check_running();
-            let sockets = listening_sockets(self.process.id());
+            let sockets = inspect(self.process.id());
             self.check_running();
 
-            let sockets = sockets.unwrap_or_else(|error| {
-                panic!(
-                    "inspect rama service {}: {error}\n{}",
-                    self.process.id(),
-                    self.diagnostics()
-                )
-            });
+            let sockets = match sockets {
+                Ok(sockets) => sockets,
+                Err(error) => {
+                    // Process teardown can revoke /proc access before wait()
+                    // reports the exit. Keep polling the owned child within the
+                    // startup budget; an inspection error never proves readiness.
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if !remaining.is_zero()
+                        && matches!(
+                            error.kind(),
+                            io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound
+                        )
+                    {
+                        thread::sleep(delay.min(remaining));
+                        delay = (delay * 2).min(Duration::from_millis(200));
+                        continue;
+                    }
+
+                    panic!(
+                        "inspect rama service {}: {error}\n{}",
+                        self.process.id(),
+                        self.diagnostics()
+                    );
+                }
+            };
 
             let candidates: Vec<_> = sockets
                 .iter()
