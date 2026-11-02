@@ -1,9 +1,10 @@
+use crate::budget::{DatagramRate, PrincipalBudget};
 use rama_core::extensions::Extensions;
 use rama_net::stream::SocketInfo;
 use rama_utils::rate::Rate;
 
 use super::*;
-use crate::connect_udp::{DatagramRate, TunnelBudget, budget::Charge};
+use crate::{budget::Charge, connect_udp::TunnelBudget};
 
 fn user(name: &str) -> PrincipalKey {
     PrincipalKey::user(&UserId::Username(name.to_owned()))
@@ -11,7 +12,7 @@ fn user(name: &str) -> PrincipalKey {
 
 #[test]
 fn the_total_cap_holds_until_a_lease_drops() {
-    let limits = ConnectUdpLimits::new().with_max_tunnels(2);
+    let limits = TunnelLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(2).unwrap());
     let first = limits.try_acquire(user("a")).unwrap();
     let _second = limits.try_acquire(user("b")).unwrap();
     assert_eq!(
@@ -26,7 +27,8 @@ fn the_total_cap_holds_until_a_lease_drops() {
 
 #[test]
 fn each_principal_has_its_own_cap_and_clones_share_them() {
-    let limits = ConnectUdpLimits::new().with_max_tunnels_per_principal(1);
+    let limits =
+        TunnelLimits::new().with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap());
     let clone = limits.clone();
     let alice = limits.try_acquire(user("alice")).unwrap();
     assert_eq!(
@@ -41,9 +43,9 @@ fn each_principal_has_its_own_cap_and_clones_share_them() {
 
 #[test]
 fn a_refused_principal_gives_the_total_place_back() {
-    let limits = ConnectUdpLimits::new()
-        .with_max_tunnels(10)
-        .with_max_tunnels_per_principal(1);
+    let limits = TunnelLimits::new()
+        .with_max_tunnels(std::num::NonZeroUsize::new(10).unwrap())
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap());
     let _held = limits.try_acquire(user("alice")).unwrap();
     for _ in 0..20 {
         limits.try_acquire(user("alice")).unwrap_err();
@@ -114,8 +116,8 @@ fn the_ipv6_aggregation_of_the_default_keyer_is_configurable() {
 #[test]
 fn any_keyer_keys_principals() {
     // IP only: two users from one address share a principal.
-    let limits = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(1)
+    let limits = TunnelLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
         .with_keyer(ClientIpRateKey::new());
     let alice = limits.try_acquire("192.0.2.1".parse().unwrap()).unwrap();
     limits
@@ -123,8 +125,8 @@ fn any_keyer_keys_principals() {
         .unwrap_err();
     drop(alice);
     // A keyer of its own, with its own key type.
-    let tenants = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(1)
+    let tenants = TunnelLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
         .with_keyer(|_: &Request| Ok::<_, BoxError>(Some(7u64)));
     let _held = tenants.try_acquire(7).unwrap();
     tenants.try_acquire(7).unwrap_err();
@@ -133,9 +135,9 @@ fn any_keyer_keys_principals() {
 
 #[tokio::test(start_paused = true)]
 async fn a_full_map_refuses_new_principals_until_one_is_idle() {
-    let limits = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(4)
-        .with_max_principals(1)
+    let limits = TunnelLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(4).unwrap())
+        .with_max_principals(std::num::NonZeroUsize::new(1).unwrap())
         .with_principal_idle_timeout(Duration::from_secs(10));
     let alice = limits.try_acquire(user("alice")).unwrap();
     assert_eq!(
@@ -164,7 +166,7 @@ async fn a_full_map_refuses_new_principals_until_one_is_idle() {
 
 #[test]
 fn principals_are_not_tracked_without_per_principal_limits() {
-    let limits = ConnectUdpLimits::new().with_max_tunnels(8);
+    let limits = TunnelLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(8).unwrap());
     let _leases: Vec<_> = (0..4)
         .map(|n| limits.try_acquire(user(&n.to_string())).unwrap())
         .collect();
@@ -173,9 +175,9 @@ fn principals_are_not_tracked_without_per_principal_limits() {
 
 #[tokio::test(start_paused = true)]
 async fn a_held_principal_survives_a_zero_idle_timeout() {
-    let limits = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(1)
-        .with_max_principals(2)
+    let limits = TunnelLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
+        .with_max_principals(std::num::NonZeroUsize::new(2).unwrap())
         .with_principal_idle_timeout(Duration::ZERO);
     let _alice = limits.try_acquire(user("alice")).unwrap();
     // A new principal sweeps the map; Alice's held entry stays, and so does her cap.
@@ -186,9 +188,9 @@ async fn a_held_principal_survives_a_zero_idle_timeout() {
     );
     assert_eq!(limits.tracked_principals(), 2);
 
-    let full = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(1)
-        .with_max_principals(1)
+    let full = TunnelLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
+        .with_max_principals(std::num::NonZeroUsize::new(1).unwrap())
         .with_principal_idle_timeout(Duration::ZERO);
     let alice = full.try_acquire(user("alice")).unwrap();
     assert_eq!(
@@ -203,9 +205,9 @@ async fn a_held_principal_survives_a_zero_idle_timeout() {
 
 #[tokio::test(start_paused = true)]
 async fn the_idle_timeout_runs_from_the_last_tunnels_end() {
-    let limits = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(1)
-        .with_max_principals(1)
+    let limits = TunnelLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
+        .with_max_principals(std::num::NonZeroUsize::new(1).unwrap())
         .with_principal_idle_timeout(Duration::from_secs(10));
     let alice = limits.try_acquire(user("alice")).unwrap();
     tokio::time::advance(Duration::from_secs(9)).await;
@@ -228,7 +230,8 @@ async fn the_idle_timeout_runs_from_the_last_tunnels_end() {
 /// A burst of ten packets that takes ten seconds to refill.
 fn ten_second_refill() -> PrincipalBudget {
     PrincipalBudget::new().with_to_target(
-        DatagramRate::new(Rate::per_sec(1), Rate::per_sec(1_000_000)).with_packet_burst(10),
+        DatagramRate::new(Rate::per_sec(1), Rate::per_sec(1_000_000))
+            .with_packet_burst(std::num::NonZeroU64::new(10).unwrap()),
     )
 }
 
@@ -241,9 +244,9 @@ fn drain_principal(lease: &TunnelLease) {
 
 #[tokio::test(start_paused = true)]
 async fn a_principal_in_debt_outlives_a_shorter_idle_timeout() {
-    let limits = ConnectUdpLimits::new()
+    let limits = TunnelLimits::new()
         .with_principal_budget(ten_second_refill())
-        .with_max_principals(1)
+        .with_max_principals(std::num::NonZeroUsize::new(1).unwrap())
         .with_principal_idle_timeout(Duration::from_secs(1));
     let alice = limits.try_acquire(user("alice")).unwrap();
     drain_principal(&alice);
@@ -273,9 +276,9 @@ async fn a_principal_in_debt_outlives_a_shorter_idle_timeout() {
 
 #[tokio::test(start_paused = true)]
 async fn a_principal_stays_tracked_until_its_quota_window_ends() {
-    let limits = ConnectUdpLimits::new()
+    let limits = TunnelLimits::new()
         .with_principal_budget(PrincipalBudget::new().with_quota(1_000, Duration::from_mins(1)))
-        .with_max_principals(1)
+        .with_max_principals(std::num::NonZeroUsize::new(1).unwrap())
         .with_principal_idle_timeout(Duration::from_secs(1));
     let alice = limits.try_acquire(user("alice")).unwrap();
     let account = TunnelBudget::unlimited().account_for(alice.principal_spend());
@@ -293,7 +296,7 @@ async fn a_principal_stays_tracked_until_its_quota_window_ends() {
 
 #[test]
 fn a_principal_budget_alone_tracks_principals() {
-    let limits = ConnectUdpLimits::new().with_principal_budget(ten_second_refill());
+    let limits = TunnelLimits::new().with_principal_budget(ten_second_refill());
     let lease = limits.try_acquire(user("alice")).unwrap();
     assert!(lease.principal_spend().is_some());
     assert_eq!(limits.tracked_principals(), 1);
@@ -301,9 +304,9 @@ fn a_principal_budget_alone_tracks_principals() {
 
 #[tokio::test(start_paused = true)]
 async fn a_quota_window_no_instant_can_end_keeps_its_principal() {
-    let limits = ConnectUdpLimits::new()
+    let limits = TunnelLimits::new()
         .with_principal_budget(PrincipalBudget::new().with_quota(64, Duration::MAX))
-        .with_max_principals(1)
+        .with_max_principals(std::num::NonZeroUsize::new(1).unwrap())
         .with_principal_idle_timeout(Duration::ZERO);
     let alice = limits.try_acquire(user("alice")).unwrap();
     let account = TunnelBudget::unlimited().account_for(alice.principal_spend());

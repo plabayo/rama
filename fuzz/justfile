@@ -43,7 +43,11 @@ masque-connect-udp SECONDS="0": (_run "masque_connect_udp" SECONDS "-max_len=700
 
 masque-tunnel-state SECONDS="0": (_run "masque_tunnel_state" SECONDS "-max_len=258 -timeout=10")
 
-masque SECONDS="0": (uri-template SECONDS) (masque-connect-udp SECONDS) (masque-tunnel-state SECONDS)
+ip-packet SECONDS="0": (_run "ip_packet" SECONDS "-max_len=65575 -timeout=10")
+
+masque-connect-ip SECONDS="0": (_run "masque_connect_ip" SECONDS "-max_len=65536 -timeout=10")
+
+masque SECONDS="0": (ip-packet SECONDS) (masque-connect-ip SECONDS) (uri-template SECONDS) (masque-connect-udp SECONDS) (masque-tunnel-state SECONDS)
 
 js-value-boundary SECONDS="0": (_run "js_value_boundary" SECONDS "-max_len=16384")
 

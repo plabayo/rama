@@ -2384,6 +2384,7 @@ name = "rama-http3-independent-interop"
 version = "0.0.0"
 dependencies = [
  "rama",
+ "rama-masque",
  "rama-quic-interop-common",
  "serde_json",
  "sha2",
@@ -2431,12 +2432,14 @@ name = "rama-masque"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "arc-swap",
  "parking_lot 0.13.0",
  "rama-core",
  "rama-dns",
  "rama-http",
  "rama-net",
  "rama-quic-proto",
+ "rama-tls",
  "rama-udp",
  "rama-utils",
  "tokio",

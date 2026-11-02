@@ -4,6 +4,7 @@
 
 #![expect(clippy::unwrap_used, reason = "integration fixture setup")]
 
+use rama_masque::limits::TunnelLimits;
 use std::{convert::Infallible, num::NonZeroU16, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
@@ -17,8 +18,8 @@ use rama_http::{
     io::upgrade::{self, Upgraded},
 };
 use rama_masque::connect_udp::{
-    ConnectUdpLimits, ConnectUdpService, ConnectUdpTarget, DestinationScopePolicy,
-    connect_udp_request, session_config,
+    ConnectUdpService, ConnectUdpTarget, DestinationScopePolicy, connect_udp_request,
+    session_config,
 };
 use rama_net::{
     address::{Host, ProxyAddress},
@@ -222,13 +223,13 @@ async fn audit_events_and_metrics_never_name_a_principal() {
 
     let target = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let target = target.local_addr().unwrap();
-    let users = with_metrics(
-        proxy().with_limits(ConnectUdpLimits::new().with_max_tunnels_per_principal(1)),
-    );
+    let users = with_metrics(proxy().with_limits(
+        TunnelLimits::new().with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap()),
+    ));
     let tenants = with_metrics(
         proxy().with_limits(
-            ConnectUdpLimits::new()
-                .with_max_tunnels_per_principal(1)
+            TunnelLimits::new()
+                .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
                 .with_keyer(|request: &Request| {
                     let tenant = request.headers().get("x-tenant").unwrap().to_str()?;
                     Ok::<_, BoxError>(Some(Tenant(tenant.to_owned())))

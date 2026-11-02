@@ -1,14 +1,13 @@
 //! A principal keyer's error never reaches the logs: it may quote a credential from the request.
 //! In a test binary of its own, as tracing's callsite interest is shared by a whole process.
 
+use rama_masque::limits::TunnelLimits;
 use std::{num::NonZeroU16, sync::Arc};
 
 use parking_lot::Mutex;
 use rama_core::{Service as _, error::BoxError, rt::Executor, telemetry::tracing};
 use rama_http::{Request, StatusCode, Version};
-use rama_masque::connect_udp::{
-    ConnectUdpLimits, ConnectUdpService, ConnectUdpTarget, connect_udp_request,
-};
+use rama_masque::connect_udp::{ConnectUdpService, ConnectUdpTarget, connect_udp_request};
 use rama_net::address::{Host, ProxyAddress};
 
 /// Captures what a `fmt` subscriber writes.
@@ -39,8 +38,8 @@ async fn a_keyers_error_never_reaches_the_logs() {
     // Process-wide, before any callsite registers: no other test runs in this binary.
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
-    let limits = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(1)
+    let limits = TunnelLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
         .with_keyer(|_: &Request| Err::<Option<u64>, BoxError>(CREDENTIAL.into()));
     let service = ConnectUdpService::try_new(Executor::default(), None)
         .unwrap()

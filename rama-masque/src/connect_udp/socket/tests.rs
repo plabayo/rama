@@ -1,5 +1,5 @@
 use super::*;
-use crate::connect_udp::{DatagramRate, PrincipalBudget};
+use crate::budget::{DatagramRate, PrincipalBudget};
 use rama_core::ServiceInput;
 use rama_http::{
     datagram::{DatagramTransport, NativeDatagramChannel, NativeRecvError, NativeSendReady},

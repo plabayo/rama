@@ -12,6 +12,7 @@ rustls-ring = ["rama/rustls", "rama/ring", "interop-common/rustls-ring"]
 rustls-aws-lc = ["rama/rustls", "rama/aws-lc", "interop-common/rustls-aws-lc"]
 
 [dependencies]
+rama-masque = { path = "../../../rama-masque" }
 rama = { path = "../../..", default-features = false, features = ["std", "quic", "http-full"] }
 interop-common = { package = "rama-quic-interop-common", path = "../interop-common" }
 tokio = { version = "1", features = ["full"] }

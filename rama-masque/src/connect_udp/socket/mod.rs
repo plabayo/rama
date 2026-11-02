@@ -1,3 +1,7 @@
+use crate::{
+    budget::{Charge, PrincipalSpend},
+    context::ContextId,
+};
 use std::{
     fmt,
     future::Future as _,
@@ -44,8 +48,8 @@ use tokio::{
 };
 
 use super::{
-    ConnectUdpStats, ContextId, ContextPayloadError, MAX_UDP_PAYLOAD, TunnelBudget,
-    budget::{Charge, FromClient, PrincipalSpend, StatsCounters, ToClient, TunnelAccount},
+    ConnectUdpStats, ContextPayloadError, MAX_UDP_PAYLOAD, TunnelBudget,
+    budget::{FromClient, StatsCounters, ToClient, TunnelAccount},
     context::context_id_len,
     decode_context_payload,
     telemetry::TunnelEnd,

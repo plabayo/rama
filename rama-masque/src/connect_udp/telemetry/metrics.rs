@@ -20,7 +20,7 @@ const DURATION_BOUNDS: &[f64] = &[
 ///
 /// Every series carries `principal.kind` when the service tracks principals (a per-principal
 /// limit or budget is set): `user`, `token`, `ip` or `anonymous` for the default keyer's
-/// [`PrincipalKey`](crate::connect_udp::PrincipalKey), `ip` for an IP address key, `custom` for
+/// [`PrincipalKey`](crate::limits::PrincipalKey), `ip` for an IP address key, `custom` for
 /// any other key type. A principal's key itself is never exported.
 ///
 /// - `connect_udp.tunnels.active`: tunnels opened and not yet ended;

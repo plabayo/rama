@@ -15,6 +15,9 @@ pub use self::address::{
     HappyEyeballAddressResolver, HappyEyeballAddressResolverExt,
 };
 
+mod bounded;
+pub use self::bounded::{BoundedDnsResolver, DnsAnswerLimitReached};
+
 mod cname;
 pub use self::cname::{BoxDnsCnameResolver, DnsCnameResolver};
 

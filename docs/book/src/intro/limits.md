@@ -115,7 +115,7 @@ See [/examples/src/udp_codec.rs](https://github.com/plabayo/rama/tree/main/examp
 A [MASQUE proxy](../proxies/masque.md) limits its CONNECT-UDP tunnels at three scopes. Every
 limit is opt-in except the first-reply allowance below:
 
-- **The proxy**: `ConnectUdpLimits::with_max_tunnels` caps the tunnels running at once. A full
+- **The proxy**: `rama_masque::limits::TunnelLimits::with_max_tunnels` caps the tunnels running at once. A full
   proxy answers `503` with `Proxy-Status: connection_limit_reached`, before it resolves or
   connects anything.
 - **A principal**: `with_max_tunnels_per_principal` caps the tunnels of one principal, and

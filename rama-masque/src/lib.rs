@@ -1,6 +1,8 @@
 //! MASQUE support for rama: proxying traffic other than TCP through HTTP.
 //!
-//! It currently implements proxying UDP in HTTP ([RFC 9298], CONNECT-UDP).
+//! It implements UDP proxying ([RFC 9298], CONNECT-UDP) and IP proxying
+//! ([RFC 9484], CONNECT-IP). [`connect_ip`] exposes packet/control sessions and
+//! explicit forwarding policy using `rama_net::ip`, without host interface changes.
 //! CONNECT-UDP runs over every HTTP version: HTTP/1.1 upgrades a `GET` request,
 //! HTTP/2 and HTTP/3 use Extended CONNECT. UDP payloads travel as HTTP Datagrams,
 //! in QUIC DATAGRAM frames on HTTP/3 when both peers support them and in
@@ -9,6 +11,7 @@
 //! connector and the tunnel socket; Capsules, HTTP Datagrams and Extended CONNECT
 //! live in the rama HTTP crates and sockets in `rama-udp`.
 //!
+//! [RFC 9484]: https://www.rfc-editor.org/rfc/rfc9484.html
 //! [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 //!
 //! # Rama
@@ -28,4 +31,16 @@
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod connect_ip;
 pub mod connect_udp;
+
+/// Shared rates and principal budgets.
+pub mod budget;
+
+pub mod limits;
+
+pub mod context;
+
+mod time;
+
+mod refusal;

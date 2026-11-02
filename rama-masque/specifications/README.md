@@ -10,6 +10,14 @@ Status (updates and errata) last checked on 2026-10-23 against
 
 ### RFCs
 
+* [rfc9484.txt](./rfc9484.txt)
+  Proxying IP in HTTP (CONNECT-IP): scopes, address/route capsules and IP datagrams.
+  Checked on 2026-11-01: no updating RFCs; verified
+  [erratum 8444](https://www.rfc-editor.org/errata/eid8444) requires encoding
+  wildcard template values as `%2A`. The IP packet specifications are indexed in
+  [`rama-net/specifications`](../../rama-net/specifications/README.md#ip).
+
+
 * [rfc9298.txt](./rfc9298.txt)  
   Proxying UDP in HTTP (CONNECT-UDP). Updated by RFC 9484 (registry only:
   the `masque` well-known URI gains `udp/` and `ip/`) and RFC 9931 (no optimistic

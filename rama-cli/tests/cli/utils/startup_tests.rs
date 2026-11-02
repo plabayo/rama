@@ -95,6 +95,68 @@ fn inherited_parent_listener_is_not_child_readiness() {
 }
 
 #[test]
+fn transient_inspection_errors_require_a_later_owned_listener() {
+    for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::NotFound] {
+        let mut service = fixture("flood");
+        service.wait_for_diagnostic("output drained before bind");
+        let mut attempts = 0;
+        let endpoint = service.find_endpoint_with(TransportProtocol::Tcp, None, 0, |pid| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(io::Error::from(kind))
+            } else {
+                listening_sockets(pid)
+            }
+        });
+        assert!(attempts > 1);
+        assert_ne!(endpoint.port(), 0);
+        assert!(service.process_is_running());
+    }
+}
+
+#[test]
+fn persistent_inspection_errors_fail_within_the_startup_budget() {
+    for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::NotFound] {
+        let mut service = fixture("never");
+        let started = Instant::now();
+        service.startup_deadline = started + Duration::from_millis(100);
+        let mut attempts = 0;
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            service.find_endpoint_with(TransportProtocol::Tcp, None, 0, |_pid| {
+                attempts += 1;
+                Err(io::Error::new(kind, "persistent inspection failure"))
+            })
+        }))
+        .expect_err("inspection failure must not establish readiness");
+        let message = failure.downcast_ref::<String>().unwrap();
+        assert!(message.contains("persistent inspection failure"));
+        assert!(attempts > 1);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(service.process_is_running());
+    }
+}
+
+#[test]
+fn inspection_error_during_exit_still_reports_and_reaps_the_child() {
+    let mut service = fixture("wait_exit");
+    service.wait_for_diagnostic("waiting to exit");
+    let mut input = service.process.stdin.take();
+    let failure = catch_unwind(AssertUnwindSafe(|| {
+        service.find_endpoint_with(TransportProtocol::Tcp, None, 0, |_pid| {
+            // Release the child only after the first liveness check, then
+            // reproduce the inspection error observed during Linux teardown.
+            drop(input.take());
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        })
+    }))
+    .expect_err("an exiting child must fail startup");
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(message.contains("exited during startup"));
+    assert!(message.contains("deliberate startup failure"));
+    assert!(service.process.try_wait().unwrap().is_some());
+}
+
+#[test]
 fn early_exit_and_absent_listener_fail_within_the_startup_budget() {
     for mode in ["exit", "never"] {
         let started = Instant::now();
@@ -155,7 +217,11 @@ fn child() {
     let Ok(mode) = std::env::var("RAMA_TEST_SERVICE_STARTUP") else {
         return;
     };
-    if mode == "exit" {
+    if mode == "wait_exit" {
+        eprintln!("waiting to exit");
+        let _eof = io::stdin().read(&mut [0]).unwrap();
+    }
+    if mode == "exit" || mode == "wait_exit" {
         eprintln!("deliberate startup failure");
         return;
     }

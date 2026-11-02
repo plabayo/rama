@@ -1,9 +1,14 @@
+//! Shared admission accounting for MASQUE tunnels.
+
+use crate::time::expiration_at;
+
 use std::{
     any::Any,
     cmp::Ordering as CmpOrdering,
     collections::BinaryHeap,
     fmt,
     net::IpAddr,
+    num::NonZeroUsize,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -22,9 +27,9 @@ use rama_net::{
 use rama_utils::macros::generate_set_and_with;
 use tokio::time::Instant;
 
-use super::budget::{PrincipalBudget, PrincipalSpend, QuotaWindowState};
+use crate::budget::{PrincipalBudget, PrincipalSpend, QuotaWindowState};
 
-/// Who a CONNECT-UDP tunnel is accounted to: the key [`UserOrClientIpKey`] derives.
+/// Who a MASQUE tunnel is accounted to: the key [`UserOrClientIpKey`] derives.
 ///
 /// Its `Debug` output names the kind only, never a username or token.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -86,7 +91,7 @@ fn principal_kind<K: Any>(key: &K) -> &'static str {
 
 impl RateKey for PrincipalKey {}
 
-/// The default [`InputToRateKey`] of [`ConnectUdpLimits`]: the user an authentication layer in
+/// The default [`InputToRateKey`] of [`TunnelLimits`]: the user an authentication layer in
 /// front identified; else the client IP, by [`ClientIpRateKey`] (an IPv6 client by its /64 by
 /// default, a `Forwarded` address only when a trusted layer set it); else
 /// [`PrincipalKey::ANONYMOUS`]. It always yields a key.
@@ -113,7 +118,7 @@ impl UserOrClientIpKey {
 
 impl<Input> InputToRateKey<Input> for UserOrClientIpKey
 where
-    Input: ExtensionsRef + Send + Sync + 'static,
+    Input: ExtensionsRef,
 {
     type Key = PrincipalKey;
 
@@ -139,29 +144,29 @@ impl fmt::Debug for PrincipalKey {
     }
 }
 
-/// How many CONNECT-UDP tunnels a proxy runs: in total and per principal.
+/// How many MASQUE tunnels a proxy runs: in total and per principal.
 ///
-/// A principal is the key the keyer `X` derives from a CONNECT-UDP request
+/// A principal is the key the keyer `X` derives from a MASQUE request
 /// ([`InputToRateKey`], closures included): by default [`UserOrClientIpKey`]; rama-net's
-/// [`ClientIpRateKey`] keys by client IP alone ([`ConnectUdpLimits::with_keyer`]), and any keyer
+/// [`ClientIpRateKey`] keys by client IP alone ([`TunnelLimits::with_keyer`]), and any keyer
 /// can derive its own key type, such as a tenant ID, from the request's headers and extensions.
 /// The keyer is asked only when a per-principal limit or budget is set, as nothing else needs a
 /// principal; then a request it yields no key for, or fails on, is refused.
 ///
 /// A tunnel takes its place before the proxy resolves or connects anything and holds it
 /// until it ends, however it ends. Clones share the places, so every clone of a
-/// [`ConnectUdpService`](super::ConnectUdpService) counts against the same limits.
+/// [`ConnectUdpService`](crate::connect_udp::ConnectUdpService) counts against the same limits.
 ///
 /// Principals are tracked only when a per-principal limit or budget is set, in a map of at
-/// most [`ConnectUdpLimits::with_max_principals`] entries. An entry is dropped only once no
-/// tunnel holds it, it has been idle for [`ConnectUdpLimits::with_principal_idle_timeout`] or
+/// most [`TunnelLimits::with_max_principals`] entries. An entry is dropped only once no
+/// tunnel holds it, it has been idle for [`TunnelLimits::with_principal_idle_timeout`] or
 /// for as long as its [`PrincipalBudget`] rates take to refill if that is longer, and its quota
 /// window has ended; while the map is full of entries that cannot be dropped, tunnels of a new
 /// principal are refused rather than letting a principal start over.
-pub struct ConnectUdpLimits<X = UserOrClientIpKey, K = PrincipalKey> {
-    max_tunnels: Option<usize>,
-    max_tunnels_per_principal: Option<usize>,
-    max_principals: usize,
+pub struct TunnelLimits<X = UserOrClientIpKey, K = PrincipalKey> {
+    max_tunnels: Option<NonZeroUsize>,
+    max_tunnels_per_principal: Option<NonZeroUsize>,
+    max_principals: NonZeroUsize,
     principal_idle_timeout: Duration,
     principal_budget: Option<PrincipalBudget>,
     keyer: Arc<X>,
@@ -169,7 +174,7 @@ pub struct ConnectUdpLimits<X = UserOrClientIpKey, K = PrincipalKey> {
     principals: Arc<Mutex<PrincipalMap<K>>>,
 }
 
-impl<X, K> Clone for ConnectUdpLimits<X, K> {
+impl<X, K> Clone for TunnelLimits<X, K> {
     fn clone(&self) -> Self {
         Self {
             max_tunnels: self.max_tunnels,
@@ -184,9 +189,9 @@ impl<X, K> Clone for ConnectUdpLimits<X, K> {
     }
 }
 
-impl<X: fmt::Debug, K> fmt::Debug for ConnectUdpLimits<X, K> {
+impl<X: fmt::Debug, K> fmt::Debug for TunnelLimits<X, K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ConnectUdpLimits")
+        f.debug_struct("TunnelLimits")
             .field("max_tunnels", &self.max_tunnels)
             .field("max_tunnels_per_principal", &self.max_tunnels_per_principal)
             .field("max_principals", &self.max_principals)
@@ -197,7 +202,7 @@ impl<X: fmt::Debug, K> fmt::Debug for ConnectUdpLimits<X, K> {
     }
 }
 
-impl Default for ConnectUdpLimits {
+impl Default for TunnelLimits {
     fn default() -> Self {
         Self::new()
     }
@@ -209,7 +214,7 @@ pub struct TunnelLimitReached;
 
 impl fmt::Display for TunnelLimitReached {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("connect-udp tunnel limit reached")
+        f.write_str("MASQUE tunnel limit reached")
     }
 }
 
@@ -226,7 +231,7 @@ pub(crate) enum Refused {
     Keyer,
 }
 
-impl ConnectUdpLimits {
+impl TunnelLimits {
     /// No limits: every tunnel is admitted, and principals are not tracked. Principals are
     /// keyed by [`UserOrClientIpKey`] once a per-principal limit is set.
     #[must_use]
@@ -234,7 +239,7 @@ impl ConnectUdpLimits {
         Self {
             max_tunnels: None,
             max_tunnels_per_principal: None,
-            max_principals: 65_536,
+            max_principals: const { NonZeroUsize::new(65_536).unwrap() },
             principal_idle_timeout: Duration::from_mins(1),
             principal_budget: None,
             keyer: Arc::new(UserOrClientIpKey::new()),
@@ -244,14 +249,22 @@ impl ConnectUdpLimits {
     }
 }
 
-impl<X, K> ConnectUdpLimits<X, K> {
-    /// Key principals with `keyer` instead, from each CONNECT-UDP request.
+impl<X, K> TunnelLimits<X, K> {
+    /// Key principals with `keyer` instead, from each MASQUE request.
     #[must_use]
-    pub fn with_keyer<X2>(self, keyer: X2) -> ConnectUdpLimits<X2, X2::Key>
+    pub fn with_keyer<X2>(self, keyer: X2) -> TunnelLimits<X2, X2::Key>
     where
         X2: InputToRateKey<Request>,
     {
-        ConnectUdpLimits {
+        self.with_keyer_for::<Request, X2>(keyer)
+    }
+
+    /// Select a keyer for another request body or input type.
+    pub fn with_keyer_for<Input, X2>(self, keyer: X2) -> TunnelLimits<X2, X2::Key>
+    where
+        X2: InputToRateKey<Input>,
+    {
+        TunnelLimits {
             max_tunnels: self.max_tunnels,
             max_tunnels_per_principal: self.max_tunnels_per_principal,
             max_principals: self.max_principals,
@@ -265,7 +278,7 @@ impl<X, K> ConnectUdpLimits<X, K> {
 
     generate_set_and_with! {
         /// The most tunnels the proxy runs at once.
-        pub fn max_tunnels(mut self, max: Option<usize>) -> Self {
+        pub fn max_tunnels(mut self, max: Option<NonZeroUsize>) -> Self {
             self.max_tunnels = max;
             self
         }
@@ -273,7 +286,7 @@ impl<X, K> ConnectUdpLimits<X, K> {
 
     generate_set_and_with! {
         /// The most tunnels one principal runs at once.
-        pub fn max_tunnels_per_principal(mut self, max: Option<usize>) -> Self {
+        pub fn max_tunnels_per_principal(mut self, max: Option<NonZeroUsize>) -> Self {
             self.max_tunnels_per_principal = max;
             self
         }
@@ -281,7 +294,7 @@ impl<X, K> ConnectUdpLimits<X, K> {
 
     generate_set_and_with! {
         /// The most principals tracked at once (default 65 536).
-        pub fn max_principals(mut self, max: usize) -> Self {
+        pub fn max_principals(mut self, max: NonZeroUsize) -> Self {
             self.max_principals = max;
             self
         }
@@ -384,7 +397,7 @@ impl<X, K> ConnectUdpLimits<X, K> {
         }
         let retention = self.retention();
         principals.expire_idle(now, retention);
-        if principals.entries.len() >= self.max_principals {
+        if principals.entries.len() >= self.max_principals.get() {
             return Err(TunnelLimitReached);
         }
         let entry = Arc::new(PrincipalEntry {
@@ -401,36 +414,39 @@ impl<X, K> ConnectUdpLimits<X, K> {
     }
 }
 
-/// The limits of a [`ConnectUdpService`](super::ConnectUdpService), whatever their keyer.
-pub(crate) trait AdmitTunnel: Send + Sync + 'static {
-    fn admit(&self, request: &Request) -> Result<TunnelLease, Refused>;
+/// The limits of a [`ConnectUdpService`](crate::connect_udp::ConnectUdpService), whatever their keyer.
+pub(crate) trait AdmitTunnel<Input = Request>: Send + Sync + 'static {
+    fn admit(&self, request: &Input) -> Result<TunnelLease, Refused>;
 }
 
-impl<X, K> AdmitTunnel for ConnectUdpLimits<X, K>
+impl<X, K, Input> AdmitTunnel<Input> for TunnelLimits<X, K>
 where
-    X: InputToRateKey<Request, Key = K>,
+    X: InputToRateKey<Input, Key = K>,
     K: RateKey,
 {
-    fn admit(&self, request: &Request) -> Result<TunnelLease, Refused> {
+    fn admit(&self, request: &Input) -> Result<TunnelLease, Refused> {
         Self::admit(self, request)
     }
 }
 
 /// Add one to `counter` unless that would pass `max`.
-fn increment_below(counter: &AtomicUsize, max: Option<usize>) -> Result<(), TunnelLimitReached> {
+fn increment_below(
+    counter: &AtomicUsize,
+    max: Option<NonZeroUsize>,
+) -> Result<(), TunnelLimitReached> {
     let Some(max) = max else {
         counter.fetch_add(1, Ordering::AcqRel);
         return Ok(());
     };
     counter
         .try_update(Ordering::AcqRel, Ordering::Acquire, |live| {
-            (live < max).then_some(live + 1)
+            (live < max.get()).then_some(live + 1)
         })
         .map(drop)
         .map_err(|_live| TunnelLimitReached)
 }
 
-/// A tunnel's place among the proxy's [`ConnectUdpLimits`], given back when dropped.
+/// A tunnel's place among the proxy's [`TunnelLimits`], given back when dropped.
 #[derive(Debug)]
 pub struct TunnelLease {
     live: Arc<AtomicUsize>,
@@ -556,16 +572,6 @@ impl<K> Ord for Expiration<K> {
     fn cmp(&self, other: &Self) -> CmpOrdering {
         // Reversed: the heap pops the earliest expiration first.
         other.at.cmp(&self.at)
-    }
-}
-
-/// `now + timeout`, shortened only when the platform cannot represent it.
-fn expiration_at(now: Instant, mut timeout: Duration) -> Instant {
-    loop {
-        if let Some(at) = now.checked_add(timeout) {
-            return at;
-        }
-        timeout /= 2;
     }
 }
 

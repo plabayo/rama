@@ -42,8 +42,13 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 `rama-masque` contains MASQUE support for rama: the IETF family of protocols that
 proxy traffic other than TCP through HTTP/1.1, HTTP/2 and HTTP/3. It currently
-implements proxying UDP in HTTP (CONNECT-UDP, [RFC 9298]).
+implements UDP proxying (CONNECT-UDP, [RFC 9298]) and IP proxying
+(CONNECT-IP, [RFC 9484]). `connect_ip` provides packet/control sessions, request
+scoping, address/route state, explicit local policy and bounded admission.
+The reusable `rama-net::ip` packet API is independent of MASQUE. Host TUN
+interfaces and route installation are application/platform responsibilities.
 
+[RFC 9484]: https://www.rfc-editor.org/rfc/rfc9484.html
 [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 
 Learn more about `rama`:

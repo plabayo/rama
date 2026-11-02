@@ -70,9 +70,12 @@ def main():
     check_quic("http-backend,fuzz-utils", False)
     check_quic("http-backend,quic", True)
     check_quic("http-full", True)
+    check_quic("masque,http-backend", False)
+    check_quic("masque,http-backend,quic", True)
 
     # Both sides of the `quic` feature must build and keep their behavior.
     for quic in ("", ",quic"):
+        cargo("check", "-p", "rama", "--lib", "--features", f"masque,http-backend{quic}")
         cargo("check", "-p", "rama", "--features", f"{CLI_SERVICES}{quic}")
         cargo(
             "test", "-p", "rama", "--lib",

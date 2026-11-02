@@ -25,6 +25,17 @@ impl CapsuleType {
         Ok(Self(value))
     }
 
+    /// Construct a statically known capsule type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value exceeds the QUIC variable-length integer range.
+    #[must_use]
+    pub const fn from_static(value: u64) -> Self {
+        assert!(value <= VarInt::MAX.into_inner(), "invalid capsule type");
+        Self(value)
+    }
+
     /// The raw value.
     #[must_use]
     pub const fn value(self) -> u64 {

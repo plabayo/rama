@@ -1,3 +1,5 @@
+use crate::limits::PrincipalKey;
+use crate::limits::TunnelLimits;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     num::NonZeroU16,
@@ -7,7 +9,10 @@ use std::{
 use parking_lot::Mutex;
 use rama_core::futures::{Stream, stream};
 use rama_dns::client::{DenyAllDnsResolver, EmptyDnsResolver};
-use rama_http::{Method, headers::ProxyStatusEntry};
+use rama_http::{
+    HeaderValue, Method, Version, header,
+    headers::{HeaderMapExt as _, ProxyStatus, ProxyStatusEntry},
+};
 use rama_net::{
     address::{Domain, Host, ProxyAddress},
     client::{ConnectionError, EstablishedClientConnection},
@@ -16,10 +21,7 @@ use rama_net::{
 use rama_udp::UdpPacketSocket;
 
 use super::*;
-use crate::connect_udp::{
-    ConnectUdpAction, ConnectUdpLimits, ConnectUdpRule, ConnectUdpRules, PrincipalKey,
-    connect_udp_request,
-};
+use crate::connect_udp::{ConnectUdpAction, ConnectUdpRule, ConnectUdpRules, connect_udp_request};
 
 const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
 
@@ -510,7 +512,7 @@ async fn a_refused_target_reports_the_policy() {
 }
 
 /// The service's tunnel places all returned, within a few scheduler turns.
-async fn assert_released<X, K>(limits: &ConnectUdpLimits<X, K>) {
+async fn assert_released<X, K>(limits: &TunnelLimits<X, K>) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while limits.live_tunnels() > 0 {
             tokio::task::yield_now().await;
@@ -522,7 +524,7 @@ async fn assert_released<X, K>(limits: &ConnectUdpLimits<X, K>) {
 
 #[tokio::test]
 async fn a_full_proxy_refuses_with_connection_limit_reached() {
-    let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+    let limits = TunnelLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
     let held = limits.try_acquire(PrincipalKey::ANONYMOUS).unwrap();
     let connector = TestConnector::default();
     let response = service()
@@ -550,7 +552,7 @@ async fn a_full_proxy_refuses_with_connection_limit_reached() {
 
 #[tokio::test]
 async fn every_refusal_gives_the_tunnel_place_back() {
-    let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+    let limits = TunnelLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
     let base = || service().with_limits(limits.clone());
     let responses = [
         // Policy.
@@ -590,7 +592,7 @@ async fn every_refusal_gives_the_tunnel_place_back() {
 
 #[tokio::test]
 async fn a_request_cancelled_while_resolving_gives_its_place_back() {
-    let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+    let limits = TunnelLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
     let service = service()
         .with_resolver(SilentResolver)
         .with_limits(limits.clone());
@@ -603,7 +605,7 @@ async fn a_request_cancelled_while_resolving_gives_its_place_back() {
 
 #[tokio::test]
 async fn a_tunnel_whose_upgrade_fails_gives_its_place_back() {
-    let limits = ConnectUdpLimits::new().with_max_tunnels(1);
+    let limits = TunnelLimits::new().with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap());
     // Accepted, but this request was never served by a connection that can upgrade.
     let response = service()
         .with_policy(DestinationScopePolicy::allow_private())
@@ -618,7 +620,8 @@ async fn a_tunnel_whose_upgrade_fails_gives_its_place_back() {
 
 #[tokio::test]
 async fn tunnels_are_counted_per_authenticated_user() {
-    let limits = ConnectUdpLimits::new().with_max_tunnels_per_principal(1);
+    let limits =
+        TunnelLimits::new().with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap());
     let held = limits
         .try_acquire(PrincipalKey::user(&UserId::Username("john".to_owned())))
         .unwrap();
@@ -663,8 +666,8 @@ async fn the_default_egress_socket_never_fragments() {
 #[tokio::test]
 async fn a_keyer_of_its_own_decides_the_principal() {
     // Tenants named by a header a trusted proxy in front sets; no header, no tunnel.
-    let limits = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(1)
+    let limits = TunnelLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
         .with_keyer(|request: &Request| {
             Ok::<_, BoxError>(
                 request
@@ -712,8 +715,8 @@ async fn a_keyer_of_its_own_decides_the_principal() {
 
 #[tokio::test]
 async fn a_failing_keyer_refuses_with_an_internal_error() {
-    let limits = ConnectUdpLimits::new()
-        .with_max_tunnels_per_principal(1)
+    let limits = TunnelLimits::new()
+        .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
         .with_keyer(|_: &Request| Err::<Option<u64>, BoxError>("no key store".into()));
     let response = service()
         .with_limits(limits.clone())
@@ -734,8 +737,8 @@ async fn without_per_principal_limits_the_keyer_is_never_asked() {
     // Only a total cap: no principal is needed, so a keyer without a key does not refuse.
     let asked = Arc::new(AtomicUsize::new(0));
     let counted = asked.clone();
-    let limits = ConnectUdpLimits::new()
-        .with_max_tunnels(1)
+    let limits = TunnelLimits::new()
+        .with_max_tunnels(std::num::NonZeroUsize::new(1).unwrap())
         .with_keyer(move |_: &Request| {
             counted.fetch_add(1, Ordering::SeqCst);
             Ok::<Option<u64>, BoxError>(None)
@@ -820,7 +823,10 @@ mod metrics {
         ConnectUdpService::try_new(exec, None)
             .unwrap()
             .with_policy(DestinationScopePolicy::allow_private())
-            .with_limits(ConnectUdpLimits::new().with_max_tunnels_per_principal(8))
+            .with_limits(
+                TunnelLimits::new()
+                    .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(8).unwrap()),
+            )
             .with_metrics(collector.metrics())
     }
 
@@ -983,9 +989,11 @@ mod metrics {
             service.serve(elsewhere).await.unwrap().status(),
             StatusCode::NOT_FOUND
         );
-        let full = service
-            .clone()
-            .with_limits(ConnectUdpLimits::new().with_max_tunnels(0));
+        let limits = TunnelLimits::new().with_max_tunnels(std::num::NonZeroUsize::MIN);
+        let _held = limits
+            .try_acquire(crate::limits::PrincipalKey::ANONYMOUS)
+            .unwrap();
+        let full = service.clone().with_limits(limits);
         full.serve(request(Version::HTTP_2)).await.unwrap();
 
         let refused = "connect_udp.tunnel.refused";

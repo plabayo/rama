@@ -51,6 +51,21 @@ def at(trace, index):
     return next(p for p in trace if p["number"] == (index + 1) * 10)
 
 
+def lost_probe_traces():
+    client, server = traces()
+    # A first probe is lost between captures; a fresh token validates NAT2.
+    client[:] = [p for p in client if p["number"] not in (90, 100)]
+    server[:] = [p for p in server if p["number"] != 100]
+    replacement = "3123456789abcdef"
+    server.extend([packet(95, SERVER, NAT2, challenges=(replacement,), frames=(0x1a,)),
+                   packet(100, NAT2, SERVER, responses=(replacement,), frames=(0x1b,))])
+    client.extend([packet(95, SERVER, CLIENT, challenges=(replacement,), frames=(0x1a,)),
+                   packet(100, CLIENT, SERVER, responses=(replacement,), frames=(0x1b,))])
+    for trace in (client, server):
+        trace.sort(key=lambda p: p["number"])
+    return client, server
+
+
 class RebindingEvidenceTests(unittest.TestCase):
     def test_ack_prefix_is_verified_without_retry(self):
         proof = verify_rebinding_packets(*traces())
@@ -58,6 +73,74 @@ class RebindingEvidenceTests(unittest.TestCase):
         self.assertEqual([p["ack_prefix_packets"] for p in proof["paths"]], [1, 0])
         self.assertEqual(proof["server_challenges_answered"], 2)
         self.assertEqual([p["token"] for p in proof["undelivered_obsolete_path_probes"]], [OLD])
+
+    def test_lost_first_probe_needs_later_validation_on_the_same_path(self):
+        client, server = lost_probe_traces()
+        replacement = "3123456789abcdef"
+        proof = verify_rebinding_packets(client, server, lost_challenges={B})
+        self.assertEqual(proof["undelivered_replaced_path_probes"], [
+            dict(token=B, path=NAT2, sent_at=90, replacement=replacement, validated_at=100)])
+        with self.assertRaises(InvalidResults):
+            verify_rebinding_packets(client, server)
+        for tokens in ({A}, {OLD}, {"ffffffffffffffff"}):
+            with self.subTest(tokens=tokens), self.assertRaises(InvalidResults):
+                verify_rebinding_packets(client, server, lost_challenges=tokens)
+        mutations = {
+            "probe actually delivered": lambda c, s: c.insert(8, packet(90, SERVER, CLIENT, challenges=(B,), frames=(0x1a,))),
+            "replacement not delivered": lambda c, s: c.remove(next(p for p in c if p["number"] == 95)),
+            "replacement unanswered": lambda c, s: at(c, 9).update(responses=(), frames=(0,)),
+            "response lost": lambda c, s: at(s, 9).update(responses=(), frames=(0,)),
+            "wrong path": lambda c, s: at(s, 9).update(src=NAT1),
+            "no data after validation": lambda c, s: at(s, 10).update(frames=(2,)),
+            "no client progress": lambda c, s: s.remove(next(p for p in s if p["number"] == 105)),
+        }
+        for name, mutate in mutations.items():
+            c, s = copy.deepcopy((client, server))
+            mutate(c, s)
+            with self.subTest(name=name), self.assertRaises(InvalidResults):
+                verify_rebinding_packets(c, s, lost_challenges={B})
+
+    def test_lost_probe_console_requires_matching_capture_and_transfer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / "logs-rama-client/ngtcp2_rama/rebind-port"
+            for folder in ("client", "server_www", "client_downloads"):
+                (directory / folder).mkdir(parents=True)
+            (directory / "client/keys.log").write_text("keys")
+            for folder in ("server_www", "client_downloads"):
+                (directory / folder / "payload").write_bytes(b"x" * (10 * 1024 * 1024))
+            token = ":".join(B[i:i + 2] for i in range(0, len(B), 2))
+            output = directory / "output.txt"
+            message = f"2026-11-02 18:03:43,773 PATH_CHALLENGE without a PATH_RESPONSE: {[token]!r}"
+            output.write_text("Check of downloaded files succeeded.\n" + message + "\n" + message)
+            with patch("check_rebinding.read_packets", side_effect=lost_probe_traces()):
+                proof = verify_rebinding(root, "client", "ngtcp2", EXITS, peer_image=PINNED_PEERS["ngtcp2"])
+            self.assertEqual(proof["undelivered_replaced_path_probes"][0]["token"], B)
+            self.assertEqual(proof["bytes"], 10 * 1024 * 1024)
+            # Each console failure needs its own capture proof. A proven lost
+            # probe must not stand in for an unproven ACK-first report.
+            both = ("Check of downloaded files succeeded.\n" + message + "\n"
+                    "First server packet on new path tuple did not contain a PATH_CHALLENGE frame")
+            output.write_text(both)
+            with patch("check_rebinding.read_packets", side_effect=lost_probe_traces()):
+                verify_rebinding(root, "client", "ngtcp2", EXITS, peer_image=PINNED_PEERS["ngtcp2"])
+            client, server = lost_probe_traces()
+            for trace in (client, server):
+                trace[:] = [p for p in trace if p["number"] != 40]
+            # Lost-probe-only evidence is valid even with no ACK prefix.
+            proof = verify_rebinding_packets(client, server, lost_challenges={B})
+            self.assertEqual([p["ack_prefix_packets"] for p in proof["paths"]], [0, 0])
+            with patch("check_rebinding.read_packets", side_effect=(client, server)):
+                with self.assertRaisesRegex(InvalidResults, "ACK-first failure has no capture proof"):
+                    verify_rebinding(root, "client", "ngtcp2", EXITS, peer_image=PINNED_PEERS["ngtcp2"])
+            for report in ("[]", "['invalid']", repr([B]), "None", "not a literal"):
+                output.write_text("Check of downloaded files succeeded.\nPATH_CHALLENGE without a PATH_RESPONSE: " + report)
+                with self.subTest(report=report), self.assertRaises(InvalidResults):
+                    verify_rebinding(root, "client", "ngtcp2", EXITS, peer_image=PINNED_PEERS["ngtcp2"])
+            output.write_text("Check of downloaded files succeeded.\n" + message)
+            (directory / "client_downloads/payload").write_bytes(b"y" * (10 * 1024 * 1024))
+            with patch("check_rebinding.read_packets", side_effect=lost_probe_traces()), self.assertRaises(InvalidResults):
+                verify_rebinding(root, "client", "ngtcp2", EXITS, peer_image=PINNED_PEERS["ngtcp2"])
 
     def test_validation_may_follow_multiple_ack_datagrams(self):
         client, server = traces()

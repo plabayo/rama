@@ -6,6 +6,7 @@
     reason = "a broken invariant must fail the fuzz case or the regression test"
 )]
 
+use crate::budget::{DatagramRate, PrincipalBudget};
 use std::{
     collections::VecDeque,
     io::IoSliceMut,
@@ -40,7 +41,7 @@ use super::{
     CLOSE_GRACE, ConnectUdpClose, ConnectUdpSender, ConnectUdpSocket, ConnectUdpSocketConfig,
     ConnectUdpStats, Shared, TunnelAccounting, session_config,
 };
-use crate::connect_udp::{DatagramRate, PrincipalBudget, TunnelBudget};
+use crate::connect_udp::TunnelBudget;
 
 type Io = ServiceInput<DuplexStream>;
 
