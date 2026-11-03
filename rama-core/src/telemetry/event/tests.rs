@@ -463,3 +463,8 @@ async fn an_isolated_async_test_covers_what_rama_spawns(events: EventDispatcher)
 
     assert_eq!(seen.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn an_event_knows_the_module_it_is_defined_in() {
+    assert_eq!(Ping::MODULE, "rama_core::telemetry::event::tests");
+}

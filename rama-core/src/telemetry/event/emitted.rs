@@ -9,14 +9,20 @@ pub struct Emitted<'a, E> {
 }
 
 impl<'a, E> Emitted<'a, E> {
-    pub(super) fn new(event: &'a E) -> Self {
+    /// Wrap an event as listeners see it, for example to test a listener or
+    /// a span adapter directly. The time is read on the first call to
+    /// [`at`](Self::at).
+    #[must_use]
+    pub fn new(event: &'a E) -> Self {
         Self {
             event,
             at: OnceCell::new(),
         }
     }
 
-    pub(super) fn at_time(event: &'a E, at: Instant) -> Self {
+    /// Like [`new`](Self::new), with the time of the event given.
+    #[must_use]
+    pub fn at_time(event: &'a E, at: Instant) -> Self {
         let cell = OnceCell::new();
         _ = cell.set(at);
         Self { event, at: cell }

@@ -28,7 +28,9 @@ pub(crate) fn expand(mut item: DeriveInput) -> syn::Result<TokenStream> {
     let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
 
     Ok(quote! {
-        impl #impl_generics #root_crate::telemetry::event::Event for #ident #ty_generics #where_clause {}
+        impl #impl_generics #root_crate::telemetry::event::Event for #ident #ty_generics #where_clause {
+            const MODULE: &'static str = ::core::module_path!();
+        }
     })
 }
 
@@ -46,6 +48,7 @@ mod tests {
         };
         let out = expand(item).unwrap().to_string();
         assert!(out.contains("Event for PathChanged"));
+        assert!(out.contains("const MODULE : & 'static str = :: core :: module_path ! ()"));
     }
 
     #[test]

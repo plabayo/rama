@@ -8,40 +8,90 @@ use tokio::time::Instant;
 use super::{Emitted, Event, Listener};
 use crate::std::sync::Arc;
 
-pub(super) type Registered<E> = Arc<dyn Listener<E>>;
+// Inline for the common one or two entries, so emitting skips a heap hop.
+pub(super) type Entries<L> = SmallVec<[(u64, Arc<L>); 2]>;
 
-// Inline for the common one or two listeners, so emitting skips a heap hop.
-type Listeners<E> = SmallVec<[(u64, Registered<E>); 2]>;
-
-/// Removes a listener by the key its slot returned on insert, without the
-/// caller knowing the event type.
+/// Removes an entry by the key its slot returned on insert, without the
+/// caller knowing the entry type.
 pub(super) trait Unsubscribe: Send + Sync {
     fn unsubscribe(&self, key: u64);
 }
 
-// Copy-on-write, so a listener can subscribe or emit from inside its callback.
-pub(super) struct Slot<E: Event> {
+// The listeners of one event type, or the span adapters of one span type.
+// Copy-on-write, so an entry can (un)subscribe or emit from inside its callback.
+pub(super) struct Slot<L: ?Sized> {
     active: AtomicUsize,
-    listeners: ArcSwap<Listeners<E>>,
-    // Serializes insert and remove and holds the next listener key; emitting
-    // never takes it.
+    entries: ArcSwap<Entries<L>>,
+    // Serializes insert and remove and holds the next key; emitting never
+    // takes it.
     write: Mutex<u64>,
 }
 
-impl<E: Event> Slot<E> {
+impl<L: ?Sized> Slot<L> {
     pub(super) fn new() -> Self {
         Self {
             active: AtomicUsize::new(0),
-            listeners: ArcSwap::from_pointee(Listeners::new()),
+            entries: ArcSwap::from_pointee(Entries::new()),
             write: Mutex::new(0),
         }
     }
 
     #[inline]
-    pub(super) fn is_active(&self) -> bool {
-        self.active.load(Ordering::Relaxed) != 0
+    pub(super) fn active(&self) -> usize {
+        self.active.load(Ordering::Relaxed)
     }
 
+    #[inline]
+    pub(super) fn is_active(&self) -> bool {
+        self.active() != 0
+    }
+
+    pub(super) fn snapshot(&self) -> Arc<Entries<L>> {
+        self.entries.load_full()
+    }
+
+    pub(super) fn insert(&self, entry: Arc<L>) -> u64 {
+        let mut next_key = self.write.lock();
+        let key = *next_key;
+        *next_key += 1;
+        let mut entries = (**self.entries.load()).clone();
+        entries.push((key, entry));
+        self.store(entries);
+        key
+    }
+
+    // Callers hold the write lock, which serializes these two stores. An
+    // emitter that reads the raised count with the old list finds no entry
+    // and skips that one event.
+    fn store(&self, entries: Entries<L>) {
+        let active = entries.len();
+        self.entries.store(Arc::new(entries));
+        self.active.store(active, Ordering::Relaxed);
+    }
+}
+
+impl<L: ?Sized + Send + Sync> Unsubscribe for Slot<L> {
+    fn unsubscribe(&self, key: u64) {
+        let removed = {
+            let _write = self.write.lock();
+            let entries = self.entries.load();
+            let Some(index) = entries
+                .iter()
+                .position(|(registered, _)| *registered == key)
+            else {
+                return;
+            };
+            let mut entries = (**entries).clone();
+            let removed = entries.remove(index);
+            self.store(entries);
+            removed
+        };
+        // Dropped after the lock: an entry's drop impl may subscribe again.
+        drop(removed);
+    }
+}
+
+impl<E: Event> Slot<dyn Listener<E>> {
     pub(super) fn emit_with(&self, event: impl FnOnce() -> E) {
         self.dispatch(None, event);
     }
@@ -50,12 +100,21 @@ impl<E: Event> Slot<E> {
         self.dispatch(Some(at), event);
     }
 
+    pub(super) fn emit(&self, emitted: &Emitted<'_, E>) {
+        if !self.is_active() {
+            return;
+        }
+        for (_, listener) in self.entries.load().iter() {
+            listener.on_event(emitted);
+        }
+    }
+
     #[inline]
     fn dispatch(&self, at: Option<Instant>, event: impl FnOnce() -> E) {
         if !self.is_active() {
             return;
         }
-        let listeners = self.listeners.load();
+        let listeners = self.entries.load();
         if listeners.is_empty() {
             return;
         }
@@ -68,45 +127,5 @@ impl<E: Event> Slot<E> {
         for (_, listener) in listeners.iter() {
             listener.on_event(&emitted);
         }
-    }
-
-    pub(super) fn insert(&self, listener: Registered<E>) -> u64 {
-        let mut next_key = self.write.lock();
-        let key = *next_key;
-        *next_key += 1;
-        let mut listeners = (**self.listeners.load()).clone();
-        listeners.push((key, listener));
-        self.store(listeners);
-        key
-    }
-
-    // Callers hold the write lock, which serializes these two stores. An
-    // emitter that reads the raised count with the old list finds no listener
-    // and skips that one event.
-    fn store(&self, listeners: Listeners<E>) {
-        let active = listeners.len();
-        self.listeners.store(Arc::new(listeners));
-        self.active.store(active, Ordering::Relaxed);
-    }
-}
-
-impl<E: Event> Unsubscribe for Slot<E> {
-    fn unsubscribe(&self, key: u64) {
-        let removed = {
-            let _write = self.write.lock();
-            let listeners = self.listeners.load();
-            let Some(index) = listeners
-                .iter()
-                .position(|(registered, _)| *registered == key)
-            else {
-                return;
-            };
-            let mut listeners = (**listeners).clone();
-            let removed = listeners.remove(index);
-            self.store(listeners);
-            removed
-        };
-        // Dropped after the lock: a listener drop impl may subscribe again.
-        drop(removed);
     }
 }

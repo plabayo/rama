@@ -9,7 +9,7 @@ pub mod dial9 {
 }
 
 pub mod event {
-    //! Typed events, see [`rama_core::telemetry::event`] for more info.
+    //! Typed events and spans, explained in the book: <https://ramaproxy.org/book/intro/events.html>.
 
     pub use ::rama_core::telemetry::event::*;
 }

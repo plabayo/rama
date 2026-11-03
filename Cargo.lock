@@ -4848,6 +4848,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+ "thread_local",
  "tokio",
  "tokio-graceful",
  "tokio-stream",
@@ -4856,6 +4857,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-opentelemetry",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 

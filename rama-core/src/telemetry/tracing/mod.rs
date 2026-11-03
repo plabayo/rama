@@ -3,6 +3,13 @@
 #[doc(inline)]
 pub use tracing::*;
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+mod spans;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use spans::TracingSpans;
+
 /// Re-export of [`tracing_appender`] plus rama utilities that go with it.
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]

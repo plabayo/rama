@@ -1,5 +1,6 @@
 use core::any::{Any, TypeId};
 use core::fmt;
+use core::marker::PhantomData;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
 
@@ -7,7 +8,8 @@ use ahash::HashMap;
 use parking_lot::Mutex;
 
 use super::slot::{Slot, Unsubscribe};
-use super::{Event, Listener};
+use super::span::{ErasedSpanAdapter, PooledSpanAdapter};
+use super::{Event, Listener, SpanAdapter, SpanStart};
 use crate::futures::future::Either;
 use crate::std::{boxed::Box, sync::Arc};
 
@@ -98,34 +100,68 @@ impl EventDispatcher {
     /// returned [`Subscription`] is dropped. It runs inline at the emit site,
     /// so a listener with heavy work needs to hand that off itself.
     pub fn subscribe<E: Event>(&self, listener: impl Listener<E>) -> Subscription {
-        let slot = self.slot::<E>();
-        let key = slot.insert(Arc::new(listener));
+        Self::register(self.slot::<E>(), Arc::new(listener))
+    }
+
+    /// Add `adapter` to every span of type `S` opened through this dispatcher,
+    /// for as long as the returned [`Subscription`] is alive.
+    ///
+    /// A span adapter is how tracing, dial9 or any other tool carries a rama
+    /// span over: it is entered around every poll of the span's work, and
+    /// closed when the span ends. Span adapters are snapshotted when a span
+    /// opens, so one added later does not join a running span.
+    pub fn add_span_adapter<S: SpanStart>(&self, adapter: impl SpanAdapter<S>) -> Subscription {
+        Self::register(
+            self.span_adapter_slot::<S>(),
+            Arc::new(PooledSpanAdapter::new(adapter)),
+        )
+    }
+
+    fn register<L: ?Sized + Send + Sync + 'static>(
+        slot: &'static Slot<L>,
+        entry: Arc<L>,
+    ) -> Subscription {
+        let key = slot.insert(entry);
         Subscription { slot, key }
     }
 
-    // Slots are never freed, so that an emitter can hold one by `&'static`
-    // reference instead of looking it up or counting references on every emit.
-    pub(super) fn slot<E: Event>(&self) -> &'static Slot<E> {
-        let mut slots = self.registry.slots.lock();
-        let slot = *slots.entry(TypeId::of::<E>()).or_insert_with(|| {
-            let slot: &'static Slot<E> = Box::leak(Box::new(Slot::new()));
-            slot
-        });
-        #[expect(
-            clippy::expect_used,
-            reason = "a slot is only ever stored under the `TypeId` of its own event type"
-        )]
-        let slot = slot
-            .downcast_ref::<Slot<E>>()
-            .expect("event slot has the type of its key");
-        slot
+    pub(super) fn slot<E: Event>(&self) -> &'static Slot<dyn Listener<E>> {
+        resolve_slot::<E, dyn Listener<E>>(&mut self.registry.slots.lock())
+    }
+
+    pub(super) fn span_adapter_slot<S: SpanStart>(
+        &self,
+    ) -> &'static Slot<dyn ErasedSpanAdapter<S>> {
+        resolve_slot::<SpanAdapterKey<S>, dyn ErasedSpanAdapter<S>>(&mut self.registry.slots.lock())
     }
 }
+
+// Span adapters of `S` are keyed apart from the listeners of `S` itself.
+struct SpanAdapterKey<S>(PhantomData<S>);
 
 impl fmt::Debug for EventDispatcher {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EventDispatcher").finish_non_exhaustive()
     }
+}
+
+// Slots are never freed, so that an emitter can hold one by `&'static`
+// reference instead of looking it up or counting references on every emit.
+fn resolve_slot<K: 'static, L: ?Sized + Send + Sync + 'static>(
+    slots: &mut HashMap<TypeId, &'static (dyn Any + Send + Sync)>,
+) -> &'static Slot<L> {
+    let slot = *slots.entry(TypeId::of::<K>()).or_insert_with(|| {
+        let slot: &'static Slot<L> = Box::leak(Box::new(Slot::new()));
+        slot
+    });
+    #[expect(
+        clippy::expect_used,
+        reason = "a slot is only ever stored under the `TypeId` of its own key type"
+    )]
+    let slot = slot
+        .downcast_ref::<Slot<L>>()
+        .expect("slot has the type of its key");
+    slot
 }
 
 fn current_override() -> Option<EventDispatcher> {
@@ -151,7 +187,7 @@ pub(super) fn task_override_is_set() -> bool {
     TASK_OVERRIDE.try_with(|_| ()).is_ok()
 }
 
-/// Keeps one listener registered. Dropping it unsubscribes.
+/// Keeps one listener or span adapter registered. Dropping it unsubscribes.
 #[must_use = "a listener is only subscribed while its Subscription is alive"]
 pub struct Subscription {
     slot: &'static dyn Unsubscribe,

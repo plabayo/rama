@@ -241,6 +241,18 @@ pub fn isolated(_attr: TokenStream, item: TokenStream) -> TokenStream {
     from_ref_macro::expand_with(item, event_macro::isolated::expand)
 }
 
+/// Derive an implementation of `rama_core::telemetry::event::SpanStart` for a type.
+///
+/// The end event is required: `#[span(end = MyEndEvent)]`. The type itself and
+/// its end event both need `#[derive(Event)]`.
+///
+/// Note that all type parameters of the derived type must satisfy:
+/// `Clone + Send + 'static`.
+#[proc_macro_derive(SpanStart, attributes(span))]
+pub fn derive_span_start(item: TokenStream) -> TokenStream {
+    from_ref_macro::expand_with(item, event_macro::span_start::expand)
+}
+
 /// Derive a `from_extensions` constructor that gathers extension pieces from a
 /// `rama_core::extensions::Extensions` store in a single pass.
 ///

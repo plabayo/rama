@@ -2568,6 +2568,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+ "thread_local",
  "tokio",
  "tokio-graceful",
  "tokio-stream",

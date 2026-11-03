@@ -35,7 +35,7 @@ synchronous applications use the same composed stacks at their boundary.
 | [`net`] | Network addresses, sockets, forwarding, fingerprints |
 | [`ua`] | User-Agent parsing, profiles, and emulation |
 | [`js`] | Embedded JavaScript runtime and Proxy Auto-Configuration (PAC) support via [`js::pac`] |
-| [`telemetry`] | tracing, OpenTelemetry, and dial9 integration |
+| [`telemetry`] | tracing, OpenTelemetry, dial9 integration, and [typed events and spans](https://ramaproxy.org/book/intro/events.html) |
 | [`utils`] | Utilities, including Tower compatibility |
 
 ## Common entry points

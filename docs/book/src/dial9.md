@@ -12,7 +12,8 @@ on traffic; leave disk headroom around the retention budget.
 
 Rama correlates protocol operations across task boundaries, including HTTP
 requests and streaming responses, WebSockets and QUIC. Applications can add
-their own events to the same flow. The [Apple transparent proxy example] shows
+their own events to the same flow, and `Dial9Operations` records rama
+[spans](./intro/events.md#span-adapters) as dial9 operations. The [Apple transparent proxy example] shows
 an integration at a synchronous runtime boundary.
 
 Recording has a cost. Start with lifecycle events and measure your workload

@@ -3,14 +3,14 @@ use core::fmt;
 use tokio::time::Instant;
 
 use super::slot::Slot;
-use super::{Event, EventDispatcher};
+use super::{Emitted, Event, EventDispatcher, Listener};
 
 /// Emits one event type. `Copy` and pointer sized: resolve it once in a
 /// long-lived component and copy it into units. Resolving takes a lock shared
 /// by all emitters, so do not resolve one per request or connection.
 #[derive(Clone)]
 pub struct Emitter<E: Event> {
-    slot: &'static Slot<E>,
+    slot: &'static Slot<dyn Listener<E>>,
 }
 
 /// Manual since we dont require `E` to be Copy
@@ -52,6 +52,14 @@ impl<E: Event> Emitter<E> {
     #[inline]
     pub fn emit_at(self, at: Instant, event: impl FnOnce() -> E) {
         self.slot.emit_at(at, event);
+    }
+
+    pub(super) fn active(self) -> usize {
+        self.slot.active()
+    }
+
+    pub(super) fn emit(self, emitted: &Emitted<'_, E>) {
+        self.slot.emit(emitted);
     }
 }
 

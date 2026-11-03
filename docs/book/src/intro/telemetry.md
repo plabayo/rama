@@ -29,6 +29,9 @@ and provides middlewares for collecting metrics on:
 Rama ships OTLP exporters built on the Rama network stack, so you can export
 telemetry without depending on `opentelemetry-otlp`.
 
+Rama crates also emit typed events for the facts they own, and open spans that
+tracing and dial9 can hang on to. See [📡 Events and Spans](./events.md).
+
 ### Apple unified logging
 
 On Apple targets, Rama can send tracing events to [Apple unified logging] and
