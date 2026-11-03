@@ -627,7 +627,7 @@ mod tests {
     use std::assert_matches;
     use std::{sync::Arc, time::Duration};
 
-    use rama_core::{ServiceInput, error::error_chain, service::service_fn};
+    use rama_core::{ServiceInput, error::CauseExt as _, service::service_fn};
     use tokio::sync::{Barrier, Notify};
 
     use crate::client::{
@@ -949,10 +949,7 @@ mod tests {
                         3,
                         "{scope:?}, {target}, {kind}"
                     );
-                    assert!(
-                        error_chain(&cached)
-                            .any(|error| error.is::<ProxyRouteFailureCachedError>())
-                    );
+                    assert!(cached.has_cause::<ProxyRouteFailureCachedError>());
                 }
             }
         }
@@ -1014,7 +1011,7 @@ mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(attempts.load(Ordering::SeqCst), 2, "{scope:?}");
-            assert!(error_chain(&cached).any(|error| error.is::<ProxyRouteFailureCachedError>()));
+            assert!(cached.has_cause::<ProxyRouteFailureCachedError>());
         }
     }
 
@@ -1072,9 +1069,7 @@ mod tests {
                     2,
                     "{scope:?}, {transport:?}"
                 );
-                assert!(
-                    error_chain(&cached).any(|error| error.is::<ProxyRouteFailureCachedError>())
-                );
+                assert!(cached.has_cause::<ProxyRouteFailureCachedError>());
             }
         }
     }

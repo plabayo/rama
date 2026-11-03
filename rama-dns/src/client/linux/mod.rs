@@ -1088,7 +1088,7 @@ mod tests {
     };
     use rama_core::{
         bytes::Bytes,
-        error::{BoxError, BoxErrorExt as _, error_chain},
+        error::{BoxError, BoxErrorExt as _, CauseExt as _},
         futures::{Stream, StreamExt as _, future::join_all, stream},
     };
     use rama_net::address::Domain;
@@ -2032,7 +2032,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_matches!(
             items.as_slice(),
-            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>()),
+            [Err(err)] if err.has_cause::<DnsTimeoutError>(),
         );
 
         drop(release);

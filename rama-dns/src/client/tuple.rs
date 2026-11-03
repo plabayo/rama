@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
-    error::{ErrorExt, extra::OpaqueError},
+    error::{ErrorExt, ErrorList, extra::OpaqueError},
     futures::{Stream, StreamExt as _, async_stream::stream_fn},
 };
 use rama_net::address::Domain;
@@ -42,18 +42,18 @@ macro_rules! dns_resolve_tuple_impl {
                 domain: Domain,
             ) -> Option<Result<Ipv4Addr, Self::Error>> {
                 let ($($ty,)+) = self;
-                let mut last_err = None;
+                let mut errors = ErrorList::new();
 
                 $(
                     if let Some(result) = $ty.lookup_ipv4_first(domain.clone()).await {
                         match result {
                             Ok(addr) => return Some(Ok(addr)),
-                            Err(err) => last_err = Some(Err(err.into_opaque_error())),
+                            Err(err) => errors.push_primary(err),
                         }
                     }
                 )+
 
-                last_err
+                errors.into_error().map(|error| Err(error.into_opaque_error()))
             }
 
             async fn lookup_ipv4_rand(
@@ -61,18 +61,18 @@ macro_rules! dns_resolve_tuple_impl {
                 domain: Domain,
             ) -> Option<Result<Ipv4Addr, Self::Error>> {
                 let ($($ty,)+) = self;
-                let mut last_err = None;
+                let mut errors = ErrorList::new();
 
                 $(
                     if let Some(result) = $ty.lookup_ipv4_rand(domain.clone()).await {
                         match result {
                             Ok(addr) => return Some(Ok(addr)),
-                            Err(err) => last_err = Some(Err(err.into_opaque_error())),
+                            Err(err) => errors.push_primary(err),
                         }
                     }
                 )+
 
-                last_err
+                errors.into_error().map(|error| Err(error.into_opaque_error()))
             }
 
             fn lookup_ipv6(
@@ -96,18 +96,18 @@ macro_rules! dns_resolve_tuple_impl {
                 domain: Domain,
             ) -> Option<Result<Ipv6Addr, Self::Error>> {
                 let ($($ty,)+) = self;
-                let mut last_err = None;
+                let mut errors = ErrorList::new();
 
                 $(
                     if let Some(result) = $ty.lookup_ipv6_first(domain.clone()).await {
                         match result {
                             Ok(addr) => return Some(Ok(addr)),
-                            Err(err) => last_err = Some(Err(err.into_opaque_error())),
+                            Err(err) => errors.push_primary(err),
                         }
                     }
                 )+
 
-                last_err
+                errors.into_error().map(|error| Err(error.into_opaque_error()))
             }
 
             async fn lookup_ipv6_rand(
@@ -115,18 +115,18 @@ macro_rules! dns_resolve_tuple_impl {
                 domain: Domain,
             ) -> Option<Result<Ipv6Addr, Self::Error>> {
                 let ($($ty,)+) = self;
-                let mut last_err = None;
+                let mut errors = ErrorList::new();
 
                 $(
                     if let Some(result) = $ty.lookup_ipv6_rand(domain.clone()).await {
                         match result {
                             Ok(addr) => return Some(Ok(addr)),
-                            Err(err) => last_err = Some(Err(err.into_opaque_error())),
+                            Err(err) => errors.push_primary(err),
                         }
                     }
                 )+
 
-                last_err
+                errors.into_error().map(|error| Err(error.into_opaque_error()))
             }
         }
 
@@ -258,11 +258,77 @@ mod tests {
 
     use rama_core::{
         bytes::Bytes,
-        error::{BoxError, BoxErrorExt as _},
+        error::{BoxError, BoxErrorExt as _, CauseExt as _, error_chain},
         futures::stream,
     };
 
     use super::*;
+    use crate::client::{DenyAllDnsResolver, DnsDeniedError, EmptyDnsResolver};
+
+    struct UpstreamFailure;
+
+    impl DnsAddressResolver for UpstreamFailure {
+        type Error = BoxError;
+
+        fn lookup_ipv4(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Err(BoxError::from_static_str(
+                "upstream timed out",
+            ))))
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Err(BoxError::from_static_str(
+                "upstream timed out",
+            ))))
+        }
+    }
+
+    #[tokio::test]
+    async fn every_failed_resolver_is_reported() {
+        let resolvers = (DenyAllDnsResolver, UpstreamFailure);
+        for error in [
+            resolvers
+                .lookup_ipv4_first(Domain::example())
+                .await
+                .map(|r| r.map(drop)),
+            resolvers
+                .lookup_ipv6_rand(Domain::example())
+                .await
+                .map(|r| r.map(drop)),
+        ] {
+            let error = error.expect("a result").expect_err("both fail");
+            assert!(error.has_cause::<DnsDeniedError>(), "{error}");
+            assert!(error.has_cause::<ErrorList>(), "{error}");
+            let rendered = error.to_string();
+            assert!(rendered.starts_with("2 errors: "), "{rendered}");
+            assert!(rendered.ends_with("; upstream timed out"), "{rendered}");
+            assert_eq!(
+                error_chain(&error)
+                    .last()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some("upstream timed out"),
+                "the last failure stays the primary one"
+            );
+        }
+
+        let single = (DenyAllDnsResolver, EmptyDnsResolver)
+            .lookup_ipv4_first(Domain::example())
+            .await
+            .expect("a result")
+            .expect_err("fails");
+        assert!(
+            !single.has_cause::<ErrorList>(),
+            "one failure is reported as itself"
+        );
+        assert!(single.has_cause::<DnsDeniedError>());
+    }
 
     struct BindingResolver(u16, u16);
 

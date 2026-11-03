@@ -1,6 +1,6 @@
 use std::fmt;
 
-use rama_core::error::{BoxError, error_chain_with};
+use rama_core::error::{BoxError, error_chain_with, error_source};
 use rama_http_types::{StatusCode, Version};
 use rama_net::client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
 
@@ -129,18 +129,13 @@ fn classify_handshake_error(error: &(dyn std::error::Error + 'static)) -> Connec
 fn handshake_source<'a>(
     error: &'a (dyn std::error::Error + 'static),
 ) -> Option<&'a (dyn std::error::Error + 'static)> {
-    // H2 and I/O errors can retain a cause that Error::source does not expose.
+    // H2 errors can retain an I/O cause that Error::source does not expose.
     if let Some(h2) = error.downcast_ref::<rama_http_core::h2::Error>()
         && let Some(io) = h2.get_io()
     {
         return Some(io);
     }
-    if let Some(io) = error.downcast_ref::<std::io::Error>()
-        && let Some(source) = io.get_ref()
-    {
-        return Some(source);
-    }
-    error.source()
+    error_source(error)
 }
 
 impl From<std::io::Error> for HttpProxyError {

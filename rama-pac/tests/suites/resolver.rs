@@ -1,13 +1,12 @@
 //! Script providers and the resolver that drives them.
 
 use std::assert_matches;
-use std::error::Error as StdError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
-use rama_core::error::{BoxError, ErrorExt as _, extra::OpaqueError};
+use rama_core::error::{BoxError, CauseExt as _, ErrorExt as _, extra::OpaqueError};
 use rama_core::{Layer, Service, service::service_fn};
 use rama_js::{JsError, JsErrorKind, JsRuntimeBuilder};
 use rama_net::uri::Uri;
@@ -79,14 +78,7 @@ fn uri(raw: &str) -> Uri {
 
 /// The kind of the js error behind a resolver failure, if one caused it.
 fn js_error_kind(err: &BoxError) -> Option<JsErrorKind> {
-    let mut source: Option<&(dyn StdError + 'static)> = Some(err.as_ref());
-    while let Some(err) = source {
-        if let Some(js) = err.downcast_ref::<JsError>() {
-            return Some(js.kind());
-        }
-        source = err.source();
-    }
-    None
+    err.find_cause::<JsError>().map(JsError::kind)
 }
 
 /// Provider counting how often it is really asked for a script.

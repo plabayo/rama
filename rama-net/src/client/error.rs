@@ -127,6 +127,23 @@ impl ConnectionError {
         }
     }
 
+    /// An error for `source` with exactly this classification.
+    pub(crate) fn with_classification(
+        source: BoxError,
+        (domain, kind, policy_scope): (
+            ConnectionErrorDomain,
+            ConnectionErrorKind,
+            ConnectionPolicyScope,
+        ),
+    ) -> Self {
+        Self {
+            source,
+            domain,
+            kind,
+            policy_scope,
+        }
+    }
+
     /// Create an error which occurred while establishing the transport path.
     pub fn transport(source: impl Into<BoxError>, kind: ConnectionErrorKind) -> Self {
         Self::new(source, ConnectionErrorDomain::Transport, kind)
@@ -359,7 +376,7 @@ impl ConnectionError {
         self
     }
 
-    fn classification_in_source_chain(
+    pub(crate) fn classification_in_source_chain(
         source: &(dyn core::error::Error + 'static),
     ) -> Option<(
         ConnectionErrorDomain,

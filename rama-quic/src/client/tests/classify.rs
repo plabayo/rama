@@ -1,6 +1,6 @@
 //! Failure classification of QUIC connection attempts and address races.
 
-use rama_core::error::{BoxError, BoxErrorExt as _, error_chain};
+use rama_core::error::{BoxError, BoxErrorExt as _, CauseExt as _, ErrorList, error_chain};
 use rama_net::{
     address::SocketAddress,
     client::{
@@ -54,6 +54,51 @@ fn address_race_preserves_authentication_failure_in_any_order() {
             })
         );
     }
+}
+
+#[test]
+fn address_race_keeps_every_failure_and_the_terminal_classification() {
+    let authentication = QuicConnectionError::TransportError(TransportErrorCode::crypto(42).into());
+    let failures = ConnectFailures::default();
+    let attempt = ConnectionAttempt::default();
+    // What the race returns: every failure, the last (a timeout) primary.
+    let mut raced = ErrorList::new();
+    raced.push(failures.record(authentication.into(), &attempt));
+    raced.push_primary(failures.record(QuicConnectionError::TimedOut.into(), &attempt));
+
+    let error = failures.finish(Box::new(raced));
+    assert_eq!(error.kind(), Authentication);
+    let list = error
+        .get_ref()
+        .downcast_ref::<ErrorList>()
+        .expect("the race's own list");
+    assert_eq!(list.len(), 2, "no failure added or dropped: {error}");
+    assert!(error.has_cause::<QuicConnectionError>());
+}
+
+#[test]
+fn a_terminal_failure_in_a_nested_branch_is_not_added_twice() {
+    let authentication = QuicConnectionError::TransportError(TransportErrorCode::crypto(42).into());
+    let failures = ConnectFailures::default();
+    let attempt = ConnectionAttempt::default();
+    let mut inner = ErrorList::new();
+    inner.push_primary(failures.record(QuicConnectionError::TimedOut.into(), &attempt));
+    inner.push(failures.record(authentication.into(), &attempt));
+    let mut outer = ErrorList::new();
+    outer.push_primary(BoxError::from_static_str("resolve failed"));
+    outer.push(Box::new(inner) as BoxError);
+
+    let error = failures.finish(Box::new(outer));
+    assert_eq!(error.kind(), Authentication);
+    let list = error
+        .get_ref()
+        .downcast_ref::<ErrorList>()
+        .expect("the race's own list");
+    assert_eq!(
+        list.len(),
+        2,
+        "terminal failure found, not appended: {error}"
+    );
 }
 
 #[test]

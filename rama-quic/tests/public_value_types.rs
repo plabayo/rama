@@ -2,7 +2,7 @@
 
 use rama_core::{
     bytes::Bytes,
-    error::{BoxError, ErrorExt as _, error_chain},
+    error::{BoxError, CauseExt as _, ErrorExt as _},
 };
 use rama_quic::{Chunk, ExportKeyingMaterialError};
 
@@ -30,7 +30,7 @@ fn exporter_errors_support_standard_propagation_and_rama_context() {
     assert!(error.is::<ExportKeyingMaterialError>());
     assert_eq!(error.to_string(), "failed to export keying material");
     let contextual = ExportKeyingMaterialError::new().context("derive application key");
-    assert!(error_chain(contextual.as_ref()).any(|e| e.is::<ExportKeyingMaterialError>()));
+    assert!(contextual.has_cause::<ExportKeyingMaterialError>());
 }
 
 #[test]

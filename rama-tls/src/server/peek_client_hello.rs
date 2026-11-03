@@ -287,6 +287,7 @@ pub struct InputWithClientHello<Input> {
 mod test {
     use rama_core::{
         ServiceInput,
+        error::error_chain,
         service::{RejectError, service_fn},
     };
     use std::{
@@ -576,20 +577,13 @@ mod test {
         }
     }
 
-    fn error_chain_has_peek_timeout(mut error: &(dyn std::error::Error + 'static)) -> bool {
-        loop {
-            if error.downcast_ref::<PeekTimeoutError>().is_some()
+    fn error_chain_has_peek_timeout(error: &(dyn std::error::Error + 'static)) -> bool {
+        error_chain(error).any(|error| {
+            error.is::<PeekTimeoutError>()
                 || error
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|error| error.kind() == std::io::ErrorKind::TimedOut)
-            {
-                return true;
-            }
-            let Some(source) = error.source() else {
-                return false;
-            };
-            error = source;
-        }
+        })
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
-    error::{ErrorExt, extra::OpaqueError},
+    error::{ErrorExt, ErrorList, extra::OpaqueError},
     futures::{Stream, StreamExt, async_stream::stream_fn, stream},
 };
 use rama_net::address::Domain;
@@ -57,19 +57,21 @@ macro_rules! impl_chain_dns_address_resolver {
         }
 
         async fn lookup_ipv4_first(&self, domain: Domain) -> Option<Result<Ipv4Addr, Self::Error>> {
-            let mut last_err = None;
+            let mut errors = ErrorList::new();
             for resolver in self {
                 match resolver.lookup_ipv4_first(domain.clone()).await {
                     None => (),
                     Some(Ok(addr)) => return Some(Ok(addr)),
-                    Some(Err(err)) => last_err = Some(Err(err.into_opaque_error())),
+                    Some(Err(err)) => errors.push_primary(err),
                 }
             }
-            last_err
+            errors
+                .into_error()
+                .map(|error| Err(error.into_opaque_error()))
         }
 
         async fn lookup_ipv4_rand(&self, domain: Domain) -> Option<Result<Ipv4Addr, Self::Error>> {
-            let mut last_err = None;
+            let mut errors = ErrorList::new();
             let n = self.len();
 
             let (start, step) = random_cycle_indices(n)?;
@@ -81,11 +83,13 @@ macro_rules! impl_chain_dns_address_resolver {
                 match resolver.lookup_ipv4_rand(domain.clone()).await {
                     None => {}
                     Some(Ok(addr)) => return Some(Ok(addr)),
-                    Some(Err(err)) => last_err = Some(Err(err.into_opaque_error())),
+                    Some(Err(err)) => errors.push_primary(err),
                 }
             }
 
-            last_err
+            errors
+                .into_error()
+                .map(|error| Err(error.into_opaque_error()))
         }
 
         fn lookup_ipv6(
@@ -98,19 +102,21 @@ macro_rules! impl_chain_dns_address_resolver {
         }
 
         async fn lookup_ipv6_first(&self, domain: Domain) -> Option<Result<Ipv6Addr, Self::Error>> {
-            let mut last_err = None;
+            let mut errors = ErrorList::new();
             for resolver in self {
                 match resolver.lookup_ipv6_first(domain.clone()).await {
                     None => (),
                     Some(Ok(addr)) => return Some(Ok(addr)),
-                    Some(Err(err)) => last_err = Some(Err(err.into_opaque_error())),
+                    Some(Err(err)) => errors.push_primary(err),
                 }
             }
-            last_err
+            errors
+                .into_error()
+                .map(|error| Err(error.into_opaque_error()))
         }
 
         async fn lookup_ipv6_rand(&self, domain: Domain) -> Option<Result<Ipv6Addr, Self::Error>> {
-            let mut last_err = None;
+            let mut errors = ErrorList::new();
             let n = self.len();
 
             let (start, step) = random_cycle_indices(n)?;
@@ -122,11 +128,13 @@ macro_rules! impl_chain_dns_address_resolver {
                 match resolver.lookup_ipv6_rand(domain.clone()).await {
                     None => {}
                     Some(Ok(addr)) => return Some(Ok(addr)),
-                    Some(Err(err)) => last_err = Some(Err(err.into_opaque_error())),
+                    Some(Err(err)) => errors.push_primary(err),
                 }
             }
 
-            last_err
+            errors
+                .into_error()
+                .map(|error| Err(error.into_opaque_error()))
         }
     };
 }

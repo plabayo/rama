@@ -1005,7 +1005,7 @@ mod tests {
     use std::assert_matches;
     use std::{io::Write as _, os::unix::net::UnixStream};
 
-    use rama_core::{error::error_chain, futures::future::join_all};
+    use rama_core::{error::CauseExt as _, futures::future::join_all};
 
     use super::*;
 
@@ -1074,7 +1074,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_matches!(
             items.as_slice(),
-            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>()),
+            [Err(err)] if err.has_cause::<DnsTimeoutError>(),
         );
     }
 
@@ -1139,9 +1139,7 @@ mod tests {
         let timeout = items
             .iter()
             .find_map(|item| item.as_ref().err())
-            .and_then(|err| {
-                error_chain(err.as_ref()).find_map(|cause| cause.downcast_ref::<DnsTimeoutError>())
-            })
+            .and_then(|err| err.find_cause::<DnsTimeoutError>())
             .map(DnsTimeoutError::timeout);
         assert_eq!(timeout, Some(Duration::from_millis(300)), "{items:?}");
     }

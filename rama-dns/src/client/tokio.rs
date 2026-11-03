@@ -306,7 +306,7 @@ static_str_error! {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::{error::error_chain, futures::future::join_all};
+    use rama_core::{error::CauseExt as _, futures::future::join_all};
     use std::assert_matches;
 
     use super::*;
@@ -454,7 +454,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_matches!(
             items.as_slice(),
-            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>()),
+            [Err(err)] if err.has_cause::<DnsTimeoutError>(),
         );
 
         drop(release);

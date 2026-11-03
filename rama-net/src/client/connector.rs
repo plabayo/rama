@@ -5,11 +5,12 @@ use std::{
 
 use crate::{
     address::{Domain, HostWithPort},
+    client::ConnectionError,
     transport::TransportProtocol,
 };
 
 use rama_core::{
-    error::{BoxError, BoxErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorExt as _, ErrorList},
     extensions::Extensions,
     futures::{
         Stream, StreamExt as _,
@@ -97,7 +98,11 @@ impl core::fmt::Debug for ConnectorTargetStream {
 /// [`ConnectorTargetStream`]), keeps up to `max_in_flight` dials racing
 /// concurrently via `dial`, and returns the first successful connection together
 /// with the address it connected to. If every candidate fails (to resolve or to
-/// connect), the last error is returned.
+/// connect), every failure is returned in an [`ErrorList`], each dial failure
+/// with its address as context. The last failure is the primary one, so the
+/// error classifies as before: when that failure is classified (it carries a
+/// [`ConnectionError`] or a timeout), the returned error is a [`ConnectionError`]
+/// with that classification. A single unclassified failure is returned as itself.
 pub async fn race_connect<S, C, F, Fut>(
     candidates: S,
     max_in_flight: usize,
@@ -115,7 +120,7 @@ where
     let mut candidates = std::pin::pin!(candidates);
     let mut in_flight = FuturesUnordered::new();
     let mut candidates_done = false;
-    let mut last_err: Option<BoxError> = None;
+    let mut failures = Failures::default();
 
     enum Event<C> {
         Candidate(Option<Result<SocketAddr, BoxError>>),
@@ -147,7 +152,7 @@ where
             }
             Event::Candidate(Some(Err(err))) => {
                 tracing::debug!(error = %err, "race connect: candidate failed");
-                last_err = Some(err);
+                failures.push(None, err);
             }
             Event::Candidate(None) => {
                 tracing::trace!(in_flight = in_flight.len(), "race connect: candidates done");
@@ -159,21 +164,86 @@ where
             }
             Event::Dialed(Some((addr, Err(err)))) => {
                 tracing::debug!(%addr, error = %err, "race connect: dial failed");
-                last_err = Some(err);
+                failures.push(Some(addr), err);
             }
             Event::Dialed(None) => {}
         }
     }
 
-    Err(last_err
-        .unwrap_or_else(|| BoxError::from_static_str("race_connect: no connection candidates")))
+    Err(failures.into_error())
+}
+
+/// Failures of a race, kept as they arrive and only wrapped once every
+/// candidate failed, so a race that still succeeds pays for no more than storing them.
+#[derive(Default)]
+struct Failures {
+    first: Option<(Option<SocketAddr>, BoxError)>,
+    rest: Vec<(Option<SocketAddr>, BoxError)>,
+}
+
+impl Failures {
+    fn push(&mut self, address: Option<SocketAddr>, error: BoxError) {
+        if self.first.is_none() {
+            self.first = Some((address, error));
+        } else {
+            self.rest.push((address, error));
+        }
+    }
+
+    fn into_error(self) -> BoxError {
+        let Self { first, rest } = self;
+        let Some(first) = first else {
+            return BoxError::from_static_str("race_connect: no connection candidates");
+        };
+        // Diagnostics deepen the chain: take the primary failure's classification
+        // first, so a bounded walk finds what it found without them.
+        let primary = rest.last().unwrap_or(&first);
+        let classification = ConnectionError::classification_in_source_chain(primary.1.as_ref());
+        let error = diagnostics(first, rest);
+        match classification {
+            Some(classification) => {
+                Box::new(ConnectionError::with_classification(error, classification))
+            }
+            None => error,
+        }
+    }
+}
+
+fn with_address((address, error): (Option<SocketAddr>, BoxError)) -> BoxError {
+    match address {
+        Some(address) => error.context_field("address", address),
+        None => error,
+    }
+}
+
+/// Every failure, each dial failure with its address; the last one primary.
+fn diagnostics(
+    first: (Option<SocketAddr>, BoxError),
+    rest: Vec<(Option<SocketAddr>, BoxError)>,
+) -> BoxError {
+    if rest.is_empty() {
+        return with_address(first);
+    }
+    let mut errors = ErrorList::with_capacity(1 + rest.len());
+    errors.push(with_address(first));
+    let last = rest.len() - 1;
+    for (idx, failure) in rest.into_iter().enumerate() {
+        if idx == last {
+            errors.push_primary(with_address(failure));
+        } else {
+            errors.push(with_address(failure));
+        }
+    }
+    Box::new(errors)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::ConnectionErrorKind;
+    use std::time::Duration;
 
-    use rama_core::futures::stream;
+    use rama_core::{error::CauseExt as _, futures::stream};
 
     fn addr(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
@@ -196,13 +266,169 @@ mod tests {
         assert_eq!(conn, won.port());
     }
 
+    #[derive(Debug)]
+    struct Refused(u16);
+
+    impl core::fmt::Display for Refused {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "refused {}", self.0)
+        }
+    }
+
+    impl core::error::Error for Refused {}
+
     #[tokio::test]
-    async fn race_connect_all_failures_returns_last_error() {
-        let candidates = stream::iter([addr(1), addr(2)].map(Ok::<_, BoxError>));
-        let result = race_connect(candidates, 3, |_a| async move {
-            Err::<u16, BoxError>(BoxError::from_static_str("always refused"))
+    async fn race_connect_all_failures_keeps_every_failure_last_primary() {
+        let candidates = stream::iter(
+            [
+                Ok(addr(1)),
+                Err(BoxError::from_static_str("resolve failed")),
+                Ok(addr(2)),
+            ]
+            .into_iter(),
+        );
+        // One at a time, so the failure order is the candidate order.
+        let error = race_connect(candidates, 1, |a: SocketAddr| async move {
+            Err::<u16, BoxError>(Refused(a.port()).into())
         })
-        .await;
-        result.unwrap_err();
+        .await
+        .unwrap_err();
+
+        let list = error.downcast_ref::<ErrorList>().expect("several failures");
+        let failures: Vec<_> = list.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            failures,
+            [
+                r#"refused 1 | address="127.0.0.1:1""#,
+                "resolve failed",
+                r#"refused 2 | address="127.0.0.1:2""#,
+            ]
+        );
+        assert_eq!(
+            error.root_cause().downcast_ref::<Refused>().map(|e| e.0),
+            Some(2),
+            "the last failure is primary"
+        );
+    }
+
+    #[tokio::test]
+    async fn race_connect_failures_classify_by_the_last_failure() {
+        let candidates = stream::iter([addr(1), addr(2)].map(Ok::<_, BoxError>));
+        let error = race_connect(candidates, 1, |a: SocketAddr| async move {
+            let kind = if a.port() == 1 {
+                ConnectionErrorKind::Authentication
+            } else {
+                ConnectionErrorKind::Timeout
+            };
+            Err::<u16, BoxError>(ConnectionError::transport(Refused(a.port()), kind).into())
+        })
+        .await
+        .unwrap_err();
+        assert!(error.has_cause::<ErrorList>());
+        assert_eq!(
+            ConnectionError::from(error).kind(),
+            ConnectionErrorKind::Timeout,
+            "the primary path is the last failure, as when only that one was returned"
+        );
+    }
+
+    #[derive(Debug)]
+    struct Layer(BoxError);
+
+    impl core::fmt::Display for Layer {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("layer")
+        }
+    }
+
+    impl core::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+            Some(self.0.as_ref())
+        }
+    }
+
+    /// A timeout under `layers` wrappers: at 63 the walk's 64th error is the timeout.
+    fn deep_timeout(port: u16, layers: usize) -> BoxError {
+        let mut error: BoxError =
+            ConnectionError::transport(Refused(port), ConnectionErrorKind::Timeout).into();
+        for _ in 0..layers {
+            error = Box::new(Layer(error));
+        }
+        error
+    }
+
+    #[tokio::test]
+    async fn race_connect_classification_survives_diagnostics_at_the_walk_bound() {
+        assert_eq!(
+            ConnectionError::from(deep_timeout(1, 63)).kind(),
+            ConnectionErrorKind::Timeout,
+            "the bound this test sits on"
+        );
+        for count in [1, 2] {
+            let candidates = stream::iter((1..=count).map(|port| Ok::<_, BoxError>(addr(port))));
+            let error = race_connect(candidates, 1, |a: SocketAddr| async move {
+                Err::<u16, BoxError>(deep_timeout(a.port(), 63))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(
+                ConnectionError::from(error).kind(),
+                ConnectionErrorKind::Timeout,
+                "{count} failures"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn race_connect_timeout_classification_survives_diagnostics_at_the_walk_bound() {
+        async fn deep_elapsed(layers: usize) -> BoxError {
+            let elapsed = tokio::time::timeout(Duration::ZERO, std::future::pending::<()>())
+                .await
+                .unwrap_err();
+            let mut error: BoxError = elapsed.into();
+            for _ in 0..layers {
+                error = Box::new(Layer(error));
+            }
+            error
+        }
+        assert_eq!(
+            ConnectionError::from(deep_elapsed(63).await).kind(),
+            ConnectionErrorKind::Timeout
+        );
+        for count in [1, 2] {
+            let candidates = stream::iter((1..=count).map(|port| Ok::<_, BoxError>(addr(port))));
+            let error = race_connect(candidates, 1, |_a: SocketAddr| async move {
+                Err::<u16, BoxError>(deep_elapsed(63).await)
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(
+                ConnectionError::from(error).kind(),
+                ConnectionErrorKind::Timeout,
+                "{count} failures"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn race_connect_single_failure_is_returned_as_itself() {
+        let candidates = stream::iter([Ok::<_, BoxError>(addr(1))]);
+        let error = race_connect(candidates, 3, |a: SocketAddr| async move {
+            Err::<u16, BoxError>(Refused(a.port()).into())
+        })
+        .await
+        .unwrap_err();
+        assert!(!error.has_cause::<ErrorList>());
+        assert!(error.has_cause::<Refused>());
+    }
+
+    #[tokio::test]
+    async fn race_connect_without_candidates_says_so() {
+        let error = race_connect(stream::empty(), 3, |_a: SocketAddr| async move {
+            Ok::<u16, BoxError>(0)
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "race_connect: no connection candidates");
     }
 }
