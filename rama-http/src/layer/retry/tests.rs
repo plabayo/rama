@@ -6,7 +6,11 @@
 use super::*;
 use crate::BodyExtractExt;
 use crate::service::web::response::IntoResponse;
-use crate::{Request, Response};
+use crate::{
+    Request, Response,
+    body::{CollectOptions, SizeHint},
+    request::Parts,
+};
 use parking_lot::Mutex;
 use rama_core::error::BoxError;
 use rama_core::error::BoxErrorExt as _;
@@ -310,6 +314,10 @@ struct StampingRetry(Arc<Mutex<usize>>);
 struct RetryRound(usize);
 
 impl Policy<Response, Error> for StampingRetry {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
         req: Request<RetryBody>,
@@ -326,7 +334,10 @@ impl Policy<Response, Error> for StampingRetry {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -358,6 +369,10 @@ async fn policy_stamps_reach_the_next_attempt() {
 struct RetryServerErrors(Arc<Mutex<usize>>);
 
 impl Policy<Response, Error> for RetryServerErrors {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
         req: Request<RetryBody>,
@@ -377,7 +392,10 @@ impl Policy<Response, Error> for RetryServerErrors {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -473,6 +491,10 @@ fn request(s: &'static str) -> Request<RetryBody> {
 struct RetryErrors;
 
 impl Policy<Response, Error> for RetryErrors {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
 
@@ -487,7 +509,10 @@ impl Policy<Response, Error> for RetryErrors {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -495,6 +520,10 @@ impl Policy<Response, Error> for RetryErrors {
 struct Limit(Arc<Mutex<usize>>);
 
 impl Policy<Response, Error> for Limit {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
 
@@ -511,7 +540,10 @@ impl Policy<Response, Error> for Limit {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -519,6 +551,10 @@ impl Policy<Response, Error> for Limit {
 struct UnlessErr(InnerError);
 
 impl Policy<Response, Error> for UnlessErr {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
 
@@ -538,7 +574,10 @@ impl Policy<Response, Error> for UnlessErr {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -546,6 +585,10 @@ impl Policy<Response, Error> for UnlessErr {
 struct CannotClone;
 
 impl Policy<Response, Error> for CannotClone {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
 
@@ -571,6 +614,10 @@ impl Policy<Response, Error> for MutatingPolicy
 where
     Error: Into<BoxError>,
 {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
         _req: Request<RetryBody>,
@@ -588,6 +635,9 @@ where
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }

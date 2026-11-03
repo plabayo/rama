@@ -12,12 +12,14 @@ use rama_core::{
 };
 use rama_http::{
     Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Version,
-    body::{Frame, util::BodyExt as _},
+    body::{CollectOptions, Frame, SizeHint, util::BodyExt as _},
     conn::{H2ClientContextParams, H2SettingsLimits},
     layer::{
         remove_header::RemoveResponseHeaderLayer,
+        retry::{ManagedPolicy, Retry, RetryBody, managed::DoNotRetry},
         version_adapter::{ResponseVersionAdapter, adapt_request_version},
     },
+    request::Parts,
 };
 use rama_http_backend::{
     client::{Http3Transport, HttpClientService, http_connect},
@@ -689,4 +691,54 @@ async fn all_http_version_pairs_reject_truncated_responses() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn one_shot_retry_bodies_preserve_content_length_on_the_wire() {
+    timeout(LIMIT, async {
+        for version in VERSIONS {
+            let origin = Hop::start(
+                version,
+                service_fn(move |req: Request| async move {
+                    // H1/H2 infer this field from the hint. H3 does not synthesize it.
+                    if version != Version::HTTP_3 {
+                        assert_eq!(req.headers()["content-length"], "5");
+                    }
+                    assert!(!req.headers().contains_key("transfer-encoding"));
+                    assert_eq!(
+                        req.into_body()
+                            .collect()
+                            .await
+                            .expect("request body")
+                            .to_bytes(),
+                        "hello"
+                    );
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }),
+            )
+            .await;
+            for (do_not_retry, cap) in [(true, None), (false, None), (false, Some(3))] {
+                let client = origin.client.clone();
+                let retry = Retry::new(
+                    ManagedPolicy::default().with_prepare_body(
+                        move |_: &Parts, _: bool, _: &SizeHint| {
+                            cap.map(|cap| CollectOptions::new().with_max_size(cap))
+                        },
+                    ),
+                    service_fn(move |req: Request<RetryBody>| {
+                        let client = client.clone();
+                        async move { client.serve(req.map(Body::from)).await }
+                    }),
+                );
+                let request = handshake_request(version).map(|_| Body::from("hello"));
+                if do_not_retry {
+                    request.extensions().insert(DoNotRetry::default());
+                }
+                retry.serve(request).await.expect("response");
+            }
+            origin.close().await;
+        }
+    })
+    .await
+    .expect("retry framing timed out");
 }

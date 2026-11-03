@@ -1,12 +1,16 @@
 use super::RetryBody;
-use crate::Request;
+use crate::{
+    Request,
+    body::{CollectOptions, SizeHint},
+    request::Parts,
+};
 
 /// A "retry policy" to classify if a request should be retried.
 ///
 /// # Example
 ///
 /// ```
-/// use rama_http::Request;
+/// use rama_http::{Request, body::{CollectOptions, SizeHint}, request::Parts};
 /// use rama_http::layer::retry::{Policy, PolicyResult, RetryBody};
 /// use std::sync::Arc;
 /// use parking_lot::Mutex;
@@ -18,6 +22,12 @@ use crate::Request;
 ///         R: Send + 'static,
 ///         E: Send + Sync + 'static,
 /// {
+///     fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint)
+///         -> Option<CollectOptions>
+///     {
+///         Some(CollectOptions::new())
+///     }
+///
 ///     async fn retry(&self, req: Request<RetryBody>, result: Result<R, E>) -> PolicyResult<R, E> {
 ///         match result {
 ///             Ok(_) => {
@@ -42,11 +52,27 @@ use crate::Request;
 ///     }
 ///
 ///     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-///         Some(req.clone())
+///         Some(Request::from_parts(req.clone_parts(), req.body().try_clone()?))
 ///     }
 /// }
 /// ```
 pub trait Policy<R, E>: Send + Sync + 'static {
+    /// Decide whether to prepare a replay before polling the request body.
+    ///
+    /// `None` streams the request once, without cloning it or calling `retry`.
+    /// Collection size/time limits also fall back to streaming the complete
+    /// body once. A body source error remains an error.
+    ///
+    /// `is_end_stream` is the body's own assertion that no frames remain.
+    /// A zero size hint alone does not exclude trailers. Each policy explicitly
+    /// chooses whether collection is allowed and which limits apply.
+    fn prepare_body(
+        &self,
+        parts: &Parts,
+        is_end_stream: bool,
+        size_hint: &SizeHint,
+    ) -> Option<CollectOptions>;
+
     /// Check the policy if a certain request should be retried.
     ///
     /// This method is passed a reference to the original request, and either
@@ -103,6 +129,15 @@ impl<P, R, E> Policy<R, E> for &'static P
 where
     P: Policy<R, E>,
 {
+    fn prepare_body(
+        &self,
+        parts: &Parts,
+        is_end_stream: bool,
+        size_hint: &SizeHint,
+    ) -> Option<CollectOptions> {
+        (**self).prepare_body(parts, is_end_stream, size_hint)
+    }
+
     #[inline(always)]
     fn retry(
         &self,
@@ -122,6 +157,15 @@ impl<P, R, E> Policy<R, E> for std::sync::Arc<P>
 where
     P: Policy<R, E>,
 {
+    fn prepare_body(
+        &self,
+        parts: &Parts,
+        is_end_stream: bool,
+        size_hint: &SizeHint,
+    ) -> Option<CollectOptions> {
+        (**self).prepare_body(parts, is_end_stream, size_hint)
+    }
+
     #[inline(always)]
     fn retry(
         &self,
@@ -142,6 +186,10 @@ where
 // and see to be smarter about async fns in general
 
 /// The full result of a limit policy.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "keep the retry request inline instead of allocating on every retry"
+)]
 pub enum PolicyResult<R, E> {
     /// The result should not be retried,
     /// and the result should be returned to the caller.
@@ -178,6 +226,17 @@ macro_rules! impl_retry_policy_either {
             Response: Send + 'static,
             Error: Send + 'static,
         {
+            fn prepare_body(
+                &self,
+                parts: &Parts,
+                is_end_stream: bool,
+                size_hint: &SizeHint,
+            ) -> Option<CollectOptions> {
+                match self {
+                    $(rama_core::combinators::$id::$param(policy) => policy.prepare_body(parts, is_end_stream, size_hint),)+
+                }
+            }
+
             async fn retry(
                 &self,
                 req: rama_http_types::Request<RetryBody>,

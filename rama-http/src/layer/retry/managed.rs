@@ -5,7 +5,11 @@
 //! [`Policy`]: super::Policy
 
 use super::{Policy, PolicyResult, RetryBody};
-use crate::{Request, Response};
+use crate::{
+    Request, Response,
+    body::{CollectOptions, SizeHint},
+    request::Parts,
+};
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_utils::backoff::Backoff;
@@ -16,6 +20,8 @@ use rama_utils::backoff::Backoff;
 /// of a [`Request`] to signal that the request should not be retried.
 ///
 /// This requires the [`ManagedPolicy`] to be used.
+///
+/// Preparation is skipped as well, so the original body streams without buffering.
 ///
 /// Only the caller can set it, i.e. anything _outside_ [`Retry`]: the policy reads it off the
 /// request clone, which references the caller's store, so an insert made by an inner layer lands in
@@ -29,26 +35,45 @@ pub struct DoNotRetry;
 /// A managed retry [`Policy`],
 /// which allows for an easier interface to configure retrying requests.
 ///
+/// By default, replay preparation collects without a bound. Use
+/// [`Self::with_prepare_body`] with [`CollectOptions::with_max_size`] and/or
+/// [`CollectOptions::with_timeout`] to bound it or decline collection entirely.
+///
 /// [`DoNotRetry`] can be added to the [`Extensions`] of a [`Request`]
 /// to signal that the request should not be retried, regardless
 /// of the retry functionality defined.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(Debug, Clone)]
-pub struct ManagedPolicy<B = Undefined, C = Undefined, R = Undefined> {
+pub struct ManagedPolicy<B = Undefined, C = Undefined, R = Undefined, P = Undefined> {
     backoff: B,
     clone: C,
     retry: R,
+    prepare: P,
 }
 
-impl<B, C, R, Response, Error> Policy<Response, Error> for ManagedPolicy<B, C, R>
+impl<B, C, R, P, Response, Error> Policy<Response, Error> for ManagedPolicy<B, C, R, P>
 where
     B: Backoff,
+    P: PrepareBody,
     C: CloneInput,
     R: RetryRule<Request<RetryBody>, Response, Error>,
     Response: Send + 'static,
     Error: Send + 'static,
 {
+    fn prepare_body(
+        &self,
+        parts: &Parts,
+        is_end_stream: bool,
+        size_hint: &SizeHint,
+    ) -> Option<CollectOptions> {
+        if parts.extensions.contains::<DoNotRetry>() {
+            None
+        } else {
+            self.prepare.prepare_body(parts, is_end_stream, size_hint)
+        }
+    }
+
     async fn retry(
         &self,
         req: Request<RetryBody>,
@@ -83,6 +108,7 @@ impl Default for ManagedPolicy<Undefined, Undefined, Undefined> {
             backoff: Undefined,
             clone: Undefined,
             retry: Undefined,
+            prepare: Undefined,
         }
     }
 }
@@ -98,38 +124,90 @@ impl<F> ManagedPolicy<Undefined, Undefined, F> {
     }
 }
 
-impl<C, R> ManagedPolicy<Undefined, C, R> {
+impl<C, R, P> ManagedPolicy<Undefined, C, R, P> {
     /// add a backoff to this [`ManagedPolicy`].
-    pub fn with_backoff<B>(self, backoff: B) -> ManagedPolicy<B, C, R> {
+    pub fn with_backoff<B>(self, backoff: B) -> ManagedPolicy<B, C, R, P> {
         ManagedPolicy {
             backoff,
             clone: self.clone,
             retry: self.retry,
+            prepare: self.prepare,
         }
     }
 }
 
-impl<B, R> ManagedPolicy<B, Undefined, R> {
+impl<B, R, P> ManagedPolicy<B, Undefined, R, P> {
     /// add a cloning function to this [`ManagedPolicy`].
     /// to determine if a request should be cloned
-    pub fn with_clone<C>(self, clone: C) -> ManagedPolicy<B, C, R> {
+    pub fn with_clone<C>(self, clone: C) -> ManagedPolicy<B, C, R, P> {
         ManagedPolicy {
             backoff: self.backoff,
             clone,
             retry: self.retry,
+            prepare: self.prepare,
         }
     }
 }
 
-impl<B, C> ManagedPolicy<B, C, Undefined> {
+impl<B, C, P> ManagedPolicy<B, C, Undefined, P> {
     /// add a retry function to this [`ManagedPolicy`].
     /// to determine if a request should be retried.
-    pub fn with_retry<R>(self, retry: R) -> ManagedPolicy<B, C, R> {
+    pub fn with_retry<R>(self, retry: R) -> ManagedPolicy<B, C, R, P> {
         ManagedPolicy {
             backoff: self.backoff,
             clone: self.clone,
             retry,
+            prepare: self.prepare,
         }
+    }
+}
+
+impl<B, C, R> ManagedPolicy<B, C, R, Undefined> {
+    /// Configure replay preparation before the body is read.
+    ///
+    /// Return `None` to stream once, or collection options to prepare a replay.
+    /// `DoNotRetry` takes precedence over this function.
+    pub fn with_prepare_body<P>(self, prepare: P) -> ManagedPolicy<B, C, R, P> {
+        ManagedPolicy {
+            backoff: self.backoff,
+            clone: self.clone,
+            retry: self.retry,
+            prepare,
+        }
+    }
+}
+
+/// Decide whether and how to collect a body for replay.
+///
+/// Implemented for functions taking request parts, the body's end-of-stream
+/// assertion, and its size hint, and returning optional collection limits.
+pub trait PrepareBody: private::Sealed<(Parts,)> + Send + Sync + 'static {
+    /// Return collection options, or decline replay preparation.
+    fn prepare_body(
+        &self,
+        parts: &Parts,
+        is_end_stream: bool,
+        size_hint: &SizeHint,
+    ) -> Option<CollectOptions>;
+}
+
+impl PrepareBody for Undefined {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+}
+
+impl<F> PrepareBody for F
+where
+    F: Fn(&Parts, bool, &SizeHint) -> Option<CollectOptions> + Send + Sync + 'static,
+{
+    fn prepare_body(
+        &self,
+        parts: &Parts,
+        is_end_stream: bool,
+        size_hint: &SizeHint,
+    ) -> Option<CollectOptions> {
+        self(parts, is_end_stream, size_hint)
     }
 }
 
@@ -204,7 +282,10 @@ pub trait CloneInput: private::Sealed<()> + Send + Sync + 'static {
 
 impl CloneInput for Undefined {
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -244,6 +325,10 @@ mod private {
     pub trait Sealed<S> {}
 
     impl<S> Sealed<S> for Undefined {}
+    impl<F> Sealed<(Parts,)> for F where
+        F: Fn(&Parts, bool, &SizeHint) -> Option<CollectOptions> + Send + Sync + 'static
+    {
+    }
     impl<F> Sealed<()> for F where
         F: Fn(&Request<RetryBody>) -> Option<Request<RetryBody>> + Send + Sync + 'static
     {
@@ -307,11 +392,16 @@ mod tests {
         assert_clone_input_some(&request, &policy);
 
         // do not retry HTTP Ok
-        assert_abort(request.clone(), Ok(StatusCode::OK.into_response()), &policy).await;
+        assert_abort(
+            Request::from_parts(request.clone_parts(), request.body().try_clone().unwrap()),
+            Ok(StatusCode::OK.into_response()),
+            &policy,
+        )
+        .await;
 
         // do retry HTTP InternalServerError
         assert_retry(
-            request.clone(),
+            Request::from_parts(request.clone_parts(), request.body().try_clone().unwrap()),
             Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             &policy,
         )
@@ -336,11 +426,16 @@ mod tests {
         assert_clone_input_none(&req, &policy);
 
         // do not retry HTTP Ok (.... Of course)
-        assert_abort(req.clone(), Ok(StatusCode::OK.into_response()), &policy).await;
+        assert_abort(
+            Request::from_parts(req.clone_parts(), req.body().try_clone().unwrap()),
+            Ok(StatusCode::OK.into_response()),
+            &policy,
+        )
+        .await;
 
         // do not retry HTTP InternalServerError
         assert_abort(
-            req.clone(),
+            Request::from_parts(req.clone_parts(), req.body().try_clone().unwrap()),
             Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             &policy,
         )
@@ -377,7 +472,8 @@ mod tests {
             .body(RetryBody::empty())
             .unwrap();
         let clone = |req: &Request<RetryBody>| {
-            let mut cloned = req.clone();
+            let mut cloned =
+                Request::from_parts(req.clone_parts(), req.body().try_clone().unwrap());
             *cloned.uri_mut() = "http://example.com/cloned".try_into().unwrap();
             Some(cloned)
         };
@@ -411,9 +507,14 @@ mod tests {
         assert_clone_input_some(&req, &policy);
 
         // retry should be the custom one
-        assert_abort(req.clone(), Ok(StatusCode::OK.into_response()), &policy).await;
         assert_abort(
-            req.clone(),
+            Request::from_parts(req.clone_parts(), req.body().try_clone().unwrap()),
+            Ok(StatusCode::OK.into_response()),
+            &policy,
+        )
+        .await;
+        assert_abort(
+            Request::from_parts(req.clone_parts(), req.body().try_clone().unwrap()),
             Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             &policy,
         )
@@ -459,9 +560,14 @@ mod tests {
         assert_clone_input_none(&req, &policy);
 
         // retry should be the custom one
-        assert_abort(req.clone(), Ok(StatusCode::OK.into_response()), &policy).await;
         assert_abort(
-            req.clone(),
+            Request::from_parts(req.clone_parts(), req.body().try_clone().unwrap()),
+            Ok(StatusCode::OK.into_response()),
+            &policy,
+        )
+        .await;
+        assert_abort(
+            Request::from_parts(req.clone_parts(), req.body().try_clone().unwrap()),
             Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             &policy,
         )
