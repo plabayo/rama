@@ -37,6 +37,8 @@ func main() {
 		runProxy(os.Args[2:])
 	case "client":
 		runClient(os.Args[2:])
+	case "early":
+		runEarly(os.Args[2:])
 	case "coverage":
 		runCoverage(os.Args[2:])
 	default:
