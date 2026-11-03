@@ -7,6 +7,7 @@ use rama::{
     service::service_fn,
     tls::server::{ServerAuthData, TlsServerConfig},
     ua::profile::selection::database::UserAgentDatabase,
+    utils::rng::{HasherRng, Rng},
 };
 use std::{convert::Infallible, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
@@ -385,15 +386,41 @@ async fn test_rama_send_closes_its_tunneled_connection_at_the_origin() {
     origin.close(0u32, b"done");
 }
 
-/// A MASQUE listener needs its port on both TCP and UDP: either taken fails startup clearly.
+/// A MASQUE listener must fail at the HTTP/3 bind when only UDP is occupied.
 #[tokio::test]
 #[ignore = "spawns rama processes"]
-async fn test_masque_proxy_refuses_to_start_when_its_port_is_taken() {
+async fn test_masque_proxy_refuses_to_start_when_its_udp_port_is_taken() {
     utils::init_tracing();
 
-    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let port = udp.local_addr().unwrap().port();
-    let bind = format!("127.0.0.1:{port}");
+    // TCP and UDP have independent reservations on Windows. A UDP port-0 allocation
+    // can be forbidden to TCP, failing before the HTTP/3 bind this test exercises.
+    // Reserve both on a random dynamic port, then release only TCP for the child.
+    let mut rng = HasherRng::new();
+    let (tcp, udp) = (0..64)
+        .find_map(|_| {
+            let address = (
+                std::net::Ipv4Addr::LOCALHOST,
+                rng.next_range(49152..65536) as u16,
+            );
+            let reserve = || {
+                let tcp = std::net::TcpListener::bind(address)?;
+                let udp = std::net::UdpSocket::bind(address)?;
+                Ok::<_, std::io::Error>((tcp, udp))
+            };
+            match reserve() {
+                Ok(pair) => Some(pair),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AddrInUse
+                        || (cfg!(windows) && error.raw_os_error() == Some(10013)) =>
+                {
+                    None
+                }
+                Err(error) => panic!("reserve TCP/UDP port: {error}"),
+            }
+        })
+        .expect("reserve a shared TCP/UDP port within 64 attempts");
+    let bind = udp.local_addr().unwrap().to_string();
+    drop(tcp);
     let (ok, _stdout, stderr) = utils::RamaService::run_capture(&[
         "serve",
         "proxy",
@@ -409,6 +436,13 @@ async fn test_masque_proxy_refuses_to_start_when_its_port_is_taken() {
         "stderr: {stderr}"
     );
     drop(udp);
+}
+
+/// A MASQUE listener must fail at the TCP bind when TCP is occupied.
+#[tokio::test]
+#[ignore = "spawns rama processes"]
+async fn test_masque_proxy_refuses_to_start_when_its_tcp_port_is_taken() {
+    utils::init_tracing();
 
     let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let bind = format!("127.0.0.1:{}", tcp.local_addr().unwrap().port());
