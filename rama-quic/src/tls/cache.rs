@@ -11,6 +11,11 @@ use super::{
     ClientHandshake, ClientSessionPolicy, QuicClientConfigProvider, TlsConfigError, TlsOptions,
 };
 use crate::ClientConfig;
+#[cfg(feature = "boring")]
+use {
+    super::BoringTlsProvider, rama_tls::client::TlsClientConfigProvider as _,
+    rama_tls_boring::client::BoringExtensionOrder,
+};
 
 // Keep native override configurations bounded alongside the protected default context.
 const MAX_CACHED_OVERRIDES: usize = 64;
@@ -50,10 +55,25 @@ impl fmt::Debug for ClientConfigCache {
 
 impl ClientConfigCache {
     fn effective_options(&self, config: &TlsClientConfig) -> TlsOptions {
-        config
+        let options = config
             .as_extensions()
             .get_ref::<AlpnPolicy>()
-            .map_or(self.options, |policy| self.options.with_alpn(*policy))
+            .map_or(self.options, |policy| self.options.with_alpn(*policy));
+        #[cfg(feature = "boring")]
+        if self.provider.pool_classifier() == BoringTlsProvider.pool_classifier() {
+            if config.as_extensions().contains::<BoringExtensionOrder>() {
+                return options.with_early_data(false);
+            }
+            #[cfg(feature = "ua")]
+            if crate::profile::replay::has_captured_tls(config.as_extensions()) {
+                return options.with_early_data(false);
+            }
+        }
+        options
+    }
+
+    pub(crate) fn allows_early_data(&self, config: &TlsClientConfig) -> bool {
+        self.effective_options(config).early_data
     }
 
     /// Bind cached configurations to one provider and its QUIC TLS options.
@@ -176,7 +196,11 @@ impl ClientConfigCache {
         // An opaque default is scoped to this cache, not shared across connectors.
         // Keep comparable request overrides distinct even if the effective ID is opaque.
         let is_default = request_policy.is_none();
-        let policy = (request_policy, effective_policy);
+        let policy = (
+            request_policy,
+            effective_policy,
+            self.effective_options(config).early_data,
+        );
         let session_defaults = {
             let mut configs = self.configs.lock();
             if let Some(config) = configs.get(&policy, is_default) {
@@ -204,7 +228,7 @@ impl ClientConfigCache {
     }
 }
 
-type Policy = (Option<TlsPoolId>, Option<TlsPoolId>);
+type Policy = (Option<TlsPoolId>, Option<TlsPoolId>, bool);
 
 struct Entry {
     policy: Policy,
@@ -642,5 +666,19 @@ mod tests {
         assert_eq!(provider.calls.load(Ordering::Relaxed), 0);
         assert!(cache.configs.lock().default.is_none());
         assert!(cache.configs.lock().overrides.is_empty());
+    }
+    #[cfg(feature = "boring")]
+    #[test]
+    fn early_options_are_explicit_and_pinned_client_hello_shapes_win() {
+        let tls = TlsClientConfig::new();
+        let ordinary = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+        assert!(!ordinary.allows_early_data(&tls));
+        let early = ClientConfigCache::new(
+            Arc::new(BoringTlsProvider),
+            TlsOptions::default().with_early_data(true),
+        );
+        assert!(early.allows_early_data(&tls));
+        tls.as_extensions().insert(BoringExtensionOrder(Vec::new()));
+        assert!(!early.allows_early_data(&tls));
     }
 }

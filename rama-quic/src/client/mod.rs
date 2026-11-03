@@ -46,7 +46,7 @@ use rama_net::{
         EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, race_connect,
     },
     mode::ConnectIpMode,
-    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, EarlyDataPermit, ForbidEarlyData, TlsAlpn},
 };
 use rama_quic_proto::{TransportErrorCode, profile::QuicProfile};
 use rama_tls::client::{
@@ -85,6 +85,7 @@ pub struct QuicConnector<E> {
     endpoints: E,
     tls: TlsClientConfig,
     tls_configs: ClientConfigCache,
+    early_data: bool,
     transport: Arc<TransportConfig>,
 }
 
@@ -94,6 +95,7 @@ impl<E: Clone> Clone for QuicConnector<E> {
             endpoints: self.endpoints.clone(),
             tls: self.tls.clone(),
             tls_configs: self.tls_configs.clone(),
+            early_data: self.early_data,
             transport: self.transport.clone(),
         }
     }
@@ -119,6 +121,7 @@ impl<E> QuicConnector<E> {
             endpoints,
             tls,
             tls_configs: ClientConfigCache::new(provider, TlsOptions::default()),
+            early_data: false,
             transport: Arc::new(TransportConfig::default()),
         }
     }
@@ -134,9 +137,29 @@ impl<E> QuicConnector<E> {
     generate_set_and_with! {
         /// The TLS defaults; client configurations built from the previous ones are dropped.
         pub fn tls_config(mut self, tls: TlsClientConfig) -> Self {
-            self.tls_configs =
-                ClientConfigCache::new(self.tls_configs.provider().clone(), TlsOptions::default());
+            self.tls_configs = ClientConfigCache::new(
+                self.tls_configs.provider().clone(),
+                TlsOptions::default().with_early_data(self.early_data),
+            );
             self.tls = tls;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Allow an operation carrying [`EarlyDataPermit`] to use resumed early keys.
+        ///
+        /// Enabling this allows a resumed ClientHello to offer early data even
+        /// for an operation that waits for confirmation. Actual application data
+        /// still needs a permit and must not carry [`ForbidEarlyData`]. Captured
+        /// TLS profiles keep their wire shape and disable early data. Disabled
+        /// by default; leave off when an exact ClientHello is required.
+        pub fn early_data(mut self, enabled: bool) -> Self {
+            self.early_data = enabled;
+            self.tls_configs = ClientConfigCache::new(
+                self.tls_configs.provider().clone(),
+                TlsOptions::default().with_early_data(enabled),
+            );
             self
         }
     }
@@ -236,6 +259,9 @@ impl<E> QuicConnector<E> {
         } else {
             policy_scope
         };
+        let early_data = self.tls_configs.allows_early_data(&tls)
+            && input.extensions().contains::<EarlyDataPermit>()
+            && !input.extensions().contains::<ForbidEarlyData>();
         let mut config = self
             .tls_configs
             .client_config_for_peer(&tls, input.extensions(), &server_identity)
@@ -261,6 +287,7 @@ impl<E> QuicConnector<E> {
                 .to_string()
         };
         Ok(Prepared {
+            early_data,
             alpn_policy,
             alpn_offered,
             config,
@@ -278,46 +305,87 @@ impl<E> QuicConnector<E> {
         prepared: &Prepared,
     ) -> Result<(ClientEndpoint, Connection), BoxError> {
         let remote = endpoint.peer().unwrap_or(address);
-        let connection = endpoint
-            .endpoint()
-            .connect_with(prepared.config.clone(), remote, &prepared.server_name)?
-            .await?;
-        connection.handshake_confirmed().await?;
-        self.check_negotiated_alpn(&connection, prepared)?;
-        Ok((endpoint, connection))
-    }
-
-    /// Refuse a connection whose negotiated protocol the connector does not serve, or that
-    /// negotiated none of an offer without out-of-band agreement (RFC 9001 §8.1), closing it.
-    fn check_negotiated_alpn(
-        &self,
-        connection: &Connection,
-        prepared: &Prepared,
-    ) -> Result<(), BoxError> {
-        let negotiated = connection
-            .extensions()
-            .get_ref::<NegotiatedTlsParameters>()
-            .and_then(|tls| tls.application_layer_protocol.as_ref());
-        let accepted = match negotiated {
-            Some(protocol) => self
-                .served_alpn()
-                .is_none_or(|served| serves(served, protocol)),
-            None => {
-                !prepared.alpn_offered || prepared.alpn_policy == AlpnPolicy::OutOfBandAgreement
+        let connecting = endpoint.endpoint().connect_with(
+            prepared.config.clone(),
+            remote,
+            &prepared.server_name,
+        )?;
+        let connecting = if prepared.early_data {
+            match connecting.into_0rtt() {
+                Ok((connection, _accepted)) => {
+                    connection.begin_connector_verification();
+                    let verifying = connection.clone();
+                    let served = self.served_alpn().cloned();
+                    let offered = prepared.alpn_offered;
+                    let policy = prepared.alpn_policy;
+                    let identity = prepared.authenticated_identity.clone();
+                    endpoint.endpoint().spawn_connection_task(async move {
+                        let result = match verifying.handshake_confirmed_inner().await {
+                            Ok(()) => {
+                                check_negotiated_alpn(&verifying, served.as_ref(), offered, policy)
+                                    .map_err(|error| {
+                                        tracing::debug!(%error, "early QUIC connector ALPN verification failed");
+                                        QuicConnectionError::LocallyClosed
+                                    })
+                            }
+                            Err(error) => Err(error),
+                        };
+                        if result.is_ok() {
+                            verifying
+                                .extensions()
+                                .insert(TlsServerAuthentication(identity));
+                        } else {
+                            verifying.close(0u32, b"QUIC connector verification failed");
+                        }
+                        // Publish last: subsequent admissions and response delivery
+                        // wait for this same verification point.
+                        verifying.finish_connector_verification(result);
+                    });
+                    return Ok((endpoint, connection));
+                }
+                Err(connecting) => connecting,
             }
+        } else {
+            connecting
         };
-        if accepted {
-            return Ok(());
-        }
-        connection.close(0u32, b"ALPN required");
-        Err(ConnectionError::application(
-            BoxError::from_static_str("QUIC requires ALPN agreement or out-of-band agreement"),
-            ProtocolError,
-        )
-        .into())
+        let connection = connecting.await?;
+        connection.handshake_confirmed().await?;
+        check_negotiated_alpn(
+            &connection,
+            self.served_alpn(),
+            prepared.alpn_offered,
+            prepared.alpn_policy,
+        )?;
+        Ok((endpoint, connection))
     }
 }
 
+/// Refuse a connection whose negotiated protocol the connector does not serve, or that
+/// negotiated none of an offer without out-of-band agreement (RFC 9001 §8.1), closing it.
+fn check_negotiated_alpn(
+    connection: &Connection,
+    served: Option<&TlsAlpn>,
+    alpn_offered: bool,
+    alpn_policy: AlpnPolicy,
+) -> Result<(), BoxError> {
+    let negotiated = connection
+        .extensions()
+        .get_ref::<NegotiatedTlsParameters>()
+        .and_then(|tls| tls.application_layer_protocol.as_ref());
+    let accepted = match negotiated {
+        Some(protocol) => served.is_none_or(|served| serves(served, protocol)),
+        None => !alpn_offered || alpn_policy == AlpnPolicy::OutOfBandAgreement,
+    };
+    if accepted {
+        return Ok(());
+    }
+    connection.close(0u32, b"ALPN required");
+    Err(ConnectionError::application(
+        BoxError::from_static_str("QUIC requires ALPN agreement or out-of-band agreement"),
+        ProtocolError,
+    )
+    .into())
+}
 /// Whether `protocol` is one of `served`, by its wire identifier.
 fn serves(served: &TlsAlpn, protocol: &ApplicationProtocol) -> bool {
     served
@@ -328,6 +396,7 @@ fn serves(served: &TlsAlpn, protocol: &ApplicationProtocol) -> bool {
 
 /// Values derived once from the effective TLS configuration for one connection.
 struct Prepared {
+    early_data: bool,
     alpn_policy: AlpnPolicy,
     alpn_offered: bool,
     config: ClientConfig,
@@ -510,7 +579,9 @@ where
         let extensions = connection.extensions();
         prepared.reuse.publish(extensions);
         extensions.insert(prepared.alpn_policy);
-        extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
+        if connection.is_handshake_confirmed() {
+            extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
+        }
         extensions.insert(prepared.policy_scope);
         if let Some(established) = established {
             extensions.insert(established);

@@ -31,7 +31,11 @@ use rama_net::{
 use rama_tls::client::NegotiatedTlsParameters;
 use tokio::sync::Mutex;
 #[cfg(feature = "quic")]
-use {rama_http_core::h3::transport::Connection as _, rama_net::tls::AlpnPolicy, std::sync::Arc};
+use {
+    rama_http_core::h3::transport::Connection as _,
+    rama_net::tls::{AlpnPolicy, EarlyDataPermit, ForbidEarlyData},
+    std::sync::Arc,
+};
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
@@ -492,10 +496,16 @@ where
         }
         #[cfg(feature = "quic")]
         HttpTransport::Quic(quic) => {
-            quic.connection
-                .handshake_confirmed()
-                .await
-                .into_opaque_error()?;
+            let early = quic.config.early_requests
+                && input.extensions().contains::<EarlyDataPermit>()
+                && !input.extensions().contains::<ForbidEarlyData>()
+                && !quic.connection.is_handshake_confirmed();
+            if !early {
+                quic.connection
+                    .handshake_confirmed()
+                    .await
+                    .into_opaque_error()?;
+            }
             let alpn = quic
                 .connection
                 .extensions()
@@ -512,7 +522,7 @@ where
                         .copied()
                 })
                 .unwrap_or_default();
-            if !policy.accepts(&quic.config.application_protocol, alpn.as_ref()) {
+            if !early && !policy.accepts(&quic.config.application_protocol, alpn.as_ref()) {
                 return Err(BoxError::from_static_str(
                     "QUIC transport did not negotiate the configured HTTP/3 ALPN",
                 )
@@ -521,7 +531,7 @@ where
             // A rejected override must not mutate a transport already used by
             // another HTTP/3 service.
             quic.connection.extensions().insert(policy);
-            let verify_peer = alpn.is_none();
+            let verify_peer = !early && alpn.is_none();
             input
                 .extensions()
                 .insert(TargetHttpVersion(Version::HTTP_3));

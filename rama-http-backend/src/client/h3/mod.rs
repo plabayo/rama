@@ -32,7 +32,7 @@ use rama_net::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectionErrorKind::InvalidInput,
         ConnectorService, EstablishedClientConnection,
     },
-    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
+    tls::{AlpnPolicy, ApplicationProtocol, EarlyDataPermit, ForbidEarlyData, TlsAlpn},
 };
 use rama_quic::{
     Endpoint, NegotiatedTlsParameters, TransportConfig,
@@ -127,8 +127,10 @@ impl<E> Http3Connector<E> {
         let tls = offering(quic.tls_config().clone(), &config.application_protocol);
         let coalescing = quic
             .clone()
-            .with_tls_config(tls.clone().with_store_server_cert_chain(true));
+            .with_tls_config(tls.clone().with_store_server_cert_chain(true))
+            .with_early_data(false);
         quic.set_tls_config(tls);
+        quic.set_early_data(config.early_requests);
         Ok(Self {
             quic,
             coalescing,
@@ -356,6 +358,15 @@ where
             input,
             conn: connection,
         } = quic.serve(input).await?;
+        let early = h3_config.early_requests
+            && input.extensions().contains::<EarlyDataPermit>()
+            && !input.extensions().contains::<ForbidEarlyData>()
+            && !connection.is_handshake_confirmed();
+        if !early {
+            connection.handshake_confirmed().await.map_err(|error| {
+                ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+            })?;
+        }
         let policy = connection
             .extensions()
             .get_ref::<AlpnPolicy>()
@@ -365,7 +376,7 @@ where
             .extensions()
             .get_ref::<NegotiatedTlsParameters>()
             .and_then(|tls| tls.application_layer_protocol.as_ref());
-        if !policy.accepts(&h3_config.application_protocol, negotiated) {
+        if !early && !policy.accepts(&h3_config.application_protocol, negotiated) {
             connection.close(0u32, b"HTTP/3 ALPN required");
             return Err(ConnectionError::application(
                 BoxError::from_static_str(
@@ -378,8 +389,9 @@ where
             .extensions()
             .get_ref::<TlsServerAuthentication>()
             .and_then(|authentication| authentication.0.clone());
-        if let Some(aliases) =
-            PendingAliases::new(&input, quic.tls_config_for(&input), authenticated.as_ref())
+        if !early
+            && let Some(aliases) =
+                PendingAliases::new(&input, quic.tls_config_for(&input), authenticated.as_ref())
         {
             aliases.verify(&connection, self.tls_provider().as_ref());
         }

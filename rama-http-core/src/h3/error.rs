@@ -28,6 +28,7 @@ enum Source {
     /// This endpoint closed the connection underneath the stream.
     LocalConnectionLost,
     EarlyDataRejected,
+    EarlyRequestRejected,
 }
 
 impl Error {
@@ -56,7 +57,26 @@ impl Error {
     /// Its requests were not processed, so they can be resent on a new connection.
     #[must_use]
     pub const fn is_early_data_rejected(self) -> bool {
-        matches!(self.source, Source::EarlyDataRejected)
+        matches!(
+            self.source,
+            Source::EarlyDataRejected | Source::EarlyRequestRejected
+        )
+    }
+
+    /// TLS rejected the early stream carrying this particular request.
+    ///
+    /// Unlike connection-wide rejection, this requires the request sender to
+    /// have observed its own stream using early keys.
+    #[must_use]
+    pub const fn is_early_request_rejected(self) -> bool {
+        matches!(self.source, Source::EarlyRequestRejected)
+    }
+
+    pub(crate) fn for_early_request(mut self) -> Self {
+        if self.is_early_data_rejected() {
+            self.source = Source::EarlyRequestRejected;
+        }
+        self
     }
 
     /// Construct an error affecting one request or push stream.
@@ -178,7 +198,10 @@ impl Error {
     pub fn is_remote_failure(self) -> bool {
         !(matches!(
             self.source,
-            Source::Local | Source::LocalConnectionLost | Source::EarlyDataRejected
+            Source::Local
+                | Source::LocalConnectionLost
+                | Source::EarlyDataRejected
+                | Source::EarlyRequestRejected
         ) || self.is_clean_close()
             || (self.scope == ErrorScope::Stream
                 && matches!(self.code(), Code::H3_REQUEST_REJECTED | Code::H3_NO_ERROR)))

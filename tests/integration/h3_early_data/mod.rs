@@ -1,6 +1,9 @@
 //! TLS session resumption and HTTP/3 early data, end to end over loopback UDP.
 
+mod admission;
+mod alpn;
 mod gate;
+mod pooled;
 
 use std::{
     future::{Future, poll_fn},
@@ -13,7 +16,10 @@ use std::{
 use rama::http::{Body, Method, Request, Response, body::util::BodyExt as _};
 use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor};
 use rama_http_core::h3::{Error, client, connection::Config, server, transport::Reversed};
-use rama_net::address::SocketAddress;
+use rama_net::{
+    address::SocketAddress,
+    tls::{EarlyDataPermit, ForbidEarlyData},
+};
 use rama_quic::{
     ClientConfig, Connecting, Connection, Endpoint, ServerConfig, TransportConfig,
     tls::{QuicClientConfigProvider as _, QuicServerConfigProvider as _, TlsOptions},
@@ -100,6 +106,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new(provider: Provider, version: Version) -> Self {
+        Self::with_request_credit(provider, version, 100).await
+    }
+
+    async fn with_request_credit(provider: Provider, version: Version, credit: u32) -> Self {
         println!("h3 early data: provider={provider:?} version={version:?}");
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let rotated = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
@@ -118,6 +128,7 @@ impl Fixture {
         Config::default()
             .configure_transport(&mut transport)
             .unwrap();
+        transport.set_max_concurrent_bidi_streams(credit);
         let transport = Arc::new(transport);
         let (mut client_config, mut server_config) =
             provider.configurations(&client_tls, &server_tls);
@@ -234,11 +245,16 @@ fn resumed(connection: &Connection) -> Option<bool> {
 }
 
 fn request(method: Method, body: &'static str) -> Request<Body> {
-    Request::builder()
+    let request = Request::builder()
         .method(method)
         .uri("https://localhost/early")
         .body(Body::from(body))
-        .unwrap()
+        .unwrap();
+    // Low-level fixture owns rejection assertions rather than automatic recovery.
+    request
+        .extensions()
+        .insert(EarlyDataPermit::with_recovery_owner());
+    request
 }
 
 /// Send one request from a client task and collect its response body.
@@ -406,6 +422,17 @@ async fn replay_unsafe_requests_wait_for_handshake_confirmation() {
         for request in [
             || request(Method::POST, ""),
             || request(Method::GET, "payload"),
+            || {
+                Request::builder()
+                    .uri("https://localhost/early")
+                    .body(Body::empty())
+                    .unwrap()
+            },
+            || {
+                let request = request(Method::GET, "");
+                request.extensions().insert(ForbidEarlyData::default());
+                request
+            },
         ] {
             timeout(LIMIT, unsafe_request_waits(provider, request()))
                 .await
@@ -458,7 +485,7 @@ async fn early_rejection(provider: Provider) {
     let _accepting = Task::spawn(async move { _ = incoming.await });
 
     let error = response.join().await.unwrap_err();
-    assert!(error.is_early_data_rejected(), "{error:?}");
+    assert!(error.is_early_request_rejected(), "{error:?}");
     assert_eq!(client.early_data_accepted(), Some(false));
     // The full handshake's chain replaces the one the rejected ticket remembered.
     let tls = client
@@ -544,6 +571,7 @@ async fn rejection_race(provider: Provider) {
     }
     let error = second.join().await.unwrap_err();
     assert!(error.is_early_data_rejected(), "{error:?}");
+    assert!(!error.is_early_request_rejected(), "{error:?}");
 }
 
 /// Test tasks cannot outlive a failed case or hide its panic.

@@ -71,14 +71,19 @@ pub struct Config {
     /// ALPN validation for inbound connections; never inherited by forwarded requests.
     /// Client connections use their connection's ALPN policy instead.
     pub server_alpn_policy: AlpnPolicy,
-    /// Send safe client requests without a body using TLS early keys, before confirmation.
+    /// Allow safe client requests without a body to use TLS early keys.
     ///
-    /// Applies to client connections taken through `Connecting::into_0rtt`; other requests
-    /// still wait for handshake confirmation. Early requests use default peer SETTINGS
-    /// (RFC 9114 section 7.2.4.2). A server rejecting early data fails the connection with
-    /// [`Error::is_early_data_rejected`]: none of its requests were processed. Rama's HTTP/3
-    /// connector always completes the handshake first. Servers ignore this: they always hold
-    /// request dispatch until the client's Finished is verified. Disabled by default.
+    /// Each request also needs an [`EarlyDataPermit`](rama_net::tls::EarlyDataPermit)
+    /// from its recovery owner. [`ForbidEarlyData`](rama_net::tls::ForbidEarlyData)
+    /// always wins. A bare configuration flag leaves ordinary clients handshake-first.
+    /// Early requests use default peer SETTINGS (RFC 9114 section 7.2.4.2).
+    /// A TLS rejection retires this connection; requests whose streams actually
+    /// opened early receive [`Error::is_early_request_rejected`]. Responses and
+    /// normal pool admissions still wait for authentication and ALPN verification.
+    /// The opt-in also allows resumed ClientHellos to offer early data when a
+    /// request ultimately waits for confirmation. Leave it off for exact TLS
+    /// fingerprint emulation; compiled captured TLS profiles take precedence
+    /// and disable early data. Disabled by default. Servers ignore this option.
     pub early_requests: bool,
     /// Optional independent budgets for wire observation; disabled by default.
     pub observation: Option<Box<ObservationLimits>>,

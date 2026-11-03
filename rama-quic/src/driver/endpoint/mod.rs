@@ -76,6 +76,11 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    /// Supervise connector verification alongside this endpoint's drivers.
+    pub(crate) fn spawn_connection_task(&self, future: impl Future<Output = ()> + Send + 'static) {
+        self.inner.shared.lifecycle.spawn(Box::pin(future));
+    }
+
     /// Configure an endpoint whose drivers run through `exec` on the current Tokio runtime.
     ///
     /// An executor carrying a graceful guard ties the endpoint to the application's

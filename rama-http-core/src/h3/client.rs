@@ -4,23 +4,26 @@ use std::{
     marker::PhantomData,
     mem,
     pin::pin,
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use parking_lot::Mutex;
 use rama_core::{
     error::BoxError,
-    extensions::{Extension, Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef, Ingress},
     rt::Executor,
 };
 use rama_http::io::upgrade as http_upgrade;
 use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
-    header::trailer::ForbiddenTrailers,
+    header::{self, trailer::ForbiddenTrailers},
     proto::{
         RequestHeaders,
-        ext::{HttpDatagrams, Protocol},
+        ext::{HttpDatagrams, Protocol, early_data::EarlyDataAttempt},
         h1::ext::informational::OnInformational,
         h3::{Code, FrameType, Settings, control::ClientControlFrame},
     },
@@ -29,6 +32,7 @@ use rama_net::client::{
     ConnectionError, ConnectionErrorKind,
     pool::{ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy},
 };
+use rama_net::tls::{EarlyDataPermit, ForbidEarlyData};
 use rama_quic_proto::ConnectionError as QuicConnectionError;
 use rama_quic_proto::{Dir, Side};
 use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
@@ -70,6 +74,7 @@ pub(crate) struct ConnectionLifetime<C: transport::Connection> {
     admission: Arc<Semaphore>,
     max_requests: usize,
     admission_changed: ChangeSignal,
+    early_admission: AtomicBool,
 }
 
 impl<C: transport::Connection> Drop for ConnectionLifetime<C> {
@@ -147,6 +152,7 @@ pub fn handshake<B, C: transport::Connection>(
                 admission,
                 max_requests,
                 admission_changed: ChangeSignal::new(),
+                early_admission: AtomicBool::new(true),
             }),
             connection,
             shared,
@@ -273,6 +279,7 @@ impl<B, C: transport::Connection> SendRequest<B, C> {
                 self.shared
                     .rejection(None)
                     .or_else(|| self.early_rejection())
+                    .or_else(|| self.shared.error())
                     .unwrap_or_else(|| Error::from_transport(&error))
             })?;
         if let Some(error) = self.early_rejection() {
@@ -313,8 +320,13 @@ impl<C: transport::Connection> Drop for RequestPermit<C> {
 
 struct ReservedRequest<C: transport::Connection> {
     // Boxed: `send_request` takes reservations without requiring `ReserveBiStreams`.
-    stream: Mutex<Option<BoxedBiReservation<C::SendStream, C::RecvStream>>>,
+    stream: Mutex<Option<ReservedStream<C>>>,
     permit: RequestPermit<C>,
+}
+
+enum ReservedStream<C: transport::Connection> {
+    Confirmed(BoxedBiReservation<C::SendStream, C::RecvStream>),
+    Early,
 }
 
 /// A checkout publishes only a weak ticket: dropping its owning pool handout
@@ -341,7 +353,7 @@ fn admission_error(error: Error) -> BoxError {
 impl<C: transport::ReserveBiStreams> ConnectionAdmissionPolicy for RequestAdmission<C> {
     fn try_acquire(
         &self,
-        _input: &Extensions,
+        input: &Extensions,
     ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
         let lifetime = self.lifetime.upgrade().ok_or_else(|| {
             admission_error(Error::stream(
@@ -363,6 +375,27 @@ impl<C: transport::ReserveBiStreams> ConnectionAdmissionPolicy for RequestAdmiss
         if lifetime.admission.available_permits() == 0 {
             return Ok(None);
         }
+        if lifetime.shared.early_attempt()
+            && lifetime.connection.early_data() == EarlyData::Pending
+            && input.contains::<EarlyDataPermit>()
+            && !input.contains::<ForbidEarlyData>()
+        {
+            let Ok(permit) = lifetime.admission.clone().try_acquire_owned() else {
+                return Ok(None);
+            };
+            if !lifetime.early_admission.swap(false, Ordering::AcqRel) {
+                return Ok(None);
+            }
+            let ticket = Arc::new(ReservedRequest {
+                stream: Mutex::new(Some(ReservedStream::Early)),
+                permit: RequestPermit::new(permit, &lifetime),
+            });
+            let binding = RequestReservation(Arc::downgrade(&ticket));
+            return Ok(Some(ConnectionAdmissionLease::new(ticket, binding)));
+        }
+        if !lifetime.connection.is_handshake_confirmed() {
+            return Ok(None);
+        }
         let Some(stream) = lifetime.connection.try_reserve_bi().map_err(|error| {
             let kind = if matches!(error, QuicConnectionError::TimedOut) {
                 ConnectionErrorKind::Timeout
@@ -379,7 +412,9 @@ impl<C: transport::ReserveBiStreams> ConnectionAdmissionPolicy for RequestAdmiss
             return Ok(None);
         };
         let ticket = Arc::new(ReservedRequest {
-            stream: Mutex::new(Some(BoxedBiReservation::new(stream))),
+            stream: Mutex::new(Some(ReservedStream::Confirmed(BoxedBiReservation::new(
+                stream,
+            )))),
             permit: RequestPermit::new(permit, &lifetime),
         });
         let binding = RequestReservation(Arc::downgrade(&ticket));
@@ -406,10 +441,12 @@ impl<C: transport::ReserveBiStreams> ConnectionAdmissionPolicy for RequestAdmiss
 
     // Requests, their bodies and upgraded tunnels hold a permit until they end. A closed,
     // draining or failed connection admits nothing more, so it is left for the pool to
-    // retire: busy only while its subscribers can still learn of its work ending.
+    // retire. An early connection also owns its pending verification after cancellation:
+    // treating it as idle would let a capacity waiter evict it and dial early again.
     fn in_use(&self) -> bool {
         self.lifetime.upgrade().is_some_and(|lifetime| {
-            lifetime.admission.available_permits() < lifetime.max_requests
+            (lifetime.admission.available_permits() < lifetime.max_requests
+                || !lifetime.connection.is_handshake_confirmed())
                 && lifetime.connection.close_reason().is_none()
                 && lifetime.shared.rejection(None).is_none()
                 && lifetime.shared.error().is_none()
@@ -454,6 +491,10 @@ where
     fn sends_early(&self, request: &Request<B>) -> bool {
         self.shared.early_attempt()
             && self.connection.early_data() == EarlyData::Pending
+            && request.extensions().contains::<EarlyDataPermit>()
+            && !request.extensions().contains::<ForbidEarlyData>()
+            && (!request.extensions().contains::<Ingress<Extensions>>()
+                || request.headers().contains_key(header::EARLY_DATA))
             && request.method().is_safe()
             && request.body().is_end_stream()
             && !request.extensions().contains::<Protocol>()
@@ -461,8 +502,29 @@ where
 
     async fn send_request_inner<const OBSERVE: bool, F>(
         &mut self,
+        request: Request<B>,
+        on_stream: F,
+    ) -> Result<Response<crate::body::Incoming>, Error>
+    where
+        F: FnOnce(PriorityHandle) + Send,
+    {
+        let mut sent_early = false;
+        self.send_request_unclassified::<OBSERVE, _>(request, on_stream, &mut sent_early)
+            .await
+            .map_err(|error| {
+                if sent_early {
+                    error.for_early_request()
+                } else {
+                    error
+                }
+            })
+    }
+
+    async fn send_request_unclassified<const OBSERVE: bool, F>(
+        &mut self,
         mut request: Request<B>,
         on_stream: F,
+        sent_early: &mut bool,
     ) -> Result<Response<crate::body::Incoming>, Error>
     where
         F: FnOnce(PriorityHandle) + Send,
@@ -504,9 +566,15 @@ where
         let (send, recv, permit): (_, _, Arc<dyn Send + Sync>) = if let Some((stream, ticket)) =
             reserved
         {
-            let (send, recv) = stream
-                .open()
-                .map_err(|error| Error::from_transport(&error))?;
+            let (send, recv) = match stream {
+                ReservedStream::Confirmed(stream) => stream.open(),
+                ReservedStream::Early => tokio::select! {
+                    biased;
+                    error = self.shared.rejected(None) => return Err(error),
+                    streams = self.connection.open_bi() => streams,
+                },
+            }
+            .map_err(|error| Error::from_transport(&error))?;
             (send, recv, ticket)
         } else {
             let permit = tokio::select! {
@@ -527,6 +595,8 @@ where
         {
             return Err(error);
         }
+        *sent_early = recv.is_0rtt();
+        let early_attempt = (*sent_early).then(|| EarlyDataAttempt::sent_early(&request));
         let id = u64::from(send.id());
         let mut reader = Reader::new(recv, self.shared.clone(), id);
         reader.abort = Some(send.boxed_handle());
@@ -690,6 +760,11 @@ where
             }
         }
         let mut upload = Upload(Some(task));
+        if *sent_early {
+            // Early output is replayable; application-visible responses still
+            // require successful authentication and ALPN agreement.
+            self.ready().await?;
+        }
         loop {
             let fields = {
                 let head = reader.headers();
@@ -724,6 +799,9 @@ where
             response
                 .extensions()
                 .insert(super::PriorityHandle::new(&self.shared, id, false));
+            if let Some(attempt) = early_attempt {
+                response.extensions().insert(attempt);
+            }
             if response.status().is_informational() {
                 if let Some(callback) = &informational {
                     callback.call(response);

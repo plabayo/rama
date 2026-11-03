@@ -999,6 +999,13 @@ impl Connection {
     /// Dropping an unused reservation returns its credit without emitting a reset.
     /// Ordinary stream opens cannot consume reserved credit.
     pub fn try_reserve_bi(&self) -> Result<Option<BiStreamReservation>, ConnectionError> {
+        if let Some(verification) = self.extensions().get_ref::<ConnectorVerification>() {
+            match verification.result.lock().as_ref() {
+                None => return Ok(None),
+                Some(Err(error)) => return Err(error.clone()),
+                Some(Ok(())) => (),
+            }
+        }
         let mut state = self.0.state.lock();
         if let Some(error) = &state.error {
             return Err(error.clone());
@@ -1171,6 +1178,16 @@ impl Connection {
     #[must_use]
     pub fn is_handshake_confirmed(&self) -> bool {
         self.0.state.lock().handshake_confirmed
+            && self
+                .extensions()
+                .get_ref::<ConnectorVerification>()
+                .is_none_or(|verification| {
+                    verification
+                        .result
+                        .lock()
+                        .as_ref()
+                        .is_some_and(Result::is_ok)
+                })
     }
 
     /// Wait for the handshake to be confirmed.
@@ -1184,7 +1201,34 @@ impl Connection {
     /// At this point, the server has either accepted our authentication,
     /// or, if client authentication is not required, accepted our lack of authentication.
     pub async fn handshake_confirmed(&self) -> Result<(), ConnectionError> {
-        self.handshake_confirmed_inner().await
+        self.handshake_confirmed_inner().await?;
+        if let Some(verification) = self.extensions().get_arc::<ConnectorVerification>() {
+            loop {
+                let completed = verification.completed.notified();
+                if let Some(result) = verification.result.lock().clone() {
+                    return result;
+                }
+                tokio::select! {
+                    () = completed => (),
+                    error = self.closed() => return Err(error),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Installed before an early connection escapes the connector. Publication
+    // and connector ALPN verification complete before normal admission wakes.
+    pub(crate) fn begin_connector_verification(&self) {
+        self.extensions().insert(ConnectorVerification::default());
+    }
+
+    pub(crate) fn finish_connector_verification(&self, result: Result<(), ConnectionError>) {
+        if let Some(verification) = self.extensions().get_ref::<ConnectorVerification>() {
+            *verification.result.lock() = Some(result);
+            verification.completed.notify_waiters();
+            self.0.shared.notify_stream_budget([BudgetChange::OTHER; 2]);
+        }
     }
 
     /// Tests: hold or release the server's HANDSHAKE_DONE (see the engine seam).
@@ -1581,7 +1625,7 @@ impl Connection {
             .map(|cid| cid.to_vec())
     }
 
-    async fn handshake_confirmed_inner(&self) -> Result<(), ConnectionError> {
+    pub(crate) async fn handshake_confirmed_inner(&self) -> Result<(), ConnectionError> {
         {
             let conn = self.0.state.lock();
             if let Some(error) = conn.error.as_ref() {
@@ -2791,6 +2835,12 @@ impl ConnectionInner {
     }
 }
 
+#[derive(Debug, Default, Extension)]
+struct ConnectorVerification {
+    result: Mutex<Option<Result<(), ConnectionError>>>,
+    completed: Notify,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Shared {
     handshake_confirmed: Notify,
@@ -3798,6 +3848,9 @@ impl State {
                 Event::HandshakeConfirmed => {
                     self.handshake_confirmed = true;
                     shared.handshake_confirmed.notify_waiters();
+                    for pending in &mut self.stream_budget_changed {
+                        pending.merge(BudgetChange::OTHER);
+                    }
                 }
                 Event::ConnectionLost { reason } => {
                     self.terminate(reason, shared);
