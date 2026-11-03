@@ -18,6 +18,12 @@ impl ErrorWithBacktrace {
     }
 }
 
+impl ErrorWithBacktrace {
+    pub(super) fn source_ref(&self) -> &(dyn core::error::Error + 'static) {
+        self.source.as_ref()
+    }
+}
+
 impl fmt::Display for ErrorWithBacktrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !f.alternate() {

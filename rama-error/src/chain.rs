@@ -9,9 +9,11 @@ pub(crate) const DEFAULT_MAX_DEPTH: usize = 64;
 /// not deduplicated. This iterator does not allocate.
 ///
 /// Sources are requested only when advancing past the current error, so an early
-/// match does not inspect that error's source. Only [`Error::source`] is followed;
-/// use [`error_chain_with`] for errors that expose causes through another API,
-/// or [`error_chain_with_limit`] to choose another traversal bound.
+/// match does not inspect that error's source. Each step follows [`error_source`],
+/// which is [`Error::source`] except that it also visits the error a
+/// `std::io::Error` wraps. Use [`error_chain_with`] for errors that expose causes
+/// through another API, or [`error_chain_with_limit`] to choose another
+/// traversal bound.
 pub fn error_chain<'a>(
     error: &'a (dyn Error + 'static),
 ) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
@@ -26,14 +28,39 @@ pub fn error_chain_with_limit<'a>(
     error: &'a (dyn Error + 'static),
     max_depth: usize,
 ) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
-    error_chain_with_limit_and(error, max_depth, |error| error.source())
+    error_chain_with_limit_and(error, max_depth, error_source)
+}
+
+/// The error that comes after `error` in its chain.
+///
+/// This is [`Error::source`], except for a `std::io::Error` (with the `std`
+/// feature): its `source` reports the source of the error it wraps, skipping
+/// that error, so this returns the wrapped error itself instead.
+///
+/// Use it as the fallback successor of an [`error_chain_with`] callback.
+///
+/// ```
+/// # #[cfg(feature = "std")] {
+/// use rama_error::{BoxError, BoxErrorExt, error_source};
+///
+/// let io = std::io::Error::other(BoxError::from_static_str("inner"));
+/// let next = error_source(&io).expect("the wrapped error");
+/// assert_eq!(next.to_string(), "inner");
+/// # }
+/// ```
+pub fn error_source<'a>(error: &'a (dyn Error + 'static)) -> Option<&'a (dyn Error + 'static)> {
+    #[cfg(feature = "std")]
+    if let Some(io) = error.downcast_ref::<std::io::Error>() {
+        return io.get_ref().map(|inner| inner as _);
+    }
+    error.source()
 }
 
 /// Iterate over an error and custom successors, visiting at most 64 errors.
 ///
 /// The `next_source` callback selects one successor per error, replacing
-/// [`Error::source`] traversal. Return `None` to end the chain, or explicitly call
-/// [`Error::source`] in the callback when it should provide the fallback successor.
+/// [`error_source`] traversal. Return `None` to end the chain, or explicitly call
+/// [`error_source`] in the callback when it should provide the fallback successor.
 ///
 /// The callback runs only when another item is requested within the limit and
 /// stops once the chain ends. The iterator does not allocate or deduplicate

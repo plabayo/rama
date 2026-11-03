@@ -48,6 +48,15 @@
 //! errors even for cyclic chains. Use [`error_chain_with_limit`] to change that
 //! bound, or [`error_chain_with`] to
 //! select causes exposed through APIs other than [`core::error::Error::source`].
+//! Each step follows [`error_source`], which also visits the error a
+//! `std::io::Error` wraps: its own `source` skips that error.
+//!
+//! [`CauseExt`] looks up causes by type on that same chain, e.g.
+//! `error.has_cause::<Elapsed>()` or `error.find_cause::<io::Error>()`.
+//!
+//! [`ErrorList`] reports several failures as one error, such as every attempt
+//! of a race. Its primary failure is its source; [`CauseExt`] searches all of
+//! them. [`CollectErrors::collect_errors`] gathers every `Err` of an iterator.
 //!
 //! # Error extension
 //!
@@ -62,6 +71,10 @@
 //! - lazy variants to avoid computing context unless needed via
 //!   [`ErrorExt::with_context`] and [`ErrorExt::with_context_field`]
 //! - a captured backtrace via [`ErrorExt::backtrace`]
+//!
+//! The context methods and [`BoxErrorExt::from_static_str`] record the caller's
+//! source location. It is shown in alternate (`{:#}`) and debug output only, so
+//! single-line log output does not change.
 //!
 //! Context is stored as fields and rendered in a log friendly key value style.
 //! Values are always quoted and escaped to avoid ambiguity in logs, even if the
@@ -178,8 +191,14 @@ pub type BoxError = self::std::Box<dyn StdError + Send + Sync + 'static>;
 
 mod chain;
 pub use chain::{
-    error_chain, error_chain_with, error_chain_with_limit, error_chain_with_limit_and,
+    error_chain, error_chain_with, error_chain_with_limit, error_chain_with_limit_and, error_source,
 };
+
+mod cause;
+pub use cause::CauseExt;
+
+mod list;
+pub use list::{CollectErrors, ErrorList};
 
 mod ext;
 #[cfg(target_has_atomic = "ptr")]

@@ -1,22 +1,29 @@
-use core::fmt::{self, Write as _};
+use core::{
+    fmt::{self, Write as _},
+    panic::Location,
+};
 
+use super::opaque::StaticStrError;
 use crate::{
     BoxError,
     chain::DEFAULT_MAX_DEPTH,
-    error_chain_with_limit,
+    error_chain_with_limit, error_source,
     std::{Box, String},
 };
 
-pub(super) struct ErrorWithContext {
+pub(crate) struct ErrorWithContext {
     source: BoxError,
     fields: Option<crate::std::Vec<ContextField>>,
+    pub(crate) location: &'static Location<'static>,
 }
 
 impl ErrorWithContext {
+    #[track_caller]
     pub(super) fn new(source: BoxError) -> Self {
         Self {
             source,
             fields: None,
+            location: Location::caller(),
         }
     }
 
@@ -66,12 +73,13 @@ struct ContextField {
     value: BoxContextValue,
 }
 
+/// Debug output of a context value, with control characters escaped.
 struct DisplayAsDebug<'a>(&'a dyn fmt::Display);
 
 impl<'a> fmt::Debug for DisplayAsDebug<'a> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self.0, f)
+        write_escaped_display(f, self.0)
     }
 }
 
@@ -109,6 +117,8 @@ impl<T: fmt::Debug + Send + Sync + 'static> fmt::Display for HexContextValue<T> 
 
 struct LogfmtEscaper<'a, 'b> {
     f: &'a mut fmt::Formatter<'b>,
+    /// Escape the logfmt structural characters too, not only control characters.
+    quoted: bool,
 }
 
 impl<'a, 'b> fmt::Write for LogfmtEscaper<'a, 'b> {
@@ -122,7 +132,7 @@ impl<'a, 'b> fmt::Write for LogfmtEscaper<'a, 'b> {
         loop {
             let mut found = None;
             for (i, ch) in rest.char_indices() {
-                if needs_escape(ch) {
+                if needs_escape(ch, self.quoted) {
                     found = Some((i, ch));
                     break;
                 }
@@ -143,11 +153,11 @@ impl<'a, 'b> fmt::Write for LogfmtEscaper<'a, 'b> {
 }
 
 #[inline]
-fn needs_escape(ch: char) -> bool {
+fn needs_escape(ch: char, quoted: bool) -> bool {
     // Backslash and quote are the logfmt structural escapes; everything that
     // is a Unicode control (C0, DEL, C1) is escaped to avoid terminal-escape
     // injection and to keep log records single-line and printable.
-    matches!(ch, '\\' | '"') || ch.is_control()
+    (quoted && matches!(ch, '\\' | '"')) || ch.is_control()
 }
 
 fn write_escaped(f: &mut fmt::Formatter<'_>, ch: char) -> fmt::Result {
@@ -167,10 +177,18 @@ fn write_logfmt_display_value_always_quoted(
 ) -> fmt::Result {
     f.write_str("\"")?;
     {
-        let mut esc = LogfmtEscaper { f };
+        let mut esc = LogfmtEscaper { f, quoted: true };
         write!(&mut esc, "{v}")?;
     }
     f.write_str("\"")
+}
+
+/// Write `v` with control characters escaped, so it stays on one printable line.
+pub(crate) fn write_escaped_display(
+    f: &mut fmt::Formatter<'_>,
+    v: &dyn fmt::Display,
+) -> fmt::Result {
+    write!(LogfmtEscaper { f, quoted: false }, "{v}")
 }
 
 impl fmt::Display for ContextField {
@@ -204,6 +222,7 @@ impl fmt::Debug for ErrorWithContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut ds = f.debug_struct("ErrorWithContext");
         ds.field("source", &self.source);
+        ds.field("location", &DisplayAsDebug(self.location));
 
         if let Some(fields) = self.fields.as_ref().filter(|v| !v.is_empty()) {
             ds.field("fields", &DebugFields(fields.as_slice()));
@@ -216,7 +235,7 @@ impl fmt::Debug for ErrorWithContext {
 }
 
 impl ErrorWithContext {
-    fn fmt_inline_fields(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    pub(crate) fn fmt_inline_fields(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(fields) = self.fields.as_ref().filter(|v| !v.is_empty()) {
             f.write_str(" | ")?;
             let mut fields_iter = fields.iter();
@@ -240,6 +259,16 @@ impl fmt::Display for ErrorWithContext {
         }
 
         writeln!(f, "{}", self.source)?;
+        match location_of(self.source.as_ref()) {
+            Some(origin)
+                if (origin.file(), origin.line())
+                    != (self.location.file(), self.location.line()) =>
+            {
+                writeln!(f, "  at {origin}")?;
+                writeln!(f, "  context added at {}", self.location)?;
+            }
+            _ => writeln!(f, "  at {}", self.location)?,
+        }
         if let Some(fields) = self.fields.as_ref().filter(|v| !v.is_empty()) {
             writeln!(f, "Context:")?;
             for field in fields {
@@ -249,7 +278,7 @@ impl fmt::Display for ErrorWithContext {
 
         // Cap the cause-chain walk so a malformed Error impl that returns a
         // cycle from .source() cannot produce an unbounded loop here.
-        if let Some(source) = self.source.as_ref().source() {
+        if let Some(source) = error_source(self.source.as_ref()) {
             writeln!(f, "Caused by:")?;
             for (idx, err) in error_chain_with_limit(source, DEFAULT_MAX_DEPTH + 1).enumerate() {
                 if idx == DEFAULT_MAX_DEPTH {
@@ -257,10 +286,31 @@ impl fmt::Display for ErrorWithContext {
                     break;
                 }
                 writeln!(f, "  {idx}: {err}")?;
+                if let Some(location) = location_of(err) {
+                    writeln!(f, "     at {location}")?;
+                }
             }
         }
 
         Ok(())
+    }
+}
+
+/// Where an error made by this crate was created.
+pub(crate) fn location_of(
+    error: &(dyn crate::StdError + 'static),
+) -> Option<&'static Location<'static>> {
+    if let Some(error) = error.downcast_ref::<StaticStrError>() {
+        return Some(error.location);
+    }
+    error
+        .downcast_ref::<ErrorWithContext>()
+        .map(|error| error.location)
+}
+
+impl ErrorWithContext {
+    pub(crate) fn source_ref(&self) -> &(dyn crate::StdError + 'static) {
+        self.source.as_ref()
     }
 }
 
@@ -274,7 +324,7 @@ impl crate::StdError for ErrorWithContext {
 mod tests {
     use super::*;
 
-    use crate::{BoxErrorExt, ErrorExt, StdError};
+    use crate::{BoxErrorExt, ErrorContext as _, ErrorExt, StdError, extra::OpaqueError};
 
     #[derive(Debug, Clone)]
     struct BoomError;
@@ -286,6 +336,118 @@ mod tests {
     }
 
     impl core::error::Error for BoomError {}
+
+    fn line_of(error: &BoxError) -> u32 {
+        let location = location_of(error.as_ref()).expect("created by this crate");
+        assert_eq!(
+            location.file(),
+            file!(),
+            "the caller's file, not this crate's internals"
+        );
+        location.line()
+    }
+
+    #[test]
+    fn location_is_the_callers_line() {
+        let (error, line) = (BoxError::from_static_str("x"), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (BoomError.context("ctx"), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (BoomError.with_context_field("k", || "v"), line!());
+        assert_eq!(line_of(&error), line);
+
+        let res: Result<(), BoomError> = Err(BoomError);
+        let (error, line) = (res.context_debug_field("k", 1).unwrap_err(), line!());
+        assert_eq!(line_of(&error), line);
+
+        let res: Result<(), BoomError> = Err(BoomError);
+        let (error, line) = (res.with_context(|| "lazy").unwrap_err(), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (None::<u8>.context("missing").unwrap_err(), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (None::<u8>.into_box_error().unwrap_err(), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (OpaqueError::from_static_str("x").into_box_error(), line!());
+        assert_eq!(line_of(&error), line);
+    }
+
+    #[test]
+    fn adding_context_again_keeps_the_first_location() {
+        let (error, line) = (BoomError.context("a"), line!());
+        let error = error.context("b");
+        assert_eq!(line_of(&error), line);
+    }
+
+    #[test]
+    fn location_shows_only_in_alternate_and_debug_output() {
+        let (error, line) = (BoomError.context_field("k", "v"), line!());
+        let at = format!("{}:{line}:", file!());
+        assert!(!format!("{error}").contains(&at), "{error}");
+        assert!(
+            format!("{error:#}").contains(&format!("  at {at}")),
+            "{error:#}"
+        );
+        assert!(format!("{error:?}").contains(&at), "{error:?}");
+
+        let (error, line) = (BoxError::from_static_str("bare"), line!());
+        let debug = format!("{error:?}");
+        assert!(debug.contains("\"bare\""), "{debug}");
+        assert!(debug.contains(&format!("{}:{line}:", file!())), "{debug}");
+        let (opaque, opaque_line) = (OpaqueError::from_static_str("op"), line!());
+        let debug = format!("{opaque:?}");
+        assert!(
+            debug.contains(&format!("{}:{opaque_line}:", file!())),
+            "{debug}"
+        );
+        assert_eq!(format!("{error}"), "bare");
+        let pretty = format!("{error:#}");
+        assert!(
+            pretty.starts_with(&format!("bare\n  at {}:{line}:", file!())),
+            "{pretty}"
+        );
+    }
+
+    #[test]
+    fn alternate_output_shows_origin_and_context_locations_when_they_differ() {
+        let (error, origin) = (BoxError::from_static_str("bare"), line!());
+        let (error, added) = (error.context_field("k", "v"), line!());
+        let pretty = format!("{error:#}");
+        assert!(
+            pretty.contains(&format!("  at {}:{origin}:", file!())),
+            "{pretty}"
+        );
+        assert!(
+            pretty.contains(&format!("  context added at {}:{added}:", file!())),
+            "{pretty}"
+        );
+
+        let (error, line) = (BoxError::from_static_str("b").context("c"), line!());
+        let pretty = format!("{error:#}");
+        assert!(
+            pretty.contains(&format!("  at {}:{line}:", file!())),
+            "{pretty}"
+        );
+        assert!(!pretty.contains("context added at"), "{pretty}");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn alternate_cause_list_includes_locations_and_io_wrapped_errors() {
+        let (inner, line) = (BoxError::from_static_str("inner"), line!());
+        let io = std::io::Error::other(inner);
+        let error = io.context("outer");
+        let pretty = format!("{error:#}");
+        assert!(pretty.contains("Caused by:\n  0: inner\n"), "{pretty}");
+        assert!(
+            pretty.contains(&format!("     at {}:{line}:", file!())),
+            "{pretty}"
+        );
+    }
 
     #[test]
     fn display_non_alternate_without_fields_is_source_only() {

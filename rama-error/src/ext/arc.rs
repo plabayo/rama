@@ -36,8 +36,9 @@ impl ArcError {
     }
 
     /// Share a static message. One allocation for the sharing, none for the message.
+    #[track_caller]
     pub fn from_static_str(message: &'static str) -> Self {
-        Self::new(StaticStrError(message))
+        Self::new(StaticStrError::new(message))
     }
 
     /// Share an error that is already boxed. The box's value moves into the shared allocation.
@@ -57,6 +58,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error in a context, as [`ErrorExt::context`](crate::ErrorExt::context) does.
     pub fn context<M>(self, value: M) -> Self
     where
@@ -66,6 +68,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error in a keyed context, as
     /// [`ErrorExt::context_field`](crate::ErrorExt::context_field) does.
     pub fn context_field<M>(self, key: &'static str, value: M) -> Self
@@ -76,6 +79,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error in a keyed context from a string-like value, for a value that cannot be
     /// borrowed for the error's lifetime.
     pub fn context_str_field<M>(self, key: &'static str, value: M) -> Self
@@ -86,6 +90,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error in a context, using [`fmt::LowerHex`] as [`fmt::Debug`] and
     /// [`fmt::Display`].
     pub fn context_hex<M>(self, value: M) -> Self
@@ -96,6 +101,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error in a context, using [`fmt::Debug`] as [`fmt::Display`].
     pub fn context_debug<M>(self, value: M) -> Self
     where
@@ -105,6 +111,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error in a keyed context, using [`fmt::LowerHex`] as [`fmt::Debug`] and
     /// [`fmt::Display`].
     pub fn context_hex_field<M>(self, key: &'static str, value: M) -> Self
@@ -115,6 +122,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error in a keyed context, using [`fmt::Debug`] as [`fmt::Display`].
     pub fn context_debug_field<M>(self, key: &'static str, value: M) -> Self
     where
@@ -124,6 +132,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error with a context the caller builds only now.
     pub fn with_context<C, F>(self, cb: F) -> Self
     where
@@ -134,6 +143,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error with a context the caller builds only now, using [`fmt::LowerHex`].
     pub fn with_context_hex<C, F>(self, cb: F) -> Self
     where
@@ -144,6 +154,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error with a context the caller builds only now, using [`fmt::Debug`].
     pub fn with_context_debug<C, F>(self, cb: F) -> Self
     where
@@ -154,6 +165,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error with a keyed context the caller builds only now.
     pub fn with_context_field<C, F>(self, key: &'static str, cb: F) -> Self
     where
@@ -164,6 +176,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error with a keyed string-like context the caller builds only now.
     pub fn with_context_str_field<C, F>(self, key: &'static str, cb: F) -> Self
     where
@@ -174,6 +187,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error with a keyed context the caller builds only now, using [`fmt::LowerHex`].
     pub fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> Self
     where
@@ -184,6 +198,7 @@ impl ArcError {
     }
 
     #[must_use]
+    #[track_caller]
     /// Wrap the error with a keyed context the caller builds only now, using [`fmt::Debug`].
     pub fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> Self
     where
@@ -193,8 +208,8 @@ impl ArcError {
         self.context_debug_field(key, cb())
     }
 
-    /// A cause nobody else holds takes the context in place; a shared one gets a layer of its
-    /// own that keeps the cause, so what other owners see stays as it was.
+    /// Reuse unique context storage; wrap a shared error so other owners keep what they see.
+    #[track_caller]
     fn layer(mut self, apply: impl FnOnce(&mut ErrorWithContext)) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.0)
             && let Some(existing) = inner.downcast_mut::<ErrorWithContext>()
