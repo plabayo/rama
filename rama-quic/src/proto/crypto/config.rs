@@ -1,4 +1,4 @@
-use rama_crypto::digest::sha256;
+use rama_crypto::digest::sha256_slices;
 #[cfg(any(
     feature = "boring",
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
@@ -173,7 +173,7 @@ impl std::error::Error for NoInitialCipherSuite {}
 
 /// Domain-separated application context, retained without allocations in TLS options.
 pub(crate) fn application_context(context: &[u8]) -> [u8; 32] {
-    sha256([b"rama-quic-application-0rtt-v1".as_slice(), context])
+    sha256_slices([b"rama-quic-application-0rtt-v1".as_slice(), context])
 }
 
 /// Bind tickets to stable transport parameters and the application's configuration.
@@ -199,7 +199,7 @@ pub(crate) fn server_early_context(
     };
     let mut encoded = Vec::new();
     stable.write(&mut encoded);
-    sha256([
+    sha256_slices([
         b"rama-quic-server-0rtt-v1".as_slice(),
         &encoded,
         &[u8::from(application.is_some())],

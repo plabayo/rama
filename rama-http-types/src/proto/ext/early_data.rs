@@ -1,4 +1,16 @@
 //! HTTP facts used by early-data recovery policies.
+//!
+//! These extensions do not depend on the Retry layer. A custom client service
+//! can grant an attempt-local [`EarlyDataPermit`](rama_net::tls::EarlyDataPermit),
+//! retain a replayable request, and inspect [`EarlyDataAttempt`] or
+//! [`EarlyDataRejected`] after sending. Recover at most once, with
+//! [`ForbidEarlyData`](rama_net::tls::ForbidEarlyData) retained for subsequent
+//! attempts. Only original requests with actual early-send evidence may recover
+//! HTTP 425; gateways pass that response back to its original owner.
+//!
+//! Custom servers and gateways can inspect [`EarlyDataReceived`] and await its
+//! confirmation without any retry middleware. Inherited `Early-Data` exposure
+//! remains independent of the current connection's handshake.
 
 use crate::{Request, header};
 use rama_core::{

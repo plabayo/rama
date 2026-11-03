@@ -1121,6 +1121,13 @@ impl<T> EasyHttpConnectorBuilder<T, PoolStage> {
     /// ClientHello even for requests that wait. Leave it off for exact TLS
     /// fingerprint emulation; compiled captured profiles disable early data.
     ///
+    /// This helper is optional. Custom recovery middleware can wrap
+    /// [`Self::build_client`] and use [`rama_net::tls::EarlyDataPermit`],
+    /// [`rama_net::tls::ForbidEarlyData`] and the transport facts in
+    /// [`rama_http::proto::ext::early_data`] directly, without Retry or RetryBody.
+    /// The custom owner must isolate each attempt's extensions, retain its
+    /// replayable request, and bound recovery itself.
+    ///
     /// `prepare_body` decides which bodies to collect and the collection bounds.
     /// Use [`rama_http::layer::retry::early_data::prepare_bodyless`] to stream
     /// payloads once, or provide a bounded preparation policy for ordinary payload

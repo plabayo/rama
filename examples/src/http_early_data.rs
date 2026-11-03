@@ -1,4 +1,5 @@
-//! A local HTTP/3 client → gateway → HTTP/1 origin, with 425 owned by the client.
+//! A local HTTP/3 client -> HTTP/3 gateway -> HTTP/1 origin.
+//! The original client owns 425 recovery.
 //!
 //! Run: `cargo run -p rama-examples --bin http_early_data --features http-full,boring`
 //! (`http-full,rustls,ring` also works.) The example generates a temporary identity,
