@@ -4,9 +4,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use rama_core::error::BoxError;
 
-use crate::body::Body;
-use crate::body::http_body_util::Full;
 use crate::body::http_body_util::combinators::Chain;
+use crate::body::http_body_util::{Collected, Full};
+use crate::body::{Body, Frame};
 
 /// Error returned by [`BodyExt::collect`] and [`BodyExt::collect_with`] when a
 /// body could not be fully buffered.
@@ -61,9 +61,22 @@ pub enum CollectErrorKind {
 
 impl CollectError {
     /// A size/time stop that kept the unread remainder.
-    pub(crate) fn stopped(bytes_read: Bytes, remainder: Body, kind: CollectErrorKind) -> Self {
+    pub(crate) fn stopped(
+        mut read: Collected<Bytes>,
+        remainder: Body,
+        kind: CollectErrorKind,
+    ) -> Self {
+        // A body may yield trailers before its final end-of-stream poll. Keep
+        // those frames when a deadline interrupts that last poll as well.
+        let remainder = if let Some(trailers) = read.take_trailers() {
+            let mut retained = Collected::<Bytes>::default();
+            retained.push_frame(Frame::trailers(trailers));
+            Body::new(Chain::new(retained, remainder))
+        } else {
+            remainder
+        };
         Self {
-            bytes_read,
+            bytes_read: read.to_bytes(),
             body_rem: Some(remainder),
             kind,
         }
@@ -127,7 +140,7 @@ impl CollectError {
         matches!(self.kind, CollectErrorKind::Decode(_))
     }
 
-    /// Borrow the unread remainder, if any.
+    /// Borrow the forwardable remainder, including retained trailers, if any.
     ///
     /// `None` for a [`Stream`](CollectErrorKind::Stream) error, where the body
     /// cannot be recovered.
@@ -148,7 +161,7 @@ impl CollectError {
         Some(Body::new(Chain::new(Full::new(self.bytes_read), rem)))
     }
 
-    /// Take just the unread remainder, dropping the bytes already read.
+    /// Take the forwardable remainder and retained trailers, dropping the bytes already read.
     ///
     /// `None` for a [`Stream`](CollectErrorKind::Stream) error.
     #[must_use]
