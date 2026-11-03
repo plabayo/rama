@@ -8,7 +8,10 @@ mod backtrace;
 mod context;
 pub(super) mod opaque;
 
-pub(crate) use context::{ErrorWithContext, location_of, write_escaped_display};
+pub use context::ContextField;
+pub(crate) use context::{
+    ErrorWithContext, context_location_of, location_of, write_escaped_display,
+};
 
 /// The error inside a wrapper whose one-line message is the inner error's (this
 /// crate's wrappers and custom `std::io::Error`s), plus the context that wrapper
@@ -20,7 +23,7 @@ pub(crate) fn transparent_inner<'a>(
     Option<&'a ErrorWithContext>,
 )> {
     if let Some(error) = error.downcast_ref::<ErrorWithContext>() {
-        return Some((error.source_ref(), Some(error)));
+        return error.source_ref().map(|source| (source, Some(error)));
     }
     if let Some(error) = error.downcast_ref::<OpaqueError>() {
         return Some((error.inner(), None));
@@ -379,7 +382,7 @@ macro_rules! forward_none_context {
                 match self {
                     Some(value) => Ok(value),
                     None => Err(BoxError::from_static_str("Option is None")
-                        .context_debug_field("type", core::any::type_name::<Self>())
+                        .context_field("type", core::any::type_name::<Self>())
                         .$name($($carg),*)),
                 }
             }
@@ -396,7 +399,7 @@ impl<T> ErrorContext for Option<T> {
         match self {
             Some(value) => Ok(value),
             None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())),
+                .context_field("type", core::any::type_name::<Self>())),
         }
     }
 
@@ -565,6 +568,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         let mut err = self.into();
 
         if let Some(existing) = err.downcast_mut::<self::context::ErrorWithContext>() {
+            existing.note_context_location();
             existing.insert_value(value);
             return err;
         }
@@ -600,6 +604,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         let mut err = self.into();
 
         if let Some(existing) = err.downcast_mut::<self::context::ErrorWithContext>() {
+            existing.note_context_location();
             existing.insert_key_value(key, value);
             return err;
         }
@@ -617,6 +622,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         let mut err = self.into();
 
         if let Some(existing) = err.downcast_mut::<self::context::ErrorWithContext>() {
+            existing.note_context_location();
             existing.insert_key_value_str(key, value);
             return err;
         }

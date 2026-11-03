@@ -72,6 +72,15 @@
 //!   [`ErrorExt::with_context`] and [`ErrorExt::with_context_field`]
 //! - a captured backtrace via [`ErrorExt::backtrace`]
 //!
+//! Context can be read back: [`CauseExt::context_fields`] lists every
+//! [`ContextField`] on the chain and [`CauseExt::context_value`] finds a value
+//! by key and type.
+//!
+//! A static message from [`BoxErrorExt::from_static_str`] takes later context
+//! in place, the first two fields of any error are stored inline, and
+//! `&'static str` values are not boxed, so the common cases allocate once for
+//! a static message and once more for context on another error.
+//!
 //! The context methods and [`BoxErrorExt::from_static_str`] record the caller's
 //! source location. It is shown in alternate (`{:#}`) and debug output only, so
 //! single-line log output does not change.
@@ -203,7 +212,7 @@ pub use list::{CollectErrors, ErrorList};
 mod ext;
 #[cfg(target_has_atomic = "ptr")]
 pub use ext::arc::ArcError;
-pub use ext::{BoxErrorExt, ErrorContext, ErrorExt};
+pub use ext::{BoxErrorExt, ContextField, ErrorContext, ErrorExt};
 
 pub mod extra {
     //! extra types for edge cases

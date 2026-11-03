@@ -1,9 +1,6 @@
 use core::fmt;
 
-use super::{
-    context::{DebugContextValue, ErrorWithContext, HexContextValue},
-    opaque::StaticStrError,
-};
+use super::context::{DebugContextValue, ErrorWithContext, HexContextValue};
 use crate::{
     BoxError,
     std::{Arc, Box, String},
@@ -38,7 +35,7 @@ impl ArcError {
     /// Share a static message. One allocation for the sharing, none for the message.
     #[track_caller]
     pub fn from_static_str(message: &'static str) -> Self {
-        Self::new(StaticStrError::new(message))
+        Self::new(ErrorWithContext::from_static_str(message))
     }
 
     /// Share an error that is already boxed. The box's value moves into the shared allocation.
@@ -214,6 +211,7 @@ impl ArcError {
         if let Some(inner) = Arc::get_mut(&mut self.0)
             && let Some(existing) = inner.downcast_mut::<ErrorWithContext>()
         {
+            existing.note_context_location();
             apply(existing);
             return self;
         }

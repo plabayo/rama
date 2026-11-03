@@ -1,5 +1,6 @@
-use core::{convert::Infallible, fmt, panic::Location};
+use core::{convert::Infallible, fmt};
 
+use super::context::ErrorWithContext;
 use crate::{BoxError, std::Box};
 
 /// Rarely will you need [`OpaqueError`],
@@ -24,7 +25,7 @@ impl OpaqueError {
     /// some other method that turns it into a BoxError...
     /// Because the std rust library turns this into a `String` otherwise...
     pub fn from_static_str(e: &'static str) -> Self {
-        Self(Box::new(StaticStrError::new(e)))
+        Self(Box::new(ErrorWithContext::from_static_str(e)))
     }
 
     #[inline(always)]
@@ -68,41 +69,3 @@ impl From<Infallible> for OpaqueError {
         match infallible {}
     }
 }
-
-#[derive(Clone, Copy)]
-pub(crate) struct StaticStrError {
-    message: &'static str,
-    pub(crate) location: &'static Location<'static>,
-}
-
-impl StaticStrError {
-    #[inline(always)]
-    #[track_caller]
-    pub(super) fn new(message: &'static str) -> Self {
-        Self {
-            message,
-            location: Location::caller(),
-        }
-    }
-}
-
-impl fmt::Debug for StaticStrError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StaticStrError")
-            .field("message", &self.message)
-            .field("location", &format_args!("{}", self.location))
-            .finish()
-    }
-}
-
-impl fmt::Display for StaticStrError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message)?;
-        if f.alternate() {
-            write!(f, "\n  at {}", self.location)?;
-        }
-        Ok(())
-    }
-}
-
-impl core::error::Error for StaticStrError {}

@@ -4,7 +4,7 @@ use crate::{
     BoxError,
     chain::DEFAULT_MAX_DEPTH,
     error_chain,
-    ext::{location_of, transparent_inner, write_escaped_display},
+    ext::{context_location_of, location_of, transparent_inner, write_escaped_display},
     std::{Box, Vec},
 };
 
@@ -248,9 +248,7 @@ impl Render {
         }
         let pad = depth * 4;
         self.error(f, error)?;
-        if let Some(location) = location_of(error) {
-            write!(f, "\n{:pad$}     at {location}", "")?;
-        }
+        write_locations(f, error, pad + 5)?;
         for cause in error_chain(error).skip(1) {
             if !self.take() {
                 return self.truncate(f, pad);
@@ -260,9 +258,7 @@ impl Render {
                 return self.tree(f, nested, depth + 2);
             }
             self.error(f, cause)?;
-            if let Some(location) = location_of(cause) {
-                write!(f, "\n{:pad$}       at {location}", "")?;
-            }
+            write_locations(f, cause, pad + 7)?;
         }
         Ok(())
     }
@@ -274,6 +270,20 @@ impl Render {
         self.truncated = true;
         write!(f, "\n{:pad$}  … (truncated)", "")
     }
+}
+
+fn write_locations(
+    f: &mut fmt::Formatter<'_>,
+    error: &(dyn Error + 'static),
+    indent: usize,
+) -> fmt::Result {
+    if let Some(location) = location_of(error) {
+        write!(f, "\n{:indent$}at {location}", "")?;
+    }
+    if let Some(location) = context_location_of(error) {
+        write!(f, "\n{:indent$}context added at {location}", "")?;
+    }
+    Ok(())
 }
 
 impl Error for ErrorList {
@@ -379,6 +389,21 @@ mod tests {
 
     impl Error for Marker {}
 
+    #[derive(Debug)]
+    struct Wrapped(BoxError);
+
+    impl fmt::Display for Wrapped {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("wrapped")
+        }
+    }
+
+    impl Error for Wrapped {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(self.0.as_ref())
+        }
+    }
+
     fn list_of(errors: impl IntoIterator<Item = BoxError>) -> ErrorList {
         errors.into_iter().collect()
     }
@@ -445,9 +470,10 @@ mod tests {
     #[test]
     fn alternate_lists_every_failure_with_causes_and_locations() {
         let (inner, line) = (BoxError::from_static_str("inner"), line!());
+        let (inner, added) = (inner.context_field("addr", "10.0.0.1"), line!());
         let mut list = ErrorList::new();
         list.push(Marker(1));
-        list.push_primary(inner.context_field("addr", "10.0.0.1"));
+        list.push_primary(inner);
         let pretty = format!("{list:#}");
         assert!(
             pretty.starts_with(
@@ -459,7 +485,14 @@ mod tests {
             pretty.contains(&format!("     at {}:{line}:", file!())),
             "{pretty}"
         );
-        assert!(pretty.contains("     caused by: inner\n"), "{pretty}");
+        assert!(
+            pretty.contains(&format!("     context added at {}:{added}:", file!())),
+            "{pretty}"
+        );
+        assert!(
+            !pretty.contains("caused by"),
+            "a static message and its context are one error: {pretty}"
+        );
     }
 
     #[test]
@@ -671,7 +704,7 @@ mod tests {
         let (secondary, line) = (BoxError::from_static_str("secondary-leaf"), line!());
         let mut inner = ErrorList::new();
         inner.push_primary(fmt::Error);
-        inner.push(secondary.context("secondary-wrapper"));
+        inner.push(Wrapped(secondary).context("secondary-wrapper"));
         let mut outer = ErrorList::new();
         outer.push(Marker(1));
         outer.push(Box::new(inner) as BoxError);

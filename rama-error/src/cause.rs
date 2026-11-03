@@ -1,6 +1,9 @@
-use core::error::Error;
+use core::{any::Any, error::Error};
 
-use crate::{ErrorList, chain::DEFAULT_MAX_DEPTH, error_chain, error_source};
+use crate::{
+    ContextField, ErrorList, chain::DEFAULT_MAX_DEPTH, error_chain, error_source,
+    ext::ErrorWithContext,
+};
 
 /// Look up causes of an error by type.
 ///
@@ -31,6 +34,9 @@ use crate::{ErrorList, chain::DEFAULT_MAX_DEPTH, error_chain, error_source};
 /// assert!(error.has_cause::<Timeout>());
 /// assert!(error.find_cause::<std::io::Error>().is_some());
 /// assert!(!error.has_cause::<std::fmt::Error>());
+/// assert!(error.any_cause(|cause| cause
+///     .downcast_ref::<std::io::Error>()
+///     .is_some_and(|io| io.kind() == std::io::ErrorKind::Other)));
 /// # }
 /// ```
 pub trait CauseExt: private::Sealed {
@@ -40,39 +46,67 @@ pub trait CauseExt: private::Sealed {
     /// The first error of type `T`, starting with this error itself.
     fn find_cause<T: Error + 'static>(&self) -> Option<&T>;
 
+    /// Whether `predicate` holds for this error or one of its causes, visited
+    /// in the same order and within the same bound as [`Self::find_cause`].
+    fn any_cause(&self, predicate: impl FnMut(&(dyn Error + 'static)) -> bool) -> bool;
+
     /// The last error in the chain: this error when it has no cause. Through an
     /// [`ErrorList`] the chain follows its primary failure.
     ///
     /// The walk visits at most 64 errors, as [`error_chain`](crate::error_chain)
     /// does; for a longer or cyclic chain this is the last error visited.
     fn root_cause(&self) -> &(dyn Error + 'static);
+
+    /// Every context field on the chain, outermost error first and in the order
+    /// each error received them. Follows the same chain as
+    /// [`error_chain`](crate::error_chain): through an [`ErrorList`] only its
+    /// primary failure.
+    fn context_fields(&self) -> impl Iterator<Item = &ContextField>;
+
+    /// The first context value with this key that was added as a `T`
+    /// (see [`ContextField::downcast_ref`]), searched as [`Self::context_fields`].
+    fn context_value<T: Any>(&self, key: &str) -> Option<&T>;
 }
 
 #[inline]
 fn find_cause<'a, T: Error + 'static>(error: &'a (dyn Error + 'static)) -> Option<&'a T> {
     let mut budget = DEFAULT_MAX_DEPTH;
-    find_in_tree(error, &mut budget)
+    find_in_tree(error, &mut budget, &mut |error| error.downcast_ref::<T>())
+}
+
+#[inline]
+fn any_cause(
+    error: &(dyn Error + 'static),
+    mut predicate: impl FnMut(&(dyn Error + 'static)) -> bool,
+) -> bool {
+    let mut budget = DEFAULT_MAX_DEPTH;
+    find_in_tree(error, &mut budget, &mut |error| {
+        predicate(error).then_some(())
+    })
+    .is_some()
 }
 
 /// Depth-first over the chain, entering every failure of an [`ErrorList`]
 /// instead of only its primary one. `budget` bounds the errors visited in total.
-fn find_in_tree<'a, T: Error + 'static>(
+fn find_in_tree<'a, R>(
     error: &'a (dyn Error + 'static),
     budget: &mut usize,
-) -> Option<&'a T> {
+    found: &mut impl FnMut(&'a (dyn Error + 'static)) -> Option<R>,
+) -> Option<R> {
     let mut current = Some(error);
     while let Some(error) = current {
         *budget = budget.checked_sub(1)?;
-        if let Some(found) = error.downcast_ref::<T>() {
-            return Some(found);
+        if let Some(result) = found(error) {
+            return Some(result);
         }
         if let Some(list) = error.downcast_ref::<ErrorList>() {
             for failure in list.iter() {
                 if *budget == 0 {
                     return None;
                 }
-                if let Some(found) = find_in_tree(failure as &(dyn Error + 'static), budget) {
-                    return Some(found);
+                if let Some(result) = find_in_tree(failure as &(dyn Error + 'static), budget, found)
+                {
+                    return Some(result);
                 }
             }
             return None;
@@ -80,6 +114,18 @@ fn find_in_tree<'a, T: Error + 'static>(
         current = error_source(error);
     }
     None
+}
+
+fn context_fields<'a>(error: &'a (dyn Error + 'static)) -> impl Iterator<Item = &'a ContextField> {
+    error_chain(error)
+        .filter_map(|error| error.downcast_ref::<ErrorWithContext>())
+        .flat_map(ErrorWithContext::fields)
+}
+
+fn context_value<'a, T: Any>(error: &'a (dyn Error + 'static), key: &str) -> Option<&'a T> {
+    context_fields(error)
+        .filter(|field| field.key() == Some(key))
+        .find_map(ContextField::downcast_ref)
 }
 
 #[inline]
@@ -102,8 +148,26 @@ macro_rules! impl_cause_ext {
                 }
 
                 #[inline]
+                fn any_cause(
+                    &self,
+                    predicate: impl FnMut(&(dyn Error + 'static)) -> bool,
+                ) -> bool {
+                    any_cause(self, predicate)
+                }
+
+                #[inline]
                 fn root_cause(&self) -> &(dyn Error + 'static) {
                     root_cause(self)
+                }
+
+                #[inline]
+                fn context_fields(&self) -> impl Iterator<Item = &ContextField> {
+                    context_fields(self)
+                }
+
+                #[inline]
+                fn context_value<T: Any>(&self, key: &str) -> Option<&T> {
+                    context_value(self, key)
                 }
             }
 
@@ -130,8 +194,23 @@ impl<E: Error + 'static> CauseExt for E {
     }
 
     #[inline]
+    fn any_cause(&self, predicate: impl FnMut(&(dyn Error + 'static)) -> bool) -> bool {
+        any_cause(self, predicate)
+    }
+
+    #[inline]
     fn root_cause(&self) -> &(dyn Error + 'static) {
         root_cause(self)
+    }
+
+    #[inline]
+    fn context_fields(&self) -> impl Iterator<Item = &ContextField> {
+        context_fields(self)
+    }
+
+    #[inline]
+    fn context_value<T: Any>(&self, key: &str) -> Option<&T> {
+        context_value(self, key)
     }
 }
 
@@ -149,7 +228,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{BoxError, BoxErrorExt as _, ErrorExt as _, std::Box};
+    use crate::{ArcError, BoxError, BoxErrorExt as _, ErrorExt as _, std::Box};
 
     #[derive(Debug)]
     struct Leaf;
@@ -280,6 +359,102 @@ mod tests {
         assert!(!outer.has_cause::<Leaf>());
         // The outer and inner list take two of the 64 visits.
         assert_eq!(SOURCES.load(Ordering::Relaxed), DEFAULT_MAX_DEPTH - 2);
+    }
+
+    #[test]
+    fn context_fields_are_listed_outermost_first_and_in_order() {
+        let inner: BoxError = Wrap(Leaf.context_field("depth", 2u8))
+            .context_field("depth", 1u8)
+            .context("note");
+        let fields: crate::std::Vec<_> = inner
+            .context_fields()
+            .map(|field| (field.key(), field.value().to_string()))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                (Some("depth"), "1".into()),
+                (None, "note".into()),
+                (Some("depth"), "2".into()),
+            ]
+        );
+        assert_eq!(inner.context_value::<u8>("depth"), Some(&1));
+        assert_eq!(inner.context_value::<u16>("depth"), None, "typed lookup");
+        assert_eq!(inner.context_value::<u8>("missing"), None);
+        assert_eq!(Leaf.context_fields().count(), 0);
+        assert_eq!(
+            BoxError::from_static_str("bare").context_fields().count(),
+            0
+        );
+    }
+
+    #[test]
+    fn context_values_downcast_to_the_type_they_were_added_as() {
+        #[derive(Debug, PartialEq)]
+        struct Port(u16);
+
+        let error = BoxError::from_static_str("x")
+            .context_field("str", "literal")
+            .context_debug_field("debug", Port(80))
+            .context_hex_field("hex", 0xffu8)
+            .context_str_field("owned", "copied")
+            .context_field("spilled", "after two inline fields");
+        assert_eq!(error.context_value::<&str>("str"), Some(&"literal"));
+        assert_eq!(error.context_value::<Port>("debug"), Some(&Port(80)));
+        assert_eq!(error.context_value::<u8>("hex"), Some(&0xff));
+        assert_eq!(
+            error
+                .context_value::<crate::std::String>("owned")
+                .map(|s| s.as_str()),
+            Some("copied")
+        );
+        assert_eq!(
+            error.context_value::<&str>("spilled"),
+            Some(&"after two inline fields")
+        );
+        assert_eq!(
+            error.to_string(),
+            r#"x | str="literal" debug="Port(80)" hex="ff" owned="copied" spilled="after two inline fields""#
+        );
+    }
+
+    #[test]
+    fn any_cause_tests_every_failure_within_one_budget() {
+        let shared = ArcError::new(Depth(7, None));
+        let elsewhere = ArcError::new(Depth(8, None));
+        let mut inner: ErrorList = (0..2).map(|_| BoxError::from_static_str("x")).collect();
+        inner.push(shared.clone());
+        let mut list: ErrorList = (0..3).map(|_| BoxError::from_static_str("x")).collect();
+        list.push(Box::new(inner) as BoxError);
+        list.push(Wrap(Box::new(Leaf)));
+        assert!(list.any_cause(|error| error.is::<Leaf>()));
+        assert!(list.any_cause(|error| core::ptr::addr_eq(error, shared.as_error())));
+        assert!(!list.any_cause(|error| core::ptr::addr_eq(error, elsewhere.as_error())));
+
+        let mut visited = 0;
+        let wide: ErrorList = (0..1_000).map(|_| BoxError::from_static_str("x")).collect();
+        assert!(!wide.any_cause(|_| {
+            visited += 1;
+            false
+        }));
+        assert_eq!(visited, DEFAULT_MAX_DEPTH);
+    }
+
+    #[test]
+    fn a_static_message_takes_context_in_place() {
+        let error = BoxError::from_static_str("x")
+            .context("y")
+            .context_field("k", 1u8);
+        assert_eq!(error_chain(error.as_ref()).count(), 1, "{error:?}");
+        assert_eq!(error.to_string(), r#"x | "y" k="1""#);
+
+        let typed: BoxError = Leaf.context("y");
+        assert_eq!(
+            error_chain(typed.as_ref()).count(),
+            2,
+            "a typed error stays its own link"
+        );
+        assert!(typed.has_cause::<Leaf>());
     }
 
     #[cfg(feature = "std")]
