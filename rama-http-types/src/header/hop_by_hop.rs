@@ -181,7 +181,7 @@ pub fn connection_header_names(headers: &HeaderMap) -> impl Iterator<Item = Head
 
 /// Whether a `Connection` nomination may remove this field from a request head.
 ///
-/// RFC 8470 §5.1 forbids intermediaries from removing `Early-Data`, even when a
+/// RFC 8470 section 5.1 forbids intermediaries from removing `Early-Data`, even when a
 /// peer incorrectly nominates it. Parsing nominations and validating trailers
 /// must still see the original name; apply this exception only when sanitizing
 /// request heads (or a head whose direction is not yet known).
@@ -192,7 +192,7 @@ pub fn is_removable_connection_header(name: &HeaderName) -> bool {
 
 /// Return known hop-by-hop field names and removable `Connection` nominations.
 ///
-/// `Early-Data` is preserved even when nominated, as RFC 8470 §5.1 requires
+/// `Early-Data` is preserved even when nominated, as RFC 8470 section 5.1 requires
 /// for requests. Use [`connection_header_names`] for raw nominations, or
 /// [`remove_hop_by_hop_response_headers`] to sanitize a response.
 ///

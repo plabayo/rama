@@ -70,7 +70,7 @@ const MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 2;
 /// The TLS defaults can be overridden per request. A non-empty default ALPN offer is what the
 /// connections serve: a request offer sharing none of it is replaced by it, and the protocol
 /// negotiated must be one of it. Otherwise an offered protocol must be negotiated unless the
-/// [`AlpnPolicy`] agrees it out of band (RFC 9001 §8.1). A
+/// [`AlpnPolicy`] agrees it out of band (RFC 9001 section 8.1). A
 /// [`QuicProfile`] on the request applies to the client and transport. The origin hostname remains the TLS verification target even when routing
 /// selects a different physical address.
 ///
@@ -361,7 +361,7 @@ impl<E> QuicConnector<E> {
 }
 
 /// Refuse a connection whose negotiated protocol the connector does not serve, or that
-/// negotiated none of an offer without out-of-band agreement (RFC 9001 §8.1), closing it.
+/// negotiated none of an offer without out-of-band agreement (RFC 9001 section 8.1), closing it.
 fn check_negotiated_alpn(
     connection: &Connection,
     served: Option<&TlsAlpn>,

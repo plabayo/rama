@@ -1,4 +1,4 @@
-//! The `Early-Data` request header (RFC 8470 §5.1).
+//! The `Early-Data` request header (RFC 8470 section 5.1).
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 use rama_http_types::{HeaderName, HeaderValue, header};
