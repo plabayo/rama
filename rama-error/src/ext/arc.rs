@@ -1,6 +1,9 @@
 use core::fmt;
 
-use super::context::{DebugContextValue, ErrorWithContext, HexContextValue};
+use super::{
+    context::{DebugContextValue, ErrorWithContext, HexContextValue},
+    opaque::StaticStrError,
+};
 use crate::{
     BoxError,
     std::{Arc, Box, String},
@@ -35,7 +38,7 @@ impl ArcError {
     /// Share a static message. One allocation for the sharing, none for the message.
     #[track_caller]
     pub fn from_static_str(message: &'static str) -> Self {
-        Self::new(ErrorWithContext::from_static_str(message))
+        Self::new(StaticStrError::new(message))
     }
 
     /// Share an error that is already boxed. The box's value moves into the shared allocation.
@@ -215,7 +218,11 @@ impl ArcError {
             apply(existing);
             return self;
         }
-        let mut wrapped = ErrorWithContext::new(Box::new(self));
+        let mut wrapped = match self.0.downcast_ref::<StaticStrError>() {
+            // The message is copied out, so even a shared one is not wrapped twice.
+            Some(error) => ErrorWithContext::from_static_error(*error),
+            None => ErrorWithContext::new(Box::new(self)),
+        };
         apply(&mut wrapped);
         Self(Arc::new(wrapped))
     }
@@ -458,6 +465,20 @@ mod tests {
         let shared = ArcError::from(boxed);
         assert!(shared.downcast_ref::<Cause>().is_some(), "the same value");
         assert_eq!(shared.to_string(), "the cause");
+    }
+
+    #[test]
+    fn context_on_a_static_message_takes_the_message_in() {
+        let shared = ArcError::from_static_str("refused");
+        let kept = shared.clone();
+        let annotated = shared.context_field("port", 443u16);
+        assert_eq!(annotated.to_string(), r#"refused | port="443""#);
+        assert_eq!(
+            error_chain(&annotated).count(),
+            2,
+            "the shared error and one node holding message and context"
+        );
+        assert_eq!(kept.to_string(), "refused", "the other owner is unaffected");
     }
 
     #[test]

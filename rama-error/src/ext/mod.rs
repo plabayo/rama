@@ -367,6 +367,15 @@ impl<T, E: Into<BoxError>> ErrorContext for Result<T, E> {
     }
 }
 
+/// The error for a `None`, already a context node so the caller's context
+/// lands in the same allocation.
+#[track_caller]
+fn none_error<O>() -> BoxError {
+    let mut node = self::context::ErrorWithContext::from_static_str("Option is None");
+    node.insert_key_value("type", core::any::type_name::<O>());
+    Box::new(node)
+}
+
 /// Generates the [`ErrorContext`] methods for [`Option<T>`], which all share the
 /// same shape: forward to the matching [`BoxError`] method, tagging the missing
 /// value with its type name.
@@ -381,9 +390,7 @@ macro_rules! forward_none_context {
             {
                 match self {
                     Some(value) => Ok(value),
-                    None => Err(BoxError::from_static_str("Option is None")
-                        .context_field("type", core::any::type_name::<Self>())
-                        .$name($($carg),*)),
+                    None => Err(none_error::<Self>().$name($($carg),*)),
                 }
             }
         )+
@@ -398,8 +405,7 @@ impl<T> ErrorContext for Option<T> {
     fn into_box_error(self) -> Self::Context {
         match self {
             Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_field("type", core::any::type_name::<Self>())),
+            None => Err(none_error::<Self>()),
         }
     }
 
@@ -565,17 +571,9 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static,
     {
-        let mut err = self.into();
-
-        if let Some(existing) = err.downcast_mut::<self::context::ErrorWithContext>() {
-            existing.note_context_location();
-            existing.insert_value(value);
-            return err;
-        }
-
-        let mut wrapped = self::context::ErrorWithContext::new(err);
-        wrapped.insert_value(value);
-        Box::new(wrapped)
+        let mut node = context_node(self.into());
+        node.insert_value(value);
+        node
     }
 
     #[inline(always)]
@@ -601,17 +599,9 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static,
     {
-        let mut err = self.into();
-
-        if let Some(existing) = err.downcast_mut::<self::context::ErrorWithContext>() {
-            existing.note_context_location();
-            existing.insert_key_value(key, value);
-            return err;
-        }
-
-        let mut wrapped = self::context::ErrorWithContext::new(err);
-        wrapped.insert_key_value(key, value);
-        Box::new(wrapped)
+        let mut node = context_node(self.into());
+        node.insert_key_value(key, value);
+        node
     }
 
     #[track_caller]
@@ -619,17 +609,9 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     where
         M: Into<String>,
     {
-        let mut err = self.into();
-
-        if let Some(existing) = err.downcast_mut::<self::context::ErrorWithContext>() {
-            existing.note_context_location();
-            existing.insert_key_value_str(key, value);
-            return err;
-        }
-
-        let mut wrapped = self::context::ErrorWithContext::new(err);
-        wrapped.insert_key_value_str(key, value);
-        Box::new(wrapped)
+        let mut node = context_node(self.into());
+        node.insert_key_value_str(key, value);
+        node
     }
 
     #[inline(always)]
@@ -726,6 +708,24 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         Box::new(self::backtrace::ErrorWithBacktrace::new(source))
     }
 }
+/// The context node to add context to: `error` itself when it already is one,
+/// a bare static message turned into one, or a new node wrapping `error`.
+#[track_caller]
+fn context_node(error: BoxError) -> Box<self::context::ErrorWithContext> {
+    let error = match error.downcast::<self::context::ErrorWithContext>() {
+        Ok(mut existing) => {
+            existing.note_context_location();
+            return existing;
+        }
+        Err(error) => error,
+    };
+    let node = match error.downcast::<self::opaque::StaticStrError>() {
+        Ok(error) => self::context::ErrorWithContext::from_static_error(*error),
+        Err(error) => self::context::ErrorWithContext::new(error),
+    };
+    Box::new(node)
+}
+
 pub trait BoxErrorExt: private::SealedBoxErrorExt {
     /// Create a [`BoxError`] from a static str.
     ///

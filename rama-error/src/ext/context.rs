@@ -4,6 +4,7 @@ use core::{
     panic::Location,
 };
 
+use super::opaque::StaticStrError;
 use crate::{
     BoxError,
     chain::DEFAULT_MAX_DEPTH,
@@ -11,10 +12,10 @@ use crate::{
     std::{Box, String, Vec},
 };
 
-/// The error behind `from_static_str` and every context wrapper.
+/// The error behind every context wrapper.
 ///
-/// A static message is stored inline, so context added to it later lands in
-/// the same allocation and the chain gets no extra link.
+/// Context added to a bare static message takes that message inline, so the
+/// chain gets no extra link for it.
 pub(crate) struct ErrorWithContext {
     source: Source,
     fields: Fields,
@@ -48,6 +49,17 @@ impl ErrorWithContext {
             fields: Fields::new(),
             location: Location::caller(),
             context_location: None,
+        }
+    }
+
+    /// The node a bare static message becomes when context is first added to it.
+    #[track_caller]
+    pub(super) fn from_static_error(error: StaticStrError) -> Self {
+        Self {
+            source: Source::Static(error.message),
+            fields: Fields::new(),
+            location: error.location,
+            context_location: Some(Location::caller()),
         }
     }
 
@@ -497,6 +509,9 @@ pub(crate) fn context_location_of(
 pub(crate) fn location_of(
     error: &(dyn crate::StdError + 'static),
 ) -> Option<&'static Location<'static>> {
+    if let Some(error) = error.downcast_ref::<StaticStrError>() {
+        return Some(error.location);
+    }
     error
         .downcast_ref::<ErrorWithContext>()
         .map(|error| error.location)

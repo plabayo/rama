@@ -76,10 +76,11 @@
 //! [`ContextField`] on the chain and [`CauseExt::context_value`] finds a value
 //! by key and type.
 //!
-//! A static message from [`BoxErrorExt::from_static_str`] takes later context
-//! in place, the first two fields of any error are stored inline, and
-//! `&'static str` values are not boxed, so the common cases allocate once for
-//! a static message and once more for context on another error.
+//! A static message from [`BoxErrorExt::from_static_str`] is one small
+//! allocation; the first context added to it moves the message into the
+//! context node, so the chain gets no extra link. The first two fields of any
+//! error are stored inline and `&'static str` values are not boxed, so adding
+//! context costs one allocation for the node.
 //!
 //! The context methods and [`BoxErrorExt::from_static_str`] record the caller's
 //! source location. It is shown in alternate (`{:#}`) and debug output only, so
