@@ -41,8 +41,8 @@
 //!
 //! ## Memory
 //!
-//! Ordinary text streams through, but a tag with its attributes, a comment or
-//! a `<script>`/`<style>` body is held until it is complete. The origin
+//! Text, including `<script>`/`<style>` bodies, streams through, but a tag
+//! with its attributes or a comment is held until it is complete. The origin
 //! controls that input, so each such construct has a budget of
 //! [`DEFAULT_MAX_BUFFERED_BYTES`] (see `with_max_buffered_bytes`); past it the
 //! body fails, or with [`MemoryLimitPolicy::Passthrough`] (not for sanitising)

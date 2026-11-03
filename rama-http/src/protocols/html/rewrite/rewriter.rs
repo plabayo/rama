@@ -408,7 +408,7 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
 
     generate_set_and_with! {
         /// Sets the budget of one construct (a tag with its attributes, a
-        /// comment, a text-mode body, …), see
+        /// comment, a doctype, …), see
         /// [`Tokenizer::with_max_buffered_bytes`]. What happens past it is
         /// set by [`with_memory_limit_policy`](Self::with_memory_limit_policy).
         pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {

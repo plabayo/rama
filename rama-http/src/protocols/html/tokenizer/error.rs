@@ -46,7 +46,7 @@ impl From<MemoryLimitExceededError> for TokenizerError {
 }
 
 /// Raised when one construct (a tag with its attributes, a comment, a
-/// text-mode body, …) needs more than the tokenizer's
+/// doctype, …) needs more than the tokenizer's
 /// [`max_buffered_bytes`](super::Tokenizer::max_buffered_bytes).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryLimitExceededError {

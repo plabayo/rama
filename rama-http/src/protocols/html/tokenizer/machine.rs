@@ -15,16 +15,15 @@
 //! drop (e.g. a stray `<`) are preserved as text — this is the substrate for
 //! a byte-faithful rewriter, not a DOM builder.
 //!
-//! Atomic constructs (tags, comments, CDATA, doctype, and raw-text/script
-//! bodies) are retained whole until their terminator arrives; ordinary text
-//! streams in chunk-sized pieces. The text mode of a start tag and whether
+//! Atomic constructs (tags, comments, CDATA, doctype) are retained whole
+//! until their terminator arrives; ordinary text, and the body of a
+//! text-mode element (`<script>`, `<style>`, …), streams in chunk-sized
+//! pieces. The text mode of a start tag and whether
 //! CDATA is real come from the consumer ([`ParseSink`]): a small context
 //! tracker (see [`super::context`]) for a plain [`TokenSink`], the rewriter's
 //! tree builder for the rewriter.
 //!
-//! > Memory note: a single unterminated raw-text/script body (or
-//! > `<plaintext>`) is buffered until its end tag or end of input; ordinary
-//! > text is not. One construct may use at most
+//! > Memory note: one construct may use at most
 //! > [`max_buffered_bytes`](Tokenizer::with_max_buffered_bytes) of input and
 //! > attribute bookkeeping, whether it arrives in one chunk or many.
 
@@ -53,6 +52,20 @@ const CDATA_SUFFIX: &[u8] = b"]]>";
 const DOCTYPE_KEYWORD: &[u8] = b"doctype";
 /// The `<script>` tag name (its body is scanned as script-data).
 const SCRIPT_NAME: &[u8] = b"script";
+
+/// The elements with a text-mode body (lowercase), as the tree builders know them.
+const TEXT_ELEMENTS: [&[u8]; 10] = [
+    b"script",
+    b"style",
+    b"title",
+    b"textarea",
+    b"xmp",
+    b"iframe",
+    b"noembed",
+    b"noframes",
+    b"noscript",
+    b"plaintext",
+];
 
 /// The default [`Tokenizer::max_buffered_bytes`].
 pub const DEFAULT_MAX_BUFFERED_BYTES: usize = mib(4);
@@ -152,7 +165,7 @@ impl Tokenizer {
 
     generate_set_and_with! {
         /// Sets the budget of one construct (a tag with its attributes, a
-        /// comment, a text-mode body, …): its input bytes plus 16 bytes per
+        /// comment, a doctype, …): its input bytes plus 16 bytes per
         /// attribute. A larger one fails with a [`MemoryLimitExceededError`].
         /// Defaults to [`DEFAULT_MAX_BUFFERED_BYTES`]; budgets below 9 bytes
         /// (the longest markup opener, `<![CDATA[`) act as 9.
@@ -477,6 +490,16 @@ fn run<P: ParseSink>(
     let mut pos = 0;
     // Start of the pending (not-yet-emitted) text run.
     let mut text_start = 0;
+    if let Some(Resume::Text { name, mode, body }) = carried {
+        match scan_body(name, mode, body, input, 0, resume, sink, limit, is_final)? {
+            Step::Next(next) => {
+                pos = next;
+                text_start = next;
+            }
+            Step::Suspend(at) => return suspend(limit, input, at),
+            Step::Incomplete => return Ok(0),
+        }
+    }
 
     loop {
         let Some(rel) = memchr(b'<', input.get(pos..).unwrap_or(&[])) else {
@@ -501,26 +524,46 @@ fn run<P: ParseSink>(
                 // construct is judged in.
                 emit_text(input, text_start, lt, sink);
                 let from = if lt == 0 { carried.as_ref() } else { None };
-                let Some(next) = process(
+                let next = match process(
                     construct, attributes, from, resume, sink, input, lt, limit, is_final,
-                )?
-                else {
-                    let attrs = match resume {
-                        Some(Resume::StartTag(_) | Resume::Body { .. }) => attributes.needed(),
-                        _ => 0,
-                    };
-                    check_limit(limit, Span::new(lt, input.len()), attrs)?;
-                    // Positions are absolute, so they hold only at offset 0.
-                    if lt != 0 {
-                        *resume = None;
+                )? {
+                    Step::Next(next) => next,
+                    Step::Suspend(at) => return suspend(limit, input, at),
+                    Step::Incomplete => {
+                        let attrs = match resume {
+                            Some(Resume::StartTag(_)) => attributes.needed(),
+                            _ => 0,
+                        };
+                        check_limit(limit, Span::new(lt, input.len()), attrs)?;
+                        // Positions are absolute, so they hold only at offset 0.
+                        if lt != 0 {
+                            *resume = None;
+                        }
+                        return Ok(lt);
                     }
-                    return Ok(lt);
                 };
                 pos = next;
                 text_start = next;
             }
         }
     }
+}
+
+/// How far [`process`] got with the construct at a `<`.
+enum Step {
+    /// It was emitted whole; tokenizing continues at this position.
+    Next(usize),
+    /// It is not complete: nothing was emitted and it is retained from its `<`.
+    Incomplete,
+    /// A text-mode body was emitted up to this position; the rest is retained
+    /// with the progress in `resume`, relative to it.
+    Suspend(usize),
+}
+
+/// Ends a run suspended in a text-mode body at `at`, charging what is retained.
+fn suspend(limit: usize, input: &[u8], at: usize) -> Result<usize, Halt> {
+    check_limit(limit, Span::new(at, input.len()), 0)?;
+    Ok(at)
 }
 
 /// The classification of a `<` and whether more input is needed to make it.
@@ -596,9 +639,9 @@ fn classify_markup_declaration<P: ParseSink>(input: &[u8], lt: usize, sink: &P) 
 enum Resume {
     /// A start tag that is not closed yet.
     StartTag(TagScan),
-    /// A closed start tag whose text-mode body or end tag is not complete yet.
-    Body {
-        tag: ClosedTag,
+    /// Inside the body of the text-mode element `name`, its start tag emitted.
+    Text {
+        name: &'static [u8],
         mode: TextMode,
         body: BodyScan,
     },
@@ -609,10 +652,9 @@ enum Resume {
     Delimited { from: usize },
 }
 
-/// Emits the construct at `lt`, returning the position just past it, or
-/// `None` (only when `is_final` is false) when it is not complete yet: then
-/// nothing was emitted, and `left` holds the progress to resume from. A
-/// construct an earlier write left incomplete continues from `from`.
+/// Emits the construct at `lt`, see [`Step`]. When it is not complete yet
+/// (only when `is_final` is false), `left` holds the progress to resume
+/// from. A construct an earlier write left incomplete continues from `from`.
 #[expect(clippy::too_many_arguments, reason = "the scan state of one construct")]
 fn process<P: ParseSink>(
     construct: Construct,
@@ -624,12 +666,15 @@ fn process<P: ParseSink>(
     lt: usize,
     limit: usize,
     is_final: bool,
-) -> Result<Option<usize>, Halt> {
+) -> Result<Step, Halt> {
     let spans = match construct {
         Construct::StartTag => {
             return scan_start_tag(attributes, from, left, input, lt, sink, limit, is_final);
         }
-        Construct::EndTag => return scan_end_tag(from, left, input, lt, sink, limit, is_final),
+        Construct::EndTag => {
+            let next = scan_end_tag(from, left, input, lt, sink, limit, is_final)?;
+            return Ok(next.map_or(Step::Incomplete, Step::Next));
+        }
         Construct::Comment => {
             let data_start = lt + COMMENT_PREFIX.len();
             let end = find_terminator(from, left, input, data_start, COMMENT_SUFFIX);
@@ -652,7 +697,7 @@ fn process<P: ParseSink>(
         }
     };
     let Some((raw, data)) = spans else {
-        return Ok(None);
+        return Ok(Step::Incomplete);
     };
     check_limit(limit, raw, 0)?;
     match construct {
@@ -663,7 +708,7 @@ fn process<P: ParseSink>(
         }
         _ => sink.comment(&Comment { input, raw, data }),
     }
-    Ok(Some(raw.end))
+    Ok(Step::Next(raw.end))
 }
 
 /// Finds `needle` from `data_start`, continuing a search an earlier write
@@ -716,9 +761,8 @@ fn delimited(
     ))
 }
 
-/// Emits a start tag (and the text-mode body it opens, with its end tag),
-/// returning the position past it. In a non-final run nothing is emitted
-/// until the tag, and a text-mode body up to its end tag, are complete.
+/// Emits a start tag, then streams the text-mode body it opens (if any) up
+/// to and including its end tag, see [`scan_body`].
 #[expect(clippy::too_many_arguments, reason = "the scan state of one construct")]
 fn scan_start_tag<P: ParseSink>(
     attributes: &mut AttrBuf,
@@ -729,65 +773,27 @@ fn scan_start_tag<P: ParseSink>(
     sink: &mut P,
     limit: usize,
     is_final: bool,
-) -> Result<Option<usize>, Halt> {
+) -> Result<Step, Halt> {
     let name_start = lt + 1;
     attributes.base = lt;
-    if !matches!(from, Some(Resume::StartTag(_) | Resume::Body { .. })) {
-        attributes.overflow = false;
-    }
-    // A carried body keeps the attributes recorded for its tag in place.
-    let (tag, carried_body) = if let Some(&Resume::Body { tag, mode, body }) = from {
-        (tag, Some((mode, body)))
+    let scan = if let Some(&Resume::StartTag(scan)) = from {
+        scan
     } else {
-        let scan = match from {
-            Some(&Resume::StartTag(scan)) => scan,
-            _ => TagScan::new(name_start),
-        };
-        match scan_tag(Some(attributes), input, scan) {
-            Ok(tag) => (tag, None),
-            Err(cut) if is_final => (cut.unclosed(input), None),
-            Err(cut) => {
-                *left = Some(Resume::StartTag(cut));
-                return Ok(None);
-            }
+        attributes.overflow = false;
+        TagScan::new(name_start)
+    };
+    let tag = match scan_tag(Some(attributes), input, scan) {
+        Ok(tag) => tag,
+        Err(cut) if is_final => cut.unclosed(input),
+        Err(cut) => {
+            *left = Some(Resume::StartTag(cut));
+            return Ok(Step::Incomplete);
         }
     };
+    check_limit(limit, Span::new(lt, tag.close), attributes.needed())?;
     let name_bytes = slice(input, name_start, tag.name_end);
     let name_hash = LocalNameHash::of(name_bytes);
-    // Decided before the tag is applied, so an incomplete body leaves no trace.
     let text_mode = sink.text_mode(name_hash, name_bytes);
-    let end_tag = match text_mode {
-        Some(mode) => {
-            let mut body = carried_body
-                .filter(|&(carried, _)| carried == mode)
-                .map_or(BodyScan::start(tag.close), |(_, body)| body);
-            find_body_end(mode, input, name_bytes, &mut body);
-            // The end tag, too, must be whole: edits anchored at it land after it.
-            let end_tag = match &mut body {
-                BodyScan::EndTag { lt, scan } => match scan_tag(None, input, *scan) {
-                    Ok(end_tag) => Some((*lt, end_tag)),
-                    Err(cut) => {
-                        *scan = cut;
-                        is_final.then(|| (*lt, cut.unclosed(input)))
-                    }
-                },
-                BodyScan::Search { .. } => None,
-            };
-            if end_tag.is_none() && !is_final {
-                *left = Some(Resume::Body { tag, mode, body });
-                return Ok(None);
-            }
-            end_tag
-        }
-        None => None,
-    };
-    let end = match end_tag {
-        Some((_, end_tag)) => end_tag.close,
-        None if text_mode.is_some() => input.len(),
-        None => tag.close,
-    };
-    check_limit(limit, Span::new(lt, end), attributes.needed())?;
-
     sink.start_tag(&StartTag {
         input,
         raw: Span::new(lt, tag.close),
@@ -798,17 +804,69 @@ fn scan_start_tag<P: ParseSink>(
     })?;
     // Done with: a large tag's ranges are then released by the next shrink.
     attributes.ranges.clear();
-    if text_mode.is_none() {
-        return Ok(Some(tag.close));
-    }
-    let Some((end_lt, end_tag)) = end_tag else {
-        // An unterminated text-mode body runs to the end of the final input.
-        emit_text(input, tag.close, input.len(), sink);
-        return Ok(Some(input.len()));
+    let Some(mode) = text_mode else {
+        return Ok(Step::Next(tag.close));
     };
-    emit_text(input, tag.close, end_lt, sink);
-    emit_end_tag(input, end_lt, end_tag, sink, true);
-    Ok(Some(end_tag.close))
+    // Text modes come from `TEXT_ELEMENTS`; any other name runs to the end.
+    let (name, mode) = TEXT_ELEMENTS
+        .into_iter()
+        .find(|name| name.eq_ignore_ascii_case(name_bytes))
+        .map_or((&b""[..], TextMode::PlainText), |name| (name, mode));
+    let body = BodyScan::start(tag.close);
+    scan_body(
+        name, mode, body, input, tag.close, left, sink, limit, is_final,
+    )
+}
+
+/// Streams a text-mode body and its end tag, suspending so only a possible end tag is retained.
+#[expect(clippy::too_many_arguments, reason = "the scan state of one body")]
+fn scan_body<P: ParseSink>(
+    name: &'static [u8],
+    mode: TextMode,
+    mut body: BodyScan,
+    input: &[u8],
+    start: usize,
+    left: &mut Option<Resume>,
+    sink: &mut P,
+    limit: usize,
+    is_final: bool,
+) -> Result<Step, Halt> {
+    find_body_end(mode, input, name, &mut body);
+    let (lt, end_tag) = match body {
+        BodyScan::EndTag { lt, scan } => match scan_tag(None, input, scan) {
+            Ok(end_tag) => (lt, end_tag),
+            Err(cut) if is_final => (lt, cut.unclosed(input)),
+            Err(cut) => {
+                emit_text(input, start, lt, sink);
+                let body = BodyScan::EndTag {
+                    lt: 0,
+                    scan: cut.rebase(lt),
+                };
+                *left = Some(Resume::Text { name, mode, body });
+                return Ok(Step::Suspend(lt));
+            }
+        },
+        BodyScan::Search { from, script } => {
+            if is_final {
+                emit_text(input, start, input.len(), sink);
+                return Ok(Step::Next(input.len()));
+            }
+            // No end tag starts before `from`; `<plaintext>` has none.
+            let settled = if mode == TextMode::PlainText {
+                input.len()
+            } else {
+                from
+            };
+            emit_text(input, start, settled, sink);
+            let body = BodyScan::Search { from: 0, script };
+            *left = Some(Resume::Text { name, mode, body });
+            return Ok(Step::Suspend(settled));
+        }
+    };
+    emit_text(input, start, lt, sink);
+    check_limit(limit, Span::new(lt, end_tag.close), 0)?;
+    emit_end_tag(input, lt, end_tag, sink, true);
+    Ok(Step::Next(end_tag.close))
 }
 
 /// Emits an end tag, returning the position past it (`None` while it is
@@ -930,6 +988,27 @@ enum AttrState {
     Unquoted { name: Span, start: usize },
 }
 
+impl AttrState {
+    /// The state with every position moved `by` bytes back.
+    fn rebase(self, by: usize) -> Self {
+        let span = |span: Span| Span::new(span.start - by, span.end - by);
+        match self {
+            Self::Name { start } => Self::Name { start: start - by },
+            Self::AfterName { name } => Self::AfterName { name: span(name) },
+            Self::BeforeValue { name } => Self::BeforeValue { name: span(name) },
+            Self::Quoted { name, quote, start } => Self::Quoted {
+                name: span(name),
+                quote,
+                start: start - by,
+            },
+            Self::Unquoted { name, start } => Self::Unquoted {
+                name: span(name),
+                start: start - by,
+            },
+        }
+    }
+}
+
 /// Resumable progress through a tag the input cut off. Every state change
 /// is decided by bytes before `pos`, so appending input never changes it and
 /// scanning continues at `pos`.
@@ -950,6 +1029,20 @@ impl TagScan {
             pos: name_start,
             name_end: name_start,
             attrs: 0,
+        }
+    }
+
+    /// The progress with every position moved `by` bytes back.
+    fn rebase(self, by: usize) -> Self {
+        let state = match self.state {
+            TagState::Attr(attr) => TagState::Attr(attr.rebase(by)),
+            state => state,
+        };
+        Self {
+            state,
+            pos: self.pos - by,
+            name_end: self.name_end - by,
+            attrs: self.attrs,
         }
     }
 

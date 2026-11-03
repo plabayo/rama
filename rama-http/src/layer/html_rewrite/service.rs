@@ -79,7 +79,7 @@ impl<S, H> HtmlRewrite<S, H> {
 
     generate_set_and_with! {
         /// Sets the budget of one HTML construct (a tag with its attributes,
-        /// a comment, a `<script>` body, …) while it is buffered, see
+        /// a comment, …) while it is buffered, see
         /// [`Tokenizer::with_max_buffered_bytes`]. Defaults to
         /// [`DEFAULT_MAX_BUFFERED_BYTES`].
         ///
@@ -217,7 +217,7 @@ impl<H> HtmlRewriteLayer<H> {
 
     generate_set_and_with! {
         /// Sets the budget of one HTML construct (a tag with its attributes,
-        /// a comment, a `<script>` body, …) while it is buffered, see
+        /// a comment, …) while it is buffered, see
         /// [`Tokenizer::with_max_buffered_bytes`]. Defaults to
         /// [`DEFAULT_MAX_BUFFERED_BYTES`].
         ///

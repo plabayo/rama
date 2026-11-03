@@ -722,6 +722,8 @@ fn oversized_documents() -> Vec<(Vec<u8>, &'static str)> {
         let input = format!("<span>before</span>{construct}<p>after</p>").into_bytes();
         let before = if construct.starts_with("<svg>") {
             "<span>before</span><svg>"
+        } else if construct.starts_with("<script>") {
+            "<span>before</span><script>x"
         } else {
             "<span>before</span>"
         };
@@ -735,7 +737,7 @@ fn oversized_documents() -> Vec<(Vec<u8>, &'static str)> {
         wrap(format!("<!doctype {big}>")),
         wrap(format!("<?{big}>")),
         wrap(format!("</div {big}>")),
-        wrap(format!("<script>{big}</script>")),
+        wrap(format!("<script>x</script title=\"{big}\">")),
         wrap(format!("<svg><![CDATA[{big}]]></svg>")),
         wrap(format!("<div{}", " a".repeat(4096))),
         wrap(format!("<!--{big}")),
@@ -904,4 +906,114 @@ fn tiny_budgets_do_not_depend_on_chunking() {
             assert!(tokenizer.held_capacity() <= 2 * limit.max(9) + 1);
         }
     }
+}
+
+#[test]
+fn text_mode_bodies_tokenize_identically_at_every_split() {
+    let inputs: [&[u8]; 9] = [
+        b"<script>a</scriptx <!--<script>b</script>c-->d</script>e",
+        b"<script><!-- x </SCRIPT\t>y",
+        b"<style>p > a { }</style ><p>",
+        b"<textarea>&amp;</textarea/>z",
+        b"<title><b></title>",
+        b"<xmp></xm</xmp>",
+        b"<plaintext></plaintext><p>",
+        b"<script>unterminated <!-- <script>",
+        b"<svg><style><g/></style></svg><style>s</style>",
+    ];
+    for input in inputs {
+        let expected = coalesce(events(input));
+        for split in 0..=input.len() {
+            let (a, b) = input.split_at(split);
+            let (events, identity) = chunked(input, &[a.len(), b.len()]);
+            let shown = String::from_utf8_lossy(input);
+            assert_eq!(events, expected, "{shown} split at {split}");
+            assert_eq!(identity, input, "{shown} split at {split}");
+        }
+        let (events, identity) = chunked(input, &[1]);
+        assert_eq!(events, expected, "{}", String::from_utf8_lossy(input));
+        assert_eq!(identity, input);
+    }
+}
+
+/// The outcome of strict tokenizing `input` fed as `chunks`: the events
+/// before the stop, and whether it stopped on an ambiguity.
+fn strict_outcome<'a>(chunks: impl IntoIterator<Item = &'a [u8]>) -> (Vec<Event>, bool) {
+    let mut tokenizer = Tokenizer::new().with_strict(true);
+    let mut sink = Collect::default();
+    let result = chunks
+        .into_iter()
+        .try_for_each(|chunk| tokenizer.write(chunk, &mut sink))
+        .and_then(|()| tokenizer.end(&mut sink));
+    let ambiguous = matches!(result, Err(TokenizerError::Ambiguity(_)));
+    (coalesce(sink.events), ambiguous)
+}
+
+#[test]
+fn strict_text_mode_ambiguity_at_every_split() {
+    for (input, before) in [
+        // The ambiguous start tag is delivered, then tokenizing stops.
+        (
+            &b"a<select><style>x</style></select>"[..],
+            &b"a<select><style>"[..],
+        ),
+        (
+            b"<frameset></frameset><style>x</style>",
+            b"<frameset></frameset><style>",
+        ),
+    ] {
+        let expected = (coalesce(events(before)), true);
+        let shown = String::from_utf8_lossy(input);
+        assert_eq!(strict_outcome([input]), expected, "{shown}");
+        for split in 0..=input.len() {
+            let (a, b) = input.split_at(split);
+            assert_eq!(strict_outcome([a, b]), expected, "{shown} split {split}");
+        }
+        assert_eq!(
+            strict_outcome(input.chunks(1)),
+            expected,
+            "{shown} byte by byte"
+        );
+    }
+}
+
+#[test]
+fn text_mode_bodies_stream_within_a_small_budget() {
+    let body = "a<b>c</scrip<!--d-->-->".repeat(kib(40));
+    for name in ["script", "style", "textarea", "title", "xmp"] {
+        let input = format!("<{name}>{body}</{name}><p>after</p>").into_bytes();
+        let expected = coalesce(events(&input));
+        for size in [1, 7, 4096, input.len()] {
+            let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(64);
+            let mut sink = Collect::default();
+            for chunk in input.chunks(size) {
+                tokenizer.write(chunk, &mut sink).expect("bodies stream");
+                assert!(
+                    tokenizer.held_capacity() <= 2 * 64 + 1,
+                    "{name} in writes of {size}"
+                );
+            }
+            tokenizer.end(&mut sink).expect("bodies stream");
+            assert_eq!(
+                coalesce(sink.events),
+                expected,
+                "{name} in writes of {size}"
+            );
+        }
+    }
+}
+
+#[test]
+fn plaintext_streams_within_a_small_budget() {
+    let input = format!("<plaintext>{}", "<p>x</p>".repeat(kib(16))).into_bytes();
+    let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(64);
+    let mut sink = Identity::default();
+    for chunk in input.chunks(100) {
+        tokenizer
+            .write(chunk, &mut sink)
+            .expect("plaintext streams");
+        assert!(tokenizer.held_capacity() <= 2 * 64 + 1);
+    }
+    tokenizer.end(&mut sink).expect("plaintext streams");
+    assert_eq!(sink.out, input);
 }
