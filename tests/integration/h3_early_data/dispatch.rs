@@ -376,7 +376,7 @@ async fn client_identity_is_available_after_waited_and_default_dispatch() {
                         .extensions()
                         .get_ref::<EarlyDataReceived>()
                         .unwrap();
-                    assert!(timeout(PROBE, received.confirmed()).await.is_err());
+                    timeout(PROBE, received.confirmed()).await.unwrap_err();
                     fixture.gate.release();
                     received.confirmed().await.unwrap();
                     resolved
