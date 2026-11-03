@@ -1,6 +1,9 @@
 use super::{HtmlRewriteBody, HtmlRewriteLayer};
-use crate::protocols::html::rewrite::{Element, ElementContentHandler, HandlerResult, ScopeMode};
+use crate::protocols::html::rewrite::{
+    Element, ElementContentHandler, HandlerResult, MemoryLimitPolicy, ScopeMode,
+};
 use crate::protocols::html::selector::Selector;
+use crate::protocols::html::tokenizer::MemoryLimitExceededError;
 use crate::{
     Body, HeaderMap, Request, Response, StreamingBody, body::Frame, body::util::BodyExt, header,
 };
@@ -11,6 +14,7 @@ use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
 use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::error::Error;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -417,4 +421,50 @@ async fn on_end_does_not_fire_in_passthrough() {
         0,
         "on_end must not fire in passthrough mode (no handler)",
     );
+}
+
+/// A layer limited to 64 bytes per construct, over a page whose `<div>` tag
+/// is larger than that.
+fn limited_layer(
+    policy: MemoryLimitPolicy,
+) -> impl Service<Request, Output = Response<HtmlRewriteBody<Body, AppendToBody>>, Error = Infallible>
+{
+    HtmlRewriteLayer::new([sel("p")], AppendToBody("!"))
+        .with_max_buffered_bytes(64)
+        .with_memory_limit_policy(policy)
+        .into_layer(service_fn(async |_: Request| {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header(header::CONTENT_TYPE, "text/html")
+                    .body(Body::from(format!(
+                        "<p>a</p><div{}><p>b</p>",
+                        " x".repeat(64)
+                    )))
+                    .expect("response"),
+            )
+        }))
+}
+
+#[tokio::test]
+async fn layer_fails_a_body_over_the_memory_limit() {
+    let res = limited_layer(MemoryLimitPolicy::Error)
+        .serve(Request::new(Body::empty()))
+        .await
+        .expect("serve");
+    let err = res.into_body().collect().await.expect_err("over the limit");
+    let root: &(dyn Error + 'static) = &err;
+    let over = std::iter::successors(Some(root), |&err| err.source())
+        .any(|err| err.is::<MemoryLimitExceededError>());
+    assert!(over, "{err}");
+}
+
+#[tokio::test]
+async fn layer_passes_the_rest_through_past_the_memory_limit() {
+    let res = limited_layer(MemoryLimitPolicy::Passthrough)
+        .serve(Request::new(Body::empty()))
+        .await
+        .expect("serve");
+    let out = res.into_body().collect().await.expect("collect").to_bytes();
+    let expected = format!("<p>a!</p><div{}><p>b</p>", " x".repeat(64));
+    assert_eq!(&out[..], expected.as_bytes());
 }

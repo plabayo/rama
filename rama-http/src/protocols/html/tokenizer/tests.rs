@@ -10,8 +10,11 @@
 
 use quickcheck_macros::quickcheck;
 
+use rama_utils::octets::kib;
+
 use super::{
-    Cdata, Comment, Doctype, EndTag, LocalNameHash, StartTag, Text, TokenSink, Tokenizer, tokenize,
+    Cdata, Comment, Doctype, EndTag, LocalNameHash, StartTag, Text, TokenSink, Tokenizer,
+    TokenizerError, tokenize,
 };
 
 /// Sink that re-serializes every token's raw bytes, for the identity check.
@@ -710,4 +713,195 @@ fn ambiguous_context_bails_in_strict_mode() {
     // `<script>` is allowed in `<select>`, so it never bails.
     let mut ok = Collect::default();
     tokenize(b"<select><script>x</script></select>", &mut ok).expect("script in select is fine");
+}
+
+/// Documents with an oversized construct (over 64 KiB, by input or by
+/// attribute ranges), each with the part before that construct.
+fn oversized_documents() -> Vec<(Vec<u8>, &'static str)> {
+    let wrap = |construct: String| {
+        let input = format!("<span>before</span>{construct}<p>after</p>").into_bytes();
+        let before = if construct.starts_with("<svg>") {
+            "<span>before</span><svg>"
+        } else {
+            "<span>before</span>"
+        };
+        (input, before)
+    };
+    let big = "x".repeat(kib(70));
+    vec![
+        wrap(format!("<div{}>", " a".repeat(4096))),
+        wrap(format!("<div title=\"{big}\">")),
+        wrap(format!("<!--{big}-->")),
+        wrap(format!("<!doctype {big}>")),
+        wrap(format!("<?{big}>")),
+        wrap(format!("</div {big}>")),
+        wrap(format!("<script>{big}</script>")),
+        wrap(format!("<svg><![CDATA[{big}]]></svg>")),
+        wrap(format!("<div{}", " a".repeat(4096))),
+        wrap(format!("<!--{big}")),
+    ]
+}
+
+/// Feeds `input` in writes of `size` bytes to a tokenizer limited to 64 KiB,
+/// returning the events seen and whether it stopped on the limit.
+fn limited(input: &[u8], size: usize) -> (Vec<Event>, bool) {
+    let mut sink = Collect::default();
+    let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(kib(64));
+    let result = input
+        .chunks(size)
+        .try_for_each(|chunk| tokenizer.write(chunk, &mut sink))
+        .and_then(|()| tokenizer.end(&mut sink));
+    let over = matches!(result, Err(TokenizerError::MemoryLimit(err)) if err.limit() == kib(64));
+    (coalesce(sink.events), over)
+}
+
+#[test]
+fn oversized_constructs_fail_at_any_chunking() {
+    for (input, before) in oversized_documents() {
+        for size in [1, 7, 512, 4096, input.len()] {
+            let (events, over) = limited(&input, size);
+            let shown = String::from_utf8_lossy(&input[..40]);
+            assert!(over, "{shown} in writes of {size}: no limit error");
+            assert_eq!(
+                events,
+                coalesce(self::events(before.as_bytes())),
+                "{shown} in writes of {size}: only what precedes the construct is emitted",
+            );
+        }
+    }
+}
+
+#[test]
+fn constructs_within_the_limit_tokenize() {
+    let attrs = " a".repeat(1000); // 2000 bytes of input, 16000 of ranges
+    let input = format!("<div{attrs}><!--{}--><p>after</p>", "x".repeat(kib(40))).into_bytes();
+    for size in [1, 7, 512, input.len()] {
+        let (events, over) = limited(&input, size);
+        assert!(!over, "writes of {size}");
+        assert_eq!(events, coalesce(self::events(&input)), "writes of {size}");
+    }
+}
+
+#[test]
+fn limit_counts_attribute_ranges() {
+    // 8 KiB of input, but 4096 ranges: over a 64 KiB limit only by its ranges.
+    let input = format!("<div{}>", " a".repeat(4096)).into_bytes();
+    let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(kib(64));
+    let result = tokenizer.tokenize(&input, &mut Collect::default());
+    assert!(matches!(result, Err(TokenizerError::MemoryLimit(_))));
+    let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(kib(80));
+    tokenizer
+        .tokenize(&input, &mut Collect::default())
+        .expect("fits");
+}
+
+#[test]
+fn tokenizer_is_reusable_after_the_limit() {
+    let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(64);
+    let mut sink = Collect::default();
+    tokenizer
+        .write(format!("<!--{}", "x".repeat(100)).as_bytes(), &mut sink)
+        .expect_err("over the limit");
+    let mut sink = Collect::default();
+    tokenizer.tokenize(b"<p>ok</p>", &mut sink).expect("fresh");
+    assert_eq!(sink.events, events(b"<p>ok</p>"));
+}
+
+#[test]
+fn large_constructs_release_their_capacity() {
+    let attrs = " a".repeat(50_000); // ~100 KB of tag, ~800 KB of ranges
+    let input = format!("<div{attrs}>{}", "<p>text</p>".repeat(100)).into_bytes();
+    let mut tokenizer = Tokenizer::new();
+    let mut sink = Collect::default();
+    for chunk in input.chunks(4096) {
+        tokenizer.write(chunk, &mut sink).expect("fits the default");
+    }
+    assert!(
+        tokenizer.held_capacity() <= kib(8),
+        "held {} bytes after the large tag",
+        tokenizer.held_capacity()
+    );
+    tokenizer.end(&mut sink).expect("fits the default");
+}
+
+#[test]
+fn allocation_stays_within_twice_the_limit() {
+    let limit = kib(64);
+    let inputs = [
+        format!("<div{}>", " a".repeat(8192)),
+        format!("<div title=\"{}\">", "x".repeat(kib(80))),
+        format!("<!--{}-->", "x".repeat(kib(80))),
+        format!("<p>{}</p>", "<b>x</b>".repeat(kib(10))),
+    ];
+    for input in inputs {
+        for size in [1, 7, 4096, input.len()] {
+            let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(limit);
+            let mut sink = Collect::default();
+            let result = input.as_bytes().chunks(size).try_for_each(|chunk| {
+                let result = tokenizer.write(chunk, &mut sink);
+                assert!(
+                    tokenizer.held_capacity() <= 2 * limit + 1,
+                    "{} bytes held in writes of {size}",
+                    tokenizer.held_capacity()
+                );
+                result
+            });
+            if result.is_ok() {
+                tokenizer.end(&mut sink).expect("fits");
+            }
+            assert!(
+                tokenizer.held_capacity() <= kib(8),
+                "{} bytes held after the stream, writes of {size}",
+                tokenizer.held_capacity()
+            );
+        }
+    }
+}
+
+/// Whether `input` fed in `chunks` stays within `limit`, and the events seen.
+fn outcome<'a>(chunks: impl IntoIterator<Item = &'a [u8]>, limit: usize) -> (bool, Vec<Event>) {
+    let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(limit);
+    let mut sink = Collect::default();
+    let fits = chunks
+        .into_iter()
+        .try_for_each(|chunk| tokenizer.write(chunk, &mut sink))
+        .and_then(|()| tokenizer.end(&mut sink))
+        .is_ok();
+    (fits, coalesce(sink.events))
+}
+
+#[test]
+fn tiny_budgets_do_not_depend_on_chunking() {
+    let inputs: [&[u8]; 8] = [
+        b"a < b",
+        b"x<",
+        b"<!-",
+        b"<!doctyp",
+        b"<![CDATA",
+        b"<![CDATA[x]]>",
+        b"a<!doctype html>b",
+        b"<p>",
+    ];
+    for limit in [0, 1, 4, 8, 9, 10, 16] {
+        for input in inputs {
+            let one_shot = outcome([input], limit);
+            for split in 0..=input.len() {
+                let (a, b) = input.split_at(split);
+                let (fits, events) = outcome([a, b], limit);
+                let shown = String::from_utf8_lossy(input);
+                assert_eq!(fits, one_shot.0, "{shown} split at {split}, limit {limit}");
+                if fits {
+                    assert_eq!(
+                        events, one_shot.1,
+                        "{shown} split at {split}, limit {limit}"
+                    );
+                }
+            }
+            let mut tokenizer = Tokenizer::new().with_max_buffered_bytes(limit);
+            if let Err(err) = tokenizer.write(input, &mut Collect::default()) {
+                assert!(matches!(err, TokenizerError::MemoryLimit(_)), "{err}");
+            }
+            assert!(tokenizer.held_capacity() <= 2 * limit.max(9) + 1);
+        }
+    }
 }

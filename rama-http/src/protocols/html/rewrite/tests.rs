@@ -4,9 +4,16 @@ use std::time::{Duration, Instant};
 
 use quickcheck_macros::quickcheck;
 
-use super::{AttributeName, ElementContentHandlers, HtmlRewriter, ScopeMode, SelectorMatcher};
+use rama_utils::octets::kib;
+
+use super::{
+    AttributeName, ElementContentHandlers, HtmlRewriter, MemoryLimitPolicy, ScopeMode,
+    SelectorMatcher,
+};
 use crate::protocols::html::selector::{Dom, NodeId, Selector};
-use crate::protocols::html::tokenizer::{Doctype, EndTag, StartTag, Text, TokenSink, tokenize};
+use crate::protocols::html::tokenizer::{
+    Doctype, EndTag, MemoryLimitExceededError, StartTag, Text, TokenSink, tokenize,
+};
 
 /// Drives a [`SelectorMatcher`] from token events, recording each match as
 /// `(selector index, element name)` in document order.
@@ -1787,4 +1794,111 @@ fn unterminated_tag_at_eof_brackets_consistently() {
             assert_bracketed_extent(input, "*", mode, split);
         }
     }
+}
+
+/// Rewrites `input`, fed in `sizes` writes (cycled), marking every `span` and
+/// `div`, with a `limit` and `policy`: the output, or the first error.
+fn rewrite_limited(
+    input: &[u8],
+    sizes: &[usize],
+    limit: usize,
+    policy: MemoryLimitPolicy,
+) -> (Vec<u8>, Option<rama_core::error::BoxError>) {
+    let handlers = ElementContentHandlers::new().on("span, div".parse().unwrap(), |el| {
+        el.set_attribute(AttributeName::from_static("data-hit"), "1");
+        Ok(())
+    });
+    let mut rewriter = HtmlRewriter::from_handlers(handlers)
+        .with_max_buffered_bytes(limit)
+        .with_memory_limit_policy(policy);
+    let mut out = Vec::new();
+    let mut rest = input;
+    for size in sizes.iter().cycle() {
+        if rest.is_empty() {
+            break;
+        }
+        let (chunk, tail) = rest.split_at((*size).clamp(1, rest.len()));
+        rest = tail;
+        if let Err(err) = rewriter.write(chunk) {
+            out.extend(rewriter.take_output());
+            return (out, Some(err));
+        }
+        out.extend(rewriter.take_output());
+    }
+    let result = rewriter.end();
+    out.extend(rewriter.take_output());
+    (out, result.err())
+}
+
+fn oversized_div() -> Vec<u8> {
+    format!("<span>before</span><div{}>after</div>", " a".repeat(4096)).into_bytes()
+}
+
+#[test]
+fn memory_limit_fails_closed_by_default() {
+    let input = oversized_div();
+    for size in [1, 7, 512, 4096, input.len()] {
+        let (out, err) = rewrite_limited(&input, &[size], kib(64), MemoryLimitPolicy::Error);
+        let err = err.unwrap_or_else(|| panic!("writes of {size}: no error"));
+        assert!(
+            err.downcast_ref::<MemoryLimitExceededError>().is_some(),
+            "writes of {size}: {err}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            r#"<span data-hit="1">before</span>"#,
+            "writes of {size}: the div is never handled"
+        );
+    }
+}
+
+#[test]
+fn memory_limit_passthrough_copies_the_rest_unchanged() {
+    let input = oversized_div();
+    let bail = b"<span>before</span>".len();
+    let mut expected = br#"<span data-hit="1">before</span>"#.to_vec();
+    expected.extend_from_slice(&input[bail..]);
+    for sizes in [
+        &[1][..],
+        &[7],
+        &[512],
+        &[4096],
+        &[input.len()],
+        &[2, 4096],
+        &[20, 1],
+    ] {
+        let (out, err) = rewrite_limited(&input, sizes, kib(64), MemoryLimitPolicy::Passthrough);
+        assert!(err.is_none(), "writes of {sizes:?}: {err:?}");
+        assert!(out == expected, "writes of {sizes:?}: output differs");
+    }
+}
+
+#[test]
+fn memory_limit_passthrough_after_a_buffered_construct() {
+    // The write of `<p` leaves it buffered; the next write completes it and
+    // brings the oversized tag into the same buffer.
+    let input = format!("<p><div{}>tail", " a".repeat(100)).into_bytes();
+    for split in 0..=input.len() {
+        let (a, b) = input.split_at(split);
+        let (out, err) = rewrite_limited(
+            &[a, b].concat(),
+            &[split.max(1), b.len().max(1)],
+            64,
+            MemoryLimitPolicy::Passthrough,
+        );
+        assert!(err.is_none(), "split at {split}: {err:?}");
+        assert!(out == input, "split at {split}: output differs");
+    }
+}
+
+#[test]
+fn memory_limit_passthrough_at_the_end_keeps_pending_input() {
+    let handlers = ElementContentHandlers::new();
+    let mut rewriter = HtmlRewriter::from_handlers(handlers)
+        .with_max_buffered_bytes(64)
+        .with_memory_limit_policy(MemoryLimitPolicy::Passthrough);
+    rewriter.write(b"<p><!--hello").unwrap();
+    rewriter.set_max_buffered_bytes(1);
+    rewriter.end().unwrap();
+    assert_eq!(rewriter.take_output(), b"<p><!--hello");
 }

@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use crate::mime::Mime;
 use crate::protocols::html::tokenizer::{
-    EndTag, HtmlTag, ParsingAmbiguityError, StartTag, Text, TokenSink, Tokenizer,
+    EndTag, HtmlTag, StartTag, Text, TokenSink, Tokenizer, TokenizerError,
 };
 
 use super::JsonLd;
@@ -38,7 +38,8 @@ impl<'html> ExtractJsonLd<'html> {
     fn new(html: &'html str) -> Self {
         Self {
             html,
-            tokenizer: Tokenizer::new(),
+            // The caller holds the whole document: extract any construct it contains.
+            tokenizer: Tokenizer::new().with_max_buffered_bytes(usize::MAX),
             sink: ExtractSink::default(),
             input_offset: 0,
             finished: false,
@@ -146,8 +147,9 @@ impl<'html> EmbeddedJsonLd<'html> {
 /// Error yielded while extracting an embedded JSON-LD document.
 #[derive(Debug)]
 pub enum ExtractJsonLdError {
-    /// The HTML tokenizer rejected an ambiguous streaming context.
-    Html(ParsingAmbiguityError),
+    /// The HTML tokenizer stopped (an ambiguous streaming context, or a
+    /// construct over its memory limit).
+    Html(TokenizerError),
     /// A JSON-LD script body was not valid JSON.
     InvalidJson {
         /// The invalid body's byte range in the source HTML.
@@ -192,8 +194,8 @@ impl std::error::Error for ExtractJsonLdError {
     }
 }
 
-impl From<ParsingAmbiguityError> for ExtractJsonLdError {
-    fn from(value: ParsingAmbiguityError) -> Self {
+impl From<TokenizerError> for ExtractJsonLdError {
+    fn from(value: TokenizerError) -> Self {
         Self::Html(value)
     }
 }
