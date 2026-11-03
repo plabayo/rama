@@ -6,7 +6,6 @@ use crate::Status;
 use crate::codec::{BufferSettings, Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 
 /// A [`Codec`] that implements `application/grpc+proto` via the prost library.
-#[derive(Debug, Clone)]
 pub struct ProstCodec<T, U> {
     _pd: PhantomData<(T, U)>,
 }
@@ -20,9 +19,22 @@ impl<T, U> ProstCodec<T, U> {
     }
 }
 
+// Hand-written so the message types need no `Default`, `Clone` or `Debug` of their own.
 impl<T, U> Default for ProstCodec<T, U> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T, U> Clone for ProstCodec<T, U> {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl<T, U> std::fmt::Debug for ProstCodec<T, U> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProstCodec").finish()
     }
 }
 
@@ -79,7 +91,6 @@ where
 }
 
 /// A [`Encoder`] that knows how to encode `T`.
-#[derive(Debug, Clone, Default)]
 pub struct ProstEncoder<T> {
     _pd: PhantomData<T>,
     buffer_settings: BufferSettings,
@@ -93,6 +104,26 @@ impl<T> ProstEncoder<T> {
             _pd: PhantomData,
             buffer_settings,
         }
+    }
+}
+
+impl<T> Default for ProstEncoder<T> {
+    fn default() -> Self {
+        Self::new(BufferSettings::default())
+    }
+}
+
+impl<T> Clone for ProstEncoder<T> {
+    fn clone(&self) -> Self {
+        Self::new(self.buffer_settings)
+    }
+}
+
+impl<T> std::fmt::Debug for ProstEncoder<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProstEncoder")
+            .field("buffer_settings", &self.buffer_settings)
+            .finish()
     }
 }
 
@@ -110,7 +141,6 @@ impl<T: Message> Encoder for ProstEncoder<T> {
 }
 
 /// A [`Decoder`] that knows how to decode `U`.
-#[derive(Debug, Clone, Default)]
 pub struct ProstDecoder<U> {
     _pd: PhantomData<U>,
     buffer_settings: BufferSettings,
@@ -124,6 +154,26 @@ impl<U> ProstDecoder<U> {
             _pd: PhantomData,
             buffer_settings,
         }
+    }
+}
+
+impl<U> Default for ProstDecoder<U> {
+    fn default() -> Self {
+        Self::new(BufferSettings::default())
+    }
+}
+
+impl<U> Clone for ProstDecoder<U> {
+    fn clone(&self) -> Self {
+        Self::new(self.buffer_settings)
+    }
+}
+
+impl<U> std::fmt::Debug for ProstDecoder<U> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProstDecoder")
+            .field("buffer_settings", &self.buffer_settings)
+            .finish()
     }
 }
 
@@ -170,6 +220,18 @@ mod tests {
     const LEN: usize = 10000;
     // The maximum uncompressed size in bytes for a message. Set to 2MB.
     const MAX_MESSAGE_SIZE: usize = mib(2);
+
+    /// A message type with no `Default`, `Clone` or `Debug` of its own.
+    struct Opaque;
+
+    fn assert_default_clone_debug<T: Default + Clone + std::fmt::Debug>() {}
+
+    #[test]
+    fn codecs_need_no_bounds_on_the_message_type() {
+        assert_default_clone_debug::<ProstEncoder<Opaque>>();
+        assert_default_clone_debug::<ProstDecoder<Opaque>>();
+        assert_default_clone_debug::<ProstCodec<Opaque, Opaque>>();
+    }
 
     #[tokio::test]
     async fn decode() {

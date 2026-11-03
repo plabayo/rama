@@ -6,7 +6,8 @@
 //! document tokenizes identically no matter how the input is split across
 //! `write` calls. A chunk is scanned in place; only an incomplete construct
 //! at its end is copied into the tokenizer's buffer, to be completed by the
-//! next chunk.
+//! next chunk. The scan of that construct resumes where the last write left
+//! it, so scanning work stays linear across small writes.
 //!
 //! It is built for verbatim re-serialization: the `raw` spans of the emitted
 //! tokens partition the input contiguously, so concatenating them reproduces
@@ -56,6 +57,8 @@ pub struct Tokenizer {
     buffer: Vec<u8>,
     /// Reusable attribute-range scratch for the current tag.
     attributes: Vec<AttrRange>,
+    /// How far the scan of the incomplete construct at the start of `buffer` got.
+    resume: Option<Resume>,
     context: ContextTracker,
     strict: bool,
 }
@@ -65,6 +68,7 @@ impl Default for Tokenizer {
         Self {
             buffer: Vec::new(),
             attributes: Vec::new(),
+            resume: None,
             context: ContextTracker::new(false),
             strict: false,
         }
@@ -117,12 +121,14 @@ impl Tokenizer {
         let Self {
             buffer,
             attributes,
+            resume,
             context,
             ..
         } = self;
         feed(
             buffer,
             attributes,
+            resume,
             chunk,
             &mut Standalone { sink, context },
             false,
@@ -139,12 +145,14 @@ impl Tokenizer {
         let Self {
             buffer,
             attributes,
+            resume,
             context,
             ..
         } = self;
         let result = feed(
             buffer,
             attributes,
+            resume,
             &[],
             &mut Standalone { sink, context },
             true,
@@ -160,7 +168,14 @@ impl Tokenizer {
         chunk: &[u8],
         sink: &mut P,
     ) -> Result<(), ParsingAmbiguityError> {
-        feed(&mut self.buffer, &mut self.attributes, chunk, sink, false)
+        feed(
+            &mut self.buffer,
+            &mut self.attributes,
+            &mut self.resume,
+            chunk,
+            sink,
+            false,
+        )
     }
 
     /// [`end`](Self::end) for a consumer that supplies its own
@@ -169,7 +184,14 @@ impl Tokenizer {
         &mut self,
         sink: &mut P,
     ) -> Result<(), ParsingAmbiguityError> {
-        let result = feed(&mut self.buffer, &mut self.attributes, &[], sink, true);
+        let result = feed(
+            &mut self.buffer,
+            &mut self.attributes,
+            &mut self.resume,
+            &[],
+            sink,
+            true,
+        );
         self.reset();
         result
     }
@@ -193,6 +215,7 @@ impl Tokenizer {
 
     fn reset(&mut self) {
         self.buffer.clear();
+        self.resume = None;
         self.context = ContextTracker::new(self.strict);
     }
 }
@@ -203,18 +226,19 @@ impl Tokenizer {
 fn feed<P: ParseSink>(
     buffer: &mut Vec<u8>,
     attributes: &mut Vec<AttrRange>,
+    resume: &mut Option<Resume>,
     chunk: &[u8],
     sink: &mut P,
     is_final: bool,
 ) -> Result<(), ParsingAmbiguityError> {
     if buffer.is_empty() {
-        let result = run(chunk, attributes, sink, is_final);
+        let result = run(chunk, attributes, resume, sink, is_final);
         sink.flush(chunk);
         let consumed = result.inspect_err(|_| buffer.extend_from_slice(chunk))?;
         buffer.extend_from_slice(chunk.get(consumed..).unwrap_or_default());
     } else {
         buffer.extend_from_slice(chunk);
-        let result = run(buffer, attributes, sink, is_final);
+        let result = run(buffer, attributes, resume, sink, is_final);
         sink.flush(buffer);
         buffer.drain(..result?);
     }
@@ -224,12 +248,19 @@ fn feed<P: ParseSink>(
 /// The resumable core. Emits all complete tokens of `input`; if `is_final`
 /// is false, stops at the first incomplete construct. Returns how many bytes
 /// were consumed: the rest is retained for the next call.
+///
+/// `resume` carries the scan progress of the construct at the start of
+/// `input` from the last call, and receives the progress of the incomplete
+/// construct when that one starts at offset 0 (a construct further in is
+/// moved to offset 0 by the caller and scanned afresh once).
 fn run<P: ParseSink>(
     input: &[u8],
     attributes: &mut Vec<AttrRange>,
+    resume: &mut Option<Resume>,
     sink: &mut P,
     is_final: bool,
 ) -> Result<usize, ParsingAmbiguityError> {
+    let carried = resume.take();
     let mut pos = 0;
     // Start of the pending (not-yet-emitted) text run.
     let mut text_start = 0;
@@ -256,13 +287,19 @@ fn run<P: ParseSink>(
                 // The pending text goes first: it can change the context the
                 // construct is judged in.
                 emit_text(input, text_start, lt, sink);
-                match process(construct, attributes, sink, input, lt, is_final)? {
-                    Some(next) => {
-                        pos = next;
-                        text_start = next;
+                let from = if lt == 0 { carried.as_ref() } else { None };
+                let Some(next) = process(
+                    construct, attributes, from, resume, sink, input, lt, is_final,
+                )?
+                else {
+                    // Positions are absolute, so they hold only at offset 0.
+                    if lt != 0 {
+                        *resume = None;
                     }
-                    None => return Ok(lt),
-                }
+                    return Ok(lt);
+                };
+                pos = next;
+                text_start = next;
             }
         }
     }
@@ -334,23 +371,49 @@ fn classify_markup_declaration<P: ParseSink>(input: &[u8], lt: usize, sink: &P) 
     Resolve::Construct(Construct::BogusComment(MARKUP_DECL_PREFIX.len()))
 }
 
+/// How far the scan of an incomplete construct got, so the next write
+/// continues it. Positions are absolute in the input whose offset 0 is the
+/// construct's `<`.
+#[derive(Debug, Clone, Copy)]
+enum Resume {
+    /// A start tag that is not closed yet.
+    StartTag(TagScan),
+    /// A closed start tag whose text-mode body or end tag is not complete yet.
+    Body {
+        tag: ClosedTag,
+        mode: TextMode,
+        body: BodyScan,
+    },
+    /// An end tag that is not closed yet.
+    EndTag(TagScan),
+    /// A comment, CDATA section, doctype or bogus comment whose terminator
+    /// does not start before `from`.
+    Delimited { from: usize },
+}
+
 /// Emits the construct at `lt`, returning the position just past it, or
 /// `None` (only when `is_final` is false) when it is not complete yet: then
-/// nothing was emitted.
+/// nothing was emitted, and `left` holds the progress to resume from. A
+/// construct an earlier write left incomplete continues from `from`.
+#[expect(clippy::too_many_arguments, reason = "the scan state of one construct")]
 fn process<P: ParseSink>(
     construct: Construct,
     attributes: &mut Vec<AttrRange>,
+    from: Option<&Resume>,
+    left: &mut Option<Resume>,
     sink: &mut P,
     input: &[u8],
     lt: usize,
     is_final: bool,
 ) -> Result<Option<usize>, ParsingAmbiguityError> {
     Ok(match construct {
-        Construct::StartTag => return scan_start_tag(attributes, input, lt, sink, is_final),
-        Construct::EndTag => scan_end_tag(attributes, input, lt, sink, false, is_final),
+        Construct::StartTag => {
+            return scan_start_tag(attributes, from, left, input, lt, sink, is_final);
+        }
+        Construct::EndTag => scan_end_tag(from, left, input, lt, sink, is_final),
         Construct::Comment => {
             let data_start = lt + COMMENT_PREFIX.len();
-            let end = find_seq(input, data_start, COMMENT_SUFFIX);
+            let end = find_terminator(from, left, input, data_start, COMMENT_SUFFIX);
             delimited(input, lt, data_start, end, COMMENT_SUFFIX.len(), is_final).map(
                 |(raw, data)| {
                     sink.comment(&Comment { input, raw, data });
@@ -360,7 +423,7 @@ fn process<P: ParseSink>(
         }
         Construct::Cdata => {
             let data_start = lt + CDATA_PREFIX.len();
-            let end = find_seq(input, data_start, CDATA_SUFFIX);
+            let end = find_terminator(from, left, input, data_start, CDATA_SUFFIX);
             delimited(input, lt, data_start, end, CDATA_SUFFIX.len(), is_final).map(
                 |(raw, data)| {
                     sink.cdata(&Cdata { input, raw, data });
@@ -370,7 +433,7 @@ fn process<P: ParseSink>(
         }
         Construct::Doctype => {
             let after_keyword = lt + MARKUP_DECL_PREFIX.len() + DOCTYPE_KEYWORD.len();
-            let end = find_byte(input, after_keyword, b'>');
+            let end = find_terminator(from, left, input, after_keyword, b">");
             delimited(input, lt, after_keyword, end, 1, is_final).map(|(raw, content)| {
                 let name = parse_doctype_name(input, after_keyword, content.end);
                 sink.doctype(&Doctype { input, raw, name });
@@ -379,13 +442,41 @@ fn process<P: ParseSink>(
         }
         Construct::BogusComment(open) => {
             let data_start = lt + open;
-            let end = find_byte(input, data_start, b'>');
+            let end = find_terminator(from, left, input, data_start, b">");
             delimited(input, lt, data_start, end, 1, is_final).map(|(raw, data)| {
                 sink.comment(&Comment { input, raw, data });
                 raw.end
             })
         }
     })
+}
+
+/// Finds `needle` from `data_start`, continuing a search an earlier write
+/// left in `from`, and leaving the progress in `left` when it is not found.
+fn find_terminator(
+    from: Option<&Resume>,
+    left: &mut Option<Resume>,
+    input: &[u8],
+    data_start: usize,
+    needle: &[u8],
+) -> Option<usize> {
+    let from = match from {
+        Some(&Resume::Delimited { from }) => from.max(data_start),
+        _ => data_start,
+    };
+    let end = find_seq(input, from, needle);
+    if end.is_none() {
+        *left = Some(Resume::Delimited {
+            from: resume_at(input, from, needle.len()),
+        });
+    }
+    end
+}
+
+/// Where a search for a match of up to `window` bytes resumes once the input
+/// grows: a match can straddle the current end of the input.
+fn resume_at(input: &[u8], from: usize, window: usize) -> usize {
+    from.max(input.len().saturating_sub(window.saturating_sub(1)))
 }
 
 /// The raw and data spans of a construct opened at `lt` whose data starts at
@@ -415,160 +506,468 @@ fn delimited(
 /// until the tag, and a text-mode body up to its end tag, are complete.
 fn scan_start_tag<P: ParseSink>(
     attributes: &mut Vec<AttrRange>,
+    from: Option<&Resume>,
+    left: &mut Option<Resume>,
     input: &[u8],
     lt: usize,
     sink: &mut P,
     is_final: bool,
 ) -> Result<Option<usize>, ParsingAmbiguityError> {
     let name_start = lt + 1;
-    let name_end = scan_tag_name(input, name_start);
-    let name_bytes = slice(input, name_start, name_end);
-
-    attributes.clear();
-    let (close, self_closing, complete) = scan_attributes(Some(attributes), input, name_end);
-    if !complete && !is_final {
-        return Ok(None);
-    }
+    // A carried body keeps the attributes recorded for its tag in place.
+    let (tag, carried_body) = if let Some(&Resume::Body { tag, mode, body }) = from {
+        (tag, Some((mode, body)))
+    } else {
+        let scan = match from {
+            Some(&Resume::StartTag(scan)) => scan,
+            _ => TagScan::new(name_start),
+        };
+        match scan_tag(Some(attributes), input, scan) {
+            Ok(tag) => (tag, None),
+            Err(cut) if is_final => (cut.unclosed(input), None),
+            Err(cut) => {
+                *left = Some(Resume::StartTag(cut));
+                return Ok(None);
+            }
+        }
+    };
+    let name_bytes = slice(input, name_start, tag.name_end);
     let name_hash = LocalNameHash::of(name_bytes);
     // Decided before the tag is applied, so an incomplete body leaves no trace.
     let text_mode = sink.text_mode(name_hash, name_bytes);
-    let body_end = match text_mode {
+    let end_tag = match text_mode {
         Some(mode) => {
-            let end = find_body_end(mode, input, close, name_bytes);
+            let mut body = carried_body
+                .filter(|&(carried, _)| carried == mode)
+                .map_or(BodyScan::start(tag.close), |(_, body)| body);
+            find_body_end(mode, input, name_bytes, &mut body);
             // The end tag, too, must be whole: edits anchored at it land after it.
-            let complete =
-                end.is_some_and(|lt| scan_attributes(None, input, scan_tag_name(input, lt + 2)).2);
-            if !complete && !is_final {
+            let end_tag = match &mut body {
+                BodyScan::EndTag { lt, scan } => match scan_tag(None, input, *scan) {
+                    Ok(end_tag) => Some((*lt, end_tag)),
+                    Err(cut) => {
+                        *scan = cut;
+                        is_final.then(|| (*lt, cut.unclosed(input)))
+                    }
+                },
+                BodyScan::Search { .. } => None,
+            };
+            if end_tag.is_none() && !is_final {
+                *left = Some(Resume::Body { tag, mode, body });
                 return Ok(None);
             }
-            end
+            end_tag
         }
         None => None,
     };
 
     sink.start_tag(&StartTag {
         input,
-        raw: Span::new(lt, close),
-        name: Span::new(name_start, name_end),
+        raw: Span::new(lt, tag.close),
+        name: Span::new(name_start, tag.name_end),
         name_hash,
         attributes,
-        self_closing,
+        self_closing: tag.self_closing,
     })?;
     if text_mode.is_none() {
-        return Ok(Some(close));
+        return Ok(Some(tag.close));
     }
-    let Some(end_lt) = body_end else {
+    let Some((end_lt, end_tag)) = end_tag else {
         // An unterminated text-mode body runs to the end of the final input.
-        emit_text(input, close, input.len(), sink);
+        emit_text(input, tag.close, input.len(), sink);
         return Ok(Some(input.len()));
     };
-    emit_text(input, close, end_lt, sink);
-    Ok(scan_end_tag(attributes, input, end_lt, sink, true, true))
+    emit_text(input, tag.close, end_lt, sink);
+    emit_end_tag(input, end_lt, end_tag, sink, true);
+    Ok(Some(end_tag.close))
 }
 
 /// Emits an end tag, returning the position past it (`None` while it is
 /// incomplete in a non-final run).
 fn scan_end_tag<P: ParseSink>(
-    attributes: &mut Vec<AttrRange>,
+    from: Option<&Resume>,
+    left: &mut Option<Resume>,
     input: &[u8],
     lt: usize,
     sink: &mut P,
-    closes_text: bool,
     is_final: bool,
 ) -> Option<usize> {
-    let name_start = lt + 2;
-    let name_end = scan_tag_name(input, name_start);
-
+    let scan = match from {
+        Some(&Resume::EndTag(scan)) => scan,
+        _ => TagScan::new(lt + 2),
+    };
     // End tags may carry (ignored) attributes; scan past them so that a `>`
     // inside a quoted value does not close the tag prematurely.
-    attributes.clear();
-    let (close, _self_closing, complete) = scan_attributes(Some(attributes), input, name_end);
-    if !complete && !is_final {
-        return None;
-    }
+    let tag = match scan_tag(None, input, scan) {
+        Ok(tag) => tag,
+        Err(cut) if is_final => cut.unclosed(input),
+        Err(cut) => {
+            *left = Some(Resume::EndTag(cut));
+            return None;
+        }
+    };
+    emit_end_tag(input, lt, tag, sink, false);
+    Some(tag.close)
+}
 
+fn emit_end_tag<P: ParseSink>(
+    input: &[u8],
+    lt: usize,
+    tag: ClosedTag,
+    sink: &mut P,
+    closes_text: bool,
+) {
+    let name = Span::new(lt + 2, tag.name_end);
     sink.end_tag(
         &EndTag {
             input,
-            raw: Span::new(lt, close),
-            name: Span::new(name_start, name_end),
-            name_hash: LocalNameHash::of(slice(input, name_start, name_end)),
+            raw: Span::new(lt, tag.close),
+            name,
+            name_hash: LocalNameHash::of(slice(input, name.start, name.end)),
         },
         closes_text,
     );
-    Some(close)
 }
 
-fn find_body_end(mode: TextMode, input: &[u8], content_start: usize, name: &[u8]) -> Option<usize> {
-    match mode {
-        TextMode::PlainText => None,
-        TextMode::RawText | TextMode::RcData => {
-            find_appropriate_end_tag(input, content_start, name)
+/// Progress through a text-mode body and the end tag that closes it.
+#[derive(Debug, Clone, Copy)]
+enum BodyScan {
+    /// No end tag starts before `from`, where script data is in `script`.
+    Search { from: usize, script: ScriptState },
+    /// The end tag starting at `lt`, scanned up to `scan`.
+    EndTag { lt: usize, scan: TagScan },
+}
+
+impl BodyScan {
+    const fn start(content_start: usize) -> Self {
+        Self::Search {
+            from: content_start,
+            script: ScriptState::Data,
         }
-        TextMode::ScriptData => find_script_data_end(input, content_start),
     }
 }
 
-/// Parses a tag's attribute list starting at `from` (just after the tag
-/// name), optionally recording attributes into `attributes`. Returns the
-/// position just past the closing `>` (or end of input), whether the tag was
-/// self-closing, and whether it actually closed (vs. running out of input).
+/// Looks for the end tag closing a text-mode body, continuing the search in
+/// `body`.
+fn find_body_end(mode: TextMode, input: &[u8], name: &[u8], body: &mut BodyScan) {
+    let BodyScan::Search { from, script } = *body else {
+        return;
+    };
+    let found = match mode {
+        TextMode::PlainText => Err(BodyScan::Search { from, script }),
+        TextMode::RawText | TextMode::RcData => {
+            find_appropriate_end_tag(input, from, name).ok_or(BodyScan::Search {
+                // `</`, the name and a terminator.
+                from: resume_at(input, from, name.len() + 3),
+                script,
+            })
+        }
+        TextMode::ScriptData => find_script_data_end(input, from, script),
+    };
+    *body = found.map_or_else(
+        |progress| progress,
+        |lt| BodyScan::EndTag {
+            lt,
+            scan: TagScan::new(lt + 2),
+        },
+    );
+}
+
+/// Where a tag scan stands.
+#[derive(Debug, Clone, Copy)]
+enum TagState {
+    /// In the tag name.
+    Name,
+    /// Between attributes.
+    Between,
+    /// Inside an attribute that ran into the end of the input.
+    Attr(AttrState),
+}
+
+/// Where an attribute scan stands.
+#[derive(Debug, Clone, Copy)]
+enum AttrState {
+    /// In the name starting at `start`.
+    Name { start: usize },
+    /// After the name, before a possible `=`.
+    AfterName { name: Span },
+    /// After `=`, before the value.
+    BeforeValue { name: Span },
+    /// In a value quoted by `quote`, starting at `start`.
+    Quoted { name: Span, quote: u8, start: usize },
+    /// In an unquoted value starting at `start`.
+    Unquoted { name: Span, start: usize },
+}
+
+/// Resumable progress through a tag the input cut off. Every state change
+/// is decided by bytes before `pos`, so appending input never changes it and
+/// scanning continues at `pos`.
+#[derive(Debug, Clone, Copy)]
+struct TagScan {
+    state: TagState,
+    pos: usize,
+    /// End of the tag name (final once `state` is past [`TagState::Name`]).
+    name_end: usize,
+    /// How many recorded attributes are complete (when recording).
+    attrs: usize,
+}
+
+impl TagScan {
+    const fn new(name_start: usize) -> Self {
+        Self {
+            state: TagState::Name,
+            pos: name_start,
+            name_end: name_start,
+            attrs: 0,
+        }
+    }
+
+    /// The tag as the final input leaves it: running to its end.
+    const fn unclosed(self, input: &[u8]) -> ClosedTag {
+        ClosedTag {
+            name_end: self.name_end,
+            close: input.len(),
+            self_closing: false,
+        }
+    }
+}
+
+/// A scanned tag.
+#[derive(Debug, Clone, Copy)]
+struct ClosedTag {
+    name_end: usize,
+    /// The position just past the tag.
+    close: usize,
+    self_closing: bool,
+}
+
+/// Scans a tag's name and attribute list from where `scan` stands,
+/// optionally recording attributes into `attributes`, up to the tag's close,
+/// or to the end of the input (`Err` with the progress to resume from).
+///
+/// At the end of the input the attribute in progress is recorded as is (an
+/// unterminated tag of the final input keeps it), but not counted as
+/// complete, so a later write continues it.
 ///
 /// Used for both emitting (with `Some` storage) and the streaming
 /// completeness check (`None`), so the two can never disagree on where a tag
 /// ends.
-fn scan_attributes(
+#[inline(always)]
+fn scan_tag(
+    mut attributes: Option<&mut Vec<AttrRange>>,
+    input: &[u8],
+    scan: TagScan,
+) -> Result<ClosedTag, TagScan> {
+    if let Some(attributes) = attributes.as_deref_mut() {
+        attributes.truncate(scan.attrs);
+    }
+    let TagScan {
+        state,
+        pos,
+        mut name_end,
+        ..
+    } = scan;
+    let cut = |state, pos, name_end, attributes: Option<&Vec<AttrRange>>| {
+        // The last recorded attribute is incomplete when the input cut it off.
+        let partial = usize::from(matches!(state, TagState::Attr(_)));
+        TagScan {
+            state,
+            pos,
+            name_end,
+            attrs: attributes.map_or(0, |attributes| attributes.len().saturating_sub(partial)),
+        }
+    };
+    let from = match state {
+        TagState::Name => {
+            name_end = scan_tag_name(input, pos);
+            if name_end == input.len() {
+                return Err(cut(TagState::Name, name_end, name_end, None));
+            }
+            name_end
+        }
+        TagState::Between => pos,
+        TagState::Attr(state) => {
+            match resume_attribute(attributes.as_deref_mut(), input, state, pos) {
+                Ok(after) => after,
+                Err(state) => {
+                    let state = TagState::Attr(state);
+                    return Err(cut(state, input.len(), name_end, attributes.as_deref()));
+                }
+            }
+        }
+    };
+    // Most tags close right after the name: that skips the out-of-line scan.
+    let list = if input.get(from) == Some(&b'>') {
+        Ok((from + 1, false))
+    } else {
+        scan_attribute_list(attributes.as_deref_mut(), input, from)
+    };
+    match list {
+        Ok((close, self_closing)) => Ok(ClosedTag {
+            name_end,
+            close,
+            self_closing,
+        }),
+        Err((state, pos)) => Err(cut(state, pos, name_end, attributes.as_deref())),
+    }
+}
+
+/// Scans an attribute list from `from` up to and including the tag's
+/// close, returning the position past it and whether the tag was
+/// self-closing, or, when the input runs out, the state and position to
+/// resume from.
+///
+/// Kept out of line: inlined into each tag scanner, its hot loop runs slower.
+#[inline(never)]
+fn scan_attribute_list(
     mut attributes: Option<&mut Vec<AttrRange>>,
     input: &[u8],
     from: usize,
-) -> (usize, bool, bool) {
+) -> Result<(usize, bool), (TagState, usize)> {
     let mut i = from;
     loop {
         i = skip_space(input, i);
         match input.get(i) {
-            None => return (input.len(), false, false),
-            Some(b'>') => return (i + 1, false, true),
-            Some(b'/') => {
-                if input.get(i + 1) == Some(&b'>') {
-                    return (i + 2, true, true);
-                }
-                i += 1; // stray solidus
-            }
-            Some(_) => i = scan_one_attribute(attributes.as_deref_mut(), input, i),
+            None => return Err((TagState::Between, i)),
+            Some(b'>') => return Ok((i + 1, false)),
+            Some(b'/') => match input.get(i + 1) {
+                Some(b'>') => return Ok((i + 2, true)),
+                Some(_) => i += 1, // stray solidus
+                None => return Err((TagState::Between, i)),
+            },
+            Some(_) => match attribute_name(attributes.as_deref_mut(), input, i, i) {
+                Ok(after) => i = after,
+                Err(state) => return Err((TagState::Attr(state), input.len())),
+            },
         }
     }
 }
 
-fn scan_one_attribute(attributes: Option<&mut Vec<AttrRange>>, input: &[u8], i: usize) -> usize {
-    let name_start = i;
-    let name_end = scan_attribute_name(input, i);
+/// Where an attribute scan records the attribute it ends with: complete, or
+/// as far as the input goes.
+type Attributes<'a> = Option<&'a mut Vec<AttrRange>>;
 
-    let after_ws = skip_space(input, name_end);
-    let (value, has_value, after) = if input.get(after_ws) == Some(&b'=') {
-        let value_pos = skip_space(input, after_ws + 1);
-        match input.get(value_pos) {
-            Some(&q @ (b'"' | b'\'')) => {
-                let (value, after) = scan_quoted_value(input, value_pos, q);
-                (value, true, after)
-            }
-            None => (Span::empty(value_pos), true, value_pos),
-            Some(_) => {
-                let (value, after) = scan_unquoted_value(input, value_pos);
-                (value, true, after)
-            }
-        }
-    } else {
-        (Span::empty(name_end), false, name_end)
-    };
+/// The position past a scanned attribute, or, when the input ends inside
+/// it, the state to resume in.
+type AttrScan = Result<usize, AttrState>;
 
+fn record(attributes: Attributes<'_>, attr: AttrRange) {
     if let Some(attributes) = attributes {
-        attributes.push(AttrRange {
-            name: Span::new(name_start, name_end),
-            value,
-            has_value,
-        });
+        attributes.push(attr);
     }
-    after
+}
+
+fn resume_attribute(
+    attributes: Attributes<'_>,
+    input: &[u8],
+    state: AttrState,
+    i: usize,
+) -> AttrScan {
+    match state {
+        AttrState::Name { start } => attribute_name(attributes, input, start, i),
+        AttrState::AfterName { name } => after_attribute_name(attributes, input, name, i),
+        AttrState::BeforeValue { name } => before_attribute_value(attributes, input, name, i),
+        AttrState::Quoted { name, quote, start } => {
+            quoted_value(attributes, input, name, quote, start, i)
+        }
+        AttrState::Unquoted { name, start } => unquoted_value(attributes, input, name, start, i),
+    }
+}
+
+#[inline(always)]
+fn attribute_name(attributes: Attributes<'_>, input: &[u8], start: usize, i: usize) -> AttrScan {
+    let end = scan_attribute_name(input, i);
+    let name = Span::new(start, end);
+    if end == input.len() {
+        record(attributes, valueless(name));
+        return Err(AttrState::Name { start });
+    }
+    after_attribute_name(attributes, input, name, end)
+}
+
+#[inline(always)]
+fn after_attribute_name(
+    attributes: Attributes<'_>,
+    input: &[u8],
+    name: Span,
+    i: usize,
+) -> AttrScan {
+    let i = skip_space(input, i);
+    match input.get(i) {
+        Some(b'=') => before_attribute_value(attributes, input, name, i + 1),
+        next => {
+            record(attributes, valueless(name));
+            next.map_or(Err(AttrState::AfterName { name }), |_| Ok(i))
+        }
+    }
+}
+
+#[inline(always)]
+fn before_attribute_value(
+    attributes: Attributes<'_>,
+    input: &[u8],
+    name: Span,
+    i: usize,
+) -> AttrScan {
+    let i = skip_space(input, i);
+    match input.get(i) {
+        None => {
+            record(attributes, valued(name, Span::empty(i)));
+            Err(AttrState::BeforeValue { name })
+        }
+        Some(&quote @ (b'"' | b'\'')) => quoted_value(attributes, input, name, quote, i + 1, i + 1),
+        Some(_) => unquoted_value(attributes, input, name, i, i),
+    }
+}
+
+#[inline(always)]
+fn quoted_value(
+    attributes: Attributes<'_>,
+    input: &[u8],
+    name: Span,
+    quote: u8,
+    start: usize,
+    i: usize,
+) -> AttrScan {
+    let Some(rel) = memchr(quote, input.get(i..).unwrap_or(&[])) else {
+        record(attributes, valued(name, Span::new(start, input.len())));
+        return Err(AttrState::Quoted { name, quote, start });
+    };
+    record(attributes, valued(name, Span::new(start, i + rel)));
+    Ok(i + rel + 1)
+}
+
+#[inline(always)]
+fn unquoted_value(
+    attributes: Attributes<'_>,
+    input: &[u8],
+    name: Span,
+    start: usize,
+    i: usize,
+) -> AttrScan {
+    let end = scan_unquoted_value(input, i);
+    record(attributes, valued(name, Span::new(start, end)));
+    if end == input.len() {
+        Err(AttrState::Unquoted { name, start })
+    } else {
+        Ok(end)
+    }
+}
+
+const fn valueless(name: Span) -> AttrRange {
+    AttrRange {
+        name,
+        value: Span::empty(name.end),
+        has_value: false,
+    }
+}
+
+const fn valued(name: Span, value: Span) -> AttrRange {
+    AttrRange {
+        name,
+        value,
+        has_value: true,
+    }
 }
 
 fn emit_text<P: ParseSink>(input: &[u8], start: usize, end: usize, sink: &mut P) {
@@ -615,15 +1014,7 @@ fn scan_attribute_name(input: &[u8], from: usize) -> usize {
     i
 }
 
-fn scan_quoted_value(input: &[u8], quote_pos: usize, quote: u8) -> (Span, usize) {
-    let start = quote_pos + 1;
-    match memchr(quote, input.get(start..).unwrap_or(&[])) {
-        Some(rel) => (Span::new(start, start + rel), start + rel + 1),
-        None => (Span::new(start, input.len()), input.len()),
-    }
-}
-
-fn scan_unquoted_value(input: &[u8], from: usize) -> (Span, usize) {
+fn scan_unquoted_value(input: &[u8], from: usize) -> usize {
     let mut i = from;
     while let Some(&b) = input.get(i) {
         if is_html_space(b) || b == b'>' {
@@ -631,7 +1022,7 @@ fn scan_unquoted_value(input: &[u8], from: usize) -> (Span, usize) {
         }
         i += 1;
     }
-    (Span::new(from, i), i)
+    i
 }
 
 fn skip_space(input: &[u8], from: usize) -> usize {
@@ -690,11 +1081,6 @@ fn find_seq(input: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     None
 }
 
-/// Finds `byte` in `input[from..]`, returning its absolute position.
-fn find_byte(input: &[u8], from: usize, byte: u8) -> Option<usize> {
-    memchr(byte, input.get(from..)?).map(|rel| from + rel)
-}
-
 fn is_tag_terminator(b: u8) -> bool {
     is_html_space(b) || b == b'/' || b == b'>'
 }
@@ -730,25 +1116,44 @@ fn find_appropriate_end_tag(input: &[u8], from: usize, name: &[u8]) -> Option<us
     None
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScriptState {
     Data,
     Escaped,
     DoubleEscaped,
 }
 
+/// The longest match the script-data scan makes (`</script` and a
+/// terminator).
+const SCRIPT_MATCH_WINDOW: usize = b"</script>".len();
+
 /// Finds the `</script>` that terminates a script element per the HTML
 /// script-data escape rules (handling `<!-- … -->` and nested `<script>`),
-/// returning the position of its `<`.
-fn find_script_data_end(input: &[u8], from: usize) -> Option<usize> {
-    let mut state = ScriptState::Data;
+/// scanning from `from` in `state` and returning the position of its `<`, or
+/// the progress to resume from once more input arrives.
+fn find_script_data_end(
+    input: &[u8],
+    from: usize,
+    mut state: ScriptState,
+) -> Result<usize, BodyScan> {
     let mut i = from;
+    // Only a full match changes the state, so a scan from the last change
+    // repeats this one; the bytes before the end window are settled.
+    let mut changed_at = from;
+    let progress = |state, changed_at| BodyScan::Search {
+        from: resume_at(input, changed_at, SCRIPT_MATCH_WINDOW),
+        script: state,
+    };
     loop {
+        let before = state;
         match state {
             ScriptState::Data => {
-                let lt = i + memchr(b'<', input.get(i..).unwrap_or(&[]))?;
+                let Some(rel) = memchr(b'<', input.get(i..).unwrap_or(&[])) else {
+                    return Err(progress(state, changed_at));
+                };
+                let lt = i + rel;
                 if is_appropriate_end_tag(input, lt, SCRIPT_NAME) {
-                    return Some(lt);
+                    return Ok(lt);
                 }
                 if input.get(lt + 1) == Some(&b'!')
                     && input.get(lt + 2..).is_some_and(|s| s.starts_with(b"--"))
@@ -760,12 +1165,15 @@ fn find_script_data_end(input: &[u8], from: usize) -> Option<usize> {
                 }
             }
             ScriptState::Escaped => {
-                let at = i + memchr2(b'<', b'-', input.get(i..).unwrap_or(&[]))?;
+                let Some(rel) = memchr2(b'<', b'-', input.get(i..).unwrap_or(&[])) else {
+                    return Err(progress(state, changed_at));
+                };
+                let at = i + rel;
                 if input.get(at) == Some(&b'-') {
                     i = consume_comment_close(input, at, &mut state);
                 } else if is_appropriate_end_tag(input, at, SCRIPT_NAME) {
                     // `</script>` ends the script even inside an escaped comment.
-                    return Some(at);
+                    return Ok(at);
                 } else if let Some(after) = double_escape_start(input, at) {
                     state = ScriptState::DoubleEscaped;
                     i = after;
@@ -774,7 +1182,10 @@ fn find_script_data_end(input: &[u8], from: usize) -> Option<usize> {
                 }
             }
             ScriptState::DoubleEscaped => {
-                let at = i + memchr2(b'<', b'-', input.get(i..).unwrap_or(&[]))?;
+                let Some(rel) = memchr2(b'<', b'-', input.get(i..).unwrap_or(&[])) else {
+                    return Err(progress(state, changed_at));
+                };
+                let at = i + rel;
                 if input.get(at) == Some(&b'-') {
                     i = consume_comment_close(input, at, &mut state);
                 } else if let Some(after) = double_escape_end(input, at) {
@@ -784,6 +1195,9 @@ fn find_script_data_end(input: &[u8], from: usize) -> Option<usize> {
                     i = at + 1;
                 }
             }
+        }
+        if state != before {
+            changed_at = i;
         }
     }
 }

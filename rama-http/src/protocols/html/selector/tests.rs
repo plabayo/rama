@@ -310,6 +310,22 @@ fn matching_attributes() {
 }
 
 #[test]
+fn matching_empty_operands_match_nothing() {
+    for value in ["", " x", "x  y", "x"] {
+        let mut dom = Dom::new();
+        let el = dom.create("p");
+        dom.set_attr(el, "class", value);
+        let el = dom.element(el);
+        for op in ["^=", "$=", "*=", "~="] {
+            let attr = format!(r#"[class{op}""]"#);
+            assert!(!sel(&attr).matches(&el), "{attr} on class={value:?}");
+            let negated = format!(":not({attr})");
+            assert!(sel(&negated).matches(&el), "{negated} on class={value:?}");
+        }
+    }
+}
+
+#[test]
 fn matching_deep_descendant_chain_stays_linear() {
     // Every `b` ancestor satisfies the inner compounds, so an unpruned search
     // re-walks the chain once per combinator: O(depth^4) here.

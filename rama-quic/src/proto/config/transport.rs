@@ -149,7 +149,8 @@ impl TransportConfig {
         /// # }
         /// ```
         pub fn max_idle_timeout(mut self, value: Option<IdleTimeout>) -> Self {
-            self.max_idle_timeout = value.map(|t| t.0);
+            // Zero means disabled (RFC 9000 §18.2), so it is stored as `None` for every reader.
+            self.max_idle_timeout = value.map(|t| t.0).filter(|t| t.into_inner() != 0);
             self
         }
     }

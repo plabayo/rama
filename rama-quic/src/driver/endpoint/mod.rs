@@ -3,7 +3,7 @@ use std::{
     future::Future,
     io,
     io::IoSliceMut,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     pin::Pin,
     str,
     sync::{
@@ -106,7 +106,7 @@ impl Endpoint {
         EndpointBuilder::new(exec).with_packet_socket(socket)
     }
 
-    /// Bind a client endpoint, requesting best-effort dual-stack operation for IPv6.
+    /// Bind a client endpoint, requesting best-effort dual-stack operation for the IPv6 wildcard.
     ///
     /// Use [`Self::build`] to customise the endpoint or UDP socket configuration.
     pub async fn bind_client(
@@ -1016,11 +1016,14 @@ pub(crate) fn default_socket_config() -> UdpSocketConfig {
 }
 
 /// The socket configuration a client binds with: the endpoint defaults, plus a request for a
-/// dual-stack socket on an IPv6 address that the platform may refuse. A refusal leaves the
-/// platform's own `IPV6_V6ONLY` default in place and the socket bound.
+/// dual-stack socket on the IPv6 wildcard or an IPv4-mapped address that the platform may
+/// refuse. A refusal leaves the platform's own `IPV6_V6ONLY` default in place and the socket bound.
 fn client_socket_config(address: SocketAddress) -> UdpSocketConfig {
     let mut config = default_socket_config();
-    if address.ip_addr.is_ipv6() {
+    // A specific IPv6 address cannot carry IPv4, and Windows rejects IPv4 options on it.
+    if let IpAddr::V6(ip) = address.ip_addr
+        && (ip.is_unspecified() || ip.to_ipv4_mapped().is_some())
+    {
         let mut options = config.socket_options().clone();
         options.only_v6_best_effort = Some(false);
         config.set_socket_options(options);

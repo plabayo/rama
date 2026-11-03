@@ -545,6 +545,137 @@ fn rewriting_time_is_linear_in_the_input() {
     }
 }
 
+/// Constructs that stay incomplete across many writes: each write must resume
+/// the scan, not repeat it from the construct's start.
+fn chunked_adversarial(id: usize, n: usize) -> String {
+    match id {
+        0 => format!("<div{}>", " a".repeat(n)),
+        1 => format!("<div{}>", " a='>'".repeat(n)),
+        2 => format!("<script>{}</script>", "abcd".repeat(n)),
+        3 => format!("<script>{}</script>", "a>b<".repeat(n)),
+        4 => format!("<script><!--{}--></script>", "<scr>-".repeat(n)),
+        5 => format!("<!--{}-->", "a->-".repeat(n)),
+        6 => format!("<textarea>{}</textarea>", "a</b>".repeat(n)),
+        7 => format!("<div></div{}>", " a='>'".repeat(n)),
+        8 => format!("<style>x</style{}>", " a='>'".repeat(n)),
+        9 => format!("<div a=\"{}\">", "a>".repeat(n)),
+        10 => format!("<d{}>", "iv".repeat(n)),
+        11 => format!("<!x{}>", "abcd".repeat(n)),
+        _ => format!("<svg><![CDATA[{}]]></svg>", "a]>]".repeat(n)),
+    }
+}
+
+const CHUNKED_ADVERSARIAL: usize = 13;
+
+/// [`rewriting_time_is_linear_in_the_input`] for input arriving in 1-16 byte
+/// writes, which a slow or hostile origin controls.
+#[test]
+fn chunked_rewriting_time_is_linear_in_the_input() {
+    fn elapsed(input: &[u8], mode: ScopeMode) -> Duration {
+        let started = Instant::now();
+        let handlers = ElementContentHandlers::new().on("div".parse().unwrap(), |el| {
+            el.append("!");
+            Ok(())
+        });
+        let mut rewriter = HtmlRewriter::from_handlers(handlers).with_scope_mode(mode);
+        let mut output = Vec::new();
+        let mut rest = input;
+        for step in 0.. {
+            if rest.is_empty() {
+                break;
+            }
+            let (chunk, tail) = rest.split_at((1 + step * 7 % 16).min(rest.len()));
+            rewriter.write(chunk).unwrap();
+            output.extend(rewriter.take_output());
+            rest = tail;
+        }
+        rewriter.end().unwrap();
+        output.extend(rewriter.take_output());
+        assert!(!output.is_empty());
+        started.elapsed()
+    }
+
+    let mut superlinear = Vec::new();
+    for mode in [ScopeMode::Browser, ScopeMode::NearestMatch] {
+        for id in 0..CHUNKED_ADVERSARIAL {
+            let small = chunked_adversarial(id, 1_000);
+            let large = chunked_adversarial(id, 16_000);
+            // Same bound and noise handling as the one-shot tripwire.
+            let mut timings = Vec::new();
+            let linear = (0..2).any(|_| {
+                let (mut small_time, mut large_time) = (Duration::MAX, Duration::MAX);
+                for _ in 0..5 {
+                    small_time = small_time.min(elapsed(small.as_bytes(), mode));
+                    large_time = large_time.min(elapsed(large.as_bytes(), mode));
+                }
+                timings.push((small_time, large_time));
+                large_time.as_secs_f64() / small_time.as_secs_f64().max(1e-6) < 100.0
+            });
+            if !linear {
+                superlinear.push((id, mode, timings));
+            }
+        }
+    }
+    assert!(
+        superlinear.is_empty(),
+        "patterns growing superlinearly (id, mode, (small, large)): {superlinear:?}"
+    );
+}
+
+/// An end-anchored edit on every element must not revisit the open elements
+/// at each end tag.
+#[test]
+fn universal_end_anchored_handler_time_is_linear() {
+    fn elapsed(input: &[u8]) -> Duration {
+        let started = Instant::now();
+        let handlers = ElementContentHandlers::new().on("*".parse().unwrap(), |el| {
+            el.append("!");
+            Ok(())
+        });
+        let mut rewriter = HtmlRewriter::from_handlers(handlers);
+        rewriter.write(input).unwrap();
+        rewriter.end().unwrap();
+        assert!(!rewriter.take_output().is_empty());
+        started.elapsed()
+    }
+
+    let small = "<div><b></b>".repeat(2_000);
+    let large = "<div><b></b>".repeat(32_000);
+    let mut timings = Vec::new();
+    let linear = (0..2).any(|_| {
+        let (mut small_time, mut large_time) = (Duration::MAX, Duration::MAX);
+        for _ in 0..5 {
+            small_time = small_time.min(elapsed(small.as_bytes()));
+            large_time = large_time.min(elapsed(large.as_bytes()));
+        }
+        timings.push((small_time, large_time));
+        large_time.as_secs_f64() / small_time.as_secs_f64().max(1e-6) < 100.0
+    });
+    assert!(linear, "grows superlinearly (small, large): {timings:?}");
+}
+
+#[test]
+fn empty_attribute_operands_match_nothing() {
+    let input = br#"<p class=""></p><p class></p><p class=" x"></p><p class="x  y"></p><p></p>"#;
+    for mode in [ScopeMode::Browser, ScopeMode::NearestMatch] {
+        for op in ["^=", "$=", "*=", "~="] {
+            let attr = format!(r#"p[class{op}""]"#);
+            assert_eq!(
+                rewrite_chunks([&input[..]], &attr, Edit::Append, mode),
+                input,
+                "{attr} {mode:?}"
+            );
+            let negated = format!(r#"p:not([class{op}""])"#);
+            let out = rewrite_chunks([&input[..]], &negated, Edit::Append, mode);
+            assert_eq!(
+                String::from_utf8_lossy(&out).matches("@@").count(),
+                5,
+                "{negated} {mode:?}"
+            );
+        }
+    }
+}
+
 #[quickcheck]
 fn nested_scope_suppression_is_complete(depth: u8, choice: u8, split: usize) -> bool {
     let depth = usize::from(depth % 32) + 1;

@@ -111,7 +111,7 @@ pub(super) struct FrameCodec {
     in_buffer: BytesMut,
     in_buf_max_read: usize,
     /// Buffer to send packets to the network.
-    out_buffer: Vec<u8>,
+    out_buffer: BytesMut,
     /// Capacity limit for `out_buffer`.
     max_out_buffer_len: usize,
     /// Buffer target length to reach before writing to the stream
@@ -272,8 +272,7 @@ impl FrameCodec {
         trace!("writing frame {frame}");
 
         self.out_buffer.reserve(frame.len());
-        // Note: writing into Vec is infallible (only panics on alloc failure).
-        _ = frame.format_into_buf(&mut self.out_buffer);
+        frame.format_into_buf(&mut self.out_buffer);
 
         if self.out_buffer.len() > self.out_buffer_write_len {
             self.write_out_buffer(stream)
@@ -300,9 +299,9 @@ impl FrameCodec {
             }
             match stream.write(&self.out_buffer[pos..]) {
                 Ok(0) => {
-                    // Drain already-written bytes before returning so that
+                    // Drop already-written bytes before returning so that
                     // a retry starts from the correct position.
-                    self.out_buffer.drain(0..pos);
+                    bytes::Buf::advance(&mut self.out_buffer, pos);
                     return Err(IoError::new(
                         IoErrorKind::ConnectionReset,
                         "Connection reset while sending",
@@ -311,7 +310,8 @@ impl FrameCodec {
                 }
                 Ok(n) => pos += n,
                 Err(err) => {
-                    self.out_buffer.drain(0..pos);
+                    // Advance past the written prefix without moving the unwritten tail.
+                    bytes::Buf::advance(&mut self.out_buffer, pos);
                     return Err(err.into());
                 }
             }
@@ -324,9 +324,12 @@ mod tests {
     use crate::protocol::error::ProtocolError;
     use std::assert_matches;
 
-    use super::{Frame, FrameSocket};
+    use super::{
+        Frame, FrameSocket,
+        coding::{OpCode, OpCodeData},
+    };
 
-    use std::io::Cursor;
+    use std::io::{self, Cursor};
 
     #[test]
     fn read_frames() {
@@ -397,6 +400,65 @@ mod tests {
             sock.read(None).unwrap().unwrap().into_payload(),
             &payload[..]
         );
+    }
+
+    /// Accepts at most 7 bytes per write and fails every other write with `WouldBlock`.
+    #[derive(Default)]
+    struct TrickleWrite {
+        wire: Vec<u8>,
+        block: bool,
+    }
+
+    impl io::Write for TrickleWrite {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.block = !self.block;
+            if self.block {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            let len = buf.len().min(7);
+            self.wire.extend_from_slice(&buf[..len]);
+            Ok(len)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `Ok(true)` once done, `Ok(false)` when the writer would block.
+    fn done_or_blocked(result: Result<(), ProtocolError>) -> bool {
+        match result {
+            Ok(()) => true,
+            Err(ProtocolError::Io(err)) if err.kind() == io::ErrorKind::WouldBlock => false,
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[test]
+    fn write_frames_in_partial_writes() {
+        let frames = || {
+            (0..4).map(|i| {
+                Frame::message(
+                    vec![i; 10 + 40 * i as usize],
+                    OpCode::Data(OpCodeData::Binary),
+                    true,
+                )
+            })
+        };
+        let mut expected = Vec::new();
+        for frame in frames() {
+            frame.format(&mut expected).unwrap();
+        }
+
+        // Queue each frame while earlier ones are still partly written.
+        let mut sock = FrameSocket::new(TrickleWrite::default());
+        for frame in frames() {
+            done_or_blocked(sock.write(frame));
+            done_or_blocked(sock.flush());
+        }
+        while !done_or_blocked(sock.flush()) {}
+
+        assert_eq!(sock.into_inner().0.wire, expected);
     }
 
     #[test]

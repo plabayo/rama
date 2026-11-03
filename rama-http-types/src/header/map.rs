@@ -5824,6 +5824,37 @@ fn remove_entry_mult_then_into_ordered_iter_skips_removed_extras() {
 }
 
 #[test]
+fn insert_mult_with_more_than_two_values() {
+    let mut map = HeaderMap::new();
+    for value in ["a", "b", "c", "d"] {
+        map.append("hello", HeaderValue::from_static(value));
+    }
+    map.append("other", HeaderValue::from_static("x"));
+    map.append("other", HeaderValue::from_static("y"));
+
+    let Entry::Occupied(mut entry) = map.entry("hello") else {
+        panic!("expected hello header");
+    };
+    let old = entry
+        .insert_mult(HeaderValue::from_static("new"))
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(old, ["a", "b", "c", "d"]);
+    assert_header_map_invariants(&map);
+
+    assert_eq!(map.len(), 3);
+    assert_eq!(map.get_all("hello").iter().collect::<Vec<_>>(), ["new"]);
+    assert_eq!(map.get_all("other").iter().collect::<Vec<_>>(), ["x", "y"]);
+
+    map.append("hello", HeaderValue::from_static("again"));
+    assert_eq!(
+        map.get_all("hello").iter().collect::<Vec<_>>(),
+        ["new", "again"]
+    );
+    assert_header_map_invariants(&map);
+}
+
+#[test]
 fn insert_mult_then_ordered_iter_updates_moved_extra_order_links() {
     let mut map = HeaderMap::new();
     map.append("x-first", HeaderValue::from_static("one"));

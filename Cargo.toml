@@ -246,7 +246,7 @@ ring = "0.17"
 rustc-hash = "2"
 rustls = { version = "0.23.46", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-pki-types = "^1"
-rustls-webpki = { version = "0.103", default-features = false, features = ["std"] }
+rustls-webpki = { version = "0.103.16", default-features = false, features = ["std"] }
 rustversion = "1.0"
 ryu = "1"
 schannel = "0.1"
@@ -291,7 +291,7 @@ venndb = "0.6"
 want = "0.3.2"
 wasmtime = { version = "49.0.5", default-features = false }
 webpki-root-certs = "1.0"
-webpki-roots = "1.0"
+webpki-roots = "1.0.10"
 wildcard = "0.3"
 windows-sys = "0.61"
 x509-ocsp = "0.2"
@@ -299,7 +299,7 @@ x509-ocsp-der = { package = "der", version = "0.7" }
 x509-parser = { version = "0.18", default-features = false }
 yasna = { version = "0.6", default-features = false }
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
-zstd = "0.14"
+zstd = "0.14.3"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"

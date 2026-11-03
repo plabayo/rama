@@ -63,6 +63,20 @@
       ]
     },
     {
+      "name": "basic, name shorthand, supplementary plane character",
+      "selector": "$.😀",
+      "document": {
+        "😀": "A",
+        "b": "B"
+      },
+      "result": [
+        "A"
+      ],
+      "result_paths": [
+        "$['😀']"
+      ]
+    },
+    {
       "name": "basic, name shorthand, underscore",
       "selector": "$._",
       "document": {
@@ -84,6 +98,11 @@
     {
       "name": "basic, name shorthand, number",
       "selector": "$.1",
+      "invalid_selector": true
+    },
+    {
+      "name": "basic, name shorthand, hyphen",
+      "selector": "$.a-b",
       "invalid_selector": true
     },
     {
@@ -257,6 +276,11 @@
     {
       "name": "basic, selector, trailing comma",
       "selector": "$[0,]",
+      "invalid_selector": true
+    },
+    {
+      "name": "basic, selector, trailing comma, space",
+      "selector": "$[0, ]",
       "invalid_selector": true
     },
     {
@@ -2149,6 +2173,22 @@
       ]
     },
     {
+      "name": "filter, less than or equal to true, number",
+      "selector": "$[?@.a<=true]",
+      "document": [
+        {
+          "a": 0,
+          "d": "e"
+        },
+        {
+          "a": 1,
+          "d": "f"
+        }
+      ],
+      "result": [],
+      "result_paths": []
+    },
+    {
       "name": "filter, less than or equal to false",
       "selector": "$[?@.a<=false]",
       "document": [
@@ -2298,6 +2338,22 @@
         },
         {
           "a": "c",
+          "d": "f"
+        }
+      ],
+      "result": [],
+      "result_paths": []
+    },
+    {
+      "name": "filter, greater than false, number",
+      "selector": "$[?@.a>false]",
+      "document": [
+        {
+          "a": 0,
+          "d": "e"
+        },
+        {
+          "a": 1,
           "d": "f"
         }
       ],
@@ -5587,6 +5643,38 @@
       ]
     },
     {
+      "name": "name selector, double quotes, escaped é, lower case hex e",
+      "selector": "$[\"\\u00e9\"]",
+      "document": {
+        "é": "A"
+      },
+      "result": [
+        "A"
+      ],
+      "result_paths": [
+        "$['é']"
+      ],
+      "tags": [
+        "unicode"
+      ]
+    },
+    {
+      "name": "name selector, double quotes, escaped control character",
+      "selector": "$[\"\\u001f\"]",
+      "document": {
+        "\u001f": "A"
+      },
+      "result": [
+        "A"
+      ],
+      "result_paths": [
+        "$['\\u001f']"
+      ],
+      "tags": [
+        "unicode"
+      ]
+    },
+    {
       "name": "name selector, double quotes, surrogate pair 𝄞",
       "selector": "$[\"\\uD834\\uDD1E\"]",
       "document": {
@@ -6271,6 +6359,38 @@
       ],
       "result_paths": [
         "$['☺']"
+      ],
+      "tags": [
+        "unicode"
+      ]
+    },
+    {
+      "name": "name selector, single quotes, escaped é, lower case hex e",
+      "selector": "$['\\u00e9']",
+      "document": {
+        "é": "A"
+      },
+      "result": [
+        "A"
+      ],
+      "result_paths": [
+        "$['é']"
+      ],
+      "tags": [
+        "unicode"
+      ]
+    },
+    {
+      "name": "name selector, single quotes, escaped control character",
+      "selector": "$['\\u001f']",
+      "document": {
+        "\u001f": "A"
+      },
+      "result": [
+        "A"
+      ],
+      "result_paths": [
+        "$['\\u001f']"
       ],
       "tags": [
         "unicode"

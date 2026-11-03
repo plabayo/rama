@@ -22,14 +22,14 @@ as a distant relative.
     - Original: <https://github.com/hyperium/h3/blob/43745ad87e95b0c035ac9c547aad467303213425/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h3](./licenses/h3)
-- hyper: <https://github.com/hyperium/hyper/tree/2b454af2127561a447214a11ac3a498ee868062c>
+- hyper: <https://github.com/hyperium/hyper/tree/cf563e8a97cc389fd8800a9f178e847dc3203d1f>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/2b454af2127561a447214a11ac3a498ee868062c/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/cf563e8a97cc389fd8800a9f178e847dc3203d1f/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
-- hyper-util: <https://github.com/hyperium/hyper-util/tree/7539356138b918bbb033f52d81703131cd7bf587>
+- hyper-util: <https://github.com/hyperium/hyper-util/tree/64855f6c6cac998255ae7776bd22a6eb7bb5f1bb>
   - License:
-    - Original: <https://github.com/hyperium/hyper-util/blob/7539356138b918bbb033f52d81703131cd7bf587/LICENSE>
+    - Original: <https://github.com/hyperium/hyper-util/blob/64855f6c6cac998255ae7776bd22a6eb7bb5f1bb/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
 - headers: <https://github.com/hyperium/headers/tree/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5>
@@ -37,20 +37,23 @@ as a distant relative.
     - Original: <https://github.com/hyperium/headers/blob/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
-- tonic: <https://github.com/hyperium/tonic/tree/a88b919bd872f20e29d40aa05a88b19574037358>
+- tonic: <https://github.com/grpc/grpc-rust/tree/864d4d11f563c79fe2d51bd15867d1ec6d2e16dc>
+  - developed upstream as `grpc/grpc-rust` (formerly `hyperium/tonic`); rama tracks the `tonic`,
+    `tonic-prost`, `tonic-types`, `tonic-web`, `tonic-health` and build crates, not the new
+    `grpc` crates
   - License:
-    - Original: <https://github.com/hyperium/tonic/blob/a88b919bd872f20e29d40aa05a88b19574037358/LICENSE>
+    - Original: <https://github.com/grpc/grpc-rust/blob/864d4d11f563c79fe2d51bd15867d1ec6d2e16dc/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
-- http: <https://github.com/hyperium/http/tree/c6af28bfd8ef171a7f8c61e551d3ee68db4ca577>
+- http: <https://github.com/hyperium/http/tree/3dd9f5e1c3c228c26e6836ee60b36129351bfd3b>
   - License:
-    - Original: <https://github.com/hyperium/http/blob/c6af28bfd8ef171a7f8c61e551d3ee68db4ca577/LICENSE-MIT>
+    - Original: <https://github.com/hyperium/http/blob/3dd9f5e1c3c228c26e6836ee60b36129351bfd3b/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
-- http-body: <https://github.com/hyperium/http-body/tree/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c>
+- http-body: <https://github.com/hyperium/http-body/tree/c6ca645377a0e7da6ca17e3eeb2ff75e20521e76>
   - forked into `rama-http-types` (`http_body`) so `Frame` trailers use rama's `HeaderMap`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/c6ca645377a0e7da6ca17e3eeb2ff75e20521e76/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body](./licenses/http-body)
 - http-body-util: <https://github.com/hyperium/http-body/tree/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c>
@@ -64,23 +67,25 @@ as a distant relative.
 
 ### quinn-rs
 
-- <https://github.com/quinn-rs/quinn/tree/48854d48635875d259a95973cc0575db8c1792a4>
+- <https://github.com/quinn-rs/quinn/tree/2c5750139fa09aab588bf0f939c83f521d658baf>
   - QUIC transport adapted into `rama-quic`, reusing Rama's UDP, TLS, runtime and
     utilities while preserving useful upstream structure.
-  - reviewed against upstream `main` (`48854d4`, 2026-10-12): every quinn-proto security
+  - reviewed against upstream `main` (`2c57501`, 2026-11-02): every quinn-proto security
     advisory through that date (the latest being GHSA-53rm-773f-4q8c and GHSA-wppq-2f6r-wfvm)
     and every behavioural fix are present or ported; not carried over are
     DATA_BLOCKED/STREAM_DATA_BLOCKED emission, the pending-incoming server-config snapshot, the
     DATAGRAM-instead-of-PING tail-loss probe, the assembler's sorted `VecDeque` storage,
     lazily allocated remote stream slots, buffering 1-RTT packets that arrive before the
-    handshake completes, and padding Initial datagrams to `min_mtu` (the profile decides the
-    Initial size), which are functional or performance choices rather than fixes.
+    handshake completes, padding Initial datagrams to `min_mtu` (the profile decides the
+    Initial size), and the batched `Connection::read_datagrams` (rama's per-datagram admission
+    gates release the connection lock per datagram), which are functional or performance choices
+    rather than fixes.
   - the three-phase accept is carried over and runs TLS setup outside the endpoint lock,
     including Initials that arrive before or during the accept (a ClientHello spanning
     several datagrams), so the handshake signature never holds the lock.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
-      and <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-APACHE>
+    - Original: <https://github.com/quinn-rs/quinn/blob/2c5750139fa09aab588bf0f939c83f521d658baf/LICENSE-MIT>
+      and <https://github.com/quinn-rs/quinn/blob/2c5750139fa09aab588bf0f939c83f521d658baf/LICENSE-APACHE>
     - Type: MIT OR Apache-2.0 (Copyright (c) 2018 The quinn Developers)
     - Copy: [./licenses/quinn/LICENSE-MIT](./licenses/quinn/LICENSE-MIT),
       [./licenses/quinn/LICENSE-APACHE](./licenses/quinn/LICENSE-APACHE)
@@ -94,13 +99,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/df06d70dbea345facbffb5881fe8647f53bf424d/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/659adab07278c8fc8ebd960067030e5e1f024df4>
+- <https://github.com/tower-rs/tower-http/tree/8569ec8b99f661eb0a4406a2e032504188d9f3fd>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/659adab07278c8fc8ebd960067030e5e1f024df4/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/8569ec8b99f661eb0a4406a2e032504188d9f3fd/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
@@ -153,7 +158,7 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/JonahLund/vy/blob/1280174f54774c24fa478475af17fd7f5814c91a/LICENSE>
     - Type: MIT
     - Copy: [./licenses/vy](./licenses/vy)
-- <https://github.com/cloudflare/lol-html/tree/608cc4a66b7ab4fcbe1bbdeb25df8f265572b11c>
+- <https://github.com/cloudflare/lol-html/tree/1d5ee9e88f235cdab283ba0f0efd0561497d4d56>
   - Forked into private modules under
     [`rama-http/src/protocols/html`](https://github.com/plabayo/rama/tree/main/rama-http/src/protocols/html)
     as the foundation for rama's native streaming HTML parsing and
@@ -169,8 +174,10 @@ not be kept in sync with upstream — they are now part of `rama`.
       for streaming responses, and rama's error and string utilities.
     - Fewer dependencies: the CSS selector parser is hand-rolled for the
       streaming-safe subset, dropping `cssparser` and Servo's `selectors`.
+  - Not carried over: lol-html's memory budget (`MemorySettings`); rama's tokenizer
+    buffers an incomplete construct without a byte limit.
   - License:
-    - Original: <https://github.com/cloudflare/lol-html/blob/608cc4a66b7ab4fcbe1bbdeb25df8f265572b11c/LICENSE>
+    - Original: <https://github.com/cloudflare/lol-html/blob/1d5ee9e88f235cdab283ba0f0efd0561497d4d56/LICENSE>
     - Type: BSD-3-Clause
     - Copy: [./licenses/lol-html](./licenses/lol-html)
 - <https://github.com/jprendes/trapeze/tree/f0dfea7f49d133e10a2a0027de53ed931ba3d47f>
@@ -202,23 +209,23 @@ not be kept in sync with upstream — they are now part of `rama`.
 
 ## Relative Forks
 
-- <https://github.com/quinn-rs/quinn/tree/48854d48635875d259a95973cc0575db8c1792a4/quinn-udp>
+- <https://github.com/quinn-rs/quinn/tree/2c5750139fa09aab588bf0f939c83f521d658baf/quinn-udp>
   - Generic UDP socket code adapted for Rama.
-  - reviewed against upstream `main` (`48854d4`, 2026-10-12): not carried over are the opt-in
+  - reviewed against upstream `main` (`2c57501`, 2026-11-02): not carried over are the opt-in
     Linux transport-error queue (`IP_RECVERR` stays off), the WASI backend, and building the
     Windows socket state before `bind`; truncated control data marks the datagram truncated
     (so it is dropped) instead of failing the socket.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
+    - Original: <https://github.com/quinn-rs/quinn/blob/2c5750139fa09aab588bf0f939c83f521d658baf/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/quinn-udp](./licenses/quinn-udp)
-- <https://github.com/tokio-rs/axum/tree/e57b547eb95de74b73b34719dd5926254a085634>
+- <https://github.com/tokio-rs/axum/tree/40d061fdacd468217c7a609bede16357276b6c40>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code
   - License:
-    - Original: <https://github.com/tokio-rs/axum/blob/e57b547eb95de74b73b34719dd5926254a085634/LICENSE>
+    - Original: <https://github.com/tokio-rs/axum/blob/40d061fdacd468217c7a609bede16357276b6c40/LICENSE>
     - Type: MIT
     - Copy: [./licenses/axum](./licenses/axum)
 - <https://github.com/dtolnay/paste/tree/6a302522990cbfd9de4e0c61d91854622f7b2999>
@@ -233,16 +240,16 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/rust-utf8](./licenses/rust-utf8)
-- <https://github.com/snapview/tungstenite-rs/tree/16ca0fc87e0a39f66548e24a08ab0961e592324f>
+- <https://github.com/snapview/tungstenite-rs/tree/2f20dc53e2a8d09bba02970d7ba15c5f33fbc17a>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tungstenite-rs/blob/16ca0fc87e0a39f66548e24a08ab0961e592324f/LICENSE-MIT>
+    - Original: <https://github.com/snapview/tungstenite-rs/blob/2f20dc53e2a8d09bba02970d7ba15c5f33fbc17a/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
-- <https://github.com/snapview/tokio-tungstenite/tree/753ca72690919485a1aa1f0f69a336b1152fb0ae>
+- <https://github.com/snapview/tokio-tungstenite/tree/76e10f08c488eb0032f136c7c56a437cd30164c2>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tokio-tungstenite/blob/753ca72690919485a1aa1f0f69a336b1152fb0ae/LICENSE>
+    - Original: <https://github.com/snapview/tokio-tungstenite/blob/76e10f08c488eb0032f136c7c56a437cd30164c2/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tokio-tungstenite](./licenses/tokio-tungstenite)
 - <https://github.com/Michael-F-Bryan/include_dir/tree/d742c6fffce99ee89da91b934e7ce6fb2a82680c>
@@ -296,7 +303,7 @@ of the rama ecosystem.
     - Original: <https://github.com/thomcc/arcstr/blob/faa7692b0d6662bb177b3aefa80a6a13f897554d/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/arcstr](./licenses/arcstr)
-- <https://github.com/rustls/rustls-native-certs/tree/da7d23de157a16b3643efc0073e9e8e65d0eb1b8>
+- <https://github.com/rustls/rustls-native-certs/tree/61437e0ce7803161778424c3fbc667148ba011d8>
   - Forked into [`rama-crypto::native_certs`](https://github.com/plabayo/rama/tree/main/rama-crypto/src/native_certs)
     as rama's tls-implementation agnostic native trust store loader, used by
     both the rustls and boring client connectors.
@@ -309,15 +316,15 @@ of the rama ecosystem.
     - Broaden the Windows reader to both the current-user and local-machine
       ROOT + CA stores (carried over from rama's previous boring-only logic).
   - License:
-    - Original: <https://github.com/rustls/rustls-native-certs/blob/da7d23de157a16b3643efc0073e9e8e65d0eb1b8/LICENSE-MIT>
+    - Original: <https://github.com/rustls/rustls-native-certs/blob/61437e0ce7803161778424c3fbc667148ba011d8/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR ISC OR MIT)
     - Copy: [../licenses/rustls-native-certs](../licenses/rustls-native-certs)
-- <https://github.com/rustls/rustls-platform-verifier/tree/v/0.7.1>
+- <https://github.com/rustls/rustls-platform-verifier/tree/6e4c1c4fbb9ec5355fcf505995724d6aa9ebf84b>
   - Forked into [`rama-crypto::platform_verifier`](https://github.com/plabayo/rama/tree/main/rama-crypto/src/platform_verifier)
   - Reasons for forking: usable by both TLS backends (not only rustls), returns
     the verified chain, and verifies on Android without a separate app component.
   - License:
-    - Original: <https://github.com/rustls/rustls-platform-verifier/blob/v/0.7.1/LICENSE-MIT>
+    - Original: <https://github.com/rustls/rustls-platform-verifier/blob/6e4c1c4fbb9ec5355fcf505995724d6aa9ebf84b/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR MIT)
     - Copy: [../licenses/rustls-platform-verifier](../licenses/rustls-platform-verifier)
 
@@ -336,12 +343,12 @@ Third-party test data vendored verbatim and used only by the test suite
     - Type: MIT
     - Copy: [./licenses/html5lib-tests](./licenses/html5lib-tests)
 
-- <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/tree/9d1a415a53f5dfb291bc874823892e49174e38eb>
+- <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/tree/20ebdcce5008c8a777ee9c80ad853ecf606950b5>
   - The generated `cts.json` corpus and schema, vendored under
     [`rama-json/tests/jsonpath-compliance`](https://github.com/plabayo/rama/tree/main/rama-json/tests/jsonpath-compliance)
     and used to exercise the RFC 9535 JSONPath selectors supported by
     rama-json's streaming matcher.
   - License:
-    - Original: <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/blob/9d1a415a53f5dfb291bc874823892e49174e38eb/LICENSE>
+    - Original: <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/blob/20ebdcce5008c8a777ee9c80ad853ecf606950b5/LICENSE>
     - Type: BSD-2-Clause
     - Copy: [./licenses/jsonpath-compliance-test-suite](./licenses/jsonpath-compliance-test-suite)

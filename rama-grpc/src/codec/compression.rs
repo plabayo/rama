@@ -120,10 +120,11 @@ impl CompressionEncoding {
         let header_value = map.get(ACCEPT_ENCODING_HEADER)?;
         let header_value_str = header_value.to_str().ok()?;
 
+        // Preserve client preference within the server's enabled encodings.
         split_by_comma(header_value_str).find_map(|value| match value {
-            "gzip" => Some(Self::Gzip),
-            "deflate" => Some(Self::Deflate),
-            "zstd" => Some(Self::Zstd),
+            "gzip" if enabled_encodings.is_enabled(Self::Gzip) => Some(Self::Gzip),
+            "deflate" if enabled_encodings.is_enabled(Self::Deflate) => Some(Self::Deflate),
+            "zstd" if enabled_encodings.is_enabled(Self::Zstd) => Some(Self::Zstd),
             _ => None,
         })
     }
@@ -340,6 +341,58 @@ mod tests {
     use rama_http_types::HeaderValue;
 
     use super::*;
+
+    #[cfg(feature = "compression")]
+    fn accept_encoding(value: &'static str) -> rama_http_types::HeaderMap {
+        let mut headers = rama_http_types::HeaderMap::new();
+        headers.insert(ACCEPT_ENCODING_HEADER, HeaderValue::from_static(value));
+        headers
+    }
+
+    #[cfg(feature = "compression")]
+    fn enabled(encodings: &[CompressionEncoding]) -> EnabledCompressionEncodings {
+        let mut enabled = EnabledCompressionEncodings::default();
+        for encoding in encodings {
+            enabled.enable(*encoding);
+        }
+        enabled
+    }
+
+    #[test]
+    #[cfg(feature = "compression")]
+    fn from_accept_encoding_header_respects_server_enabled_encodings() {
+        assert_eq!(
+            CompressionEncoding::from_accept_encoding_header(
+                &accept_encoding("gzip,zstd,identity"),
+                enabled(&[CompressionEncoding::Zstd]),
+            ),
+            Some(CompressionEncoding::Zstd),
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "compression")]
+    fn from_accept_encoding_header_returns_none_when_no_overlap() {
+        assert_eq!(
+            CompressionEncoding::from_accept_encoding_header(
+                &accept_encoding("gzip,identity"),
+                enabled(&[CompressionEncoding::Zstd]),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "compression")]
+    fn from_accept_encoding_header_uses_client_preference_order() {
+        assert_eq!(
+            CompressionEncoding::from_accept_encoding_header(
+                &accept_encoding("gzip,zstd,identity"),
+                enabled(&[CompressionEncoding::Zstd, CompressionEncoding::Gzip]),
+            ),
+            Some(CompressionEncoding::Gzip),
+        );
+    }
 
     #[test]
     fn convert_none_into_header_value() {

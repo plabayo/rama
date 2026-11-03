@@ -815,7 +815,8 @@ fn prepare_msg(
     if let Some(ip) = &transmit.src_ip {
         match ip {
             IpAddr::V4(v4) => {
-                #[cfg(any(target_os = "linux", target_os = "android"))]
+                // Darwin ignores `IP_RECVDSTADDR` as an outgoing source override.
+                #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
                 {
                     let pktinfo = libc::in_pktinfo {
                         ipi_ifindex: 0,
@@ -830,7 +831,6 @@ fn prepare_msg(
                     target_os = "freebsd",
                     target_os = "openbsd",
                     target_os = "netbsd",
-                    target_vendor = "apple",
                     target_os = "solaris",
                     target_os = "illumos"
                 ))]
@@ -1264,6 +1264,58 @@ mod tests {
             get_socket_option(&socket, libc::IPPROTO_IP, libc::IP_DONTFRAG).unwrap(),
             1
         );
+    }
+
+    /// A wildcard socket must send from the requested IPv4 source, not the route's default.
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn ipv4_source_address_override() {
+        let Some(src_ip) = rama_net::socket::interfaces()
+            .unwrap()
+            .iter()
+            .filter(|interface| interface.is_up())
+            .flat_map(|interface| interface.addresses())
+            .find_map(|address| match address.address() {
+                IpAddr::V4(ip)
+                    if !ip.is_loopback()
+                        && !ip.is_unspecified()
+                        && !ip.is_multicast()
+                        && !ip.is_broadcast() =>
+                {
+                    Some(ip)
+                }
+                _ => None,
+            })
+        else {
+            eprintln!("skipping source override test: no alternate assigned IPv4 address");
+            return;
+        };
+
+        let send = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let recv = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        recv.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let state = UdpSocketState::new((&send).into(), false).unwrap();
+        send.set_nonblocking(false).unwrap();
+
+        let contents = b"hello";
+        state
+            .try_send(
+                &(&send).into(),
+                &Transmit {
+                    destination: recv.local_addr().unwrap(),
+                    ecn: None,
+                    contents,
+                    segment_size: None,
+                    src_ip: Some(src_ip.into()),
+                    src_interface: None,
+                },
+            )
+            .unwrap();
+
+        let mut buf = [0; 32];
+        let (received, source) = recv.recv_from(&mut buf).unwrap();
+        assert_eq!(&buf[..received], contents);
+        assert_eq!(source.ip(), src_ip);
     }
 
     #[cfg(any(target_vendor = "apple", target_os = "linux"))]
