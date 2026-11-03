@@ -2227,7 +2227,7 @@ fn poll_accept<'a>(
     // Check for incoming streams before checking `state.error` so that already-received streams,
     // which are necessarily finite, can be drained from a closed connection.
     if let Some(id) = state.inner.streams().accept(dir) {
-        let is_0rtt = state.inner.is_handshaking();
+        let is_0rtt = state.inner.recv_stream(id).received_early();
         state.wake(); // To send additional stream ID credit
         let (gates, side) = (state.gates.clone(), state.inner.side());
         drop(state); // Release the lock so clone can take it

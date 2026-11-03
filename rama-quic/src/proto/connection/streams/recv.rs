@@ -17,6 +17,7 @@ pub(super) struct Recv {
     sent_max_stream_data: u64,
     pub(super) end: u64,
     pub(super) stopped: bool,
+    pub(super) received_early: bool,
 }
 
 impl Recv {
@@ -27,6 +28,7 @@ impl Recv {
             sent_max_stream_data: initial_max_data,
             end: 0,
             stopped: false,
+            received_early: false,
         })
     }
 
@@ -37,6 +39,7 @@ impl Recv {
         self.sent_max_stream_data = initial_max_data;
         self.end = 0;
         self.stopped = false;
+        self.received_early = false;
     }
 
     /// Process a STREAM frame
@@ -505,6 +508,14 @@ mod tests {
 
     use super::*;
     use crate::proto::connection::streams::state::StreamRecv;
+
+    #[test]
+    fn recycled_receiver_does_not_inherit_early_receipt() {
+        let mut recv = super::Recv::new(1024);
+        recv.received_early = true;
+        recv.reinit(2048);
+        assert!(!recv.received_early);
+    }
 
     #[test]
     fn duplicates_do_not_hide_missing_bytes_when_stopping() {

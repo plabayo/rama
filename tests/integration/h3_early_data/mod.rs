@@ -4,6 +4,7 @@ mod admission;
 mod alpn;
 mod gate;
 mod pooled;
+mod receipt;
 
 use std::{
     future::{Future, poll_fn},

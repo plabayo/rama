@@ -297,7 +297,9 @@ impl RecvStream {
         if self.is_0rtt && conn.check_0rtt().is_err() {
             return Ok(());
         }
-        conn.inner.recv_stream(self.stream).stop(error_code)?;
+        let mut recv = conn.inner.recv_stream(self.stream);
+        self.is_0rtt |= recv.received_early();
+        recv.stop(error_code)?;
         conn.wake();
         self.all_data_read = true;
         // Clean up shared state that might be left over from a cancalled read
@@ -306,12 +308,22 @@ impl RecvStream {
         Ok(())
     }
 
-    /// Check if this stream has been opened during 0-RTT.
+    /// Whether this stream used replayable early data.
     ///
-    /// In which case any non-idempotent request should be considered dangerous at the application
-    /// level. Because read data is subject to replay attacks.
+    /// Locally opened client streams retain their early admission. Incoming streams
+    /// record actual authenticated 0-RTT STREAM frames, independently of when the
+    /// application accepts or reads them. The receipt remains true after confirmation
+    /// and after the stream is drained. Before any early frame arrives it is false;
+    /// servers should inspect it after reading the application request head.
     pub fn is_0rtt(&self) -> bool {
         self.is_0rtt
+            || self
+                .conn
+                .state
+                .lock()
+                .inner
+                .recv_stream(self.stream)
+                .received_early()
     }
 
     /// Get the identity of this stream
@@ -340,7 +352,9 @@ impl RecvStream {
                 return Poll::Ready(Ok(Some(code)));
             }
 
-            match conn.inner.recv_stream(self.stream).received_reset() {
+            let mut recv = conn.inner.recv_stream(self.stream);
+            self.is_0rtt |= recv.received_early();
+            match recv.received_reset() {
                 Err(_) => Poll::Ready(Ok(None)),
                 Ok(Some(error_code)) => {
                     // Stream state has just now been freed, so the connection may need to issue new
@@ -456,6 +470,7 @@ impl RecvStream {
             ReadStatus::Failed(None, ProtoReadError::Reset(code))
         } else {
             let mut recv = conn.inner.recv_stream(self.stream);
+            self.is_0rtt |= recv.received_early();
             let mut chunks = recv.read(ordered)?;
             let mut budgeted = BudgetedChunks {
                 chunks: &mut chunks,

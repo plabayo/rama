@@ -219,7 +219,12 @@ impl Connection {
                     self.read_crypto(SpaceId::Data, &frame, allocated)?;
                 }
                 Frame::Stream(frame) => {
-                    if self.streams.received(frame, allocated)?.should_transmit() {
+                    let transmit = if packet.header.is_0rtt() {
+                        self.streams.received_early(frame, allocated)?
+                    } else {
+                        self.streams.received(frame, allocated)?
+                    };
+                    if transmit.should_transmit() {
                         self.spaces[SpaceId::Data].pending.max_data = true;
                     }
                 }
