@@ -173,12 +173,14 @@ async fn each_rejection_reaches_the_fallback_only_when_its_class_is_admitted() {
             deadline: class == QuicPeekRejection::Deadline,
         };
         for class in classes {
-            // By default only an association that is not QUIC reaches the fallback.
-            let defaults = (
-                QuicPeekFallbackPolicy::default(),
-                class == QuicPeekRejection::NotQuic,
-            );
-            for (policy, admitted) in [defaults, (only(class), true)] {
+            for (policy, admitted) in [
+                (QuicPeekFallbackPolicy::default(), true),
+                (
+                    QuicPeekFallbackPolicy::NOT_QUIC,
+                    class == QuicPeekRejection::NotQuic,
+                ),
+                (only(class), true),
+            ] {
                 let (client, ingress) = association();
                 let (flight, limits) = flight_ending_in(class);
                 for bytes in &flight {
@@ -196,12 +198,25 @@ async fn each_rejection_reaches_the_fallback_only_when_its_class_is_admitted() {
                 .with_fallback(service_fn(
                     async |mut input: PrefixedDatagramSocket<MemoryDatagramSocket>| {
                         let reason = input.extensions().get_ref::<QuicPeekRejection>().copied();
-                        Ok::<_, BoxError>((reason, drain(&mut input).await))
+                        let failure = input
+                            .extensions()
+                            .get_ref::<ClientHelloPeekStatus>()
+                            .unwrap()
+                            .failure;
+                        Ok::<_, BoxError>((reason, failure, drain(&mut input).await))
                     },
                 ));
                 let result = peek.serve(ingress).await;
                 if admitted {
-                    assert_eq!(result.unwrap(), (Some(class), flight), "{class}");
+                    let expected = match class {
+                        QuicPeekRejection::NotQuic => None,
+                        QuicPeekRejection::UnsupportedVersion | QuicPeekRejection::Malformed => {
+                            Some(PeekStopReason::Rejected)
+                        }
+                        QuicPeekRejection::Budget => Some(PeekStopReason::MaxPeekSizeReached),
+                        QuicPeekRejection::Deadline => Some(PeekStopReason::Timeout),
+                    };
+                    assert_eq!(result.unwrap(), (Some(class), expected, flight), "{class}");
                 } else {
                     let error = result.unwrap_err();
                     assert_eq!(
@@ -248,7 +263,8 @@ async fn the_deadline_is_fixed_when_the_association_is_handed_over() {
             keys(),
             service_fn(async |_: InputWithQuicClientHello<_>| Ok::<_, BoxError>(())),
         )
-        .with_peek_timeout(Duration::from_millis(100));
+        .with_peek_timeout(Duration::from_millis(100))
+        .with_peek_timeout_policy(PeekTimeoutPolicy::FailClosed);
         let serving = peek.serve(ingress);
         // A late first poll, and the rest of the flight after the deadline, find it expired.
         advance(Duration::from_millis(150)).await;
@@ -456,4 +472,238 @@ async fn a_peeked_association_is_bridged_with_its_client_hello() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn shared_policies_control_quic_failures_and_timeouts_independently() {
+    for malformed in [MalformedTlsPolicy::Fallback, MalformedTlsPolicy::Reject] {
+        for timeout_policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
+            for class in [
+                QuicPeekRejection::NotQuic,
+                QuicPeekRejection::UnsupportedVersion,
+                QuicPeekRejection::Malformed,
+                QuicPeekRejection::Budget,
+                QuicPeekRejection::Deadline,
+            ] {
+                let (client, ingress) = association();
+                let (flight, limits) = flight_ending_in(class);
+                for packet in &flight {
+                    deliver(&ingress, &client, packet);
+                }
+                let service = PeekQuicClientHelloService::new(
+                    keys(),
+                    service_fn(async |_: InputWithQuicClientHello<_>| {
+                        Err::<Vec<Vec<u8>>, _>(BoxError::from_static_str(
+                            "unexpected complete hello",
+                        ))
+                    }),
+                )
+                .with_limits(limits)
+                .with_peek_timeout(Duration::from_millis(100))
+                .with_malformed_tls_policy(malformed)
+                .with_peek_timeout_policy(timeout_policy)
+                .with_fallback(service_fn(
+                    async |mut input: PrefixedDatagramSocket<MemoryDatagramSocket>| {
+                        Ok::<_, BoxError>(drain(&mut input).await)
+                    },
+                ));
+                // Both adapters and the explicit policy survive fallback replacement and cloning.
+                let extensions = ingress.extensions().clone();
+                let result = service.clone().serve(ingress).await;
+                let allowed = match class {
+                    QuicPeekRejection::NotQuic => true,
+                    QuicPeekRejection::Deadline => timeout_policy == PeekTimeoutPolicy::FailOpen,
+                    _ => malformed == MalformedTlsPolicy::Fallback,
+                };
+                if allowed {
+                    assert_eq!(result.unwrap(), flight);
+                    assert!(extensions.get_ref::<ClientHelloPeekStatus>().is_some());
+                } else {
+                    assert!(extensions.get_ref::<ClientHelloPeekStatus>().is_none());
+                    assert_eq!(
+                        result.unwrap_err().downcast_ref::<QuicPeekRejectedError>(),
+                        Some(&QuicPeekRejectedError(class))
+                    );
+                }
+                drop(client);
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn shared_status_shadows_stale_failure_on_quic_and_non_quic_bridges() {
+    for flight in [chrome_initials().to_vec(), vec![b"not quic".to_vec()]] {
+        let (client, ingress) = association();
+        let (egress, _peer) = association();
+        let address = egress.local_addr().unwrap();
+        ingress.extensions().insert(ClientHelloPeekStatus {
+            failure: Some(PeekStopReason::Timeout),
+        });
+        let extensions = ingress.extensions().clone();
+        for packet in &flight {
+            deliver(&ingress, &client, packet);
+        }
+        type Input = BridgeIo<PrefixedDatagramSocket<MemoryDatagramSocket>, MemoryDatagramSocket>;
+        let service = PeekQuicClientHelloService::new(
+            keys(),
+            service_fn(async |input: InputWithQuicClientHello<Input>| {
+                assert!(
+                    input
+                        .extensions()
+                        .get_ref::<ClientHelloPeekStatus>()
+                        .unwrap()
+                        .failure
+                        .is_none()
+                );
+                Ok::<_, BoxError>(input.input.1.local_addr().unwrap())
+            }),
+        )
+        .with_fallback(service_fn(async |input: Input| {
+            assert!(
+                input
+                    .extensions()
+                    .get_ref::<ClientHelloPeekStatus>()
+                    .unwrap()
+                    .failure
+                    .is_none()
+            );
+            Ok::<_, BoxError>(input.1.local_addr().unwrap())
+        }));
+        assert_eq!(
+            service.serve(BridgeIo(ingress, egress)).await.unwrap(),
+            address
+        );
+        assert!(
+            extensions
+                .get_ref::<ClientHelloPeekStatus>()
+                .unwrap()
+                .failure
+                .is_none()
+        );
+    }
+}
+
+/// Encrypt a large hello across Initial packets to exercise the real CRYPTO assembler.
+fn large_initial_flight() -> Vec<Vec<u8>> {
+    use rama_quic_proto::{
+        ConnectionId, Side, Version,
+        coding::BufMutExt as _,
+        packet::{Header, InitialHeader, PacketNumber},
+    };
+    let mut body = vec![3, 3]; // TLS legacy_version 0x0303.
+    body.extend_from_slice(&[0; 32]); // Random.
+    body.extend_from_slice(&[0, 0, 2, 0x13, 1, 1, 0]); // No session ID, TLS_AES_128_GCM_SHA256, null compression.
+    let padding = kib(60);
+    body.extend_from_slice(&u16::try_from(padding + 18).unwrap().to_be_bytes());
+    body.extend_from_slice(&[0, 21]); // TLS padding extension.
+    body.extend_from_slice(&u16::try_from(padding).unwrap().to_be_bytes());
+    body.resize(body.len() + padding, 0);
+    // QUIC transport parameters extension (57), with initial_source_connection_id
+    // (parameter 15) matching the packet header's eight-byte source CID.
+    body.extend_from_slice(&[0, 57, 0, 10, 15, 8]);
+    body.extend_from_slice(&[8; 8]);
+    let mut hello = vec![1]; // TLS HandshakeType client_hello.
+    hello.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes()[1..]);
+    hello.extend_from_slice(&body);
+    let cid = ConnectionId::try_from_bytes(&[7; 8]).unwrap();
+    let scid = ConnectionId::try_from_bytes(&[8; 8]).unwrap();
+    let provider = keys();
+    let protection = provider
+        .initial_keys(Version::V1, &cid, Side::Server)
+        .unwrap();
+    hello
+        .chunks(1000)
+        .enumerate()
+        .map(|(index, fragment)| {
+            let mut packet = Vec::new();
+            let header = Header::Initial(InitialHeader {
+                dst_cid: cid,
+                src_cid: scid,
+                token: Bytes::new(),
+                number: PacketNumber::new_at_least(index as u64, 0, 2).unwrap(),
+                version: Version::V1.to_wire().unwrap(),
+            })
+            .encode_with_max_packet_len(&mut packet, 1252);
+            packet.push(6); // QUIC CRYPTO frame type.
+            packet.write_var((index * 1000) as u64);
+            packet.write_var(fragment.len() as u64);
+            packet.extend_from_slice(fragment);
+            packet.resize(1252, 0); // PADDING and space for the authentication tag.
+            header
+                .finish(
+                    &mut packet,
+                    &protection.header,
+                    Some((index as u64, &protection.packet)),
+                )
+                .unwrap();
+            packet
+        })
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn relaxed_limits_inspect_large_reordered_flights_and_configured_caps_fall_back() {
+    let mut flight = large_initial_flight();
+    assert!(flight.len() > CaptureLimits::default().datagrams);
+    flight.reverse();
+    flight.insert(1, flight[0].clone()); // A retransmission must agree and still count toward budgets.
+    for relaxed in [true, false] {
+        let (client, ingress) = MemoryDatagramSocket::pair(
+            SocketAddress::local_ipv4(24000),
+            SocketAddress::local_ipv4(24001),
+            NonZeroUsize::new(128).unwrap(),
+        );
+        for packet in &flight {
+            deliver(&ingress, &client, packet);
+        }
+        let packet_count = flight.len();
+        let service = PeekQuicClientHelloService::new(
+            keys(),
+            service_fn(
+                async |InputWithQuicClientHello { mut input, peeked }: InputWithQuicClientHello<
+                    PrefixedDatagramSocket<MemoryDatagramSocket>,
+                >| {
+                    assert!(
+                        input
+                            .extensions()
+                            .get_ref::<ClientHelloPeekStatus>()
+                            .unwrap()
+                            .failure
+                            .is_none()
+                    );
+                    assert!(peeked.first_flight.is_some());
+                    Ok::<_, BoxError>((true, drain(&mut input).await))
+                },
+            ),
+        )
+        .with_fallback(service_fn(
+            move |mut input: PrefixedDatagramSocket<MemoryDatagramSocket>| async move {
+                assert_eq!(
+                    input
+                        .extensions()
+                        .get_ref::<ClientHelloPeekStatus>()
+                        .unwrap()
+                        .failure,
+                    Some(PeekStopReason::MaxPeekSizeReached)
+                );
+                // Include unread datagrams too: inspection stops, forwarding does not lose data.
+                let mut packets = drain(&mut input).await;
+                let mut buffer = vec![0; kib(64)];
+                while packets.len() < packet_count {
+                    let metadata = input.recv(&mut buffer).await.unwrap();
+                    packets.push(buffer[..metadata.len].to_vec());
+                }
+                Ok::<_, BoxError>((false, packets))
+            },
+        ));
+        let service = if relaxed {
+            service
+        } else {
+            service.with_limits(CaptureLimits::default())
+        };
+        let (inspected, replay) = service.serve(ingress).await.unwrap();
+        assert_eq!(inspected, relaxed);
+        assert_eq!(replay, flight);
+    }
 }

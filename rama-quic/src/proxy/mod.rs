@@ -9,8 +9,9 @@ pub use admission::{
 
 mod peek;
 pub use peek::{
-    DEFAULT_QUIC_PEEK_TIMEOUT, InputWithQuicClientHello, NoQuicRejectError,
-    PeekQuicClientHelloService, QuicPeekFallbackPolicy, QuicPeekRejectedError, QuicPeekRejection,
+    DEFAULT_QUIC_PEEK_LIMITS, DEFAULT_QUIC_PEEK_TIMEOUT, InputWithQuicClientHello,
+    NoQuicRejectError, PeekQuicClientHelloService, QuicPeekFallbackPolicy, QuicPeekRejectedError,
+    QuicPeekRejection,
 };
 
 mod relay;
