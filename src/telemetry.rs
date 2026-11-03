@@ -8,6 +8,12 @@ pub mod dial9 {
     pub use ::rama_core::telemetry::dial9::*;
 }
 
+pub mod event {
+    //! Typed events, see [`rama_core::telemetry::event`] for more info.
+
+    pub use ::rama_core::telemetry::event::*;
+}
+
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod opentelemetry {

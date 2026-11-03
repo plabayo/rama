@@ -1383,6 +1383,7 @@ name = "rama-core"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "arc-swap",
  "asynk-strim",
  "bytes",
  "futures",
@@ -1393,6 +1394,7 @@ dependencies = [
  "rama-utils",
  "serde",
  "serde_json",
+ "smallvec",
  "tokio",
  "tokio-graceful",
  "tokio-stream",

@@ -35,8 +35,10 @@ std = [
     "rama-utils/std",
     "tracing/std",
     "dep:ahash",
+    "dep:arc-swap",
     "dep:parking_lot",
     "dep:serde_json",
+    "dep:smallvec",
     "dep:tokio",
     "dep:tokio-graceful",
     "dep:tokio-stream",
@@ -57,6 +59,7 @@ dial9 = ["std", "dep:dial9", "dep:dial9-trace-format", "dep:metrique-writer-core
 
 [dependencies]
 ahash = { workspace = true, optional = true }
+arc-swap = { workspace = true, optional = true }
 asynk-strim = { workspace = true }
 bytes = { workspace = true }
 dial9 = { workspace = true, optional = true }
@@ -73,6 +76,7 @@ rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
+smallvec = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "rt", "rt-multi-thread", "sync", "time"], optional = true }
 tokio-graceful = { workspace = true, optional = true }
 tokio-stream = { workspace = true, features = ["full"], optional = true }

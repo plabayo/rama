@@ -167,6 +167,7 @@
 
 use proc_macro::TokenStream;
 
+mod event_macro;
 mod extension_macro;
 mod from_extensions_macro;
 mod from_ref_macro;
@@ -219,6 +220,25 @@ pub fn derive_from_ref(item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Extension, attributes(extension))]
 pub fn derive_extension(item: TokenStream) -> TokenStream {
     from_ref_macro::expand_with(item, extension_macro::extension::expand)
+}
+
+/// Derive an implementation of `rama_core::telemetry::event::Event` for a type.
+///
+/// Note that all type parameters of the derived type must satisfy:
+/// `Clone + Send + 'static`.
+#[proc_macro_derive(Event)]
+pub fn derive_event(item: TokenStream) -> TokenStream {
+    from_ref_macro::expand_with(item, event_macro::event::expand)
+}
+
+/// Run a test with its own `rama_core::telemetry::event::EventDispatcher`.
+///
+/// Place it above `#[tokio::test]` or `#[test]`. The test takes the dispatcher
+/// as its one parameter, and its whole body runs in that dispatcher's scope,
+/// including everything rama spawns from it.
+#[proc_macro_attribute]
+pub fn isolated(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    from_ref_macro::expand_with(item, event_macro::isolated::expand)
 }
 
 /// Derive a `from_extensions` constructor that gathers extension pieces from a
