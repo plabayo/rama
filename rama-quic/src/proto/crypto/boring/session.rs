@@ -181,7 +181,11 @@ impl TlsSession {
             .set_transport_parameters(&encoded)
             .map_err(|error| crypto_error(error.into()))?;
         if !side.is_client() {
-            let context = crypto::config::server_early_context(params, options.early_data_context);
+            let context = crypto::config::server_early_context(
+                params,
+                options.early_data_context,
+                &mut encoded,
+            );
             inner
                 .set_early_data_context(&context)
                 .map_err(|error| crypto_error(error.into()))?;

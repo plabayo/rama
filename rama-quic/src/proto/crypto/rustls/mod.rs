@@ -615,15 +615,23 @@ pub(crate) struct QuicServerConfig {
     /// (RFC 9369 §5). rustls labels 0-RTT keys with the session's version, but a client sends
     /// 0-RTT only in its original version (RFC 9369 §4.1), so a session moved to another
     /// version refuses early data instead of failing to open it.
-    scoped: Mutex<HashMap<(rama_quic_proto::Version, bool), ([u8; 32], Arc<rustls::ServerConfig>)>>,
+    scoped: Mutex<ScopedServerConfigs>,
     initial: Suite,
+}
+
+/// The bounded configuration cache also owns the reusable context encoding buffer.
+#[derive(Default)]
+struct ScopedServerConfigs {
+    configs:
+        HashMap<(rama_quic_proto::Version, bool), (Option<[u8; 32]>, Arc<rustls::ServerConfig>)>,
+    encoded: Vec<u8>,
 }
 
 /// Tags tickets with their QUIC version and application/transport compatibility context.
 #[derive(Debug)]
 struct VersionedTicketer {
     inner: Arc<dyn rustls::server::ProducesTickets>,
-    scope: [u8; 36],
+    scope: [u8; 37],
 }
 
 impl rustls::server::ProducesTickets for VersionedTicketer {
@@ -648,7 +656,7 @@ impl rustls::server::ProducesTickets for VersionedTicketer {
 #[derive(Debug)]
 struct VersionedSessionStorage {
     inner: Arc<dyn rustls::server::StoresServerSessions>,
-    scope: [u8; 36],
+    scope: [u8; 37],
 }
 
 impl VersionedSessionStorage {
@@ -681,17 +689,32 @@ impl QuicServerConfig {
         early_data: bool,
         params: &TransportParameters,
     ) -> Arc<rustls::ServerConfig> {
-        let context = crypto::config::server_early_context(params, self.early_data_context);
         let mut scoped = self.scoped.lock();
-        let slot = scoped.entry((version, early_data));
+        let context = if self.early_data_context.is_none() && self.inner.max_early_data_size == 0 {
+            // Ordinary sessions cannot issue or accept early keys. Version scoping
+            // suffices, without serializing and hashing transport settings.
+            None
+        } else {
+            Some(crypto::config::server_early_context(
+                params,
+                self.early_data_context,
+                &mut scoped.encoded,
+            ))
+        };
+        let slot = scoped.configs.entry((version, early_data));
         if let std::collections::hash_map::Entry::Occupied(entry) = &slot
             && entry.get().0 == context
         {
             return entry.get().1.clone();
         }
-        let mut scope = [0; 36];
+        let mut scope = [0; 37];
         scope[..4].copy_from_slice(&version.to_be_bytes());
-        scope[4..].copy_from_slice(&context);
+        // An explicit marker separates ordinary sessions from every possible
+        // context digest, including an all-zero digest.
+        if let Some(context) = context {
+            scope[4] = 1;
+            scope[5..].copy_from_slice(&context);
+        }
         let mut config = (*self.inner).clone();
         config.ticketer = Arc::new(VersionedTicketer {
             inner: self.inner.ticketer.clone(),
@@ -730,7 +753,7 @@ impl QuicServerConfig {
             // We're confident that the *ring* default provider contains TLS13_AES_128_GCM_SHA256
             initial: initial_suite_from_provider(inner.crypto_provider())
                 .expect("no initial cipher suite found"),
-            scoped: Mutex::new(HashMap::default()),
+            scoped: Mutex::default(),
             inner: Arc::new(inner),
         })
     }
@@ -745,7 +768,7 @@ impl QuicServerConfig {
     ) -> Result<Self, NoInitialCipherSuite> {
         match initial.suite.common.suite {
             CipherSuite::TLS13_AES_128_GCM_SHA256 => Ok(Self {
-                scoped: Mutex::new(HashMap::default()),
+                scoped: Mutex::default(),
                 inner,
                 initial,
                 early_data_context: Some(crypto::config::application_context(b"rama-quic-test")),
@@ -799,7 +822,7 @@ impl TryFrom<Arc<rustls::ServerConfig>> for QuicServerConfig {
             store_peer_chain: false,
             initial: initial_suite_from_provider(inner.crypto_provider())
                 .ok_or(NoInitialCipherSuite { specific: false })?,
-            scoped: Mutex::new(HashMap::default()),
+            scoped: Mutex::default(),
             inner,
         })
     }

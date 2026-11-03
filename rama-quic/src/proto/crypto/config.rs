@@ -36,6 +36,8 @@ impl TlsOptions {
     generate_set_and_with! {
         /// Bind server 0-RTT acceptance to compatible application settings.
         /// Required when a server enables early data; clients ignore it.
+        /// It may also be set while early data is disabled, keeping the Rustls
+        /// ticket namespace stable when toggling early acceptance.
         /// Include every application setting or state a resumed early request
         /// could violate. A changed context rejects early data; Rustls also
         /// declines ordinary resumption. QUIC transport parameters are bound
@@ -184,6 +186,7 @@ pub(crate) fn application_context(context: &[u8]) -> [u8; 32] {
 pub(crate) fn server_early_context(
     params: &TransportParameters,
     application: Option<[u8; 32]>,
+    encoded: &mut Vec<u8>,
 ) -> [u8; 32] {
     let stable = TransportParameters {
         initial_src_cid: None,
@@ -195,13 +198,27 @@ pub(crate) fn server_early_context(
         extra: Vec::new(),
         write_plan: None,
         version_information: None,
-        ..params.clone()
+        max_idle_timeout: params.max_idle_timeout,
+        max_udp_payload_size: params.max_udp_payload_size,
+        initial_max_data: params.initial_max_data,
+        initial_max_stream_data_bidi_local: params.initial_max_stream_data_bidi_local,
+        initial_max_stream_data_bidi_remote: params.initial_max_stream_data_bidi_remote,
+        initial_max_stream_data_uni: params.initial_max_stream_data_uni,
+        initial_max_streams_bidi: params.initial_max_streams_bidi,
+        initial_max_streams_uni: params.initial_max_streams_uni,
+        ack_delay_exponent: params.ack_delay_exponent,
+        max_ack_delay: params.max_ack_delay,
+        active_connection_id_limit: params.active_connection_id_limit,
+        disable_active_migration: params.disable_active_migration,
+        max_datagram_frame_size: params.max_datagram_frame_size,
+        grease_quic_bit: params.grease_quic_bit,
+        min_ack_delay: params.min_ack_delay,
     };
-    let mut encoded = Vec::new();
-    stable.write(&mut encoded);
+    encoded.clear();
+    stable.write(encoded);
     sha256_slices([
         b"rama-quic-server-0rtt-v1".as_slice(),
-        &encoded,
+        encoded,
         &[u8::from(application.is_some())],
         application.as_ref().map_or(&[], |value| value.as_slice()),
     ])
