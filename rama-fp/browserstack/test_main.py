@@ -415,6 +415,11 @@ class NightlyTests(unittest.TestCase):
         ) as safari, patch(
             "browser_automation.drivers.webdriver.Firefox", return_value=driver
         ) as firefox, patch(
+            "browser_automation.drivers.SeleniumManager.binary_paths",
+            return_value={"driver_path": "/drivers/geckodriver"},
+        ), patch(
+            "selenium.webdriver.common.utils.free_port", return_value=4444,
+        ), patch(
             "browser_automation.drivers.webdriver.Remote"
         ) as remote, patch.object(
             main, "run_capture_flow", return_value=SimpleNamespace(protocols=completed)
