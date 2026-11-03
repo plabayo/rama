@@ -7,7 +7,10 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef},
-    io::BridgeIo,
+    io::{
+        BridgeIo,
+        peek::{PeekStopReason, PeekTimeoutPolicy},
+    },
     service::RejectService,
     telemetry::tracing,
 };
@@ -15,16 +18,30 @@ use rama_quic_proto::{
     capture::{CaptureError, CaptureLimits, KeyProvider},
     peek::{InitialPeek, PeekError, PeekedClientHello},
 };
+use rama_tls::client::{ClientHelloPeekStatus, DEFAULT_CLIENT_HELLO_MAX_SIZE, MalformedTlsPolicy};
 use rama_udp::{
     DatagramPeekInput, DatagramSocket, DatagramSocketExt as _, PrefixedDatagramSocket,
     RetainedDatagram, proxy::DatagramBridgeInput,
 };
-use rama_utils::octets::kib;
+use rama_utils::octets::{kib, mib};
 use tokio::time::{Instant, timeout_at};
 
 /// The default for [`PeekQuicClientHelloService::with_peek_timeout`]: one handshake flight
 /// over a slow path, short enough that a silent client cannot hold an inspection open.
-pub const DEFAULT_QUIC_PEEK_TIMEOUT: Duration = Duration::from_secs(2);
+pub const DEFAULT_QUIC_PEEK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Default live-inspection budgets. A 256 KiB ClientHello has room for packet
+/// overhead, fragmentation and retransmissions within 1 MiB of datagrams.
+/// These apply before dispatch; they do not change capture or endpoint admission limits.
+pub const DEFAULT_QUIC_PEEK_LIMITS: CaptureLimits = CaptureLimits {
+    datagrams: 512,
+    bytes: mib(1),
+    packets: 1024,
+    frames: 8192,
+    crypto_fragments: 1024,
+    client_hello_bytes: DEFAULT_CLIENT_HELLO_MAX_SIZE,
+    parameters: 256,
+};
 
 /// Every datagram fits: the largest UDP payload.
 const RECEIVE_BUFFER: usize = kib(64);
@@ -67,8 +84,9 @@ where
     }
 }
 
-/// Why a peek found no complete QUIC ClientHello. The fallback finds it in its input's
-/// extensions.
+/// Why a QUIC peek found no complete ClientHello. A fallback receives this detail
+/// in its extensions. For the current inspection outcome, including a cleared
+/// failure after a later successful or non-QUIC peek, use [`ClientHelloPeekStatus`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(net, proxy))]
 pub enum QuicPeekRejection {
@@ -101,9 +119,10 @@ impl fmt::Display for QuicPeekRejection {
 /// Which [`QuicPeekRejection`]s reach the fallback; any other fails the association with
 /// [`QuicPeekRejectedError`].
 ///
-/// The default admits only [`QuicPeekRejection::NotQuic`]: forwarding any other class
-/// untouched would let a client evade inspection by malforming, stretching or stalling its
-/// flight.
+/// Defaults to [`Self::ALL`] for best-effort inspection and passthrough. Use
+/// [`Self::NOT_QUIC`] when routing requires inspection of every QUIC ClientHello,
+/// or configure each class separately. Inspection budgets still stop reading;
+/// selecting fallback does not relax them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuicPeekFallbackPolicy {
     pub not_quic: bool,
@@ -147,7 +166,7 @@ impl QuicPeekFallbackPolicy {
 
 impl Default for QuicPeekFallbackPolicy {
     fn default() -> Self {
-        Self::NOT_QUIC
+        Self::ALL
     }
 }
 
@@ -173,7 +192,17 @@ impl std::error::Error for QuicPeekRejectedError {}
 /// the fallback can still forward the association untouched; the others fail with
 /// [`QuicPeekRejectedError`]. Nothing is ever sent while peeking: the decision is made before
 /// any local QUIC output exists. The deadline is absolute from `serve`, and the read ahead is
-/// bounded by [`CaptureLimits`].
+/// bounded by [`CaptureLimits`]. Defaults use [`DEFAULT_QUIC_PEEK_LIMITS`] and
+/// select the configured fallback for every rejection. Use
+/// [`Self::with_malformed_tls_policy`] and [`Self::with_peek_timeout_policy`] for
+/// the same policy controls as TCP, or [`Self::with_fallback_policy`] for per-class
+/// QUIC control. The last applicable setter wins.
+///
+/// Both successful and fallback dispatch insert [`ClientHelloPeekStatus`], replacing
+/// any earlier status. Non-QUIC input has no inspection failure. Unsupported or
+/// malformed QUIC maps to `Rejected`, budget exhaustion to `MaxPeekSizeReached`,
+/// and deadline expiry to `Timeout`. Receive errors always fail the service.
+/// Strict routing should use [`QuicPeekFallbackPolicy::NOT_QUIC`].
 ///
 /// Routing sees the outer ClientHello only: with ECH that is the public name, never the
 /// encrypted inner one. 0-RTT in the first flight is never decrypted: it is flagged as
@@ -199,7 +228,7 @@ impl<K, S> PeekQuicClientHelloService<K, S> {
             keys,
             inner,
             fallback: RejectService::new(NoQuicRejectError),
-            limits: CaptureLimits::default(),
+            limits: DEFAULT_QUIC_PEEK_LIMITS,
             peek_timeout: DEFAULT_QUIC_PEEK_TIMEOUT,
             fallback_policy: QuicPeekFallbackPolicy::default(),
             retain_first_flight: true,
@@ -231,7 +260,9 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Bounds on the datagrams, packets and bytes read ahead.
+        /// Bounds on datagrams, packets, bytes, CRYPTO fragments and the ClientHello.
+        /// Defaults to [`DEFAULT_QUIC_PEEK_LIMITS`]. Reaching a bound stops inspection
+        /// and follows the configured fallback policy.
         pub fn limits(mut self, limits: CaptureLimits) -> Self {
             self.limits = limits;
             self
@@ -248,8 +279,31 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Whether malformed, unsupported or over-budget QUIC reaches fallback.
+        /// Defaults to [`MalformedTlsPolicy::Fallback`]. This updates those three
+        /// classes only; timeout and non-QUIC policy remain independent.
+        pub fn malformed_tls_policy(mut self, policy: MalformedTlsPolicy) -> Self {
+            let fallback = policy == MalformedTlsPolicy::Fallback;
+            self.fallback_policy.malformed = fallback;
+            self.fallback_policy.unsupported_version = fallback;
+            self.fallback_policy.budget = fallback;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Whether an inconclusive inspection deadline selects fallback.
+        /// Defaults to [`PeekTimeoutPolicy::FailOpen`]. This updates only the
+        /// deadline class, independently of the malformed-TLS policy.
+        pub fn peek_timeout_policy(mut self, policy: PeekTimeoutPolicy) -> Self {
+            self.fallback_policy.deadline = policy == PeekTimeoutPolicy::FailOpen;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Which rejections reach the fallback. Defaults to
-        /// [`QuicPeekFallbackPolicy::NOT_QUIC`].
+        /// [`QuicPeekFallbackPolicy::ALL`].
         pub fn fallback_policy(mut self, policy: QuicPeekFallbackPolicy) -> Self {
             self.fallback_policy = policy;
             self
@@ -313,16 +367,27 @@ where
                 .await?;
             let input =
                 input.map_peek_socket(|socket| PrefixedDatagramSocket::new(socket, retained));
+            let failure = peeked.as_ref().err().and_then(|reason| match reason {
+                QuicPeekRejection::NotQuic => None,
+                QuicPeekRejection::Malformed | QuicPeekRejection::UnsupportedVersion => {
+                    Some(PeekStopReason::Rejected)
+                }
+                QuicPeekRejection::Budget => Some(PeekStopReason::MaxPeekSizeReached),
+                QuicPeekRejection::Deadline => Some(PeekStopReason::Timeout),
+            });
             match peeked {
-                Ok(client_hello) => self
-                    .inner
-                    .serve(InputWithQuicClientHello {
-                        input,
-                        peeked: client_hello,
-                    })
-                    .await
-                    .map_err(Into::into),
+                Ok(client_hello) => {
+                    input.extensions().insert(ClientHelloPeekStatus::default());
+                    self.inner
+                        .serve(InputWithQuicClientHello {
+                            input,
+                            peeked: client_hello,
+                        })
+                        .await
+                        .map_err(Into::into)
+                }
                 Err(rejection) if self.fallback_policy.admits(rejection) => {
+                    input.extensions().insert(ClientHelloPeekStatus { failure });
                     input.extensions().insert(rejection);
                     self.fallback.serve(input).await.map_err(Into::into)
                 }

@@ -196,3 +196,80 @@ fn fragments_straddling_the_bound_or_the_declared_end_are_clipped() {
     assembly.take_in(10, &hello[10..50]).unwrap();
     assert_eq!(assembly.client_hello().unwrap(), hello);
 }
+
+#[test]
+fn header_split_across_sparse_crypto_fragments_enforces_shared_limits() {
+    let hello = message(rama_utils::octets::kib(60));
+    let relaxed = limits(rama_tls::client::DEFAULT_CLIENT_HELLO_MAX_SIZE, 128);
+    let fragments = [(2, &hello[2..]), (0, &hello[..1]), (1, &hello[1..2])];
+    assert_eq!(assemble(&fragments, &relaxed).unwrap(), hello);
+    assert!(matches!(
+        assemble(&fragments, &CaptureLimits::default()),
+        Err(CaptureError::LimitExceeded("ClientHello bytes"))
+    ));
+    assert!(matches!(
+        assemble(&[(0, &[1, 0, 0, 0])], &relaxed),
+        Err(CaptureError::Malformed("expected ClientHello"))
+    ));
+}
+
+#[test]
+fn pre_header_memory_tracks_received_bytes_not_offsets() {
+    let limits = limits(rama_tls::client::DEFAULT_CLIENT_HELLO_MAX_SIZE, 8);
+    let mut assembly = ClientHelloAssembly::new(&limits);
+    let offset = limits.client_hello_bytes - 1;
+    for _ in 0..1000 {
+        assembly.take_in(offset as u64, &[42]).unwrap();
+    }
+    assert_eq!(assembly.buffer.capacity(), 0);
+    assert_eq!(assembly.pending.len(), 1);
+    assert_eq!(assembly.pending[0].1.capacity(), 1);
+    assert!(assembly.received().is_empty());
+    assert!(matches!(
+        assembly.take_in(offset as u64, &[43]),
+        Err(CaptureError::Malformed("conflicting CRYPTO overlap"))
+    ));
+}
+
+#[test]
+fn pre_header_overlaps_keep_only_new_bytes_then_materialize_once() {
+    let hello = message(3000);
+    let mut assembly = ClientHelloAssembly::new(&CaptureLimits::default());
+    for (offset, bytes) in [
+        (100, &hello[100..1000]),
+        (500, &hello[500..2000]),
+        (1000, &hello[1000..3000]),
+    ] {
+        assembly.take_in(offset, bytes).unwrap();
+    }
+    assert_eq!(
+        assembly
+            .pending
+            .iter()
+            .map(|(_, bytes)| bytes.len())
+            .sum::<usize>(),
+        2900
+    );
+    assert_eq!(assembly.buffer.capacity(), 0);
+    assembly.take_in(0, &hello[..2]).unwrap();
+    assert_eq!(assembly.received(), &hello[..2]);
+    assembly.take_in(2, &hello[2..100]).unwrap();
+    assert_eq!(assembly.client_hello().unwrap(), hello);
+    assert!(assembly.pending.is_empty());
+    assert_eq!(assembly.buffer.capacity(), hello.len());
+    let allocation = assembly.buffer.as_ptr();
+    assembly.take_in(0, &hello).unwrap();
+    assert_eq!(assembly.buffer.as_ptr(), allocation);
+}
+
+#[test]
+fn pre_header_metadata_is_bounded_even_for_adjacent_fragments() {
+    let mut assembly = ClientHelloAssembly::new(&limits(100, 2));
+    assembly.take_in(4, &[0]).unwrap();
+    assembly.take_in(5, &[0]).unwrap();
+    assert!(matches!(
+        assembly.take_in(6, &[0]),
+        Err(CaptureError::LimitExceeded("CRYPTO fragments"))
+    ));
+    assert_eq!(assembly.pending.len(), 2);
+}

@@ -20,11 +20,20 @@ pub use hello::{
     ClientHello, ClientHelloExtension, ECHClientHello, client_hello_extension_is_connection_bound,
 };
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
+mod inspect;
+pub use inspect::{ClientHelloPeekStatus, MalformedTlsPolicy};
+
 mod parser;
 pub use parser::{
-    ClientHelloHandshakePrefix, extract_sni_from_client_hello_handshake,
+    ClientHelloHandshakePrefix, ClientHelloMessageError, ClientHelloReassemblyConfig,
+    DEFAULT_CLIENT_HELLO_MAX_SIZE, client_hello_message_size,
+    extract_sni_from_client_hello_handshake, extract_sni_from_client_hello_handshake_with_config,
     extract_sni_from_client_hello_record, parse_client_hello, parse_client_hello_handshake,
-    parse_client_hello_handshake_prefix, parse_client_hello_message_prefix,
+    parse_client_hello_handshake_prefix, parse_client_hello_handshake_prefix_with_config,
+    parse_client_hello_handshake_with_config, parse_client_hello_message_prefix,
 };
 
 mod chain_policy;

@@ -6,6 +6,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorExt as _},
     extensions::ExtensionsRef as _,
     http::{Version, conn::TargetHttpVersion},
+    io::peek::PeekTimeoutPolicy,
     net::{
         Protocol,
         client::{
@@ -13,17 +14,20 @@ use rama::{
         },
         tls::{ApplicationProtocol, TlsAlpn},
     },
-    tls::client::{ClientHello, ServerVerifyMode, TlsClientConfig, parse_client_hello_handshake},
+    tls::{
+        client::{ClientHello, ClientHelloReassemblyConfig, ServerVerifyMode, TlsClientConfig},
+        server::{MalformedTlsPolicy, peek_client_hello_from_input_with_policies},
+    },
     utils::octets::kib,
 };
-use tokio::io::{AsyncReadExt as _, DuplexStream};
+use tokio::io::DuplexStream;
 
 #[cfg(feature = "boring")]
 use rama::tls::boring::client::TlsConnector as BoringConnector;
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
 use rama::tls::rustls::client::TlsConnector as RustlsConnector;
 
-/// One in-memory transport; the peer reads the native TLS engine's first record.
+/// One in-memory transport; the peer reassembles the native TLS engine's first hello.
 #[derive(Clone, Debug)]
 struct Dial(Arc<Mutex<Option<DuplexStream>>>);
 
@@ -53,16 +57,17 @@ impl Service<ConnectRequest> for Dial {
 }
 
 /// EOF before the first byte distinguishes refusal from a rewritten offer.
-async fn first_hello(mut peer: DuplexStream) -> Result<Option<ClientHello>, BoxError> {
-    let mut header = [0u8; 5];
-    if peer.read(&mut header[..1]).await? == 0 {
-        return Ok(None);
-    }
-    peer.read_exact(&mut header[1..]).await?;
-    let mut record = vec![0; 5 + usize::from(u16::from_be_bytes([header[3], header[4]]))];
-    record[..5].copy_from_slice(&header);
-    peer.read_exact(&mut record[5..]).await?;
-    parse_client_hello_handshake(&record).map(Some)
+async fn first_hello(peer: DuplexStream) -> Result<Option<ClientHello>, BoxError> {
+    // A malformed native offer must fail this fixture, not look like refusal.
+    let (_, hello, _) = peek_client_hello_from_input_with_policies(
+        peer,
+        None,
+        PeekTimeoutPolicy::FailClosed,
+        MalformedTlsPolicy::Reject,
+        ClientHelloReassemblyConfig::default(),
+    )
+    .await?;
+    Ok(hello)
 }
 
 async fn observe<C>(

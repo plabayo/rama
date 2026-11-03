@@ -51,10 +51,10 @@
 //!
 //! # Policy and limits
 //!
-//! The default peek fallback forwards non-QUIC datagrams only. Unsupported QUIC versions,
-//! malformed flights, exhausted capture budgets and inspection timeouts are refused before
-//! any local QUIC response. A different application can set `QuicPeekFallbackPolicy`
-//! explicitly; forwarding every rejection is best-effort inspection that a client can evade.
+//! The peek fallback forwards uninspectable associations by default, including unsupported
+//! QUIC versions, malformed flights, exhausted inspection budgets and timeouts. It receives
+//! `ClientHelloPeekStatus` and the QUIC rejection class. Applications requiring inspection
+//! before forwarding can select `QuicPeekFallbackPolicy::NOT_QUIC` or per-class controls.
 //! Once interception starts, handshake or relay failure closes that association: it cannot
 //! fall back to the original encrypted connection.
 //!

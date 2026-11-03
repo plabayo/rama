@@ -20,7 +20,8 @@ use rama_net::{
     address::{Domain, Host},
     tls::ApplicationProtocol,
 };
-use std::str;
+use rama_utils::octets::kib;
+use std::{borrow::Cow, str};
 
 /// Parse a [`ClientHello`] from the raw "wire" bytes.
 ///
@@ -41,12 +42,142 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, BoxError> {
     }
 }
 
-/// Parse a [`ClientHello`] from the raw handshake "wire" bytes.
+/// Default maximum ClientHello handshake bytes for live inspection, including its header.
+pub const DEFAULT_CLIENT_HELLO_MAX_SIZE: usize = kib(256);
+
+// TLS's unsigned 24-bit handshake body length plus its four-byte header (RFC 8446 section 4).
+const MAX_CLIENT_HELLO_MESSAGE_SIZE: usize = 0x00ff_ffff + 4;
+
+/// A ClientHello header cannot describe an inspectable message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientHelloMessageError {
+    /// The handshake type is not ClientHello, or its body is empty.
+    Invalid,
+    /// The header or declared message exceeds the caller's byte budget.
+    TooLarge,
+}
+
+impl std::fmt::Display for ClientHelloMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Invalid => "invalid ClientHello handshake header",
+            Self::TooLarge => "ClientHello exceeds the message byte budget",
+        })
+    }
+}
+
+impl std::error::Error for ClientHelloMessageError {}
+
+/// Inspect a contiguous TLS handshake header without allocating or needing its body.
 ///
-/// Same as [`parse_client_hello`] but for the outer tls handshake,
-/// instead of just the record
+/// Returns the total message size, including the four-byte header, or `None` if
+/// the header is incomplete. TLS records and QUIC CRYPTO assembly both use this
+/// check after making their first handshake bytes contiguous. The caller supplies
+/// its byte budget and decides how to retain or replay transport data.
+pub fn client_hello_message_size(
+    prefix: &[u8],
+    max_size: usize,
+) -> Result<Option<usize>, ClientHelloMessageError> {
+    if max_size < 4 {
+        return Err(ClientHelloMessageError::TooLarge);
+    }
+    // TLS HandshakeType client_hello is 1; its length is an unsigned 24-bit
+    // body length following the type byte (RFC 8446 section 4).
+    if prefix.first().is_some_and(|kind| *kind != 1) {
+        return Err(ClientHelloMessageError::Invalid);
+    }
+    let Some(header) = prefix.get(..4) else {
+        return Ok(None);
+    };
+    let size = 4
+        + ((usize::from(header[1]) << 16) | (usize::from(header[2]) << 8) | usize::from(header[3]));
+    if size == 4 {
+        return Err(ClientHelloMessageError::Invalid);
+    }
+    if size > max_size {
+        return Err(ClientHelloMessageError::TooLarge);
+    }
+    Ok(Some(size))
+}
+
+/// Bounds for reassembling the first record-framed ClientHello.
+///
+/// Defaults allow 256 KiB (including the four-byte handshake header) across
+/// 256 records. Memory grows with received bytes, never a peer's declaration.
+/// Plaintext record payloads must still be nonempty and at most 16 KiB.
+/// These limits do not apply to bare ClientHello bodies or QUIC messages.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientHelloReassemblyConfig {
+    max_handshake_size: usize,
+    max_records: usize,
+    require_matching_record_version: bool,
+}
+
+impl Default for ClientHelloReassemblyConfig {
+    fn default() -> Self {
+        Self {
+            max_handshake_size: DEFAULT_CLIENT_HELLO_MAX_SIZE,
+            max_records: 256,
+            require_matching_record_version: false,
+        }
+    }
+}
+
+impl ClientHelloReassemblyConfig {
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum handshake bytes, including its four-byte header.
+        /// Defaults to 256 KiB. Values below four reject every hello; values
+        /// above the TLS 24-bit length plus four have no additional effect.
+        pub fn max_handshake_size(mut self, size: usize) -> Self {
+            self.max_handshake_size = size;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum records contributing to the first handshake.
+        /// Defaults to 256. Zero rejects every hello.
+        pub fn max_records(mut self, count: usize) -> Self {
+            self.max_records = count;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Require every record's legacy version to equal the first one's.
+        /// Defaults to false for interoperability: TLS 1.3 ignores this field
+        /// (RFC 8446 §5.1). Every record must still use a recognized TLS version.
+        pub fn require_matching_record_version(mut self, required: bool) -> Self {
+            self.require_matching_record_version = required;
+            self
+        }
+    }
+
+    pub(crate) fn max_wire_size(self) -> usize {
+        let size = self.max_handshake_size.min(MAX_CLIENT_HELLO_MESSAGE_SIZE);
+        // Each nonempty record contributes at least one handshake byte. Allow
+        // the rest of the final record, which can contain another message.
+        size + self.max_records.min(size) * 5 + MAX_PLAINTEXT_RECORD_SIZE
+    }
+}
+
+const MAX_PLAINTEXT_RECORD_SIZE: usize = kib(16);
+
+/// Parse exactly one ClientHello from TLS records using default reassembly bounds.
+///
+/// Unlike the prefix parser, this rejects trailing bytes, including another
+/// handshake in the final record. Record headers may split the handshake at
+/// any byte, including within its four-byte header.
 pub fn parse_client_hello_handshake(i: &[u8]) -> Result<ClientHello, BoxError> {
-    match parse_client_hello_handshake_inner(i) {
+    parse_client_hello_handshake_with_config(i, ClientHelloReassemblyConfig::default())
+}
+
+/// Parse exactly one record-framed ClientHello with explicit reassembly bounds.
+pub fn parse_client_hello_handshake_with_config(
+    i: &[u8],
+    config: ClientHelloReassemblyConfig,
+) -> Result<ClientHello, BoxError> {
+    match parse_client_hello_handshake_prefix_inner(i, config) {
         Err(err) => Err(
             BoxError::from_static_str("parse client hello handshake message")
                 .context_debug_field("err", err.to_owned()),
@@ -93,41 +224,115 @@ pub enum ClientHelloHandshakePrefix {
 /// [`ClientHelloHandshakePrefix`] so a peeker only keeps waiting while the
 /// prefix remains possibly-valid, and rejects immediately otherwise.
 pub fn parse_client_hello_handshake_prefix(i: &[u8]) -> ClientHelloHandshakePrefix {
-    match parse_client_hello_handshake_prefix_inner(i) {
+    parse_client_hello_handshake_prefix_with_config(i, ClientHelloReassemblyConfig::default())
+}
+
+/// Classify a record-framed ClientHello using explicit reassembly bounds.
+///
+/// A partial record is incomplete even if its available payload contains the
+/// entire hello. Once its containing record is complete, subsequent handshake
+/// messages and records are ignored. Limit violations are invalid immediately.
+pub fn parse_client_hello_handshake_prefix_with_config(
+    i: &[u8],
+    config: ClientHelloReassemblyConfig,
+) -> ClientHelloHandshakePrefix {
+    match parse_client_hello_handshake_prefix_inner(i, config) {
         Ok((_, hello)) => ClientHelloHandshakePrefix::Complete(hello),
         Err(nom::Err::Incomplete(_)) => ClientHelloHandshakePrefix::Incomplete,
         Err(nom::Err::Error(_) | nom::Err::Failure(_)) => ClientHelloHandshakePrefix::Invalid,
     }
 }
 
-/// Like [`parse_client_hello_handshake_inner`], but bounds the ClientHello body
-/// by the handshake-message length so partial input surfaces as `Incomplete`.
-///
-/// The plain inner parser's `if i.is_empty()` extensions short-circuit would
-/// otherwise *falsely complete* a buffer that ends exactly at the
-/// compression-methods boundary as an extension-less hello (silently dropping
-/// SNI/ALPN) — fine for a fully-buffered record, wrong for an incremental peek.
-/// Taking the exact handshake body with streaming `take` (so a not-yet-buffered
-/// body is `Incomplete`) and then `complete`-parsing within it keeps
-/// "no extensions" and "extensions not buffered yet" distinct.
-fn parse_client_hello_handshake_prefix_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
-    // record content type + TLS version
-    let (i, _) = verify(take(3usize), |s: &[u8]| {
-        matches!(s, [0x16, 0x03, 0x00..=0x04])
-    })
-    .parse(i)?;
-    // record length (unused: the handshake length below bounds the body)
-    let (i, _) = be_u16(i)?;
-    // handshake type (ClientHello == 0x01) + 3-byte handshake-message length
-    let (i, hs_header) = verify(take(4usize), |s: &[u8]| matches!(s, [0x01, ..])).parse(i)?;
-    let hs_len =
-        ((hs_header[1] as usize) << 16) | ((hs_header[2] as usize) << 8) | (hs_header[3] as usize);
-    // Streaming `take` yields `Incomplete` until the whole handshake body is
-    // buffered; `complete` then converts any residual incompleteness inside the
-    // exact-length body into a hard error.
-    let (rest, body) = take(hs_len).parse(i)?;
-    let (_, hello) = complete(all_consuming(parse_client_hello_inner)).parse(body)?;
+fn parse_client_hello_handshake_prefix_inner(
+    i: &[u8],
+    config: ClientHelloReassemblyConfig,
+) -> IResult<&[u8], ClientHello> {
+    let (rest, message) = reassemble_client_hello(i, config)?;
+    // Complete-parse the exact body so missing extensions cannot be mistaken
+    // for an extension-less hello.
+    let hello = complete(all_consuming(parse_client_hello_inner))
+        .parse(&message[4..])
+        .map_err(|err| err.map(|err| make_error(i, err.code)))?
+        .1;
     Ok((rest, hello))
+}
+
+/// Scan record framing without copying partial handshakes. Only assemble once
+/// all required bytes have arrived; the common single-record case is borrowed.
+/// Repeated prefix calls inspect at most `max_records` headers and four handshake
+/// header bytes, rather than copying the growing body on every TCP read.
+fn reassemble_client_hello(
+    input: &[u8],
+    config: ClientHelloReassemblyConfig,
+) -> IResult<&[u8], Cow<'_, [u8]>> {
+    let mut i = input;
+    let mut header = [0u8; 4];
+    let mut header_len = 0;
+    let mut expected = None;
+    let mut first_version = None;
+    let mut records = 0;
+    let mut handshake_bytes = 0;
+    loop {
+        let invalid = || nom::Err::Error(make_error(i, ErrorKind::Verify));
+        if config.max_handshake_size < 4 || records >= config.max_records {
+            return Err(invalid());
+        }
+        // Validate available header bytes before asking for more input.
+        if i.first().is_some_and(|b| *b != 0x16)
+            || i.get(1).is_some_and(|b| *b != 0x03)
+            || i.get(2).is_some_and(|b| !matches!(b, 0x00..=0x04))
+        {
+            return Err(invalid());
+        }
+        if i.len() < 5 {
+            return Err(nom::Err::Incomplete(nom::Needed::Unknown));
+        }
+        let version = [i[1], i[2]];
+        if config.require_matching_record_version
+            && first_version.is_some_and(|first| first != version)
+        {
+            return Err(invalid());
+        }
+        first_version.get_or_insert(version);
+        let record_len = usize::from(u16::from_be_bytes([i[3], i[4]]));
+        if record_len == 0 || record_len > MAX_PLAINTEXT_RECORD_SIZE {
+            return Err(invalid());
+        }
+        records += 1;
+        let payload = &i[5..];
+        let available = &payload[..payload.len().min(record_len)];
+        if header_len < 4 {
+            let n = (4 - header_len).min(available.len());
+            header[header_len..header_len + n].copy_from_slice(&available[..n]);
+            header_len += n;
+            expected = client_hello_message_size(&header[..header_len], config.max_handshake_size)
+                .map_err(|_error| invalid())?;
+        }
+        if available.len() < record_len {
+            return Err(nom::Err::Incomplete(nom::Needed::Unknown));
+        }
+        if let Some(size) = expected.filter(|size| *size <= handshake_bytes + record_len) {
+            let used = size - handshake_bytes;
+            let message = if records == 1 {
+                Cow::Borrowed(&payload[..used])
+            } else {
+                // The first pass proved these bytes exist and fit the limits.
+                // This allocation follows received data, not a declaration.
+                let mut message = Vec::with_capacity(size);
+                let mut rest = input;
+                while message.len() < size {
+                    let len = usize::from(u16::from_be_bytes([rest[3], rest[4]]));
+                    let n = len.min(size - message.len());
+                    message.extend_from_slice(&rest[5..5 + n]);
+                    rest = &rest[5 + len..];
+                }
+                Cow::Owned(message)
+            };
+            return Ok((&payload[used..], message));
+        }
+        handshake_bytes += record_len;
+        i = &payload[record_len..];
+    }
 }
 
 /// Incrementally classify a (possibly partial) bare TLS ClientHello handshake message: the
@@ -147,20 +352,17 @@ pub fn parse_client_hello_message_prefix(i: &[u8]) -> ClientHelloHandshakePrefix
 }
 
 fn parse_client_hello_message_prefix_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
-    // handshake type (ClientHello == 0x01) + 3-byte handshake-message length
-    let (i, hs_header) = verify(take(4usize), |s: &[u8]| matches!(s, [0x01, ..])).parse(i)?;
-    let hs_len =
-        ((hs_header[1] as usize) << 16) | ((hs_header[2] as usize) << 8) | (hs_header[3] as usize);
+    let size = client_hello_message_size(i, MAX_CLIENT_HELLO_MESSAGE_SIZE)
+        .map_err(|_error| nom::Err::Error(make_error(i, ErrorKind::Verify)))?
+        .ok_or(nom::Err::Incomplete(nom::Needed::Unknown))?;
+    let (i, _) = take(4usize).parse(i)?;
+    let hs_len = size - 4;
 
     // Bound the body by the handshake length so a short buffer is `Incomplete` rather than a
-    // falsely-completed extension-less hello; see `parse_client_hello_handshake_prefix_inner`.
+    // falsely-completed extension-less hello.
     let (rest, body) = take(hs_len).parse(i)?;
     let (_, hello) = complete(all_consuming(parse_client_hello_inner)).parse(body)?;
     Ok((rest, hello))
-}
-
-fn parse_client_hello_handshake_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
-    parse_client_hello_handshake_prefix_inner(i)
 }
 
 /// Parse a [`ClientHello`] from the raw incoming "wire" client handshake bytes to find the SNI Host value.
@@ -168,12 +370,22 @@ fn parse_client_hello_handshake_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
 /// Same as [`extract_sni_from_client_hello_record`] but handles the full handshake bytes, meaning
 /// the client hello record itself and the handshake header bytes in front of it.
 pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain>, BoxError> {
-    parse_client_hello_handshake_sni_inner(i)
-        .map(|(_, domain)| domain)
-        .map_err(|err| {
-            BoxError::from_static_str("parse client hello handshake message to find SNI")
-                .context_debug_field("err", err.to_owned())
-        })
+    extract_sni_from_client_hello_handshake_with_config(i, ClientHelloReassemblyConfig::default())
+}
+
+/// Extract SNI from reassembled TLS records with explicit bounds.
+///
+/// Like the body-only extractor, this validates SNI but skips other extension
+/// contents. It is not a substitute for validating the entire ClientHello.
+pub fn extract_sni_from_client_hello_handshake_with_config(
+    i: &[u8],
+    config: ClientHelloReassemblyConfig,
+) -> Result<Option<Domain>, BoxError> {
+    let (_, message) = reassemble_client_hello(i, config).map_err(|err| {
+        BoxError::from_static_str("reassemble client hello handshake to find SNI")
+            .context_debug_field("err", err.to_owned())
+    })?;
+    extract_sni_from_client_hello_record(&message[4..])
 }
 
 /// Parse a [`ClientHello`] from the raw "wire" bytes to find the SNI Host value.
@@ -192,23 +404,6 @@ pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Option<Domain>, 
             BoxError::from_static_str("parse client hello record message to find SNI")
                 .context_debug_field("err", err.to_owned())
         })
-}
-
-fn parse_client_hello_handshake_sni_inner(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
-    // verify content type and tls version
-    let (i, _) = verify(take(3usize), |s: &[u8]| {
-        matches!(s, [0x16, 0x03, 0x00..=0x04])
-    })
-    .parse(i)?;
-
-    // skip record length
-    let (i, _) = be_u16(i)?;
-
-    // verify handshake type and drop the handshake length
-    let (i, _) = verify(take(4usize), |s: &[u8]| matches!(s, [0x01, ..])).parse(i)?;
-
-    // now it's time for the record
-    parse_client_hello_record_sni_inner(i)
 }
 
 fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
@@ -610,6 +805,40 @@ fn parse_ech_client_hello(input: &[u8]) -> IResult<&[u8], ECHClientHello> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_header_validation_is_incremental_and_bounded() {
+        use super::{
+            ClientHelloMessageError, MAX_CLIENT_HELLO_MESSAGE_SIZE, client_hello_message_size,
+        };
+        for size in [
+            5usize,
+            rama_utils::octets::kib(256),
+            MAX_CLIENT_HELLO_MESSAGE_SIZE,
+        ] {
+            let body = u32::try_from(size - 4).unwrap().to_be_bytes();
+            let header = [1, body[1], body[2], body[3]];
+            for prefix in 0..4 {
+                assert_eq!(client_hello_message_size(&header[..prefix], size), Ok(None));
+            }
+            assert_eq!(client_hello_message_size(&header, size), Ok(Some(size)));
+            assert_eq!(
+                client_hello_message_size(&header, size - 1),
+                Err(ClientHelloMessageError::TooLarge)
+            );
+        }
+        assert_eq!(
+            client_hello_message_size(&[2], usize::MAX),
+            Err(ClientHelloMessageError::Invalid)
+        );
+        assert_eq!(
+            client_hello_message_size(&[1, 0, 0, 0], usize::MAX),
+            Err(ClientHelloMessageError::Invalid)
+        );
+        assert_eq!(
+            client_hello_message_size(&[], 3),
+            Err(ClientHelloMessageError::TooLarge)
+        );
+    }
 
     use super::*;
     use crate::{
@@ -618,6 +847,192 @@ mod tests {
     };
     use rama_net::address::Domain;
     use std::assert_matches;
+
+    use crate::client::test_support::{fragments, hello, record};
+
+    #[test]
+    fn record_fragmentation_preserves_hello_and_fingerprints_at_every_split() {
+        use crate::fingerprint::{Ja3, Ja4};
+        let message = hello(0);
+        let expected = parse_client_hello_handshake(&record(&message)).unwrap();
+        let expected_json = serde_json::to_value(&expected).unwrap();
+        for split in 1..message.len() {
+            let mut wire = record(&message[..split]);
+            wire.extend(record(&message[split..]));
+            for end in 0..wire.len() {
+                assert_matches!(
+                    parse_client_hello_handshake_prefix(&wire[..end]),
+                    ClientHelloHandshakePrefix::Incomplete
+                );
+            }
+            let actual = parse_client_hello_handshake(&wire).unwrap();
+            assert_eq!(serde_json::to_value(&actual).unwrap(), expected_json);
+            assert_eq!(
+                extract_sni_from_client_hello_handshake(&wire).unwrap(),
+                expected.ext_server_name().cloned()
+            );
+            assert_eq!(
+                Ja3::compute_from_client_hello(&actual).unwrap().to_string(),
+                Ja3::compute_from_client_hello(&expected)
+                    .unwrap()
+                    .to_string()
+            );
+            assert_eq!(
+                Ja4::compute_from_client_hello(&actual).unwrap().to_string(),
+                Ja4::compute_from_client_hello(&expected)
+                    .unwrap()
+                    .to_string()
+            );
+        }
+        parse_client_hello_handshake(&fragments(&message, 1)).unwrap();
+        assert_matches!(
+            parse_client_hello_message_prefix(&message),
+            ClientHelloHandshakePrefix::Complete(_)
+        );
+    }
+
+    #[test]
+    fn reassembly_limits_are_configurable_and_reject_declarations_early() {
+        let message = hello(400);
+        let wire = fragments(&message, 1);
+        assert_matches!(
+            parse_client_hello_handshake_prefix(&wire),
+            ClientHelloHandshakePrefix::Invalid
+        );
+        let config = ClientHelloReassemblyConfig {
+            max_handshake_size: message.len(),
+            max_records: message.len(),
+            ..Default::default()
+        };
+        parse_client_hello_handshake_with_config(&wire, config).unwrap();
+        assert_eq!(
+            extract_sni_from_client_hello_handshake_with_config(&wire, config)
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "x.com"
+        );
+        for config in [
+            ClientHelloReassemblyConfig {
+                max_handshake_size: message.len() - 1,
+                ..config
+            },
+            ClientHelloReassemblyConfig {
+                max_records: message.len() - 1,
+                ..config
+            },
+            ClientHelloReassemblyConfig {
+                max_records: 0,
+                ..config
+            },
+            ClientHelloReassemblyConfig {
+                max_handshake_size: 0,
+                ..config
+            },
+        ] {
+            assert_matches!(
+                parse_client_hello_handshake_prefix_with_config(&wire, config),
+                ClientHelloHandshakePrefix::Invalid
+            );
+        }
+        // The over-cap handshake declaration is rejected before its body arrives.
+        let declared = [0x16, 3, 1, 0x40, 0, 1, 4, 0, 0];
+        assert_matches!(
+            parse_client_hello_handshake_prefix(&declared),
+            ClientHelloHandshakePrefix::Invalid
+        );
+        // The record-count budget cannot be extended by waiting for more input.
+        assert_matches!(
+            parse_client_hello_handshake_prefix_with_config(
+                &record(&message[..1]),
+                ClientHelloReassemblyConfig {
+                    max_records: 1,
+                    ..config
+                }
+            ),
+            ClientHelloHandshakePrefix::Invalid
+        );
+        let enormous = ClientHelloReassemblyConfig {
+            max_handshake_size: usize::MAX,
+            max_records: usize::MAX,
+            ..config
+        };
+        assert!(enormous.max_wire_size() < rama_utils::octets::mib(128));
+    }
+
+    #[test]
+    fn malformed_records_and_optional_version_consistency() {
+        let message = hello(0);
+        for header in [
+            vec![0x16, 3, 1, 0, 0],    // empty handshake record
+            vec![0x16, 3, 1, 0x40, 1], // oversized plaintext record
+            vec![0x17],
+            vec![0x16, 2],
+            vec![0x16, 3, 5],
+        ] {
+            let mut wire = record(&message[..2]);
+            wire.extend_from_slice(&header);
+            assert_matches!(
+                parse_client_hello_handshake_prefix(&wire),
+                ClientHelloHandshakePrefix::Invalid
+            );
+        }
+        let mut wire = record(&message[..2]);
+        let mut second = record(&message[2..]);
+        second[2] = 3;
+        wire.extend(second);
+        parse_client_hello_handshake(&wire).unwrap();
+        assert_matches!(
+            parse_client_hello_handshake_prefix_with_config(
+                &wire,
+                ClientHelloReassemblyConfig {
+                    require_matching_record_version: true,
+                    ..Default::default()
+                }
+            ),
+            ClientHelloHandshakePrefix::Invalid
+        );
+    }
+
+    #[test]
+    fn first_message_boundary_and_complete_record_are_respected() {
+        let message = hello(0);
+        let mut payload = message.clone();
+        payload.extend_from_slice(&[2, 0, 0, 0]);
+        let wire = record(&payload);
+        assert_matches!(
+            parse_client_hello_handshake_prefix(&wire[..wire.len() - 1]),
+            ClientHelloHandshakePrefix::Incomplete
+        );
+        assert_matches!(
+            parse_client_hello_handshake_prefix(&wire),
+            ClientHelloHandshakePrefix::Complete(_)
+        );
+        parse_client_hello_handshake(&wire).unwrap_err();
+        let mut wire = fragments(&message, 3);
+        wire.extend_from_slice(&[0x17, 3]); // a later partial record is irrelevant
+        assert_matches!(
+            parse_client_hello_handshake_prefix(&wire),
+            ClientHelloHandshakePrefix::Complete(_)
+        );
+        parse_client_hello_handshake(&wire).unwrap_err();
+        // A record cannot borrow handshake bytes from beyond its declared end.
+        let mut wire = record(&message);
+        wire[3..5].copy_from_slice(&2u16.to_be_bytes());
+        assert_matches!(
+            parse_client_hello_handshake_prefix(&wire),
+            ClientHelloHandshakePrefix::Invalid
+        );
+    }
+
+    #[test]
+    fn large_hello_crosses_record_boundaries_under_default_limits() {
+        let message = hello(60_000);
+        let wire = fragments(&message, kib(16));
+        let parsed = parse_client_hello_handshake(&wire).unwrap();
+        assert_eq!(parsed.ext_server_name().unwrap().as_str(), "x.com");
+        assert_eq!(parsed.ext_alpn().unwrap(), &[ApplicationProtocol::HTTP_2]);
+    }
 
     fn body_with_extension(id: u16, value: &[u8]) -> Vec<u8> {
         let mut body = ch_record_body_prefix();
