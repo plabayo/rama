@@ -863,13 +863,50 @@ async fn completed_handshake_cancels_deadline() {
 }
 
 #[tokio::test]
+async fn handshake_allowance_accepts_zero_and_existing_long_initial_budgets() {
+    for allowance in [Duration::ZERO, Duration::from_secs(20)] {
+        let mut config = EndpointConfig::try_with_rand_key()
+            .unwrap()
+            .with_handshake_allowance(allowance);
+        config.handshake_timeout(Duration::from_secs(60)).unwrap();
+        let endpoint = endpoint_with(config, None, loopback_socket());
+        assert_eq!(endpoint.shutdown().await, ShutdownOutcome::Drained);
+    }
+}
+
+#[tokio::test]
 async fn invalid_handshake_deadlines_fail_before_spawning() {
     let mut config = EndpointConfig::try_with_rand_key().unwrap();
     config
         .handshake_timeout(Duration::ZERO)
         .expect_err("a zero handshake timeout is refused");
-    for duration in [Duration::ZERO, Duration::MAX] {
-        config.handshake_timeout = duration;
+    // Find a duration that fits on its own but overflows when added after the initial
+    // budget. Instant's representable range differs between operating systems.
+    let origin = now();
+    let (mut low, mut high) = (0, u64::MAX);
+    while low < high {
+        let middle = low + (high - low) / 2 + 1;
+        if origin.checked_add(Duration::from_secs(middle)).is_some() {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    let fitting_allowance = Duration::from_secs(low);
+    assert!(origin.checked_add(fitting_allowance).is_some());
+    assert!(
+        (origin + Duration::from_secs(1))
+            .checked_add(fitting_allowance)
+            .is_none()
+    );
+    for (initial, allowance) in [
+        (Duration::ZERO, Duration::from_secs(20)),
+        (Duration::MAX, Duration::ZERO),
+        (Duration::from_secs(10), Duration::MAX),
+        (Duration::from_secs(1), fitting_allowance),
+    ] {
+        config.handshake_timeout = initial;
+        config.set_handshake_allowance(allowance);
         let socket =
             Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
         let error = Endpoint::new_with_advertised(
@@ -2220,6 +2257,60 @@ async fn handshake_deadline_holds_while_the_receive_queue_is_saturated() {
     .unwrap();
     client_conn.unwrap();
     drop(server_conn);
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// A token-validated peer still occupies admission while its longer handshake budget runs.
+/// Refusing the server flight at the client's receive queue keeps Finished off the wire.
+#[tokio::test]
+async fn validated_handshake_retains_admission_until_the_extended_deadline() {
+    let (client_config, server_config) = configs();
+    let server_config = server_config.with_admission(
+        crate::AdmissionConfig::default()
+            .with_retry_threshold_min(0)
+            .with_retry_threshold_max(0)
+            .with_max_in_progress(1),
+    );
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
+    config
+        .handshake_timeout(Duration::from_secs(1))
+        .unwrap()
+        .set_handshake_allowance(Duration::from_secs(2));
+    let server = endpoint_with(config, Some(server_config), loopback_socket());
+    let (connection, endpoint_limits) = small_limits();
+    let client = endpoint_with(
+        limited_config(Duration::from_secs(5), connection, endpoint_limits),
+        None,
+        loopback_socket(),
+    );
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(incoming.remote_address_validated());
+    let budget = connection_budget(&client);
+    let held = saturate(&budget);
+    tokio::time::pause();
+    let accepting = incoming.accept().unwrap();
+    tokio::time::advance(Duration::from_secs(2)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(server.stats().handshakes_in_progress, 1);
+    assert_eq!(server.open_connections(), 1);
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert_matches!(
+        tokio::time::timeout(Duration::from_secs(1), accepting)
+            .await
+            .unwrap(),
+        Err(ConnectionError::TimedOut)
+    );
+    assert_eq!(server.stats().handshakes_in_progress, 0);
+    drop(held);
+    drop(connecting);
     tokio::join!(client.shutdown(), server.shutdown());
 }
 

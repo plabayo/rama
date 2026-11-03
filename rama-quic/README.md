@@ -70,6 +70,29 @@ Pick one crypto backend: `boring` (BoringSSL), `rustls,ring`, or `rustls,aws-lc`
 `boring` pulls in neither ring, AWS-LC nor the Rustls engine. From the end-user `rama`
 crate, enable the `quic` feature.
 
+### Handshake budgets
+
+`EndpointConfig::handshake_timeout` defaults to 10 seconds, starting at connection
+initiation on clients and the first datagram's arrival on servers. Application
+acceptance consumes that same budget. After acceptance, a valid server-side
+address-validation token or an authenticated Handshake packet grants the remaining
+time up to `handshake_timeout + handshake_allowance`, measured from the same origin.
+The allowance defaults to 20 seconds, giving a 30-second total by default. Traffic
+never renews that absolute ceiling. Initials, Retry packets and
+buffered early 1-RTT packets do not grant an extension.
+
+Set the allowance to zero for a strict absolute deadline, using
+`EndpointConfig::set_handshake_allowance` or `with_handshake_allowance`.
+The initial timeout must be nonzero, and the combined deadline must fit the runtime
+clock; this is checked when constructing the endpoint. Existing longer initial
+timeouts keep working: a 60-second timeout gets a total of 80 seconds after proof
+with the default allowance, or stays strict at 60 seconds with a zero allowance.
+
+Transport idle timeouts and application deadlines still apply independently. For
+example, a MASQUE tunnel opening or QUIC MITM relay with a shorter setup budget can
+expire before this transport ceiling. Configure both layers when a deployment
+needs more time for setup over a lossy path.
+
 Qlog recording follows qlog schema draft 14 and QUIC events draft 13; see the
 [`qlog` module](src/qlog/mod.rs) for scope and reader compatibility.
 

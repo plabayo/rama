@@ -117,9 +117,10 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     if testcase == TestCase::MultiConnect {
         // Keep the per-attempt deadline within the complete batch budget.
         let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
-        endpoint_config.handshake_timeout(
-            Duration::from_secs(args.timeout_seconds).min(MULTICONNECT_HANDSHAKE_TIMEOUT),
-        )?;
+        let budget = Duration::from_secs(args.timeout_seconds).min(MULTICONNECT_HANDSHAKE_TIMEOUT);
+        endpoint_config
+            .handshake_timeout(budget)?
+            .set_handshake_allowance(Duration::ZERO);
         builder = builder.with_config(endpoint_config);
     }
     let endpoint = builder.bind_address(bind).await?;

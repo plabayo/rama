@@ -103,8 +103,10 @@ pub struct EndpointConfig {
     pub(crate) grease_quic_bit: bool,
     /// Minimum interval between outgoing stateless reset packets
     pub(crate) min_reset_interval: Duration,
-    /// Local deadline for completing a handshake, independent of idle timeout.
+    /// Initial handshake/admission budget, independent of idle timeout.
     pub(crate) handshake_timeout: Duration,
+    /// Extra handshake time after the peer proves its address or Handshake keys.
+    pub(crate) handshake_allowance: Duration,
     pub(crate) connection_receive_queue: ReceiveQueueLimits,
     pub(crate) endpoint_receive_queue: ReceiveQueueLimits,
     /// Optional seed to be used internally for random number generation
@@ -136,6 +138,7 @@ impl EndpointConfig {
             grease_quic_bit: true,
             min_reset_interval: Duration::from_millis(20),
             handshake_timeout: Duration::from_secs(10),
+            handshake_allowance: Duration::from_secs(20),
             // One Linux receive pass hands over up to 32 messages of 64 GRO segments each; a
             // queue that holds a full pass never drops what the kernel already delivered.
             connection_receive_queue: ReceiveQueueLimits {
@@ -155,17 +158,44 @@ impl EndpointConfig {
         HmacSha2::try_rand_256().map(Self::new)
     }
 
-    /// Maximum time to complete a handshake, including time awaiting application acceptance.
+    /// Initial handshake budget, including time awaiting application acceptance.
     ///
-    /// Defaults to ten seconds. This local resource limit remains active when the
-    /// negotiated idle timeout is disabled. The duration must be nonzero and fit
-    /// the runtime clock when the endpoint is constructed.
+    /// Defaults to ten seconds, measured from connection initiation on clients and the
+    /// first datagram's arrival on servers. Acceptance never restarts this budget.
+    /// Once accepted, a server with a valid address-validation token, or either peer
+    /// receiving an authenticated Handshake packet, may use the extra budget configured
+    /// by [`Self::set_handshake_allowance`].
+    /// Initial packets, Retry packets and buffered early packets do not extend the budget.
+    ///
+    /// This local resource limit remains active when the negotiated idle timeout is
+    /// disabled. This duration must be nonzero, and the deadline including the allowance
+    /// must fit the runtime clock when the endpoint is constructed. Set the allowance to
+    /// zero for a strict absolute handshake deadline.
     pub fn handshake_timeout(&mut self, value: Duration) -> Result<&mut Self, ConfigError> {
         if value.is_zero() {
             return Err(ConfigError::OutOfBounds);
         }
         self.handshake_timeout = value;
         Ok(self)
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Extra time granted once after qualifying peer validation during the handshake.
+        ///
+        /// Defaults to twenty seconds, added to [`Self::handshake_timeout`] from its
+        /// original start, not from validation. The default total ceiling is therefore
+        /// thirty seconds; packet activity never renews it. Zero gives a strict absolute
+        /// handshake deadline. The combined deadline must fit the runtime clock when
+        /// the endpoint is constructed.
+        ///
+        /// Queued application acceptance remains limited by `handshake_timeout`, even
+        /// with a valid token. Negotiated transport idle timeouts and application deadlines
+        /// can expire sooner. A CONNECT tunnel opening or MITM relay may have its own
+        /// budget; increase that separately when longer end-to-end setup is desired.
+        pub fn handshake_allowance(mut self, value: Duration) -> Self {
+            self.handshake_allowance = value;
+            self
+        }
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -315,6 +345,7 @@ impl fmt::Debug for EndpointConfig {
             .field("supported_versions", &self.supported_versions)
             .field("grease_quic_bit", &self.grease_quic_bit)
             .field("handshake_timeout", &self.handshake_timeout)
+            .field("handshake_allowance", &self.handshake_allowance)
             .field("connection_receive_queue", &self.connection_receive_queue)
             .field("endpoint_receive_queue", &self.endpoint_receive_queue)
             .field("rng_seed", &self.rng_seed)

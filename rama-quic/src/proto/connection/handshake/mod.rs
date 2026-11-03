@@ -35,6 +35,17 @@ use crate::proto::{
 };
 
 impl Connection {
+    /// Grant the total handshake budget once, after a valid server-side token or a
+    /// Handshake packet proves the peer. It is anchored to the original attempt, so
+    /// neither repeated proof nor later path validation can keep a handshake alive.
+    pub(super) fn extend_handshake_deadline(&mut self) {
+        if self.state.is_handshake()
+            && let Some(deadline) = self.handshake_max_deadline.take()
+        {
+            self.timers.set(Timer::Handshake, deadline);
+        }
+    }
+
     /// The negotiated TLS key exchange group, if the session exposes it (test observation point)
     #[cfg(test)]
     pub(crate) fn negotiated_key_exchange_group(&self) -> Option<u16> {

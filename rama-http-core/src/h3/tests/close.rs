@@ -265,7 +265,7 @@ async fn memory_unknown_connection_codes_are_clean_and_keep_raw_diagnostics() {
 #[tokio::test(start_paused = true)]
 async fn memory_response_close_waits_for_buffered_goaway_before_classifying_rejection() {
     for method in [Method::GET, Method::POST, Method::CONNECT] {
-        tokio::time::timeout(LIMIT, async {
+        Box::pin(tokio::time::timeout(LIMIT, async {
             let pair = Pair::in_memory(None, None).await;
             let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
@@ -334,7 +334,7 @@ async fn memory_response_close_waits_for_buffered_goaway_before_classifying_reje
             assert!(error.is_rejected());
             assert_eq!(error.scope(), ErrorScope::Stream);
             pair.close().await;
-        })
+        }))
         .await
         .unwrap();
     }

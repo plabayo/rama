@@ -43,6 +43,7 @@ mod closing;
 mod datagrams;
 mod early_packets;
 mod grease;
+mod handshake_deadline;
 mod loss_config;
 mod migration_interop;
 mod observation;
