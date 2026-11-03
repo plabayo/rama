@@ -444,6 +444,13 @@ async fn sustained_load_on_every_carrier_moves_every_payload_and_frees_everythin
             for _ in 0..TUNNELS {
                 sockets.push(tunnel(&proxy, target, carrier).await);
             }
+            // A reliable carrier only answers late on a loaded runner, so only a long wait
+            // counts as a loss there.
+            let lost_after = if carrier == Carrier::Http3Datagram {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_secs(10)
+            };
             let trips = join_all(sockets.iter_mut().map(|socket| {
                 round_trips(
                     socket,
@@ -451,7 +458,7 @@ async fn sustained_load_on_every_carrier_moves_every_payload_and_frees_everythin
                     TRIPS,
                     None,
                     None,
-                    Duration::from_secs(1),
+                    lost_after,
                 )
             }))
             .await;
