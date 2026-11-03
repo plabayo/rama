@@ -119,11 +119,13 @@ where
                 Err(error) if (rules.1)(error) => Some(true),
                 _ => None,
             };
+
             if let Some(evidence) = evidence {
                 let retry = evidence && eligible(&request);
                 if retry {
                     request.extensions().insert(ForbidEarlyData::default());
                 }
+
                 (request, result, retry)
             } else {
                 rules.0.retry(request, result).await

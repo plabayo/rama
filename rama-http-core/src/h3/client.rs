@@ -270,6 +270,28 @@ impl<B, C: transport::Connection> SendRequest<B, C> {
         self.shared.rejection(Some(id)).unwrap_or(error)
     }
 
+    /// Authenticate an existing early stream without applying new-work admission.
+    async fn response_ready(&self, id: u64) -> Result<(), Error> {
+        if !self.connection.is_handshake_confirmed()
+            && let Err(error) = self.connection.handshake_confirmed().await
+        {
+            let error = self
+                .early_rejection()
+                .unwrap_or_else(|| Error::from_transport(&error));
+            if !error.is_clean_close() || !self.connection.is_handshake_confirmed() {
+                return Err(error);
+            }
+        }
+        if let Some(error) = self
+            .early_rejection()
+            .or_else(|| self.shared.rejection(Some(id)))
+            .or_else(|| self.shared.error().filter(|error| !error.is_clean_close()))
+        {
+            return Err(error);
+        }
+        super::connection::validate_alpn(&self.connection, &self.shared.config)
+    }
+
     /// Check whether this connection still admits new work.
     pub async fn ready(&mut self) -> Result<(), Error> {
         self.connection
@@ -763,7 +785,7 @@ where
         if *sent_early {
             // Early output is replayable; application-visible responses still
             // require successful authentication and ALPN agreement.
-            self.ready().await?;
+            self.response_ready(id).await?;
         }
         loop {
             let fields = {

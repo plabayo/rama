@@ -39,11 +39,13 @@ pub async fn require_confirmed<B>(request: Request<B>) -> Result<Request<B>, Res
     if request.headers().contains_key(header::EARLY_DATA) {
         return Err(too_early());
     }
+
     if let Some(received) = request.extensions().get_ref::<EarlyDataReceived>()
         && received.confirmed().await.is_err()
     {
         return Err(too_early());
     }
+
     Ok(request)
 }
 
@@ -70,9 +72,11 @@ where
 {
     ValidateRequestHeaderLayer::custom_fn(move |mut request: Request<B>| {
         let capable = supports_early_data(&request);
+
         async move {
             let inherited = request.headers().contains_key(header::EARLY_DATA);
             let received = request.extensions().get_ref::<EarlyDataReceived>().cloned();
+
             if capable {
                 if !inherited && let Some(received) = &received {
                     match received.confirmed().now_or_never() {
@@ -91,6 +95,7 @@ where
                 }
                 request.extensions().insert(ForbidEarlyData::default());
             }
+
             Ok(request)
         }
     })

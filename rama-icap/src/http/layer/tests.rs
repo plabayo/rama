@@ -3391,3 +3391,76 @@ async fn respmod_never_attaches_a_body_to_a_classic_connect_acceptance() {
         );
     }
 }
+
+#[tokio::test]
+async fn reqmod_preserves_inherited_early_data_when_adaptation_rebuilds_the_head() {
+    for original in [false, true] {
+        for adapted in [None, Some("1")] {
+            let connector = mock_icap_client(
+                move || {
+                    Server::new(
+                        HttpService::new(service_fn(move |incoming: IncomingRequest| async move {
+                            let (parts, body) = incoming.into_parts();
+                            let body = Body::new(body.collect().await?);
+                            let mut request = parts.encapsulated.unwrap().request.unwrap();
+                            request.headers_mut().remove(http_header::EARLY_DATA);
+                            if let Some(value) = adapted {
+                                request.headers_mut().insert(
+                                    http_header::EARLY_DATA,
+                                    HeaderValue::from_static(value),
+                                );
+                            }
+                            OutgoingResponse::from_http_request(
+                                ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                                &adaptation_response_fields(),
+                                Request::from_parts(request.clone_parts(), body),
+                            )
+                            .map_err(BoxError::from)
+                        })),
+                        TEST_SERVICE_TAG,
+                    )
+                    .unwrap()
+                },
+                256,
+            );
+            let service = AdaptationLayer::new(connector)
+                .with_request_service(endpoint("reqmod"))
+                .layer(service_fn(move |request: Request<Body>| async move {
+                    let values = request
+                        .headers()
+                        .get_all(http_header::EARLY_DATA)
+                        .iter()
+                        .map(|v| v.to_str().unwrap())
+                        .collect::<Vec<_>>();
+                    let expected = adapted.map_or_else(
+                        || {
+                            if original {
+                                vec!["invalid", "0"]
+                            } else {
+                                vec![]
+                            }
+                        },
+                        |value| vec![value],
+                    );
+                    assert_eq!(values, expected);
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }));
+            let mut request = Request::builder()
+                .uri("http://origin.test/early")
+                .body(Body::empty())
+                .unwrap();
+            if original {
+                request
+                    .headers_mut()
+                    .append(http_header::EARLY_DATA, HeaderValue::from_static("invalid"));
+                request
+                    .headers_mut()
+                    .append(http_header::EARLY_DATA, HeaderValue::from_static("0"));
+            }
+            timeout(Duration::from_secs(5), service.serve(request))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+}

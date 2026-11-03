@@ -3,6 +3,7 @@
 mod admission;
 mod alpn;
 mod dispatch;
+mod drain;
 mod gate;
 mod pooled;
 mod receipt;
@@ -74,10 +75,11 @@ impl Provider {
         self,
         client: &TlsClientConfig,
         server: &TlsServerConfig,
+        http_config: &Config,
     ) -> (ClientConfig, ServerConfig) {
         let options = TlsOptions::default()
             .with_early_data(true)
-            .with_early_data_context(Config::default().early_data_context().unwrap());
+            .with_early_data_context(http_config.early_data_context().unwrap());
         match self {
             #[cfg(feature = "boring")]
             Self::Boring => (
@@ -114,14 +116,15 @@ impl Fixture {
     }
 
     async fn with_request_credit(provider: Provider, version: Version, credit: u32) -> Self {
-        Self::with_endpoint_config(provider, version, credit, None).await
+        Self::with_configs(provider, version, credit, None, Config::default()).await
     }
 
-    async fn with_endpoint_config(
+    async fn with_configs(
         provider: Provider,
         version: Version,
         credit: u32,
         endpoint_config: Option<EndpointConfig>,
+        http_config: Config,
     ) -> Self {
         println!("h3 early data: provider={provider:?} version={version:?}");
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
@@ -138,13 +141,11 @@ impl Fixture {
             ])
             .unwrap();
         let mut transport = TransportConfig::default();
-        Config::default()
-            .configure_transport(&mut transport)
-            .unwrap();
+        http_config.configure_transport(&mut transport).unwrap();
         transport.set_max_concurrent_bidi_streams(credit);
         let transport = Arc::new(transport);
         let (mut client_config, mut server_config) =
-            provider.configurations(&client_tls, &server_tls);
+            provider.configurations(&client_tls, &server_tls, &http_config);
         client_config.set_version(version).unwrap();
         client_config.set_transport_config(transport.clone());
         server_config.set_transport_config(transport.clone());
@@ -204,9 +205,9 @@ impl Fixture {
 
     /// Rotate to a new identity and native server state, so earlier tickets are refused.
     fn forget_tickets(&self) {
-        let (_, mut server_config) = self
-            .provider
-            .configurations(&self.client_tls, &self.rotated_tls);
+        let (_, mut server_config) =
+            self.provider
+                .configurations(&self.client_tls, &self.rotated_tls, &Config::default());
         server_config.set_transport_config(self.transport.clone());
         self.server.set_server_config(Some(server_config));
     }

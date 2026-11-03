@@ -1,10 +1,15 @@
 //! Opt-in dispatch uses actual per-stream receipt and matching settings.
 use super::*;
+use rama::http::proto::h3::{FrameHeader, FrameType};
 use rama::http::{
     layer::validate_request::early_data::require_confirmed,
     proto::ext::early_data::EarlyDataReceived,
 };
-use rama_http_core::server::conn::HeaderReadTimeout;
+use rama_core::bytes::BytesMut;
+use rama_http_core::{
+    h3::qpack::{Encoder, EncoderConfig},
+    server::conn::HeaderReadTimeout,
+};
 
 #[derive(Clone, Copy, Debug)]
 enum Dispatch {
@@ -169,7 +174,8 @@ async fn early_request_confirmation_wait_ends_at_the_transport_deadline() {
             // Resumption tokens otherwise grant the endpoint's extra allowance.
             config.set_handshake_allowance(Duration::ZERO);
             let fixture =
-                Fixture::with_endpoint_config(provider, Version::V1, 100, Some(config)).await;
+                Fixture::with_configs(provider, Version::V1, 100, Some(config), Config::default())
+                    .await;
             fixture.warm().await;
             fixture.gate.hold();
             let (client, server) = fixture.early_pair().await;
@@ -223,4 +229,80 @@ async fn confirmed_dispatch_checks_alpn_even_before_the_driver_runs() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test]
+async fn unsafe_methods_and_extended_connect_wait_even_with_early_dispatch() {
+    for provider in Provider::enabled() {
+        for method in [Method::GET, Method::POST, Method::CONNECT] {
+            timeout(LIMIT, dispatch_method(provider, method))
+                .await
+                .unwrap();
+        }
+    }
+}
+
+async fn dispatch_method(provider: Provider, method: Method) {
+    let config = Config {
+        early_dispatch: true,
+        extended_connect: true,
+        ..Config::default()
+    };
+    let fixture = Fixture::with_configs(provider, Version::V1, 100, None, config.clone()).await;
+    let (warm_client, warm_server) = fixture.full_pair().await;
+    let (mut warm_receiver, driver) = server::handshake(warm_server, config.clone()).unwrap();
+    let _warm_driver = Task::spawn(driver.run());
+    let warm = send(
+        warm_client.clone(),
+        Config::default(),
+        request(Method::GET, ""),
+    );
+    serve(warm_receiver.accept().await.unwrap()).await;
+    assert_eq!(warm.join().await.unwrap(), "served");
+    warm_client.close(0u32, b"warm complete");
+    fixture.gate.hold();
+    let (client, server) = fixture.early_pair().await;
+    let (mut output, _input) = client.open_bi().await.unwrap();
+    let mut fields = vec![
+        (b":method".as_slice(), method.as_str().as_bytes()),
+        (b":scheme", b"https"),
+        (b":authority", b"localhost"),
+        (b":path", b"/early"),
+    ];
+    if method == Method::CONNECT {
+        fields.push((b":protocol", b"connect-udp"));
+    }
+    let encoded = Encoder::new(EncoderConfig {
+        max_table_capacity: 0,
+        max_blocked_streams: 0,
+        target_capacity: 0,
+        ..Default::default()
+    })
+    .encode(u64::from(output.id()), fields)
+    .unwrap();
+    let mut bytes = BytesMut::new();
+    FrameHeader::new(FrameType::HEADERS, encoded.len() as u64)
+        .encode(&mut bytes)
+        .unwrap();
+    bytes.extend_from_slice(&encoded);
+    output.write_all(&bytes).await.unwrap();
+    output.finish().unwrap();
+    let (mut receiver, _driver) = server::handshake(server.clone(), config).unwrap();
+    // Static QPACK needs no peer driver; omitting it also isolates dispatch from SETTINGS.
+    let mut resolving = pin!(receiver.accept().await.unwrap().resolve());
+    let (request, _response) = if method.is_safe() {
+        let result = timeout(PROBE, &mut resolving).await.unwrap().unwrap();
+        assert!(!server.is_handshake_confirmed());
+        fixture.gate.release();
+        result
+    } else {
+        assert!(timeout(PROBE, &mut resolving).await.is_err());
+        assert!(!server.is_handshake_confirmed());
+        fixture.gate.release();
+        let result = resolving.await.unwrap();
+        assert!(server.is_handshake_confirmed());
+        result
+    };
+    assert_eq!(request.method(), &method);
+    assert!(request.extensions().contains::<EarlyDataReceived>());
 }

@@ -62,6 +62,7 @@ mod tests {
         assert!(!headers.contains_key(http_header::CONNECTION));
         assert!(!headers.contains_key(http_header::TRAILER));
     }
+
     #[test]
     fn early_data_adaptation_is_directional_even_without_restoration() {
         for kind in [HttpHeadKind::Request, HttpHeadKind::Response] {

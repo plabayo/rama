@@ -34,11 +34,17 @@ pub(super) enum HttpHeadKind {
 pub(super) struct SanitizedHttpHead {
     forwarded_icap_headers: Vec<ForwardedIcapHeader>,
     hop_by_hop: HopByHopHeaderContext,
+    early_data: Vec<HeaderValue>,
 }
 
 impl SanitizedHttpHead {
     pub(super) fn take(headers: &mut HeaderMap, version: Version, kind: HttpHeadKind) -> Self {
         let mut sanitized = Self::default();
+        if kind == HttpHeadKind::Request {
+            sanitized
+                .early_data
+                .extend(headers.get_all(http_header::EARLY_DATA).iter().cloned());
+        }
 
         for (name, value) in headers.ordered_iter() {
             if name == http_header::PROXY_AUTHENTICATE {
@@ -105,6 +111,12 @@ impl SanitizedHttpHead {
     ) {
         self.hop_by_hop
             .restore_request(headers, version, adapted_nominations);
+        // REQMOD may replace the entire head, but cannot erase inherited replay exposure.
+        if !headers.contains_key(http_header::EARLY_DATA) {
+            for value in &self.early_data {
+                headers.append(http_header::EARLY_DATA, value.clone());
+            }
+        }
     }
 }
 
@@ -226,6 +238,32 @@ pub(super) fn restore_proxy_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapted_request_cannot_erase_inherited_early_data() {
+        for original_values in [vec![], vec!["invalid", "0"]] {
+            let mut original = HeaderMap::new();
+            for value in &original_values {
+                original.append(http_header::EARLY_DATA, HeaderValue::from_static(value));
+            }
+            let saved =
+                SanitizedHttpHead::take(&mut original, Version::HTTP_11, HttpHeadKind::Request);
+            for adapted in [None, Some("1")] {
+                let mut headers = HeaderMap::new();
+                if let Some(value) = adapted {
+                    headers.insert(http_header::EARLY_DATA, HeaderValue::from_static(value));
+                }
+                saved.restore_request(&mut headers, Version::HTTP_2, &[]);
+                let actual = headers
+                    .get_all(http_header::EARLY_DATA)
+                    .iter()
+                    .map(|v| v.to_str().unwrap())
+                    .collect::<Vec<_>>();
+                let expected = adapted.map_or_else(|| original_values.clone(), |value| vec![value]);
+                assert_eq!(actual, expected);
+            }
+        }
+    }
 
     #[test]
     fn early_data_survives_request_adaptation_with_lenient_receipt() {

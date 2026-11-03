@@ -85,13 +85,14 @@ pub struct Config {
     /// fingerprint emulation; compiled captured TLS profiles take precedence
     /// and disable early data. Disabled by default. Servers ignore this option.
     pub early_requests: bool,
-    /// Dispatch server requests actually received in early data before Finished.
+    /// Dispatch safe-method requests actually received in early data before Finished.
     ///
     /// Requires native server TLS early-data opt-in bound to
     /// [`Self::early_data_context`]. A missing or mismatched context keeps
     /// handshake-first dispatch. Routes must decide whether replay is safe;
     /// client-authenticated routes must await `EarlyDataReceived::confirmed`.
-    /// Requests may reach services before the client's handshake completes.
+    /// Unsafe methods, CONNECT and requests with a `Protocol` extension still wait
+    /// for confirmation, retaining their actual early receipt metadata.
     /// Gate non-replay-safe routes with `validate_request::early_data::require_confirmed`.
     /// Gateways must use `validate_request::early_data::forward_to` or add
     /// `Early-Data: 1` themselves, including when upstream uses ordinary 1-RTT.

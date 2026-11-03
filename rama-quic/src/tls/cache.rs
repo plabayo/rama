@@ -59,16 +59,19 @@ impl ClientConfigCache {
             .as_extensions()
             .get_ref::<AlpnPolicy>()
             .map_or(self.options, |policy| self.options.with_alpn(*policy));
+
         #[cfg(feature = "boring")]
         if self.provider.pool_classifier() == BoringTlsProvider.pool_classifier() {
             if config.as_extensions().contains::<BoringExtensionOrder>() {
                 return options.with_early_data(false);
             }
+
             #[cfg(feature = "ua")]
             if crate::profile::replay::has_captured_tls(config.as_extensions()) {
                 return options.with_early_data(false);
             }
         }
+
         options
     }
 
@@ -667,6 +670,7 @@ mod tests {
         assert!(cache.configs.lock().default.is_none());
         assert!(cache.configs.lock().overrides.is_empty());
     }
+
     #[cfg(feature = "boring")]
     #[test]
     fn early_options_are_explicit_and_pinned_client_hello_shapes_win() {

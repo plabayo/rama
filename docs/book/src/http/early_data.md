@@ -68,7 +68,9 @@ Boring can retain ordinary resumption. This compatibility check is not replay
 prevention across servers or connections.
 
 Set `h3_config.early_dispatch = true` to dispatch matching, actually early
-requests before the client's Finished. Otherwise dispatch waits. Missing or
+safe-method requests before the client's Finished. Unsafe methods, CONNECT and
+requests with a `Protocol` extension still wait for confirmation and retain their
+early receipt metadata. Otherwise dispatch waits. Missing or
 mismatched contexts also wait. `EarlyDataReceived` is attached only when that
 request's stream received early bytes, and remains present after confirmation;
 a later ordinary stream on the same connection is unmarked. Existing header,

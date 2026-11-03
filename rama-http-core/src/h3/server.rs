@@ -424,8 +424,11 @@ impl<C: transport::Connection> RequestStream<C> {
             Err(error) => return Err(self.reader.reject(error)),
         };
         let received_early = self.reader.stream.is_0rtt();
-        if !received_early {
-            // Context matching is a connection property; receipt is per stream.
+        if !received_early
+            || !request.method().is_safe()
+            || request.extensions().contains::<Protocol>()
+        {
+            // Unsafe methods and tunnels require confirmation even on an opt-in connection.
             self.confirmed().await?;
         }
         // TLS exposes ALPN before Finished. Validate here as well as in the

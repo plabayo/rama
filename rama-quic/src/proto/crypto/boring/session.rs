@@ -479,6 +479,7 @@ impl crypto::Session for TlsSession {
             )
         })
     }
+
     fn early_data_context_matches(&self, context: &[u8]) -> bool {
         self.early_data_context.is_some_and(|configured| {
             configured == crate::proto::crypto::config::application_context(context)
