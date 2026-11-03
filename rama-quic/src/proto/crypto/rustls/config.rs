@@ -80,6 +80,7 @@ pub(crate) fn server_config_from_rama(
     provider: Arc<rustls::crypto::CryptoProvider>,
     options: TlsOptions,
 ) -> Result<ServerCrypto, TlsConfigError> {
+    options.validate_server()?;
     let pieces = RustlsTlsAcceptorConfig::from_extensions(config.as_extensions());
     let store_peer_chain = pieces.store_client_chain.is_some_and(|store| store.0);
     Ok(match pieces.dynamic {
@@ -124,6 +125,7 @@ impl QuicServerConfig {
         options: TlsOptions,
         store_peer_chain: bool,
     ) -> Result<Self, TlsConfigError> {
+        options.validate_server()?;
         validate_alpn(&native.alpn_protocols, options.alpn)?;
         if native.max_early_data_size != 0 && !options.early_data {
             return Err(TlsConfigError::EarlyDataNotEnabled);
@@ -133,6 +135,10 @@ impl QuicServerConfig {
             .map_err(invalid_configuration)?;
         let mut config = Self::try_from(native)?;
         config.alpn_policy = options.alpn;
+        config.early_data_context = options
+            .early_data
+            .then_some(options.early_data_context)
+            .flatten();
         config.store_peer_chain = store_peer_chain;
         Ok(config)
     }
@@ -183,6 +189,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::proto::crypto::{HandshakeEvent, Session, config::application_context};
     use crate::{
         driver::Endpoint,
         proto::{
@@ -190,6 +197,34 @@ mod tests {
             crypto::{ClientConfig as _, ServerConfig as _, rustls::configured_provider},
         },
     };
+
+    fn handshake(
+        client: &mut dyn Session,
+        server: &mut dyn Session,
+    ) -> Result<(), rama_quic_proto::TransportError> {
+        for _ in 0..32 {
+            let mut progress = false;
+            for client_sends in [true, false] {
+                let (sender, receiver) = if client_sends {
+                    (&mut *client, &mut *server)
+                } else {
+                    (&mut *server, &mut *client)
+                };
+                while let Some(event) = sender.poll_handshake()? {
+                    progress = true;
+                    if let HandshakeEvent::Data(level, bytes) = event {
+                        receiver.read_handshake(level, &bytes)?;
+                    }
+                }
+            }
+            if !progress {
+                assert!(!client.is_handshaking());
+                assert!(!server.is_handshaking());
+                return Ok(());
+            }
+        }
+        panic!("TLS handshake did not settle");
+    }
 
     fn configs() -> (TlsClientConfig, TlsServerConfig) {
         let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
@@ -209,6 +244,74 @@ mod tests {
                 .with_server_auth(auth)
                 .with_alpn(alpn()),
         )
+    }
+
+    #[test]
+    fn early_context_changes_reject_old_tickets_and_accept_new_ones() {
+        let (client, server) = configs();
+        let options = TlsOptions::default()
+            .with_early_data(true)
+            .with_early_data_context(b"old settings");
+        let client =
+            Arc::new(QuicClientConfig::from_rama(&client, configured_provider(), options).unwrap());
+        let mut server =
+            Arc::new(QuicServerConfig::from_rama(&server, configured_provider(), options).unwrap());
+        let mut params = TransportParameters::default();
+        params.initial_max_data = 1024u32.into();
+        // Accept the same context, lower application settings, mint a new ticket,
+        // flip back, then lower QUIC flow control without changing the application.
+        for (context, limit, accepted) in [
+            (b"old settings".as_slice(), 1024, false),
+            (b"old settings", 1024, true),
+            (b"new settings", 1024, false),
+            (b"new settings", 1024, true),
+            (b"old settings", 1024, false),
+            (b"old settings", 1024, true),
+            (b"old settings", 512, false),
+            (b"old settings", 512, true),
+        ] {
+            Arc::get_mut(&mut server).unwrap().early_data_context =
+                Some(application_context(context));
+            params.initial_max_data = (limit as u32).into();
+            let mut c = client
+                .clone()
+                .start_session(Version::V1, "localhost", &TransportParameters::default())
+                .unwrap();
+            let mut s = server.clone().start_session(Version::V1, &params).unwrap();
+            handshake(&mut *c, &mut *s).unwrap();
+            assert_eq!(
+                c.early_data_accepted(),
+                Some(accepted),
+                "context={context:?}, limit={limit}"
+            );
+            assert_eq!(server.scoped.lock().len(), 1);
+        }
+    }
+
+    #[test]
+    fn server_early_data_requires_an_application_context() {
+        let (_, server) = configs();
+        let options = TlsOptions::default().with_early_data(true);
+        assert!(matches!(
+            QuicServerConfig::from_rama(&server, configured_provider(), options),
+            Err(TlsConfigError::EarlyDataContextRequired)
+        ));
+        assert!(matches!(
+            server_config_from_rama(&server, configured_provider(), options),
+            Err(TlsConfigError::EarlyDataContextRequired)
+        ));
+        let dynamic = TlsServerConfig::new().with_dynamic_config(Arc::new(Dynamic));
+        assert!(matches!(
+            server_config_from_rama(&dynamic, configured_provider(), options),
+            Err(TlsConfigError::EarlyDataContextRequired)
+        ));
+        let native =
+            QuicServerConfig::from_rama(&server, configured_provider(), TlsOptions::default())
+                .unwrap();
+        assert!(matches!(
+            QuicServerConfig::from_native((*native.inner).clone(), options, false),
+            Err(TlsConfigError::EarlyDataContextRequired)
+        ));
     }
 
     #[test]
@@ -312,10 +415,9 @@ mod tests {
             native.max_early_data_size = 17;
             Ok(native)
         });
-        let options = TlsOptions {
-            early_data: true,
-            ..Default::default()
-        };
+        let options = TlsOptions::default()
+            .with_early_data(true)
+            .with_early_data_context(b"rama-quic-test");
         assert!(matches!(
             QuicServerConfig::from_rama(&server, configured_provider(), options),
             Err(TlsConfigError::InvalidConfiguration(_))

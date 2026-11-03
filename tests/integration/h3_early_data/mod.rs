@@ -74,7 +74,9 @@ impl Provider {
         client: &TlsClientConfig,
         server: &TlsServerConfig,
     ) -> (ClientConfig, ServerConfig) {
-        let options = TlsOptions::default().with_early_data(true);
+        let options = TlsOptions::default()
+            .with_early_data(true)
+            .with_early_data_context(Config::default().early_data_context().unwrap());
         match self {
             #[cfg(feature = "boring")]
             Self::Boring => (

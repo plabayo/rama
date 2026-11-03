@@ -58,8 +58,13 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>, early_
     // The server would accept early data; the connector must still never send any.
     let server = Endpoint::bind_server(
         Executor::new(),
-        ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default().with_early_data(true))
-            .unwrap(),
+        ServerConfig::try_from_rama_tls(
+            &server_tls,
+            TlsOptions::default()
+                .with_early_data(true)
+                .with_early_data_context(Config::default().early_data_context().unwrap()),
+        )
+        .unwrap(),
         SocketAddress::local_ipv4(0),
     )
     .await

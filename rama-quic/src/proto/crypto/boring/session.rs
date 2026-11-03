@@ -142,6 +142,7 @@ pub(super) struct TlsSession {
     pub(super) store_peer_chain: bool,
     /// Whether the handshake-completed hook already ran.
     completed: bool,
+    early_data_context: Option<[u8; 32]>,
     remembered: Option<TransportParameters>,
     peer_params: Arc<Mutex<Option<TransportParameters>>>,
 }
@@ -158,7 +159,7 @@ impl TlsSession {
         wire: &'static Wire,
         early_wire: &'static Wire,
         params: &TransportParameters,
-        early_data: bool,
+        options: crypto::config::TlsOptions,
         initializer: Option<&HandshakeInitializer>,
         remembered: Option<TransportParameters>,
         peer_params: Arc<Mutex<Option<TransportParameters>>>,
@@ -180,29 +181,18 @@ impl TlsSession {
             .set_transport_parameters(&encoded)
             .map_err(|error| crypto_error(error.into()))?;
         if !side.is_client() {
-            // Bind early data to stable transport settings, excluding connection-specific values.
-            let stable = TransportParameters {
-                initial_src_cid: None,
-                original_dst_cid: None,
-                retry_src_cid: None,
-                stateless_reset_token: None,
-                preferred_address: None,
-                grease_transport_parameter: None,
-                extra: Vec::new(),
-                write_plan: None,
-                // Version negotiation is settled per connection, not a transport setting.
-                version_information: None,
-                ..params.clone()
-            };
-            encoded.clear();
-            encoded.extend_from_slice(b"rama-quic-v1");
-            stable.write(&mut encoded);
+            let context = crypto::config::server_early_context(params, options.early_data_context);
             inner
-                .set_early_data_context(&encoded)
+                .set_early_data_context(&context)
                 .map_err(|error| crypto_error(error.into()))?;
         }
-        inner.set_early_data_enabled(early_data);
+        inner.set_early_data_enabled(options.early_data);
         let mut session = Self {
+            early_data_context: if side.is_server() && options.early_data {
+                options.early_data_context
+            } else {
+                None
+            },
             inner,
             side,
             wire,
@@ -489,6 +479,12 @@ impl crypto::Session for TlsSession {
             )
         })
     }
+    fn early_data_context_matches(&self, context: &[u8]) -> bool {
+        self.early_data_context.is_some_and(|configured| {
+            configured == crate::proto::crypto::config::application_context(context)
+        })
+    }
+
     fn early_data_accepted(&self) -> Option<bool> {
         self.inner
             .ssl()

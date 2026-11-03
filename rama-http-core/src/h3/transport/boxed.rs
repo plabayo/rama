@@ -110,6 +110,10 @@ impl Connection for BoxedConnection {
         self.0.local_stream_limit(dir)
     }
 
+    fn early_data_context_matches(&self, context: &[u8]) -> bool {
+        self.0.early_data_context_matches(context)
+    }
+
     fn early_data(&self) -> EarlyData {
         self.0.early_data()
     }
@@ -175,6 +179,7 @@ trait DynConnection: ExtensionsRef + fmt::Debug + Send + Sync + 'static {
     fn remote_stream_limit(&self, dir: Dir) -> u64;
     fn local_stream_limit(&self, dir: Dir) -> u64;
     fn early_data(&self) -> EarlyData;
+    fn early_data_context_matches(&self, context: &[u8]) -> bool;
     fn qlog_control(&self) -> Option<ConnectionQlogControl>;
     fn read_datagram(&self) -> BoxFuture<'_, Result<Bytes, ConnectionError>>;
     fn max_datagram_size(&self) -> Option<usize>;
@@ -250,6 +255,10 @@ impl<C: ReserveBiStreams> DynConnection for C {
 
     fn local_stream_limit(&self, dir: Dir) -> u64 {
         Connection::local_stream_limit(self, dir)
+    }
+
+    fn early_data_context_matches(&self, context: &[u8]) -> bool {
+        Connection::early_data_context_matches(self, context)
     }
 
     fn early_data(&self) -> EarlyData {

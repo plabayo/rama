@@ -174,6 +174,10 @@ impl transport::Connection for Wrapped {
         self.0.local_stream_limit(dir)
     }
 
+    fn early_data_context_matches(&self, context: &[u8]) -> bool {
+        self.0.early_data_context_matches(context)
+    }
+
     fn early_data(&self) -> transport::EarlyData {
         transport::Connection::early_data(&self.0)
     }

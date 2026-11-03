@@ -36,6 +36,10 @@ impl Session for FailedKeyUpdate {
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {
         None
     }
+    fn early_data_context_matches(&self, _: &[u8]) -> bool {
+        false
+    }
+
     fn early_data_accepted(&self) -> Option<bool> {
         Some(false)
     }

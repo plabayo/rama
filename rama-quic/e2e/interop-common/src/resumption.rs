@@ -572,7 +572,12 @@ pub fn rama_resuming_server_config(
             crate::backend::verify_server(native)
         });
     crate::backend::server_tls_provider()
-        .server_config(&tls, crate::backend::options().with_early_data(early_data))
+        .server_config(
+            &tls,
+            crate::backend::options()
+                .with_early_data(early_data)
+                .with_early_data_context(b"rama-interop-resumption-v1"),
+        )
         .expect("the server config is built")
 }
 
@@ -600,7 +605,12 @@ impl RamaResumptionConfigs {
                 .with_alpn(smallvec![alpn()])
                 .with_server_auth(identity.clone());
             let mut config = crate::backend::server_tls_provider()
-                .server_config(&tls, crate::backend::options().with_early_data(early_data))
+                .server_config(
+                    &tls,
+                    crate::backend::options()
+                        .with_early_data(early_data)
+                        .with_early_data_context(b"rama-interop-resumption-v1"),
+                )
                 .unwrap();
             config.set_transport_config(Arc::new(
                 rama::quic::TransportConfig::default()

@@ -1171,6 +1171,18 @@ impl Connection {
         self.0.close_transport(error);
     }
 
+    /// Whether this server's TLS early acceptance is bound to `context`.
+    /// Custom application protocols include the settings a resumed client could
+    /// violate. This describes configuration, not whether a request arrived early.
+    pub fn early_data_context_matches(&self, context: &[u8]) -> bool {
+        self.0
+            .state
+            .lock()
+            .inner
+            .crypto_session()
+            .early_data_context_matches(context)
+    }
+
     /// Whether the handshake was confirmed, see [`Self::handshake_confirmed`].
     ///
     /// This stays true after the connection closes, so buffered data received over an

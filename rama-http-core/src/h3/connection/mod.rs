@@ -433,6 +433,26 @@ impl Config {
         Ok(())
     }
 
+    /// Application compatibility context for a QUIC server accepting early data.
+    ///
+    /// Pass these bytes to `TlsOptions::with_early_data_context` together with
+    /// `with_early_data(true)` when building server TLS. The encoding includes
+    /// every configured local SETTINGS entry, including unknown entries, and
+    /// supported CONNECT/datagram capabilities. It does not promise replay safety
+    /// for a route; that remains application policy. Changed settings reject
+    /// old early sessions conservatively, even when the change only increases limits.
+    pub fn early_data_context(&self) -> Result<Bytes, Error> {
+        let settings = self.local_settings(Role::Server, self.datagrams.is_some())?;
+        let mut bytes = BytesMut::from(b"rama-h3-early-data-v1".as_slice());
+        settings.encode_payload(&mut bytes).ok_or_else(|| {
+            Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "early-data settings exceed wire bounds",
+            )
+        })?;
+        Ok(bytes.freeze())
+    }
+
     /// The SETTINGS this endpoint sends. Only a server's ENABLE_CONNECT_PROTOCOL
     /// grants permission; literal client values have no effect (RFC 9220 §3).
     /// `datagrams` is whether QUIC DATAGRAM was negotiated and datagrams are enabled.
@@ -2566,6 +2586,38 @@ mod tests {
         task::{Context, Wake, Waker},
         time::Duration,
     };
+
+    #[test]
+    fn early_context_covers_every_advertised_setting() {
+        let config = Config {
+            extended_connect: true,
+            ..Config::default()
+        };
+        let original = config.early_data_context().unwrap();
+        let settings = config.local_settings(Role::Server, true).unwrap();
+        for (id, value) in [
+            (SettingId::QPACK_MAX_TABLE_CAPACITY, 17),
+            (SettingId::QPACK_BLOCKED_STREAMS, 8),
+            (SettingId::MAX_FIELD_SECTION_SIZE, 17),
+            (SettingId::ENABLE_CONNECT_PROTOCOL, 0),
+            (SettingId::H3_DATAGRAM, 0),
+            (SettingId::new(0xface), 17),
+        ] {
+            let mut changed = Settings::new();
+            for entry in settings.entries().iter().filter(|entry| entry.id != id) {
+                changed.set(entry.id, entry.value).unwrap();
+            }
+            changed.set(id, value).unwrap();
+            let changed = config.try_with_server_settings(Arc::new(changed)).unwrap();
+            assert_ne!(changed.early_data_context().unwrap(), original, "{id:?}");
+        }
+        // Local scheduling budgets do not change the peer's 0-RTT contract.
+        let changed = Config {
+            max_requests: 1,
+            ..config
+        };
+        assert_eq!(changed.early_data_context().unwrap(), original);
+    }
 
     #[test]
     fn the_goaway_drain_counts_from_the_later_start_and_never_overflows() {
