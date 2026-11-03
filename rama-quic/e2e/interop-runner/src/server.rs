@@ -1,14 +1,15 @@
 //! Runner server: serve bounded HTTP/0.9 request lines from the mounted document root.
 
 use crate::{
-    BUFFER_SIZE, MULTICONNECT_HANDSHAKE_TIMEOUT, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn,
-    log_connection_stats, relative_path, shutdown_endpoint, transport,
+    BUFFER_SIZE, MULTICONNECT_HANDSHAKE_TIMEOUT, REQUEST_LIMIT, STREAM_LIMIT, TestCase,
+    armed_shutdown_signal, check_alpn, log_connection_stats, relative_path, shutdown_endpoint,
+    transport,
 };
 use clap::Parser;
 use rama::{
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, ErrorContext as _},
-    graceful::{Shutdown, default_signal},
+    graceful::Shutdown,
     net::{socket::SocketOptions, tls::ApplicationProtocol},
     quic::{
         Connection, Endpoint, EndpointConfig, RecvStream, SendStream,
@@ -108,6 +109,8 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                 .context("a usable preference")?,
         );
     }
+    // Installed before binding, which a supervisor may answer with a signal.
+    let mut stopping = std::pin::pin!(armed_shutdown_signal().await);
     let mut socket_options = SocketOptions::default_udp();
     if args.listen.is_ipv6() {
         socket_options.only_v6 = Some(false);
@@ -129,7 +132,6 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .context("bind interop server")?;
     tracing::info!(address = %endpoint.local_addr()?, "interop server listening");
     let mut connections = JoinSet::new();
-    let mut stopping = std::pin::pin!(default_signal());
     let outcome = loop {
         tokio::select! {
             _ = &mut stopping => break Ok(()),

@@ -19,13 +19,16 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
+// Catches a hang, not a slow disk: recording does file I/O that loaded CI runners stretch.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
 async fn stop_recording(recorder: &FileRecorder) {
-    let stopped = tokio::time::timeout(Duration::from_secs(2), recorder.stop_record()).await;
+    let stopped = tokio::time::timeout(HANG_GUARD, recorder.stop_record()).await;
     assert!(stopped.is_ok(), "recording must stop promptly");
 }
 
 async fn wait_for_recording_file_cleanup(dir: &std::path::Path) -> Result<(), BoxError> {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             let count = std::fs::read_dir(dir)?
                 .collect::<Result<Vec<_>, _>>()?
@@ -81,7 +84,7 @@ async fn open_bodies_do_not_delay_response_or_stop() {
 
     // Both channel senders remain open. The old collect-first implementation
     // could not return from serve in this state.
-    let mut response = tokio::time::timeout(Duration::from_secs(2), service.serve(request))
+    let mut response = tokio::time::timeout(HANG_GUARD, service.serve(request))
         .await
         .expect("serve must not wait for either body to end")
         .expect("response");

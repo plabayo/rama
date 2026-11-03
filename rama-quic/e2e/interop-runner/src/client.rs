@@ -1,14 +1,15 @@
 //! Runner client: bounded concurrent downloads over one connection, or one per request.
 
 use crate::{
-    BUFFER_SIZE, MULTICONNECT_HANDSHAKE_TIMEOUT, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn,
-    log_connection_stats, relative_path, shutdown_endpoint, transport,
+    BUFFER_SIZE, MULTICONNECT_HANDSHAKE_TIMEOUT, REQUEST_LIMIT, STREAM_LIMIT, TestCase,
+    armed_shutdown_signal, check_alpn, log_connection_stats, relative_path, shutdown_endpoint,
+    transport,
 };
 use clap::Parser;
 use rama::{
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef as _,
-    graceful::{Shutdown, default_signal},
+    graceful::Shutdown,
     net::{tls::ApplicationProtocol, uri::Uri},
     quic::{
         Connection, Endpoint, EndpointConfig, NegotiatedTlsParameters,
@@ -105,6 +106,8 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         "[::]:0"
     }
     .parse()?;
+    // Installed before the first packet, which a supervisor may answer with a signal.
+    let interrupted = armed_shutdown_signal().await;
     tokio::fs::create_dir_all(&args.downloads)
         .await
         .context("create downloads directory")?;
@@ -246,7 +249,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     });
     let outcome = tokio::select! {
         result = batch => result.context("download batch timed out").and_then(|result| result),
-        _ = default_signal() => Err(BoxError::from("download batch interrupted by shutdown signal")),
+        _ = interrupted => Err(BoxError::from("download batch interrupted by shutdown signal")),
     };
     // Release our own shutdown guard before joining the remaining producers.
     drop(executor);

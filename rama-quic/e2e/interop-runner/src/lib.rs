@@ -24,6 +24,8 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     error_sink::TracingErrorSink,
     extensions::ExtensionsRef as _,
+    futures::{self, future::Either},
+    graceful::default_signal,
     net::tls::ApplicationProtocol,
     quic::{
         Connection, Endpoint, NegotiatedTlsParameters, ShutdownOutcome, TransportConfig,
@@ -37,7 +39,17 @@ use rama::{
     },
     utils::octets,
 };
-use std::{path::Path, process::ExitCode, sync::Arc, time::Duration};
+use std::{future::Future, path::Path, process::ExitCode, sync::Arc, time::Duration};
+
+/// The shutdown signal with its handlers already installed: a signal sent before it is awaited
+/// still drains the endpoint instead of terminating the process.
+async fn armed_shutdown_signal() -> impl Future<Output = ()> {
+    let mut signal = Box::pin(default_signal());
+    if futures::poll!(signal.as_mut()).is_ready() {
+        return Either::Left(std::future::ready(()));
+    }
+    Either::Right(signal)
+}
 
 pub fn tls_options() -> TlsOptions {
     TlsOptions::default()
