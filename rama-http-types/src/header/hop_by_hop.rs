@@ -179,14 +179,29 @@ pub fn connection_header_names(headers: &HeaderMap) -> impl Iterator<Item = Head
     }
 }
 
-/// Return known hop-by-hop field names and valid `Connection` nominations.
+/// Whether a `Connection` nomination may remove this field from a request head.
+///
+/// RFC 8470 §5.1 forbids intermediaries from removing `Early-Data`, even when a
+/// peer incorrectly nominates it. Parsing nominations and validating trailers
+/// must still see the original name; apply this exception only when sanitizing
+/// request heads (or a head whose direction is not yet known).
+#[must_use]
+pub fn is_removable_connection_header(name: &HeaderName) -> bool {
+    name != header::EARLY_DATA
+}
+
+/// Return known hop-by-hop field names and removable `Connection` nominations.
+///
+/// `Early-Data` is preserved even when nominated, as RFC 8470 §5.1 requires
+/// for requests. Use [`connection_header_names`] for raw nominations, or
+/// [`remove_hop_by_hop_response_headers`] to sanitize a response.
 ///
 /// Known names are included even when absent from the map. The iterator owns
 /// its nominations so callers may mutate the map while consuming it.
 pub fn hop_by_hop_header_names(headers: &HeaderMap) -> impl Iterator<Item = HeaderName> + use<> {
     known_hop_by_hop_headers()
         .cloned()
-        .chain(connection_header_names(headers))
+        .chain(connection_header_names(headers).filter(is_removable_connection_header))
 }
 
 fn remove_field(headers: &mut HeaderMap, name: &HeaderName) {
@@ -211,9 +226,10 @@ fn remove_hop_by_hop_headers_with_nominations(
 /// Remove all hop-by-hop headers from an HTTP message.
 ///
 /// In addition to the known connection-specific fields, this removes every
-/// field nominated by `Connection`. Use [`HopByHopHeaderContext::take`] when
+/// field nominated by `Connection` except `Early-Data`. Use [`HopByHopHeaderContext::take`] when
 /// upgrade, trailer, or `TE: trailers` metadata has to be restored for a newly
-/// originated hop.
+/// originated hop. This direction-free helper preserves request-field
+/// exceptions; use [`remove_hop_by_hop_response_headers`] for responses.
 pub fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
     for name in hop_by_hop_header_names(headers) {
         remove_field(headers, &name);
@@ -233,7 +249,8 @@ pub fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
 /// Use this when the next hop intentionally does not support upgrades or
 /// trailers.
 pub fn remove_hop_by_hop_response_headers(headers: &mut HeaderMap) {
-    remove_hop_by_hop_headers(headers);
+    let nominated = connection_header_names(headers);
+    remove_hop_by_hop_headers_with_nominations(headers, nominated, known_hop_by_hop_headers());
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -354,6 +371,13 @@ pub struct HopByHopHeaderContext {
     te_trailers: bool,
 }
 
+struct HeaderSanitizationOptions {
+    version: Version,
+    retain_trailers: bool,
+    retain_request_te: bool,
+    preserve_request_fields: bool,
+}
+
 impl HopByHopHeaderContext {
     /// Capture connection-specific metadata without modifying the headers.
     #[must_use]
@@ -430,20 +454,49 @@ impl HopByHopHeaderContext {
         }
     }
 
-    /// Capture connection-specific metadata and remove all hop-by-hop fields.
+    /// Capture connection-specific metadata and remove hop-by-hop fields.
+    ///
+    /// Request-field exceptions remain in place. Use [`Self::take_response`]
+    /// when capturing a response so every nomination is removed.
     #[must_use]
     pub fn take(headers: &mut HeaderMap, version: Version) -> Self {
-        Self::take_with_retention(headers, version, false, false)
+        Self::take_with_options(
+            headers,
+            HeaderSanitizationOptions {
+                version,
+                retain_trailers: false,
+                retain_request_te: false,
+                preserve_request_fields: true,
+            },
+        )
+    }
+
+    /// Capture response metadata and remove all connection-specific fields.
+    ///
+    /// Unlike [`Self::take`], the message direction is known, so request-field
+    /// exceptions do not apply to `Connection` nominations.
+    #[must_use]
+    pub fn take_response(headers: &mut HeaderMap, version: Version) -> Self {
+        Self::take_with_options(
+            headers,
+            HeaderSanitizationOptions {
+                version,
+                retain_trailers: false,
+                retain_request_te: false,
+                preserve_request_fields: false,
+            },
+        )
     }
 
     // Relay sanitation retains valid fields in place. Explicit take() still
     // removes every capability for adaptation to a different hop.
-    fn take_with_retention(
-        headers: &mut HeaderMap,
-        version: Version,
-        retain_trailers: bool,
-        retain_request_te: bool,
-    ) -> Self {
+    fn take_with_options(headers: &mut HeaderMap, options: HeaderSanitizationOptions) -> Self {
+        let HeaderSanitizationOptions {
+            version,
+            retain_trailers,
+            retain_request_te,
+            preserve_request_fields,
+        } = options;
         let context = Self::capture(headers, version);
         let keep_trailer = retain_trailers && !context.trailer_fields.is_empty();
         let keep_te = retain_request_te
@@ -462,7 +515,10 @@ impl HopByHopHeaderContext {
             context
                 .nominated_headers
                 .iter()
-                .filter(|name| !keep_te || *name != &header::TE)
+                .filter(|name| {
+                    (!keep_te || *name != &header::TE)
+                        && (!preserve_request_fields || is_removable_connection_header(name))
+                })
                 .cloned(),
             known_hop_by_hop_headers().filter(|name| {
                 !(keep_trailer && *name == &header::TRAILER
@@ -614,8 +670,15 @@ pub enum HopByHopResponseDisposition {
 #[must_use]
 pub fn sanitize_hop_by_hop_request_headers<B>(request: &mut Request<B>) -> HopByHopHeaderContext {
     let version = request.version();
-    let context =
-        HopByHopHeaderContext::take_with_retention(request.headers_mut(), version, true, true);
+    let context = HopByHopHeaderContext::take_with_options(
+        request.headers_mut(),
+        HeaderSanitizationOptions {
+            version,
+            retain_trailers: true,
+            retain_request_te: true,
+            preserve_request_fields: true,
+        },
+    );
     context.restore_request(request.headers_mut(), version, &[]);
     context
 }
@@ -632,8 +695,15 @@ pub fn sanitize_hop_by_hop_response_headers<B>(
 ) -> HopByHopResponseDisposition {
     let version = response.version();
     let status = response.status();
-    let response_context =
-        HopByHopHeaderContext::take_with_retention(response.headers_mut(), version, true, false);
+    let response_context = HopByHopHeaderContext::take_with_options(
+        response.headers_mut(),
+        HeaderSanitizationOptions {
+            version,
+            retain_trailers: true,
+            retain_request_te: false,
+            preserve_request_fields: false,
+        },
+    );
     response_context.restore_trailer_headers(response.headers_mut(), version);
     if status != StatusCode::SWITCHING_PROTOCOLS {
         return HopByHopResponseDisposition::Forward;
@@ -665,6 +735,95 @@ pub fn sanitize_hop_by_hop_response_headers<B>(
 mod tests {
     use super::*;
     use std::assert_matches;
+
+    #[test]
+    fn early_data_survives_request_sanitation_and_adaptation() {
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let mut headers = HeaderMap::new();
+            headers.append(
+                header::CONNECTION,
+                HeaderValue::from_static("EaRlY-DaTa, x-hop"),
+            );
+            headers.append(header::CONNECTION, HeaderValue::from_static("early-data"));
+            headers.append(header::EARLY_DATA, HeaderValue::from_static("invalid"));
+            headers.append(header::EARLY_DATA, HeaderValue::from_static("0"));
+            headers.insert("x-hop", HeaderValue::from_static("private"));
+            assert!(connection_header_names(&headers).any(|name| name == header::EARLY_DATA));
+            let original = headers.clone();
+            remove_hop_by_hop_request_headers(&mut headers);
+            assert_eq!(
+                values(&headers, &header::EARLY_DATA),
+                [b"invalid".as_slice(), b"0"]
+            );
+            assert!(!headers.contains_key("x-hop"));
+            assert!(!headers.contains_key(header::CONNECTION));
+
+            let mut req = Request::new(());
+            *req.version_mut() = version;
+            *req.headers_mut() = original;
+            let context = sanitize_hop_by_hop_request_headers(&mut req);
+            context.restore_request(req.headers_mut(), version, &[header::EARLY_DATA]);
+            assert_eq!(
+                values(req.headers(), &header::EARLY_DATA),
+                [b"invalid".as_slice(), b"0"]
+            );
+            assert!(!req.headers().contains_key("x-hop"));
+
+            let mut response = Response::new(());
+            *response.version_mut() = version;
+            response
+                .headers_mut()
+                .insert(header::EARLY_DATA, HeaderValue::from_static("1"));
+            assert_eq!(
+                sanitize_hop_by_hop_response_headers(&mut response, &context),
+                HopByHopResponseDisposition::Forward
+            );
+            assert_eq!(response.headers()[header::EARLY_DATA], "1");
+        }
+    }
+
+    #[test]
+    fn early_data_responses_follow_generic_connection_nominations() {
+        for nominated in [false, true] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::EARLY_DATA, HeaderValue::from_static("invalid"));
+            if nominated {
+                headers.insert(
+                    header::CONNECTION,
+                    HeaderValue::from_static("EaRlY-DaTa, x-hop"),
+                );
+            }
+            headers.insert("x-hop", HeaderValue::from_static("private"));
+            let mut direct = headers.clone();
+            remove_hop_by_hop_response_headers(&mut direct);
+            assert_eq!(direct.contains_key(header::EARLY_DATA), !nominated);
+            assert_eq!(direct.contains_key("x-hop"), !nominated);
+
+            let mut response = Response::new(());
+            *response.headers_mut() = headers.clone();
+            assert_eq!(
+                sanitize_hop_by_hop_response_headers(
+                    &mut response,
+                    &HopByHopHeaderContext::default()
+                ),
+                HopByHopResponseDisposition::Forward
+            );
+            assert_eq!(
+                response.headers().contains_key(header::EARLY_DATA),
+                !nominated
+            );
+
+            let context = HopByHopHeaderContext::take_response(&mut headers, Version::HTTP_11);
+            assert_eq!(headers.contains_key(header::EARLY_DATA), !nominated);
+            headers.insert(
+                "x-hop",
+                HeaderValue::from_static("adapted end-to-end field"),
+            );
+            context.restore_response(&mut headers, Version::HTTP_3, &[]);
+            assert_eq!(headers.contains_key(header::EARLY_DATA), !nominated);
+            assert_eq!(headers["x-hop"], "adapted end-to-end field");
+        }
+    }
 
     #[test]
     fn te_is_retained_as_the_exact_trailers_or_removed() {

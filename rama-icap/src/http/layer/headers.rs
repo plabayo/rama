@@ -5,13 +5,14 @@ use rama_http_types::{
 };
 use rama_net::address::HostWithOptPort;
 
-use crate::http::headers::SanitizedHttpHead;
+use crate::http::headers::{HttpHeadKind, SanitizedHttpHead};
 
 pub(super) fn sanitize_adapted_http_headers(
     headers: &mut HeaderMap,
     version: Version,
+    kind: HttpHeadKind,
 ) -> SanitizedHttpHead {
-    let sanitized = SanitizedHttpHead::take(headers, version);
+    let sanitized = SanitizedHttpHead::take(headers, version, kind);
     // The adapted body, not the untrusted ICAP response head, determines
     // downstream HTTP framing. This also removes conflicting duplicate values.
     headers.remove(http_header::CONTENT_LENGTH);
@@ -44,7 +45,7 @@ mod tests {
         headers.append(http_header::CONTENT_LENGTH, HeaderValue::from_static("20"));
         headers.insert(http_header::TRAILER, HeaderValue::from_static("x-checksum"));
 
-        sanitize_adapted_http_headers(&mut headers, Version::HTTP_11);
+        sanitize_adapted_http_headers(&mut headers, Version::HTTP_11, HttpHeadKind::Request);
 
         assert!(!headers.contains_key(http_header::CONTENT_LENGTH));
         assert_eq!(headers[http_header::TRAILER], "x-checksum");
@@ -56,9 +57,29 @@ mod tests {
         headers.insert(http_header::CONNECTION, HeaderValue::from_static("Trailer"));
         headers.insert(http_header::TRAILER, HeaderValue::from_static("x-checksum"));
 
-        sanitize_adapted_http_headers(&mut headers, Version::HTTP_11);
+        sanitize_adapted_http_headers(&mut headers, Version::HTTP_11, HttpHeadKind::Request);
 
         assert!(!headers.contains_key(http_header::CONNECTION));
         assert!(!headers.contains_key(http_header::TRAILER));
+    }
+    #[test]
+    fn early_data_adaptation_is_directional_even_without_restoration() {
+        for kind in [HttpHeadKind::Request, HttpHeadKind::Response] {
+            for nominated in [false, true] {
+                let mut headers = HeaderMap::new();
+                headers.insert(http_header::EARLY_DATA, HeaderValue::from_static("invalid"));
+                if nominated {
+                    headers.insert(
+                        http_header::CONNECTION,
+                        HeaderValue::from_static("early-data"),
+                    );
+                }
+                sanitize_adapted_http_headers(&mut headers, Version::HTTP_11, kind);
+                assert_eq!(
+                    headers.contains_key(http_header::EARLY_DATA),
+                    kind == HttpHeadKind::Request || !nominated
+                );
+            }
+        }
     }
 }

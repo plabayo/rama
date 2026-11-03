@@ -24,6 +24,12 @@ pub(super) struct ForwardedIcapHeader {
     pub(super) value: HeaderValue,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HttpHeadKind {
+    Request,
+    Response,
+}
+
 #[derive(Default)]
 pub(super) struct SanitizedHttpHead {
     forwarded_icap_headers: Vec<ForwardedIcapHeader>,
@@ -31,7 +37,7 @@ pub(super) struct SanitizedHttpHead {
 }
 
 impl SanitizedHttpHead {
-    pub(super) fn take(headers: &mut HeaderMap, version: Version) -> Self {
+    pub(super) fn take(headers: &mut HeaderMap, version: Version, kind: HttpHeadKind) -> Self {
         let mut sanitized = Self::default();
 
         for (name, value) in headers.ordered_iter() {
@@ -51,7 +57,10 @@ impl SanitizedHttpHead {
                 });
             }
         }
-        sanitized.hop_by_hop = HopByHopHeaderContext::take(headers, version);
+        sanitized.hop_by_hop = match kind {
+            HttpHeadKind::Request => HopByHopHeaderContext::take(headers, version),
+            HttpHeadKind::Response => HopByHopHeaderContext::take_response(headers, version),
+        };
         remove_proxy_auth_request_headers(headers);
         remove_proxy_auth_response_headers(headers);
         sanitized
@@ -219,6 +228,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn early_data_survives_request_adaptation_with_lenient_receipt() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http_header::CONNECTION,
+            HeaderValue::from_static("early-data, x-hop"),
+        );
+        headers.append(http_header::EARLY_DATA, HeaderValue::from_static("invalid"));
+        headers.append(http_header::EARLY_DATA, HeaderValue::from_static("0"));
+        headers.insert("x-hop", HeaderValue::from_static("private"));
+        let sanitized =
+            SanitizedHttpHead::take(&mut headers, Version::HTTP_11, HttpHeadKind::Request);
+        sanitized.restore_request(&mut headers, Version::HTTP_3, &[http_header::EARLY_DATA]);
+        assert_eq!(
+            headers
+                .get_all(http_header::EARLY_DATA)
+                .iter()
+                .map(HeaderValue::as_bytes)
+                .collect::<Vec<_>>(),
+            [b"invalid".as_slice(), b"0"]
+        );
+        assert!(!headers.contains_key("x-hop"));
+        let mut trailers = HeaderMap::new();
+        trailers.insert(http_header::EARLY_DATA, HeaderValue::from_static("1"));
+        validate_http_trailers(&trailers, &[]).unwrap();
+        for nominated in [false, true] {
+            let mut headers = HeaderMap::new();
+            headers.insert(http_header::EARLY_DATA, HeaderValue::from_static("invalid"));
+            if nominated {
+                headers.insert(
+                    http_header::CONNECTION,
+                    HeaderValue::from_static("early-data"),
+                );
+            }
+            let sanitized =
+                SanitizedHttpHead::take(&mut headers, Version::HTTP_11, HttpHeadKind::Response);
+            assert_eq!(headers.contains_key(http_header::EARLY_DATA), !nominated);
+            sanitized.restore_response(&mut headers, Version::HTTP_3, &[]);
+            assert_eq!(headers.contains_key(http_header::EARLY_DATA), !nominated);
+        }
+    }
+
+    #[test]
     fn connection_names_share_exact_ows_and_comma_parsing() {
         let mut headers = HeaderMap::new();
         headers.append(
@@ -255,7 +306,8 @@ mod tests {
         );
         headers.insert("x-hop", HeaderValue::from_static("secret"));
 
-        let sanitized = SanitizedHttpHead::take(&mut headers, Version::HTTP_11);
+        let sanitized =
+            SanitizedHttpHead::take(&mut headers, Version::HTTP_11, HttpHeadKind::Response);
         sanitized.restore_response(&mut headers, Version::HTTP_11, &[]);
 
         assert!(!headers.contains_key("x-hop"));
@@ -281,13 +333,18 @@ mod tests {
             http_header::CONNECTION,
             HeaderValue::from_static("keep-alive"),
         );
-        let sanitized = SanitizedHttpHead::take(&mut ordinary, Version::HTTP_11);
+        let sanitized =
+            SanitizedHttpHead::take(&mut ordinary, Version::HTTP_11, HttpHeadKind::Response);
         sanitized.restore_response(&mut ordinary, Version::HTTP_11, &[]);
         assert!(!ordinary.contains_key(http_header::CONNECTION));
 
         let mut missing_connection = HeaderMap::new();
         missing_connection.insert(http_header::UPGRADE, HeaderValue::from_static("websocket"));
-        let sanitized = SanitizedHttpHead::take(&mut missing_connection, Version::HTTP_11);
+        let sanitized = SanitizedHttpHead::take(
+            &mut missing_connection,
+            Version::HTTP_11,
+            HttpHeadKind::Response,
+        );
         sanitized.restore_response(&mut missing_connection, Version::HTTP_11, &[]);
         assert!(!missing_connection.contains_key(http_header::CONNECTION));
         assert!(!missing_connection.contains_key(http_header::UPGRADE));
@@ -298,7 +355,11 @@ mod tests {
             HeaderValue::from_static("keep-alive"),
         );
         missing_upgrade_token.insert(http_header::UPGRADE, HeaderValue::from_static("websocket"));
-        let sanitized = SanitizedHttpHead::take(&mut missing_upgrade_token, Version::HTTP_11);
+        let sanitized = SanitizedHttpHead::take(
+            &mut missing_upgrade_token,
+            Version::HTTP_11,
+            HttpHeadKind::Response,
+        );
         sanitized.restore_response(&mut missing_upgrade_token, Version::HTTP_11, &[]);
         assert!(!missing_upgrade_token.contains_key(http_header::CONNECTION));
         assert!(!missing_upgrade_token.contains_key(http_header::UPGRADE));
@@ -320,12 +381,14 @@ mod tests {
         }
 
         let mut h2_source = upgrade_headers();
-        let sanitized = SanitizedHttpHead::take(&mut h2_source, Version::HTTP_2);
+        let sanitized =
+            SanitizedHttpHead::take(&mut h2_source, Version::HTTP_2, HttpHeadKind::Response);
         sanitized.restore_response(&mut h2_source, Version::HTTP_11, &[]);
         assert!(h2_source.is_empty());
 
         let mut http1_source = upgrade_headers();
-        let sanitized = SanitizedHttpHead::take(&mut http1_source, Version::HTTP_11);
+        let sanitized =
+            SanitizedHttpHead::take(&mut http1_source, Version::HTTP_11, HttpHeadKind::Response);
         sanitized.restore_response(&mut http1_source, Version::HTTP_2, &[]);
         assert!(http1_source.is_empty());
     }
@@ -344,7 +407,7 @@ mod tests {
             );
             headers.insert(http_header::TE, HeaderValue::from_static("gzip, trailers"));
 
-            let sanitized = SanitizedHttpHead::take(&mut headers, version);
+            let sanitized = SanitizedHttpHead::take(&mut headers, version, HttpHeadKind::Request);
             sanitized.restore_request(&mut headers, version, &[]);
 
             assert_eq!(headers[http_header::TE], "trailers");
@@ -370,7 +433,8 @@ mod tests {
             HeaderValue::from_static("x-checksum"),
         );
 
-        let sanitized = SanitizedHttpHead::take(&mut headers, Version::HTTP_11);
+        let sanitized =
+            SanitizedHttpHead::take(&mut headers, Version::HTTP_11, HttpHeadKind::Response);
         sanitized.restore_response(&mut headers, Version::HTTP_11, &[]);
 
         assert!(!headers.contains_key(http_header::CONNECTION));
@@ -384,12 +448,14 @@ mod tests {
             HeaderName::from_bytes(b"TrAiLeR").unwrap(),
             HeaderValue::from_static("x-original"),
         );
-        let original = SanitizedHttpHead::take(&mut original, Version::HTTP_11);
+        let original =
+            SanitizedHttpHead::take(&mut original, Version::HTTP_11, HttpHeadKind::Response);
 
         let mut adapted = HeaderMap::new();
         adapted.insert(http_header::CONNECTION, HeaderValue::from_static("Trailer"));
         adapted.insert(http_header::TRAILER, HeaderValue::from_static("x-adapted"));
-        let adapted_head = SanitizedHttpHead::take(&mut adapted, Version::HTTP_11);
+        let adapted_head =
+            SanitizedHttpHead::take(&mut adapted, Version::HTTP_11, HttpHeadKind::Response);
         adapted_head.restore_trailer_headers(&mut adapted, Version::HTTP_11);
         original.restore_response(
             &mut adapted,

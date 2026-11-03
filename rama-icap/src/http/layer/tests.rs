@@ -2846,7 +2846,7 @@ fn separates_proxy_credentials_and_removes_hop_headers() {
     );
     headers.insert("x-end-to-end", HeaderValue::from_static("keep"));
 
-    let sanitized = SanitizedHttpHead::take(&mut headers, Version::HTTP_11);
+    let sanitized = SanitizedHttpHead::take(&mut headers, Version::HTTP_11, HttpHeadKind::Request);
     assert_eq!(headers.len(), 1);
     assert_eq!(headers["x-end-to-end"], "keep");
 

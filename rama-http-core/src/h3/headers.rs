@@ -163,7 +163,9 @@ fn outgoing_fields(
                 return Some((name, te_value));
             }
         } else if !header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name)
-            && !nominated.contains(name)
+            && (!nominated.contains(name)
+                || kind == Outgoing::Request
+                    && !header::hop_by_hop::is_removable_connection_header(name))
         {
             return Some((name, value));
         }
@@ -777,6 +779,43 @@ mod tests {
 
     use super::*;
     use crate::{h3::qpack::ErrorScope, proto::h1::test_util as h1};
+
+    #[test]
+    fn early_data_survives_request_encoding_but_not_outgoing_trailers() {
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .header(header::CONNECTION, "EaRlY-DaTa, x-hop")
+            .header(header::EARLY_DATA, "invalid")
+            .header(header::EARLY_DATA, "0")
+            .header("x-hop", "private")
+            .body(())
+            .unwrap();
+        let sent = decode(encode_request(&shared(), 0, &request).unwrap());
+        let values: Vec<_> = sent
+            .iter()
+            .filter(|field| field.name == "early-data")
+            .map(|field| field.value.as_ref())
+            .collect();
+        assert_eq!(values, [b"invalid".as_slice(), b"0"]);
+        assert!(
+            !names(&sent)
+                .iter()
+                .any(|name| name == "x-hop" || name == "connection")
+        );
+
+        let received = trailers(fields(&[("early-data", "1"), ("x-checksum", "ok")])).unwrap();
+        let sent = decode(
+            crate::h3::stream::encode_trailers(
+                &shared(),
+                0,
+                &received,
+                Some(&ForbiddenTrailers::AllowAll),
+            )
+            .unwrap(),
+        );
+        assert_eq!(names(&sent), ["x-checksum"]);
+        response(fields(&[(":status", "200"), ("early-data", "1")])).unwrap();
+    }
 
     fn fields(values: &[(&'static str, &'static str)]) -> Vec<FieldPair> {
         values
