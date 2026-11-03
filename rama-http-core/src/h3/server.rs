@@ -24,7 +24,7 @@ use rama_http_types::{
     body::StreamingBody,
     header::{self, trailer::ForbiddenTrailers},
     proto::{
-        ext::{HttpDatagrams, Protocol},
+        ext::{HttpDatagrams, Protocol, early_data::EarlyDataReceived},
         h3::{Code, FrameType, Settings, StreamType},
     },
 };
@@ -44,7 +44,7 @@ use super::{
     headers,
     quic::Writer,
     stream::{HEAD_TIMEOUT, HeadDeadline, Phase, Reader},
-    transport::{self, SendStream as _, StreamHandle as _},
+    transport::{self, RecvStream as _, SendStream as _, StreamHandle as _},
 };
 use crate::{
     headers::{ResponseLength, is_tunnel_response, set_content_length_if_missing},
@@ -56,6 +56,7 @@ pub struct Connection<C> {
     connection: C,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
+    early_dispatch: bool,
     next_id: u64,
     draining: bool,
     idle: ConnTimer,
@@ -203,6 +204,8 @@ pub fn handshake<C: transport::Connection>(
         ));
     }
     config.settings()?;
+    let early_dispatch = config.early_dispatch
+        && connection.early_data_context_matches(&config.early_data_context()?);
     let admission = Arc::new(Semaphore::new(config.max_requests));
     let idle = ConnTimer::new(config.idle_timeout, None);
     let shared = Shared::from_connection(config, Role::Server, &connection)?;
@@ -212,6 +215,7 @@ pub fn handshake<C: transport::Connection>(
             connection,
             shared,
             admission,
+            early_dispatch,
             next_id: 0,
             draining: false,
             idle,
@@ -326,6 +330,7 @@ impl<C: transport::Connection> Connection<C> {
         Ok(RequestStream {
             connection: self.connection.clone(),
             accepted,
+            early_dispatch: self.early_dispatch,
             heads: self.heads.clone(),
             reader,
             writer,
@@ -363,6 +368,7 @@ impl<C: transport::Connection> Connection<C> {
 pub struct RequestStream<C: transport::Connection> {
     connection: C,
     accepted: Instant,
+    early_dispatch: bool,
     heads: Arc<Heads>,
     reader: Reader<C::RecvStream>,
     writer: Writer<C::SendStream>,
@@ -370,11 +376,7 @@ pub struct RequestStream<C: transport::Connection> {
 }
 
 impl<C: transport::Connection> RequestStream<C> {
-    /// Decode and validate the request head, returning the common Incoming body.
-    pub async fn resolve(
-        mut self,
-    ) -> Result<(Request<crate::body::Incoming>, SendResponse<C>), Error> {
-        // Early or buffered bytes may be replayed: dispatch only after the client's verified Finished.
+    async fn confirmed(&mut self) -> Result<(), Error> {
         if !self.connection.is_handshake_confirmed()
             && let Err(error) = self.connection.handshake_confirmed().await
         {
@@ -383,6 +385,16 @@ impl<C: transport::Connection> RequestStream<C> {
             if !error.is_clean_close() || !self.connection.is_handshake_confirmed() {
                 return Err(self.reader.reject(error));
             }
+        }
+        Ok(())
+    }
+
+    /// Decode and validate the request head, returning the common Incoming body.
+    pub async fn resolve(
+        mut self,
+    ) -> Result<(Request<crate::body::Incoming>, SendResponse<C>), Error> {
+        if !self.early_dispatch {
+            self.confirmed().await?;
         }
         let extended_connect = self.reader.shared.config.extended_connect;
         let deadline = self
@@ -411,6 +423,30 @@ impl<C: transport::Connection> RequestStream<C> {
             Ok(request) => request,
             Err(error) => return Err(self.reader.reject(error)),
         };
+        let received_early = self.reader.stream.is_0rtt();
+        if !received_early {
+            // Context matching is a connection property; receipt is per stream.
+            self.confirmed().await?;
+        }
+        // TLS exposes ALPN before Finished. Validate here as well as in the
+        // driver: request dispatch must not race the driver's protocol check.
+        super::connection::validate_alpn(&self.connection, &self.reader.shared.config)
+            .map_err(|error| self.reader.reject(error))?;
+        if received_early {
+            let connection = self.connection.clone();
+            request.extensions().insert(EarlyDataReceived::new(move || {
+                let connection = connection.clone();
+                async move {
+                    if !connection.is_handshake_confirmed()
+                        && let Err(error) = connection.handshake_confirmed().await
+                        && !connection.is_handshake_confirmed()
+                    {
+                        return Err(error.into());
+                    }
+                    Ok(())
+                }
+            }));
+        }
         if let Some((observer, snapshot)) = observation {
             request.extensions().insert(observer);
             request.extensions().insert(snapshot);

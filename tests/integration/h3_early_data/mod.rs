@@ -2,6 +2,7 @@
 
 mod admission;
 mod alpn;
+mod dispatch;
 mod gate;
 mod pooled;
 mod receipt;
@@ -22,7 +23,7 @@ use rama_net::{
     tls::{EarlyDataPermit, ForbidEarlyData},
 };
 use rama_quic::{
-    ClientConfig, Connecting, Connection, Endpoint, ServerConfig, TransportConfig,
+    ClientConfig, Connecting, Connection, Endpoint, EndpointConfig, ServerConfig, TransportConfig,
     tls::{QuicClientConfigProvider as _, QuicServerConfigProvider as _, TlsOptions},
 };
 use rama_quic_proto::Version;
@@ -113,6 +114,15 @@ impl Fixture {
     }
 
     async fn with_request_credit(provider: Provider, version: Version, credit: u32) -> Self {
+        Self::with_endpoint_config(provider, version, credit, None).await
+    }
+
+    async fn with_endpoint_config(
+        provider: Provider,
+        version: Version,
+        credit: u32,
+        endpoint_config: Option<EndpointConfig>,
+    ) -> Self {
         println!("h3 early data: provider={provider:?} version={version:?}");
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let rotated = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
@@ -143,6 +153,7 @@ impl Fixture {
             .await
             .unwrap();
         let server = Endpoint::build(Executor::new())
+            .maybe_with_config(endpoint_config)
             .with_server_config(server_config)
             .with_datagram_socket(GatedSocket {
                 inner: socket,

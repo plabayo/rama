@@ -1,7 +1,11 @@
 use super::*;
 use crate::{
     Body, BodyExtractExt, Method,
-    layer::retry::{ManagedPolicy, Retry},
+    layer::{
+        retry::{ManagedPolicy, Retry},
+        validate_request::{ValidateRequest as _, early_data::forward_to},
+    },
+    proto::ext::early_data::EarlyDataReceived,
 };
 use rama_core::{
     Service,
@@ -323,4 +327,25 @@ async fn repeated_typed_rejection_is_terminal_and_the_returned_error_keeps_its_c
     let error = retry.serve(Request::new(Body::empty())).await.unwrap_err();
     assert!(is_early_data_rejected(&error));
     assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn actual_ingress_receipt_needs_forwarding_marker_for_early_egress() {
+    let request = Request::new(RetryBody::empty());
+    request.extensions().insert(Ingress(Extensions::new()));
+    request
+        .extensions()
+        .insert(EarlyDataReceived::new(std::future::pending));
+    let request = permit_attempt(request);
+    assert!(!request.extensions().contains::<EarlyDataPermit>());
+    assert!(!EarlyDataAttempt::sent_early(&request).permits_425_recovery());
+    let request = forward_to(|_: &Request<RetryBody>| true)
+        .validate
+        .validate(request)
+        .await
+        .unwrap();
+    assert_eq!(request.headers()[header::EARLY_DATA], "1");
+    let request = permit_attempt(request);
+    assert!(request.extensions().contains::<EarlyDataPermit>());
+    assert!(!EarlyDataAttempt::sent_early(&request).permits_425_recovery());
 }

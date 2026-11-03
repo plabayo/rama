@@ -1,19 +1,25 @@
 //! The ordinary builder and multiplex pool own early recovery together.
 
 use super::*;
+use rama::tcp::server::TcpListener;
 use rama::{
-    Service,
+    Layer as _, Service,
     http::{
-        StatusCode,
+        StatusCode, Version as HttpVersion,
         body::util::CollectOptions,
         client::{EasyHttpConnectorBuilder, Http3Connector, HttpPooledConnectorConfig},
+        conn::TargetHttpVersion,
+        header,
         layer::retry::{RetryBody, early_data::prepare_bodyless},
-        proto::ext::early_data::EarlyDataAttempt,
+        layer::validate_request::early_data::forward_to,
+        proto::ext::early_data::{EarlyDataAttempt, EarlyDataReceived},
+        server::HttpServer,
     },
 };
 use rama_core::{
     error::extra::OpaqueError,
-    extensions::{Egress, Extensions},
+    extensions::{Egress, Extensions, Ingress},
+    service::service_fn,
 };
 use rama_net::{
     address::HostWithPort,
@@ -23,6 +29,7 @@ use rama_net::{
 use rama_quic::client::SharedQuicEndpoint;
 use rama_tls::client::TlsServerAuthentication;
 use std::{
+    convert::Infallible,
     num::NonZeroUsize,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -41,6 +48,7 @@ fn client_provider(provider: Provider) -> Arc<dyn rama_quic::tls::QuicClientConf
 
 fn pooled_request(port: u16) -> Request<Body> {
     let request = Request::builder()
+        .version(HttpVersion::HTTP_3)
         .uri(format!("https://localhost:{port}/early"))
         .body(Body::empty())
         .unwrap();
@@ -65,6 +73,9 @@ enum Scenario {
     CancelEarly,
     RejectTls,
     ReplayPayload,
+    UnmarkedIngress,
+    MarkedIngress,
+    RealIngress(HttpVersion),
 }
 
 #[tokio::test]
@@ -91,6 +102,23 @@ async fn pooled_client_keeps_application_payload_retries_without_sending_early()
         timeout(LIMIT, pooled_recovery(provider, Scenario::ReplayPayload))
             .await
             .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn ingress_needs_forwarding_marker_for_real_early_send_and_never_recovers_425() {
+    for provider in Provider::enabled() {
+        for scenario in [
+            Scenario::UnmarkedIngress,
+            Scenario::MarkedIngress,
+            Scenario::RealIngress(HttpVersion::HTTP_11),
+            Scenario::RealIngress(HttpVersion::HTTP_2),
+            Scenario::RealIngress(HttpVersion::HTTP_3),
+        ] {
+            timeout(LIMIT, pooled_recovery(provider, scenario))
+                .await
+                .unwrap();
+        }
     }
 }
 
@@ -244,21 +272,67 @@ async fn pooled_recovery(provider: Provider, scenario: Scenario) {
     fixture.gate.hold();
     let first_client = client.clone();
     let first = Task::spawn(async move {
-        let mut request = pooled_request(port);
+        let mut request = if let Scenario::RealIngress(version) = scenario {
+            let mut request = real_ingress_request(provider, version).await;
+            *request.uri_mut() = format!("https://localhost:{port}/early").parse().unwrap();
+            request.headers_mut().remove(header::HOST);
+            // Select the same upstream H3 pool as the warm request and waiters.
+            // The actual frontend version was checked before this adaptation.
+            *request.version_mut() = HttpVersion::HTTP_3;
+            request
+                .extensions()
+                .insert(ConnectorTarget(HostWithPort::local_ipv4(port)));
+            request
+        } else {
+            pooled_request(port)
+        };
         if matches!(scenario, Scenario::ReplayPayload) {
             *request.method_mut() = Method::POST;
             *request.body_mut() = Body::from("payload");
         }
-        let response = first_client.serve(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        if matches!(
+            scenario,
+            Scenario::UnmarkedIngress | Scenario::MarkedIngress
+        ) {
+            request.extensions().insert(Ingress(Extensions::new()));
+            request
+                .extensions()
+                .insert(EarlyDataReceived::new(std::future::pending));
+        }
+        let response = if matches!(scenario, Scenario::MarkedIngress) {
+            forward_to(|_: &Request| true)
+                .into_layer(first_client)
+                .serve(request)
+                .await
+                .unwrap()
+        } else {
+            first_client.serve(request).await.unwrap()
+        };
+        assert_eq!(
+            response.status(),
+            if matches!(scenario, Scenario::MarkedIngress) {
+                StatusCode::TOO_EARLY
+            } else {
+                StatusCode::OK
+            }
+        );
         assert_eq!(
             response.extensions().contains::<ForbidEarlyData>(),
-            !matches!(scenario, Scenario::ReplayPayload)
+            !matches!(
+                scenario,
+                Scenario::ReplayPayload
+                    | Scenario::UnmarkedIngress
+                    | Scenario::MarkedIngress
+                    | Scenario::RealIngress(_)
+            )
         );
         if matches!(scenario, Scenario::ReplayPayload) {
             assert!(!response.extensions().contains::<EarlyDataPermit>());
         }
-        assert!(!response.extensions().contains::<EarlyDataAttempt>());
+        assert_eq!(
+            response.extensions().contains::<EarlyDataAttempt>(),
+            matches!(scenario, Scenario::MarkedIngress)
+        );
         let egress = response
             .extensions()
             .get_ref::<Egress<Extensions>>()
@@ -266,7 +340,13 @@ async fn pooled_recovery(provider: Provider, scenario: Scenario) {
         assert!(egress.0.contains::<TlsServerAuthentication>());
         response.into_body().collect().await.unwrap();
     });
-    if !matches!(scenario, Scenario::RejectTls | Scenario::ReplayPayload) {
+    if !matches!(
+        scenario,
+        Scenario::RejectTls
+            | Scenario::ReplayPayload
+            | Scenario::UnmarkedIngress
+            | Scenario::RealIngress(_)
+    ) {
         timeout(PROBE * 5, early_seen.notified())
             .await
             .expect("pooled request did not send early");
@@ -280,7 +360,15 @@ async fn pooled_recovery(provider: Provider, scenario: Scenario) {
         Some(first)
     };
     let mut waiters = Vec::new();
-    for _ in 0..3 {
+    // Real ingress may carry a different pool identity (for example H2 policy).
+    // Keep this proof about that forwarded request; unrelated original callers
+    // are allowed to establish their own early-capable connection.
+    let waiter_count = if matches!(scenario, Scenario::RealIngress(_)) {
+        0
+    } else {
+        3
+    };
+    for _ in 0..waiter_count {
         let client = client.clone();
         waiters.push(Task::spawn(async move {
             let response = client.serve(pooled_request(port)).await.unwrap();
@@ -299,7 +387,10 @@ async fn pooled_recovery(provider: Provider, scenario: Scenario) {
         early.load(Ordering::Relaxed),
         usize::from(!matches!(
             scenario,
-            Scenario::RejectTls | Scenario::ReplayPayload
+            Scenario::RejectTls
+                | Scenario::ReplayPayload
+                | Scenario::UnmarkedIngress
+                | Scenario::RealIngress(_)
         ))
     );
     assert!(
@@ -340,25 +431,85 @@ async fn pooled_recovery(provider: Provider, scenario: Scenario) {
         early.load(Ordering::Relaxed),
         usize::from(!matches!(
             scenario,
-            Scenario::RejectTls | Scenario::ReplayPayload
+            Scenario::RejectTls
+                | Scenario::ReplayPayload
+                | Scenario::UnmarkedIngress
+                | Scenario::RealIngress(_)
         ))
     );
     assert_eq!(
         processed.load(Ordering::Relaxed),
-        if matches!(scenario, Scenario::CancelEarly) {
-            4
-        } else {
-            5
-        },
+        1 + waiter_count
+            + usize::from(!matches!(
+                scenario,
+                Scenario::CancelEarly | Scenario::MarkedIngress
+            )),
         "each completed operation is processed once"
     );
     assert_eq!(
         rule_calls.load(Ordering::Relaxed),
-        match scenario {
-            Scenario::CancelEarly => 4,
-            Scenario::ReplayPayload => 6,
-            _ => 5,
-        },
+        1 + waiter_count
+            + usize::from(!matches!(
+                scenario,
+                Scenario::CancelEarly | Scenario::MarkedIngress
+            ))
+            + usize::from(matches!(scenario, Scenario::ReplayPayload)),
         "only ordinary results reach the application rule"
     );
+}
+
+/// Capture the request produced by each real server adapter. Only its origin is
+/// rewritten before it enters the warmed early-capable client; Ingress is never
+/// inserted by the test. H1/H2 use cleartext sockets; H3 completes native TLS.
+async fn real_ingress_request(provider: Provider, version: HttpVersion) -> Request {
+    let (captured, mut received) = mpsc::unbounded_channel();
+    let capture = service_fn(move |request: Request| {
+        captured.send(request).unwrap();
+        async { Ok::<_, Infallible>(Response::new(Body::empty())) }
+    });
+    if version == HttpVersion::HTTP_3 {
+        let fixture = Fixture::new(provider, Version::V1).await;
+        let (client, server) = fixture.full_pair().await;
+        let service = HttpServer::new_http3(Executor::new()).service(capture);
+        let _serving = Task::spawn(async move { service.serve(server).await });
+        send(client, Config::default(), request(Method::GET, ""))
+            .join()
+            .await
+            .unwrap();
+    } else {
+        let listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let service = HttpServer::auto(Executor::new()).service(capture);
+        let _serving = Task::spawn(listener.serve(service));
+        let client = EasyHttpConnectorBuilder::new()
+            .with_default_transport_connector()
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::new())
+            .with_default_connection_pool()
+            .build_client();
+        let request = Request::builder()
+            .uri(format!("http://{address}/ingress"))
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(TargetHttpVersion(version));
+        let response = client.serve(request).await.unwrap();
+        assert_eq!(response.version(), version);
+        response.into_body().collect().await.unwrap();
+    }
+    let request = received.recv().await.unwrap();
+    assert_eq!(request.version(), version);
+    assert!(request.extensions().contains::<Ingress<Extensions>>());
+    assert!(!request.extensions().contains::<EarlyDataReceived>());
+    assert!(!request.headers().contains_key(header::EARLY_DATA));
+    let (parts, body) = request.into_parts();
+    let body = body.collect().await.unwrap();
+    assert!(body.trailers().is_none());
+    assert!(body.to_bytes().is_empty());
+    // Normalize only the consumed empty body, retaining the real ingress store.
+    Request::from_parts(parts, Body::empty())
 }

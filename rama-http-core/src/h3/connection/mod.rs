@@ -85,6 +85,18 @@ pub struct Config {
     /// fingerprint emulation; compiled captured TLS profiles take precedence
     /// and disable early data. Disabled by default. Servers ignore this option.
     pub early_requests: bool,
+    /// Dispatch server requests actually received in early data before Finished.
+    ///
+    /// Requires native server TLS early-data opt-in bound to
+    /// [`Self::early_data_context`]. A missing or mismatched context keeps
+    /// handshake-first dispatch. Routes must decide whether replay is safe;
+    /// client-authenticated routes must await `EarlyDataReceived::confirmed`.
+    /// Requests may reach services before the client's handshake completes.
+    /// Gate non-replay-safe routes with `validate_request::early_data::require_confirmed`.
+    /// Gateways must use `validate_request::early_data::forward_to` or add
+    /// `Early-Data: 1` themselves, including when upstream uses ordinary 1-RTT.
+    /// Disabled by default. Clients ignore this option.
+    pub early_dispatch: bool,
     /// Optional independent budgets for wire observation; disabled by default.
     pub observation: Option<Box<ObservationLimits>>,
     /// Optional literal SETTINGS order, including unknown and reserved identifiers.
@@ -162,6 +174,7 @@ impl Default for Config {
             application_protocol: ApplicationProtocol::HTTP_3,
             server_alpn_policy: AlpnPolicy::Require,
             early_requests: false,
+            early_dispatch: false,
             observation: None,
             settings_profile: None,
             critical_streams: CriticalStreamPreferences::default(),

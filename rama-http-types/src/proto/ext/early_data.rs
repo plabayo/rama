@@ -1,14 +1,19 @@
 //! HTTP facts used by early-data recovery policies.
 
 use crate::{Request, header};
-use rama_core::{error::BoxError, extensions::Extension};
-use std::{error::Error, fmt};
+use rama_core::{
+    error::BoxError,
+    extensions::{Extension, Extensions, ExtensionsRef, Ingress},
+};
+use std::{error::Error, fmt, future::Future, pin::Pin, sync::Arc};
 
 /// Transport evidence that this request was actually sent with TLS early keys.
 ///
 /// Published on the response, using the actual outgoing request. A forwarded
 /// `Early-Data` field prevents original-client 425 recovery even if a layer
-/// inserted that field after the retry policy cloned the request.
+/// inserted that field after the retry policy cloned the request. An ingress
+/// request is also classified as forwarded, even when a custom gateway omitted
+/// the forwarding marker.
 #[derive(Debug, Clone, Copy, Extension)]
 #[extension(tags(http))]
 #[non_exhaustive]
@@ -25,11 +30,12 @@ impl EarlyDataAttempt {
     #[must_use]
     pub fn sent_early<B>(request: &Request<B>) -> Self {
         Self {
-            original: !request.headers().contains_key(header::EARLY_DATA),
+            original: !request.headers().contains_key(header::EARLY_DATA)
+                && !request.extensions().contains::<Ingress<Extensions>>(),
         }
     }
 
-    /// Whether the outgoing request lacked an inherited replay-exposure field.
+    /// Whether the request originated here and lacked an inherited exposure field.
     #[must_use]
     pub const fn permits_425_recovery(&self) -> bool {
         self.original
@@ -65,5 +71,53 @@ impl fmt::Display for EarlyDataRejected {
 impl Error for EarlyDataRejected {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(self.source.as_ref())
+    }
+}
+
+/// Transport evidence that this request contained bytes received with early keys.
+///
+/// Presence records replay exposure even after the handshake completes. It is
+/// independent of an inherited `Early-Data` field, whose exposure a local
+/// handshake cannot discharge. Only transports observing actual receipt may
+/// construct this extension; a pending handshake alone is insufficient.
+/// The callback may retain a connection handle until all extension copies are
+/// dropped. Keep only the request metadata needed when retaining requests long-term.
+#[derive(Clone, Extension)]
+#[extension(tags(http))]
+#[non_exhaustive]
+pub struct EarlyDataReceived {
+    confirm: Arc<Confirmation>,
+}
+
+type Confirmation =
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), BoxError>> + Send>> + Send + Sync;
+
+impl fmt::Debug for EarlyDataReceived {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EarlyDataReceived").finish_non_exhaustive()
+    }
+}
+
+impl EarlyDataReceived {
+    /// Record actual early receipt with a cancellation-safe handshake wait.
+    ///
+    /// The callback must resolve only after successful peer authentication.
+    /// Repeated or cancelled waits must leave the connection usable.
+    pub fn new<F, Fut>(confirm: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
+    {
+        Self {
+            confirm: Arc::new(move || Box::pin(confirm())),
+        }
+    }
+
+    /// Wait until this connection's handshake is confirmed.
+    ///
+    /// This does not clear an inherited `Early-Data` field or make an arbitrary
+    /// replay-sensitive operation safe across connections.
+    pub async fn confirmed(&self) -> Result<(), BoxError> {
+        (self.confirm)().await
     }
 }
