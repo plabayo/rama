@@ -18,6 +18,8 @@ You can find these integration tests at [./tests/integration](./tests/integratio
 ## HTTP Servers and Services
 
 ### Basic HTTP Services
+
+- [`http_early_data.rs`](./src/http_early_data.rs) - HTTP/3 client and gateway to an HTTP/1 origin, with 425 pass-through and one confirmed client recovery
 - [`http3_client_server.rs`](./src/http3_client_server.rs) - Authenticated HTTP/3 client/server with common streaming bodies, trailers and pooled reuse (executable end-to-end coverage in the integration suite)
 - [`http_version_proxy.rs`](./src/http_version_proxy.rs) - TLS h1/h2 and QUIC h3 ingress to a plaintext h1 origin, plus a CONNECT MITM with strict username-selected egress versions
 - [`http_datagram_echo.rs`](./src/http_datagram_echo.rs) - HTTP Datagrams (RFC 9297) over HTTP/3 Extended CONNECT, native QUIC datagrams or DATAGRAM capsules

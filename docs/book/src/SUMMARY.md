@@ -66,6 +66,7 @@
 # Intro to HTTP
 
 - [Http Clients](./http/http_clients.md)
+  - [Early data and HTTP 425](./http/early_data.md)
 - [gRPC](./http/grpc.md)
 - [Server-Sent Events (SSE)](./http/sse.md)
 - [Declarative Partial Updates](./http/declarative_partial_updates.md)
