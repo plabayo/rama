@@ -319,6 +319,15 @@ impl Connecting {
         let conn = self.connection_ref().state.lock();
 
         let is_ok = conn.inner.has_0rtt() || conn.inner.side().is_server();
+        if is_ok && !conn.connected {
+            // The accepted ClientHello may already supply early streams before
+            // the driver publishes HandshakeDataReady. Expose the selected
+            // protocol now, leaving peer identity to authenticated Connected.
+            if let Some(mut parameters) = conn.inner.crypto_session().handshake_summary() {
+                parameters.peer_certificate_chain = None;
+                self.connection_ref().extensions.insert(parameters);
+            }
+        }
         drop(conn);
 
         if is_ok {
@@ -3807,7 +3816,8 @@ impl State {
                 Event::HandshakeDataReady => {
                     // Early data uses the connection before the handshake completes: publish the
                     // negotiated protocol now; `Connected` publishes it again with the peer's chain.
-                    if let Some(parameters) = self.inner.crypto_session().handshake_summary() {
+                    if let Some(mut parameters) = self.inner.crypto_session().handshake_summary() {
+                        parameters.peer_certificate_chain = None;
                         extensions.insert(parameters);
                     }
                     if let Some(x) = self.on_handshake_data.take() {

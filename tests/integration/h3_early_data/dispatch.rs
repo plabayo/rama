@@ -6,9 +6,14 @@ use rama::http::{
     proto::ext::early_data::EarlyDataReceived,
 };
 use rama_core::bytes::BytesMut;
+use rama_crypto::cert::{CertificateAuthorityData, LeafCertRequest, SelfSignedCaConfig};
 use rama_http_core::{
     h3::qpack::{Encoder, EncoderConfig},
     server::conn::HeaderReadTimeout,
+};
+use rama_tls::{
+    client::{ClientAuth, ClientAuthData},
+    server::ClientVerifyMode,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -305,4 +310,98 @@ async fn dispatch_method(provider: Provider, method: Method) {
     };
     assert_eq!(request.method(), &method);
     assert!(request.extensions().contains::<EarlyDataReceived>());
+}
+
+#[tokio::test]
+async fn client_identity_is_available_after_waited_and_default_dispatch() {
+    for provider in Provider::enabled() {
+        for early_dispatch in [false, true] {
+            timeout(LIMIT, async {
+                let mut fixture = Fixture::new(provider, Version::V1).await;
+                let identity =
+                    ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+                let authority =
+                    CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+                let (cert_chain, private_key) = authority
+                    .issue_client_leaf(LeafCertRequest::default())
+                    .unwrap();
+                let expected_leaf = cert_chain[0].clone();
+                let server_tls = tls_server(&identity)
+                    .with_client_verify(ClientVerifyMode::ClientAuth(
+                        authority.certificate_chain().to_vec(),
+                    ))
+                    .with_store_client_cert_chain(true);
+                fixture.client_tls = TlsClientConfig::new()
+                    .with_alpn([b"h3".as_slice().into()].into_iter().collect())
+                    .try_with_server_trust_anchors(identity.cert_chain)
+                    .unwrap()
+                    .with_client_auth(ClientAuth::Single(ClientAuthData {
+                        cert_chain,
+                        private_key,
+                    }));
+                let (mut client_config, mut server_config) =
+                    provider.configurations(&fixture.client_tls, &server_tls, &Config::default());
+                client_config.set_transport_config(fixture.transport.clone());
+                server_config.set_transport_config(fixture.transport.clone());
+                fixture.client_config = client_config;
+                fixture.server.set_server_config(Some(server_config));
+                fixture.warm().await;
+                fixture.gate.hold();
+                let (client, server) = fixture.early_pair().await;
+                let (mut receiver, driver) = server::handshake(
+                    server.clone(),
+                    Config {
+                        early_dispatch,
+                        ..Config::default()
+                    },
+                )
+                .unwrap();
+                let _driver = Task::spawn(driver.run());
+                let sending = send(client, early_config(), request(Method::GET, ""));
+                let stream = receiver.accept().await.unwrap();
+                let mut resolving = pin!(stream.resolve());
+                let (request, response) = if early_dispatch {
+                    let resolved = timeout(PROBE, &mut resolving).await.unwrap().unwrap();
+                    assert!(!server.is_handshake_confirmed());
+                    assert!(
+                        server
+                            .extensions()
+                            .get_ref::<NegotiatedTlsParameters>()
+                            .unwrap()
+                            .peer_certificate_chain
+                            .is_none()
+                    );
+                    let received = resolved
+                        .0
+                        .extensions()
+                        .get_ref::<EarlyDataReceived>()
+                        .unwrap();
+                    assert!(timeout(PROBE, received.confirmed()).await.is_err());
+                    fixture.gate.release();
+                    received.confirmed().await.unwrap();
+                    resolved
+                } else {
+                    assert!(timeout(PROBE, &mut resolving).await.is_err());
+                    fixture.gate.release();
+                    resolving.await.unwrap()
+                };
+                assert!(request.extensions().contains::<EarlyDataReceived>());
+                assert!(server.is_handshake_confirmed());
+                assert_eq!(
+                    server
+                        .extensions()
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .unwrap()
+                        .peer_certificate_chain
+                        .as_ref()
+                        .unwrap()[0],
+                    expected_leaf
+                );
+                respond(response).await;
+                assert_eq!(sending.join().await.unwrap(), "served");
+            })
+            .await
+            .unwrap();
+        }
+    }
 }

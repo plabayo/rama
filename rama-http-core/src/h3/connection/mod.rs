@@ -90,7 +90,9 @@ pub struct Config {
     /// Requires native server TLS early-data opt-in bound to
     /// [`Self::early_data_context`]. A missing or mismatched context keeps
     /// handshake-first dispatch. Routes must decide whether replay is safe;
-    /// client-authenticated routes must await `EarlyDataReceived::confirmed`.
+    /// client-authenticated routes must await `EarlyDataReceived::confirmed()`
+    /// and then read the connection's `NegotiatedTlsParameters` again; peer
+    /// identity is provisional before confirmation.
     /// Unsafe methods, CONNECT and requests with a `Protocol` extension still wait
     /// for confirmation, retaining their actual early receipt metadata.
     /// Gate non-replay-safe routes with `validate_request::early_data::require_confirmed`.
