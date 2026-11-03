@@ -11,7 +11,7 @@ use super::{Pushed, ScopeMode, SelectorMatcher};
 use crate::protocols::html::selector::Selector;
 use crate::protocols::html::tokenizer::{
     Cdata, Comment, ContextTracker, Doctype, EndTag, HtmlTag, LocalNameHash, ParseSink,
-    ParsingAmbiguityError, Span, StartTag, Text, TextMode, Tokenizer,
+    ParsingAmbiguityError, Span, StartTag, Stopped, Text, TextMode, Tokenizer, TokenizerError,
 };
 
 /// The UTF-8 byte order mark: browsers strip it while decoding, before any
@@ -327,6 +327,22 @@ impl<H: ElementContentHandler> RewriteSink<H> {
     }
 }
 
+/// What an [`HtmlRewriter`] does with a construct over its
+/// [`max_buffered_bytes`](HtmlRewriter::with_max_buffered_bytes).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum MemoryLimitPolicy {
+    /// Fail with a
+    /// [`MemoryLimitExceededError`](crate::protocols::html::tokenizer::MemoryLimitExceededError):
+    /// a rewrite that sanitises must never stop rewriting.
+    #[default]
+    Error,
+    /// Stop rewriting: the construct and everything after it pass through
+    /// unchanged. Edits still pending for open elements (`append`, `after`,
+    /// removing their content) are dropped, so content a handler removes may
+    /// appear: never use this to sanitise.
+    Passthrough,
+}
+
 /// A streaming, selector-driven HTML rewriter.
 ///
 /// Feed input with [`write`](Self::write) and finish with
@@ -343,6 +359,9 @@ pub struct HtmlRewriter<H> {
     bom: Option<u8>,
     /// Whether input has been written (the scope mode is then fixed).
     started: bool,
+    memory_limit_policy: MemoryLimitPolicy,
+    /// Set once [`MemoryLimitPolicy::Passthrough`] stopped the rewrite.
+    passthrough: bool,
 }
 
 impl<H: ElementContentHandler> HtmlRewriter<H> {
@@ -367,6 +386,8 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
             },
             bom: Some(0),
             started: false,
+            memory_limit_policy: MemoryLimitPolicy::Error,
+            passthrough: false,
         }
     }
 
@@ -385,20 +406,43 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
         }
     }
 
+    generate_set_and_with! {
+        /// Sets the budget of one construct (a tag with its attributes, a
+        /// comment, a doctype, …), see
+        /// [`Tokenizer::with_max_buffered_bytes`]. What happens past it is
+        /// set by [`with_memory_limit_policy`](Self::with_memory_limit_policy).
+        pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+            self.tokenizer.set_max_buffered_bytes(max_buffered_bytes);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Sets what happens to a construct over
+        /// [`max_buffered_bytes`](Self::with_max_buffered_bytes). Defaults to
+        /// [`MemoryLimitPolicy::Error`].
+        pub fn memory_limit_policy(mut self, policy: MemoryLimitPolicy) -> Self {
+            self.memory_limit_policy = policy;
+            self
+        }
+    }
+
     /// Feeds a chunk of input, appending rewritten bytes to the output.
     ///
     /// # Errors
     ///
-    /// Surfaces a handler error, or a [`ParsingAmbiguityError`] if the input
-    /// is ambiguous for streaming parsing.
+    /// Surfaces a handler error, a [`ParsingAmbiguityError`] if the input
+    /// is ambiguous for streaming parsing, or a [`MemoryLimitExceededError`]
+    /// (with [`MemoryLimitPolicy::Error`]).
     ///
     /// [`ParsingAmbiguityError`]: crate::protocols::html::tokenizer::ParsingAmbiguityError
+    /// [`MemoryLimitExceededError`]: crate::protocols::html::tokenizer::MemoryLimitExceededError
     pub fn write(&mut self, chunk: &[u8]) -> Result<(), BoxError> {
         self.started = true;
         let Some(chunk) = self.skip_bom(chunk)? else {
             return Ok(());
         };
-        self.tokenizer.write_parse(chunk, &mut self.sink)?;
+        self.parse(chunk)?;
         self.sink.take_error()
     }
 
@@ -414,11 +458,51 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
             && !prefix.is_empty()
         {
             // A truncated BOM is plain text.
-            self.tokenizer.write_parse(prefix, &mut self.sink)?;
+            self.parse(prefix)?;
         }
-        self.tokenizer.end_parse(&mut self.sink)?;
-        self.sink.finish();
+        if !self.passthrough {
+            if let Err(stopped) = self.tokenizer.end_parse(&mut self.sink) {
+                self.stop(stopped, &[])?;
+            }
+            if !self.passthrough {
+                self.sink.finish();
+            }
+        }
         self.sink.take_error()
+    }
+
+    /// Tokenizes `input`, or copies it once the rewrite passes through.
+    fn parse(&mut self, input: &[u8]) -> Result<(), BoxError> {
+        if self.passthrough {
+            self.sink.output.extend_from_slice(input);
+            return Ok(());
+        }
+        match self.tokenizer.write_parse(input, &mut self.sink) {
+            Ok(()) => Ok(()),
+            Err(stopped) => self.stop(stopped, input),
+        }
+    }
+
+    /// Handles the tokenizer stopping on `input`: past the memory limit with
+    /// [`MemoryLimitPolicy::Passthrough`], the bytes not yet tokenized are
+    /// passed through unchanged and so is all later input.
+    fn stop(&mut self, stopped: Stopped, input: &[u8]) -> Result<(), BoxError> {
+        let pending = self.tokenizer.take_pending();
+        self.sink.take_error()?;
+        match stopped.error {
+            TokenizerError::MemoryLimit(_)
+                if self.memory_limit_policy == MemoryLimitPolicy::Passthrough =>
+            {
+                self.passthrough = true;
+                self.sink.output.extend_from_slice(&pending);
+                self.sink
+                    .output
+                    .extend_from_slice(input.get(stopped.chunk_from..).unwrap_or_default());
+                Ok(())
+            }
+            TokenizerError::Ambiguity(err) => Err(err.into()),
+            TokenizerError::MemoryLimit(err) => Err(err.into()),
+        }
     }
 
     /// Passes a leading UTF-8 BOM (possibly split across writes) straight
@@ -444,7 +528,7 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
         if let Some(prefix) = BOM.get(..seen)
             && !prefix.is_empty()
         {
-            self.tokenizer.write_parse(prefix, &mut self.sink)?;
+            self.parse(prefix)?;
         }
         Ok(Some(chunk))
     }

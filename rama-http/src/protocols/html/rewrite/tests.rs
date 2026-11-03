@@ -1,12 +1,20 @@
 //! Tests for the streaming selector matcher, driven through the tokenizer.
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use quickcheck_macros::quickcheck;
 
-use super::{AttributeName, ElementContentHandlers, HtmlRewriter, ScopeMode, SelectorMatcher};
+use rama_utils::octets::kib;
+
+use super::{
+    AttributeName, ElementContentHandlers, HtmlRewriter, MemoryLimitPolicy, ScopeMode,
+    SelectorMatcher,
+};
 use crate::protocols::html::selector::{Dom, NodeId, Selector};
-use crate::protocols::html::tokenizer::{Doctype, EndTag, StartTag, Text, TokenSink, tokenize};
+use crate::protocols::html::tokenizer::{
+    Doctype, EndTag, MemoryLimitExceededError, StartTag, Text, TokenSink, tokenize,
+};
 
 /// Drives a [`SelectorMatcher`] from token events, recording each match as
 /// `(selector index, element name)` in document order.
@@ -1786,5 +1794,324 @@ fn unterminated_tag_at_eof_brackets_consistently() {
         for split in 0..=input.len() {
             assert_bracketed_extent(input, "*", mode, split);
         }
+    }
+}
+
+/// Rewrites `input`, fed in `sizes` writes (cycled), marking every `span` and
+/// `div`, with a `limit` and `policy`: the output, or the first error.
+fn rewrite_limited(
+    input: &[u8],
+    sizes: &[usize],
+    limit: usize,
+    policy: MemoryLimitPolicy,
+) -> (Vec<u8>, Option<rama_core::error::BoxError>) {
+    let handlers = ElementContentHandlers::new().on("span, div".parse().unwrap(), |el| {
+        el.set_attribute(AttributeName::from_static("data-hit"), "1");
+        Ok(())
+    });
+    let mut rewriter = HtmlRewriter::from_handlers(handlers)
+        .with_max_buffered_bytes(limit)
+        .with_memory_limit_policy(policy);
+    let mut out = Vec::new();
+    let mut rest = input;
+    for size in sizes.iter().cycle() {
+        if rest.is_empty() {
+            break;
+        }
+        let (chunk, tail) = rest.split_at((*size).clamp(1, rest.len()));
+        rest = tail;
+        if let Err(err) = rewriter.write(chunk) {
+            out.extend(rewriter.take_output());
+            return (out, Some(err));
+        }
+        out.extend(rewriter.take_output());
+    }
+    let result = rewriter.end();
+    out.extend(rewriter.take_output());
+    (out, result.err())
+}
+
+fn oversized_div() -> Vec<u8> {
+    format!("<span>before</span><div{}>after</div>", " a".repeat(4096)).into_bytes()
+}
+
+#[test]
+fn memory_limit_fails_closed_by_default() {
+    let input = oversized_div();
+    for size in [1, 7, 512, 4096, input.len()] {
+        let (out, err) = rewrite_limited(&input, &[size], kib(64), MemoryLimitPolicy::Error);
+        let err = err.unwrap_or_else(|| panic!("writes of {size}: no error"));
+        assert!(
+            err.downcast_ref::<MemoryLimitExceededError>().is_some(),
+            "writes of {size}: {err}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            r#"<span data-hit="1">before</span>"#,
+            "writes of {size}: the div is never handled"
+        );
+    }
+}
+
+#[test]
+fn memory_limit_passthrough_copies_the_rest_unchanged() {
+    let input = oversized_div();
+    let bail = b"<span>before</span>".len();
+    let mut expected = br#"<span data-hit="1">before</span>"#.to_vec();
+    expected.extend_from_slice(&input[bail..]);
+    for sizes in [
+        &[1][..],
+        &[7],
+        &[512],
+        &[4096],
+        &[input.len()],
+        &[2, 4096],
+        &[20, 1],
+    ] {
+        let (out, err) = rewrite_limited(&input, sizes, kib(64), MemoryLimitPolicy::Passthrough);
+        assert!(err.is_none(), "writes of {sizes:?}: {err:?}");
+        assert!(out == expected, "writes of {sizes:?}: output differs");
+    }
+}
+
+#[test]
+fn memory_limit_passthrough_after_a_buffered_construct() {
+    // The write of `<p` leaves it buffered; the next write completes it and
+    // brings the oversized tag into the same buffer.
+    let input = format!("<p><div{}>tail", " a".repeat(100)).into_bytes();
+    for split in 0..=input.len() {
+        let (a, b) = input.split_at(split);
+        let (out, err) = rewrite_limited(
+            &[a, b].concat(),
+            &[split.max(1), b.len().max(1)],
+            64,
+            MemoryLimitPolicy::Passthrough,
+        );
+        assert!(err.is_none(), "split at {split}: {err:?}");
+        assert!(out == input, "split at {split}: output differs");
+    }
+}
+
+#[test]
+fn memory_limit_passthrough_at_the_end_keeps_pending_input() {
+    let handlers = ElementContentHandlers::new();
+    let mut rewriter = HtmlRewriter::from_handlers(handlers)
+        .with_max_buffered_bytes(64)
+        .with_memory_limit_policy(MemoryLimitPolicy::Passthrough);
+    rewriter.write(b"<p><!--hello").unwrap();
+    rewriter.set_max_buffered_bytes(1);
+    rewriter.end().unwrap();
+    assert_eq!(rewriter.take_output(), b"<p><!--hello");
+}
+
+/// Text-mode bodies are never parsed as markup, so edits land around them.
+#[test]
+fn text_mode_element_edits_at_every_split() {
+    for name in [
+        "script", "style", "title", "textarea", "xmp", "iframe", "noembed", "noframes", "noscript",
+    ] {
+        let body = format!("a</{name}x <!--b--><p>c</{name}");
+        let input = format!("<div><{name} class=t>{body}</{name}>tail</div>");
+        for (edit, expected) in [
+            (
+                Edit::Append,
+                format!("<div><{name} class=t>{body}@@</{name}>tail</div>"),
+            ),
+            (Edit::Remove, "<div>tail</div>".to_owned()),
+            (
+                Edit::Inner,
+                format!("<div><{name} class=t>I</{name}>tail</div>"),
+            ),
+            (Edit::Replace, "<div>Rtail</div>".to_owned()),
+            (
+                Edit::SetAttribute,
+                format!(r#"<div><{name} class="t" data-hit="1">{body}</{name}>tail</div>"#),
+            ),
+        ] {
+            for mode in [ScopeMode::Browser, ScopeMode::NearestMatch] {
+                assert_rewrite(input.as_bytes(), ".t", edit, mode, expected.as_bytes());
+            }
+        }
+    }
+}
+
+/// Script-data escape states decide which `</script>` ends the body.
+#[test]
+fn script_escape_states_at_every_split() {
+    for (body, rest) in [
+        // A `</script>` inside an escaped `<script>` (double-escaped) is data.
+        ("<!--<script>x</script>y-->z", "tail"),
+        // Escaped without a nested script: the first `</script>` ends it.
+        ("<!-- a ", "--></script>tail"),
+        ("<!--<script>x-->", "tail"),
+        ("a<!--b--!>c<!-->d", "tail"),
+        ("<!--<script></script ", "tail"),
+        ("<!--<scriptx>", "tail"),
+        ("--><!--->", "tail"),
+    ] {
+        let input = format!("<script class=t>{body}</script>{rest}");
+        for (edit, expected) in [
+            (
+                Edit::Append,
+                format!("<script class=t>{body}@@</script>{rest}"),
+            ),
+            (Edit::Remove, rest.to_owned()),
+            (Edit::Inner, format!("<script class=t>I</script>{rest}")),
+        ] {
+            assert_rewrite(
+                input.as_bytes(),
+                ".t",
+                edit,
+                ScopeMode::Browser,
+                expected.as_bytes(),
+            );
+        }
+    }
+}
+
+/// `<plaintext>` runs to the end of the input.
+#[test]
+fn plaintext_edits_at_every_split() {
+    let input = "<div><plaintext class=t>a</plaintext><p>b</div>";
+    for (edit, expected) in [
+        (Edit::Append, format!("{input}@@")),
+        (Edit::Remove, "<div>".to_owned()),
+        (Edit::Inner, "<div><plaintext class=t>I".to_owned()),
+        (
+            Edit::SetAttribute,
+            r#"<div><plaintext class="t" data-hit="1">a</plaintext><p>b</div>"#.to_owned(),
+        ),
+    ] {
+        assert_rewrite(
+            input.as_bytes(),
+            ".t",
+            edit,
+            ScopeMode::Browser,
+            expected.as_bytes(),
+        );
+    }
+}
+
+/// Elements foreign content names like text-mode elements hold markup.
+#[test]
+fn foreign_style_and_title_are_not_text_mode() {
+    for name in ["style", "title"] {
+        let input = format!("<svg><{name}><g>x</g></{name}></svg>t");
+        assert_rewrite(
+            input.as_bytes(),
+            "g",
+            Edit::Append,
+            ScopeMode::Browser,
+            format!("<svg><{name}><g>x@@</g></{name}></svg>t").as_bytes(),
+        );
+    }
+}
+
+/// Output, limit failure and `script` handler calls of a 64-byte-budget rewrite.
+fn rewrite_text_mode_limited<'a>(
+    chunks: impl IntoIterator<Item = &'a [u8]>,
+    policy: MemoryLimitPolicy,
+) -> (String, bool, usize) {
+    let scripts = Cell::new(0);
+    let handlers = ElementContentHandlers::new()
+        .on(".p".parse().unwrap(), |el| {
+            el.append("@@");
+            Ok(())
+        })
+        .on("script".parse().unwrap(), |el| {
+            scripts.set(scripts.get() + 1);
+            el.set_attribute(AttributeName::from_static("data-hit"), "1");
+            Ok(())
+        })
+        .on("textarea".parse().unwrap(), |el| {
+            el.set_attribute(AttributeName::from_static("data-hit"), "1");
+            Ok(())
+        });
+    let mut rewriter = HtmlRewriter::from_handlers(handlers)
+        .with_max_buffered_bytes(64)
+        .with_memory_limit_policy(policy);
+    let mut out = Vec::new();
+    let mut result = Ok(());
+    for chunk in chunks {
+        result = rewriter.write(chunk);
+        out.extend(rewriter.take_output());
+        if result.is_err() {
+            break;
+        }
+    }
+    if result.is_ok() {
+        result = rewriter.end();
+        out.extend(rewriter.take_output());
+    }
+    drop(rewriter);
+    let over = result
+        .err()
+        .is_some_and(|err| err.downcast_ref::<MemoryLimitExceededError>().is_some());
+    (String::from_utf8(out).unwrap(), over, scripts.get())
+}
+
+/// Asserts the outcome of [`rewrite_text_mode_limited`] one-shot, at every
+/// split and byte by byte.
+fn assert_text_mode_limited(input: &str, policy: MemoryLimitPolicy, expected: (&str, bool, usize)) {
+    let expected = (expected.0.to_owned(), expected.1, expected.2);
+    let input = input.as_bytes();
+    assert_eq!(
+        rewrite_text_mode_limited([input], policy),
+        expected,
+        "{policy:?} one-shot"
+    );
+    for split in 0..=input.len() {
+        let (a, b) = input.split_at(split);
+        assert_eq!(
+            rewrite_text_mode_limited([a, b], policy),
+            expected,
+            "{policy:?} split {split}"
+        );
+    }
+    assert_eq!(
+        rewrite_text_mode_limited(input.chunks(1), policy),
+        expected,
+        "{policy:?} byte by byte"
+    );
+}
+
+#[test]
+fn text_mode_elements_before_an_oversized_construct() {
+    let rest = format!("<div{}>after</div></div>", " a".repeat(40));
+    let input = format!("<div class=p><script>s</script><textarea>t</textarea>{rest}");
+    let before =
+        r#"<div class=p><script data-hit="1">s</script><textarea data-hit="1">t</textarea>"#;
+    assert_text_mode_limited(&input, MemoryLimitPolicy::Error, (before, true, 1));
+    let passed = format!("{before}{rest}");
+    assert_text_mode_limited(&input, MemoryLimitPolicy::Passthrough, (&passed, false, 1));
+}
+
+#[test]
+fn oversized_text_mode_start_tags_are_never_handled() {
+    let rest = format!("<script{}>body</script>tail", " a".repeat(40));
+    let input = format!("<p>x</p>{rest}");
+    assert_text_mode_limited(&input, MemoryLimitPolicy::Error, ("<p>x</p>", true, 0));
+    let passed = format!("<p>x</p>{rest}");
+    assert_text_mode_limited(&input, MemoryLimitPolicy::Passthrough, (&passed, false, 0));
+}
+
+#[test]
+fn removed_text_mode_bodies_stream_within_a_small_budget() {
+    let body = "<p>secret</p>".repeat(kib(16));
+    let input = format!("<div><script class=t>{body}</script>tail</div>");
+    for size in [7, 4096, input.len()] {
+        let handlers = ElementContentHandlers::new().on(".t".parse().unwrap(), |el| {
+            el.remove();
+            Ok(())
+        });
+        let mut rewriter = HtmlRewriter::from_handlers(handlers).with_max_buffered_bytes(64);
+        let mut out = Vec::new();
+        for chunk in input.as_bytes().chunks(size) {
+            rewriter.write(chunk).expect("bodies stream");
+            out.extend(rewriter.take_output());
+        }
+        rewriter.end().expect("bodies stream");
+        out.extend(rewriter.take_output());
+        assert_eq!(out, b"<div>tail</div>", "writes of {size}");
     }
 }

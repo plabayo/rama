@@ -13,7 +13,9 @@ use rama_utils::macros::generate_set_and_with;
 use crate::HeaderMap;
 use crate::body::{Frame, SizeHint, StreamingBody};
 use crate::layer::util::stream_body::{IntoHandler, OnEnd, fire_on_end, poll_passthrough_frame};
-use crate::protocols::html::rewrite::{ElementContentHandler, HtmlRewriter, ScopeMode};
+use crate::protocols::html::rewrite::{
+    ElementContentHandler, HtmlRewriter, MemoryLimitPolicy, ScopeMode,
+};
 use crate::protocols::html::selector::Selector;
 
 impl<H: ElementContentHandler> IntoHandler<H> for HtmlRewriter<H> {
@@ -72,6 +74,30 @@ where
         pub fn scope_mode(mut self, mode: ScopeMode) -> Self {
             if let Some(rewriter) = self.rewriter.as_mut() {
                 rewriter.set_scope_mode(mode);
+            }
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Sets the budget of one HTML construct while it is buffered, see
+        /// [`HtmlRewriter::with_max_buffered_bytes`]; a
+        /// passthrough body ignores it.
+        pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+            if let Some(rewriter) = self.rewriter.as_mut() {
+                rewriter.set_max_buffered_bytes(max_buffered_bytes);
+            }
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Sets what happens to a construct over
+        /// [`max_buffered_bytes`](Self::with_max_buffered_bytes), see
+        /// [`MemoryLimitPolicy`]; a passthrough body ignores it.
+        pub fn memory_limit_policy(mut self, policy: MemoryLimitPolicy) -> Self {
+            if let Some(rewriter) = self.rewriter.as_mut() {
+                rewriter.set_memory_limit_policy(policy);
             }
             self
         }

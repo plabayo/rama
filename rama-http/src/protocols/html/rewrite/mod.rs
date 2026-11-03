@@ -40,7 +40,7 @@ mod tests;
 pub use self::element::{
     AttributeName, Element, ElementContentHandler, HandlerResult, InvalidAttributeName,
 };
-pub use self::rewriter::{ElementContentHandlers, HtmlRewriter, rewrite_str};
+pub use self::rewriter::{ElementContentHandlers, HtmlRewriter, MemoryLimitPolicy, rewrite_str};
 
 /// Selectors with more compounds than this can't be represented in the
 /// `u64` match bitmask; they simply never match (absurd in practice).

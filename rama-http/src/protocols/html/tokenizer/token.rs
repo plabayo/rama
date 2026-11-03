@@ -42,12 +42,62 @@ impl Span {
     }
 }
 
-/// A single attribute's name and value spans (relative to the input).
+/// An attribute's name and value spans; tag-relative `u32` offsets keep it compact.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AttrRange {
-    pub(crate) name: Span,
-    pub(crate) value: Span,
-    pub(crate) has_value: bool,
+    name_start: u32,
+    name_end: u32,
+    /// [`NO_VALUE`] for a valueless attribute.
+    value_start: u32,
+    value_end: u32,
+}
+
+/// The `value_start` of a valueless attribute: no offset in a tag reaches it.
+const NO_VALUE: u32 = u32::MAX;
+
+impl AttrRange {
+    /// A valueless attribute of a tag starting at `base`, or `None` when an
+    /// offset does not fit (the tag is then over the memory limit).
+    pub(crate) fn valueless(name: Span, base: usize) -> Option<Self> {
+        Some(Self {
+            name_start: offset(name.start, base)?,
+            name_end: offset(name.end, base)?,
+            value_start: NO_VALUE,
+            value_end: NO_VALUE,
+        })
+    }
+
+    /// A valued attribute of a tag starting at `base`, see [`Self::valueless`].
+    pub(crate) fn valued(name: Span, value: Span, base: usize) -> Option<Self> {
+        Some(Self {
+            name_start: offset(name.start, base)?,
+            name_end: offset(name.end, base)?,
+            value_start: offset(value.start, base)?,
+            value_end: offset(value.end, base)?,
+        })
+    }
+
+    const fn has_value(self) -> bool {
+        self.value_start != NO_VALUE
+    }
+
+    fn name(self) -> Span {
+        Span::new(self.name_start as usize, self.name_end as usize)
+    }
+
+    fn value(self) -> Span {
+        if self.has_value() {
+            Span::new(self.value_start as usize, self.value_end as usize)
+        } else {
+            Span::empty(0)
+        }
+    }
+}
+
+fn offset(pos: usize, base: usize) -> Option<u32> {
+    u32::try_from(pos.checked_sub(base)?)
+        .ok()
+        .filter(|&offset| offset != NO_VALUE)
 }
 
 /// A start tag, e.g. `<a href="/x">` or `<br/>`.
@@ -90,7 +140,7 @@ impl<'i> StartTag<'i> {
     #[must_use]
     pub fn attributes(&self) -> Attributes<'i> {
         Attributes {
-            input: self.input,
+            tag: self.input.get(self.raw.start..).unwrap_or_default(),
             ranges: self.attributes.iter(),
         }
     }
@@ -120,7 +170,8 @@ impl StartTag<'static> {
 /// Iterator over a [`StartTag`]'s attributes.
 #[derive(Debug, Clone)]
 pub struct Attributes<'i> {
-    input: &'i [u8],
+    /// The input from the tag's `<` on: the base of the ranges.
+    tag: &'i [u8],
     ranges: std::slice::Iter<'i, AttrRange>,
 }
 
@@ -128,11 +179,11 @@ impl<'i> Iterator for Attributes<'i> {
     type Item = Attribute<'i>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let range = self.ranges.next()?;
+        let range = *self.ranges.next()?;
         Some(Attribute {
-            name: range.name.slice(self.input),
-            value: range.value.slice(self.input),
-            has_value: range.has_value,
+            name: range.name().slice(self.tag),
+            value: range.value().slice(self.tag),
+            has_value: range.has_value(),
         })
     }
 

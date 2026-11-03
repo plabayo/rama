@@ -15,22 +15,25 @@
 //! drop (e.g. a stray `<`) are preserved as text — this is the substrate for
 //! a byte-faithful rewriter, not a DOM builder.
 //!
-//! Atomic constructs (tags, comments, CDATA, doctype, and raw-text/script
-//! bodies) are retained whole until their terminator arrives; ordinary text
-//! streams in chunk-sized pieces. The text mode of a start tag and whether
+//! Atomic constructs (tags, comments, CDATA, doctype) are retained whole
+//! until their terminator arrives; ordinary text, and the body of a
+//! text-mode element (`<script>`, `<style>`, …), streams in chunk-sized
+//! pieces. The text mode of a start tag and whether
 //! CDATA is real come from the consumer ([`ParseSink`]): a small context
 //! tracker (see [`super::context`]) for a plain [`TokenSink`], the rewriter's
 //! tree builder for the rewriter.
 //!
-//! > Memory note: a single unterminated raw-text/script body (or
-//! > `<plaintext>`) is buffered until its end tag or end of input; ordinary
-//! > text is not.
+//! > Memory note: one construct may use at most
+//! > [`max_buffered_bytes`](Tokenizer::with_max_buffered_bytes) of input and
+//! > attribute bookkeeping, whether it arrives in one chunk or many.
 
 use memchr::{memchr, memchr2};
 use rama_utils::byte_set::set_each;
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::octets::{kib, mib};
 
 use super::context::{ContextTracker, ParsingAmbiguityError, TextMode};
+use super::error::{MemoryLimitExceededError, TokenizerError};
 use super::name::LocalNameHash;
 use super::sink::{ParseSink, Standalone, TokenSink};
 use super::token::{AttrRange, Cdata, Comment, Doctype, EndTag, Span, StartTag, Text};
@@ -50,28 +53,78 @@ const DOCTYPE_KEYWORD: &[u8] = b"doctype";
 /// The `<script>` tag name (its body is scanned as script-data).
 const SCRIPT_NAME: &[u8] = b"script";
 
+/// The elements with a text-mode body (lowercase), as the tree builders know them.
+const TEXT_ELEMENTS: [&[u8]; 10] = [
+    b"script",
+    b"style",
+    b"title",
+    b"textarea",
+    b"xmp",
+    b"iframe",
+    b"noembed",
+    b"noframes",
+    b"noscript",
+    b"plaintext",
+];
+
+/// The default [`Tokenizer::max_buffered_bytes`].
+pub const DEFAULT_MAX_BUFFERED_BYTES: usize = mib(4);
+
+/// The highest effective limit: it keeps tag offsets within an [`AttrRange`].
+const MAX_LIMIT: usize = (u32::MAX - 1) as usize;
+
+/// The lowest effective limit: room for a partial markup opener, which is not charged.
+const MIN_LIMIT: usize = CDATA_PREFIX.len();
+
+/// A buffer whose capacity grew past this is shrunk once its construct is gone.
+const SHRINK_ABOVE: usize = kib(64);
+
+/// The capacity a shrunk input buffer keeps.
+const SHRUNK_CAPACITY: usize = kib(4);
+
 /// A byte-faithful, low-allocation, resumable HTML tokenizer.
 #[derive(Debug)]
 pub struct Tokenizer {
     /// Bytes received but not yet fully tokenized.
     buffer: Vec<u8>,
     /// Reusable attribute-range scratch for the current tag.
-    attributes: Vec<AttrRange>,
+    attributes: AttrBuf,
     /// How far the scan of the incomplete construct at the start of `buffer` got.
     resume: Option<Resume>,
     context: ContextTracker,
     strict: bool,
+    max_buffered_bytes: usize,
 }
 
 impl Default for Tokenizer {
     fn default() -> Self {
         Self {
             buffer: Vec::new(),
-            attributes: Vec::new(),
+            attributes: AttrBuf::default(),
             resume: None,
             context: ContextTracker::new(false),
             strict: false,
+            max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
         }
+    }
+}
+
+/// The attribute ranges of the start tag being scanned.
+#[derive(Debug, Default)]
+struct AttrBuf {
+    ranges: Vec<AttrRange>,
+    /// Where the tag's `<` is in the input: the base of the ranges.
+    base: usize,
+    /// Ranges past this many are not recorded: the tag is over the limit.
+    max: usize,
+    /// Whether a range of the tag was not recorded.
+    overflow: bool,
+}
+
+impl AttrBuf {
+    /// The ranges the tag needs, recorded or not (then any count over `max`).
+    fn needed(&self) -> usize {
+        self.ranges.len() + usize::from(self.overflow)
     }
 }
 
@@ -83,7 +136,9 @@ impl Default for Tokenizer {
 /// The default tokenizer is non-strict, so this does not abort on ambiguous
 /// contexts; build a strict [`Tokenizer`] (via
 /// [`with_strict`](Tokenizer::with_strict)) to get a [`ParsingAmbiguityError`].
-pub fn tokenize<S: TokenSink>(input: &[u8], sink: &mut S) -> Result<(), ParsingAmbiguityError> {
+/// A construct over [`DEFAULT_MAX_BUFFERED_BYTES`] fails with a
+/// [`MemoryLimitExceededError`].
+pub fn tokenize<S: TokenSink>(input: &[u8], sink: &mut S) -> Result<(), TokenizerError> {
     Tokenizer::new().tokenize(input, sink)
 }
 
@@ -108,6 +163,41 @@ impl Tokenizer {
         }
     }
 
+    generate_set_and_with! {
+        /// Sets the budget of one construct (a tag with its attributes, a
+        /// comment, a doctype, …): its input bytes plus 16 bytes per
+        /// attribute. A larger one fails with a [`MemoryLimitExceededError`].
+        /// Defaults to [`DEFAULT_MAX_BUFFERED_BYTES`]; budgets below 9 bytes
+        /// (the longest markup opener, `<![CDATA[`) act as 9.
+        ///
+        /// The tokenizer's input and attribute scratch buffers stay below
+        /// about twice the budget (they are capped separately); this is not a
+        /// ceiling for the whole heap (e.g. nesting context, a rewriter's
+        /// output). Once a construct is gone, buffers above 64 KiB shrink
+        /// back to 4 KiB, and ending or failing the stream shrinks them to
+        /// 4 KiB.
+        pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+            self.max_buffered_bytes = max_buffered_bytes;
+            self
+        }
+    }
+
+    /// The budget of one construct, see
+    /// [`with_max_buffered_bytes`](Self::with_max_buffered_bytes).
+    #[must_use]
+    pub const fn max_buffered_bytes(&self) -> usize {
+        self.max_buffered_bytes
+    }
+
+    /// Removes and returns the retained input not yet tokenized, and resets
+    /// for reuse: after a [`MemoryLimitExceededError`] these are the bytes
+    /// from the construct that hit the limit on, up to [`Stopped::chunk_from`].
+    pub(crate) fn take_pending(&mut self) -> Vec<u8> {
+        let pending = std::mem::take(&mut self.buffer);
+        self.reset();
+        pending
+    }
+
     /// Feeds a chunk of input, emitting every token that is now complete.
     ///
     /// # Errors
@@ -117,22 +207,28 @@ impl Tokenizer {
         &mut self,
         chunk: &[u8],
         sink: &mut S,
-    ) -> Result<(), ParsingAmbiguityError> {
+    ) -> Result<(), TokenizerError> {
         let Self {
             buffer,
             attributes,
             resume,
             context,
+            max_buffered_bytes,
             ..
         } = self;
-        feed(
+        let result = feed(
             buffer,
             attributes,
             resume,
             chunk,
             &mut Standalone { sink, context },
+            *max_buffered_bytes,
             false,
-        )
+        );
+        result.map_err(|stopped| {
+            self.reset();
+            stopped.error
+        })
     }
 
     /// Finalizes the stream, emitting any remaining (possibly unterminated)
@@ -141,12 +237,13 @@ impl Tokenizer {
     /// # Errors
     ///
     /// See [`tokenize`].
-    pub fn end<S: TokenSink>(&mut self, sink: &mut S) -> Result<(), ParsingAmbiguityError> {
+    pub fn end<S: TokenSink>(&mut self, sink: &mut S) -> Result<(), TokenizerError> {
         let Self {
             buffer,
             attributes,
             resume,
             context,
+            max_buffered_bytes,
             ..
         } = self;
         let result = feed(
@@ -155,44 +252,48 @@ impl Tokenizer {
             resume,
             &[],
             &mut Standalone { sink, context },
+            *max_buffered_bytes,
             true,
         );
         self.reset();
-        result
+        result.map_err(|stopped| stopped.error)
     }
 
     /// [`write`](Self::write) for a consumer that supplies its own
-    /// tree-construction context.
+    /// tree-construction context. Unlike `write` it keeps the pending input
+    /// on error, see [`take_pending`](Self::take_pending).
     pub(crate) fn write_parse<P: ParseSink>(
         &mut self,
         chunk: &[u8],
         sink: &mut P,
-    ) -> Result<(), ParsingAmbiguityError> {
+    ) -> Result<(), Stopped> {
         feed(
             &mut self.buffer,
             &mut self.attributes,
             &mut self.resume,
             chunk,
             sink,
+            self.max_buffered_bytes,
             false,
         )
     }
 
     /// [`end`](Self::end) for a consumer that supplies its own
-    /// tree-construction context.
-    pub(crate) fn end_parse<P: ParseSink>(
-        &mut self,
-        sink: &mut P,
-    ) -> Result<(), ParsingAmbiguityError> {
+    /// tree-construction context. Like [`write_parse`](Self::write_parse) it
+    /// keeps the pending input on error.
+    pub(crate) fn end_parse<P: ParseSink>(&mut self, sink: &mut P) -> Result<(), Stopped> {
         let result = feed(
             &mut self.buffer,
             &mut self.attributes,
             &mut self.resume,
             &[],
             sink,
+            self.max_buffered_bytes,
             true,
         );
-        self.reset();
+        if result.is_ok() {
+            self.reset();
+        }
         result
     }
 
@@ -205,7 +306,7 @@ impl Tokenizer {
         &mut self,
         input: &[u8],
         sink: &mut S,
-    ) -> Result<(), ParsingAmbiguityError> {
+    ) -> Result<(), TokenizerError> {
         if let Err(err) = self.write(input, sink) {
             self.reset();
             return Err(err);
@@ -215,32 +316,156 @@ impl Tokenizer {
 
     fn reset(&mut self) {
         self.buffer.clear();
+        self.buffer.shrink_to(SHRUNK_CAPACITY);
+        self.attributes.ranges.clear();
+        self.attributes
+            .ranges
+            .shrink_to(SHRUNK_CAPACITY / size_of::<AttrRange>());
         self.resume = None;
         self.context = ContextTracker::new(self.strict);
     }
 }
 
+#[cfg(test)]
+impl Tokenizer {
+    /// The capacity, in bytes, of the input buffer and attribute ranges.
+    pub(super) fn held_capacity(&self) -> usize {
+        self.buffer.capacity() + self.attributes.ranges.capacity() * size_of::<AttrRange>()
+    }
+}
+
 /// Tokenizes `chunk` after the bytes retained from earlier calls. Without
 /// retained bytes the chunk is scanned in place, and only its incomplete tail
-/// is copied.
+/// is copied. A retained construct completes within `limit` bytes or fails,
+/// so at most that much of the chunk is copied behind it at a time.
 fn feed<P: ParseSink>(
     buffer: &mut Vec<u8>,
-    attributes: &mut Vec<AttrRange>,
+    attributes: &mut AttrBuf,
     resume: &mut Option<Resume>,
     chunk: &[u8],
     sink: &mut P,
+    limit: usize,
     is_final: bool,
-) -> Result<(), ParsingAmbiguityError> {
-    if buffer.is_empty() {
-        let result = run(chunk, attributes, resume, sink, is_final);
-        sink.flush(chunk);
-        let consumed = result.inspect_err(|_| buffer.extend_from_slice(chunk))?;
-        buffer.extend_from_slice(chunk.get(consumed..).unwrap_or_default());
-    } else {
-        buffer.extend_from_slice(chunk);
-        let result = run(buffer, attributes, resume, sink, is_final);
+) -> Result<(), Stopped> {
+    let limit = limit.clamp(MIN_LIMIT, MAX_LIMIT);
+    attributes.max = limit / size_of::<AttrRange>();
+    let mut rest = chunk;
+    let result = loop {
+        let offset = chunk.len() - rest.len();
+        if buffer.is_empty() {
+            let result = run(rest, attributes, resume, sink, limit, is_final);
+            sink.flush(rest);
+            match result {
+                Ok(consumed) => {
+                    let tail = rest.get(consumed..).unwrap_or_default();
+                    reserve(buffer, tail.len(), limit + 1);
+                    buffer.extend_from_slice(tail);
+                    break Ok(());
+                }
+                Err(halt) => break Err(stopped(halt, limit, |at| offset + at)),
+            }
+        }
+        let take = rest
+            .len()
+            .min((limit + 1).saturating_sub(buffer.len()).max(1));
+        let (head, next) = rest.split_at(take);
+        rest = next;
+        reserve(buffer, head.len(), limit + 1);
+        buffer.extend_from_slice(head);
+        let result = run(
+            buffer,
+            attributes,
+            resume,
+            sink,
+            limit,
+            is_final && rest.is_empty(),
+        );
         sink.flush(buffer);
-        buffer.drain(..result?);
+        match result {
+            Ok(consumed) => {
+                buffer.drain(..consumed);
+            }
+            Err(halt) => {
+                if let Halt::OverLimit { at } = halt {
+                    buffer.drain(..at);
+                }
+                // The whole head is in the buffer now.
+                break Err(stopped(halt, limit, |_| offset + take));
+            }
+        }
+        if rest.is_empty() {
+            break Ok(());
+        }
+    };
+    shrink(buffer, &mut attributes.ranges);
+    result
+}
+
+/// A [`feed`] that stopped: its error, and where the bytes not yet
+/// tokenized continue in the chunk, after those left in the buffer.
+#[derive(Debug)]
+pub(crate) struct Stopped {
+    pub(crate) error: TokenizerError,
+    pub(crate) chunk_from: usize,
+}
+
+/// The [`Stopped`] for `halt`, with `chunk_from` mapping where the run
+/// stopped in its input to the chunk.
+fn stopped(halt: Halt, limit: usize, chunk_from: impl FnOnce(usize) -> usize) -> Stopped {
+    match halt {
+        Halt::Ambiguity(err) => Stopped {
+            error: err.into(),
+            chunk_from: chunk_from(0),
+        },
+        Halt::OverLimit { at } => Stopped {
+            error: MemoryLimitExceededError::new(limit).into(),
+            chunk_from: chunk_from(at),
+        },
+    }
+}
+
+/// Reserves room for `additional` more elements, doubling the capacity but
+/// not past `cap` (unless more is needed).
+fn reserve<T>(vec: &mut Vec<T>, additional: usize, cap: usize) {
+    let needed = vec.len() + additional;
+    if needed > vec.capacity() {
+        let target = needed.max(vec.capacity() * 2).min(cap.max(needed));
+        vec.reserve_exact(target - vec.len());
+    }
+}
+
+/// Releases the capacity a large construct left behind once it is gone.
+fn shrink(buffer: &mut Vec<u8>, ranges: &mut Vec<AttrRange>) {
+    if buffer.capacity() > SHRINK_ABOVE && buffer.len() <= SHRUNK_CAPACITY {
+        buffer.shrink_to(SHRUNK_CAPACITY);
+    }
+    let shrunk_ranges = SHRUNK_CAPACITY / size_of::<AttrRange>();
+    if ranges.capacity() * size_of::<AttrRange>() > SHRINK_ABOVE && ranges.len() <= shrunk_ranges {
+        ranges.shrink_to(shrunk_ranges);
+    }
+}
+
+/// Why a run stopped before the end of its input.
+enum Halt {
+    Ambiguity(ParsingAmbiguityError),
+    /// The construct at `at` does not fit the memory limit.
+    OverLimit {
+        at: usize,
+    },
+}
+
+impl From<ParsingAmbiguityError> for Halt {
+    fn from(err: ParsingAmbiguityError) -> Self {
+        Self::Ambiguity(err)
+    }
+}
+
+/// Fails the construct spanning `raw` with `attrs` attribute ranges when it
+/// does not fit `limit`.
+fn check_limit(limit: usize, raw: Span, attrs: usize) -> Result<(), Halt> {
+    let size = (raw.end - raw.start).saturating_add(attrs.saturating_mul(size_of::<AttrRange>()));
+    if size > limit {
+        return Err(Halt::OverLimit { at: raw.start });
     }
     Ok(())
 }
@@ -255,15 +480,26 @@ fn feed<P: ParseSink>(
 /// moved to offset 0 by the caller and scanned afresh once).
 fn run<P: ParseSink>(
     input: &[u8],
-    attributes: &mut Vec<AttrRange>,
+    attributes: &mut AttrBuf,
     resume: &mut Option<Resume>,
     sink: &mut P,
+    limit: usize,
     is_final: bool,
-) -> Result<usize, ParsingAmbiguityError> {
+) -> Result<usize, Halt> {
     let carried = resume.take();
     let mut pos = 0;
     // Start of the pending (not-yet-emitted) text run.
     let mut text_start = 0;
+    if let Some(Resume::Text { name, mode, body }) = carried {
+        match scan_body(name, mode, body, input, 0, resume, sink, limit, is_final)? {
+            Step::Next(next) => {
+                pos = next;
+                text_start = next;
+            }
+            Step::Suspend(at) => return suspend(limit, input, at),
+            Step::Incomplete => return Ok(0),
+        }
+    }
 
     loop {
         let Some(rel) = memchr(b'<', input.get(pos..).unwrap_or(&[])) else {
@@ -288,21 +524,46 @@ fn run<P: ParseSink>(
                 // construct is judged in.
                 emit_text(input, text_start, lt, sink);
                 let from = if lt == 0 { carried.as_ref() } else { None };
-                let Some(next) = process(
-                    construct, attributes, from, resume, sink, input, lt, is_final,
-                )?
-                else {
-                    // Positions are absolute, so they hold only at offset 0.
-                    if lt != 0 {
-                        *resume = None;
+                let next = match process(
+                    construct, attributes, from, resume, sink, input, lt, limit, is_final,
+                )? {
+                    Step::Next(next) => next,
+                    Step::Suspend(at) => return suspend(limit, input, at),
+                    Step::Incomplete => {
+                        let attrs = match resume {
+                            Some(Resume::StartTag(_)) => attributes.needed(),
+                            _ => 0,
+                        };
+                        check_limit(limit, Span::new(lt, input.len()), attrs)?;
+                        // Positions are absolute, so they hold only at offset 0.
+                        if lt != 0 {
+                            *resume = None;
+                        }
+                        return Ok(lt);
                     }
-                    return Ok(lt);
                 };
                 pos = next;
                 text_start = next;
             }
         }
     }
+}
+
+/// How far [`process`] got with the construct at a `<`.
+enum Step {
+    /// It was emitted whole; tokenizing continues at this position.
+    Next(usize),
+    /// It is not complete: nothing was emitted and it is retained from its `<`.
+    Incomplete,
+    /// A text-mode body was emitted up to this position; the rest is retained
+    /// with the progress in `resume`, relative to it.
+    Suspend(usize),
+}
+
+/// Ends a run suspended in a text-mode body at `at`, charging what is retained.
+fn suspend(limit: usize, input: &[u8], at: usize) -> Result<usize, Halt> {
+    check_limit(limit, Span::new(at, input.len()), 0)?;
+    Ok(at)
 }
 
 /// The classification of a `<` and whether more input is needed to make it.
@@ -378,9 +639,9 @@ fn classify_markup_declaration<P: ParseSink>(input: &[u8], lt: usize, sink: &P) 
 enum Resume {
     /// A start tag that is not closed yet.
     StartTag(TagScan),
-    /// A closed start tag whose text-mode body or end tag is not complete yet.
-    Body {
-        tag: ClosedTag,
+    /// Inside the body of the text-mode element `name`, its start tag emitted.
+    Text {
+        name: &'static [u8],
         mode: TextMode,
         body: BodyScan,
     },
@@ -391,64 +652,63 @@ enum Resume {
     Delimited { from: usize },
 }
 
-/// Emits the construct at `lt`, returning the position just past it, or
-/// `None` (only when `is_final` is false) when it is not complete yet: then
-/// nothing was emitted, and `left` holds the progress to resume from. A
-/// construct an earlier write left incomplete continues from `from`.
+/// Emits the construct at `lt`, see [`Step`]. When it is not complete yet
+/// (only when `is_final` is false), `left` holds the progress to resume
+/// from. A construct an earlier write left incomplete continues from `from`.
 #[expect(clippy::too_many_arguments, reason = "the scan state of one construct")]
 fn process<P: ParseSink>(
     construct: Construct,
-    attributes: &mut Vec<AttrRange>,
+    attributes: &mut AttrBuf,
     from: Option<&Resume>,
     left: &mut Option<Resume>,
     sink: &mut P,
     input: &[u8],
     lt: usize,
+    limit: usize,
     is_final: bool,
-) -> Result<Option<usize>, ParsingAmbiguityError> {
-    Ok(match construct {
+) -> Result<Step, Halt> {
+    let spans = match construct {
         Construct::StartTag => {
-            return scan_start_tag(attributes, from, left, input, lt, sink, is_final);
+            return scan_start_tag(attributes, from, left, input, lt, sink, limit, is_final);
         }
-        Construct::EndTag => scan_end_tag(from, left, input, lt, sink, is_final),
+        Construct::EndTag => {
+            let next = scan_end_tag(from, left, input, lt, sink, limit, is_final)?;
+            return Ok(next.map_or(Step::Incomplete, Step::Next));
+        }
         Construct::Comment => {
             let data_start = lt + COMMENT_PREFIX.len();
             let end = find_terminator(from, left, input, data_start, COMMENT_SUFFIX);
-            delimited(input, lt, data_start, end, COMMENT_SUFFIX.len(), is_final).map(
-                |(raw, data)| {
-                    sink.comment(&Comment { input, raw, data });
-                    raw.end
-                },
-            )
+            delimited(input, lt, data_start, end, COMMENT_SUFFIX.len(), is_final)
         }
         Construct::Cdata => {
             let data_start = lt + CDATA_PREFIX.len();
             let end = find_terminator(from, left, input, data_start, CDATA_SUFFIX);
-            delimited(input, lt, data_start, end, CDATA_SUFFIX.len(), is_final).map(
-                |(raw, data)| {
-                    sink.cdata(&Cdata { input, raw, data });
-                    raw.end
-                },
-            )
+            delimited(input, lt, data_start, end, CDATA_SUFFIX.len(), is_final)
         }
         Construct::Doctype => {
             let after_keyword = lt + MARKUP_DECL_PREFIX.len() + DOCTYPE_KEYWORD.len();
             let end = find_terminator(from, left, input, after_keyword, b">");
-            delimited(input, lt, after_keyword, end, 1, is_final).map(|(raw, content)| {
-                let name = parse_doctype_name(input, after_keyword, content.end);
-                sink.doctype(&Doctype { input, raw, name });
-                raw.end
-            })
+            delimited(input, lt, after_keyword, end, 1, is_final)
         }
         Construct::BogusComment(open) => {
             let data_start = lt + open;
             let end = find_terminator(from, left, input, data_start, b">");
-            delimited(input, lt, data_start, end, 1, is_final).map(|(raw, data)| {
-                sink.comment(&Comment { input, raw, data });
-                raw.end
-            })
+            delimited(input, lt, data_start, end, 1, is_final)
         }
-    })
+    };
+    let Some((raw, data)) = spans else {
+        return Ok(Step::Incomplete);
+    };
+    check_limit(limit, raw, 0)?;
+    match construct {
+        Construct::Cdata => sink.cdata(&Cdata { input, raw, data }),
+        Construct::Doctype => {
+            let name = parse_doctype_name(input, data.start, data.end);
+            sink.doctype(&Doctype { input, raw, name });
+        }
+        _ => sink.comment(&Comment { input, raw, data }),
+    }
+    Ok(Step::Next(raw.end))
 }
 
 /// Finds `needle` from `data_start`, continuing a search an earlier write
@@ -501,85 +761,112 @@ fn delimited(
     ))
 }
 
-/// Emits a start tag (and the text-mode body it opens, with its end tag),
-/// returning the position past it. In a non-final run nothing is emitted
-/// until the tag, and a text-mode body up to its end tag, are complete.
+/// Emits a start tag, then streams the text-mode body it opens (if any) up
+/// to and including its end tag, see [`scan_body`].
+#[expect(clippy::too_many_arguments, reason = "the scan state of one construct")]
 fn scan_start_tag<P: ParseSink>(
-    attributes: &mut Vec<AttrRange>,
+    attributes: &mut AttrBuf,
     from: Option<&Resume>,
     left: &mut Option<Resume>,
     input: &[u8],
     lt: usize,
     sink: &mut P,
+    limit: usize,
     is_final: bool,
-) -> Result<Option<usize>, ParsingAmbiguityError> {
+) -> Result<Step, Halt> {
     let name_start = lt + 1;
-    // A carried body keeps the attributes recorded for its tag in place.
-    let (tag, carried_body) = if let Some(&Resume::Body { tag, mode, body }) = from {
-        (tag, Some((mode, body)))
+    attributes.base = lt;
+    let scan = if let Some(&Resume::StartTag(scan)) = from {
+        scan
     } else {
-        let scan = match from {
-            Some(&Resume::StartTag(scan)) => scan,
-            _ => TagScan::new(name_start),
-        };
-        match scan_tag(Some(attributes), input, scan) {
-            Ok(tag) => (tag, None),
-            Err(cut) if is_final => (cut.unclosed(input), None),
-            Err(cut) => {
-                *left = Some(Resume::StartTag(cut));
-                return Ok(None);
-            }
+        attributes.overflow = false;
+        TagScan::new(name_start)
+    };
+    let tag = match scan_tag(Some(attributes), input, scan) {
+        Ok(tag) => tag,
+        Err(cut) if is_final => cut.unclosed(input),
+        Err(cut) => {
+            *left = Some(Resume::StartTag(cut));
+            return Ok(Step::Incomplete);
         }
     };
+    check_limit(limit, Span::new(lt, tag.close), attributes.needed())?;
     let name_bytes = slice(input, name_start, tag.name_end);
     let name_hash = LocalNameHash::of(name_bytes);
-    // Decided before the tag is applied, so an incomplete body leaves no trace.
     let text_mode = sink.text_mode(name_hash, name_bytes);
-    let end_tag = match text_mode {
-        Some(mode) => {
-            let mut body = carried_body
-                .filter(|&(carried, _)| carried == mode)
-                .map_or(BodyScan::start(tag.close), |(_, body)| body);
-            find_body_end(mode, input, name_bytes, &mut body);
-            // The end tag, too, must be whole: edits anchored at it land after it.
-            let end_tag = match &mut body {
-                BodyScan::EndTag { lt, scan } => match scan_tag(None, input, *scan) {
-                    Ok(end_tag) => Some((*lt, end_tag)),
-                    Err(cut) => {
-                        *scan = cut;
-                        is_final.then(|| (*lt, cut.unclosed(input)))
-                    }
-                },
-                BodyScan::Search { .. } => None,
-            };
-            if end_tag.is_none() && !is_final {
-                *left = Some(Resume::Body { tag, mode, body });
-                return Ok(None);
-            }
-            end_tag
-        }
-        None => None,
-    };
-
     sink.start_tag(&StartTag {
         input,
         raw: Span::new(lt, tag.close),
         name: Span::new(name_start, tag.name_end),
         name_hash,
-        attributes,
+        attributes: &attributes.ranges,
         self_closing: tag.self_closing,
     })?;
-    if text_mode.is_none() {
-        return Ok(Some(tag.close));
-    }
-    let Some((end_lt, end_tag)) = end_tag else {
-        // An unterminated text-mode body runs to the end of the final input.
-        emit_text(input, tag.close, input.len(), sink);
-        return Ok(Some(input.len()));
+    // Done with: a large tag's ranges are then released by the next shrink.
+    attributes.ranges.clear();
+    let Some(mode) = text_mode else {
+        return Ok(Step::Next(tag.close));
     };
-    emit_text(input, tag.close, end_lt, sink);
-    emit_end_tag(input, end_lt, end_tag, sink, true);
-    Ok(Some(end_tag.close))
+    // Text modes come from `TEXT_ELEMENTS`; any other name runs to the end.
+    let (name, mode) = TEXT_ELEMENTS
+        .into_iter()
+        .find(|name| name.eq_ignore_ascii_case(name_bytes))
+        .map_or((&b""[..], TextMode::PlainText), |name| (name, mode));
+    let body = BodyScan::start(tag.close);
+    scan_body(
+        name, mode, body, input, tag.close, left, sink, limit, is_final,
+    )
+}
+
+/// Streams a text-mode body and its end tag, suspending so only a possible end tag is retained.
+#[expect(clippy::too_many_arguments, reason = "the scan state of one body")]
+fn scan_body<P: ParseSink>(
+    name: &'static [u8],
+    mode: TextMode,
+    mut body: BodyScan,
+    input: &[u8],
+    start: usize,
+    left: &mut Option<Resume>,
+    sink: &mut P,
+    limit: usize,
+    is_final: bool,
+) -> Result<Step, Halt> {
+    find_body_end(mode, input, name, &mut body);
+    let (lt, end_tag) = match body {
+        BodyScan::EndTag { lt, scan } => match scan_tag(None, input, scan) {
+            Ok(end_tag) => (lt, end_tag),
+            Err(cut) if is_final => (lt, cut.unclosed(input)),
+            Err(cut) => {
+                emit_text(input, start, lt, sink);
+                let body = BodyScan::EndTag {
+                    lt: 0,
+                    scan: cut.rebase(lt),
+                };
+                *left = Some(Resume::Text { name, mode, body });
+                return Ok(Step::Suspend(lt));
+            }
+        },
+        BodyScan::Search { from, script } => {
+            if is_final {
+                emit_text(input, start, input.len(), sink);
+                return Ok(Step::Next(input.len()));
+            }
+            // No end tag starts before `from`; `<plaintext>` has none.
+            let settled = if mode == TextMode::PlainText {
+                input.len()
+            } else {
+                from
+            };
+            emit_text(input, start, settled, sink);
+            let body = BodyScan::Search { from: 0, script };
+            *left = Some(Resume::Text { name, mode, body });
+            return Ok(Step::Suspend(settled));
+        }
+    };
+    emit_text(input, start, lt, sink);
+    check_limit(limit, Span::new(lt, end_tag.close), 0)?;
+    emit_end_tag(input, lt, end_tag, sink, true);
+    Ok(Step::Next(end_tag.close))
 }
 
 /// Emits an end tag, returning the position past it (`None` while it is
@@ -590,8 +877,9 @@ fn scan_end_tag<P: ParseSink>(
     input: &[u8],
     lt: usize,
     sink: &mut P,
+    limit: usize,
     is_final: bool,
-) -> Option<usize> {
+) -> Result<Option<usize>, Halt> {
     let scan = match from {
         Some(&Resume::EndTag(scan)) => scan,
         _ => TagScan::new(lt + 2),
@@ -603,11 +891,12 @@ fn scan_end_tag<P: ParseSink>(
         Err(cut) if is_final => cut.unclosed(input),
         Err(cut) => {
             *left = Some(Resume::EndTag(cut));
-            return None;
+            return Ok(None);
         }
     };
+    check_limit(limit, Span::new(lt, tag.close), 0)?;
     emit_end_tag(input, lt, tag, sink, false);
-    Some(tag.close)
+    Ok(Some(tag.close))
 }
 
 fn emit_end_tag<P: ParseSink>(
@@ -699,6 +988,27 @@ enum AttrState {
     Unquoted { name: Span, start: usize },
 }
 
+impl AttrState {
+    /// The state with every position moved `by` bytes back.
+    fn rebase(self, by: usize) -> Self {
+        let span = |span: Span| Span::new(span.start - by, span.end - by);
+        match self {
+            Self::Name { start } => Self::Name { start: start - by },
+            Self::AfterName { name } => Self::AfterName { name: span(name) },
+            Self::BeforeValue { name } => Self::BeforeValue { name: span(name) },
+            Self::Quoted { name, quote, start } => Self::Quoted {
+                name: span(name),
+                quote,
+                start: start - by,
+            },
+            Self::Unquoted { name, start } => Self::Unquoted {
+                name: span(name),
+                start: start - by,
+            },
+        }
+    }
+}
+
 /// Resumable progress through a tag the input cut off. Every state change
 /// is decided by bytes before `pos`, so appending input never changes it and
 /// scanning continues at `pos`.
@@ -719,6 +1029,20 @@ impl TagScan {
             pos: name_start,
             name_end: name_start,
             attrs: 0,
+        }
+    }
+
+    /// The progress with every position moved `by` bytes back.
+    fn rebase(self, by: usize) -> Self {
+        let state = match self.state {
+            TagState::Attr(attr) => TagState::Attr(attr.rebase(by)),
+            state => state,
+        };
+        Self {
+            state,
+            pos: self.pos - by,
+            name_end: self.name_end - by,
+            attrs: self.attrs,
         }
     }
 
@@ -754,12 +1078,12 @@ struct ClosedTag {
 /// ends.
 #[inline(always)]
 fn scan_tag(
-    mut attributes: Option<&mut Vec<AttrRange>>,
+    mut attributes: Option<&mut AttrBuf>,
     input: &[u8],
     scan: TagScan,
 ) -> Result<ClosedTag, TagScan> {
     if let Some(attributes) = attributes.as_deref_mut() {
-        attributes.truncate(scan.attrs);
+        attributes.ranges.truncate(scan.attrs);
     }
     let TagScan {
         state,
@@ -767,14 +1091,16 @@ fn scan_tag(
         mut name_end,
         ..
     } = scan;
-    let cut = |state, pos, name_end, attributes: Option<&Vec<AttrRange>>| {
+    let cut = |state, pos, name_end, attributes: Option<&AttrBuf>| {
         // The last recorded attribute is incomplete when the input cut it off.
         let partial = usize::from(matches!(state, TagState::Attr(_)));
         TagScan {
             state,
             pos,
             name_end,
-            attrs: attributes.map_or(0, |attributes| attributes.len().saturating_sub(partial)),
+            attrs: attributes.map_or(0, |attributes| {
+                attributes.ranges.len().saturating_sub(partial)
+            }),
         }
     };
     let from = match state {
@@ -820,7 +1146,7 @@ fn scan_tag(
 /// Kept out of line: inlined into each tag scanner, its hot loop runs slower.
 #[inline(never)]
 fn scan_attribute_list(
-    mut attributes: Option<&mut Vec<AttrRange>>,
+    mut attributes: Option<&mut AttrBuf>,
     input: &[u8],
     from: usize,
 ) -> Result<(usize, bool), (TagState, usize)> {
@@ -845,15 +1171,28 @@ fn scan_attribute_list(
 
 /// Where an attribute scan records the attribute it ends with: complete, or
 /// as far as the input goes.
-type Attributes<'a> = Option<&'a mut Vec<AttrRange>>;
+type Attributes<'a> = Option<&'a mut AttrBuf>;
 
 /// The position past a scanned attribute, or, when the input ends inside
 /// it, the state to resume in.
 type AttrScan = Result<usize, AttrState>;
 
-fn record(attributes: Attributes<'_>, attr: AttrRange) {
-    if let Some(attributes) = attributes {
-        attributes.push(attr);
+/// Records an attribute, valueless when `value` is `None`. Past `max` ranges
+/// (or offsets beyond `u32`) the tag is over the limit: only that is noted.
+fn record(attributes: Attributes<'_>, name: Span, value: Option<Span>) {
+    let Some(attributes) = attributes else {
+        return;
+    };
+    let range = match value {
+        Some(value) => AttrRange::valued(name, value, attributes.base),
+        None => AttrRange::valueless(name, attributes.base),
+    };
+    match range {
+        Some(range) if attributes.ranges.len() < attributes.max => {
+            reserve(&mut attributes.ranges, 1, attributes.max);
+            attributes.ranges.push(range);
+        }
+        _ => attributes.overflow = true,
     }
 }
 
@@ -879,7 +1218,7 @@ fn attribute_name(attributes: Attributes<'_>, input: &[u8], start: usize, i: usi
     let end = scan_attribute_name(input, i);
     let name = Span::new(start, end);
     if end == input.len() {
-        record(attributes, valueless(name));
+        record(attributes, name, None);
         return Err(AttrState::Name { start });
     }
     after_attribute_name(attributes, input, name, end)
@@ -896,7 +1235,7 @@ fn after_attribute_name(
     match input.get(i) {
         Some(b'=') => before_attribute_value(attributes, input, name, i + 1),
         next => {
-            record(attributes, valueless(name));
+            record(attributes, name, None);
             next.map_or(Err(AttrState::AfterName { name }), |_| Ok(i))
         }
     }
@@ -912,7 +1251,7 @@ fn before_attribute_value(
     let i = skip_space(input, i);
     match input.get(i) {
         None => {
-            record(attributes, valued(name, Span::empty(i)));
+            record(attributes, name, Some(Span::empty(i)));
             Err(AttrState::BeforeValue { name })
         }
         Some(&quote @ (b'"' | b'\'')) => quoted_value(attributes, input, name, quote, i + 1, i + 1),
@@ -930,10 +1269,10 @@ fn quoted_value(
     i: usize,
 ) -> AttrScan {
     let Some(rel) = memchr(quote, input.get(i..).unwrap_or(&[])) else {
-        record(attributes, valued(name, Span::new(start, input.len())));
+        record(attributes, name, Some(Span::new(start, input.len())));
         return Err(AttrState::Quoted { name, quote, start });
     };
-    record(attributes, valued(name, Span::new(start, i + rel)));
+    record(attributes, name, Some(Span::new(start, i + rel)));
     Ok(i + rel + 1)
 }
 
@@ -946,27 +1285,11 @@ fn unquoted_value(
     i: usize,
 ) -> AttrScan {
     let end = scan_unquoted_value(input, i);
-    record(attributes, valued(name, Span::new(start, end)));
+    record(attributes, name, Some(Span::new(start, end)));
     if end == input.len() {
         Err(AttrState::Unquoted { name, start })
     } else {
         Ok(end)
-    }
-}
-
-const fn valueless(name: Span) -> AttrRange {
-    AttrRange {
-        name,
-        value: Span::empty(name.end),
-        has_value: false,
-    }
-}
-
-const fn valued(name: Span, value: Span) -> AttrRange {
-    AttrRange {
-        name,
-        value,
-        has_value: true,
     }
 }
 

@@ -14,8 +14,9 @@ use crate::layer::remove_header::{
     remove_cache_validation_response_headers, remove_payload_metadata_headers,
 };
 use crate::layer::util::rewrite_policy::BodyRewritePolicy;
-use crate::protocols::html::rewrite::{ElementContentHandler, ScopeMode};
+use crate::protocols::html::rewrite::{ElementContentHandler, MemoryLimitPolicy, ScopeMode};
 use crate::protocols::html::selector::Selector;
+use crate::protocols::html::tokenizer::DEFAULT_MAX_BUFFERED_BYTES;
 use crate::{HeaderMap, Request, Response, StreamingBody};
 
 /// Rewrites the `text/html` response bodies of the underlying service, using
@@ -30,6 +31,8 @@ pub struct HtmlRewrite<S, H> {
     pub(crate) handler: H,
     policy: BodyRewritePolicy,
     scope_mode: ScopeMode,
+    max_buffered_bytes: usize,
+    memory_limit_policy: MemoryLimitPolicy,
 }
 
 impl<S, H> HtmlRewrite<S, H> {
@@ -44,6 +47,8 @@ impl<S, H> HtmlRewrite<S, H> {
             handler,
             policy: BodyRewritePolicy::unencoded_content_type(is_html_content_type),
             scope_mode: ScopeMode::default(),
+            max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
+            memory_limit_policy: MemoryLimitPolicy::default(),
         }
     }
 
@@ -72,6 +77,29 @@ impl<S, H> HtmlRewrite<S, H> {
         }
     }
 
+    generate_set_and_with! {
+        /// Sets the budget of one HTML construct (a tag with its attributes,
+        /// a comment, …) while it is buffered, see
+        /// [`Tokenizer::with_max_buffered_bytes`]. Defaults to
+        /// [`DEFAULT_MAX_BUFFERED_BYTES`].
+        ///
+        /// [`Tokenizer::with_max_buffered_bytes`]: crate::protocols::html::tokenizer::Tokenizer::with_max_buffered_bytes
+        pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+            self.max_buffered_bytes = max_buffered_bytes;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Sets what happens to a construct over
+        /// [`max_buffered_bytes`](Self::with_max_buffered_bytes), see
+        /// [`MemoryLimitPolicy`]. Defaults to failing the body.
+        pub fn memory_limit_policy(mut self, policy: MemoryLimitPolicy) -> Self {
+            self.memory_limit_policy = policy;
+            self
+        }
+    }
+
     define_inner_service_accessors!();
 }
 
@@ -83,6 +111,8 @@ impl<S: fmt::Debug, H> fmt::Debug for HtmlRewrite<S, H> {
             .field("handler", &type_name::<H>())
             .field("policy", &self.policy)
             .field("scope_mode", &self.scope_mode)
+            .field("max_buffered_bytes", &self.max_buffered_bytes)
+            .field("memory_limit_policy", &self.memory_limit_policy)
             .finish()
     }
 }
@@ -116,6 +146,8 @@ where
             remove_cache_validation_response_headers(&mut parts.headers);
             HtmlRewriteBody::new(body, &self.selectors, self.handler.clone())
                 .with_scope_mode(self.scope_mode)
+                .with_max_buffered_bytes(self.max_buffered_bytes)
+                .with_memory_limit_policy(self.memory_limit_policy)
         } else {
             HtmlRewriteBody::passthrough(body)
         };
@@ -139,6 +171,8 @@ pub struct HtmlRewriteLayer<H> {
     handler: H,
     policy: BodyRewritePolicy,
     scope_mode: ScopeMode,
+    max_buffered_bytes: usize,
+    memory_limit_policy: MemoryLimitPolicy,
 }
 
 impl<H> HtmlRewriteLayer<H> {
@@ -151,6 +185,8 @@ impl<H> HtmlRewriteLayer<H> {
             handler,
             policy: BodyRewritePolicy::unencoded_content_type(is_html_content_type),
             scope_mode: ScopeMode::default(),
+            max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
+            memory_limit_policy: MemoryLimitPolicy::default(),
         }
     }
 
@@ -179,6 +215,29 @@ impl<H> HtmlRewriteLayer<H> {
         }
     }
 
+    generate_set_and_with! {
+        /// Sets the budget of one HTML construct (a tag with its attributes,
+        /// a comment, …) while it is buffered, see
+        /// [`Tokenizer::with_max_buffered_bytes`]. Defaults to
+        /// [`DEFAULT_MAX_BUFFERED_BYTES`].
+        ///
+        /// [`Tokenizer::with_max_buffered_bytes`]: crate::protocols::html::tokenizer::Tokenizer::with_max_buffered_bytes
+        pub fn max_buffered_bytes(mut self, max_buffered_bytes: usize) -> Self {
+            self.max_buffered_bytes = max_buffered_bytes;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Sets what happens to a construct over
+        /// [`max_buffered_bytes`](Self::with_max_buffered_bytes), see
+        /// [`MemoryLimitPolicy`]. Defaults to failing the body.
+        pub fn memory_limit_policy(mut self, policy: MemoryLimitPolicy) -> Self {
+            self.memory_limit_policy = policy;
+            self
+        }
+    }
+
     /// Wraps a body directly using this layer's selector set and handler.
     ///
     /// This is useful for services that need request-specific gating before
@@ -190,6 +249,8 @@ impl<H> HtmlRewriteLayer<H> {
     {
         HtmlRewriteBody::new(body, &self.selectors, self.handler.clone())
             .with_scope_mode(self.scope_mode)
+            .with_max_buffered_bytes(self.max_buffered_bytes)
+            .with_memory_limit_policy(self.memory_limit_policy)
     }
 }
 
@@ -200,6 +261,8 @@ impl<H: fmt::Debug> fmt::Debug for HtmlRewriteLayer<H> {
             .field("handler", &self.handler)
             .field("policy", &self.policy)
             .field("scope_mode", &self.scope_mode)
+            .field("max_buffered_bytes", &self.max_buffered_bytes)
+            .field("memory_limit_policy", &self.memory_limit_policy)
             .finish()
     }
 }
@@ -214,6 +277,8 @@ impl<S, H: Clone> Layer<S> for HtmlRewriteLayer<H> {
             handler: self.handler.clone(),
             policy: self.policy.clone(),
             scope_mode: self.scope_mode,
+            max_buffered_bytes: self.max_buffered_bytes,
+            memory_limit_policy: self.memory_limit_policy,
         }
     }
 
@@ -224,6 +289,8 @@ impl<S, H: Clone> Layer<S> for HtmlRewriteLayer<H> {
             handler: self.handler,
             policy: self.policy,
             scope_mode: self.scope_mode,
+            max_buffered_bytes: self.max_buffered_bytes,
+            memory_limit_policy: self.memory_limit_policy,
         }
     }
 }

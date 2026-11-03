@@ -39,6 +39,18 @@
 //! [`ScopeMode::Browser`]: crate::protocols::html::rewrite::ScopeMode::Browser
 //! [`ScopeMode::NearestMatch`]: crate::protocols::html::rewrite::ScopeMode::NearestMatch
 //!
+//! ## Memory
+//!
+//! Text, including `<script>`/`<style>` bodies, streams through, but a tag
+//! with its attributes or a comment is held until it is complete. The origin
+//! controls that input, so each such construct has a budget of
+//! [`DEFAULT_MAX_BUFFERED_BYTES`] (see `with_max_buffered_bytes`); past it the
+//! body fails, or with [`MemoryLimitPolicy::Passthrough`] (not for sanitising)
+//! the rest of the body passes through unchanged.
+//!
+//! [`DEFAULT_MAX_BUFFERED_BYTES`]: crate::protocols::html::tokenizer::DEFAULT_MAX_BUFFERED_BYTES
+//! [`MemoryLimitPolicy::Passthrough`]: crate::protocols::html::rewrite::MemoryLimitPolicy::Passthrough
+//!
 //! ## Encoding
 //!
 //! The rewriter sees raw bytes, so a compressed (`Content-Encoding`) body is
