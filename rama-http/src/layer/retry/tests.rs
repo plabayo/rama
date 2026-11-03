@@ -17,6 +17,7 @@ use rama_core::error::BoxErrorExt as _;
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
+use std::error::Error as _;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -85,7 +86,8 @@ async fn retry_limit() {
     });
 
     let err = svc.serve(request("hello")).await.unwrap_err();
-    assert_eq!(err.to_string(), "service error: error forever");
+    assert_eq!(err.to_string(), "service error");
+    assert_eq!(err.source().unwrap().to_string(), "error forever");
     assert_eq!(error_counter.load(Ordering::Acquire), 3);
 }
 
@@ -114,7 +116,8 @@ async fn retry_error_inspection() {
     });
 
     let err = svc.serve(request("hello")).await.unwrap_err();
-    assert_eq!(err.to_string(), "service error: reject");
+    assert_eq!(err.to_string(), "service error");
+    assert_eq!(err.source().unwrap().to_string(), "reject");
 }
 
 #[tokio::test]
@@ -134,7 +137,8 @@ async fn retry_cannot_clone_request() {
     let svc = RetryLayer::new(CannotClone).into_layer(Svc);
 
     let err = svc.serve(request("hello")).await.unwrap_err();
-    assert_eq!(err.to_string(), "service error: failed");
+    assert_eq!(err.to_string(), "service error");
+    assert_eq!(err.source().unwrap().to_string(), "failed");
 }
 
 #[tokio::test]
@@ -190,7 +194,8 @@ async fn retry_mutating_policy() {
     });
 
     let err = svc.serve(request("hello")).await.unwrap_err();
-    assert_eq!(err.to_string(), "service error: out of retries");
+    assert_eq!(err.to_string(), "service error");
+    assert_eq!(err.source().unwrap().to_string(), "out of retries");
     assert_eq!(response_counter.load(Ordering::Acquire), 3);
 }
 

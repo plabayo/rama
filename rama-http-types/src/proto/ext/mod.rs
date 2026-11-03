@@ -1,5 +1,8 @@
 //! Message extensions shared by the HTTP protocol versions.
 
+/// Early-data transmission facts and rejection errors.
+pub mod early_data;
+
 use crate::{header::is_token, proto::h2::hpack::BytesStr};
 
 use rama_core::bytes::Bytes;

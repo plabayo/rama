@@ -50,6 +50,7 @@ mod body;
 #[doc(inline)]
 pub use body::RetryBody;
 
+pub mod early_data;
 pub mod managed;
 pub use managed::ManagedPolicy;
 
@@ -99,10 +100,7 @@ enum RetryErrorKind {
 
 impl std::fmt::Display for RetryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.inner {
-            Some(inner) => write!(f, "{}: {}", self.kind, inner),
-            None => write!(f, "{}", self.kind),
-        }
+        self.kind.fmt(f)
     }
 }
 
@@ -117,7 +115,9 @@ impl std::fmt::Display for RetryErrorKind {
 
 impl std::error::Error for RetryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.inner.as_ref().and_then(|e| e.source())
+        self.inner
+            .as_ref()
+            .map(|error| error.as_ref() as &(dyn std::error::Error + 'static))
     }
 }
 
