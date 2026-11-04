@@ -150,6 +150,10 @@ final class SystemLifecycleTests: XCTestCase {
         body()
     }
 
+    /// An allowance no test outlives, so "not yet judged" never depends on
+    /// runner speed; the verdict is then forced with `testExpirePathRecovery`.
+    private let unreachableAllowanceMs: UInt32 = 600_000
+
     /// An expired allowance on a still non-viable path resets the flow: the
     /// silent `.ready`-over-dead-path wedge.
     func testExpiredAllowanceResetsEstablishedFlowWhenNotViable() {
@@ -231,9 +235,9 @@ final class SystemLifecycleTests: XCTestCase {
     }
 
     /// Delayed same-path recovery after wake: the path is lost right after
-    /// resume and returns seconds later, inside the allowance.
+    /// resume and returns inside the allowance.
     func testWakeSparesDelayedSamePathRecovery() {
-        withRecoveryAllowance(400) {
+        withRecoveryAllowance(unreachableAllowanceMs) {
             let core = TransparentProxyCore()
             let queue = DispatchQueue(label: "rama.test.flow.wake.delayed")
             let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
@@ -241,14 +245,13 @@ final class SystemLifecycleTests: XCTestCase {
 
             core.handleSystemWake()
             f.conn.simulateViability(false)
-            drain(queue, afterMs: 250)
-            XCTAssertFalse(f.ctx.isDone, "still inside the allowance")
+            XCTAssertNotNil(queue.sync { f.ctx.pathRecoveryDeadline }, "loss starts the allowance")
             f.conn.simulateViability(true)
-            drain(queue, afterMs: 500)
+            XCTAssertNil(queue.sync { f.ctx.pathRecoveryDeadline })
+            queue.sync { core.testExpirePathRecovery(f.ctx) }
 
             XCTAssertFalse(f.ctx.isDone, "recovered path must keep the flow")
             XCTAssertEqual(f.conn.cancelCount, 0)
-            XCTAssertNil(queue.sync { f.ctx.pathRecoveryDeadline })
         }
     }
 
@@ -271,10 +274,10 @@ final class SystemLifecycleTests: XCTestCase {
     }
 
     /// Ordering: wake arms the verdict over a lost path, then the flow enters
-    /// `.waiting` before it is due. The verdict must not land before the
-    /// allowance ends, and a recovery inside it keeps the flow.
+    /// `.waiting` before it is due. The deadline must not move earlier, and a
+    /// recovery inside it keeps the flow.
     func testWaitingAfterScheduledWakeCheckKeepsAllowance() {
-        withRecoveryAllowance(400) {
+        withRecoveryAllowance(unreachableAllowanceMs) {
             let core = TransparentProxyCore()
             let queue = DispatchQueue(label: "rama.test.flow.wake.waiting")
             let f = makeEstablishedFlow(on: core, viable: false, flowQueue: queue)
@@ -284,15 +287,13 @@ final class SystemLifecycleTests: XCTestCase {
             let deadline = queue.sync { f.ctx.pathRecoveryDeadline }
             XCTAssertNotNil(deadline, "wake arms the verdict")
             XCTAssertTrue(queue.sync { f.ctx.pathRecoveryTimerArmed })
-            drain(queue, afterMs: 100)
             enterWaiting(f.ctx, core: core, on: queue)
-            drain(queue, afterMs: 150)
-            XCTAssertFalse(f.ctx.isDone, "verdict must not land inside the allowance")
             XCTAssertEqual(queue.sync { f.ctx.pathRecoveryDeadline }, deadline, "later signals keep the deadline")
+            XCTAssertFalse(f.ctx.isDone)
 
             leaveWaiting(f.ctx, core: core, on: queue)
             f.conn.simulateViability(true)
-            drain(queue, afterMs: 400)
+            queue.sync { core.testExpirePathRecovery(f.ctx) }
 
             XCTAssertFalse(f.ctx.isDone, "recovery inside the allowance keeps the flow")
             XCTAssertEqual(f.conn.cancelCount, 0)
@@ -302,21 +303,22 @@ final class SystemLifecycleTests: XCTestCase {
     /// Mid-session ordering: viability loss starts the allowance, `.waiting`
     /// follows; neither shortens it, and the verdict re-checks state at fire.
     func testWaitingAfterViabilityLossDoesNotShortenAllowance() {
-        withRecoveryAllowance(400) {
+        withRecoveryAllowance(unreachableAllowanceMs) {
             let core = TransparentProxyCore()
             let queue = DispatchQueue(label: "rama.test.flow.mid.waiting")
             let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
             wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
 
             f.conn.simulateViability(false)
-            drain(queue, afterMs: 100)
+            let deadline = queue.sync { f.ctx.pathRecoveryDeadline }
+            XCTAssertNotNil(deadline)
             enterWaiting(f.ctx, core: core, on: queue)
-            drain(queue, afterMs: 200)
-            XCTAssertFalse(f.ctx.isDone, "verdict must not land inside the allowance")
+            XCTAssertEqual(queue.sync { f.ctx.pathRecoveryDeadline }, deadline)
+            XCTAssertFalse(f.ctx.isDone)
 
             leaveWaiting(f.ctx, core: core, on: queue)
             f.conn.simulateViability(true)
-            drain(queue, afterMs: 400)
+            queue.sync { core.testExpirePathRecovery(f.ctx) }
             XCTAssertFalse(f.ctx.isDone)
             XCTAssertEqual(f.conn.cancelCount, 0)
         }
@@ -342,19 +344,22 @@ final class SystemLifecycleTests: XCTestCase {
     /// A wake while a loss is already running restarts the allowance from
     /// resume: time spent asleep is not recovery time.
     func testWakeRestartsRunningAllowance() {
-        withRecoveryAllowance(300) {
+        withRecoveryAllowance(unreachableAllowanceMs) {
             let core = TransparentProxyCore()
             let queue = DispatchQueue(label: "rama.test.flow.wake.restart")
             let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
             wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
 
             enterWaiting(f.ctx, core: core, on: queue)
-            drain(queue, afterMs: 200)
+            let first = queue.sync { f.ctx.pathRecoveryDeadline }
+            XCTAssertNotNil(first)
+            drain(queue, afterMs: 20)
             core.handleSystemWake()
-            drain(queue, afterMs: 200)
-            XCTAssertFalse(f.ctx.isDone, "wake must restart, not keep, the running allowance")
+            let restarted = queue.sync { f.ctx.pathRecoveryDeadline }
+            XCTAssertNotNil(restarted)
+            XCTAssertGreaterThan(restarted!, first!, "wake must restart, not keep, the running allowance")
 
-            drain(queue, afterMs: 300)
+            queue.sync { core.testExpirePathRecovery(f.ctx) }
             XCTAssertTrue(f.ctx.isDone, "restarted allowance still ends")
         }
     }
@@ -362,21 +367,24 @@ final class SystemLifecycleTests: XCTestCase {
     /// Losing the path again after a recovery starts a fresh allowance; the
     /// earlier timer re-arms instead of judging the new loss early.
     func testReLossAfterRecoveryStartsFreshAllowance() {
-        withRecoveryAllowance(300) {
-            let core = TransparentProxyCore()
-            let queue = DispatchQueue(label: "rama.test.flow.reloss")
-            let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
-            wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+        let core = TransparentProxyCore()
+        let queue = DispatchQueue(label: "rama.test.flow.reloss")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
 
+        withRecoveryAllowance(20) {
             f.conn.simulateViability(false)
-            drain(queue, afterMs: 50)
             f.conn.simulateViability(true)
-            drain(queue, afterMs: 150)
+            queue.sync {}
+        }
+        withRecoveryAllowance(unreachableAllowanceMs) {
             f.conn.simulateViability(false)
+            // The first loss's timer comes due here and must re-arm.
             drain(queue, afterMs: 200)
             XCTAssertFalse(f.ctx.isDone, "first timer must not judge the second loss early")
+            XCTAssertTrue(queue.sync { f.ctx.pathRecoveryTimerArmed })
 
-            drain(queue, afterMs: 250)
+            queue.sync { core.testExpirePathRecovery(f.ctx) }
             XCTAssertTrue(f.ctx.isDone, "second allowance ends")
         }
     }
@@ -425,7 +433,7 @@ final class SystemLifecycleTests: XCTestCase {
     /// past its idle timeout is reaped during a running allowance, and the
     /// later verdict adds no second teardown.
     func testIdleBackstopPreemptsRunningAllowance() {
-        withRecoveryAllowance(200) {
+        withRecoveryAllowance(unreachableAllowanceMs) {
             let core = TransparentProxyCore()
             let flow = MockTcpFlow()
             let conn = MockNwConnection()
@@ -452,7 +460,7 @@ final class SystemLifecycleTests: XCTestCase {
             core.testRunPeriodicMaintenance()
             XCTAssertTrue(session.flowQueue.sync { session.ctx.isDone }, "idle backstop wins")
 
-            drain(session.flowQueue, afterMs: 400)
+            session.flowQueue.sync { core.testExpirePathRecovery(session.ctx) }
             XCTAssertEqual(conn.cancelCount, 1, "verdict after the backstop is a no-op")
             XCTAssertEqual(flow.closeReadCallCount, 1)
             XCTAssertEqual(core.tcpFlowCount, 0)
