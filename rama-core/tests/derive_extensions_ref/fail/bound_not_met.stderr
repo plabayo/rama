@@ -31,7 +31,8 @@ note: required for `Svc<NotExtensions>` to implement `ExtensionsRef`
    |          ------------- type parameter would need to implement `ExtensionsRef`
  6 | struct Svc<S> {
    |        ^^^^^^
-   = help: consider manually implementing `ExtensionsRef` to avoid undesired bounds
+   = help: consider manually implementing `ExtensionsRef` to avoid undesired bounds caused by "imperfect derives"
+   = note: to learn more, visit <https://github.com/rust-lang/rust/issues/26925>
 note: required by a bound in `store`
   --> tests/derive_extensions_ref/fail/bound_not_met.rs:10:13
    |
