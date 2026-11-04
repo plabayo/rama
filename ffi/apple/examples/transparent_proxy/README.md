@@ -615,10 +615,15 @@ Failure signature of intercept-but-no-forward on the Rust data path:
    torn down almost immediately).
 2. Apple `... Closing reads ... closed by plugin` immediate-EOFs.
 
-The lifecycle lines are just `system sleep` / `system wake`: sleep is a
+The lifecycle lines are `system sleep` / `system wake` and
+`system network path lost` / `system network path restored`: sleep is a
 brief pause-and-return (no engine drain, no flow teardown), and flows
 that don't survive the suspend are reaped post-wake by the per-flow
-`.failed` path. The historical root cause here was a blocking on-sleep
+`.failed` path. An established flow stranded on a dead path is reset
+(`egress path not viable after settle; resetting established flow`) only
+once the system network is back and the flow's own path still isn't;
+while the machine is offline those flows are held, not reset. The
+historical root cause here was a blocking on-sleep
 engine drain that wedged on a non-yielding task and left the proxy
 intercepting traffic it could no longer forward — do not reintroduce a
 blocking drain on the sleep path.

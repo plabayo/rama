@@ -115,6 +115,9 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertTrue(f.ctx.isDone, "dead-path established flow must be torn down")
         XCTAssertEqual(f.conn.cancelCount, 1, "egress connection cancelled")
         XCTAssertEqual(core.tcpFlowCount, 0, "registry entry removed")
+        XCTAssertEqual(
+            (f.flow.lastCloseReadError as NSError?)?.code, Int(ECONNRESET),
+            "the app must see ECONNRESET, not the -1 that surfaces as errno 65535")
     }
 
     /// An established flow whose path stayed viable (e.g. a no-op Power-Nap
@@ -524,5 +527,119 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertFalse(f.ctx.isDone, "pre-ready flow must not be reset by the re-check")
         XCTAssertEqual(f.conn.cancelCount, 0)
         XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+    // MARK: - dead-path re-check vs the system network path
+
+    private func waitOnQueue(_ queue: DispatchQueue, ms: Int, _ what: String) {
+        let exp = expectation(description: what)
+        queue.asyncAfter(deadline: .now() + .milliseconds(ms)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+    }
+
+    /// Wi-Fi still re-associating after wake: every flow is non-viable
+    /// because the machine is offline, not because the flow is stranded.
+    /// Resetting here is what turned a few seconds of stall into errno 65535
+    /// on every open connection.
+    func testDeadPathHoldsEstablishedFlowWhileSystemOffline() {
+        let core = TransparentProxyCore()
+        core.handleSystemPathUpdate(satisfied: false)
+        let f = makeEstablishedFlow(on: core, viable: false)
+
+        core.testCheckWakeDeadPath(f.ctx)
+
+        XCTAssertFalse(f.ctx.isDone, "offline must hold, not reset")
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+    /// The mid-session trigger shares the verdict: a Wi-Fi drop with no
+    /// other interface holds flows past the viability-loss settle.
+    func testViabilityLossHoldsFlowWhileSystemOffline() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 10
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss.offline")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+        core.handleSystemPathUpdate(satisfied: false)
+
+        f.conn.simulateViability(false)
+        waitOnQueue(queue, ms: 200, "viability-loss re-check fired")
+
+        XCTAssertFalse(f.ctx.isDone, "offline must hold, not reset")
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+    /// The link comes back on the same address and the flow's own path
+    /// recovers inside the grace: the connection survives the outage.
+    func testNetworkRestoreSparesFlowWhosePathCameBack() {
+        let core = TransparentProxyCore()
+        let prev = defaultPathRestoredRecheckMs
+        defaultPathRestoredRecheckMs = 100
+        defer { defaultPathRestoredRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.restore.recovered")
+        core.handleSystemPathUpdate(satisfied: false)
+        let f = makeEstablishedFlow(on: core, viable: false, flowQueue: queue)
+        queue.sync { core.testCheckWakeDeadPath(f.ctx) }
+        XCTAssertFalse(queue.sync { f.ctx.isDone }, "held while offline")
+
+        core.handleSystemPathUpdate(satisfied: true)
+        queue.async { f.ctx.lastPathViable = true }
+        waitOnQueue(queue, ms: 400, "restore re-check fired")
+
+        XCTAssertFalse(f.ctx.isDone, "path recovered with the link; flow must survive")
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+        XCTAssertFalse(queue.sync { f.ctx.deadPathRecheckPending })
+    }
+
+    /// The link comes back but this flow's path never does (its address or
+    /// interface is gone): it is stranded, so the restore re-check resets it.
+    func testNetworkRestoreResetsFlowStillStranded() {
+        let core = TransparentProxyCore()
+        let prev = defaultPathRestoredRecheckMs
+        defaultPathRestoredRecheckMs = 20
+        defer { defaultPathRestoredRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.restore.stranded")
+        core.handleSystemPathUpdate(satisfied: false)
+        let f = makeEstablishedFlow(on: core, viable: false, flowQueue: queue)
+
+        core.handleSystemPathUpdate(satisfied: true)
+        waitOnQueue(queue, ms: 300, "restore re-check fired")
+
+        XCTAssertTrue(f.ctx.isDone, "still dead with the network up: stranded")
+        XCTAssertEqual(f.conn.cancelCount, 1)
+        XCTAssertEqual(core.tcpFlowCount, 0)
+        XCTAssertEqual((f.flow.lastCloseReadError as NSError?)?.code, Int(ECONNRESET))
+    }
+
+    /// A wake or path-change verdict landing just after the link returned is
+    /// pushed to the end of the restore grace instead of judging a flow whose
+    /// own viability update may not have arrived yet.
+    func testDeadPathCheckRightAfterRestoreWaitsOutGrace() {
+        let core = TransparentProxyCore()
+        let prev = defaultPathRestoredRecheckMs
+        defaultPathRestoredRecheckMs = 300
+        defer { defaultPathRestoredRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.restore.grace")
+        core.handleSystemPathUpdate(satisfied: false)
+        core.handleSystemPathUpdate(satisfied: true)
+        let f = makeEstablishedFlow(on: core, viable: false, flowQueue: queue)
+
+        queue.sync { core.testCheckWakeDeadPath(f.ctx) }
+        XCTAssertFalse(queue.sync { f.ctx.isDone }, "inside the restore grace: not judged yet")
+        XCTAssertTrue(queue.sync { f.ctx.deadPathRecheckPending }, "re-check pushed out")
+
+        waitOnQueue(queue, ms: 700, "deferred re-check fired")
+
+        XCTAssertTrue(f.ctx.isDone, "still dead after the grace: reset")
+        XCTAssertEqual(core.tcpFlowCount, 0)
     }
 }

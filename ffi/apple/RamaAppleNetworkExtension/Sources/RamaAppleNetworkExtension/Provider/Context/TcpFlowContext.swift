@@ -659,11 +659,14 @@ final class TcpFlowContext: @unchecked Sendable {
     /// `.waiting` nor `.failed` fired. Reset it so the client reconnects
     /// instead of hanging until an idle reaper.
     func applyWakeDeadPath() {
+        // Only the code reaches the app, as its socket error truncated to 16
+        // bits (so -1 surfaced as errno 65535). ECONNRESET is how the stale
+        // connection would have failed on its own, and clients retry it.
         let err = NSError(
-            domain: "rama.tproxy.wake-dead-path", code: -1,
+            domain: "rama.tproxy.wake-dead-path", code: Int(ECONNRESET),
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "established egress path not satisfied after system wake; flow reset"
+                    "established egress path stayed dead with the network up; flow reset"
             ])
         applyFullTeardown(error: err, driveForwarder: true)
     }

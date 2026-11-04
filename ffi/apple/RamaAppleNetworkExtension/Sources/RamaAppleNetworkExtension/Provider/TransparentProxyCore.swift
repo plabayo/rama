@@ -161,6 +161,18 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// state machine can be driven without a real socket.
     var nwConnectionFactory: NwConnectionFactoryFn = defaultNwConnectionFactory
 
+    private struct SystemPathState {
+        var satisfied = true
+        /// Uptime (ns) of the last unsatisfied → satisfied transition; `nil`
+        /// if the path never went down.
+        var restoredAtNs: UInt64?
+    }
+    /// Last system path reported by the provider's `SystemPathMonitor`.
+    /// Starts satisfied so a core that never gets an update (engine-less
+    /// tests, or before the monitor's first callback) judges dead paths as
+    /// it always did. Read from flow queues by `checkDeadPath`.
+    private let systemPath = Locked(SystemPathState())
+
     /// Timer that emits a per-protocol live-flow count every 60s.
     /// Operator-visible signal that catches accumulation regressions
     /// — a registered-flow leak would show up as `tcp_flows` /
@@ -530,7 +542,9 @@ final class TransparentProxyCore: @unchecked Sendable {
     ///     path didn't come back, so a stale long-lived connection (e.g.
     ///     Chrome reusing an HTTP/2 connection to a Google host) is reset
     ///     promptly instead of hanging. A no-op (Power-Nap) sleep leaves the
-    ///     path viable, so those flows are kept.
+    ///     path viable, so those flows are kept. If the machine is still
+    ///     offline at the settle, the verdict waits for the link to return
+    ///     (see `checkDeadPath`).
     func handleSystemWake() {
         engine?.notifySystemWake()
         // Reconcile on each flow's own queue: the `egressReady` /
@@ -628,13 +642,48 @@ final class TransparentProxyCore: @unchecked Sendable {
         scheduleDeadPathRecheck(ctx, afterMs: settleMs, trigger: "path change")
     }
 
+    /// Fed by the provider's `SystemPathMonitor`. Losing the system path
+    /// tears nothing down: `checkDeadPath` holds non-viable flows while
+    /// offline. When it comes back, every established flow still reporting a
+    /// dead egress path gets one re-check after `defaultPathRestoredRecheckMs`,
+    /// which spares the ones whose path returned with the link and resets the
+    /// ones left stranded on an address or interface that is gone.
+    func handleSystemPathUpdate(satisfied: Bool) {
+        let changed = systemPath.withLock { state -> Bool in
+            guard state.satisfied != satisfied else { return false }
+            state.satisfied = satisfied
+            if satisfied { state.restoredAtNs = DispatchTime.now().uptimeNanoseconds }
+            return true
+        }
+        guard changed else { return }
+        guard satisfied else {
+            logLifecycle("system network path lost; holding established flows")
+            return
+        }
+        logLifecycle("system network path restored")
+        let all: [TcpFlowContext] = stateQueue.sync { self.tcpSessions.values.map { $0.ctx } }
+        for ctx in all {
+            runFlowTeardown(ctx) { [weak self] in
+                guard ctx.egressReady, !ctx.lastPathViable, !ctx.postReadyWaitingArmed else {
+                    return
+                }
+                self?.scheduleDeadPathRecheck(
+                    ctx, afterMs: defaultPathRestoredRecheckMs, trigger: "network restored")
+            }
+        }
+    }
+
     /// Settle re-check for one established flow. MUST run on the flow's
     /// own `flowQueue` so the `egressReady` / `lastPathViable` reads stay
     /// single-threaded with the flow's other callbacks. Reached from two
     /// triggers — the post-wake reconcile and a mid-session viability loss
     /// — with the same verdict: reset iff the egress path is no longer
     /// viable (the `viabilityUpdateHandler` last reported `false` and it
-    /// didn't recover during the settle window). Idempotent: if the flow
+    /// didn't recover during the settle window) while the system itself has
+    /// had a usable path for at least `defaultPathRestoredRecheckMs`.
+    /// Offline, the flow is held and `handleSystemPathUpdate` re-arms the
+    /// check when the link returns; just after it returns, the check is
+    /// pushed out to the end of that grace. Idempotent: if the flow
     /// already tore down in the settle window (its NWConnection reported
     /// `.failed` / `.waiting`, or it closed gracefully) the teardown's
     /// sticky `done` flag makes this a no-op; if the path recovered,
@@ -651,6 +700,17 @@ final class TransparentProxyCore: @unchecked Sendable {
         // misleading "resetting established flow" log line.
         guard ctx.isDone != true else { return }
         guard !ctx.lastPathViable else { return }
+        let path = systemPath.withLock { $0 }
+        guard path.satisfied else { return }
+        if let restoredAtNs = path.restoredAtNs {
+            let graceNs = UInt64(defaultPathRestoredRecheckMs) * 1_000_000
+            let elapsedNs = DispatchTime.now().uptimeNanoseconds &- restoredAtNs
+            if elapsedNs < graceNs {
+                let remainingMs = UInt32((graceNs - elapsedNs + 999_999) / 1_000_000)
+                scheduleDeadPathRecheck(ctx, afterMs: remainingMs, trigger: trigger)
+                return
+            }
+        }
         logLifecycle(
             "\(trigger): egress path not viable after settle; resetting established flow")
         ctx.applyWakeDeadPath()

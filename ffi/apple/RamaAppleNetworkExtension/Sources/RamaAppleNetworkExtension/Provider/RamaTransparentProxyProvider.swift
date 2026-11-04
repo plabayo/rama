@@ -391,6 +391,22 @@ nonisolated(unsafe) var defaultPostWakePathRecheckMs: UInt32 = 1_500
 /// `defaultFlowPressureSoftCap`.
 nonisolated(unsafe) var defaultViabilityLossRecheckMs: UInt32 = 5_000
 
+/// Grace after the system network path comes back (`SystemPathMonitor`)
+/// before an established flow whose own egress path is still non-viable is
+/// judged stranded and reset.
+///
+/// While the system path is unsatisfied the dead-path re-check holds flows
+/// instead of resetting them: an outage that ends on the same local address
+/// (Wi-Fi re-associating after wake, 802.1X, DHCP) leaves their TCP
+/// connections intact, and resetting early only turns a stall into an
+/// app-visible connection error. Only once the link is back does a flow that
+/// is still non-viable prove it was stranded (new address / interface). Same
+/// budget as `defaultEgressWaitingToleranceMs`, so a VPN tunnel that comes up
+/// a few seconds after the link still gets to carry its flows' paths back.
+///
+/// `var` for tests.
+nonisolated(unsafe) var defaultPathRestoredRecheckMs: UInt32 = 5_000
+
 /// Budget for an egress `NWConnection` in `.waiting(_)` *before* it
 /// ever reaches `.ready` (path down at connect — boot, wake, VPN
 /// transition). Fail fast instead of hanging the full connect timeout;
@@ -904,6 +920,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// like `setTunnelNetworkSettings` and the metadata extraction
     /// from `NEFlowMetaData`).
     let core = TransparentProxyCore()
+    private let systemPathMonitor = SystemPathMonitor()
 
     public override func startProxy(
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
@@ -988,6 +1005,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         // No maintenance task or flow callback can observe a partial config.
         let engineGeneration = core.attachEngine(engine, runtimePolicy: runtimePolicy)
         core.logLifecycle("engine created")
+        systemPathMonitor.start { [weak core] satisfied in
+            core?.handleSystemPathUpdate(satisfied: satisfied)
+        }
 
         let settings = Self.buildNetworkSettings(
             from: startup,
