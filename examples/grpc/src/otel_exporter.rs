@@ -56,6 +56,8 @@ use rama::{
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::{
+        DefaultListeners, DefaultSpanAdapters,
+        event::{EventDispatcher, Listeners, SpanAdapters},
         opentelemetry::{
             self, InstrumentationScope, KeyValue,
             metrics::UpDownCounter,
@@ -112,6 +114,13 @@ async fn main() {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let exporter_grpc_svc = EasyHttpWebClient::default();
     let exporter_grpc_client =

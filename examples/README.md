@@ -235,6 +235,7 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 - [`quic_h3_mitm_proxy.rs`](./src/quic_h3_mitm_proxy.rs) - Conditional QUIC interception: peeks each association's ClientHello, terminates HTTP/3 for chosen server names and forwards the rest untouched (executable end-to-end coverage in the integration suite)
 - [`quic_terminating_relay.rs`](./src/quic_terminating_relay.rs) - Terminating QUIC relay: presents its own identity downstream and authenticates the origin upstream, carrying client-initiated bidirectional streams
 - [`tcp_listener_fd_passing.rs`](./src/tcp_listener_fd_passing.rs) - FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
+- [`tcp_listener_events.rs`](./src/tcp_listener_events.rs) - TCP listener that uses rama's events: listeners counting open connections, and a span adapter writing a wide log line per connection
 - [`tcp_listener_hello.rs`](./src/tcp_listener_hello.rs) - Basic TCP listener example
 - [`tcp_listener_layers.rs`](./src/tcp_listener_layers.rs) - TCP listener with layers
 - [`tcp_nd_json.rs`](./src/tcp_nd_json.rs) - TCP listener serving a ndjson (Newline Delimited JSON) stream of data

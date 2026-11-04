@@ -4828,6 +4828,7 @@ name = "rama-core"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "arc-swap",
  "asynk-strim",
  "bytes",
  "dial9",
@@ -4846,6 +4847,8 @@ dependencies = [
  "rand 0.10.3",
  "serde",
  "serde_json",
+ "smallvec",
+ "thread_local",
  "tokio",
  "tokio-graceful",
  "tokio-stream",
@@ -4854,6 +4857,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-opentelemetry",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 
@@ -5557,6 +5561,7 @@ dependencies = [
  "rama-utils",
  "rand 0.10.3",
  "tokio",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 

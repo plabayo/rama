@@ -576,6 +576,7 @@ impl ExampleRunner {
             .args(args);
         if capture {
             command
+                .env("NO_COLOR", "1")
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
             #[cfg(windows)]

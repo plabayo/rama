@@ -23,6 +23,10 @@
 //! curl -k -v -x socks5h://127.0.0.1:62022 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
@@ -67,6 +71,13 @@ async fn main() -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());

@@ -57,6 +57,10 @@
 //! the listener side) → server `ncat` on 9001. Replies travel back
 //! through the tunnel the same way.
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters, Subscriptions},
+};
 use std::net::SocketAddr;
 
 use rama::{
@@ -79,7 +83,7 @@ use rama::{
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    init_tracing();
+    let _telemetry = init_tracing();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [m, t, b, p] = args.as_slice() else {
@@ -137,7 +141,7 @@ async fn bridge(udp: UdpSocket, tcp: TcpStream) -> Result<(), BoxError> {
     Ok(())
 }
 
-fn init_tracing() {
+fn init_tracing() -> (Subscriptions, Subscriptions) {
     tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -146,4 +150,13 @@ fn init_tracing() {
                 .from_env_lossy(),
         )
         .init();
+
+    (
+        SpanAdapters::new(EventDispatcher::global())
+            .with_group(DefaultSpanAdapters::tracing)
+            .build(),
+        Listeners::new(EventDispatcher::global())
+            .with_group(DefaultListeners::tracing)
+            .build(),
+    )
 }

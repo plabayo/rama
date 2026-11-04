@@ -3,6 +3,8 @@ use rama::{
     http::client::EasyHttpWebClient,
     rt::Executor,
     telemetry::{
+        DefaultListeners, DefaultSpanAdapters,
+        event::{EventDispatcher, Listeners, SpanAdapters, Subscriptions},
         opentelemetry::{
             KeyValue,
             collector::OtelExporter,
@@ -32,13 +34,16 @@ use std::{
     path::Path,
 };
 
-/// Keeps the tracing writer thread alive; dropping it flushes pending records.
+/// Keeps the tracing writer thread and rama's tracing spans and listeners alive; dropping it
+/// flushes pending records.
 ///
 /// Hold it for the lifetime of the command.
 #[must_use = "dropping the guard stops the tracing writer thread"]
 #[derive(Debug)]
 pub struct TracingGuard {
     _worker: WorkerGuard,
+    _span_adapters: Subscriptions,
+    _listeners: Subscriptions,
 }
 
 /// Write records on a dedicated thread. A `write(2)` per event on a runtime
@@ -49,7 +54,20 @@ fn dedicated_writer<W: Write + Send + 'static>(writer: W) -> (NonBlocking, Traci
         .lossy(false)
         .thread_name("rama-tracing")
         .finish(writer);
-    (writer, TracingGuard { _worker: worker })
+    let span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
+    (
+        writer,
+        TracingGuard {
+            _worker: worker,
+            _span_adapters: span_adapters,
+            _listeners: listeners,
+        },
+    )
 }
 
 pub fn init_tracing(default_directive: impl Into<Directive>) -> Result<TracingGuard, BoxError> {

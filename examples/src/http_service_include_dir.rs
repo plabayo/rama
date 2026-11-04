@@ -22,6 +22,10 @@
     reason = "example: panic-on-error is the standard pattern for demos"
 )]
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use rama::{
     Layer,
     http::{
@@ -51,6 +55,13 @@ async fn main() {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let listener = TcpListener::bind_address("127.0.0.1:62037", Executor::default())
         .await

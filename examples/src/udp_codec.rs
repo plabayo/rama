@@ -33,6 +33,10 @@
     reason = "example: panic-on-error is the standard pattern for demos"
 )]
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use rama::{
     bytes::Bytes,
     error::BoxError,
@@ -64,6 +68,13 @@ async fn main() -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     // pace outgoing pings: their 4 bytes cost against 16 B/s (4 B burst)
     let mut a = PacedSink::new(

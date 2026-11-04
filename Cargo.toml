@@ -266,6 +266,7 @@ static_assertions = "1"
 syn = "3.0"
 sync_wrapper = "1.0"
 terminal-prompt = "0.2"
+thread_local = "1.1"
 time = "0.3.55"
 tokio = "1.54.1"
 tokio-graceful = "0.2"
@@ -812,6 +813,16 @@ harness = false
 [[bench]]
 name = "quic_qlog"
 required-features = ["quic"]
+harness = false
+
+[[bench]]
+name = "events"
+required-features = ["std"]
+harness = false
+
+[[bench]]
+name = "event_spans"
+required-features = ["tcp"]
 harness = false
 
 [[bench]]

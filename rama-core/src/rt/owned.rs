@@ -67,11 +67,15 @@ impl OwnedRuntimeHandle {
     ///
     /// With `dial9` enabled, the task is associated with the exact telemetry
     /// session of the targeted runtime, even when called from another thread.
+    ///
+    /// An active event dispatcher override is carried into the task.
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
+        let future = crate::telemetry::event::inherit(future);
+
         #[cfg(feature = "dial9")]
         {
             ::dial9::spawn_in(&self.tokio, crate::telemetry::dial9::inherit(future))
@@ -260,6 +264,8 @@ impl OwnedRuntime {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
+        let future = crate::telemetry::event::inherit(future);
+
         match &self.inner {
             RuntimeInner::Tokio(runtime) => runtime.block_on(future),
             #[cfg(feature = "dial9")]

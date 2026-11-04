@@ -34,6 +34,9 @@ pub mod conn;
 pub mod extensions;
 pub mod forwarded;
 pub mod gate;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod id;
 pub mod input_ext;
 pub mod ip;
 pub mod mode;

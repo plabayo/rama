@@ -85,6 +85,10 @@
 //! notice that if you try to send for exampel plain-text HTTP traffic over it,
 //! that the connection will be simply aborted.
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, extra::OpaqueError},
@@ -136,6 +140,13 @@ async fn main() -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let shutdown = Shutdown::default();
     let exec = Executor::graceful(shutdown.guard());

@@ -28,6 +28,10 @@
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
 )]
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use rama::{
     Layer,
     futures::async_stream::stream_fn,
@@ -67,6 +71,13 @@ async fn main() {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());

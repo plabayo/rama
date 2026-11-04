@@ -40,6 +40,10 @@
 //! typed application error rendered as `403`, and the second `Mike` request
 //! shows the typed rate-limit error rendered as `429`.
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use std::{
     convert::Infallible,
     fmt::Debug,
@@ -92,6 +96,13 @@ async fn main() -> Result<(), BoxError> {
             "http_advanced_router=trace,rama_http[request]=off",
         ))
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let graceful = graceful::Shutdown::default();
 

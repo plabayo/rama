@@ -18,6 +18,8 @@ mod export;
 pub use export::{ExportReport, export_completed_segments};
 mod health;
 pub use health::{RecorderHealth, RecorderHealthSnapshot};
+mod spans;
+pub use spans::Dial9Operations;
 #[cfg(test)]
 mod tests;
 

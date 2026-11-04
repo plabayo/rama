@@ -30,6 +30,10 @@
     reason = "harness: panic-on-setup-error and the READY line on stdout are intended"
 )]
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use std::{
     convert::Infallible,
     fs,
@@ -152,6 +156,13 @@ async fn main() -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let mut revocation = Revocation::Ocsp;
     let mut leaf_revocation = LeafRevocation::Staple;

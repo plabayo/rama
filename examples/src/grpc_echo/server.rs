@@ -20,6 +20,10 @@
 //!
 //! [`examples/proto/echo.proto`]: https://github.com/plabayo/rama/blob/main/examples/proto/echo.proto
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use rama::{
     error::BoxError,
     http::{
@@ -50,6 +54,13 @@ async fn main() -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     tracing::info!("grpc echo server listening on {ADDR}");
     HttpServer::auto(Executor::default())

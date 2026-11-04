@@ -25,6 +25,7 @@ pub mod pool;
 pub mod posted_recv;
 pub mod proxy;
 pub mod server;
+pub mod telemetry;
 
 pub mod stream;
 pub use stream::{TcpStream, TokioTcpStream};

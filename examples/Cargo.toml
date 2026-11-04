@@ -319,6 +319,11 @@ path = "src/tcp_listener_fd_passing.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "tcp_listener_events"
+path = "src/tcp_listener_events.rs"
+required-features = ["tcp"]
+
+[[bin]]
 name = "tcp_listener_hello"
 path = "src/tcp_listener_hello.rs"
 required-features = ["tcp"]

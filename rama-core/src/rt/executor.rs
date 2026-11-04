@@ -122,6 +122,8 @@ impl Executor {
 /// Prefer [`Executor::spawn_task`] for work that should be awaited on
 /// shutdown.
 ///
+/// An active [`EventDispatcher`] override is carried into the spawned task.
+///
 /// When the `dial9` feature is enabled this routes through
 /// `dial9::spawn`, which wraps the future with
 /// wake-event tracking on a traced runtime and falls through to
@@ -132,12 +134,16 @@ impl Executor {
 ///
 /// Panics if called from outside a tokio runtime context,
 /// same as `tokio::spawn`.
+///
+/// [`EventDispatcher`]: crate::telemetry::event::EventDispatcher
 #[inline]
 #[track_caller]
 pub fn spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>
 where
     F: Future<Output: Send + 'static> + Send + 'static,
 {
+    let future = crate::telemetry::event::inherit(future);
+
     #[cfg(feature = "dial9")]
     {
         ::dial9::spawn(crate::telemetry::dial9::inherit(future))

@@ -40,6 +40,10 @@ mod unix_example {
         time::Duration,
     };
 
+    use rama::telemetry::{
+        DefaultListeners, DefaultSpanAdapters,
+        event::{EventDispatcher, Listeners, SpanAdapters},
+    };
     use rama::{
         error::BoxError,
         graceful::Shutdown,
@@ -89,6 +93,13 @@ mod unix_example {
                     .from_env_lossy(),
             )
             .init();
+
+        let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+            .with_group(DefaultSpanAdapters::tracing)
+            .build();
+        let _listeners = Listeners::new(EventDispatcher::global())
+            .with_group(DefaultListeners::tracing)
+            .build();
 
         tracing::info!("=== Parent Process ===");
         tracing::info!("Creating TCP listener...");
@@ -158,6 +169,13 @@ mod unix_example {
                     .from_env_lossy(),
             )
             .init();
+
+        let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+            .with_group(DefaultSpanAdapters::tracing)
+            .build();
+        let _listeners = Listeners::new(EventDispatcher::global())
+            .with_group(DefaultListeners::tracing)
+            .build();
 
         // Give parent time to set up
         tokio::time::sleep(Duration::from_millis(100)).await;

@@ -31,6 +31,10 @@
     reason = "examples: panic-on-error is the standard pattern"
 )]
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -69,6 +73,13 @@ async fn main() {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let listen: SocketAddress = std::env::var("RAMA_FASTCGI_PHP_LISTEN")
         .ok()

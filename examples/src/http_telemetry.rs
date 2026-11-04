@@ -55,6 +55,8 @@ use rama::{
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::{
+        DefaultListeners, DefaultSpanAdapters,
+        event::{EventDispatcher, Listeners, SpanAdapters},
         opentelemetry::{
             self, InstrumentationScope, KeyValue,
             collector::OtelExporter,
@@ -117,6 +119,13 @@ async fn main() {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let exporter = OtelExporter::new_http(EasyHttpWebClient::default())
         .with_endpoint(Uri::from_static("http://localhost:4318"))
