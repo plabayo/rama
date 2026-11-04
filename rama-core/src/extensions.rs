@@ -2871,6 +2871,7 @@ mod tests {
 #[cfg(test)]
 mod derive_extensions_ref_tests {
     use super::*;
+    use core::marker::PhantomData;
 
     #[derive(Debug, Clone, PartialEq, Eq, Extension)]
     struct Marker(u8);
@@ -2927,6 +2928,32 @@ mod derive_extensions_ref_tests {
 
     fn store<T: ExtensionsRef>(value: &T) -> &Extensions {
         value.extensions()
+    }
+
+    // Inherent consts shadow trait consts only when their bounds hold,
+    // so this answers "is `T: ExtensionsRef`" without a compile failure.
+    struct Probe<T>(PhantomData<T>);
+
+    trait NotForwarding {
+        const FORWARDS: bool;
+    }
+
+    impl<T> NotForwarding for Probe<T> {
+        const FORWARDS: bool = false;
+    }
+
+    impl<T: ExtensionsRef> Probe<T> {
+        const FORWARDS: bool = true;
+    }
+
+    #[test]
+    fn bound_is_placed_on_the_forwarded_field_only() {
+        const {
+            assert!(Probe::<Middleware<Conn, NotExtensions>>::FORWARDS);
+            assert!(!Probe::<Middleware<NotExtensions, Conn>>::FORWARDS);
+            assert!(!Probe::<Newtype<NotExtensions>>::FORWARDS);
+            assert!(Probe::<Owned<NotExtensions>>::FORWARDS);
+        }
     }
 
     #[test]
