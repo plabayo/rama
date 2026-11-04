@@ -1,5 +1,5 @@
 error: `#[derive(ExtensionsRef)]` cannot forward to a `cfg`-gated field: implement `ExtensionsRef` by hand
  --> tests/derive_extensions_ref/fail/cfg_field.rs:7:5
   |
-7 |     #[cfg(not(windows))]
-  |     ^^^^^^^^^^^^^^^^^^^^
+7 |     #[cfg(all())]
+  |     ^^^^^^^^^^^^^

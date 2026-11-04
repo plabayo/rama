@@ -2,9 +2,9 @@ use rama_core::extensions::ExtensionsRef;
 
 #[derive(ExtensionsRef)]
 struct Posted<S> {
-    #[cfg(windows)]
+    #[cfg(any())]
     inner: std::mem::ManuallyDrop<S>,
-    #[cfg(not(windows))]
+    #[cfg(all())]
     inner: S,
 }
 
