@@ -467,16 +467,18 @@ where
     where
         F: FnOnce(PriorityHandle) + Send,
     {
+        let extended = request.extensions().contains::<Protocol>();
+        // Malformed locally, so it must not wait on the handshake to fail.
+        if extended && request.method() != Method::CONNECT {
+            return Err(Error::stream(
+                Code::H3_MESSAGE_ERROR,
+                ":protocol requires CONNECT",
+            ));
+        }
         if !self.sends_early(&request) {
             self.ready().await?;
         }
-        if request.extensions().contains::<Protocol>() {
-            if request.method() != Method::CONNECT {
-                return Err(Error::stream(
-                    Code::H3_MESSAGE_ERROR,
-                    ":protocol requires CONNECT",
-                ));
-            }
+        if extended {
             // RFC 8441 §3: :protocol requires the server's SETTINGS_ENABLE_CONNECT_PROTOCOL.
             let settings = tokio::select! {
                 biased;
