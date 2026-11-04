@@ -244,6 +244,13 @@ span type its own adapters, such as `TcpServerConnectionOpened::tracing_spans()`
 so you can pick exactly what you want, or add your own with `.with(..)`.
 Everything stays added until the value `build` returns is dropped.
 
+### Example
+
+[/examples/src/tcp_listener_events.rs](https://github.com/plabayo/rama/tree/main/examples/src/tcp_listener_events.rs)
+uses the tcp events of a server: listeners that count the open connections,
+and a span adapter of its own that writes one wide log line per connection, with
+how long it lived and how long it was busy.
+
 ## Tests
 
 There is one global dispatcher per process. A test that listens gets its own
