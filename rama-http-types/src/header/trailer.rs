@@ -48,7 +48,10 @@ impl ForbiddenTrailers {
 /// is [`ForbiddenTrailers::DenyAll`].
 #[must_use]
 pub fn is_sent_in_trailers(name: &HeaderName, allowed: Option<&ForbiddenTrailers>) -> bool {
-    !is_never_a_trailer(name)
+    // RFC 8470 §5.1 prohibits sending this field in trailers, but does not
+    // require rejecting a peer that sends it. Keep receive validation lenient.
+    name != header::EARLY_DATA
+        && !is_never_a_trailer(name)
         && (name.is_allowed_in_trailers() || allowed.is_some_and(|allowed| allowed.allows(name)))
 }
 
@@ -63,6 +66,19 @@ pub fn is_never_a_trailer(name: &HeaderName) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn early_data_is_tolerated_on_receipt_but_never_sent_in_trailers() {
+        assert!(!is_never_a_trailer(&header::EARLY_DATA));
+        assert!(!header::EARLY_DATA.is_allowed_in_trailers());
+        for allowed in [
+            None,
+            Some(ForbiddenTrailers::AllowAll),
+            Some(ForbiddenTrailers::AllowSome([header::EARLY_DATA].into())),
+        ] {
+            assert!(!is_sent_in_trailers(&header::EARLY_DATA, allowed.as_ref()));
+        }
+    }
 
     #[test]
     fn trailers_send_allowed_fields_and_opted_in_ones_but_never_framing() {

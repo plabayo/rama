@@ -39,13 +39,18 @@ fn providers() -> Vec<Arc<dyn QuicClientConfigProvider>> {
 #[tokio::test]
 async fn resumed_connections_complete_their_handshake_before_requests() {
     for provider in providers() {
-        timeout(Duration::from_secs(15), resumed_round_trips(provider))
+        for early_requests in [false, true] {
+            timeout(
+                Duration::from_secs(15),
+                resumed_round_trips(provider.clone(), early_requests),
+            )
             .await
             .unwrap();
+        }
     }
 }
 
-async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>) {
+async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>, early_requests: bool) {
     let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
     let server_tls = TlsServerConfig::new()
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
@@ -53,8 +58,13 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>) {
     // The server would accept early data; the connector must still never send any.
     let server = Endpoint::bind_server(
         Executor::new(),
-        ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default().with_early_data(true))
-            .unwrap(),
+        ServerConfig::try_from_rama_tls(
+            &server_tls,
+            TlsOptions::default()
+                .with_early_data(true)
+                .with_early_data_context(Config::default().early_data_context().unwrap()),
+        )
+        .unwrap(),
         SocketAddress::local_ipv4(0),
     )
     .await
@@ -69,7 +79,7 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>) {
         .with_tls_provider(provider)
         .with_tls_config(tls)
         .with_config(Config {
-            early_requests: true,
+            early_requests,
             ..Config::default()
         })
         .build_lazy()
@@ -83,7 +93,9 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>) {
             .get_ref::<QuicConnectionInfo>()
             .copied()
             .expect("quic facts published before requests");
-        assert!(!info.early_data_keys_enabled);
+        if !early_requests {
+            assert!(!info.early_data_keys_enabled);
+        }
         let parameters = service
             .extensions()
             .get_ref::<NegotiatedTlsParameters>()

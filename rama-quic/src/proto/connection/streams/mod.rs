@@ -183,6 +183,16 @@ pub(crate) struct RecvStream<'a> {
 }
 
 impl RecvStream<'_> {
+    /// Whether an authenticated 0-RTT STREAM frame has reached this stream.
+    pub(crate) fn received_early(&self) -> bool {
+        self.state
+            .recv
+            .get(&self.id)
+            .and_then(Option::as_ref)
+            .and_then(state::StreamRecv::as_open_recv)
+            .is_some_and(|recv| recv.received_early)
+    }
+
     /// Read from the given recv stream
     ///
     /// `max_length` limits the maximum size of the returned `Bytes` value; passing `usize::MAX`

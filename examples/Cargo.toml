@@ -22,6 +22,11 @@ path = "src/http_version_proxy.rs"
 required-features = ["http-full", "boring"]
 
 [[bin]]
+name = "http_early_data"
+path = "src/http_early_data.rs"
+required-features = ["http-full"]
+
+[[bin]]
 name = "http3_client_server"
 path = "src/http3_client_server.rs"
 required-features = ["http-full"]

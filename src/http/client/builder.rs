@@ -1,4 +1,4 @@
-use rama_core::rt::Executor;
+use rama_core::{error::extra::OpaqueError, layer::MapInput, rt::Executor};
 
 use super::{
     HttpConnectRequestAdapter, HttpConnector, HttpPooledConnector, HttpPooledConnectorConfig,
@@ -11,8 +11,8 @@ use crate::{
     error::BoxError,
     extensions::ExtensionsRef,
     http::{
-        Request, StreamingBody, client::proxy::layer::HttpProxyConnector,
-        layer::version_adapter::RequestVersionAdapter,
+        Body as ResponseBody, Request, Response, StreamingBody,
+        client::proxy::layer::HttpProxyConnector, layer::version_adapter::RequestVersionAdapter,
     },
     net::client::{
         ConnectRequest, ConnectionError, ConnectorService, EstablishedClientConnection,
@@ -25,6 +25,11 @@ use crate::{
 use rama_http::layer::{
     alt_svc::{AltSvc, AltSvcCache, AltSvcLayer},
     http_service::HttpServiceConnector,
+    retry::{
+        ManagedPolicy, Retry, RetryBody, RetryError,
+        early_data::{is_early_data_rejected, permit_attempt, with_recovery},
+        managed::{PrepareBody, RetryRule},
+    },
 };
 use rama_utils::macros::generate_set_and_with;
 #[cfg(feature = "boring")]
@@ -1108,6 +1113,61 @@ impl<T, D> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage, D> {
 }
 
 impl<T> EasyHttpConnectorBuilder<T, PoolStage> {
+    /// Build a client with one owner for HTTP early-data recovery.
+    ///
+    /// This composes the existing Retry and MapInput services around the client,
+    /// above pool selection. Configure HTTP/3 `Config::early_requests` to make
+    /// early transport available; ordinary clients remain handshake-first.
+    /// That explicit HTTP/3 setting can add an early-data offer to a resumed
+    /// ClientHello even for requests that wait. Leave it off for exact TLS
+    /// fingerprint emulation; compiled captured profiles disable early data.
+    ///
+    /// This helper is optional. Custom recovery middleware can wrap
+    /// [`Self::build_client`] and use [`rama_net::tls::EarlyDataPermit`],
+    /// [`rama_net::tls::ForbidEarlyData`] and the transport facts in
+    /// [`rama_http::proto::ext::early_data`] directly, without Retry or RetryBody.
+    /// The custom owner must isolate each attempt's extensions, retain its
+    /// replayable request, and bound recovery itself.
+    ///
+    /// `prepare_body` decides which bodies to collect and the collection bounds.
+    /// Use [`rama_http::layer::retry::early_data::prepare_bodyless`] to stream
+    /// payloads once, or provide a bounded preparation policy for ordinary payload
+    /// retries. Only safe, truly empty requests may send early, regardless of that
+    /// policy. A 425 with actual original-client early-send evidence, or a
+    /// per-request TLS early rejection, receives one confirmed retry. Forwarded
+    /// 425 responses pass through. Other results use `application_rule`, with
+    /// its normal limits; no additional outer retry loop should own recovery.
+    pub fn build_client_with_early_data<Body, ModifiedBody, ConnResponse, IncomingBody, R, P>(
+        self,
+        application_rule: R,
+        prepare_body: P,
+    ) -> impl Service<Request<Body>, Output = Response, Error = RetryError>
+    where
+        Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+        ModifiedBody:
+            StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+        T: Service<
+                Request<RetryBody>,
+                Output = EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>,
+                Error: Into<BoxError>,
+            >,
+        ConnResponse: Service<Request<ModifiedBody>, Output = Response<IncomingBody>, Error = BoxError>
+            + ExtensionsRef,
+        IncomingBody: Send + Sync + 'static,
+        ResponseBody: From<IncomingBody>,
+        R: RetryRule<Request<RetryBody>, Response, OpaqueError>,
+        P: PrepareBody,
+    {
+        let client = self.build_client::<RetryBody, ModifiedBody, ConnResponse>();
+        let rule = with_recovery(application_rule, |error: &OpaqueError| {
+            is_early_data_rejected(error)
+        });
+        Retry::new(
+            ManagedPolicy::new(rule).with_prepare_body(prepare_body),
+            MapInput::new(client, permit_attempt),
+        )
+    }
+
     /// Build a [`super::EasyHttpWebClient`] using the currently configured connector
     pub fn build_client<Body, ModifiedBody, ConnResponse>(
         self,

@@ -17,7 +17,9 @@ pub(crate) fn identity() -> ServerAuthData {
 }
 
 pub(crate) fn options() -> TlsOptions {
-    TlsOptions::default().with_early_data(true)
+    TlsOptions::default()
+        .with_early_data(true)
+        .with_early_data_context(b"rama-quic-test")
 }
 
 pub(crate) fn client(identity: &ServerAuthData) -> ClientConfig {

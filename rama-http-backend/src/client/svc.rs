@@ -34,7 +34,7 @@ use {
         Error as Http3Error, client as http3, connection::Config as Http3Config,
         transport::BoxedConnection as BoxedQuicConnection,
     },
-    rama_http_types::StatusCode,
+    rama_http_types::{StatusCode, proto::ext::early_data::EarlyDataRejected},
     rama_net::conn::MaxConcurrency,
     rama_tls::client::TlsServerAuthenticatedAliases,
     std::pin::pin,
@@ -368,7 +368,9 @@ fn remote_io_failure(error: &io::Error) -> Option<ConnectionErrorKind> {
 
 #[cfg(feature = "quic")]
 pub(crate) fn classify_http3_error(error: Http3Error) -> BoxError {
-    if error.is_remote_failure() {
+    if error.is_early_request_rejected() {
+        EarlyDataRejected::new(error).into_box_error()
+    } else if error.is_remote_failure() {
         ConnectionError::application(error, ConnectionErrorKind::Unavailable).into_box_error()
     } else {
         ConnectionError::unknown(error).into_box_error()

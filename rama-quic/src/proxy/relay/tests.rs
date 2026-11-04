@@ -57,7 +57,9 @@ async fn hop_with_early_data(
         .unwrap();
     let mut server_config = ServerConfig::try_from_rama_tls(
         &server_tls,
-        TlsOptions::default().with_early_data(early_data),
+        TlsOptions::default()
+            .with_early_data(early_data)
+            .with_early_data_context(b"rama-quic-relay-test"),
     )
     .unwrap();
     let mut transport =

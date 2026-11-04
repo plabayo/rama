@@ -1,5 +1,7 @@
 //! Connection and endpoint lifecycle tests.
 
+mod verification;
+
 use std::{
     assert_matches,
     collections::VecDeque,

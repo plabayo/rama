@@ -1,3 +1,9 @@
+use rama_crypto::digest::sha256_slices;
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+use rama_quic_proto::transport_parameters::TransportParameters;
 use std::fmt;
 
 use rama_core::error::BoxError;
@@ -22,10 +28,37 @@ pub enum ClientSessionPolicy {
 pub struct TlsOptions {
     pub(crate) alpn: AlpnPolicy,
     pub(crate) early_data: bool,
+    pub(crate) early_data_context: Option<[u8; 32]>,
     pub(crate) client_sessions: ClientSessionPolicy,
 }
 
 impl TlsOptions {
+    generate_set_and_with! {
+        /// Bind server 0-RTT acceptance to compatible application settings.
+        /// Required when a server enables early data; clients ignore it.
+        /// It may also be set while early data is disabled, keeping the Rustls
+        /// ticket namespace stable when toggling early acceptance.
+        /// Include every application setting or state a resumed early request
+        /// could violate. A changed context rejects early data; Rustls also
+        /// declines ordinary resumption. QUIC transport parameters are bound
+        /// separately by the provider. This does not prevent cross-connection replay.
+        pub fn early_data_context(mut self, context: impl AsRef<[u8]>) -> Self {
+            self.early_data_context = Some(application_context(context.as_ref()));
+            self
+        }
+    }
+
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
+    pub(crate) fn validate_server(&self) -> Result<(), TlsConfigError> {
+        if self.early_data && self.early_data_context.is_none() {
+            return Err(TlsConfigError::EarlyDataContextRequired);
+        }
+        Ok(())
+    }
+
     generate_set_and_with! {
         /// Client ticket policy. Servers ignore this client-only option.
         /// Connection pooling remains an independent application decision.
@@ -46,6 +79,8 @@ impl TlsOptions {
     }
     generate_set_and_with! {
         /// Allow early application data, which a peer may replay. Disabled by default.
+        /// Servers must also supply [`Self::with_early_data_context`]; construction
+        /// fails without it. Clients only need this explicit send capability.
         pub fn early_data(mut self, allowed: bool) -> Self {
             self.early_data = allowed;
             self
@@ -62,6 +97,7 @@ pub enum TlsConfigError {
     InvalidAlpn,
     UnsupportedDynamicConfig,
     EarlyDataNotEnabled,
+    EarlyDataContextRequired,
     NoInitialCipherSuite(NoInitialCipherSuite),
     InvalidConfiguration(BoxError),
 }
@@ -85,6 +121,9 @@ impl fmt::Display for TlsConfigError {
             ),
             Self::EarlyDataNotEnabled => {
                 f.write_str("TLS configuration enables early data without QUIC application opt-in")
+            }
+            Self::EarlyDataContextRequired => {
+                f.write_str("server early data requires an application compatibility context")
             }
             Self::NoInitialCipherSuite(error) => error.fmt(f),
             Self::InvalidConfiguration(error) => {
@@ -133,3 +172,54 @@ impl fmt::Display for NoInitialCipherSuite {
 }
 
 impl std::error::Error for NoInitialCipherSuite {}
+
+/// Domain-separated application context, retained without allocations in TLS options.
+pub(crate) fn application_context(context: &[u8]) -> [u8; 32] {
+    sha256_slices([b"rama-quic-application-0rtt-v1".as_slice(), context])
+}
+
+/// Bind tickets to stable transport parameters and the application's configuration.
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+pub(crate) fn server_early_context(
+    params: &TransportParameters,
+    application: Option<[u8; 32]>,
+    encoded: &mut Vec<u8>,
+) -> [u8; 32] {
+    let stable = TransportParameters {
+        initial_src_cid: None,
+        original_dst_cid: None,
+        retry_src_cid: None,
+        stateless_reset_token: None,
+        preferred_address: None,
+        grease_transport_parameter: None,
+        extra: Vec::new(),
+        write_plan: None,
+        version_information: None,
+        max_idle_timeout: params.max_idle_timeout,
+        max_udp_payload_size: params.max_udp_payload_size,
+        initial_max_data: params.initial_max_data,
+        initial_max_stream_data_bidi_local: params.initial_max_stream_data_bidi_local,
+        initial_max_stream_data_bidi_remote: params.initial_max_stream_data_bidi_remote,
+        initial_max_stream_data_uni: params.initial_max_stream_data_uni,
+        initial_max_streams_bidi: params.initial_max_streams_bidi,
+        initial_max_streams_uni: params.initial_max_streams_uni,
+        ack_delay_exponent: params.ack_delay_exponent,
+        max_ack_delay: params.max_ack_delay,
+        active_connection_id_limit: params.active_connection_id_limit,
+        disable_active_migration: params.disable_active_migration,
+        max_datagram_frame_size: params.max_datagram_frame_size,
+        grease_quic_bit: params.grease_quic_bit,
+        min_ack_delay: params.min_ack_delay,
+    };
+    encoded.clear();
+    stable.write(encoded);
+    sha256_slices([
+        b"rama-quic-server-0rtt-v1".as_slice(),
+        encoded,
+        &[u8::from(application.is_some())],
+        application.as_ref().map_or(&[], |value| value.as_slice()),
+    ])
+}

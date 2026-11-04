@@ -594,6 +594,12 @@ standard_headers! {
     /// Contains the date and time at which the message was originated.
     (Date, DATE, b"date");
 
+    /// Indicates that a request was conveyed in early data on an earlier hop.
+    ///
+    /// RFC 8470 defines the single value `1`. Servers treat any present value,
+    /// including invalid or repeated values, as equivalent to `1`.
+    (EarlyData, EARLY_DATA, b"early-data");
+
     /// Identifier for a specific version of a resource.
     ///
     /// This header allows caches to be more efficient, and saves bandwidth, as

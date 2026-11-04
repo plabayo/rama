@@ -40,6 +40,7 @@ use super::{Endpoint, EndpointConfig, RecvStream, SendDatagramError, SendStream,
 
 mod admission;
 mod closing;
+mod early_data;
 mod owned;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 mod resumption;

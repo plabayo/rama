@@ -30,7 +30,7 @@ use crate::{
     },
     http::{
         ClientRequest, ReplayLimits,
-        headers::{SanitizedHttpHead, restore_proxy_header},
+        headers::{HttpHeadKind, SanitizedHttpHead, restore_proxy_header},
     },
     message::Response as IcapResponse,
     proto::{Method, header},
@@ -540,7 +540,8 @@ where
     let upgrade = service
         .upgrade_encapsulation()
         .tokens(Some(&request), None::<&HttpResponse<()>>);
-    let original_head = SanitizedHttpHead::take(request.headers_mut(), version);
+    let original_head =
+        SanitizedHttpHead::take(request.headers_mut(), version, HttpHeadKind::Request);
     normalize_request_authority(&mut request)?;
     let preview = (!request.body().is_end_stream())
         .then_some(policy.preview)
@@ -590,7 +591,8 @@ where
             .into_request()
             .context("decode ICAP REQMOD request result")?;
         let version = request.version();
-        let effective_head = sanitize_adapted_http_headers(request.headers_mut(), version);
+        let effective_head =
+            sanitize_adapted_http_headers(request.headers_mut(), version, HttpHeadKind::Request);
         original_head.restore_request(
             request.headers_mut(),
             version,
@@ -611,7 +613,8 @@ where
             .into_response()
             .context("decode ICAP REQMOD response result")?;
         let version = response.version();
-        let effective_head = sanitize_adapted_http_headers(response.headers_mut(), version);
+        let effective_head =
+            sanitize_adapted_http_headers(response.headers_mut(), version, HttpHeadKind::Response);
         restore_proxy_header(
             response.headers_mut(),
             &http_header::PROXY_AUTHENTICATE,
@@ -661,10 +664,18 @@ where
     let upgrade = service
         .upgrade_encapsulation()
         .tokens(Some(&request), Some(&response));
-    let request_head = SanitizedHttpHead::take(request.headers_mut(), request_version);
+    let request_head = SanitizedHttpHead::take(
+        request.headers_mut(),
+        request_version,
+        HttpHeadKind::Request,
+    );
     normalize_request_authority(&mut request)?;
     let response_version = response.version();
-    let original_response_head = SanitizedHttpHead::take(response.headers_mut(), response_version);
+    let original_response_head = SanitizedHttpHead::take(
+        response.headers_mut(),
+        response_version,
+        HttpHeadKind::Response,
+    );
     let mut forwarded = request_head.forwarded_icap_headers().to_vec();
     forwarded.extend_from_slice(original_response_head.forwarded_icap_headers());
     let preview = (!response.body().is_end_stream())
@@ -719,7 +730,8 @@ where
         .into_response()
         .context("decode ICAP RESPMOD result")?;
     let version = response.version();
-    let effective_head = sanitize_adapted_http_headers(response.headers_mut(), version);
+    let effective_head =
+        sanitize_adapted_http_headers(response.headers_mut(), version, HttpHeadKind::Response);
     original_response_head.restore_response(
         response.headers_mut(),
         version,

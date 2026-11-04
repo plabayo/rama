@@ -234,7 +234,9 @@ async fn hop_with_transports(
         .with_alpn([b"h3".as_slice().into()].into_iter().collect())
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
         .unwrap();
-    let options = TlsOptions::default().with_early_data(early_data);
+    let options = TlsOptions::default()
+        .with_early_data(early_data)
+        .with_early_data_context(Config::default().early_data_context().unwrap());
     let mut server_config = ServerConfig::try_from_rama_tls(&server_tls, options).unwrap();
     let mut client_config = ClientConfig::try_from_rama_tls(&client_tls, options).unwrap();
     if let Some(transport) = server_transport {

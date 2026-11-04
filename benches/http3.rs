@@ -4,11 +4,12 @@
 )]
 
 use rama::{
+    Service as _,
     bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef as _,
     futures::stream,
     http::{
-        Body, Method, Request, Response,
+        Body, Method, Request, Response, StatusCode,
         body::{Frame, util::BodyExt as _},
         core::h3::{
             client,
@@ -18,18 +19,28 @@ use rama::{
             server,
             transport::{self, BoxedConnection},
         },
+        layer::retry::{
+            ManagedPolicy, Retry, RetryBody,
+            early_data::{permit_attempt, prepare_bodyless, with_recovery},
+        },
+        proto::ext::early_data::{EarlyDataAttempt, EarlyDataReceived},
         proto::h3::{
             FrameHeader, FrameType, VarInt,
             qpack::{DecoderInstruction, EncoderInstruction},
         },
     },
-    net::{address::SocketAddress, tls::ApplicationProtocol},
+    layer::MapInput,
+    net::{
+        address::SocketAddress,
+        tls::{ApplicationProtocol, ForbidEarlyData},
+    },
     quic::{
         ClientConfig, Connection, Endpoint, TransportConfig,
         proto::capture::QuicObservation,
         tls::{ClientSessionPolicy, TlsOptions},
     },
     rt::Executor,
+    service::service_fn,
     tls::{
         client::TlsClientConfig,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -545,4 +556,69 @@ fn qpack_fragmented_encoder_literals(bencher: divan::Bencher, size: usize) {
             assert_eq!(decoder.insert_count(), 1);
             divan::black_box(decoder);
         });
+}
+
+// These opt-in microbenchmarks isolate policy/metadata allocation costs. They do
+// not model network latency or claim a measured 0-RTT speedup.
+#[divan::bench(args = [false, true])]
+fn early_recovery_middleware(bencher: divan::Bencher, rejects: bool) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let application_rule =
+        async |request, result: Result<Response, Infallible>| (request, result, false);
+    let policy = ManagedPolicy::new(with_recovery(application_rule, |_| false))
+        .with_prepare_body(prepare_bodyless);
+    let service = Retry::new(
+        policy,
+        MapInput::new(
+            service_fn(move |request: Request<RetryBody>| async move {
+                let mut response = Response::new(Body::empty());
+                if rejects && !request.extensions().contains::<ForbidEarlyData>() {
+                    *response.status_mut() = StatusCode::TOO_EARLY;
+                    // Simulated transport evidence; no TLS or socket work is measured here.
+                    response
+                        .extensions()
+                        .insert(EarlyDataAttempt::sent_early(&request));
+                }
+                Ok::<_, Infallible>(response)
+            }),
+            permit_attempt,
+        ),
+    );
+    bencher.bench_local(|| {
+        let response = runtime
+            .block_on(service.serve(Request::new(Body::empty())))
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        divan::black_box(response);
+    });
+}
+
+#[divan::bench]
+fn early_receipt_and_confirmation(bencher: divan::Bencher) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let connection = Arc::new(());
+    bencher.bench_local(|| {
+        let connection = connection.clone();
+        let received = EarlyDataReceived::new(move || {
+            let connection = connection.clone();
+            async move {
+                divan::black_box(connection);
+                Ok(())
+            }
+        });
+        runtime.block_on(received.confirmed()).unwrap();
+    });
+}
+
+#[divan::bench]
+fn early_settings_context(bencher: divan::Bencher) {
+    let config = Config::default();
+    bencher.bench(|| {
+        let context = config.early_data_context().unwrap();
+        divan::black_box(TlsOptions::default().with_early_data_context(context));
+    });
 }

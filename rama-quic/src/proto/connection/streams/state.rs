@@ -333,6 +333,25 @@ impl StreamsState {
         self.connection_blocked.clear();
     }
 
+    /// A successfully authenticated early STREAM frame leaves sticky receipt provenance.
+    pub(crate) fn received_early(
+        &mut self,
+        frame: frame::Stream,
+        allocated: usize,
+    ) -> Result<ShouldTransmit, TransportError> {
+        let id = frame.id;
+        let transmit = self.received(frame, allocated)?;
+        if let Some(recv) = self
+            .recv
+            .get_mut(&id)
+            .and_then(Option::as_mut)
+            .and_then(StreamRecv::as_open_recv_mut)
+        {
+            recv.received_early = true;
+        }
+        Ok(transmit)
+    }
+
     /// Process incoming stream frame
     ///
     /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted

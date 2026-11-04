@@ -111,7 +111,7 @@ where
                 let body = this.body.take().expect("polled after complete");
                 let after = this.timeout.expect("sleep present implies a timeout");
                 return Poll::Ready(Err(CollectError::stopped(
-                    read.to_bytes(),
+                    read,
                     Body::new(body),
                     CollectErrorKind::TimedOut { after },
                 )));
@@ -146,7 +146,7 @@ where
                             let body = this.body.take().expect("polled after complete");
                             let remainder = Body::new(Chain::new(Full::new(data), body));
                             return Poll::Ready(Err(CollectError::stopped(
-                                read.to_bytes(),
+                                read,
                                 remainder,
                                 CollectErrorKind::CapReached { limit: max },
                             )));
@@ -176,13 +176,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::CollectOptions;
-    use crate::Body;
     use crate::body::util::{BodyExt, CollectErrorKind};
+    use crate::{Body, HeaderMap, body::Frame};
     use bytes::Bytes;
     use rama_core::error::BoxError;
     use rama_core::futures::{StreamExt, stream};
     use std::assert_matches;
-    use std::time::Duration;
+    use std::{future::Future as _, pin::Pin, task::Poll, time::Duration};
 
     fn body_from_chunks(chunks: &[&'static [u8]]) -> Body {
         let items: Vec<Result<Bytes, BoxError>> =
@@ -192,6 +192,38 @@ mod tests {
 
     async fn drain(body: Body) -> Vec<u8> {
         body.collect().await.unwrap().to_bytes().to_vec()
+    }
+
+    #[tokio::test]
+    async fn timeout_preserves_already_collected_trailers() {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-checksum", "hello".parse().unwrap());
+        let expected = trailers.clone();
+        let mut frames = [
+            Frame::data(Bytes::from_static(b"hello")),
+            Frame::trailers(trailers),
+        ]
+        .into_iter();
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        let body = Body::from_frame_stream(stream::poll_fn(move |cx| {
+            if let Some(frame) = frames.next() {
+                return Poll::Ready(Some(Ok::<_, BoxError>(frame)));
+            }
+            Pin::new(&mut rx).poll(cx).map(|result| {
+                result.unwrap();
+                None
+            })
+        }));
+        let error = body
+            .collect_with(CollectOptions::new().with_timeout(Duration::from_millis(10)))
+            .await
+            .unwrap_err();
+        assert!(error.is_timed_out());
+        assert_eq!(error.bytes_read(), "hello");
+        tx.send(()).unwrap();
+        let mut recovered = error.into_full_body().unwrap().collect().await.unwrap();
+        assert_eq!(recovered.take_trailers(), Some(expected));
+        assert_eq!(recovered.to_bytes(), "hello");
     }
 
     #[tokio::test]

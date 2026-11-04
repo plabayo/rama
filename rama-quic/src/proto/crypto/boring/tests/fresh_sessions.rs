@@ -17,6 +17,7 @@ fn fresh_client_policy_keeps_full_handshakes_across_providers_and_versions() {
             let (client, server) = configs();
             let options = TlsOptions::default()
                 .with_early_data(true)
+                .with_early_data_context(b"rama-quic-test")
                 .with_client_sessions(policy);
             let client = provider.client_config(&client, options).unwrap().crypto;
             let server = provider
@@ -51,7 +52,9 @@ fn fresh_boring_sessions_neither_consume_warm_tickets_nor_retain_new_ones() {
         client
             .as_extensions()
             .extend(&SharedClientSessions::defaults());
-        let options = TlsOptions::default().with_early_data(true);
+        let options = TlsOptions::default()
+            .with_early_data(true)
+            .with_early_data_context(b"rama-quic-test");
         let reusable = Arc::new(QuicClientConfig::from_rama(&client, options).unwrap());
         let server = Arc::new(QuicServerConfig::from_rama(&server, options).unwrap());
         if warm {

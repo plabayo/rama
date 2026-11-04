@@ -135,6 +135,8 @@
 //! # }
 //! ```
 
+pub mod early_data;
+
 mod accept_header;
 mod bound_authority;
 mod validate;

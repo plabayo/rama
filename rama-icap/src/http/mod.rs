@@ -24,8 +24,8 @@ use rama_http_types::{
 use rama_net::{address::Authority, uri::Uri};
 
 use self::headers::{
-    ForwardedIcapHeader, SanitizedHttpHead, connection_nominated_headers, response_proxy_headers,
-    validate_http_trailers,
+    ForwardedIcapHeader, HttpHeadKind, SanitizedHttpHead, connection_nominated_headers,
+    response_proxy_headers, validate_http_trailers,
 };
 use crate::{
     client::{
@@ -2418,7 +2418,8 @@ fn prepare_request_head<T>(
     let mut request = HttpRequest::from_parts(request.clone_parts(), ());
     let version = request.version();
     let (promoted, trailer_forbidden) =
-        SanitizedHttpHead::take(request.headers_mut(), version).into_forwarded_and_nominated();
+        SanitizedHttpHead::take(request.headers_mut(), version, HttpHeadKind::Request)
+            .into_forwarded_and_nominated();
     if extended_connect_protocol(&request).is_some() {
         *request.method_mut() = HttpMethod::GET;
     }
@@ -2494,7 +2495,8 @@ fn prepare_response_head<T>(
     let mut response = HttpResponse::from_parts(response.clone_parts(), ());
     let version = response.version();
     let (promoted, trailer_forbidden) =
-        SanitizedHttpHead::take(response.headers_mut(), version).into_forwarded_and_nominated();
+        SanitizedHttpHead::take(response.headers_mut(), version, HttpHeadKind::Response)
+            .into_forwarded_and_nominated();
     if switching {
         *response.status_mut() = HttpStatusCode::SWITCHING_PROTOCOLS;
     }
@@ -2844,6 +2846,24 @@ mod tests {
     const OPAQUE_SERVICE_TAG: ServiceTag = ServiceTag::from_static(r#"rama "test"\http"#);
     use rama_core::{bytes::Bytes, extensions::Extension, futures::stream};
     use rama_http_types::{HeaderValue, body::util::BodyExt as _};
+
+    #[test]
+    fn early_data_response_encapsulation_uses_only_connection_nominations() {
+        for nominated in [false, true] {
+            let mut response = HttpResponse::new(());
+            response
+                .headers_mut()
+                .insert("early-data", HeaderValue::from_static("invalid"));
+            if nominated {
+                response
+                    .headers_mut()
+                    .insert("connection", HeaderValue::from_static("Early-Data"));
+            }
+            let (head, _, _) = prepare_response_head(&response, None, false);
+            assert_eq!(head.headers().contains_key("early-data"), !nominated);
+            assert!(!head.headers().contains_key("connection"));
+        }
+    }
 
     #[derive(Debug, Extension)]
     struct ConnectionMarker;

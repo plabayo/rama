@@ -88,7 +88,11 @@ pub struct NegotiatedTlsParameters {
     ///
     /// e.g. [`ApplicationProtocol::HTTP_2`]
     pub application_layer_protocol: Option<ApplicationProtocol>,
-    /// Certificate chain provided the peer (only stored if config requested this)
+    /// Certificate chain provided by the peer (only stored if config requested this).
+    /// QUIC early handles omit it until authentication completes. On an early
+    /// HTTP request, await `EarlyDataReceived::confirmed()` and then read the
+    /// connection's extensions again before relying on peer identity. Absence
+    /// before confirmation does not mean the peer has no certificate.
     pub peer_certificate_chain: Option<Vec<CertificateDer<'static>>>,
     /// Received SNI on a server, not a verified peer identity. Absent on clients
     /// and when the peer omits SNI (including IP-address connections).
