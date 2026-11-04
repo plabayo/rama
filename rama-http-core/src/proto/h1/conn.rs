@@ -1250,8 +1250,10 @@ mod tests {
     use std::assert_matches;
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+    #[derive(ExtensionsRef)]
     struct TestIo<I> {
         inner: I,
+        #[extensions_ref]
         extensions: Extensions,
     }
 
@@ -1289,12 +1291,6 @@ mod tests {
 
         fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Pin::new(&mut self.inner).poll_shutdown(cx)
-        }
-    }
-
-    impl<I> ExtensionsRef for TestIo<I> {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
         }
     }
 

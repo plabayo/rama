@@ -3,6 +3,7 @@ use crate::{Body, Request, Response, StatusCode, StreamingBody};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_http_headers::Location;
 use rama_net::uri::{UriMatchError, UriMatchReplace};
@@ -16,7 +17,7 @@ use std::borrow::Cow;
 /// instead makes serves the request and produces a response.
 ///
 /// [`Uri`]: rama_net::uri::Uri
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct UriMatchRedirectService<R, S> {
     status_code: StatusCode,
     match_replace: R,

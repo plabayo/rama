@@ -68,6 +68,7 @@ use std::{fmt, marker::PhantomData};
 /// and inserts it into the [`Extensions`] of that object.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
+#[derive(ExtensionsRef)]
 pub struct HeaderFromStrConfigService<T, S, C = Vec<T>> {
     inner: S,
     header_name: HeaderName,

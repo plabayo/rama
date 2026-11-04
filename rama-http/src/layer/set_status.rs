@@ -35,7 +35,7 @@
 //! ```
 
 use crate::{Request, Response, StatusCode};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Layer that applies [`SetStatus`] which overrides the status codes.
@@ -73,7 +73,7 @@ impl<S> Layer<S> for SetStatusLayer {
 /// Middleware to override status codes.
 ///
 /// See the [module docs](self) for more details.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct SetStatus<S> {
     inner: S,
     status: StatusCode,

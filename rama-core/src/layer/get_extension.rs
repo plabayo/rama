@@ -79,6 +79,7 @@ where
 }
 
 /// Middleware for retrieving an owned [`Arc`] value from input extensions.
+#[derive(ExtensionsRef)]
 pub struct GetInputExtensionOwned<S, T, Fut, F> {
     inner: S,
     callback: F,
@@ -217,6 +218,7 @@ where
 }
 
 /// Middleware for retrieving a shared reference from input extensions.
+#[derive(ExtensionsRef)]
 pub struct GetInputExtensionRef<S, T, F> {
     inner: S,
     callback: F,
@@ -352,6 +354,7 @@ where
 }
 
 /// Middleware for retrieving an owned [`Arc`] value from output extensions.
+#[derive(ExtensionsRef)]
 pub struct GetOutputExtensionOwned<S, T, Fut, F> {
     inner: S,
     callback: F,
@@ -491,6 +494,7 @@ where
 }
 
 /// Middleware for retrieving a shared reference from output extensions.
+#[derive(ExtensionsRef)]
 pub struct GetOutputExtensionRef<S, T, F> {
     inner: S,
     callback: F,

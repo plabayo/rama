@@ -19,7 +19,9 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadHalf};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use rama_core::{Service, bytes::Bytes, error::BoxError, io::Io, telemetry::tracing};
+use rama_core::{
+    Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef, io::Io, telemetry::tracing,
+};
 
 use crate::body::FastCgiBody;
 use crate::proto::{ProtocolError, Role};
@@ -35,7 +37,7 @@ use crate::proto::{ProtocolError, Role};
 /// All three FastCGI roles are dispatched to the inner service:
 /// [`Role::Responder`], [`Role::Authorizer`], and [`Role::Filter`].
 /// The service inspects `req.role` to handle each case appropriately.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct FastCgiServer<S> {
     inner: S,
     options: ServerOptions,

@@ -5,13 +5,13 @@ use super::{
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
-    extensions::{Extensions, ExtensionsRef as _},
+    extensions::{Extensions, ExtensionsRef},
 };
 use rama_http::{
     HeaderMap, Request, Response, StreamingBody as _, Version, io::upgrade::handle_upgrade,
 };
 use rama_net::Protocol;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 /// Prepare a CONNECT-IP handshake from a configured endpoint and typed scope.
 ///
@@ -133,12 +133,14 @@ impl ConnectIpRequestBuilder {
 }
 
 /// Adapt an HTTP client into a service opening prepared CONNECT-IP sessions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ConnectIpConnector<S> {
     inner: S,
 }
 
 impl<S> ConnectIpConnector<S> {
+    define_inner_service_accessors!();
+
     /// Wrap an HTTP client service, retaining its authentication and transport layers.
     pub const fn new(inner: S) -> Self {
         Self { inner }

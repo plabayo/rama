@@ -56,7 +56,7 @@
 //! ```
 
 use crate::{Request, Response};
-use rama_core::{Layer, Service, bytes::Bytes, error::BoxError};
+use rama_core::{Layer, Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef};
 use rama_http_types::StreamingBody;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -128,7 +128,7 @@ impl<F> fmt::Debug for MapRequestBodyLayer<F> {
 /// Apply a transformation to the request body.
 ///
 /// See the [module docs](crate::layer::map_request_body) for an example.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct MapRequestBody<S, F> {
     inner: S,
     f: F,

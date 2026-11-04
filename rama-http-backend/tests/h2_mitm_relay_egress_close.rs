@@ -34,7 +34,7 @@ use rama_core::{
     Layer, Service,
     bytes::Bytes,
     error::{BoxError, BoxErrorExt as _},
-    extensions::ExtensionsRef as _,
+    extensions::ExtensionsRef,
     graceful::Shutdown,
     io::BridgeIo,
     layer::{ArcLayer, ConsumeErrLayer},
@@ -113,7 +113,7 @@ impl<S> Layer<S> for GateLayer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 struct Gate<S> {
     inner: S,
     gates: GateLayer,

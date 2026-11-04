@@ -151,7 +151,7 @@
 //! ```
 
 use crate::{HeaderValue, Request, Response, header::HeaderName, headers::HeaderEncode};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http_headers::TypedHeader;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -401,7 +401,7 @@ where
 }
 
 /// Middleware that sets a header on the response.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct SetResponseHeader<S, M> {
     inner: S,
     header_name: HeaderName,

@@ -1,7 +1,7 @@
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
 use crate::{Request, Response};
 use rama_core::error::BoxError;
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http_types::mime::Mime;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -70,7 +70,7 @@ where
 /// Middleware that validates requests.
 ///
 /// See the [module docs](crate::layer::validate_request) for an example.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ValidateRequestHeader<S, T> {
     inner: S,
     pub(crate) validate: T,

@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
+    extensions::ExtensionsRef,
 };
 use rama_net::{Protocol, uri::file_uri_path};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
@@ -76,7 +77,7 @@ impl<S> Layer<S> for FileUriLayer {
 /// Serve `file://` request URIs from the local filesystem.
 ///
 /// See the [module docs](crate::layer::uri::file) for an example.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct FileUriService<S> {
     inner: S,
     jail: Option<PathBuf>,

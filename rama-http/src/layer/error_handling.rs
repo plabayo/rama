@@ -48,7 +48,7 @@
 
 use crate::service::web::response::{ErrorResponse, IntoResponse};
 use crate::{Request, Response};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 use std::convert::Infallible;
 
@@ -93,7 +93,7 @@ impl<S, F: Clone> Layer<S> for ErrorHandlerLayer<F> {
 }
 
 /// A [`Service`] adapter that handles errors by converting them into [`Response`]s.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ErrorHandler<S, F = ()> {
     inner: S,
     error_mapper: F,

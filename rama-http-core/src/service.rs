@@ -1,5 +1,5 @@
 use rama_core::bytes::Bytes;
-use rama_core::extensions::{Extensions, ExtensionsRef as _, Ingress};
+use rama_core::extensions::{Extensions, ExtensionsRef, Ingress};
 use rama_core::telemetry::tracing::{Instrument, trace_root_span};
 use rama_core::{Service, error::BoxError};
 use rama_http::StreamingBody;
@@ -8,7 +8,7 @@ use rama_http::service::web::response::IntoResponse;
 use rama_http_types::{Body, BodyLimit, Request, Response, body::util::Limited};
 use std::{convert::Infallible, fmt};
 
-#[derive(Clone, fmt::Debug)]
+#[derive(Clone, fmt::Debug, ExtensionsRef)]
 pub struct RamaHttpService<S> {
     svc: S,
 }

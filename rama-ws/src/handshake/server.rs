@@ -634,11 +634,12 @@ where
 ///
 /// Created via [`WebSocketAcceptor::into_service`]
 /// or `WebSocketAcceptor::into_echo_service`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct WebSocketAcceptorService<S> {
     acceptor: WebSocketAcceptor,
     config: Option<WebSocketConfig>,
     exec: Option<Executor>,
+    #[extensions_ref]
     service: S,
 }
 
@@ -652,7 +653,7 @@ impl<S> WebSocketAcceptorService<S> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 /// Server WebSocket, used as input-output stream.
 ///
 /// Utility type created via [`WebSocketAcceptorService`].
@@ -662,6 +663,7 @@ impl<S> WebSocketAcceptorService<S> {
 /// [`AcceptedWebSocketProtocol`]: headers::sec_websocket_protocol::AcceptedWebSocketProtocol
 pub struct ServerWebSocket<S = AsyncWebSocket> {
     /// Established WebSocket message transport.
+    #[extensions_ref]
     pub socket: S,
     /// Original HTTP handshake request metadata.
     pub request: request::Parts,
@@ -712,15 +714,6 @@ where
 
     fn poll_close(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Sink::poll_close(Pin::new(&mut self.get_mut().socket), ctx)
-    }
-}
-
-impl<S> ExtensionsRef for ServerWebSocket<S>
-where
-    S: ExtensionsRef,
-{
-    fn extensions(&self) -> &Extensions {
-        self.socket.extensions()
     }
 }
 

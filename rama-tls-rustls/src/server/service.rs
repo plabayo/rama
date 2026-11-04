@@ -21,7 +21,7 @@ use rama_utils::macros::define_inner_service_accessors;
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct TlsAcceptorService<S> {
     config: TlsServerConfig,
     store_client_hello: bool,

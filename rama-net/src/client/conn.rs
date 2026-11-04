@@ -72,7 +72,7 @@ where
 
 /// A [`ConnectorService`] which only job is to [`Box`]
 /// the created [`Service`] by the inner [`ConnectorService`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct BoxedConnectorService<S>(S);
 
 impl<S> BoxedConnectorService<S> {

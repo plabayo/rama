@@ -5,6 +5,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef,
 };
 use rama_http_types::{Request, Response};
 use rama_net::client::EstablishedClientConnection;
@@ -38,7 +39,7 @@ use super::convert::{fastcgi_response_to_http, http_request_to_fastcgi};
 ///
 /// The returned [`EstablishedClientConnection`] carries the IO stream ready for
 /// use with [`send_on`][crate::client::send_on] or inside [`FastCgiHttpClient`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct FastCgiHttpClientConnector<S> {
     inner: S,
 }
@@ -86,7 +87,7 @@ where
 /// 3. Connects to the backend via the inner connector.
 /// 4. Runs the FastCGI exchange.
 /// 5. Parses the CGI stdout into an HTTP [`Response`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct FastCgiHttpClient<S> {
     inner: S,
 }

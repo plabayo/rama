@@ -28,6 +28,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef,
 };
 use rama_net::client::EstablishedClientConnection;
 use rama_utils::macros::define_inner_service_accessors;
@@ -38,7 +39,7 @@ use rama_utils::macros::define_inner_service_accessors;
 /// the FastCGI protocol framing over it and returns the response.
 ///
 /// For one-shot use on an already-established stream, see [`send_on`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct FastCgiClient<S> {
     inner: S,
     options: ClientOptions,

@@ -192,6 +192,7 @@ async fn retry_mutating_policy() {
 
 /// A per-request decider: stamps a fresh `AttemptDecision` unless this attempt already carries one
 /// — the shape of every request-dependent decider (route selection, DNS overwrite, ...).
+#[derive(ExtensionsRef)]
 struct AttemptDecider<S> {
     inner: S,
     seen: Arc<Mutex<Vec<usize>>>,

@@ -215,7 +215,7 @@ impl<S> Layer<S> for HttpServiceLayer {
 /// protocols and routes before network I/O with [`ConnectionErrorDomain::Local`]
 /// and [`ConnectionErrorKind::Unavailable`]. Such refusals leave cached endpoint
 /// health and the network-attempt budget unchanged; no capability list is needed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct HttpServiceConnector<S> {
     inner: S,
     policy: HttpServiceLayer,

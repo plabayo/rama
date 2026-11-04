@@ -17,7 +17,7 @@ use crate::{client::ClientConnection, io::ConnectionOptions};
 /// Do **not** leave `drop_connection_if_no_response` enabled on the inner
 /// pool. ICAP reports unusable transports through Rama's shared health
 /// watcher.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct Client<S> {
     inner: S,
     options: ConnectionOptions,

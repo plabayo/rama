@@ -4194,7 +4194,9 @@ where
     Ok(buf)
 }
 
+#[derive(ExtensionsRef)]
 struct DebugStream<T, D> {
+    #[extensions_ref]
     stream: T,
     _debug: D,
 }

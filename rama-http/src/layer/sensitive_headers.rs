@@ -39,7 +39,7 @@
 //! ```
 
 use crate::{HeaderName, Request, Response, header};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
 
@@ -147,7 +147,7 @@ impl<S> Layer<S> for SetSensitiveRequestHeadersLayer {
 /// See the [module docs](crate::layer::sensitive_headers) for more details.
 ///
 /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct SetSensitiveRequestHeaders<S> {
     inner: S,
     headers: Arc<[HeaderName]>,
@@ -245,7 +245,7 @@ impl<S> Layer<S> for SetSensitiveResponseHeadersLayer {
 /// See the [module docs](crate::layer::sensitive_headers) for more details.
 ///
 /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct SetSensitiveResponseHeaders<S> {
     inner: S,
     headers: Arc<[HeaderName]>,

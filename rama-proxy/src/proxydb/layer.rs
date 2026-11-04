@@ -35,7 +35,7 @@ pub const DEFAULT_PROXY_DB_MAX_PROXIES: NonZeroUsize = NonZeroUsize::new(5).unwr
 /// See [the crate docs](crate) for examples and more info on the usage of this service.
 ///
 /// [`Proxy`]: crate::Proxy
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProxyDBService<S, D, P, F> {
     inner: S,
     db: D,

@@ -458,6 +458,7 @@ impl EncapsulatedParts {
 ///
 /// Pulling the body past an incomplete Preview boundary sends `100 Continue`.
 /// Returning a response before doing so rejects the remainder of the Preview.
+#[derive(ExtensionsRef)]
 pub struct IncomingRequest {
     icap: IcapRequest,
     encapsulated: Option<Encapsulated>,
@@ -599,12 +600,6 @@ impl IncomingRequest {
     }
 }
 
-impl ExtensionsRef for IncomingRequest {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-}
-
 impl fmt::Debug for IncomingRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -632,7 +627,7 @@ impl RawIncomingRequest {
 ///
 /// Use this as the inner service of [`crate::server::Server`] while keeping
 /// ordinary Rama layers around the typed `Service<IncomingRequest>`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct HttpService<S> {
     inner: S,
     parser: HeadParser,
@@ -1469,6 +1464,7 @@ fn encode_http_trailers(fields: &HeaderMap) -> Result<TrailerBlock, Error> {
 /// wire buffers. Entity data is exposed as ref-counted `Bytes` chunks. For a
 /// negotiated 204 or 206 response, the stream transparently replays the
 /// retained original body bytes required to produce the final HTTP message.
+#[derive(ExtensionsRef)]
 pub struct ClientResponse<'a, IO> {
     inner: RawClientResponse<'a, IO>,
     state: ClientResponseState,
@@ -2160,12 +2156,6 @@ impl ClientResponseState {
     }
 }
 
-impl<IO> ExtensionsRef for ClientResponse<'_, IO> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
-    }
-}
-
 impl<IO> fmt::Debug for ClientResponse<'_, IO>
 where
     IO: Io + Unpin + ExtensionsRef,
@@ -2186,8 +2176,10 @@ where
 /// suitable for request-level services and can turn its remaining stream into
 /// a Rama [`Body`] without spawning a task or copying payload bytes.
 #[must_use]
+#[derive(ExtensionsRef)]
 pub struct OwnedClientResponse<IO> {
     connection: Option<RawClientConnection<IO>>,
+    #[extensions_ref]
     extensions: Extensions,
     inner: RawClientResponseState,
     state: ClientResponseState,
@@ -2368,12 +2360,6 @@ where
         if replay_is_verified {
             drop(self.connection.take());
         }
-    }
-}
-
-impl<IO> ExtensionsRef for OwnedClientResponse<IO> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

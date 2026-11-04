@@ -45,7 +45,7 @@ use rama_tls::{TlsTunnel, TlsTunnelRoute, client::NegotiatedTlsParameters};
 ///
 /// This behaviour is optional and only triggered in case there
 /// is a proxied [`ProxyRoute`] found in the [`Extensions`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct HttpProxyConnector<S> {
     pub(super) inner: S,
     pub(super) required: bool,

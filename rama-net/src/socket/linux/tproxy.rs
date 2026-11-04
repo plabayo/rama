@@ -1,3 +1,4 @@
+use rama_utils::macros::define_inner_service_accessors;
 use std::{
     io,
     mem::size_of,
@@ -34,7 +35,7 @@ impl<S> Layer<S> for ConnectorTargetFromGetSocketnameLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// Middleware that can be used by Linux transparent proxies,
 /// to insert the [`ConnectorTarget`] based on the address inserted
 /// by the OS in the "socketname" of the underlying OS socket.
@@ -42,6 +43,10 @@ impl<S> Layer<S> for ConnectorTargetFromGetSocketnameLayer {
 /// Created using [`ConnectorTargetFromGetSocketnameLayer`].
 pub struct ConnectorTargetFromGetSocketname<S> {
     inner: S,
+}
+
+impl<S> ConnectorTargetFromGetSocketname<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S, Input> Service<Input> for ConnectorTargetFromGetSocketname<S>

@@ -766,6 +766,7 @@ type DefaultConnectionPoolBuilder<C> =
 // before adding route caching and fallback. This prevents deeply nested TLS
 // connector futures from overflowing ordinary thread stacks while dispatching
 // only once per new connection (and behind the pool when pooling is enabled).
+#[derive(ExtensionsRef)]
 struct ConnectorServiceAdapter<T>(T);
 
 impl<T> Service<ConnectRequest> for ConnectorServiceAdapter<T>

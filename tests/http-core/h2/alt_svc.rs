@@ -21,15 +21,11 @@ use rama_core::{
 use std::assert_matches;
 use std::sync::Arc;
 
+#[derive(ExtensionsRef)]
 struct ResponseService<S> {
     inner: S,
+    #[extensions_ref]
     extensions: Extensions,
-}
-
-impl<S> ExtensionsRef for ResponseService<S> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl<S, Input> Service<Input> for ResponseService<S>

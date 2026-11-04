@@ -97,6 +97,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
     Ok(())
 }
 
+#[derive(ExtensionsRef)]
 struct LoggingService<S> {
     inner: S,
 }

@@ -10,6 +10,7 @@ use rama_net::{
     client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
     http::FallbackHttpVersion,
 };
+use rama_utils::macros::define_inner_service_accessors;
 
 use crate::profile::{
     replay::{
@@ -31,7 +32,7 @@ use super::{preserve, profile::OptionalEmulation};
 /// selected by [`ProfileEmulateLayer`](super::ProfileEmulateLayer).
 ///
 /// Connections without a published emulation context pass through unchanged.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProfileEmulateHttpConnectModifier<S, C = ()> {
     inner: S,
     compiler: C,
@@ -44,6 +45,8 @@ impl<S: Default> Default for ProfileEmulateHttpConnectModifier<S> {
 }
 
 impl<S> ProfileEmulateHttpConnectModifier<S> {
+    define_inner_service_accessors!();
+
     /// Create a new [`ProfileEmulateHttpConnectModifier`].
     #[inline]
     #[must_use]

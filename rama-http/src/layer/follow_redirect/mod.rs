@@ -227,7 +227,7 @@ where
 /// Middleware that retries requests with a [`Service`] to follow redirection responses.
 ///
 /// See the [module docs](self) for more details.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct FollowRedirect<S, P = Standard> {
     inner: S,
     policy: P,
@@ -760,7 +760,7 @@ mod tests {
     /// A layer that derives a `Route` from the request target, unless the current attempt already
     /// carries one — the shape of every target-dependent decider (proxy/route selection, DNS
     /// overwrite, ...). It records what each attempt ended up with.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, ExtensionsRef)]
     struct RouteDecider<S> {
         inner: S,
         seen: Arc<Mutex<Vec<String>>>,

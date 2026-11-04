@@ -9,6 +9,7 @@ use std::{
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorExt as _},
+    extensions::ExtensionsRef,
 };
 use rama_net::{Protocol, uri::Uri};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
@@ -190,7 +191,7 @@ impl<S> Layer<S> for OptionsCacheLayer {
 }
 
 /// Cached OPTIONS discovery service produced by [`OptionsCacheLayer`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct OptionsCache<S> {
     inner: S,
     config: OptionsCacheConfig,

@@ -3,6 +3,7 @@
 //! Ingress and egress are independent QUIC connections: transport settings, RTT estimation
 //! and optional spin signaling belong to each hop. Spin bits are not copied across them.
 
+use rama_utils::macros::define_inner_service_accessors;
 use std::{sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
@@ -291,10 +292,14 @@ impl<Issuer: Clone, S> Layer<S> for QuicMitmRelay<Issuer> {
 }
 
 /// The service a [`QuicMitmRelay`] layer produces.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct QuicMitmRelayService<Issuer, S> {
     relay: QuicMitmRelay<Issuer>,
     inner: S,
+}
+
+impl<Issuer, S> QuicMitmRelayService<Issuer, S> {
+    define_inner_service_accessors!();
 }
 
 impl<Issuer, S, Ingress, Egress> Service<InputWithQuicClientHello<BridgeIo<Ingress, Egress>>>

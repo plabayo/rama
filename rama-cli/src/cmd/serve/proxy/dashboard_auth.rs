@@ -1,5 +1,6 @@
 use rama::{
     Service,
+    extensions::ExtensionsRef,
     http::{
         HeaderName, HeaderValue, Method, Request, Response, StatusCode, header,
         headers::{Authorization, CacheControl, HeaderMapExt as _},
@@ -17,7 +18,7 @@ const AUTH_COOKIE: &str = "rama-inspector";
 /// UI sessions only isolate filters and selections. This independent, random
 /// startup capability prevents arbitrary proxy clients and rebound browser
 /// origins from reading captures or invoking inspector controls.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub(super) struct DashboardAuthService<S> {
     inner: S,
     token: Arc<str>,

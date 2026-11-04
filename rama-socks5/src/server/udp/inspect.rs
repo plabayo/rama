@@ -94,7 +94,7 @@ pub enum RelayDirection {
     South,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// Request to Relay, used by an async UDP inspector [`Service`].
 pub struct RelayRequest {
     pub direction: RelayDirection,
@@ -103,22 +103,10 @@ pub struct RelayRequest {
     pub extensions: Extensions,
 }
 
-impl ExtensionsRef for RelayRequest {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct RelayResponse {
     pub maybe_payload: Option<Bytes>,
     pub extensions: Extensions,
-}
-
-impl ExtensionsRef for RelayResponse {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 /// Wrapper used for Async udp inspectors.

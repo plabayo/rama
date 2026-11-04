@@ -35,7 +35,7 @@ impl<S> Layer<S> for DpiProxyCredentialExtractorLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// Middleware that extracts credentials for an egress proxy
 /// found in the Proxy-Authorization header of a passthrough request.
 ///

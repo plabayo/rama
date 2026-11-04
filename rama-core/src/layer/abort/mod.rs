@@ -41,7 +41,7 @@ impl AbortController {
 }
 
 /// Applies the option to abort an inner service.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Abortable<S, F> {
     inner: S,
     into_error: F,

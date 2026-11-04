@@ -34,10 +34,12 @@ use crate::{
 /// connection is reusable only after the returned response body reaches its
 /// terminal chunk. Dropping a transaction early leaves it poisoned so a
 /// later request cannot accidentally reuse desynchronized framing.
+#[derive(ExtensionsRef)]
 pub struct ClientConnection<IO> {
     // Fields drop in declaration order. Poison the shared health state before
     // dropping `framed`, which may return its underlying lease to a pool.
     poison: PoisonOnDrop,
+    #[extensions_ref]
     framed: FramedIo<IO>,
     poisoned: bool,
 }
@@ -124,12 +126,6 @@ where
         self.extensions()
             .get_ref_or_insert(ConnectionHealthWatcher::default)
             .mark_broken();
-    }
-}
-
-impl<IO> ExtensionsRef for ClientConnection<IO> {
-    fn extensions(&self) -> &Extensions {
-        self.framed.extensions()
     }
 }
 
@@ -282,7 +278,9 @@ struct PendingResponse {
 }
 
 /// A streaming ICAP request body being sent by a client.
+#[derive(ExtensionsRef)]
 pub struct ClientTransaction<'a, IO> {
+    #[extensions_ref]
     connection: &'a mut ClientConnection<IO>,
     method: MethodKind,
     has_body: bool,
@@ -297,12 +295,6 @@ pub struct ClientTransaction<'a, IO> {
     write_shutdown_complete: bool,
     response_read_in_progress: bool,
     pending_response: Option<PendingResponse>,
-}
-
-impl<IO> ExtensionsRef for ClientTransaction<'_, IO> {
-    fn extensions(&self) -> &Extensions {
-        self.connection.extensions()
-    }
 }
 
 impl<'a, IO> ClientTransaction<'a, IO>
@@ -942,7 +934,9 @@ pub enum PreviewOutcome<'a, IO> {
 }
 
 /// A streaming final response received by an ICAP client.
+#[derive(ExtensionsRef)]
 pub struct ClientResponse<'a, IO> {
+    #[extensions_ref]
     connection: &'a mut ClientConnection<IO>,
     state: ClientResponseState,
 }
@@ -954,12 +948,6 @@ pub(crate) struct ClientResponseState {
     close: bool,
     original_body_bytes_sent: u64,
     original_body_len: Option<u64>,
-}
-
-impl<IO> ExtensionsRef for ClientResponse<'_, IO> {
-    fn extensions(&self) -> &Extensions {
-        self.connection.extensions()
-    }
 }
 
 impl<'a, IO> ClientResponse<'a, IO>

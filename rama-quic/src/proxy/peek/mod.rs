@@ -1,12 +1,13 @@
 //! Peek at a QUIC client's Initial flight before choosing how to handle the association.
 
+use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::Duration};
 
 use rama_core::{
     Service,
     bytes::Bytes,
     error::BoxError,
-    extensions::{Extension, Extensions, ExtensionsRef},
+    extensions::{Extension, ExtensionsRef},
     io::{
         BridgeIo,
         peek::{PeekStopReason, PeekTimeoutPolicy},
@@ -47,17 +48,12 @@ pub const DEFAULT_QUIC_PEEK_LIMITS: CaptureLimits = CaptureLimits {
 const RECEIVE_BUFFER: usize = kib(64);
 
 /// The input handed on after a complete QUIC ClientHello was found in the client's Initials.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct InputWithQuicClientHello<Input> {
+    #[extensions_ref]
     pub input: Input,
     /// The ClientHello found, with what was learned on the way.
     pub peeked: PeekedClientHello,
-}
-
-impl<Input: ExtensionsRef> ExtensionsRef for InputWithQuicClientHello<Input> {
-    fn extensions(&self) -> &Extensions {
-        self.input.extensions()
-    }
 }
 
 /// An association peeked before its egress exists keeps its ClientHello once bridged, so the
@@ -210,6 +206,7 @@ impl std::error::Error for QuicPeekRejectedError {}
 /// while a terminating relay rejects it and the client resends that data after the handshake.
 ///
 /// The fallback rejects by default; use [`Self::with_fallback`] to forward instead.
+#[derive(ExtensionsRef)]
 pub struct PeekQuicClientHelloService<K, S, F = RejectService<(), NoQuicRejectError>> {
     keys: K,
     inner: S,
@@ -221,6 +218,8 @@ pub struct PeekQuicClientHelloService<K, S, F = RejectService<(), NoQuicRejectEr
 }
 
 impl<K, S> PeekQuicClientHelloService<K, S> {
+    define_inner_service_accessors!();
+
     /// Peek with `keys` deriving the Initial keys of the client's offered version. No
     /// certificate or server identity is needed.
     pub fn new(keys: K, inner: S) -> Self {

@@ -22,7 +22,7 @@ macro_rules! limited_write_buf {
     }};
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub(super) struct FramedWrite<T, B> {
     /// Upstream `AsyncWrite`
     inner: T,
@@ -216,12 +216,6 @@ where
 enum ControlFlow {
     Continue,
     Break,
-}
-
-impl<T: ExtensionsRef, B> ExtensionsRef for FramedWrite<T, B> {
-    fn extensions(&self) -> &rama_core::extensions::Extensions {
-        self.inner.extensions()
-    }
 }
 
 impl<B> Encoder<B>

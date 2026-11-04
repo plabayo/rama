@@ -1,5 +1,6 @@
 use crate::body::http_body::{Body, Frame, SizeHint};
 use pin_project_lite::pin_project;
+use rama_core::extensions::ExtensionsRef;
 use std::{
     any::type_name,
     fmt,
@@ -11,7 +12,7 @@ pin_project! {
     /// Body returned by the [`map_err`] combinator.
     ///
     /// [`map_err`]: crate::body::http_body_util::BodyExt::map_err
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, ExtensionsRef)]
     pub struct MapErr<B, F> {
         #[pin]
         inner: B,

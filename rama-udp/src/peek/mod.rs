@@ -7,11 +7,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use rama_core::{
-    bytes::Bytes,
-    extensions::{Extensions, ExtensionsRef},
-    io::BridgeIo,
-};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef, io::BridgeIo};
 use rama_net::{address::SocketAddress, stream::Socket};
 
 use crate::{DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSocket};
@@ -27,6 +23,7 @@ pub struct RetainedDatagram {
 /// with their boundaries and metadata, and only then what `inner` receives.
 ///
 /// Sending goes straight to `inner`.
+#[derive(ExtensionsRef)]
 pub struct PrefixedDatagramSocket<S> {
     inner: S,
     prefix: VecDeque<RetainedDatagram>,
@@ -59,12 +56,6 @@ impl<S: fmt::Debug> fmt::Debug for PrefixedDatagramSocket<S> {
             .field("inner", &self.inner)
             .field("retained", &self.prefix.len())
             .finish()
-    }
-}
-
-impl<S: ExtensionsRef> ExtensionsRef for PrefixedDatagramSocket<S> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
     }
 }
 

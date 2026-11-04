@@ -7,16 +7,19 @@ use rama_core::{
 use rama_net::ProtocolInputExt;
 use rama_tls::client::TlsClientConfig;
 use rama_ua::profile::model::tls::TlsProfile;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 use crate::client::BoringClientConfigExt;
 
+#[derive(ExtensionsRef)]
 pub struct EmulateTlsProfileService<S> {
     inner: S,
     config_overwrites: Option<TlsClientConfig>,
 }
 
 impl<S> EmulateTlsProfileService<S> {
+    define_inner_service_accessors!();
+
     pub fn new(inner: S) -> Self {
         Self {
             inner,

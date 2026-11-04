@@ -1,11 +1,12 @@
 use core::marker::PhantomData;
+use rama_utils::macros::define_inner_service_accessors;
 
 use rama_error::BoxError;
 
-use crate::{Layer, Service};
+use crate::{Layer, Service, extensions::ExtensionsRef};
 
 /// [`Service`] which converts errors using [`Into`] trait
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct IntoErr<S, E> {
     inner: S,
     _error: PhantomData<fn(E)>,
@@ -18,6 +19,8 @@ impl<S: Clone, E> Clone for IntoErr<S, E> {
 }
 
 impl<S, E> IntoErr<S, E> {
+    define_inner_service_accessors!();
+
     /// Create a new [`IntoErr`] service
     pub fn new(inner: S) -> Self {
         Self {

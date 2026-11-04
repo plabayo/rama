@@ -1,8 +1,9 @@
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http::headers::{ContentType, HeaderMapExt as _};
 use rama_http::layer::version_adapter::adapt_request_version;
 use rama_http_types::{Request, Response, Version};
+use rama_utils::macros::define_inner_service_accessors;
 
 use super::GrpcWebCall;
 
@@ -31,12 +32,14 @@ impl<S> Layer<S> for GrpcWebClientLayer {
 /// A [`Service`] that wraps some inner http service that will
 /// coerce requests coming from `rama-grpc` clients into proper
 /// `grpc-web` requests.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct GrpcWebClientService<S> {
     inner: S,
 }
 
 impl<S> GrpcWebClientService<S> {
+    define_inner_service_accessors!();
+
     /// Create a new grpc-web for clients service.
     pub fn new(inner: S) -> Self {
         Self { inner }

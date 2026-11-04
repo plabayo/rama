@@ -1,11 +1,11 @@
-use crate::{Layer, Service, error::BoxError};
+use crate::{Layer, Service, error::BoxError, extensions::ExtensionsRef};
 use core::{convert::Infallible, fmt};
 use rama_utils::macros::define_inner_service_accessors;
 
 use sealed::DefaultOutput;
 
 /// Consumes this service's error value and returns [`Infallible`].
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct ConsumeErr<S, F, O = DefaultOutput> {
     inner: S,
     f: F,

@@ -36,6 +36,7 @@
 use crate::{Request, StreamingBody, body::util::BodyExt};
 use rama_core::Service;
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsRef;
 use rama_utils::macros::define_inner_service_accessors;
 
 mod layer;
@@ -57,7 +58,7 @@ pub use self::policy::{Policy, PolicyResult};
 /// Configure retrying requests of "failed" responses.
 ///
 /// A [`Policy`] classifies what is a "failed" response.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Retry<P, S> {
     policy: P,
     inner: S,

@@ -23,7 +23,7 @@ use rama_net::{
 };
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 /// [`ConnectorService`] which will adapt the request version if needed.
 ///
 /// It will adapt the request version to [`TargetHttpVersion`], or the configured

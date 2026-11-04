@@ -12,7 +12,7 @@ use rama_net::address::Domain;
 use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
 use rama_net::stream::SocketInfo;
 use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
-use rama_utils::macros::all_the_tuples_no_last_special_case;
+use rama_utils::macros::{all_the_tuples_no_last_special_case, define_inner_service_accessors};
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -96,6 +96,7 @@ impl<H, S> Layer<S> for SetForwardedHeadersLayer<H> {
 /// added to the end of the chain of forwarded information already known.
 ///
 /// See [`SetForwardedHeadersLayer`] for more information.
+#[derive(ExtensionsRef)]
 pub struct SetForwardedHeadersService<S, T = Forwarded> {
     inner: S,
     by_node: NodeId,
@@ -126,6 +127,8 @@ impl<S: Clone, T> Clone for SetForwardedHeadersService<S, T> {
 }
 
 impl<S, T> SetForwardedHeadersService<S, T> {
+    define_inner_service_accessors!();
+
     /// Create a new `SetForwardedHeadersService` for the specified headers `T`.
     pub fn new(inner: S) -> Self {
         Self {

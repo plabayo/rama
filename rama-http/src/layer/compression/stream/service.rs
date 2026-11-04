@@ -33,7 +33,7 @@ use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case}
 /// `Content-Encoding` header to responses.
 ///
 /// See the [module docs](super::StreamCompression) for more details.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct StreamCompression<S, P = DefaultStreamPredicate> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,

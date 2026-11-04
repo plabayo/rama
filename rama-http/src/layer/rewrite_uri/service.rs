@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::Request;
-use rama_core::{Service, telemetry::tracing};
+use rama_core::{Service, extensions::ExtensionsRef, telemetry::tracing};
 use rama_net::uri::{UriMatchError, UriMatchReplace};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
@@ -14,6 +14,7 @@ use std::borrow::Cow;
 /// using a [`UriMatchReplace`] to match and replace the incoming request [`Uri`].
 ///
 /// [`Uri`]: rama_net::uri::Uri
+#[derive(ExtensionsRef)]
 pub struct RewriteUriService<R, S> {
     match_replace: R,
     inner: S,

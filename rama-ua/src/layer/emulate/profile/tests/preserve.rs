@@ -5,6 +5,7 @@ use crate::{
         PreserveClientHints, PreserveHeaderUserAgent, ProfileEmulateRelayRequestModifier,
     },
 };
+use rama_core::extensions::ExtensionsRef;
 
 #[cfg(all(feature = "tls", feature = "embed-profiles"))]
 use {
@@ -250,14 +251,8 @@ async fn preserved_tls_leaves_the_captured_offer_unapplied() {
     assert!(emitted.extensions().contains::<RequestSelection>());
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 struct Sink(Extensions);
-
-impl ExtensionsRef for Sink {
-    fn extensions(&self) -> &Extensions {
-        &self.0
-    }
-}
 
 impl rama_core::Service<Request<()>> for Sink {
     type Output = Request<()>;

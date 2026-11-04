@@ -29,7 +29,7 @@
 //! ```
 
 use crate::{HeaderName, Request, Response};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::smol_str::SmolStr;
 
@@ -134,7 +134,7 @@ impl<S> Layer<S> for RemoveResponseHeaderLayer {
 }
 
 /// Middleware that removes response headers from a request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct RemoveResponseHeader<S> {
     inner: S,
     mode: RemoveResponseHeaderMode,

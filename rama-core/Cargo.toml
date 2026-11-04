@@ -87,8 +87,10 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage
 [dev-dependencies]
 quickcheck = { workspace = true }
 rand = { workspace = true }
+rustversion = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
+trybuild = { workspace = true, features = ["diff"] }
 
 [lints]
 workspace = true

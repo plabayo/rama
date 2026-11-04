@@ -487,12 +487,8 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct Id(u8);
     impl ConnID for Id {}
+    #[derive(ExtensionsRef)]
     struct Conn(Extensions);
-    impl ExtensionsRef for Conn {
-        fn extensions(&self) -> &Extensions {
-            &self.0
-        }
-    }
 
     let pair = Pair::in_memory(None, None).await;
     let (sender, driver) =

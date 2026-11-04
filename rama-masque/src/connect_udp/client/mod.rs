@@ -67,6 +67,7 @@ pub const OUTER_IDLE_TIMEOUT: Duration = Duration::from_mins(3);
 /// [`OUTER_INITIAL_MTU`].
 ///
 /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
+#[derive(ExtensionsRef)]
 pub struct ConnectUdpConnector<S, C> {
     client: S,
     inner: C,

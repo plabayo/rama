@@ -12,15 +12,9 @@ use rama::{
 
 use super::VerboseLogs;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub(super) struct RequestHeaderLoggerService<S> {
     inner: S,
-}
-
-impl<S: ExtensionsRef> ExtensionsRef for RequestHeaderLoggerService<S> {
-    fn extensions(&self) -> &rama::extensions::Extensions {
-        self.inner.extensions()
-    }
 }
 
 impl<S> RequestHeaderLoggerService<S> {

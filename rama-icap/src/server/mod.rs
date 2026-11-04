@@ -14,11 +14,7 @@ pub use types::{
 use core::future::Future;
 use std::pin::pin;
 
-use rama_core::{
-    bytes::Bytes,
-    extensions::{Extensions, ExtensionsRef},
-    io::Io,
-};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef, io::Io};
 use tokio::io::AsyncRead;
 
 use crate::{
@@ -35,7 +31,9 @@ use crate::{
 /// [`ServerConnection::accept`] returns a transaction which streams request
 /// body data and makes the Preview decision explicit. Dropping any
 /// transaction before its response completes poisons the connection.
+#[derive(ExtensionsRef)]
 pub struct ServerConnection<IO> {
+    #[extensions_ref]
     framed: FramedIo<IO>,
     closed: bool,
     poisoned: bool,
@@ -96,12 +94,6 @@ where
     }
 }
 
-impl<IO> ExtensionsRef for ServerConnection<IO> {
-    fn extensions(&self) -> &Extensions {
-        self.framed.extensions()
-    }
-}
-
 impl<IO> ServerConnection<IO>
 where
     IO: Io + Unpin,
@@ -159,19 +151,15 @@ where
 }
 
 /// One inbound ICAP request and its response transaction.
+#[derive(ExtensionsRef)]
 pub struct ServerTransaction<'a, IO> {
+    #[extensions_ref]
     connection: &'a mut ServerConnection<IO>,
     request: Request,
     body: Option<BodyReader>,
     end: Option<BodyEnd>,
     continued: bool,
     write_in_progress: bool,
-}
-
-impl<IO> ExtensionsRef for ServerTransaction<'_, IO> {
-    fn extensions(&self) -> &Extensions {
-        self.connection.extensions()
-    }
 }
 
 impl<'a, IO> ServerTransaction<'a, IO>
@@ -420,7 +408,9 @@ where
 }
 
 /// A streaming final response being sent by an ICAP server.
+#[derive(ExtensionsRef)]
 pub struct ServerResponse<'a, IO> {
+    #[extensions_ref]
     connection: &'a mut ServerConnection<IO>,
     status: StatusCode,
     has_body: bool,
@@ -432,12 +422,6 @@ pub struct ServerResponse<'a, IO> {
     request_end: Option<BodyEnd>,
     original_body_bytes_received: u64,
     original_body_len: Option<u64>,
-}
-
-impl<IO> ExtensionsRef for ServerResponse<'_, IO> {
-    fn extensions(&self) -> &Extensions {
-        self.connection.extensions()
-    }
 }
 
 impl<IO> ServerResponse<'_, IO>

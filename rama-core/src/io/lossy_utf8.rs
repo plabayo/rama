@@ -1,3 +1,4 @@
+use crate::extensions::ExtensionsRef;
 use core::{
     pin::Pin,
     task::{Context, Poll},
@@ -10,7 +11,7 @@ use tokio::io::{AsyncBufRead, AsyncRead, ReadBuf};
 /// Valid input is exposed directly from the inner reader without copying.
 /// Scratch capacity is retained when invalid or split sequences require a
 /// transformed buffer.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct LossyUtf8Reader<R> {
     inner: R,
     output: Vec<u8>,

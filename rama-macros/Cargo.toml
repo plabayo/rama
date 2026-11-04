@@ -39,6 +39,7 @@ syn = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 paste-test-suite = { version = "0", path = "tests/macros" }
+renamed-rama-core = { package = "rama-core", path = "../rama-core" }
 rustversion = { workspace = true }
 trybuild = { workspace = true, features = ["diff"] }
 

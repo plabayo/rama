@@ -13,7 +13,7 @@ use rama_utils::macros::define_inner_service_accessors;
 /// to reoslve DNS even if it is not needed.
 ///
 /// See `Dns` (`rama_core`) and [`DnsResolveMode`] for more information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct DnsResolveModeService<S> {
     inner: S,
     header_name: HeaderName,

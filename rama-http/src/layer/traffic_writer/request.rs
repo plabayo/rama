@@ -6,7 +6,7 @@ use crate::io::write_http_request_streaming;
 use crate::{Body, Request, StreamingBody, body::util::BodyExt as _};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Layer, Service};
@@ -63,7 +63,7 @@ impl DoNotWriteRequest {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 /// Middleware to print Http request in std format.
 ///
 /// Request bodies are observed while they stream to the inner service. The
@@ -254,15 +254,6 @@ where
             });
             self.inner.serve(request).await.into_box_error()
         }
-    }
-}
-
-impl<S, W> ExtensionsRef for RequestWriterService<S, W>
-where
-    S: ExtensionsRef,
-{
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
     }
 }
 

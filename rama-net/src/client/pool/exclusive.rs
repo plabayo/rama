@@ -100,7 +100,9 @@ impl<C: ExtensionsRef, ID> ExtensionsRef for LeasedConnection<C, ID> {
 ///
 /// A ID is used to determine which connections can be used for a request.
 /// This ID encodes all the details that make a connection unique/suitable for a request.
+#[derive(ExtensionsRef)]
 struct PooledConnection<C, ID> {
+    #[extensions_ref]
     conn: C,
     id: ID,
     pool_slot: PoolSlot,
@@ -109,12 +111,6 @@ struct PooledConnection<C, ID> {
     /// Which requests may use the connection, `None` if it is dropped once
     /// returned. Read from [`ConnectionReuse`] once, when it is added.
     lane: Option<LaneKey>,
-}
-
-impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
-    fn extensions(&self) -> &Extensions {
-        self.conn.extensions()
-    }
 }
 
 /// Connection pool that uses LRU to evict connections
@@ -853,7 +849,7 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, ExtensionsRef)]
     struct Conn {
         items: Vec<u32>,
         extensions: Extensions,
@@ -865,12 +861,6 @@ mod tests {
                 items: vec![],
                 extensions: Extensions::new(),
             }
-        }
-    }
-
-    impl ExtensionsRef for Conn {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
         }
     }
 
@@ -1423,16 +1413,10 @@ mod tests {
         }
     }
 
-    #[derive(Default, Debug)]
+    #[derive(Default, Debug, ExtensionsRef)]
     struct InnerService {
         should_error: Arc<AtomicBool>,
         extensions: Extensions,
-    }
-
-    impl ExtensionsRef for InnerService {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl Service<ServiceInput<bool>> for InnerService {

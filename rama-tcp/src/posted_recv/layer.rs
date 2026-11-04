@@ -1,4 +1,4 @@
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_net::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -53,7 +53,7 @@ impl<S> Layer<S> for PostedRecvLayer {
 /// establishes in a [`PostedRecv`].
 ///
 /// Created by [`PostedRecvLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct PostedRecvConnector<S> {
     inner: S,
     config: PostedRecvConfig,

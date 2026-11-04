@@ -15,8 +15,8 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use parking_lot::RwLock;
 use rama_core::{
-    Layer, Service, bytes::Bytes, error::BoxError, futures::async_stream::stream_fn,
-    stream::io::StreamReader,
+    Layer, Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef,
+    futures::async_stream::stream_fn, stream::io::StreamReader,
 };
 use rama_inspect::storage::{
     AppendRecord, Collection, CreateCollection, ListRecords, ReadRecord, Reader, RecordId,
@@ -65,7 +65,7 @@ impl<S> Layer<S> for EncryptStorageLayer {
 }
 
 /// Storage service produced by [`EncryptStorageLayer`].
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct EncryptStore<S> {
     inner: S,
     key: Arc<[u8; 32]>,

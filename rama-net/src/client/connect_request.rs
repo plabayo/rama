@@ -15,7 +15,7 @@ use crate::{
 };
 
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// A protocol-independent request to establish a client connection.
 pub struct ConnectRequest {
     pub authority: HostWithPort,
@@ -78,12 +78,6 @@ impl Fork for ConnectRequest {
             application_protocol: self.application_protocol.clone(),
             transport_protocol: self.transport_protocol,
         }
-    }
-}
-
-impl ExtensionsRef for ConnectRequest {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use crate::extensions::{Extensions, ExtensionsRef};
+use crate::extensions::ExtensionsRef;
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
@@ -24,7 +24,7 @@ pin_project! {
     /// tries one inner read when the buf has room left, so a
     /// peeked prefix need not be a short read of its own.
     /// Sync reads never do this.
-    #[derive(Debug)]
+    #[derive(Debug, ExtensionsRef)]
     pub struct PrefixedIo<P, S> {
         prefix_eof: bool,
         // error hit after bytes were already read
@@ -65,12 +65,6 @@ impl<P: Clone, S: Clone> Clone for PrefixedIo<P, S> {
             prefix: self.prefix.clone(),
             inner: self.inner.clone(),
         }
-    }
-}
-
-impl<P, S: ExtensionsRef> ExtensionsRef for PrefixedIo<P, S> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
     }
 }
 

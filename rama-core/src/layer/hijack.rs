@@ -18,7 +18,7 @@ use rama_utils::macros::define_inner_service_accessors;
 ///
 /// [`Service`]: crate
 /// [`Matcher`]: crate::matcher::Matcher
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct HijackService<S, H, M> {
     inner: S,
     hijack: H,

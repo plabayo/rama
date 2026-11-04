@@ -1,6 +1,7 @@
 use rama::{
     Layer, Service,
     dns::client::resolver::DnsAddresssResolverOverwrite,
+    extensions::ExtensionsRef,
     net::{ConnectorTargetInputExt, address::DomainTrie},
 };
 
@@ -33,7 +34,7 @@ impl<S> Layer<S> for OptDnsOverwriteLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub(in crate::cmd::send) struct OptDnsOverwriteService<S> {
     inner: S,
     info: Option<ResolveArg>,

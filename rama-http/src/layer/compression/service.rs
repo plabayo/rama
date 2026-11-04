@@ -30,7 +30,7 @@ use rama_utils::str::submatch_ignore_ascii_case;
 /// `Content-Encoding` header to responses.
 ///
 /// See the [module docs](crate::layer::compression) for more details.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Compression<S, P = DefaultPredicate> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,

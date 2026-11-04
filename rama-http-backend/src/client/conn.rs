@@ -359,7 +359,7 @@ fn apply_h2_client_extensions_to_builder(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S, Body> {
     inner: S,

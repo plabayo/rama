@@ -60,6 +60,7 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
 }
 
 /// Internal http sender used to send the actual requests.
+#[derive(ExtensionsRef)]
 pub struct HttpClientService<Body> {
     pub(super) sender: SendRequest<Body>,
     pub(super) extensions: Extensions,
@@ -384,12 +385,6 @@ fn mark_broken(extensions: &Extensions) {
     extensions
         .get_ref_or_insert(ConnectionHealthWatcher::default)
         .mark_broken();
-}
-
-impl<B> ExtensionsRef for HttpClientService<B> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 #[cfg(feature = "quic")]

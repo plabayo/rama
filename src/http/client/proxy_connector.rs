@@ -1,3 +1,4 @@
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     Layer, Service,
     error::{BoxError, BoxErrorExt},
@@ -31,7 +32,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 ///
 /// Connector will look at [`ProxyRoute`] to determine which proxy
 /// connector to use if one is configured
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProxyConnector<S> {
     inner: S,
     socks: Socks5ProxyConnector<S>,
@@ -40,6 +41,8 @@ pub struct ProxyConnector<S> {
 }
 
 impl<S: Clone> ProxyConnector<S> {
+    define_inner_service_accessors!();
+
     /// Creates a new [`ProxyConnector`].
     fn new(
         inner: S,

@@ -4,6 +4,7 @@
 
 use crate::Service;
 use crate::error::{BoxError, ErrorContext as _};
+use crate::extensions::ExtensionsRef;
 use into_output::{ErrorIntoOutput, ErrorIntoOutputFn};
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -20,7 +21,7 @@ mod into_output;
 /// Limit inputs based on a [`Policy`].
 ///
 /// [`Policy`]: crate::layer::limit::Policy
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Limit<S, P, F = ()> {
     inner: S,
     policy: P,

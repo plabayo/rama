@@ -3,7 +3,7 @@
 use std::fmt;
 
 use rama_core::error::BoxError;
-use rama_core::extensions::Extensions;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::{Layer, Service};
 use rama_json::path::JsonPath;
 use rama_json::rewrite::JsonValueHandler;
@@ -23,7 +23,7 @@ use crate::{HeaderMap, Request, Response, StreamingBody};
 ///
 /// See the [module docs](crate::layer::json_rewrite) for details. Construct it
 /// directly with [`new`](Self::new) or via [`JsonRewriteLayer`].
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct JsonRewrite<S, H> {
     pub(crate) inner: S,
     pub(crate) selectors: Box<[JsonPath]>,
@@ -129,7 +129,7 @@ where
 ///
 /// See the [module docs](crate::layer::json_rewrite) for details. Construct it
 /// directly with [`new`](Self::new) or via [`JsonRequestRewriteLayer`].
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct JsonRequestRewrite<S, H> {
     pub(crate) inner: S,
     pub(crate) selectors: Box<[JsonPath]>,

@@ -4844,6 +4844,7 @@ dependencies = [
  "rama-macros",
  "rama-utils",
  "rand 0.10.3",
+ "rustversion",
  "serde",
  "serde_json",
  "tokio",
@@ -4854,6 +4855,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-opentelemetry",
+ "trybuild",
  "windows-sys 0.61.2",
 ]
 
@@ -5326,9 +5328,17 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
+ "rama-core",
  "rustversion",
  "syn 3.0.9",
  "trybuild",
+]
+
+[[package]]
+name = "rama-macros-renamed-umbrella"
+version = "0.0.0"
+dependencies = [
+ "rama",
 ]
 
 [[package]]

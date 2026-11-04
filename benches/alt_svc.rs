@@ -96,14 +96,8 @@ fn replacement(b: divan::Bencher) {
     b.bench_local(|| cache.record(black_box(&origin), black_box(&headers), Duration::ZERO));
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 struct Connection(Extensions);
-
-impl ExtensionsRef for Connection {
-    fn extensions(&self) -> &Extensions {
-        &self.0
-    }
-}
 
 impl Service<Request> for Connection {
     type Output = Response;

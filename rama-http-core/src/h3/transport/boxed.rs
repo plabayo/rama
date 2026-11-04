@@ -4,10 +4,7 @@ use super::{
     BiReservation, BoxedStreamHandle, ClosedStream, Connection, EarlyData, RecvStream,
     ReserveBiStreams, SendDatagramError, SendStream, StoppedError, StreamHandle, WriteError,
 };
-use rama_core::{
-    bytes::Bytes,
-    extensions::{Extensions, ExtensionsRef},
-};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef};
 use rama_quic::qlog::ConnectionQlogControl;
 use rama_quic_proto::{ConnectionError, Dir, Side, StreamId, VarInt};
 use rama_utils::reactive::ChangeListener;
@@ -26,7 +23,7 @@ type BoxedReservation = BoxedBiReservation<BoxedSendStream, Box<dyn RecvStream>>
 /// A [`Connection`] behind dynamic dispatch, for where one type has to carry any transport.
 ///
 /// Its streams, futures and reservations are boxed as well.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct BoxedConnection(Arc<dyn DynConnection>);
 
 impl BoxedConnection {
@@ -38,12 +35,6 @@ impl BoxedConnection {
 impl fmt::Debug for BoxedConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&*self.0, f)
-    }
-}
-
-impl ExtensionsRef for BoxedConnection {
-    fn extensions(&self) -> &Extensions {
-        self.0.extensions()
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::bytes::{Buf, Bytes};
-use crate::extensions::{Extensions, ExtensionsRef};
+use crate::extensions::ExtensionsRef;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::{cmp, io};
@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 /// The read that drains the buffer also tries one inner read
 /// when there is room left, so the buffer need not be a short
 /// read of its own.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct Rewind<T> {
     pre: Option<Bytes>,
     // inner error hit after buffered bytes were read
@@ -85,12 +85,6 @@ impl<T: Clone> Clone for Rewind<T> {
             }),
             inner: self.inner.clone(),
         }
-    }
-}
-
-impl<T: ExtensionsRef> ExtensionsRef for Rewind<T> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
     }
 }
 

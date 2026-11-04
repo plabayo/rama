@@ -498,6 +498,7 @@ impl Drop for Release {
 
 /// One association of a [`DatagramDemux`]: the datagrams one peer sent to one local
 /// address, and replies to that peer only.
+#[derive(ExtensionsRef)]
 pub struct DemuxedSocket<T> {
     receiver: mpsc::Receiver<Queued>,
     /// Cloned for each send handle; never sends itself.
@@ -519,12 +520,6 @@ impl<T: fmt::Debug> fmt::Debug for DemuxedSocket<T> {
             .field("local", &self.addresses.local)
             .field("peer", &self.addresses.peer)
             .finish_non_exhaustive()
-    }
-}
-
-impl<T> ExtensionsRef for DemuxedSocket<T> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

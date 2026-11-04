@@ -11,14 +11,9 @@ use rama_http_types::conn::{
 use rama_net::{Protocol, tls::ApplicationProtocol};
 use std::{convert::Infallible, sync::Arc};
 
+#[derive(ExtensionsRef)]
 struct Connection {
     extensions: Extensions,
-}
-
-impl ExtensionsRef for Connection {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl Service<Request> for Connection {

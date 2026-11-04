@@ -1187,6 +1187,7 @@ fn tcp_client_eof_after_activate_with_no_bytes_half_closes() {
 }
 
 /// Upstream that ends with `end` (EOF when `None`) once the client's bytes reached it.
+#[derive(ExtensionsRef)]
 struct EndingUpstream {
     end: Option<ErrorKind>,
     received: bool,
@@ -1202,12 +1203,6 @@ impl EndingUpstream {
             reader: None,
             extensions: Extensions::new(),
         }
-    }
-}
-
-impl ExtensionsRef for EndingUpstream {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

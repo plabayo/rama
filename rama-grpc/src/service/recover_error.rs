@@ -1,8 +1,9 @@
 //! Middleware which recovers from error and returns a Grpc status.
 
-use rama_core::{Layer, Service, error::BoxError};
+use rama_core::{Layer, Service, error::BoxError, extensions::ExtensionsRef};
 use rama_http::body::OptionalBody;
 use rama_http_types::Response;
+use rama_utils::macros::define_inner_service_accessors;
 
 use crate::Status;
 
@@ -29,12 +30,14 @@ impl<S> Layer<S> for RecoverErrorLayer {
 
 /// Middleware that attempts to recover from service errors by turning them into a response built
 /// from the [`Status`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct RecoverError<S> {
     inner: S,
 }
 
 impl<S> RecoverError<S> {
+    define_inner_service_accessors!();
+
     /// Create a new `RecoverError` middleware.
     pub fn new(inner: S) -> Self {
         Self { inner }

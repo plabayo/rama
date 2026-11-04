@@ -73,6 +73,7 @@ impl Datagram {
 }
 
 /// A per-flow UDP datagram socket abstraction for transparent proxy services.
+#[derive(ExtensionsRef)]
 pub struct UdpFlow {
     incoming: mpsc::Receiver<Datagram>,
     outgoing: Arc<dyn Fn(Datagram) + Send + Sync + 'static>,
@@ -169,11 +170,5 @@ impl UdpFlow {
 impl Drop for UdpFlow {
     fn drop(&mut self) {
         self.close_ingress();
-    }
-}
-
-impl ExtensionsRef for UdpFlow {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }

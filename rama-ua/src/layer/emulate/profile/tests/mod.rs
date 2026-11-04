@@ -633,18 +633,12 @@ async fn request_modifier_draws_from_the_actual_connection_ticket() {
         .unwrap();
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 struct RequestSink {
     extensions: Extensions,
     profile: ValueId,
     connection_variant: ValueId,
     expected_differences: usize,
-}
-
-impl ExtensionsRef for RequestSink {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl rama_core::Service<Request<()>> for RequestSink {

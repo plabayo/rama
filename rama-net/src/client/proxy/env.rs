@@ -6,7 +6,7 @@ use rama_core::{
     error_sink::ErrorSink,
     extensions::ExtensionsRef,
 };
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use rama_utils::str::trim_non_empty;
 use tokio::sync::OnceCell;
 
@@ -415,10 +415,14 @@ impl<S> Layer<S> for ProxyEnvLayer {
 }
 
 /// Service produced by [`ProxyEnvLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProxyEnvService<S> {
     inner: S,
     layer: ProxyEnvLayer,
+}
+
+impl<S> ProxyEnvService<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S, Input> Service<Input> for ProxyEnvService<S>
@@ -630,10 +634,14 @@ impl<S> Layer<S> for NoProxyEnvLayer {
 }
 
 /// Service produced by [`NoProxyEnvLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct NoProxyEnvService<S> {
     inner: S,
     layer: NoProxyEnvLayer,
+}
+
+impl<S> NoProxyEnvService<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S, Input> Service<Input> for NoProxyEnvService<S>
@@ -676,7 +684,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, ExtensionsRef)]
     struct TestInput {
         uri: Uri,
         protocol: Option<Protocol>,
@@ -719,12 +727,6 @@ mod tests {
                     .authority()
                     .map(|authority| authority.into_owned().address)
             })
-        }
-    }
-
-    impl ExtensionsRef for TestInput {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
         }
     }
 

@@ -1,6 +1,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -20,7 +21,9 @@ use super::RESULT_KEY;
 /// - The `Res` value returned by the service is serialized and wrapped as
 ///   `{"$result": <value>}`.
 /// - If the service returns `()`, the reply is `{"$result": null}`.
+#[derive(ExtensionsRef)]
 pub(super) struct TypedAdapter<Req, Res, S> {
+    #[extensions_ref]
     service: S,
     _marker: std::marker::PhantomData<fn(Req) -> Res>,
 }

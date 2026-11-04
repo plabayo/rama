@@ -1,0 +1,5 @@
+error: only one field can be marked with `#[extensions_ref]`
+ --> tests/derive_extensions_ref/fail/two_markers.rs:7:5
+  |
+7 |     #[extensions_ref]
+  |     ^^^^^^^^^^^^^^^^^

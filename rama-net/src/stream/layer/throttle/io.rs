@@ -475,19 +475,13 @@ mod tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
     struct Marker(u8);
 
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, ExtensionsRef)]
     struct ProbeWriter {
         extensions: Extensions,
         writes: usize,
         vectored_writes: usize,
         flushes: usize,
         shutdowns: usize,
-    }
-
-    impl ExtensionsRef for ProbeWriter {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl AsyncWrite for ProbeWriter {

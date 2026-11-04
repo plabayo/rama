@@ -32,7 +32,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Layer, Service,
     error::{BoxError, error_chain},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
 };
 use rama_http_headers::{AltUsed, HeaderMapExt as _, TypedHeader as _};
 use rama_http_types::{
@@ -254,7 +254,7 @@ impl<S> Layer<S> for AltSvcLayer {
 }
 
 /// Service applying an [`AltSvcLayer`] to an established connection.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct AltSvc<S> {
     inner: S,
     cache: Option<AltSvcCache>,
@@ -266,12 +266,6 @@ impl<S> AltSvc<S> {
     /// Disable advertisement learning while preserving actual Alt-Used bookkeeping.
     pub fn passthrough(inner: S) -> Self {
         Self { inner, cache: None }
-    }
-}
-
-impl<S: ExtensionsRef> ExtensionsRef for AltSvc<S> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
     }
 }
 
@@ -482,7 +476,7 @@ where
 mod tests {
     use super::*;
     use crate::Body;
-    use rama_core::{error::BoxErrorExt as _, service::service_fn};
+    use rama_core::{error::BoxErrorExt as _, extensions::Extensions, service::service_fn};
     use rama_http_types::conn::{
         HttpServiceCandidate, HttpServiceCandidates, HttpServiceSelection,
     };
@@ -499,15 +493,11 @@ mod tests {
         time::Duration,
     };
 
+    #[derive(ExtensionsRef)]
     struct Connection<S> {
         inner: S,
+        #[extensions_ref]
         extensions: Extensions,
-    }
-
-    impl<S> ExtensionsRef for Connection<S> {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl<S, Input> Service<Input> for Connection<S>

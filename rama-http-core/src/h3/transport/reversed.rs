@@ -1,7 +1,4 @@
-use rama_core::{
-    bytes::Bytes,
-    extensions::{Extensions, ExtensionsRef},
-};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef};
 use rama_net::tls::ApplicationProtocol;
 use rama_quic::qlog::ConnectionQlogControl;
 use rama_quic_proto::{ConnectionError, Dir, Side, StreamId, VarInt};
@@ -35,7 +32,7 @@ use super::{
 /// [draft-thomson-ptth-potato]: https://datatracker.ietf.org/doc/draft-thomson-ptth-potato/
 /// [`Config::application_protocol`]: crate::h3::connection::Config::application_protocol
 /// [`BoxedConnection`]: super::BoxedConnection
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct Reversed<T>(T);
 
 impl<T> Reversed<T> {
@@ -66,12 +63,6 @@ fn reverse(id: StreamId) -> StreamId {
 
 fn reverse_bi<S, R>((send, recv): (S, R)) -> (Reversed<S>, Reversed<R>) {
     (Reversed(send), Reversed(recv))
-}
-
-impl<C: ExtensionsRef> ExtensionsRef for Reversed<C> {
-    fn extensions(&self) -> &Extensions {
-        self.0.extensions()
-    }
 }
 
 impl<C: Connection> Connection for Reversed<C> {

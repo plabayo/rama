@@ -1,3 +1,4 @@
+use rama_utils::macros::define_inner_service_accessors;
 use std::num::NonZeroUsize;
 
 use rama_core::{Layer, Service, extensions::ExtensionsRef};
@@ -38,10 +39,14 @@ impl<S> Layer<S> for CaptureWebSocketLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct CaptureWebSocketService<S> {
     inner: S,
     store: Option<CaptureStore>,
+}
+
+impl<S> CaptureWebSocketService<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S, Ingress, Egress> Service<WebSocketBridge<Ingress, Egress>> for CaptureWebSocketService<S>

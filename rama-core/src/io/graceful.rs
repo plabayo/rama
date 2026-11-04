@@ -8,7 +8,7 @@ use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::sync::CancellationToken;
 
-use crate::extensions::{Extension, Extensions, ExtensionsRef};
+use crate::extensions::{Extension, ExtensionsRef};
 
 /// Extension type that can be injected into an I/O stream to cancel it gracefully.
 ///
@@ -22,7 +22,7 @@ pin_project! {
     /// An I/O wrapper that stops reading and writing once the cancel future resolves.
     ///
     /// Reads complete as EOF after cancellation. Writes fail with `BrokenPipe`.
-    #[derive(Debug)]
+    #[derive(Debug, ExtensionsRef)]
     #[must_use = "I/O wrappers do nothing unless polled"]
     pub struct GracefulIo<F, S> {
         #[pin]
@@ -54,12 +54,6 @@ impl<F, S> GracefulIo<F, S> {
 
     pub fn into_inner(self) -> S {
         self.inner
-    }
-}
-
-impl<F, S: ExtensionsRef> ExtensionsRef for GracefulIo<F, S> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
     }
 }
 

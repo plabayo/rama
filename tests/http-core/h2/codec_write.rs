@@ -1,6 +1,6 @@
 use h2_support::prelude::*;
 use rama::ServiceInput;
-use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -149,15 +149,10 @@ async fn server_settings_header_table_size() {
 }
 
 /// An IO wrapper whose `poll_write` returns `Ready(Ok(0))` once the flag is set.
+#[derive(ExtensionsRef)]
 struct ZeroWriteIo<T> {
     inner: T,
     zero_writes: Arc<AtomicBool>,
-}
-
-impl<T: ExtensionsRef> ExtensionsRef for ZeroWriteIo<T> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
-    }
 }
 
 impl<T: AsyncRead + Unpin> AsyncRead for ZeroWriteIo<T> {

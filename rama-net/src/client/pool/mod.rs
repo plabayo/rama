@@ -11,7 +11,7 @@ use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Layer, Service};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::time::{Instant, timeout, timeout_at};
@@ -210,6 +210,7 @@ where
     }
 }
 
+#[derive(ExtensionsRef)]
 pub struct PooledConnector<S, P, R> {
     inner: S,
     pool: P,
@@ -218,6 +219,8 @@ pub struct PooledConnector<S, P, R> {
 }
 
 impl<S, P, R> PooledConnector<S, P, R> {
+    define_inner_service_accessors!();
+
     pub fn new(inner: S, pool: P, req_to_conn_id: R) -> Self {
         Self {
             inner,

@@ -80,7 +80,7 @@ impl<S, T> Layer<S> for AddInputExtensionLayer<T> {
 }
 
 /// Middleware for adding some shareable value to incoming input's extensions.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct AddInputExtension<S, T> {
     inner: S,
     value: Arc<T>,
@@ -200,7 +200,7 @@ impl<S, T> Layer<S> for AddOutputExtensionLayer<T> {
 }
 
 /// Middleware for adding some shareable value to an output's extensions.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct AddOutputExtension<S, T> {
     inner: S,
     value: Arc<T>,

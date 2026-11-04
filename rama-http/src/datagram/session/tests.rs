@@ -4,7 +4,7 @@ use crate::datagram::{
     capsule::{CapsuleError, UnknownCapsules, encode_capsule},
 };
 use parking_lot::Mutex;
-use rama_core::{ServiceInput, extensions::Extensions};
+use rama_core::{ServiceInput, extensions::Extensions, extensions::ExtensionsRef};
 use std::assert_matches;
 use std::{
     collections::VecDeque,
@@ -348,16 +348,12 @@ async fn malformed_streams_abort_through_the_transport_hook() {
 }
 
 /// Accepts one byte per successful poll and alternates with `Pending`.
+#[derive(ExtensionsRef)]
 struct Trickle {
     inner: DuplexStream,
     pending: bool,
+    #[extensions_ref]
     extensions: Extensions,
-}
-
-impl ExtensionsRef for Trickle {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl AsyncRead for Trickle {
@@ -914,15 +910,10 @@ async fn dropping_the_receiver_releases_native_receive_only() {
 }
 
 /// An always-ready reader: one unknown capsule that never ends.
+#[derive(ExtensionsRef)]
 struct Endless {
     header_sent: bool,
     extensions: Extensions,
-}
-
-impl ExtensionsRef for Endless {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl AsyncRead for Endless {
@@ -983,16 +974,11 @@ async fn receive_polls_do_bounded_work_and_keep_native_flowing() {
 }
 
 /// Fails the first read and write, then behaves like a healthy, empty stream.
+#[derive(ExtensionsRef)]
 struct FailsOnce {
     read_failed: bool,
     write_failed: bool,
     extensions: Extensions,
-}
-
-impl ExtensionsRef for FailsOnce {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl AsyncRead for FailsOnce {
@@ -1211,17 +1197,13 @@ async fn malformed_input_closes_hookless_carriers_for_both_halves() {
 }
 
 /// Shutdown stays pending until allowed, to cancel `close` after its commit.
+#[derive(ExtensionsRef)]
 struct PendingShutdown {
     inner: DuplexStream,
+    #[extensions_ref]
     extensions: Extensions,
     polled: Arc<AtomicUsize>,
     allowed: Arc<AtomicBool>,
-}
-
-impl ExtensionsRef for PendingShutdown {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl AsyncRead for PendingShutdown {
@@ -1688,16 +1670,12 @@ async fn aborted_sessions_release_accepted_payloads_on_any_next_send() {
 }
 
 /// Reads `input` then EOF; its first write takes one byte and every later one fails.
+#[derive(ExtensionsRef)]
 struct FailsAfterFirstWrite {
     input: Bytes,
     writes: usize,
+    #[extensions_ref]
     extensions: Extensions,
-}
-
-impl ExtensionsRef for FailsAfterFirstWrite {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl AsyncRead for FailsAfterFirstWrite {
@@ -1797,16 +1775,11 @@ async fn native_datagrams_queued_before_a_clean_end_are_delivered() {
 }
 
 /// Counts writes; accepts everything.
-#[derive(Default)]
+#[derive(Default, ExtensionsRef)]
 struct CountsWrites {
     writes: Arc<AtomicUsize>,
+    #[extensions_ref]
     extensions: Extensions,
-}
-
-impl ExtensionsRef for CountsWrites {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl AsyncRead for CountsWrites {

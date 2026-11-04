@@ -60,6 +60,7 @@ members = [
     "rama-json",
     "rama-macros",
     "rama-macros/tests/macros",
+    "rama-macros/tests/renamed-umbrella",
     "rama-masque",
     "rama-net",
     "rama-net-apple-networkextension",

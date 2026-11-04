@@ -28,6 +28,7 @@ use crate::{
 ///
 /// Sending from either endpoint queues a datagram for the other. The fixed
 /// queue capacity models backpressure without using an operating-system socket.
+#[derive(ExtensionsRef)]
 pub struct MemoryDatagramSocket {
     shared: Arc<Shared>,
     side: usize,
@@ -277,12 +278,6 @@ impl Drop for MemoryDatagramSocket {
             waker.wake();
         }
         wake_all(send_wakers);
-    }
-}
-
-impl ExtensionsRef for MemoryDatagramSocket {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

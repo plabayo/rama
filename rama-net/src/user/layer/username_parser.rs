@@ -1,4 +1,5 @@
 use core::{fmt, marker::PhantomData};
+use rama_utils::macros::define_inner_service_accessors;
 
 use crate::user::UserId;
 
@@ -67,9 +68,14 @@ impl<S, P> Layer<S> for UsernameLabelParserLayer<P> {
 /// stack which injects a [`UserId`] into the input.
 ///
 /// See [`UsernameLabelParserLayer`] for more info.
+#[derive(ExtensionsRef)]
 pub struct UsernameLabelParserService<S, P> {
     inner: S,
     _parser: PhantomData<fn() -> P>,
+}
+
+impl<S, P> UsernameLabelParserService<S, P> {
+    define_inner_service_accessors!();
 }
 
 impl<S: fmt::Debug, P> fmt::Debug for UsernameLabelParserService<S, P> {

@@ -11,7 +11,7 @@
 
 use std::fmt;
 
-use rama_core::error::BoxError;
+use rama_core::{error::BoxError, extensions::ExtensionsRef};
 use rama_http_hyperium::{HyperiumBody, RamaBody, TryIntoHyperiumHttp as _, TryIntoRamaHttp as _};
 use rama_http_types::body::http_body::Body;
 use rama_http_types::{Request, Response};
@@ -32,7 +32,7 @@ use crate::service_ready::Ready;
 ///
 /// [`tower::Service`]: tower_service::Service
 /// [`Service`]: rama_core::Service
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct TowerHttpServiceAdapter<T>(T);
 
 impl<T: Clone + Send + Sync + 'static> TowerHttpServiceAdapter<T> {

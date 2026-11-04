@@ -12,7 +12,7 @@ use rama::{
     crypto::cert::boring::generate_certificate_authority_x509,
     dns::client::DnsConnector,
     error::{BoxError, error_chain, extra::OpaqueError},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     http::{
         Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
@@ -241,8 +241,9 @@ impl Service<ConnectRequest> for CountingUdpConnector {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 struct CountedSocket {
+    #[extensions_ref]
     socket: UdpPacketSocket,
     count: Arc<EgressSockets>,
 }
@@ -250,12 +251,6 @@ struct CountedSocket {
 impl Drop for CountedSocket {
     fn drop(&mut self) {
         self.count.active.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-impl ExtensionsRef for CountedSocket {
-    fn extensions(&self) -> &Extensions {
-        self.socket.extensions()
     }
 }
 

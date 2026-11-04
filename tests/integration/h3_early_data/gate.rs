@@ -1,6 +1,7 @@
 //! Hold all server output, so a client cannot complete its handshake.
 
 use parking_lot::Mutex;
+use rama::extensions::ExtensionsRef;
 use rama_net::{address::SocketAddress, stream::Socket};
 use rama_udp::{
     DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
@@ -49,7 +50,7 @@ impl Gate {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub(super) struct GatedSocket<S> {
     pub(super) inner: S,
     pub(super) gate: Arc<Gate>,

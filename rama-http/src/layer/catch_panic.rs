@@ -94,7 +94,7 @@
 use crate::{Body, HeaderValue, Request, Response, StatusCode};
 use rama_core::futures::FutureExt;
 use rama_core::telemetry::tracing;
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{any::Any, panic::AssertUnwindSafe};
 
@@ -157,7 +157,7 @@ where
 /// Middleware that catches panics and converts them into `500 Internal Server` responses.
 ///
 /// See the [module docs](self) for an example.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct CatchPanic<S, T> {
     inner: S,
     panic_handler: T,

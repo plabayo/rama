@@ -1303,12 +1303,13 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 /// [`ClientWebSocket`], used as input-output stream.
 ///
 /// Utility type created via [`WebSocketRequestBuilder::handshake`].
 pub struct ClientWebSocket<S = AsyncWebSocket> {
     /// Established WebSocket message transport.
+    #[extensions_ref]
     pub socket: S,
     /// Original HTTP handshake response metadata.
     pub response: response::Parts,
@@ -1361,15 +1362,6 @@ where
 
     fn poll_close(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Sink::poll_close(Pin::new(&mut self.get_mut().socket), ctx)
-    }
-}
-
-impl<S> ExtensionsRef for ClientWebSocket<S>
-where
-    S: ExtensionsRef,
-{
-    fn extensions(&self) -> &Extensions {
-        self.socket.extensions()
     }
 }
 

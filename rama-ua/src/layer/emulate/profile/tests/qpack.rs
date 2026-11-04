@@ -1,18 +1,14 @@
 use super::*;
+use rama_core::extensions::ExtensionsRef;
 use rama_http::proto::h3::{
     observation::{FieldRepresentation, ObservedFieldRepresentation},
     qpack::encoding::Representation,
 };
 
+#[derive(ExtensionsRef)]
 pub(super) struct QpackRequestSink {
     pub(super) extensions: Extensions,
     pub(super) calls: Arc<AtomicUsize>,
-}
-
-impl ExtensionsRef for QpackRequestSink {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl Service<Request<()>> for QpackRequestSink {

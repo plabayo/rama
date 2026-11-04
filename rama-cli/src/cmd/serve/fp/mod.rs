@@ -542,6 +542,7 @@ impl<S> Layer<S> for StorageAuthLayer {
     }
 }
 
+#[derive(ExtensionsRef)]
 struct StorageAuthService<S> {
     inner: S,
     storage_auth: Option<String>,

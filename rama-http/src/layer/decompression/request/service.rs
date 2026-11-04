@@ -9,6 +9,7 @@ use crate::{HeaderValue, Request, Response, StatusCode, header};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::extensions::ExtensionsRef;
 use rama_http_types::Body;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -23,7 +24,7 @@ use rama_utils::macros::define_inner_service_accessors;
 /// This is disabled by default.
 ///
 /// See the [module docs](crate::layer::decompression) for more details.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct RequestDecompression<S> {
     pub(super) inner: S,
     pub(super) accept: AcceptEncoding,

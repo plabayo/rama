@@ -7,7 +7,7 @@ use crate::{
     header::{self, DATE, RAMA_ID_HEADER_VALUE, SERVER},
     headers::{Date, HeaderMapExt},
 };
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::{macros::define_inner_service_accessors, time::now_system_time};
 use std::fmt;
 
@@ -73,7 +73,7 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
 }
 
 /// Middleware that sets a header on the request.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct AddRequiredResponseHeaders<S> {
     inner: S,
     overwrite: bool,

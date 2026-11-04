@@ -31,7 +31,7 @@ use crate::{
 /// Factory-created dual-stack wildcard sockets on Apple platforms own one socket per IP
 /// family, bound to the same port. This prevents IPv4 sockets from taking traffic destined for
 /// a dual-stack socket whose ephemeral allocation did not reserve that port in both families.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct UdpPacketSocket {
     primary: PacketSocket,
     extensions: Extensions,
@@ -134,12 +134,6 @@ impl DatagramSocket for UdpPacketSocket {
             return common_capabilities(primary, ipv4.capabilities());
         }
         primary
-    }
-}
-
-impl ExtensionsRef for UdpPacketSocket {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

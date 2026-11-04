@@ -9,7 +9,7 @@ use std::{
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
-    extensions::ExtensionsRef as _,
+    extensions::ExtensionsRef,
     http::{
         HeaderMap, HeaderValue, Request, Response, StatusCode,
         header::{COOKIE, REFRESH, SET_COOKIE},
@@ -125,7 +125,7 @@ impl<S> Layer<S> for Http3BootstrapCleanupLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub(crate) struct Http3BootstrapCleanup<S> {
     inner: S,
     active: bool,

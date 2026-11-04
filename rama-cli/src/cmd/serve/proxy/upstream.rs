@@ -164,7 +164,7 @@ impl<S> Layer<S> for RejectSelfProxyLayer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 struct RejectSelfProxyService<S> {
     inner: S,
     listener_addresses: ListenerAddresses,

@@ -15,9 +15,10 @@ use rama_core::{Service, bytes::Bytes};
 use rama_http_types::proto::ext::Protocol;
 use tokio::time::Instant;
 
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct HARExportService<R, S, T> {
     pub(super) recorder: R,
+    #[extensions_ref]
     pub(super) service: S,
     pub(super) toggle: T,
 

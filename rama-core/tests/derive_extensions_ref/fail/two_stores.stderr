@@ -1,0 +1,9 @@
+error: `#[derive(ExtensionsRef)]` cannot pick a field: mark the field to forward with `#[extensions_ref]`
+ --> tests/derive_extensions_ref/fail/two_stores.rs:4:12
+  |
+4 |   struct Svc {
+  |  ____________^
+5 | |     a: Extensions,
+6 | |     b: Extensions,
+7 | | }
+  | |_^

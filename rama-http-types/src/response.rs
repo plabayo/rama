@@ -133,7 +133,7 @@ pub struct Response<T = Body> {
 /// The HTTP response head consists of a status, version, and a set of
 /// header fields.
 #[non_exhaustive]
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct Parts {
     /// The response's status
     pub status: StatusCode,
@@ -226,12 +226,6 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Response<T> {
             },
             body: repr.body,
         })
-    }
-}
-
-impl ExtensionsRef for Parts {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 
@@ -861,7 +855,7 @@ impl Builder {
     ///
     /// ```
     /// # use rama_http_types::Response;
-    /// # use rama_core::extensions::{Extension, ExtensionsRef as _};
+    /// # use rama_core::extensions::{Extension, ExtensionsRef};
     ///
     /// #[derive(Debug, Clone, PartialEq)]
     /// struct MyExtension(&'static str);

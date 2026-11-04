@@ -52,7 +52,7 @@ use crate::{
 };
 use rama_core::{
     Layer, Service,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     futures::{Sink, SinkExt as _, Stream, StreamExt as _, task::AtomicWaker},
     telemetry::tracing::debug,
 };
@@ -146,7 +146,7 @@ impl<S> Layer<S> for HARWebSocketLayer {
 }
 
 /// Service produced by [`HARWebSocketLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct HARWebSocketService<S> {
     inner: S,
 }
@@ -274,6 +274,7 @@ impl fmt::Debug for PendingObservation {
 /// polling the inner transport would bypass capture. Use [`Self::get_ref`] or
 /// [`Self::get_mut`] only when that bypass is explicitly intended, and call
 /// [`Self::into_inner`] to remove the middleware.
+#[derive(ExtensionsRef)]
 pub struct HARWebSocket<S> {
     inner: S,
     mode: CaptureMode,
@@ -511,12 +512,6 @@ impl<S> HARWebSocket<S> {
     }
 }
 
-impl<S: ExtensionsRef> ExtensionsRef for HARWebSocket<S> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
-    }
-}
-
 impl<S> Stream for HARWebSocket<S>
 where
     S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
@@ -734,16 +729,10 @@ mod tests {
         messages: Mutex<Vec<Message>>,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, ExtensionsRef)]
     struct DelegatingSocket {
         extensions: Extensions,
         state: Arc<DelegatingSocketState>,
-    }
-
-    impl ExtensionsRef for DelegatingSocket {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl Stream for DelegatingSocket {
@@ -786,16 +775,11 @@ mod tests {
         }
     }
 
+    #[derive(ExtensionsRef)]
     struct TailSocket {
         extensions: Extensions,
         incoming: Option<Message>,
         sent: Arc<Mutex<Vec<Message>>>,
-    }
-
-    impl ExtensionsRef for TailSocket {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl Stream for TailSocket {

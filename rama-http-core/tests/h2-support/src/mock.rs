@@ -19,16 +19,10 @@ use std::time::Duration;
 use std::{cmp, io};
 
 /// A mock I/O
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct Mock {
     pipe: Pipe,
     extensions: Extensions,
-}
-
-impl ExtensionsRef for Mock {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 #[derive(Debug)]

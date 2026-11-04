@@ -515,7 +515,7 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 struct NestedService<S> {
     inner: S,
     prefix: ArcStr,

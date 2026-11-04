@@ -132,6 +132,7 @@ impl TunnelReset {
     }
 }
 
+#[derive(ExtensionsRef)]
 pub(super) struct H2Upgraded {
     ping: Recorder,
     send_stream: Box<dyn TunnelSink>,
@@ -140,12 +141,6 @@ pub(super) struct H2Upgraded {
     recv_stream: RecvStream,
     buf: Bytes,
     extensions: Extensions,
-}
-
-impl ExtensionsRef for H2Upgraded {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl H2Upgraded {

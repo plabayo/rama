@@ -46,8 +46,9 @@ use super::NoTlsRejectError;
 /// this is as a standalone function instead.
 ///
 /// [`SniRouter`]: super::SniRouter
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct PeekTlsClientHelloService<S, F = RejectService<(), NoTlsRejectError>> {
+    #[extensions_ref]
     service: S,
     fallback: F,
     peek_timeout: Option<Duration>,

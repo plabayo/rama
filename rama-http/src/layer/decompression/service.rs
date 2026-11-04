@@ -9,6 +9,7 @@ use crate::{
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::{
     Service,
+    extensions::ExtensionsRef,
     matcher::service::{ServiceMatch, ServiceMatcher},
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -20,7 +21,7 @@ use std::convert::Infallible;
 /// bodies based on the `Content-Encoding` header.
 ///
 /// See the [module docs](crate::layer::decompression) for more details.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Decompression<S, M = DefaultDecompressionMatcher> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,

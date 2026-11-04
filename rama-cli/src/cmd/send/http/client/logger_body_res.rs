@@ -22,7 +22,7 @@ use crate::cmd::send::http::{
 
 const SELECT_JSON_MAX_CAPTURE_BYTES: usize = mib(8);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub(super) struct ResponseBodyLogger<S> {
     pub(super) inner: S,
     pub(super) writer: Writer,

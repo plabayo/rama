@@ -6,7 +6,7 @@ use crate::io::write_http_response_streaming;
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt as _};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Layer, Service};
@@ -229,7 +229,7 @@ impl<S, W: Clone> Layer<S> for ResponseWriterLayer<W> {
 /// receives an owned body stream and processes frames concurrently.
 ///
 /// See the [module docs](super) for more details.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct ResponseWriterService<S, W> {
     inner: S,
     writer: Arc<W>,
@@ -391,15 +391,6 @@ where
             resp.map(Body::new)
         };
         Ok(resp)
-    }
-}
-
-impl<S, W> ExtensionsRef for ResponseWriterService<S, W>
-where
-    S: ExtensionsRef,
-{
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
     }
 }
 

@@ -1,3 +1,4 @@
+use rama_utils::macros::define_inner_service_accessors;
 use std::{io, os::windows::io::AsRawSocket, ptr};
 
 use crate::client::ConnectorTarget;
@@ -68,11 +69,15 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ConnectorTargetFromWfpContext<S, D> {
     inner: S,
     decoder: D,
     context_optional: bool,
+}
+
+impl<S, D> ConnectorTargetFromWfpContext<S, D> {
+    define_inner_service_accessors!();
 }
 
 impl<S, Input, D> Service<Input> for ConnectorTargetFromWfpContext<S, D>

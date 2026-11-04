@@ -8,7 +8,7 @@ use crate::layer::classify::{
     ServerErrorsAsFailures, SharedClassifier,
 };
 use crate::{Request, Response, StreamingBody};
-use rama_core::{Service, telemetry::tracing::Instrument};
+use rama_core::{Service, extensions::ExtensionsRef, telemetry::tracing::Instrument};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::Instant};
 
@@ -18,7 +18,7 @@ use std::{fmt, time::Instant};
 ///
 /// [tracing]: https://crates.io/crates/tracing
 /// [`Service`]: rama_core::Service
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Trace<
     S,
     M,

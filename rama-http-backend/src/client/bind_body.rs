@@ -32,7 +32,7 @@ use rama_http::StreamingBody;
 use rama_http_types::body::GuardedBody;
 use rama_http_types::{Body, Request, Response};
 use rama_net::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 use super::Http1BodyDrainConfig;
 use super::drain::{Http1BodyDrain, Http1DrainBody, Http1DrainRuntime};
@@ -56,6 +56,7 @@ use super::drain::{Http1BodyDrain, Http1DrainBody, Http1DrainRuntime};
 ///
 /// Warning: the connection returned by this service should only be used for a single
 /// request, since it will be transferred to the response body and not be useable after that.
+#[derive(ExtensionsRef)]
 pub struct BindBodyToConn<C> {
     /// `Some` until the (single) `serve` moves the connection into the body.
     conn: Mutex<Option<C>>,
@@ -87,12 +88,6 @@ impl<C: ExtensionsRef> BindBodyToConn<C> {
 impl<C> std::fmt::Debug for BindBodyToConn<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BindBodyToConn").finish_non_exhaustive()
-    }
-}
-
-impl<C> ExtensionsRef for BindBodyToConn<C> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 
@@ -194,11 +189,15 @@ impl<S> Layer<S> for BindBodyToConnLayer {
 
 /// Connector produced by [`BindBodyToConnLayer`]: wraps each established
 /// connection in [`BindBodyToConn`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct BindBodyToConnector<S> {
     inner: S,
     /// Shared by the clones of this connector, not by other connectors.
     pub(super) drain: Option<Arc<Http1BodyDrain>>,
+}
+
+impl<S> BindBodyToConnector<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S, Input> Service<Input> for BindBodyToConnector<S>

@@ -61,7 +61,7 @@ fn try_from_http_request<Body>(request: &Request<Body>) -> Result<ConnectRequest
 /// connector input's extension chain is then installed on the original request
 /// so selected routes and other connection metadata remain observable without
 /// requiring the body to be cloned.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 #[non_exhaustive]
 pub struct HttpConnectRequestAdapter<S> {
     inner: S,

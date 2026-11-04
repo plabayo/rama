@@ -1,4 +1,5 @@
 use core::{fmt, net::IpAddr};
+use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
 
 use rama_core::{
@@ -200,10 +201,14 @@ impl<S> Layer<S> for ProxyBypassLayer {
 }
 
 /// Service produced by [`ProxyBypassLayer`].
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct ProxyBypassService<S> {
     inner: S,
     layer: ProxyBypassLayer,
+}
+
+impl<S> ProxyBypassService<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S: fmt::Debug> fmt::Debug for ProxyBypassService<S> {

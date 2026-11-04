@@ -1033,6 +1033,7 @@ async fn path_router_service_inserts_owned_captures() {
         extensions::{Extensions, ExtensionsRef},
         service::service_fn,
     };
+    #[derive(ExtensionsRef)]
     struct Input {
         uri: Uri,
         extensions: Extensions,
@@ -1044,12 +1045,6 @@ async fn path_router_service_inserts_owned_captures() {
                 uri: path.parse().unwrap(),
                 extensions: Extensions::new(),
             }
-        }
-    }
-
-    impl ExtensionsRef for Input {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
         }
     }
 

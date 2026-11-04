@@ -16,7 +16,7 @@ use crate::{HeaderValue, Request, Response, header};
 /// Middleware that enforces cross-origin request forgery (CSRF) protection.
 ///
 /// See the [module docs](crate::layer::csrf) for more details.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 #[must_use]
 pub struct Csrf<S, T = DefaultResponseForProtectionError> {
     inner: S,

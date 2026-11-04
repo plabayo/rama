@@ -64,6 +64,7 @@ use rama_utils::macros::generate_set_and_with;
 ///
 /// Alternatively, if the exact type is known, this can be deconstructed
 /// into its parts.
+#[derive(ExtensionsRef)]
 pub struct Upgraded {
     io: Rewind<Box<dyn UpgradeIo>>,
     extensions: Extensions,
@@ -337,12 +338,6 @@ impl dyn UpgradeIo {
         } else {
             Err(self)
         }
-    }
-}
-
-impl ExtensionsRef for Upgraded {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

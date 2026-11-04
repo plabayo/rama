@@ -18,7 +18,7 @@ pin_project! {
     /// This is mainly useful for testing or less import request types. In most
     /// cases you should create a new type that implements all the needed traits,
     /// but that is focussed specifically on that use case.
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Default, ExtensionsRef)]
     pub struct ServiceInput<T> {
         #[pin]
         pub input: T,
@@ -32,12 +32,6 @@ impl<T> ServiceInput<T> {
             input,
             extensions: Extensions::new(),
         }
-    }
-}
-
-impl<T> ExtensionsRef for ServiceInput<T> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 
