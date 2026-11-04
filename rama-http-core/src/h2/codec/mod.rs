@@ -23,7 +23,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use std::io;
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct Codec<T, B> {
     inner: FramedRead<FramedWrite<T, B>>,
 }
@@ -185,12 +185,6 @@ where
     /// Shutdown the send half
     pub fn shutdown(&mut self, cx: &mut Context) -> Poll<io::Result<()>> {
         self.framed_write().shutdown(cx)
-    }
-}
-
-impl<T: ExtensionsRef, B> ExtensionsRef for Codec<T, B> {
-    fn extensions(&self) -> &rama_core::extensions::Extensions {
-        self.inner.extensions()
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::{Layer, Service};
+use crate::{Layer, Service, extensions::ExtensionsRef};
 use core::fmt;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -6,7 +6,7 @@ use rama_utils::macros::define_inner_service_accessors;
 ///
 /// This adapter produces a new service that passes each value through the
 /// given function `f` before sending it to `self`.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct MapInput<S, F> {
     inner: S,
     f: F,

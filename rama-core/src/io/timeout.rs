@@ -1,3 +1,4 @@
+use crate::extensions::{Extensions, ExtensionsRef};
 use pin_project_lite::pin_project;
 use rama_utils::macros::generate_set_and_with;
 use std::{
@@ -96,6 +97,12 @@ pin_project! {
         reader: R,
         #[pin]
         state: TimeoutState,
+    }
+}
+
+impl<R: ExtensionsRef> ExtensionsRef for TimeoutReader<R> {
+    fn extensions(&self) -> &Extensions {
+        self.reader.extensions()
     }
 }
 
@@ -231,6 +238,12 @@ pin_project! {
         writer: W,
         #[pin]
         state: TimeoutState,
+    }
+}
+
+impl<W: ExtensionsRef> ExtensionsRef for TimeoutWriter<W> {
+    fn extensions(&self) -> &Extensions {
+        self.writer.extensions()
     }
 }
 
@@ -378,7 +391,7 @@ where
 
 pin_project! {
     /// A io which applies read and write timeouts to an inner io.
-    #[derive(Debug)]
+    #[derive(Debug, ExtensionsRef)]
     pub struct TimeoutIo<S> {
         #[pin]
         io: TimeoutReader<TimeoutWriter<S>>
@@ -516,7 +529,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::futures::FutureExt as _;
+    use crate::{ServiceInput, extensions::Extension, futures::FutureExt as _};
 
     use core::pin::pin;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
@@ -692,4 +705,32 @@ mod test {
         let r = io.write(&[0]).await;
         assert_eq!(r.err().unwrap().kind(), io::ErrorKind::TimedOut);
     }
+
+    #[tokio::test]
+    async fn timeout_wrappers_forward_the_connection_extensions() {
+        let (client, _server) = duplex(16);
+        let io = TimeoutIo::new(ServiceInput::new(client));
+        let store = &raw const io.get_ref().extensions;
+        assert!(core::ptr::eq(io.extensions(), store));
+
+        io.extensions().insert(TimedOutMarker);
+        assert!(io.get_ref().extensions.contains::<TimedOutMarker>());
+
+        let (client, _server) = duplex(16);
+        let reader = TimeoutReader::new(ServiceInput::new(client));
+        assert!(core::ptr::eq(
+            reader.extensions(),
+            &raw const reader.get_ref().extensions
+        ));
+
+        let (client, _server) = duplex(16);
+        let writer = TimeoutWriter::new(ServiceInput::new(client));
+        assert!(core::ptr::eq(
+            writer.extensions(),
+            &raw const writer.get_ref().extensions
+        ));
+    }
+
+    #[derive(Debug, Clone, Extension)]
+    struct TimedOutMarker;
 }

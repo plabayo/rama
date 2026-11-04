@@ -5,6 +5,7 @@ use crate::{Body, Request, Response, body::util::BodyExt as _};
 use parking_lot::Mutex;
 use rama_core::{
     bytes::Bytes,
+    extensions::ExtensionsRef,
     extensions::{Extension, Extensions},
     futures::stream,
 };
@@ -90,18 +91,12 @@ impl FakeConnector {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 struct FakeConnection {
     extensions: Extensions,
     dispatched: Arc<AtomicUsize>,
     expected_alt_used: Option<String>,
     response_failure: Option<ConnectionErrorDomain>,
-}
-
-impl ExtensionsRef for FakeConnection {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl Service<Request> for FakeConnection {

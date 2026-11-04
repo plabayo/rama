@@ -13,6 +13,7 @@ use rama_net::{
     address::HostWithPort,
     client::{ConnectRequest, ConnectorService, ConnectorTarget, EstablishedClientConnection},
 };
+use rama_utils::macros::define_inner_service_accessors;
 
 use crate::{DatagramSocket, UdpPacketSocket, UdpSocketConfig, bind_udp_socket_with_connect};
 
@@ -102,7 +103,7 @@ impl<S: DatagramSocket + ExtensionsRef + Send + 'static> DatagramBridgeInput for
 /// The egress socket is created by the connector, so a platform that must bind or mark it
 /// before it connects supplies its own. The target is fixed, or the association's
 /// [`ConnectorTarget`] extension; never anything its datagrams carry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct DatagramToProxyBridge<S, C = UdpConnector> {
     inner: S,
     connector: C,
@@ -110,6 +111,8 @@ pub struct DatagramToProxyBridge<S, C = UdpConnector> {
 }
 
 impl<S> DatagramToProxyBridge<S> {
+    define_inner_service_accessors!();
+
     /// Bridge every association to `target`.
     pub fn new(inner: S, target: impl Into<HostWithPort>) -> Self {
         Self {

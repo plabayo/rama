@@ -13,7 +13,7 @@ use crate::body::FastCgiBody;
 /// `stdin` is a streaming [`FastCgiBody`]; any of `Bytes`, `Vec<u8>`, `String`,
 /// `&'static [u8]`, or an [`AsyncRead`][tokio::io::AsyncRead] wrapper can be
 /// passed via [`Self::with_stdin`].
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct FastCgiClientRequest {
     /// CGI environment variables to send as `FCGI_PARAMS`.
     pub params: Vec<(Bytes, Bytes)>,
@@ -77,12 +77,6 @@ impl FastCgiClientRequest {
     /// Get a mutable reference to the extensions.
     pub fn extensions_mut(&mut self) -> &mut Extensions {
         &mut self.extensions
-    }
-}
-
-impl ExtensionsRef for FastCgiClientRequest {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

@@ -1,16 +1,17 @@
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
 use rama_core::telemetry::tracing;
-use rama_core::{Layer, Service, extensions::ExtensionsRef as _};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http_headers::{Connection, HeaderMapExt, SecWebSocketAccept, SecWebSocketKey, Upgrade};
 use rama_http_types::header::{CONTENT_LENGTH, SEC_WEBSOCKET_ACCEPT};
 use rama_http_types::proto::ext::Protocol;
 use rama_http_types::{Request, Response, StatusCode, Version};
+use rama_utils::macros::define_inner_service_accessors;
 
 use super::request::{DowngradeWebSocketKey, is_websocket_protocol};
 use crate::layer::remove_header::remove_illegal_h2_response_headers;
 use crate::utils::request_connect_protocol;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 /// [`Service`] which will adapt the response version to the original request version.
 ///
 /// When a request passes through this [`Service`] it will store the request version,
@@ -25,6 +26,8 @@ pub struct ResponseVersionAdapter<S> {
 }
 
 impl<S> ResponseVersionAdapter<S> {
+    define_inner_service_accessors!();
+
     pub fn new(inner: S) -> Self {
         Self { inner }
     }
@@ -288,7 +291,7 @@ fn downgrade_response_to_h1<Body>(
 mod tests {
     use super::*;
     use crate::layer::version_adapter::adapt_request_version;
-    use rama_core::{extensions::ExtensionsRef, service::service_fn};
+    use rama_core::service::service_fn;
     use rama_http_types::header::{CONNECTION, SEC_WEBSOCKET_KEY, TRANSFER_ENCODING, UPGRADE};
     use rama_http_types::{Body, HeaderValue, Method};
     use std::convert::Infallible;

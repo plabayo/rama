@@ -3,6 +3,7 @@ use crate::core::Layer as TowerLayer;
 use crate::core::Service as TowerService;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext as _;
+use rama_core::extensions::ExtensionsRef;
 use std::{fmt, pin::Pin};
 
 /// Adapter to use a [`tower::Layer`]-[`tower::Service`] as a [`rama::Layer`]-[`rama::Service`].
@@ -55,6 +56,7 @@ impl<L: fmt::Debug> fmt::Debug for LayerAdapter<L> {
 /// [`tower::Service`]: tower_service::Service
 /// [`tower::Layer`]: tower_layer::Layer
 /// [`rama::Service`]: rama_core::Service
+#[derive(ExtensionsRef)]
 pub struct TowerAdapterService<S> {
     inner: S,
 }
@@ -91,7 +93,7 @@ impl<S: Clone> Clone for TowerAdapterService<S> {
 /// [`tower::Service`]: tower_service::Service
 /// [`tower::Layer`]: tower_layer::Layer
 /// [`rama::Service`]: rama_core::Service
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct LayerAdapterService<T>(T);
 
 impl<T: fmt::Debug> fmt::Debug for LayerAdapterService<T> {

@@ -38,7 +38,7 @@
 //! ```
 
 use crate::{Request, Response};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Different modes of normalizing paths
@@ -104,7 +104,7 @@ impl<S> Layer<S> for NormalizePathLayer {
 /// Middleware that normalizes paths.
 ///
 /// See the [module docs](self) for more details.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct NormalizePath<S> {
     mode: NormalizeMode,
     inner: S,

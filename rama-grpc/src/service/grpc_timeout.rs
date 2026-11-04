@@ -3,6 +3,7 @@ use std::time::Duration;
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_http::{HeaderMap, HeaderValue, Request};
@@ -34,7 +35,7 @@ impl<S> Layer<S> for GrpcTimeoutLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// A timeout [`Service`] for timeout support in Grpc stacks.
 pub struct GrpcTimeout<S> {
     inner: S,

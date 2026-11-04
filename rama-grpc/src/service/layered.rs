@@ -1,14 +1,19 @@
+use rama_utils::macros::define_inner_service_accessors;
 use std::marker::PhantomData;
 
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 
 use crate::server::NamedService;
 
 /// A layered service to propagate [`NamedService`] implementation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Layered<S, T> {
     inner: S,
     _ty: PhantomData<T>,
+}
+
+impl<S, T> Layered<S, T> {
+    define_inner_service_accessors!();
 }
 
 impl<S, T: NamedService> NamedService for Layered<S, T> {

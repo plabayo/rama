@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use ahash::HashMap;
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt, extra::OpaqueError};
 use rama_core::telemetry::tracing;
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::arcstr::ArcStr;
@@ -164,7 +164,7 @@ impl<S> Layer<S> for PacScriptCacheLayer {
 }
 
 /// See [`PacScriptCacheLayer`].
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct PacScriptCache<S> {
     inner: S,
     ttl: Duration,

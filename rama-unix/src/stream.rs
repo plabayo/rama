@@ -3,7 +3,7 @@ use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 pub use tokio::net::UnixStream as TokioUnixStream;
 
 pin_project! {
-    #[derive(Debug)]
+    #[derive(Debug, ExtensionsRef)]
     /// A stream which can be either a secure or a plain stream.
     pub struct UnixStream {
         #[pin]
@@ -30,12 +30,6 @@ impl From<TokioUnixStream> for UnixStream {
 impl From<UnixStream> for TokioUnixStream {
     fn from(value: UnixStream) -> Self {
         value.stream
-    }
-}
-
-impl ExtensionsRef for UnixStream {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

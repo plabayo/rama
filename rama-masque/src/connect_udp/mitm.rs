@@ -9,7 +9,7 @@ use super::request::request_names_connect_udp;
 use rama_core::{
     Layer, Service,
     error::BoxError,
-    extensions::{Extensions, ExtensionsRef as _},
+    extensions::{Extensions, ExtensionsRef},
     matcher::{
         Matcher,
         service::{ServiceMatch, ServiceMatcher},
@@ -235,7 +235,7 @@ impl<S, M: Clone> Layer<S> for ConnectUdpMitmLayer<M> {
 }
 
 /// Service created by [`ConnectUdpMitmLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ConnectUdpMitm<S, M = bool> {
     inner: S,
     matcher: M,

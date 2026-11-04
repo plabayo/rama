@@ -647,7 +647,7 @@ impl Drop for RuntimeInner {
 /// The wrapper owns `S` directly and clones it for each owned asynchronous
 /// task. Use `Arc<S>` as the service type when calls should share one service
 /// instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Service<S> {
     inner: S,
     runtime: Runtime,

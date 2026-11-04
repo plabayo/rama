@@ -1,4 +1,4 @@
-use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::task;
 use rama_core::telemetry::tracing::trace;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ pub(crate) enum ContextWaker {
     Write,
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub(crate) struct AllowStd<S> {
     inner: S,
     // We have the problem that external read operations (i.e. the Stream impl)
@@ -211,12 +211,6 @@ where
             Poll::Ready(r) => r,
             Poll::Pending => Err(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
         }
-    }
-}
-
-impl<S: ExtensionsRef> ExtensionsRef for AllowStd<S> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
     }
 }
 

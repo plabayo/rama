@@ -43,7 +43,7 @@ use rama_core::{
     Layer, Service,
     bytes::Bytes,
     error::BoxError,
-    extensions::{Extensions, ExtensionsRef as _, Ingress},
+    extensions::{Extensions, ExtensionsRef, Ingress},
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -75,7 +75,7 @@ impl<S> Layer<S> for BodyLimitLayer {
 /// Apply a transformation to the request body.
 ///
 /// See the [module docs](crate::layer::body_limit) for an example.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct BodyLimitService<S> {
     inner: S,
     size: usize,

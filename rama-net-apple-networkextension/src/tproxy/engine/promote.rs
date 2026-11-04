@@ -659,7 +659,7 @@ impl<S> Layer<S> for PromoteLayer {
 }
 
 /// Service produced by [`PromoteLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Promote<S> {
     inner: S,
 }
@@ -797,13 +797,9 @@ mod tests {
         use rama_core::service::service_fn;
         use std::sync::atomic::AtomicUsize;
 
+        #[derive(ExtensionsRef)]
         struct TestIo {
             extensions: Extensions,
-        }
-        impl ExtensionsRef for TestIo {
-            fn extensions(&self) -> &Extensions {
-                &self.extensions
-            }
         }
 
         let fires = Arc::new(AtomicUsize::new(0));

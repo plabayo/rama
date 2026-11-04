@@ -7,7 +7,7 @@ use crate::Client;
 /// A rama connector that establishes a transport connection through an inner connector and
 /// wraps it in a ttRPC [`Client`], so a client stack yields a ready to use `Client` instead
 /// of a raw stream.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, ExtensionsRef)]
 pub struct TtrpcConnector<C> {
     inner: C,
 }

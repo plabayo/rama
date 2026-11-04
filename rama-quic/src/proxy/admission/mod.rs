@@ -1,6 +1,7 @@
 //! Admission shared by every producer of inspected QUIC associations: per-source and global
 //! limits, an inspection-start rate, and counters for what was refused and why.
 
+use rama_utils::macros::define_inner_service_accessors;
 use std::{
     error::Error,
     fmt,
@@ -14,7 +15,7 @@ use std::{
 
 use ahash::HashMap;
 use parking_lot::Mutex;
-use rama_core::{Layer, Service, error::BoxError};
+use rama_core::{Layer, Service, error::BoxError, extensions::ExtensionsRef};
 use rama_net::{
     address::{SocketAddress, ip::IntoCanonicalIpAddr as _},
     stream::Socket,
@@ -401,10 +402,14 @@ impl<S> Layer<S> for QuicAdmissionLayer {
 }
 
 /// The service a [`QuicAdmissionLayer`] produces.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct QuicAdmissionService<S> {
     admission: QuicAssociationAdmission,
     inner: S,
+}
+
+impl<S> QuicAdmissionService<S> {
+    define_inner_service_accessors!();
 }
 
 impl<I, S> Service<I> for QuicAdmissionService<S>

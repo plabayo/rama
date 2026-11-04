@@ -51,41 +51,49 @@ const CLOSING_200_RESPONSE: &[u8] = b"ICAP/1.0 200 OK\r\n\
     Connection: close\r\n\
     Encapsulated: null-body=0\r\n\r\n";
 
+#[derive(ExtensionsRef)]
 struct OneByteIo<T>(T);
 
+#[derive(ExtensionsRef)]
 struct BlockPreviewTerminalFlushIo<T> {
     inner: T,
     completed_flushes: u8,
     release: Arc<AtomicBool>,
 }
 
+#[derive(ExtensionsRef)]
 struct BlockPreviewTerminalWriteIo<T> {
     inner: T,
     release: Arc<AtomicBool>,
 }
 
+#[derive(ExtensionsRef)]
 struct BlockAfterPartialWriteIo<T> {
     inner: T,
     target: &'static [u8],
     partial_write_completed: bool,
 }
 
+#[derive(ExtensionsRef)]
 struct BlockShutdownIo<T> {
     inner: T,
     release: Arc<AtomicBool>,
     shutdown_polled: Arc<AtomicBool>,
 }
 
+#[derive(ExtensionsRef)]
 struct FailShutdownOnceIo<T> {
     inner: T,
     failed: bool,
 }
 
+#[derive(ExtensionsRef)]
 struct FailNextReadIo<T> {
     inner: T,
     fail: Arc<AtomicBool>,
 }
 
+#[derive(ExtensionsRef)]
 struct BlockWritesIo<T> {
     inner: T,
     write_polled: Arc<AtomicBool>,

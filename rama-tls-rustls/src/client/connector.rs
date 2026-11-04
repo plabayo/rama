@@ -27,7 +27,7 @@ use rama_tls::client::{
 use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 #[cfg(all(test, feature = "http"))]
 use rama_net::http::Version;
@@ -133,7 +133,7 @@ impl Default for TlsConnectorLayer<ConnectorKindAuto> {
 /// only if the request requires a secure connection. You can instead use
 /// [`TlsConnector::secure`] to force the connector to always
 /// establish a secure connection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
     base_config: Option<TlsClientConfig>,
@@ -141,6 +141,8 @@ pub struct TlsConnector<S, K = ConnectorKindAuto> {
 }
 
 impl<S, K> TlsConnector<S, K> {
+    define_inner_service_accessors!();
+
     /// Creates a new [`TlsConnector`].
     pub const fn new(inner: S, kind: K) -> Self {
         Self {
@@ -930,13 +932,8 @@ mod tests {
     }
 
     /// An input whose forwarded context names another host than its own target.
+    #[derive(ExtensionsRef)]
     struct ForwardedInput(rama_core::extensions::Extensions);
-
-    impl rama_core::extensions::ExtensionsRef for ForwardedInput {
-        fn extensions(&self) -> &rama_core::extensions::Extensions {
-            &self.0
-        }
-    }
 
     impl AuthorityInputExt for ForwardedInput {
         fn authority(&self) -> Option<rama_net::address::HostWithOptPort> {

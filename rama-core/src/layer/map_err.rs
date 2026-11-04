@@ -3,7 +3,7 @@ use core::fmt;
 use rama_error::{BoxError, ErrorExt, extra::OpaqueError};
 use rama_utils::macros::define_inner_service_accessors;
 
-use crate::{Layer, Service};
+use crate::{Layer, Service, extensions::ExtensionsRef};
 
 /// Maps this service's error value to a different value.
 ///
@@ -11,7 +11,7 @@ use crate::{Layer, Service};
 /// into a different type. It is similar to the [`Result::map_err`] method.
 ///
 /// [`Error`]: crate::error::BoxError
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct MapErr<S, F> {
     inner: S,
     f: F,

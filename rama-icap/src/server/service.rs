@@ -62,7 +62,7 @@ impl std::error::Error for ExtensionMethodNotImplemented {}
 /// [`ExtensionsRef`](rama_core::extensions::ExtensionsRef), so it can be
 /// passed directly to listeners such as
 /// `rama_tcp::server::TcpListener::serve`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct Server<S> {
     inner: S,
     options: ConnectionOptions,

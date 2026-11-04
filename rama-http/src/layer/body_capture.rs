@@ -6,7 +6,7 @@
 
 use std::{fmt, future::Future};
 
-use rama_core::{Layer, Service, bytes::Bytes, error::BoxError};
+use rama_core::{Layer, Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef};
 use rama_http_types::{
     Body, BodyCaptureSink, CaptureBody, Request, Response, StreamingBody, body::util::BodyExt as _,
     request, response,
@@ -155,7 +155,7 @@ where
 }
 
 /// Service produced by [`BodyCaptureLayer`].
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct BodyCaptureService<M, S> {
     inner: S,
     make_sink: M,

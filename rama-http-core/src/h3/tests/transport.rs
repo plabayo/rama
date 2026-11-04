@@ -5,7 +5,7 @@ use std::{
 
 use rama_core::{
     bytes::Bytes,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     rt::{Executor, spawn},
 };
 use rama_http_types::{Body, Request, Response, body::util::BodyExt};
@@ -21,7 +21,7 @@ use crate::h3::{
     transport::{self, BoxedConnection, ClosedStream, ReadError, StoppedError, WriteError},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 struct Wrapped(rama_quic::Connection);
 
 struct WrappedSend(rama_quic::SendStream);
@@ -105,12 +105,6 @@ async fn round_trip<C: transport::Connection>(wrap: impl Fn(rama_quic::Connectio
     })
     .await
     .unwrap();
-}
-
-impl ExtensionsRef for Wrapped {
-    fn extensions(&self) -> &Extensions {
-        self.0.extensions()
-    }
 }
 
 impl transport::Connection for Wrapped {

@@ -182,7 +182,7 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 /// Service that pins each request to an IP picked from the
 /// resolved DNS entries
 pub struct DnsLoadBalancer<S, R, P> {
@@ -298,16 +298,10 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
+    #[derive(Default, ExtensionsRef)]
     struct FakeRequest {
         extensions: Extensions,
         authority: Option<HostWithPort>,
-    }
-
-    impl ExtensionsRef for FakeRequest {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl AuthorityInputExt for FakeRequest {

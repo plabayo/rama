@@ -12,6 +12,7 @@ use crate::{
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext},
+    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_http_headers::Host;
@@ -81,7 +82,7 @@ impl<S> Layer<S> for AddRequiredRequestHeadersLayer {
 }
 
 /// Middleware that sets a header on the request.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct AddRequiredRequestHeaders<S> {
     inner: S,
     overwrite: bool,

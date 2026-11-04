@@ -10,7 +10,7 @@ use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 /// A [`Service`] that wraps established client connections in [`GracefulIo`]
 /// and injects a [`CancelIo`] extension into the connection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct GracefulConnectorService<S> {
     inner: S,
 }

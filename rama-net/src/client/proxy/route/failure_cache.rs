@@ -9,6 +9,7 @@ use moka::{policy::EvictionPolicy, sync::Cache};
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
+    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_utils::{macros::define_inner_service_accessors, time::now_monotonic_nanos};
@@ -515,7 +516,7 @@ impl core::error::Error for ProxyRouteFailureCachedError {}
 /// about the proxy and leave its backoff unchanged, as do failures marked with
 /// [`ConnectionPolicyScope::Request`]. Direct and plural routes
 /// are ignored.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProxyRouteFailureCacheConnector<S> {
     inner: S,
     cache: ProxyRouteFailureCache,

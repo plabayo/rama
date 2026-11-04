@@ -1,0 +1,21 @@
+error: `#[derive(ExtensionsRef)]` cannot pick a field: mark the field to forward with `#[extensions_ref]`
+ --> tests/derive_extensions_ref/fail/no_field.rs:4:24
+  |
+4 |   struct Ambiguous<A, B> {
+  |  ________________________^
+5 | |     a: A,
+6 | |     b: B,
+7 | | }
+  | |_^
+
+error: `#[derive(ExtensionsRef)]` cannot pick a field: mark the field to forward with `#[extensions_ref]`
+  --> tests/derive_extensions_ref/fail/no_field.rs:10:18
+   |
+10 | struct Pair<A, B>(A, B);
+   |                  ^^^^^^
+
+error: `#[derive(ExtensionsRef)]` cannot pick a field: mark the field to forward with `#[extensions_ref]`
+  --> tests/derive_extensions_ref/fail/no_field.rs:13:8
+   |
+13 | struct Unit;
+   |        ^^^^

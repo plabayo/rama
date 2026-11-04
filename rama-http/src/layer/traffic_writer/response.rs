@@ -229,7 +229,7 @@ impl<S, W: Clone> Layer<S> for ResponseWriterLayer<W> {
 /// receives an owned body stream and processes frames concurrently.
 ///
 /// See the [module docs](super) for more details.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct ResponseWriterService<S, W> {
     inner: S,
     writer: Arc<W>,

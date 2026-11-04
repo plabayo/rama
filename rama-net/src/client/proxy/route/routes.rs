@@ -204,7 +204,7 @@ impl<S> Layer<S> for ProxyRoutesLayer {
 }
 
 /// Service produced by [`ProxyRoutesLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProxyRoutesService<S> {
     inner: S,
     routes: Option<Arc<ProxyRoutes>>,
@@ -291,7 +291,7 @@ where
 /// inserted [`ProxyRoute`] or [`ProxyRoutes`] wins. Configure default or
 /// authoritative plans on [`ProxyRoutesLayer`], before route-aware middleware,
 /// so every consumer observes the same selected route.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 #[non_exhaustive]
 pub struct ProxyRoutesConnector<S> {
     inner: S,

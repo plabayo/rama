@@ -374,6 +374,7 @@ impl RateLimit {
 /// - logs typed output and errors before any conversion
 /// - signs every serializable success payload as a JSON envelope
 /// - converts handler-specific errors into [`CustomRouterError`]
+#[derive(ExtensionsRef)]
 struct ApiEndpointService<S> {
     inner: S,
     state: Arc<AppState>,
@@ -443,6 +444,7 @@ where
 
 /// Service that turns the [`CustomRouterError::RateLimit`] variant into a
 /// per-client cooldown.
+#[derive(ExtensionsRef)]
 struct RateLimitService<S> {
     inner: S,
     limits: Mutex<HashMap<IpAddr, Instant>>,

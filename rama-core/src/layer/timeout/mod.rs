@@ -5,6 +5,7 @@
 
 use super::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
 use crate::Service;
+use crate::extensions::ExtensionsRef;
 use rama_error::{BoxError, ErrorContext, ErrorExt};
 use rama_utils::macros::define_inner_service_accessors;
 use std::time::Duration;
@@ -18,7 +19,7 @@ mod layer;
 pub use layer::TimeoutLayer;
 
 /// Applies a timeout to inputs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Timeout<S, F> {
     inner: S,
     into_error: F,

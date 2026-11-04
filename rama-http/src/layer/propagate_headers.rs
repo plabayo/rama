@@ -36,7 +36,7 @@
 //! ```
 
 use crate::{Request, Response, header::HeaderName};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Layer that applies [`PropagateHeader`] which propagates headers from requests to responses.
@@ -81,7 +81,7 @@ impl<S> Layer<S> for PropagateHeaderLayer {
 /// for example be used to propagate headers such as `X-Request-Id`.
 ///
 /// See the [module docs](crate::layer::propagate_headers) for more details.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct PropagateHeader<S> {
     inner: S,
     header: HeaderName,

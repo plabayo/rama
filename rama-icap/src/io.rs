@@ -232,6 +232,7 @@ impl From<BuildError> for Error {
     }
 }
 
+#[derive(ExtensionsRef)]
 pub(crate) struct FramedIo<IO> {
     pub(crate) read: FramedRead<ReadHalf<IO>>,
     pub(crate) write: FramedWrite<WriteHalf<IO>>,
@@ -271,6 +272,7 @@ struct PendingResponseHead {
     close: bool,
 }
 
+#[derive(ExtensionsRef)]
 pub(crate) struct FramedWrite<W> {
     io: W,
 }
@@ -316,12 +318,6 @@ where
 
     pub(crate) const fn options(&self) -> &ConnectionOptions {
         &self.read.options
-    }
-}
-
-impl<IO> ExtensionsRef for FramedIo<IO> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

@@ -102,7 +102,7 @@ impl Limits {
     };
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Quinn {
     connection: quinn::Connection,
     extensions: Extensions,
@@ -171,12 +171,6 @@ impl Quinn {
             recv: None,
             connection: self.connection.clone(),
         }
-    }
-}
-
-impl ExtensionsRef for Quinn {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

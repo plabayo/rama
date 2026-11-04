@@ -3,7 +3,7 @@
 use rama_core::{
     Layer, Service,
     error::BoxError,
-    extensions::{Egress, Extensions, ExtensionsRef},
+    extensions::{Egress, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
@@ -123,7 +123,7 @@ impl<S> Layer<S> for HttpForwardProxyLayer {
 }
 
 /// Service produced by [`HttpForwardProxyLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct HttpForwardProxyService<S> {
     inner: S,
     proxy_auth: bool,
@@ -143,12 +143,6 @@ impl<S> HttpForwardProxyService<S> {
     }
 
     rama_utils::macros::define_inner_service_accessors!();
-}
-
-impl<S: ExtensionsRef> ExtensionsRef for HttpForwardProxyService<S> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
-    }
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for HttpForwardProxyService<S>
@@ -227,6 +221,7 @@ mod tests {
     use core::convert::Infallible;
     use std::assert_matches;
 
+    use rama_core::extensions::Extensions;
     use rama_http_types::{Body, HeaderValue, header::PROXY_AUTHORIZATION};
     use rama_net::{
         address::ProxyAddress,
@@ -268,16 +263,10 @@ mod tests {
         request
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, ExtensionsRef)]
     struct ObserveProxyAuthorization {
         extensions: Extensions,
         status: StatusCode,
-    }
-
-    impl ExtensionsRef for ObserveProxyAuthorization {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl Service<Request> for ObserveProxyAuthorization {

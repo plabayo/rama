@@ -9,7 +9,9 @@ use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http_headers::HeaderMapExt;
 use rama_net::forwarded::Forwarded;
 use rama_net::forwarded::{ForwardedElement, ForwardedSelectionPolicy};
-use rama_utils::macros::{all_the_tuples_no_last_special_case, generate_set_and_with};
+use rama_utils::macros::{
+    all_the_tuples_no_last_special_case, define_inner_service_accessors, generate_set_and_with,
+};
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -131,6 +133,7 @@ impl<H, S> Layer<S> for GetForwardedHeadersLayer<H> {
 /// Middleware service to extract [`Forwarded`] information from the specified `T` headers.
 ///
 /// See [`GetForwardedHeadersLayer`] for more information.
+#[derive(ExtensionsRef)]
 pub struct GetForwardedHeadersService<S, T = Forwarded> {
     inner: S,
     selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
@@ -164,6 +167,8 @@ impl<S: Clone, T> Clone for GetForwardedHeadersService<S, T> {
 }
 
 impl<S, T> GetForwardedHeadersService<S, T> {
+    define_inner_service_accessors!();
+
     /// Create a new `GetForwardedHeadersService` for the specified headers `T`.
     pub const fn new(inner: S) -> Self {
         Self {

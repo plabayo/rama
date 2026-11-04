@@ -38,8 +38,10 @@ pub(crate) const DEFAULT_MAX_BUFFER_SIZE: usize = 8192 + 4096 * 100;
 /// forces a flush if the queue gets this big.
 const MAX_BUF_LIST_BUFFERS: usize = 16;
 
+#[derive(ExtensionsRef)]
 pub(crate) struct Buffered<T, B> {
     flush_pipeline: bool,
+    #[extensions_ref]
     io: T,
     partial_len: Option<usize>,
     read_blocked: bool,
@@ -61,12 +63,6 @@ where
             .field("read_buf", &self.read_buf)
             .field("write_buf", &self.write_buf)
             .finish()
-    }
-}
-
-impl<T: ExtensionsRef, B> ExtensionsRef for Buffered<T, B> {
-    fn extensions(&self) -> &rama_core::extensions::Extensions {
-        self.io.extensions()
     }
 }
 

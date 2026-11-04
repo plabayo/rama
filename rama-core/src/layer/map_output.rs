@@ -1,4 +1,4 @@
-use crate::{Layer, Service};
+use crate::{Layer, Service, extensions::ExtensionsRef};
 use core::fmt;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -8,7 +8,7 @@ use rama_utils::macros::define_inner_service_accessors;
 /// into a different type. It is similar to the [`Result::map`]
 /// method. You can use this method to chain along a computation once the
 /// service's output has been resolved.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct MapOutput<S, F> {
     inner: S,
     f: F,

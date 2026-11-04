@@ -8,7 +8,7 @@ use crate::{
 };
 use rama_core::error::BoxError;
 use rama_core::error::BoxErrorExt as _;
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http_headers::{
     AccessControlAllowHeaders, AccessControlAllowMethods, AccessControlExposeHeaders,
     AccessControlMaxAge, HeaderMapExt, Vary, util::Seconds,
@@ -449,7 +449,7 @@ impl<S> Layer<S> for CorsLayer {
 /// See the [module docs](crate::layer::cors) for an example.
 ///
 /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Cors<S> {
     inner: S,
     layer: CorsLayer,

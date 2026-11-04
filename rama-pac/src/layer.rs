@@ -117,7 +117,7 @@ impl<S> Layer<S> for PacProxyRoutesLayer {
 }
 
 /// See [`PacProxyRoutesLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct PacProxyRoutesService<S> {
     inner: S,
     layer: PacProxyRoutesLayer,

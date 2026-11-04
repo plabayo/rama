@@ -1,7 +1,7 @@
 use h2_support::prelude::*;
 use h2_support::util::yield_once;
 use rama::ServiceInput;
-use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::{StreamExt, TryStreamExt};
 use rama_utils::octets::{kib, kib_u32, mib_u32};
 use std::pin::Pin;
@@ -66,15 +66,10 @@ impl FlushInterleave {
     }
 }
 
+#[derive(ExtensionsRef)]
 struct FlushInterleaveIo {
     inner: mock::Mock,
     interleave: FlushInterleave,
-}
-
-impl ExtensionsRef for FlushInterleaveIo {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
-    }
 }
 
 impl AsyncRead for FlushInterleaveIo {

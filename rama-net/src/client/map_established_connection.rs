@@ -8,7 +8,7 @@ use super::{ConnectionError, ConnectorService, EstablishedClientConnection};
 /// The layer wraps the established connection, not the connector or its input.
 /// The winning input and connection errors pass through unchanged. Place this
 /// outside a pool to wrap each checkout, or inside it to wrap new connections.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct MapEstablishedConnection<S, L> {
     inner: S,
     layer: L,

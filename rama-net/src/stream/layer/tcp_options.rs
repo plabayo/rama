@@ -2,6 +2,7 @@ use crate::socket::{AsSocketRef, SocketOptions, opts::TcpKeepAlive};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef,
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
@@ -98,7 +99,7 @@ impl<S> Layer<S> for TcpStreamOptionsLayer {
 }
 
 /// Service produced by [`TcpStreamOptionsLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct TcpStreamOptionsService<S> {
     inner: S,
     options: Arc<TcpStreamOptions>,

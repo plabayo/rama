@@ -80,7 +80,7 @@ pub enum SystemProxyInvalidBypassRulePolicy {
 /// The extension store is a cheap clone of the input's store. This keeps caller
 /// metadata available to custom PAC implementations without borrowing the
 /// request across an await point.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct SystemProxyPacRequest {
     /// Metadata cloned from the routed service input.
     pub extensions: Extensions,
@@ -97,12 +97,6 @@ impl SystemProxyPacRequest {
             ));
         }
         Ok(Self { extensions, uri })
-    }
-}
-
-impl ExtensionsRef for SystemProxyPacRequest {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 
@@ -648,7 +642,7 @@ impl SystemProxyConfigRefresh {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 struct IntoBoxErrorService<T>(T);
 
 impl<T> Service<()> for IntoBoxErrorService<T>
@@ -1224,7 +1218,7 @@ where
 }
 
 /// See [`SystemProxyLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct SystemProxyService<S, P = SystemProxyPacDisabled> {
     inner: S,
     layer: SystemProxyLayer<P>,
@@ -1388,7 +1382,7 @@ where
 }
 
 /// Service produced by [`SystemProxyConnectLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct SystemProxyConnectService<S, P = SystemProxyPacDisabled> {
     inner: S,
     layer: SystemProxyLayer<P>,
@@ -1572,7 +1566,7 @@ mod tests {
         Routes(Arc<ProxyRoutes>),
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, ExtensionsRef)]
     struct TestInput {
         uri: Uri,
         protocol: Option<Protocol>,
@@ -1628,12 +1622,6 @@ mod tests {
     impl ProtocolInputExt for TestInput {
         fn protocol(&self) -> Option<&Protocol> {
             self.protocol.as_ref().or_else(|| self.uri.scheme())
-        }
-    }
-
-    impl ExtensionsRef for TestInput {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
         }
     }
 

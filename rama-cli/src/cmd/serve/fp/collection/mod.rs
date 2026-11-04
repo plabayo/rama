@@ -196,7 +196,7 @@ impl<S> Layer<S> for CollectionLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub(super) struct ConnectionCollection<S> {
     inner: S,
 }

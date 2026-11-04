@@ -71,7 +71,7 @@ impl<S> Layer<S> for CaptureLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub(in super::super) struct CaptureService<S> {
     inner: S,
     queue: CollectionQueue,

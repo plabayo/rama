@@ -14,7 +14,7 @@ use crate::{
 };
 use dial9_trace_format::TraceEvent;
 use pin_project_lite::pin_project;
-use rama_core::extensions::ExtensionsRef as _;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::{
     Layer, Service,
     bytes::Buf,
@@ -24,6 +24,7 @@ use rama_core::{
     },
     telemetry::dial9::{Operation, Outcome, TraceContext, core::clock_monotonic_ns},
 };
+use rama_utils::macros::define_inner_service_accessors;
 use std::{
     pin::Pin,
     task::{Context, Poll},
@@ -86,9 +87,13 @@ impl<S> Layer<S> for Dial9Layer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Dial9<S> {
     inner: S,
+}
+
+impl<S> Dial9<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S, B> Service<Request<B>> for Dial9<S>

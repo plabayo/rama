@@ -190,7 +190,7 @@ impl IpFirewall {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 struct IpFirewallService<S> {
     inner: S,
     block_list: BlockList,

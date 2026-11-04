@@ -10,7 +10,6 @@ use crate::{
 use rama_core::{
     bytes::Bytes,
     error::BoxErrorExt as _,
-    extensions::ExtensionsRef as _,
     futures::{StreamExt as _, stream},
     service::service_fn,
 };

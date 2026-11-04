@@ -69,7 +69,7 @@ pub struct WebSocketBridge<Ingress, Egress> {
 /// construction and a relay. Existing [`WebSocketRelayService`] and
 /// [`WebSocketRelayEventService`] values continue to accept raw [`BridgeIo`]
 /// directly for backwards compatibility.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct WebSocketRelayIoService<S> {
     inner: S,
 }
@@ -323,7 +323,7 @@ impl<S> WebSocketRelayEventService<S> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// Most typically used as Input
 /// for users of [`WebSocketRelayService`].
 pub struct WebSocketRelayInput {
@@ -332,14 +332,7 @@ pub struct WebSocketRelayInput {
     pub extensions: Extensions,
 }
 
-impl ExtensionsRef for WebSocketRelayInput {
-    #[inline(always)]
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// Most typically used as Output
 /// for users of [`WebSocketRelayService`].
 pub struct WebSocketRelayOutput {
@@ -368,14 +361,7 @@ impl From<WebSocketRelayInput> for WebSocketRelayOutput {
     }
 }
 
-impl ExtensionsRef for WebSocketRelayOutput {
-    #[inline(always)]
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// Input for middleware used by [`WebSocketRelayEventService`].
 pub struct WebSocketRelayEventInput {
     pub direction: WebSocketRelayDirection,
@@ -383,14 +369,7 @@ pub struct WebSocketRelayEventInput {
     pub extensions: Extensions,
 }
 
-impl ExtensionsRef for WebSocketRelayEventInput {
-    #[inline(always)]
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// Output for middleware used by [`WebSocketRelayEventService`].
 pub struct WebSocketRelayEventOutput {
     /// Zero or more data messages to send to the opposite WebSocket connection.
@@ -430,13 +409,6 @@ impl From<WebSocketRelayEventInput> for WebSocketRelayEventOutput {
             close: None,
             extensions,
         }
-    }
-}
-
-impl ExtensionsRef for WebSocketRelayEventOutput {
-    #[inline(always)]
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 
@@ -2436,6 +2408,7 @@ mod tests {
 
     /// A WebSocket side whose reads the test feeds and whose writes fail on demand;
     /// its transport's abort is counted.
+    #[derive(ExtensionsRef)]
     struct ScriptedSide {
         reads: tokio_mpsc::UnboundedReceiver<Result<Message, ProtocolError>>,
         writes: tokio_mpsc::UnboundedSender<Message>,
@@ -2489,12 +2462,6 @@ mod tests {
             _cx: &mut Context<'_>,
         ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
-        }
-    }
-
-    impl ExtensionsRef for ScriptedSide {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
         }
     }
 

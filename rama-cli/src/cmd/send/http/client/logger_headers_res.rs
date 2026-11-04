@@ -13,7 +13,7 @@ use rama::{
 
 use super::VerboseLogs;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub(super) struct ResponseHeaderLogger<S> {
     pub(super) inner: S,
     pub(super) show_headers: bool,

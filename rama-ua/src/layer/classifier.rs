@@ -55,7 +55,7 @@ use crate::{UserAgent, UserAgentOverwrites};
 /// if the [`Request`] contains a valid [`UserAgent`] header.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, ExtensionsRef)]
 pub struct UserAgentClassifier<S> {
     inner: S,
     overwrite_header: Option<HeaderName>,

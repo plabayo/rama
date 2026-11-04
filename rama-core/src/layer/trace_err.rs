@@ -1,9 +1,9 @@
-use crate::{Layer, Service};
+use crate::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Service which traces the error using [`tracing`],
 /// of the inner [`Service`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct TraceErr<S> {
     inner: S,
     level: tracing::Level,

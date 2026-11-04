@@ -76,7 +76,7 @@ impl<S> Layer<S> for BodyLimitLayer {
 /// Communicate to the downstream http service to apply a limit to the body.
 ///
 /// See [`BodyLimitService`] for more information.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct BodyLimitService<S> {
     inner: S,
     limit: BodyLimit,
@@ -158,13 +158,8 @@ mod tests {
     use super::*;
 
     // A connection that is not a byte stream, as a QUIC connection is not.
+    #[derive(ExtensionsRef)]
     struct Connection(Extensions);
-
-    impl ExtensionsRef for Connection {
-        fn extensions(&self) -> &Extensions {
-            &self.0
-        }
-    }
 
     #[tokio::test]
     async fn limit_reaches_a_connection_that_is_not_a_stream() {

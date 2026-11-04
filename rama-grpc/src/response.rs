@@ -3,7 +3,7 @@ use rama_core::extensions::{Extensions, ExtensionsRef};
 use crate::metadata::MetadataMap;
 
 /// A gRPC response and metadata from an RPC call.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct Response<T> {
     metadata: MetadataMap,
     message: T,
@@ -115,12 +115,6 @@ impl<T> Response<T> {
     pub fn disable_compression(&mut self) {
         self.extensions()
             .insert(crate::codec::compression::SingleMessageCompressionOverride::Disable);
-    }
-}
-
-impl<T> ExtensionsRef for Response<T> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

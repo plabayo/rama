@@ -163,6 +163,7 @@ type CommandSender = mpsc::Sender<BodyCommand>;
 /// Its metadata and body handle are lifetime-independent so ordinary Rama
 /// [`Service`](rama_core::Service) layers can wrap the request service. Entity
 /// bytes remain bounded, backpressured, and streaming through [`IncomingBody`].
+#[derive(ExtensionsRef)]
 pub struct IncomingRequest {
     request: Request,
     body: IncomingBody,
@@ -215,12 +216,6 @@ impl IncomingRequest {
             },
             self.body,
         )
-    }
-}
-
-impl ExtensionsRef for IncomingRequest {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 
@@ -1127,6 +1122,7 @@ fn sorted_token_lists_overlap(first: &[&[u8]], second: &[&[u8]]) -> bool {
 }
 
 /// Owned streaming response returned by an ICAP request service.
+#[derive(ExtensionsRef)]
 pub struct OutgoingResponse {
     response: Response,
     body: OutgoingBody,
@@ -1206,12 +1202,6 @@ impl OutgoingResponse {
             },
             self.body,
         )
-    }
-}
-
-impl ExtensionsRef for OutgoingResponse {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

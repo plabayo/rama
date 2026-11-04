@@ -103,6 +103,7 @@ pub(crate) fn new<C: transport::Connection>(
 
 type Acknowledged = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>;
 
+#[derive(ExtensionsRef)]
 struct Tunnel<R: RecvStream, S: SendStream> {
     reader: Reader<R>,
     writer: Writer<S>,
@@ -221,12 +222,6 @@ impl Wake for BothWakers {
     fn wake_by_ref(self: &Arc<Self>) {
         self.0.wake_by_ref();
         self.1.wake_by_ref();
-    }
-}
-
-impl<R: RecvStream, S: SendStream> ExtensionsRef for Tunnel<R, S> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

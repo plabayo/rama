@@ -937,17 +937,10 @@ mod tests {
     }
 
     #[cfg(feature = "tls")]
-    #[derive(Clone)]
+    #[derive(Clone, ExtensionsRef)]
     struct ResponseConnection {
         extensions: Extensions,
         response: Arc<Mutex<ResponseKind>>,
-    }
-
-    #[cfg(feature = "tls")]
-    impl ExtensionsRef for ResponseConnection {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     #[cfg(feature = "tls")]

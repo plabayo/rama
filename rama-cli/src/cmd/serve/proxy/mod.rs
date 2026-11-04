@@ -37,7 +37,7 @@ use rama::{
     Layer, Service,
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext, error_chain},
-    extensions::ExtensionsRef as _,
+    extensions::ExtensionsRef,
     graceful::ShutdownGuard,
     http::{
         BodyLimitLayer, Method, Request, Response, StatusCode,
@@ -270,7 +270,7 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> AsyncWrite for IcapTimeoutIo<IO> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 struct IcapIoTimeoutConnector<S> {
     inner: S,
     timeout: Duration,
@@ -496,7 +496,7 @@ impl ConnectionLimiter {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 struct ConnectionLimitConnector<S> {
     inner: S,
     limit: ConnectionLimiter,
@@ -523,15 +523,10 @@ where
     }
 }
 
+#[derive(ExtensionsRef)]
 struct LimitedConnection<C> {
     inner: C,
     _permit: OwnedSemaphorePermit,
-}
-
-impl<C: rama::extensions::ExtensionsRef> rama::extensions::ExtensionsRef for LimitedConnection<C> {
-    fn extensions(&self) -> &rama::extensions::Extensions {
-        self.inner.extensions()
-    }
 }
 
 impl<C: AsyncRead + Unpin> AsyncRead for LimitedConnection<C> {
@@ -580,7 +575,7 @@ impl<C: AsyncWrite + Unpin> AsyncWrite for LimitedConnection<C> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 struct ConnectionLimitOptions<S> {
     inner: S,
     limit: ConnectionLimiter,
@@ -819,7 +814,7 @@ fn observe_target(
 }
 
 /// Record the final outcome when protocol peeking falls back to a byte tunnel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 struct ObservePassthroughService<S> {
     inner: S,
     control: Control,
@@ -2273,7 +2268,7 @@ fn classify_http_connection<S>(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 struct ClassifyHttpConnectionService<S> {
     inner: S,
     dashboard_address: Option<SocketAddress>,

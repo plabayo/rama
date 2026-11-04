@@ -107,7 +107,7 @@ pub struct Request<T = Body> {
 }
 
 #[non_exhaustive]
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct Parts {
     /// The request's method
     pub method: Method,
@@ -223,12 +223,6 @@ fn deserialize_request_uri(method: &Method, value: &str) -> Result<Uri> {
         Uri::parse_reference(value)
     }
     .map_err(Into::into)
-}
-
-impl ExtensionsRef for Parts {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl ExtensionsMut for Parts {
@@ -800,7 +794,7 @@ impl<T> Request<T> {
     ///
     /// ```
     /// # use rama_http_types::Request;
-    /// # use rama_core::extensions::{Extension, ExtensionsRef as _};
+    /// # use rama_core::extensions::{Extension, ExtensionsRef};
     /// #[derive(Debug, Extension)]
     /// struct Caller;
     /// #[derive(Debug, Extension)]
@@ -1131,7 +1125,7 @@ impl Builder {
     ///
     /// ```
     /// # use rama_http_types::Request;
-    /// # use rama_core::extensions::{Extension, ExtensionsRef as _};
+    /// # use rama_core::extensions::{Extension, ExtensionsRef};
     ///
     /// #[derive(Debug, Clone, PartialEq)]
     /// struct MyExtension(&'static str);

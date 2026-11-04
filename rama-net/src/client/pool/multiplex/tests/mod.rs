@@ -11,7 +11,7 @@ use crate::client::{
 
 use rama_core::error::BoxErrorExt as _;
 
-use rama_core::{ServiceInput, service::service_fn};
+use rama_core::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
 
 use rama_utils::reactive::ChangeSignal;
 
@@ -46,16 +46,10 @@ impl ConnID for TestId {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 struct Conn {
     serial: usize,
     extensions: Extensions,
-}
-
-impl ExtensionsRef for Conn {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 impl Service<ServiceInput<()>> for Conn {

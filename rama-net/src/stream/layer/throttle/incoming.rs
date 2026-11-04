@@ -1,4 +1,4 @@
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 
 use super::{ThrottleConfig, ThrottleMode, Throttleable};
@@ -10,7 +10,7 @@ use super::{ThrottleConfig, ThrottleMode, Throttleable};
 /// [`Service`]: rama_core::Service
 /// [`Stream`]: rama_core::io::Io
 /// [`ThrottledIo`]: super::ThrottledIo
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ThrottleService<S> {
     inner: S,
     config: ThrottleConfig,

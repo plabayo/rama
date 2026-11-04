@@ -82,7 +82,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct MockSocket {
     stream: DuplexStream,
     extensions: Extensions,
@@ -95,12 +95,6 @@ impl MockSocket {
             stream,
             extensions: Extensions::new(),
         }
-    }
-}
-
-impl ExtensionsRef for MockSocket {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

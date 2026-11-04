@@ -21,7 +21,7 @@ use crate::client::{SendAttempts, classify_http3_error, note_http3_unprocessed};
 ///
 /// It is the inner service the relay's HTTP middleware wraps, as `HttpClientService` is for
 /// the HTTP/1 and HTTP/2 relay.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Http3EgressService<C: transport::ReserveBiStreams> {
     sender: SendRequest<Body, C>,
     extensions: Extensions,
@@ -31,12 +31,6 @@ impl<C: transport::ReserveBiStreams> Http3EgressService<C> {
     pub(super) fn new(sender: SendRequest<Body, C>, extensions: Extensions) -> Self {
         extensions.insert(sender.connection_admission());
         Self { sender, extensions }
-    }
-}
-
-impl<C: transport::ReserveBiStreams> ExtensionsRef for Http3EgressService<C> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

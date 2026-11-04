@@ -6,7 +6,7 @@ use crate::{
 use rama_core::{
     Service,
     error::BoxError,
-    extensions::ExtensionsRef as _,
+    extensions::ExtensionsRef,
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
@@ -45,8 +45,9 @@ use rama_net::{
 /// Connection policy belongs in the connector stack. For example, wrap the
 /// connector in a [`TimeoutLayer`](rama_core::layer::TimeoutLayer) to bound the
 /// time spent establishing egress.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct EagerHttpProxyConnector<C, S> {
+    #[extensions_ref]
     connector: C,
     relay_service: S,
 }
@@ -143,11 +144,7 @@ mod tests {
     };
 
     use rama_core::{
-        Layer, ServiceInput,
-        error::BoxErrorExt as _,
-        extensions::{Extensions, ExtensionsRef},
-        layer::TimeoutLayer,
-        service::service_fn,
+        Layer, ServiceInput, error::BoxErrorExt as _, layer::TimeoutLayer, service::service_fn,
     };
     use rama_http_types::Body;
     use rama_net::client::{ConnectionError, EstablishedClientConnection};
@@ -167,6 +164,7 @@ mod tests {
         ServiceInput::new(tokio_test::io::Builder::new().build())
     }
 
+    #[derive(ExtensionsRef)]
     struct DropTrackedIo {
         inner: ServiceInput<tokio_test::io::Mock>,
         dropped: Arc<AtomicBool>,
@@ -175,12 +173,6 @@ mod tests {
     impl Drop for DropTrackedIo {
         fn drop(&mut self) {
             self.dropped.store(true, Ordering::SeqCst);
-        }
-    }
-
-    impl ExtensionsRef for DropTrackedIo {
-        fn extensions(&self) -> &Extensions {
-            self.inner.extensions()
         }
     }
 

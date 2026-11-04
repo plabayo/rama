@@ -6,6 +6,8 @@
 
 use core::fmt::Debug;
 
+use crate::extensions::{Extensions, ExtensionsRef};
+
 /// A layer that produces a Layered service (middleware(inner service)).
 pub trait Layer<S>: Sized {
     /// The service produced by the layer.
@@ -85,6 +87,19 @@ where
 {
     fn clone(&self) -> Self {
         Self(self.0.clone())
+    }
+}
+
+impl<S, L> ExtensionsRef for MaybeLayeredService<S, L>
+where
+    S: ExtensionsRef,
+    L: Layer<S, Service: ExtensionsRef>,
+{
+    fn extensions(&self) -> &Extensions {
+        match &self.0 {
+            MaybeLayeredSvc::Enabled(svc) => svc.extensions(),
+            MaybeLayeredSvc::Disabled(svc) => svc.extensions(),
+        }
     }
 }
 

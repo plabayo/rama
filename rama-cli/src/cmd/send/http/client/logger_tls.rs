@@ -9,7 +9,7 @@ use rama::{
 
 use super::VerboseLogs;
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub(super) struct TlsInfoLogger<C>(pub(super) C);
 
 impl<Input, C> Service<Input> for TlsInfoLogger<C>

@@ -9,11 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use rama_core::{
-    bytes::Bytes,
-    extensions::{Extensions, ExtensionsRef},
-    telemetry::tracing,
-};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef, telemetry::tracing};
 use rama_net::{
     address::{Host, SocketAddress, ip::IntoCanonicalIpAddr as _},
     stream::Socket,
@@ -34,7 +30,9 @@ use crate::tproxy::TransparentProxyFlowMeta;
 /// the app as sent by that destination (`sentBy`). A datagram the kernel gave no destination
 /// cannot be attributed and is dropped and counted; one larger than the receive buffer is
 /// reported truncated, as a kernel socket does.
+#[derive(ExtensionsRef)]
 pub struct UdpFlowSocket {
+    #[extensions_ref]
     flow: UdpFlow,
     app: SocketAddress,
     dropped_without_destination: Arc<AtomicU64>,
@@ -79,12 +77,6 @@ impl fmt::Debug for UdpFlowSocket {
         f.debug_struct("UdpFlowSocket")
             .field("app", &self.app)
             .finish_non_exhaustive()
-    }
-}
-
-impl ExtensionsRef for UdpFlowSocket {
-    fn extensions(&self) -> &Extensions {
-        self.flow.extensions()
     }
 }
 

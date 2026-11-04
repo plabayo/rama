@@ -12,8 +12,9 @@
 //! a rama middleware is more appropriate since it can also act on the response. For example
 //! rama-http's [`Trace`](rama_http::layer::trace::Trace)
 //! middleware supports gRPC out of the box.
-use rama_core::{Layer, Service, telemetry::tracing};
+use rama_core::{Layer, Service, extensions::ExtensionsRef, telemetry::tracing};
 use rama_http::{self as http, Response, StatusCode, body::OptionalBody};
+use rama_utils::macros::define_inner_service_accessors;
 
 use crate::request::SanitizeHeaders;
 
@@ -46,13 +47,15 @@ where
 }
 
 /// A service wrapped in an interceptor middleware.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct InterceptedService<S, I> {
     inner: S,
     interceptor: I,
 }
 
 impl<S, I> InterceptedService<S, I> {
+    define_inner_service_accessors!();
+
     /// Create a new `InterceptedService` that wraps `S` and intercepts each request with the
     /// the given interceptor [`Service`] (`I`).
     pub fn new(service: S, interceptor: I) -> Self {

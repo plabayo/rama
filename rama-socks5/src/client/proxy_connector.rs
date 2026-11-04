@@ -139,7 +139,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 /// is a proxied [`ProxyRoute`] found in the [`Extensions`].
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Socks5ProxyConnector<S> {
     inner: S,
     required: bool,

@@ -7,6 +7,7 @@ use std::convert::Infallible;
 
 use rama_core::{
     Service,
+    extensions::ExtensionsRef,
     service::{BoxService, StaticOutput},
 };
 
@@ -138,6 +139,7 @@ pub use service::EndpointServiceFn;
 /// as required when entering a generic HTTP application context by RFC 9113
 /// §8.2.3 and RFC 9114 §4.2.1. Transport-aware services passed directly to a
 /// router do not use this wrapper and retain their individual field lines.
+#[derive(ExtensionsRef)]
 pub struct EndpointServiceFnWrapper<F, T, State> {
     inner: F,
     _marker: std::marker::PhantomData<fn(T)>,

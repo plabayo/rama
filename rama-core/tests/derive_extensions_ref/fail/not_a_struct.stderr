@@ -1,0 +1,11 @@
+error: `#[derive(ExtensionsRef)]` only supports structs
+ --> tests/derive_extensions_ref/fail/not_a_struct.rs:4:1
+  |
+4 | enum E<S> {
+  | ^^^^
+
+error: `#[derive(ExtensionsRef)]` only supports structs
+ --> tests/derive_extensions_ref/fail/not_a_struct.rs:9:1
+  |
+9 | union U {
+  | ^^^^^

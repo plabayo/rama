@@ -81,10 +81,7 @@
 
 use crate::{Request, Response};
 use rama_core::{
-    Layer, Service,
-    bytes::Bytes,
-    error::BoxError,
-    extensions::{Extensions, ExtensionsRef},
+    Layer, Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef,
     futures::TryFutureExt as _,
 };
 use rama_http_types::StreamingBody;
@@ -158,16 +155,10 @@ impl<F> fmt::Debug for MapResponseBodyLayer<F> {
 /// Apply a transformation to the response body.
 ///
 /// See the [module docs](crate::layer::map_response_body) for an example.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct MapResponseBody<S, F> {
     inner: S,
     f: F,
-}
-
-impl<S: ExtensionsRef, F> ExtensionsRef for MapResponseBody<S, F> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
-    }
 }
 
 impl<S, F> MapResponseBody<S, F> {

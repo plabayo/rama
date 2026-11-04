@@ -39,7 +39,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::std::{boxed::Box, sync::Arc, vec::Vec};
 
-pub use rama_macros::{Extension, FromExtensions};
+pub use rama_macros::{Extension, ExtensionsRef, FromExtensions};
 use rama_utils::collections::AppendOnlyVec;
 use rama_utils::macros::impl_deref;
 
@@ -1349,7 +1349,7 @@ impl ExtensionsRef for Extensions {
 
 impl<T> ExtensionsRef for &T
 where
-    T: ExtensionsRef,
+    T: ExtensionsRef + ?Sized,
 {
     #[inline(always)]
     fn extensions(&self) -> &Extensions {
@@ -1359,7 +1359,7 @@ where
 
 impl<T> ExtensionsRef for &mut T
 where
-    T: ExtensionsRef,
+    T: ExtensionsRef + ?Sized,
 {
     #[inline(always)]
     fn extensions(&self) -> &Extensions {
@@ -1369,7 +1369,7 @@ where
 
 impl<T> ExtensionsRef for Box<T>
 where
-    T: ExtensionsRef,
+    T: ExtensionsRef + ?Sized,
 {
     fn extensions(&self) -> &Extensions {
         (**self).extensions()
@@ -1378,7 +1378,7 @@ where
 
 impl<T> ExtensionsRef for Pin<Box<T>>
 where
-    T: ExtensionsRef,
+    T: ExtensionsRef + ?Sized,
 {
     fn extensions(&self) -> &Extensions {
         (**self).extensions()
@@ -1387,7 +1387,7 @@ where
 
 impl<T> ExtensionsRef for Arc<T>
 where
-    T: ExtensionsRef,
+    T: ExtensionsRef + ?Sized,
 {
     fn extensions(&self) -> &Extensions {
         (**self).extensions()
@@ -2865,5 +2865,156 @@ mod tests {
             .tests(if cfg!(miri) { 3 } else { 300 })
             .rng(quickcheck::Gen::new(if cfg!(miri) { 30 } else { 120 }))
             .quickcheck(agrees_with_model_for as fn(Vec<(u8, u8, u8, u16)>) -> bool);
+    }
+}
+
+#[cfg(test)]
+mod derive_extensions_ref_tests {
+    use super::*;
+    use core::marker::PhantomData;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
+    struct Marker(u8);
+
+    struct Conn {
+        extensions: Extensions,
+    }
+
+    impl ExtensionsRef for Conn {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    fn conn() -> Conn {
+        let extensions = Extensions::new();
+        extensions.insert(Marker(1));
+        Conn { extensions }
+    }
+
+    // `W` is deliberately not `ExtensionsRef`.
+    struct NotExtensions;
+
+    #[derive(ExtensionsRef)]
+    struct Middleware<S, W> {
+        inner: S,
+        _writer: W,
+    }
+
+    #[derive(ExtensionsRef)]
+    struct Tuple<W, S>(W, #[extensions_ref] S);
+
+    #[derive(ExtensionsRef)]
+    struct TupleStore<B>(B, Extensions);
+
+    #[derive(ExtensionsRef)]
+    struct Shared<S> {
+        inner: Arc<S>,
+    }
+
+    #[derive(ExtensionsRef)]
+    struct Borrowed<'a, S> {
+        conn: &'a S,
+    }
+
+    #[derive(ExtensionsRef)]
+    struct Newtype<S>(S);
+
+    #[derive(ExtensionsRef)]
+    struct Owned<B> {
+        extensions: Extensions,
+        _body: B,
+    }
+
+    fn store<T: ExtensionsRef>(value: &T) -> &Extensions {
+        value.extensions()
+    }
+
+    // Inherent consts shadow trait consts only when their bounds hold,
+    // so this answers "is `T: ExtensionsRef`" without a compile failure.
+    struct Probe<T>(PhantomData<T>);
+
+    trait NotForwarding {
+        const FORWARDS: bool;
+    }
+
+    impl<T> NotForwarding for Probe<T> {
+        const FORWARDS: bool = false;
+    }
+
+    impl<T: ExtensionsRef> Probe<T> {
+        const FORWARDS: bool = true;
+    }
+
+    #[test]
+    fn bound_is_placed_on_the_forwarded_field_only() {
+        const {
+            assert!(Probe::<Middleware<Conn, NotExtensions>>::FORWARDS);
+            assert!(!Probe::<Middleware<NotExtensions, Conn>>::FORWARDS);
+            assert!(!Probe::<Newtype<NotExtensions>>::FORWARDS);
+            assert!(Probe::<Owned<NotExtensions>>::FORWARDS);
+        }
+    }
+
+    #[test]
+    fn named_field_forwards_the_inner_store() {
+        let svc = Middleware {
+            inner: conn(),
+            _writer: NotExtensions,
+        };
+        assert!(core::ptr::eq(store(&svc), &raw const svc.inner.extensions));
+        assert_eq!(store(&svc).get_ref::<Marker>(), Some(&Marker(1)));
+    }
+
+    #[test]
+    fn tuple_field_forwards_the_marked_field() {
+        let svc = Tuple(NotExtensions, conn());
+        assert!(core::ptr::eq(store(&svc), &raw const svc.1.extensions));
+    }
+
+    #[test]
+    fn nested_wrappers_reach_the_innermost_store() {
+        let svc = Middleware {
+            inner: Tuple(
+                NotExtensions,
+                Shared {
+                    inner: Arc::new(conn()),
+                },
+            ),
+            _writer: (),
+        };
+        let innermost = &svc.inner.1.inner.extensions;
+        assert!(core::ptr::eq(store(&svc), innermost));
+
+        store(&svc).insert(Marker(2));
+        assert_eq!(innermost.get_ref::<Marker>(), Some(&Marker(2)));
+    }
+
+    #[test]
+    fn borrowed_field_forwards() {
+        let conn = conn();
+        let svc = Borrowed { conn: &conn };
+        assert!(core::ptr::eq(store(&svc), &raw const conn.extensions));
+    }
+
+    #[test]
+    fn extensions_tuple_field_is_returned() {
+        let svc = TupleStore(NotExtensions, Extensions::new());
+        assert!(core::ptr::eq(store(&svc), &raw const svc.1));
+    }
+
+    #[test]
+    fn single_tuple_field_forwards() {
+        let svc = Newtype(conn());
+        assert!(core::ptr::eq(store(&svc), &raw const svc.0.extensions));
+    }
+
+    #[test]
+    fn extensions_field_is_returned_without_bounds_on_other_params() {
+        let svc = Owned {
+            extensions: Extensions::new(),
+            _body: NotExtensions,
+        };
+        assert!(core::ptr::eq(store(&svc), &raw const svc.extensions));
     }
 }

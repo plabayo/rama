@@ -751,15 +751,9 @@ mod tests {
         drop(client);
     }
 
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Default, ExtensionsRef)]
     struct EmptyHttpConnection {
         extensions: Extensions,
-    }
-
-    impl ExtensionsRef for EmptyHttpConnection {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl Service<Request> for EmptyHttpConnection {
@@ -864,15 +858,9 @@ mod tests {
         use rama_core::layer::{MapInputLayer, MapOutputLayer};
         use rama_http::{HeaderValue, StatusCode, header::PROXY_AUTHORIZATION};
 
-        #[derive(Debug, Clone)]
+        #[derive(Debug, Clone, ExtensionsRef)]
         struct InspectProxyConnection {
             extensions: Extensions,
-        }
-
-        impl ExtensionsRef for InspectProxyConnection {
-            fn extensions(&self) -> &Extensions {
-                &self.extensions
-            }
         }
 
         impl Service<Request> for InspectProxyConnection {

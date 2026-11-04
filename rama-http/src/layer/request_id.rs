@@ -181,7 +181,7 @@ where
 ///
 /// Additionally [`RequestId`] will be inserted into [`Request::extensions`] so other
 /// services can access it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct SetRequestId<S, M> {
     inner: S,
     header_name: HeaderName,
@@ -287,7 +287,7 @@ impl<S> Layer<S> for PropagateRequestIdLayer {
 ///
 /// If the request contains a matching header that header will be applied to responses. If a
 /// [`RequestId`] extension is also present it will be propagated as well.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct PropagateRequestId<S> {
     inner: S,
     header_name: HeaderName,

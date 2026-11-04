@@ -2,6 +2,7 @@ use rama::{
     Layer, Service,
     bytes::Bytes,
     error::BoxError,
+    extensions::ExtensionsRef,
     http::{
         Body, Method, Request, Response, StreamingBody,
         header::CONTENT_ENCODING,
@@ -155,7 +156,7 @@ impl<S> Layer<S> for HtmlBadgeLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct HtmlBadgeService<S> {
     inner: S,
     enabled: bool,
@@ -354,7 +355,6 @@ mod tests {
     use super::*;
     use rama::{
         bytes::Bytes,
-        extensions::ExtensionsRef as _,
         futures::async_stream::stream_fn,
         http::{
             body::util::BodyExt,

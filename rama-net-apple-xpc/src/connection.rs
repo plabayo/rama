@@ -383,7 +383,7 @@ impl ReceivedXpcMessage {
 /// [`XpcClientConfig`](crate::XpcClientConfig) or
 /// [`XpcListenerConfig`](crate::XpcListenerConfig) to restrict which peer binaries
 /// may connect. The kernel enforces the constraint before any message is delivered.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct XpcConnection {
     // Safety invariant: `connection` has been activated (and given an event handler).
     connection: ConnectionObject,
@@ -805,12 +805,6 @@ impl XpcConnection {
             ConnectionOrigin::Created => Ok(self.connection.with_raw(f)),
             ConnectionOrigin::Received => Err(XpcError::EndpointUnsupported),
         }
-    }
-}
-
-impl ExtensionsRef for XpcConnection {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

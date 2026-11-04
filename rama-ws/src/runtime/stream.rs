@@ -8,7 +8,7 @@ use tokio::time::Sleep;
 
 use rama_core::io::Io;
 use rama_core::{
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     futures::{self, SinkExt, StreamExt},
     telemetry::tracing::{debug, trace},
 };
@@ -30,7 +30,7 @@ use crate::{
 /// successfully and both the server and the client are ready for receiving
 /// and sending data. Message from a `AsyncWebSocket<S>` are accessible
 /// through the respective `Stream` and `Sink`.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     inner: WebSocket<AllowStd<S>>,
     lifecycle: Lifecycle,
@@ -147,12 +147,6 @@ impl<S> AsyncWebSocket<S> {
         S: Io + Unpin,
     {
         self.send(Message::Close(msg)).await
-    }
-}
-
-impl<S: ExtensionsRef> ExtensionsRef for AsyncWebSocket<S> {
-    fn extensions(&self) -> &Extensions {
-        self.inner.extensions()
     }
 }
 

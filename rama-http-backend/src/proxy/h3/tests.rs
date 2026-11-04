@@ -2,7 +2,7 @@ mod spin;
 
 use rama_core::{
     bytes::Bytes,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     futures::{SinkExt as _, stream},
     io::BridgeIo,
     layer::{ArcLayer, MapInputLayer, MapOutputLayer},
@@ -865,7 +865,9 @@ async fn native_h3_mitm_advertises_only_upstream_extended_connect_support() {
 
 // Observe the first actual frame header on each leg. Configuring an endpoint
 // for compression alone would not prove that compressed frames crossed IO.
+#[derive(ExtensionsRef)]
 struct FrameHeaders {
+    #[extensions_ref]
     io: Upgraded,
     received: Arc<AtomicU8>,
     sent: Arc<AtomicU8>,
@@ -878,12 +880,6 @@ impl FrameHeaders {
             received: Arc::new(AtomicU8::new(0)),
             sent: Arc::new(AtomicU8::new(0)),
         }
-    }
-}
-
-impl ExtensionsRef for FrameHeaders {
-    fn extensions(&self) -> &Extensions {
-        self.io.extensions()
     }
 }
 

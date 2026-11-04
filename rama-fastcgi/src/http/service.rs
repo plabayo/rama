@@ -3,6 +3,7 @@
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef,
 };
 use rama_http_types::{Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
@@ -31,7 +32,7 @@ use super::convert::{fastcgi_request_to_http, http_response_to_fastcgi};
 /// - **Filter**: the `FCGI_DATA` stream is not exposed through the HTTP
 ///   adapter; only the params and stdin are converted. Services that need
 ///   the raw data stream should implement `Service<FastCgiRequest>` directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct FastCgiHttpService<S> {
     inner: S,
 }

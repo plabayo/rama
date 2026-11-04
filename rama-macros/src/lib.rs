@@ -168,6 +168,7 @@
 use proc_macro::TokenStream;
 
 mod extension_macro;
+mod extensions_ref_macro;
 mod from_extensions_macro;
 mod from_ref_macro;
 mod include_dir_macro;
@@ -219,6 +220,21 @@ pub fn derive_from_ref(item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Extension, attributes(extension))]
 pub fn derive_extension(item: TokenStream) -> TokenStream {
     from_ref_macro::expand_with(item, extension_macro::extension::expand)
+}
+
+/// Derive `rama_core::extensions::ExtensionsRef` by forwarding to one field.
+///
+/// The field is picked by the first rule that matches:
+///
+/// 1. the field marked `#[extensions_ref]`
+/// 2. the field named `inner`
+/// 3. the only field of type `Extensions`
+/// 4. the only field of a single-field struct
+///
+/// Otherwise it is a compile error. Structs only.
+#[proc_macro_derive(ExtensionsRef, attributes(extensions_ref))]
+pub fn derive_extensions_ref(item: TokenStream) -> TokenStream {
+    from_ref_macro::expand_with(item, |item| extensions_ref_macro::expand(&item))
 }
 
 /// Derive a `from_extensions` constructor that gathers extension pieces from a

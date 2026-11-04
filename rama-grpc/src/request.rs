@@ -9,7 +9,7 @@ use rama_utils::str::smol_str::{SmolStr, format_smolstr};
 use std::time::Duration;
 
 /// A gRPC request and metadata from an RPC call.
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct Request<T> {
     metadata: MetadataMap,
     message: T,
@@ -221,12 +221,6 @@ impl<T> Request<T> {
         self.metadata_mut()
             .insert(crate::metadata::GRPC_TIMEOUT_HEADER, value);
         Ok(())
-    }
-}
-
-impl<T> ExtensionsRef for Request<T> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

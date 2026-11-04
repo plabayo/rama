@@ -1,9 +1,10 @@
 use crate::core::Service as TowerService;
 use crate::service_ready::Ready;
+use rama_core::extensions::ExtensionsRef;
 use std::{fmt, sync::Arc};
 use tokio::sync::Mutex;
 
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 /// Adapter to use a [`tower::Service`] as a [`rama::Service`],
 /// cloning the servicer for each input it has to serve.
 ///

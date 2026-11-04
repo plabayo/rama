@@ -4,7 +4,7 @@ use std::any::type_name;
 use std::fmt;
 
 use rama_core::error::BoxError;
-use rama_core::extensions::Extensions;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::{Layer, Service};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
@@ -24,7 +24,7 @@ use crate::{HeaderMap, Request, Response, StreamingBody};
 ///
 /// See the [module docs](crate::layer::html_rewrite) for details. Construct it
 /// directly with [`new`](Self::new) or via [`HtmlRewriteLayer`].
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct HtmlRewrite<S, H> {
     pub(crate) inner: S,
     pub(crate) selectors: Box<[Selector]>,

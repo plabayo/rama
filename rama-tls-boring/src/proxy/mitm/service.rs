@@ -108,7 +108,7 @@ fn config_sni(config: &TlsClientConfig) -> Option<Domain> {
     super::server_name_as_sni(&server_name.0)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// A utility that can be used by MITM services such as transparent proxies,
 /// in order to relay (and MITM a TLS connection between a client and server,
 /// as part of a deep protocol inspection protocol (DPI) flow.

@@ -10,7 +10,7 @@ use rama_core::{
 };
 use rama_net::address::Domain;
 use rama_net::forwarded::{Forwarded, ForwardedElement, ForwardedSelectionPolicy};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::io::AsyncReadExt;
 
@@ -290,7 +290,7 @@ impl<S> Layer<S> for HaProxyLayer {
 ///
 /// This service will decode the HaProxy Protocol header and pass the decoded
 /// information to the inner service.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct HaProxyService<S> {
     inner: S,
     peek: bool,
@@ -300,6 +300,8 @@ pub struct HaProxyService<S> {
 }
 
 impl<S> HaProxyService<S> {
+    define_inner_service_accessors!();
+
     /// Create a new [`HaProxyService`] with the given inner service.
     pub const fn new(inner: S) -> Self {
         Self {

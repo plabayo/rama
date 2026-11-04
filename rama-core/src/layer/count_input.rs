@@ -144,7 +144,7 @@ struct DefaultInputCounterData {
 /// - increments the counter
 /// - inserts the returned tracker into `input.extensions()`
 /// - ensures decrement is executed by relying on a drop guard
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct CountInput<S, C = DefaultInputCounter> {
     inner: S,
     counter: C,

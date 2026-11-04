@@ -14,7 +14,7 @@ use crate::client::NegotiatedTlsParameters;
 /// extensions: the one both peers agreed on, never one only offered. That makes it the same
 /// decision for a TLS stream, a pair of relayed streams (whose extensions are the ingress
 /// side's) or a QUIC connection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct AlpnRouter<S, F = RejectService<(), UnsupportedAlpnError>> {
     protocol: ApplicationProtocol,
     inner: S,

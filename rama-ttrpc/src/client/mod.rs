@@ -35,18 +35,12 @@ type RequestFnBox = Box<dyn FnOnce(StreamIo, &mut JoinSet<IoResult<()>>) + Send>
 /// connection's demultiplexer, stalling every other in-flight call until it is polled again
 /// or dropped. Consume or drop response streams promptly. (The Go implementation instead
 /// fails the offending stream after a grace period, containerd/ttrpc stream.go.)
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct Client {
     tx: UnboundedSender<RequestFnBox>,
     _tasks: Arc<JoinSet<IoResult<()>>>,
     context: Context,
     extensions: Extensions,
-}
-
-impl ExtensionsRef for Client {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 struct ClientInner {

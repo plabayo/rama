@@ -46,7 +46,7 @@
 )]
 
 use crate::{HeaderValue, Request, Response};
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http_headers::authorization::Credentials;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -142,7 +142,7 @@ impl<S> Layer<S> for AddAuthorizationLayer {
 ///
 /// [`Authorization`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization
 /// [`SetRequestHeader`]: crate::layer::set_header::SetRequestHeader
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct AddAuthorization<S> {
     inner: S,
     value: Option<HeaderValue>,

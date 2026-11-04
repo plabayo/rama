@@ -1,3 +1,4 @@
+use rama_utils::macros::define_inner_service_accessors;
 use std::{
     fmt,
     sync::{Arc, OnceLock},
@@ -104,7 +105,7 @@ impl<S> Layer<S> for ProxyAddressLayer {
 /// Service produced by [`ProxyAddressLayer`].
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProxyAddressService<S> {
     inner: S,
     proxy_info: Option<ProxyAddress>,
@@ -112,6 +113,8 @@ pub struct ProxyAddressService<S> {
 }
 
 impl<S> ProxyAddressService<S> {
+    define_inner_service_accessors!();
+
     /// Create a new [`ProxyAddressService`] that will create
     /// a service to set the given [`ProxyAddress`] as a proxied [`ProxyRoute`].
     pub const fn new(inner: S, address: ProxyAddress) -> Self {
@@ -278,13 +281,17 @@ impl<S> Layer<S> for LazyProxyAddressLayer {
 }
 
 /// Service produced by [`LazyProxyAddressLayer`].
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct LazyProxyAddressService<S> {
     inner: S,
     loader: Arc<ProxyAddressLoader>,
     cached: Arc<OnceLock<CachedProxyAddress>>,
     load_error_policy: LoadErrorPolicy,
     overwrite: bool,
+}
+
+impl<S> LazyProxyAddressService<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S: fmt::Debug> fmt::Debug for LazyProxyAddressService<S> {
@@ -383,7 +390,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, ExtensionsRef)]
     struct TestInput {
         extensions: Extensions,
     }
@@ -393,12 +400,6 @@ mod tests {
             Self {
                 extensions: Extensions::new(),
             }
-        }
-    }
-
-    impl ExtensionsRef for TestInput {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
         }
     }
 

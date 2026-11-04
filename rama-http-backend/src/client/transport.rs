@@ -23,18 +23,12 @@ use {
 /// when required by the service selector. ALPN alone does not establish these facts.
 #[cfg(feature = "quic")]
 #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct Http3Transport {
+    #[extensions_ref]
     pub connection: BoxedConnection,
     /// Shared connector defaults; cloned into the connection engine at handshake.
     pub config: Arc<Config>,
-}
-
-#[cfg(feature = "quic")]
-impl ExtensionsRef for Http3Transport {
-    fn extensions(&self) -> &Extensions {
-        self.connection.extensions()
-    }
 }
 
 /// The transport on which the common HTTP connector performs its handshake.

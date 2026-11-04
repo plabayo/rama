@@ -1,4 +1,5 @@
 use rama_core::error::BoxErrorExt as _;
+use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, marker::PhantomData, net::IpAddr};
 
 use crate::protocol::{v1, v2};
@@ -157,6 +158,7 @@ impl<S, P, V: Clone> Layer<S> for HaProxyLayer<P, V> {
 ///
 /// This connector should in most cases
 /// happen as the first thing after establishing the connection.
+#[derive(ExtensionsRef)]
 pub struct HaProxyService<S, P = protocol::Tcp, V = version::Two> {
     inner: S,
     version: V,
@@ -164,6 +166,8 @@ pub struct HaProxyService<S, P = protocol::Tcp, V = version::Two> {
 }
 
 impl<S> HaProxyService<S> {
+    define_inner_service_accessors!();
+
     /// Create a new [`HaProxyService`] for the TCP protocol (default).
     ///
     /// This is in the PROXY spec referred to as:
@@ -525,16 +529,11 @@ mod tests {
     use tokio::io::{AsyncRead, AsyncWrite};
     use tokio_test::io::{Builder, Mock};
 
+    #[derive(ExtensionsRef)]
     struct SocketConnection {
         conn: Mock,
         extensions: Extensions,
         socket: SocketAddress,
-    }
-
-    impl ExtensionsRef for SocketConnection {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl Socket for SocketConnection {

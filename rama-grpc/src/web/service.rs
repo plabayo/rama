@@ -1,6 +1,7 @@
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
-use rama_core::{Service, bytes, error::BoxError, telemetry::tracing};
+use rama_core::{Service, bytes, error::BoxError, extensions::ExtensionsRef, telemetry::tracing};
 use rama_http::headers::{ContentType, HeaderMapExt as _, Te};
 use rama_http_types::{
     Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, StreamingBody, Version,
@@ -13,7 +14,7 @@ use super::call::content_types::is_grpc_web;
 use super::call::{Encoding, GrpcWebCall};
 
 /// Service implementing the grpc-web protocol.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct GrpcWebService<S> {
     inner: S,
 }
@@ -36,6 +37,8 @@ enum RequestKind<'a> {
 }
 
 impl<S> GrpcWebService<S> {
+    define_inner_service_accessors!();
+
     pub(crate) fn new(inner: S) -> Self {
         Self { inner }
     }

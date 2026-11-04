@@ -1,3 +1,4 @@
+use rama::extensions::ExtensionsRef;
 use rama::net::Protocol;
 
 use super::*;
@@ -264,15 +265,10 @@ async fn icap_pool_controller_replaces_only_changed_capacity() {
 
 #[tokio::test]
 async fn icap_pool_generation_replacement_closes_every_idle_transport() {
+    #[derive(ExtensionsRef)]
     struct TrackedConnection {
         extensions: Extensions,
         live: Arc<AtomicUsize>,
-    }
-
-    impl rama::extensions::ExtensionsRef for TrackedConnection {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl Drop for TrackedConnection {
@@ -341,15 +337,10 @@ async fn icap_pool_generation_replacement_closes_every_idle_transport() {
 
 #[tokio::test]
 async fn icap_pool_retirement_is_not_held_open_by_a_pending_connect() {
+    #[derive(ExtensionsRef)]
     struct TrackedConnection {
         extensions: Extensions,
         live: Arc<AtomicUsize>,
-    }
-
-    impl rama::extensions::ExtensionsRef for TrackedConnection {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     impl Drop for TrackedConnection {

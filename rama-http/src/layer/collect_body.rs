@@ -4,6 +4,7 @@ use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext},
+    extensions::ExtensionsRef,
 };
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -29,7 +30,7 @@ impl<S> Layer<S> for CollectBodyLayer {
 }
 
 /// Service to collect the http `Body`
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct CollectBody<S> {
     inner: S,
 }

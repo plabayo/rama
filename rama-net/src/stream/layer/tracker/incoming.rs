@@ -7,7 +7,7 @@ use rama_utils::macros::define_inner_service_accessors;
 ///
 /// [`Service`]: rama_core::Service
 /// [`Stream`]: rama_core::io::Io
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct IncomingBytesTrackerService<S> {
     inner: S,
 }

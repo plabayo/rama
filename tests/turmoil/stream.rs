@@ -14,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub use turmoil::net::TcpStream as TurmoilTcpStream;
 
 pin_project! {
+    #[derive(ExtensionsRef)]
     pub struct TcpStream {
         #[pin]
         pub stream: TurmoilTcpStream,
@@ -39,12 +40,6 @@ impl From<TurmoilTcpStream> for TcpStream {
 impl From<TcpStream> for TurmoilTcpStream {
     fn from(value: TcpStream) -> Self {
         value.stream
-    }
-}
-
-impl ExtensionsRef for TcpStream {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

@@ -62,7 +62,7 @@ impl<S> Layer<S> for TimeoutLayer {
 /// Middleware which apply a timeout to requests.
 ///
 /// See the [module docs](super) for an example.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct Timeout<S> {
     inner: S,
     timeout: Duration,
@@ -151,7 +151,7 @@ impl<S> Layer<S> for RequestBodyTimeoutLayer {
 }
 
 /// Applies a [`TimeoutBody`] to the request body.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct RequestBodyTimeout<S> {
     inner: S,
     timeout: Duration,
@@ -212,7 +212,7 @@ impl<S> Layer<S> for ResponseBodyTimeoutLayer {
 }
 
 /// Applies a [`TimeoutBody`] to the response body.
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct ResponseBodyTimeout<S> {
     inner: S,
     timeout: Duration,
@@ -278,7 +278,7 @@ impl<S> Layer<S> for RequestBodyDeadlineLayer {
 }
 
 /// Applies a [`DeadlineBody`] to the request body.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct RequestBodyDeadline<S> {
     inner: S,
     timeout: Duration,
@@ -342,7 +342,7 @@ impl<S> Layer<S> for ResponseBodyDeadlineLayer {
 }
 
 /// Applies a [`DeadlineBody`] to the response body.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ExtensionsRef)]
 pub struct ResponseBodyDeadline<S> {
     inner: S,
     timeout: Duration,

@@ -4,6 +4,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::Extensions,
+    extensions::ExtensionsRef,
     futures::{StreamExt, stream::BoxStream},
 };
 use rama_net::{
@@ -75,7 +76,7 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 /// A connector service that stamps a lazy DNS [`ConnectorTargetStream`] for a
 /// domain target, then forwards the input to the inner transport connector.
 pub struct DnsConnector<S, R = GlobalDnsResolver> {
@@ -199,7 +200,7 @@ mod tests {
     };
     use std::sync::Arc;
 
-    #[derive(Debug)]
+    #[derive(Debug, ExtensionsRef)]
     struct FakeInput {
         extensions: Extensions,
         authority: Option<HostWithPort>,
@@ -221,12 +222,6 @@ mod tests {
         }
     }
 
-    impl ExtensionsRef for FakeInput {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
-    }
-
     impl AuthorityInputExt for FakeInput {
         fn authority(&self) -> Option<HostWithOptPort> {
             self.authority.clone().map(Into::into)
@@ -239,15 +234,9 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, ExtensionsRef)]
     struct TestConn {
         extensions: Extensions,
-    }
-
-    impl ExtensionsRef for TestConn {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
     }
 
     /// Inner connector that records whether it was called and whether a

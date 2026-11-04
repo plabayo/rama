@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// A [`Service`] that wraps I/O input with [`GracefulIo`] and injects a [`CancelIo`] extension.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct GracefulIoService<S> {
     inner: S,
 }

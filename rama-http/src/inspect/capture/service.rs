@@ -1,4 +1,5 @@
-use rama_core::extensions::ExtensionsRef as _;
+use rama_core::extensions::ExtensionsRef;
+use rama_utils::macros::define_inner_service_accessors;
 
 use super::*;
 use crate::inspect::control::{ControlConnection, Decision, HttpUpgradeContext, http_message};
@@ -68,11 +69,15 @@ impl<S> Layer<S> for CaptureHttpLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct CaptureHttpService<S> {
     inner: S,
     store: Option<CaptureStore>,
     policy: Option<crate::inspect::mitm_policy::MitmPolicy>,
+}
+
+impl<S> CaptureHttpService<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CaptureHttpService<S>
@@ -358,11 +363,15 @@ impl<S> Layer<S> for MarkProtocolLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct MarkProtocolService<S> {
     inner: S,
     store: Option<CaptureStore>,
     protocol: Protocol,
+}
+
+impl<S> MarkProtocolService<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S, IO> Service<IO> for MarkProtocolService<S>
@@ -410,11 +419,15 @@ impl<S> Layer<S> for ObserveConnectionLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ObserveConnectionService<S> {
     inner: S,
     store: CaptureStore,
     label: Protocol,
+}
+
+impl<S> ObserveConnectionService<S> {
+    define_inner_service_accessors!();
 }
 
 impl<S, IO> Service<IO> for ObserveConnectionService<S>

@@ -6,7 +6,7 @@
 )]
 
 use rama_core::error::{BoxError, BoxErrorExt as _};
-use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_utils::octets::kib;
@@ -390,8 +390,10 @@ impl WebSocketConfig {
 /// It may be created by calling `connect`, `accept` or `client` functions.
 ///
 /// Use [`WebSocket::read`], [`WebSocket::send`] to received and send messages.
+#[derive(ExtensionsRef)]
 pub struct WebSocket<Stream> {
     /// The underlying socket.
+    #[extensions_ref]
     socket: Stream,
     /// The context for managing a WebSocket.
     context: WebSocketContext,
@@ -575,12 +577,6 @@ impl<Stream: Read + Write> WebSocket<Stream> {
     /// is returned from [`read`](Self::read) or [`flush`](Self::flush).
     pub fn close(&mut self, code: Option<CloseFrame>) -> Result<(), ProtocolError> {
         self.context.close(&mut self.socket, code)
-    }
-}
-
-impl<Stream: ExtensionsRef> ExtensionsRef for WebSocket<Stream> {
-    fn extensions(&self) -> &Extensions {
-        self.socket.extensions()
     }
 }
 

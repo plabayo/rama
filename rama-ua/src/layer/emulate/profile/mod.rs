@@ -195,7 +195,7 @@ impl<S, P: Clone> Layer<S> for ProfileEmulateLayer<P> {
 }
 
 /// Request service produced by [`ProfileEmulateLayer`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProfileEmulateService<S, P = Arc<UserAgentDatabase>> {
     inner: S,
     source: P,
@@ -391,7 +391,7 @@ fn ordered_headers(headers: &HeaderMap, order: Option<&InputHeaderOrder>) -> Hea
 ///
 /// HTTP/3 field choices follow the emitted occurrences, including rebuilt cookies.
 /// Explicit caller QPACK preferences take precedence and are reported as differences.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProfileEmulateHttpRequestModifier<S> {
     inner: S,
 }
@@ -424,7 +424,7 @@ where
 ///
 /// Each request replays against a drawn connection variant; this is reported as
 /// [`LoweredProfileItem::UnemulatedConnection`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct ProfileEmulateRelayRequestModifier<S> {
     inner: S,
 }

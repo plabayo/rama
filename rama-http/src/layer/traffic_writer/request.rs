@@ -63,7 +63,7 @@ impl DoNotWriteRequest {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 /// Middleware to print Http request in std format.
 ///
 /// Request bodies are observed while they stream to the inner service. The

@@ -18,7 +18,7 @@ use crate::client::service::TcpConnector;
 // need to find some kind of input which is not tcp specific,
 // at that point it us no longer bound to tcp at all
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct IoToProxyBridgeIo<S, C = TcpConnector> {
     inner: S,
     connector: C,
@@ -251,7 +251,7 @@ mod tests {
     #[derive(Debug, Clone, Extension)]
     struct ConnectorOnlyMarker;
 
-    #[derive(Debug)]
+    #[derive(Debug, ExtensionsRef)]
     struct TestIo {
         extensions: Extensions,
     }
@@ -261,12 +261,6 @@ mod tests {
             Self {
                 extensions: Extensions::new(),
             }
-        }
-    }
-
-    impl ExtensionsRef for TestIo {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
         }
     }
 

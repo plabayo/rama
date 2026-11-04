@@ -17,6 +17,7 @@ use std::{fmt, marker::PhantomData};
 /// A [`Service`] which stores the [`Default`] value of type `T` in case
 /// the header with the given [`HeaderName`] is present
 /// and has a bool-like value.
+#[derive(ExtensionsRef)]
 pub struct HeaderOptionValueService<T, S> {
     inner: S,
     header_name: HeaderName,

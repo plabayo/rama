@@ -10,6 +10,7 @@
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt, ErrorContext},
+    extensions::ExtensionsRef,
 };
 use rama_net::{Protocol, uri::DataUri};
 use rama_utils::macros::define_inner_service_accessors;
@@ -45,7 +46,7 @@ impl<S> Layer<S> for DataUriLayer {
 /// Serve `data:` request URIs from the URI itself.
 ///
 /// See the [module docs](crate::layer::uri::data) for an example.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct DataUriService<S> {
     inner: S,
 }

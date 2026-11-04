@@ -1,3 +1,4 @@
+use rama_core::extensions::ExtensionsRef;
 use std::sync::LazyLock;
 
 use rama_core::error::BoxError;
@@ -14,14 +15,8 @@ use crate::{
 const LEGACY_PROFILES: &[u8] =
     include_bytes!("../../../../profile/format/legacy/tests/browser_profiles.json");
 
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 struct Sink(Extensions);
-
-impl ExtensionsRef for Sink {
-    fn extensions(&self) -> &Extensions {
-        &self.0
-    }
-}
 
 impl rama_core::Service<Request<()>> for Sink {
     type Output = Request<()>;

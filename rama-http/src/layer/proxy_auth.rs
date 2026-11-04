@@ -129,6 +129,7 @@ where
 /// allowed and the user will be authoized as [`UserId::Anonymous`].
 ///
 /// See the [module docs](self) for an example.
+#[derive(ExtensionsRef)]
 pub struct ProxyAuthService<A, C, S, L = ()> {
     proxy_auth: A,
     allow_anonymous: bool,

@@ -26,6 +26,7 @@
 use rama::{
     Layer as _,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    extensions::ExtensionsRef,
     http::{
         HeaderValue, Request,
         layer::trace::TraceLayer,
@@ -137,7 +138,7 @@ where
 #[derive(Debug, Clone)]
 struct TimeoutLayer(Duration);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, ExtensionsRef)]
 struct TimeoutService<S> {
     inner: S,
     duration: Duration,

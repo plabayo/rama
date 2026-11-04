@@ -3389,6 +3389,7 @@ mod conn {
         }
     }
 
+    #[derive(ExtensionsRef)]
     struct DebugStream {
         tcp: TcpStream,
         shutdown_called: bool,
@@ -3402,12 +3403,6 @@ mod conn {
                 shutdown_called: false,
                 extensions: Extensions::default(),
             }
-        }
-    }
-
-    impl ExtensionsRef for DebugStream {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
         }
     }
 
@@ -3460,15 +3455,11 @@ mod conn {
         }
     }
 
+    #[derive(ExtensionsRef)]
     struct CountingStream {
+        #[extensions_ref]
         tcp: ServiceInput<TcpStream>,
         flush_count: Arc<AtomicUsize>,
-    }
-
-    impl ExtensionsRef for CountingStream {
-        fn extensions(&self) -> &Extensions {
-            self.tcp.extensions()
-        }
     }
 
     impl AsyncWrite for CountingStream {

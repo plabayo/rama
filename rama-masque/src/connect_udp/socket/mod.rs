@@ -314,6 +314,7 @@ impl TunnelReport {
 /// never re-sent as capsules (RFC 9298 §6.1).
 ///
 /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
+#[derive(ExtensionsRef)]
 pub struct ConnectUdpSocket<T = Upgraded> {
     receiver: SessionReceiver<T>,
     shared: Arc<Shared>,
@@ -328,12 +329,6 @@ impl<T> Drop for ConnectUdpSocket<T> {
         // the receive drain of an already failed send stops when its owner drops.
         self.shared.receiver_dropped.store(true, Ordering::Release);
         self.shared.stopped.notify_waiters();
-    }
-}
-
-impl<T> ExtensionsRef for ConnectUdpSocket<T> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

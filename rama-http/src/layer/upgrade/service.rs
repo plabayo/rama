@@ -18,6 +18,7 @@ use std::{convert::Infallible, fmt, future::Future, pin::Pin, sync::Arc};
 
 /// Upgrade service can be used to handle the possibility of upgrading a request,
 /// after which it will pass down the transport RW to the attached upgrade service.
+#[derive(ExtensionsRef)]
 pub struct UpgradeService<S, O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
     inner: S,

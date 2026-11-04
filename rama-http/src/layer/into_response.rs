@@ -1,10 +1,10 @@
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_http_types::{Request, Response};
 
 use crate::service::web::response::IntoResponse;
 
 /// A [`Service`] that maps Output of an inner service using [`IntoResponse`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct IntoResponseService<S>(S);
 
 impl<S> IntoResponseService<S>

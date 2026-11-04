@@ -1,4 +1,4 @@
-use crate::{Layer, Service};
+use crate::{Layer, Service, extensions::ExtensionsRef};
 use core::fmt;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -27,7 +27,7 @@ use rama_utils::macros::define_inner_service_accessors;
 ///
 /// [`MapOutput`]: crate::layer::MapOutput
 /// [`MapErr`]: crate::layer::MapErr
-#[derive(Clone)]
+#[derive(Clone, ExtensionsRef)]
 pub struct MapResult<S, F> {
     inner: S,
     f: F,

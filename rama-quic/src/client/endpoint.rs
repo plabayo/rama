@@ -29,6 +29,7 @@ pub(super) const MAX_CACHED_PROFILE_ENDPOINTS: usize = 8;
 ///
 /// Its extensions are the facts of the path below the endpoint, such as the
 /// [`EstablishedProxyRoute`](rama_net::client::EstablishedProxyRoute) of a proxy tunnel.
+#[derive(ExtensionsRef)]
 pub struct ClientEndpoint {
     endpoint: Endpoint,
     peer: Option<SocketAddr>,
@@ -76,12 +77,6 @@ impl ClientEndpoint {
     #[must_use]
     pub fn peer(&self) -> Option<SocketAddr> {
         self.peer
-    }
-}
-
-impl ExtensionsRef for ClientEndpoint {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 
@@ -291,7 +286,7 @@ impl Service<ConnectRequest> for SharedQuicEndpoint {
 /// The endpoint applies the request's [`QuicProfile`], keeps its packets within what the
 /// socket carries, and opens its connection to the socket's peer. The socket's extensions,
 /// such as an established proxy route, become the endpoint's.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ExtensionsRef)]
 pub struct QuicEndpointConnector<C> {
     inner: C,
     executor: Executor,

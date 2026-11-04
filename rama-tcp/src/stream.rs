@@ -22,7 +22,7 @@ pin_project! {
     /// It publishes an [`AbortIo`] in its own extensions: once called, dropping the
     /// stream sends a TCP RST instead of a FIN: SO_LINGER 0 only takes effect on close, which
     /// is the owner's to do.
-    #[derive(Debug)]
+    #[derive(Debug, ExtensionsRef)]
     pub struct TcpStream {
         #[pin]
         pub stream: TokioTcpStream,
@@ -232,12 +232,6 @@ impl From<TcpStream> for TokioTcpStream {
         drop(unsafe { ptr::read(&raw const value.abort) });
         // SAFETY: as above, for `stream`.
         unsafe { ptr::read(&raw const value.stream) }
-    }
-}
-
-impl ExtensionsRef for TcpStream {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

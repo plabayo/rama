@@ -281,7 +281,7 @@ where
 }
 
 /// HTTP service produced by [`AdaptationLayer`].
-#[derive(Debug)]
+#[derive(Debug, ExtensionsRef)]
 pub struct Adaptation<S, C, D = NoOptionsDiscovery> {
     inner: S,
     client: C,

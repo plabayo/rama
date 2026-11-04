@@ -74,6 +74,7 @@ where
 /// and inserts it into the [`Extensions`] of that object.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
+#[derive(ExtensionsRef)]
 pub struct HeaderConfigService<T, S> {
     inner: S,
     header_name: HeaderName,
