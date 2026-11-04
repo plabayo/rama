@@ -87,7 +87,9 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let mut config = crate::server_tls_provider()
         .server_config(
             &tls,
-            crate::tls_options().with_early_data(testcase == TestCase::ZeroRtt),
+            crate::tls_options()
+                .with_early_data(testcase == TestCase::ZeroRtt)
+                .with_early_data_context(b"rama-interop-runner-v1"),
         )?
         .with_transport_config(transport(executor.clone(), "server", testcase).await?);
     if testcase == TestCase::ConnectionMigration {

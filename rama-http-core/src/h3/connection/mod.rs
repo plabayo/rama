@@ -71,15 +71,35 @@ pub struct Config {
     /// ALPN validation for inbound connections; never inherited by forwarded requests.
     /// Client connections use their connection's ALPN policy instead.
     pub server_alpn_policy: AlpnPolicy,
-    /// Send safe client requests without a body using TLS early keys, before confirmation.
+    /// Allow safe client requests without a body to use TLS early keys.
     ///
-    /// Applies to client connections taken through `Connecting::into_0rtt`; other requests
-    /// still wait for handshake confirmation. Early requests use default peer SETTINGS
-    /// (RFC 9114 section 7.2.4.2). A server rejecting early data fails the connection with
-    /// [`Error::is_early_data_rejected`]: none of its requests were processed. Rama's HTTP/3
-    /// connector always completes the handshake first. Servers ignore this: they always hold
-    /// request dispatch until the client's Finished is verified. Disabled by default.
+    /// Each request also needs an [`EarlyDataPermit`](rama_net::tls::EarlyDataPermit)
+    /// from its recovery owner. [`ForbidEarlyData`](rama_net::tls::ForbidEarlyData)
+    /// always wins. A bare configuration flag leaves ordinary clients handshake-first.
+    /// Early requests use default peer SETTINGS (RFC 9114 section 7.2.4.2).
+    /// A TLS rejection retires this connection; requests whose streams actually
+    /// opened early receive [`Error::is_early_request_rejected`]. Responses and
+    /// normal pool admissions still wait for authentication and ALPN verification.
+    /// The opt-in also allows resumed ClientHellos to offer early data when a
+    /// request ultimately waits for confirmation. Leave it off for exact TLS
+    /// fingerprint emulation; compiled captured TLS profiles take precedence
+    /// and disable early data. Disabled by default. Servers ignore this option.
     pub early_requests: bool,
+    /// Dispatch safe-method requests actually received in early data before Finished.
+    ///
+    /// Requires native server TLS early-data opt-in bound to
+    /// [`Self::early_data_context`]. A missing or mismatched context keeps
+    /// handshake-first dispatch. Routes must decide whether replay is safe;
+    /// client-authenticated routes must await `EarlyDataReceived::confirmed()`
+    /// and then read the connection's `NegotiatedTlsParameters` again; peer
+    /// identity is provisional before confirmation.
+    /// Unsafe methods, CONNECT and requests with a `Protocol` extension still wait
+    /// for confirmation, retaining their actual early receipt metadata.
+    /// Gate non-replay-safe routes with `validate_request::early_data::require_confirmed`.
+    /// Gateways must use `validate_request::early_data::forward_to` or add
+    /// `Early-Data: 1` themselves, including when upstream uses ordinary 1-RTT.
+    /// Disabled by default. Clients ignore this option.
+    pub early_dispatch: bool,
     /// Optional independent budgets for wire observation; disabled by default.
     pub observation: Option<Box<ObservationLimits>>,
     /// Optional literal SETTINGS order, including unknown and reserved identifiers.
@@ -157,6 +177,7 @@ impl Default for Config {
             application_protocol: ApplicationProtocol::HTTP_3,
             server_alpn_policy: AlpnPolicy::Require,
             early_requests: false,
+            early_dispatch: false,
             observation: None,
             settings_profile: None,
             critical_streams: CriticalStreamPreferences::default(),
@@ -426,6 +447,26 @@ impl Config {
         transport.set_stream_receive_window(VarInt::from_u32(kib(256) as u32));
         transport.set_receive_window(VarInt::from_u32(mib(8) as u32));
         Ok(())
+    }
+
+    /// Application compatibility context for a QUIC server accepting early data.
+    ///
+    /// Pass these bytes to `TlsOptions::with_early_data_context` together with
+    /// `with_early_data(true)` when building server TLS. The encoding includes
+    /// every configured local SETTINGS entry, including unknown entries, and
+    /// supported CONNECT/datagram capabilities. It does not promise replay safety
+    /// for a route; that remains application policy. Changed settings reject
+    /// old early sessions conservatively, even when the change only increases limits.
+    pub fn early_data_context(&self) -> Result<Bytes, Error> {
+        let settings = self.local_settings(Role::Server, self.datagrams.is_some())?;
+        let mut bytes = BytesMut::from(b"rama-h3-early-data-v1".as_slice());
+        settings.encode_payload(&mut bytes).ok_or_else(|| {
+            Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "early-data settings exceed wire bounds",
+            )
+        })?;
+        Ok(bytes.freeze())
     }
 
     /// The SETTINGS this endpoint sends. Only a server's ENABLE_CONNECT_PROTOCOL
@@ -2561,6 +2602,38 @@ mod tests {
         task::{Context, Wake, Waker},
         time::Duration,
     };
+
+    #[test]
+    fn early_context_covers_every_advertised_setting() {
+        let config = Config {
+            extended_connect: true,
+            ..Config::default()
+        };
+        let original = config.early_data_context().unwrap();
+        let settings = config.local_settings(Role::Server, true).unwrap();
+        for (id, value) in [
+            (SettingId::QPACK_MAX_TABLE_CAPACITY, 17),
+            (SettingId::QPACK_BLOCKED_STREAMS, 8),
+            (SettingId::MAX_FIELD_SECTION_SIZE, 17),
+            (SettingId::ENABLE_CONNECT_PROTOCOL, 0),
+            (SettingId::H3_DATAGRAM, 0),
+            (SettingId::new(0xface), 17),
+        ] {
+            let mut changed = Settings::new();
+            for entry in settings.entries().iter().filter(|entry| entry.id != id) {
+                changed.set(entry.id, entry.value).unwrap();
+            }
+            changed.set(id, value).unwrap();
+            let changed = config.try_with_server_settings(Arc::new(changed)).unwrap();
+            assert_ne!(changed.early_data_context().unwrap(), original, "{id:?}");
+        }
+        // Local scheduling budgets do not change the peer's 0-RTT contract.
+        let changed = Config {
+            max_requests: 1,
+            ..config
+        };
+        assert_eq!(changed.early_data_context().unwrap(), original);
+    }
 
     #[test]
     fn the_goaway_drain_counts_from_the_later_start_and_never_overflows() {

@@ -26,15 +26,20 @@
 //! reuses its verdict — retrying through the very proxy or address that just failed. Placed
 //! _inside_, it is consulted per attempt.
 //!
-//! One counterweight: retrying requires a replayable body, so this middleware buffers the request
-//! body in full ([`RetryBody`]) and every layer inside it sees that buffered body instead of the
-//! original stream.
+//! Retrying requires a replayable body. [`Policy::prepare_body`] decides before
+//! reading whether to collect data and trailers into [`RetryBody`]. Declined
+//! requests stream once; size/time-limited collection also falls back to the
+//! complete original stream. The default policy still collects without bounds.
 //!
 //! [`follow_redirect`](crate::layer::follow_redirect) follows the same rules for redirect hops. Keep
 //! that middleware outside this one, so a retry replays one hop instead of the entire chain.
 
-use crate::{Request, StreamingBody, body::util::BodyExt};
+use crate::{
+    Body, Request, StreamingBody,
+    body::util::{BodyExt, BodyStream},
+};
 use rama_core::Service;
+use rama_core::bytes::Buf as _;
 use rama_core::error::BoxError;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -45,9 +50,12 @@ mod body;
 #[doc(inline)]
 pub use body::RetryBody;
 
+pub mod early_data;
 pub mod managed;
 pub use managed::ManagedPolicy;
 
+#[cfg(test)]
+mod preparation_tests;
 #[cfg(test)]
 mod tests;
 
@@ -92,10 +100,7 @@ enum RetryErrorKind {
 
 impl std::fmt::Display for RetryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.inner {
-            Some(inner) => write!(f, "{}: {}", self.kind, inner),
-            None => write!(f, "{}", self.kind),
-        }
+        self.kind.fmt(f)
     }
 }
 
@@ -110,30 +115,64 @@ impl std::fmt::Display for RetryErrorKind {
 
 impl std::error::Error for RetryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.inner.as_ref().and_then(|e| e.source())
+        self.inner
+            .as_ref()
+            .map(|error| error.as_ref() as &(dyn std::error::Error + 'static))
     }
 }
 
-impl<P, S, Body> Service<Request<Body>> for Retry<P, S>
+impl<P, S, RequestBody> Service<Request<RequestBody>> for Retry<P, S>
 where
     P: Policy<S::Output, S::Error>,
     S: Service<Request<RetryBody>, Error: Into<BoxError>>,
-    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+    RequestBody: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
     type Output = S::Output;
     type Error = RetryError;
 
-    async fn serve(&self, request: Request<Body>) -> Result<Self::Output, Self::Error> {
-        // consume body so we can clone the request if desired
+    async fn serve(&self, request: Request<RequestBody>) -> Result<Self::Output, Self::Error> {
         let (parts, body) = request.into_parts();
-        let body = body.collect().await.map_err(|e| RetryError {
-            kind: RetryErrorKind::BodyConsume,
-            inner: Some(e.into()),
-        })?;
-        let body = RetryBody::new(body.to_bytes());
+        let is_end_stream = body.is_end_stream();
+        let size_hint = body.size_hint();
+        let options = self.policy.prepare_body(&parts, is_end_stream, &size_hint);
+        let body = match options {
+            Some(_) if is_end_stream => RetryBody::empty(),
+            None if is_end_stream => RetryBody::streaming(Body::empty(), size_hint),
+            options => {
+                // The frame-stream adapter keeps Send-only bodies supported;
+                // Bytes chunks remain zero-copy and trailers remain frames.
+                let body = Body::from_frame_stream(BodyStream::new(body.map_frame(|frame| {
+                    frame.map_data(|mut data| data.copy_to_bytes(data.remaining()))
+                })));
+                match options {
+                    None => RetryBody::streaming(body, size_hint),
+                    Some(options) => match body.collect_with(options).await {
+                        Ok(body) => RetryBody::collected(body),
+                        Err(error) if error.is_cap_reached() || error.is_timed_out() => {
+                            RetryBody::streaming(
+                                error.into_full_body().ok_or(RetryError {
+                                    kind: RetryErrorKind::BodyConsume,
+                                    inner: None,
+                                })?,
+                                size_hint,
+                            )
+                        }
+                        Err(error) => {
+                            return Err(RetryError {
+                                kind: RetryErrorKind::BodyConsume,
+                                inner: Some(error.into()),
+                            });
+                        }
+                    },
+                }
+            }
+        };
         let mut request = Request::from_parts(parts, body);
-
-        let mut cloned = self.policy.clone_input(&request);
+        let mut cloned = request
+            .body()
+            .is_replayable()
+            .then(|| self.policy.clone_input(&request))
+            .flatten();
 
         // Fork per attempt, so an attempt's inserts reach neither the next attempt nor the caller —
         // unconditionally, as whether a request can be retried is no business of who owns its
@@ -159,7 +198,11 @@ where
                     // caller store before cloning the next policy view, then
                     // fork the request actually sent to the service.
                     request.set_extensions(parent_ext.clone());
-                    cloned = self.policy.clone_input(&request);
+                    cloned = request
+                        .body()
+                        .is_replayable()
+                        .then(|| self.policy.clone_input(&request))
+                        .flatten();
                     request.set_extensions(parent_ext.fork());
                 }
                 // no clone was made, so no possibility to retry
@@ -178,7 +221,10 @@ where
 mod test {
     use super::*;
     use crate::{
-        BodyExtractExt, Response, StatusCode, layer::retry::managed::DoNotRetry,
+        BodyExtractExt, Response, StatusCode,
+        body::{CollectOptions, SizeHint},
+        layer::retry::managed::DoNotRetry,
+        request::Parts,
         service::web::response::IntoResponse,
     };
     use rama_core::{
@@ -439,6 +485,10 @@ mod test {
         struct FreshRequestPolicy;
 
         impl Policy<Response, BoxError> for FreshRequestPolicy {
+            fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+                Some(CollectOptions::new())
+            }
+
             async fn retry(
                 &self,
                 req: Request<RetryBody>,
@@ -461,7 +511,10 @@ mod test {
             }
 
             fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-                Some(req.clone())
+                Some(Request::from_parts(
+                    req.clone_parts(),
+                    req.body().try_clone()?,
+                ))
             }
         }
 

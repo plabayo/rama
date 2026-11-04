@@ -138,6 +138,11 @@ impl<C: Connection> Connection for Reversed<C> {
     // Only the QUIC client can send 0-RTT, and here it serves HTTP/3: an h3 server opens its
     // control and QPACK streams only after `handshake_confirmed`. Reporting none also keeps the
     // h3 client on the QUIC server from treating anything as early.
+    fn early_data_context_matches(&self, _context: &[u8]) -> bool {
+        // Reversed HTTP/3 never dispatches requests under QUIC early keys.
+        false
+    }
+
     fn early_data(&self) -> EarlyData {
         EarlyData::Unavailable
     }

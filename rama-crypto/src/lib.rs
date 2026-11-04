@@ -34,6 +34,8 @@ pub mod jose;
 
 pub mod hmac;
 
+pub mod digest;
+
 pub mod pem;
 
 pub mod pki_types {

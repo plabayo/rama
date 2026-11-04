@@ -378,7 +378,7 @@ impl crypto::ClientConfig for QuicClientConfig {
             wire,
             wire,
             params,
-            self.early_data,
+            TlsOptions::default().with_early_data(self.early_data),
             initializer,
             remembered,
             peer_params,
@@ -432,6 +432,7 @@ pub(crate) struct QuicServerConfig {
     /// session-ID context that issued it, which scopes tickets by version (RFC 9369 §5).
     contexts: [SslContext; 2],
     early_data: bool,
+    early_data_context: Option<[u8; 32]>,
     store_peer_chain: bool,
     initializer: Option<HandshakeInitializer>,
 }
@@ -442,6 +443,7 @@ pub(crate) struct QuicServerCertIssuer {
     data: TlsAcceptorData,
     contexts: [SslContext; 2],
     early_data: bool,
+    early_data_context: Option<[u8; 32]>,
     initializer: Option<HandshakeInitializer>,
 }
 
@@ -461,6 +463,7 @@ pub(crate) fn server_config_from_rama(
             contexts: contexts(|| data.acceptor_builder_without_identity())?,
             data,
             early_data: options.early_data,
+            early_data_context: options.early_data_context,
             initializer,
         }))
     } else {
@@ -476,6 +479,7 @@ fn acceptor_data(
     config: &TlsServerConfig,
     options: TlsOptions,
 ) -> Result<TlsAcceptorData, TlsConfigError> {
+    options.validate_server()?;
     let pieces = BoringTlsAcceptorConfig::from_extensions(config.as_extensions());
     validate_versions(pieces.versions)?;
     validate_alpn(pieces.alpn, options)?;
@@ -505,6 +509,7 @@ impl QuicServerConfig {
             issued: None,
             contexts: contexts(|| data.clone().into_static_acceptor_builder())?,
             early_data: options.early_data,
+            early_data_context: options.early_data_context,
             store_peer_chain: data.stores_client_certificate_chain(),
             initializer,
         })
@@ -639,6 +644,7 @@ impl QuicServerCertIssuer {
             issued: Some(certificate),
             contexts: self.contexts.clone(),
             early_data: self.early_data,
+            early_data_context: self.early_data_context,
             store_peer_chain: self.data.stores_client_certificate_chain(),
             initializer: self.initializer.clone(),
         })
@@ -672,7 +678,11 @@ impl QuicServerConfig {
             wire,
             early_wire,
             params,
-            self.early_data,
+            TlsOptions {
+                early_data: self.early_data,
+                early_data_context: self.early_data_context,
+                ..TlsOptions::default()
+            },
             self.initializer.as_ref(),
             None,
             Arc::new(Mutex::new(None)),
@@ -686,7 +696,73 @@ impl QuicServerConfig {
 mod tests {
     use rama_net::tls::ApplicationProtocol;
 
+    use super::super::tests::{configs, handshake};
     use super::*;
+    use crate::proto::crypto::{ClientConfig as _, ServerConfig as _, config::application_context};
+    use rama_quic_proto::transport_parameters::TransportParameters;
+
+    #[test]
+    fn early_context_changes_reject_old_tickets_and_accept_new_ones() {
+        let (client, server) = configs();
+        let options = TlsOptions::default()
+            .with_early_data(true)
+            .with_early_data_context(b"old settings");
+        let client = Arc::new(QuicClientConfig::from_rama(&client, options).unwrap());
+        let mut server = Arc::new(QuicServerConfig::from_rama(&server, options).unwrap());
+        let mut params = TransportParameters {
+            initial_src_cid: Some(ConnectionId::new(&[2])),
+            ..TransportParameters::default()
+        };
+        params.initial_max_data = 1024u32.into();
+        // Accept the same context, lower application settings, mint a new ticket,
+        // flip back, then lower QUIC flow control without changing the application.
+        for (context, limit, accepted) in [
+            (b"old settings".as_slice(), 1024, false),
+            (b"old settings", 1024, true),
+            (b"new settings", 1024, false),
+            (b"new settings", 1024, true),
+            (b"old settings", 1024, false),
+            (b"old settings", 1024, true),
+            (b"old settings", 512, false),
+            (b"old settings", 512, true),
+        ] {
+            Arc::get_mut(&mut server).unwrap().early_data_context =
+                Some(application_context(context));
+            params.initial_max_data = (limit as u32).into();
+            let mut c = client
+                .clone()
+                .start_session(
+                    Version::V1,
+                    "localhost",
+                    &TransportParameters {
+                        initial_src_cid: Some(ConnectionId::new(&[1])),
+                        ..TransportParameters::default()
+                    },
+                )
+                .unwrap();
+            let mut s = server.clone().start_session(Version::V1, &params).unwrap();
+            handshake(&mut *c, &mut *s).unwrap();
+            assert_eq!(
+                c.early_data_accepted(),
+                Some(accepted),
+                "context={context:?}, limit={limit}"
+            );
+        }
+    }
+
+    #[test]
+    fn server_early_data_requires_an_application_context() {
+        let (_, server) = configs();
+        let options = TlsOptions::default().with_early_data(true);
+        assert!(matches!(
+            QuicServerConfig::from_rama(&server, options),
+            Err(TlsConfigError::EarlyDataContextRequired)
+        ));
+        assert!(matches!(
+            server_config_from_rama(&server, options),
+            Err(TlsConfigError::EarlyDataContextRequired)
+        ));
+    }
 
     #[test]
     fn repeated_client_configs_reuse_the_process_ticket_slot() {

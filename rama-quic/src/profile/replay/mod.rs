@@ -142,6 +142,12 @@ struct AppliedSessionScope {
     installed: Arc<TlsSessionProfileScope>,
 }
 
+/// A compiled captured ClientHello owns its connection-dependent wire choices.
+#[cfg(feature = "boring")]
+pub(crate) fn has_captured_tls(extensions: &Extensions) -> bool {
+    extensions.contains::<AppliedSessionScope>()
+}
+
 impl CompiledConnectionProfile for CompiledConnection {
     fn supports(&self, component: CapturedSlotKind) -> bool {
         let Some(native) = &self.native else {

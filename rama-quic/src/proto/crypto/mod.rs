@@ -76,6 +76,11 @@ pub trait Session: Send + Sync + 'static {
     /// not connected to this server before.
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)>;
 
+    /// Whether server early acceptance is bound to these application settings.
+    /// Clients and servers without such a binding return false. Implementations
+    /// choose their own representation; callers pass the original context bytes.
+    fn early_data_context_matches(&self, context: &[u8]) -> bool;
+
     /// If the 0-RTT-encrypted data has been accepted by the peer
     fn early_data_accepted(&self) -> Option<bool>;
 

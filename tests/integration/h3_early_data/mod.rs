@@ -1,6 +1,12 @@
 //! TLS session resumption and HTTP/3 early data, end to end over loopback UDP.
 
+mod admission;
+mod alpn;
+mod dispatch;
+mod drain;
 mod gate;
+mod pooled;
+mod receipt;
 
 use std::{
     future::{Future, poll_fn},
@@ -13,9 +19,12 @@ use std::{
 use rama::http::{Body, Method, Request, Response, body::util::BodyExt as _};
 use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor};
 use rama_http_core::h3::{Error, client, connection::Config, server, transport::Reversed};
-use rama_net::address::SocketAddress;
+use rama_net::{
+    address::SocketAddress,
+    tls::{EarlyDataPermit, ForbidEarlyData},
+};
 use rama_quic::{
-    ClientConfig, Connecting, Connection, Endpoint, ServerConfig, TransportConfig,
+    ClientConfig, Connecting, Connection, Endpoint, EndpointConfig, ServerConfig, TransportConfig,
     tls::{QuicClientConfigProvider as _, QuicServerConfigProvider as _, TlsOptions},
 };
 use rama_quic_proto::Version;
@@ -66,8 +75,11 @@ impl Provider {
         self,
         client: &TlsClientConfig,
         server: &TlsServerConfig,
+        http_config: &Config,
     ) -> (ClientConfig, ServerConfig) {
-        let options = TlsOptions::default().with_early_data(true);
+        let options = TlsOptions::default()
+            .with_early_data(true)
+            .with_early_data_context(http_config.early_data_context().unwrap());
         match self {
             #[cfg(feature = "boring")]
             Self::Boring => (
@@ -100,6 +112,20 @@ struct Fixture {
 
 impl Fixture {
     async fn new(provider: Provider, version: Version) -> Self {
+        Self::with_request_credit(provider, version, 100).await
+    }
+
+    async fn with_request_credit(provider: Provider, version: Version, credit: u32) -> Self {
+        Self::with_configs(provider, version, credit, None, Config::default()).await
+    }
+
+    async fn with_configs(
+        provider: Provider,
+        version: Version,
+        credit: u32,
+        endpoint_config: Option<EndpointConfig>,
+        http_config: Config,
+    ) -> Self {
         println!("h3 early data: provider={provider:?} version={version:?}");
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let rotated = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
@@ -115,12 +141,11 @@ impl Fixture {
             ])
             .unwrap();
         let mut transport = TransportConfig::default();
-        Config::default()
-            .configure_transport(&mut transport)
-            .unwrap();
+        http_config.configure_transport(&mut transport).unwrap();
+        transport.set_max_concurrent_bidi_streams(credit);
         let transport = Arc::new(transport);
         let (mut client_config, mut server_config) =
-            provider.configurations(&client_tls, &server_tls);
+            provider.configurations(&client_tls, &server_tls, &http_config);
         client_config.set_version(version).unwrap();
         client_config.set_transport_config(transport.clone());
         server_config.set_transport_config(transport.clone());
@@ -129,6 +154,7 @@ impl Fixture {
             .await
             .unwrap();
         let server = Endpoint::build(Executor::new())
+            .maybe_with_config(endpoint_config)
             .with_server_config(server_config)
             .with_datagram_socket(GatedSocket {
                 inner: socket,
@@ -179,9 +205,9 @@ impl Fixture {
 
     /// Rotate to a new identity and native server state, so earlier tickets are refused.
     fn forget_tickets(&self) {
-        let (_, mut server_config) = self
-            .provider
-            .configurations(&self.client_tls, &self.rotated_tls);
+        let (_, mut server_config) =
+            self.provider
+                .configurations(&self.client_tls, &self.rotated_tls, &Config::default());
         server_config.set_transport_config(self.transport.clone());
         self.server.set_server_config(Some(server_config));
     }
@@ -234,11 +260,16 @@ fn resumed(connection: &Connection) -> Option<bool> {
 }
 
 fn request(method: Method, body: &'static str) -> Request<Body> {
-    Request::builder()
+    let request = Request::builder()
         .method(method)
         .uri("https://localhost/early")
         .body(Body::from(body))
-        .unwrap()
+        .unwrap();
+    // Low-level fixture owns rejection assertions rather than automatic recovery.
+    request
+        .extensions()
+        .insert(EarlyDataPermit::with_recovery_owner());
+    request
 }
 
 /// Send one request from a client task and collect its response body.
@@ -406,6 +437,17 @@ async fn replay_unsafe_requests_wait_for_handshake_confirmation() {
         for request in [
             || request(Method::POST, ""),
             || request(Method::GET, "payload"),
+            || {
+                Request::builder()
+                    .uri("https://localhost/early")
+                    .body(Body::empty())
+                    .unwrap()
+            },
+            || {
+                let request = request(Method::GET, "");
+                request.extensions().insert(ForbidEarlyData::default());
+                request
+            },
         ] {
             timeout(LIMIT, unsafe_request_waits(provider, request()))
                 .await
@@ -458,7 +500,7 @@ async fn early_rejection(provider: Provider) {
     let _accepting = Task::spawn(async move { _ = incoming.await });
 
     let error = response.join().await.unwrap_err();
-    assert!(error.is_early_data_rejected(), "{error:?}");
+    assert!(error.is_early_request_rejected(), "{error:?}");
     assert_eq!(client.early_data_accepted(), Some(false));
     // The full handshake's chain replaces the one the rejected ticket remembered.
     let tls = client
@@ -544,6 +586,7 @@ async fn rejection_race(provider: Provider) {
     }
     let error = second.join().await.unwrap_err();
     assert!(error.is_early_data_rejected(), "{error:?}");
+    assert!(!error.is_early_request_rejected(), "{error:?}");
 }
 
 /// Test tasks cannot outlive a failed case or hide its panic.

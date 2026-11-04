@@ -26,6 +26,17 @@ The Docker runner accepts `--backend` with the same three choices.
   [masque-go CONNECT-UDP peer](../../examples/tests/masque_interop/) and locked
   [aioquic environment](aioquic-interop/). aioquic exercises both roles,
   including dynamic QPACK and concurrent uploads with trailers.
+  `http-interop/tests/early_data.rs` also checks actual early transmission and
+  HTTP 425 recovery in both directions with quic-go. The Rama-client case owns
+  recovery directly, without Retry middleware. The Go fixture supplies its own
+  HTTP rejection/recovery policy; quic-go supplies the independent wire stack.
+  Run with `RAMA_HTTP_INTEROP_PEER` pointing to the built Go peer:
+
+  ```sh
+  cargo test --manifest-path rama-quic/e2e/http-interop/Cargo.toml --features boring --test early_data -- --ignored
+  ```
+
+  Use `rustls-ring` or `rustls-aws-lc` to select another Rama TLS backend.
 - [External GnuTLS provider](gnutls-interop/): tests against aioquic with all
   built-in Rama backends disabled; `just rama-quic/qa-interop-gnutls`.
 

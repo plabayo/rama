@@ -258,6 +258,10 @@ impl Session for ObservedSession {
         self.inner.early_crypto()
     }
 
+    fn early_data_context_matches(&self, context: &[u8]) -> bool {
+        self.inner.early_data_context_matches(context)
+    }
+
     fn early_data_accepted(&self) -> Option<bool> {
         self.inner.early_data_accepted()
     }

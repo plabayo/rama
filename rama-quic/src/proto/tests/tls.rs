@@ -99,6 +99,11 @@ impl crypto::Session for FailingInitialKeys {
     )> {
         None
     }
+
+    fn early_data_context_matches(&self, _: &[u8]) -> bool {
+        false
+    }
+
     fn early_data_accepted(&self) -> Option<bool> {
         None
     }

@@ -49,6 +49,7 @@ pub use self::cross_origin_opener_policy::{
 };
 pub use self::cross_origin_resource_policy::CrossOriginResourcePolicy;
 pub use self::date::Date;
+pub use self::early_data::EarlyData;
 pub use self::etag::ETag;
 pub use self::expect::Expect;
 pub use self::expires::Expires;
@@ -189,6 +190,7 @@ mod cross_origin_opener_policy;
 mod cross_origin_policy_util;
 mod cross_origin_resource_policy;
 mod date;
+mod early_data;
 mod etag;
 mod expect;
 mod expires;

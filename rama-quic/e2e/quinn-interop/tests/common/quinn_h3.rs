@@ -269,6 +269,10 @@ impl transport::Connection for Quinn {
         u64::MAX
     }
 
+    fn early_data_context_matches(&self, _context: &[u8]) -> bool {
+        false
+    }
+
     fn early_data(&self) -> transport::EarlyData {
         transport::EarlyData::Unavailable
     }

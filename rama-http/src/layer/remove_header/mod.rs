@@ -34,7 +34,10 @@ use rama_utils::str::{any_submatch_ignore_ascii_case, starts_with_ignore_ascii_c
 
 use crate::{
     HeaderMap, HeaderName, HeaderValue, Response, StatusCode, Version,
-    header::{self, hop_by_hop::retain_te_trailers},
+    header::{
+        self,
+        hop_by_hop::{is_removable_connection_header, retain_te_trailers},
+    },
 };
 
 pub mod request;
@@ -164,7 +167,9 @@ pub fn coalesce_cookie_headers(headers: &mut HeaderMap) {
 /// WebSocket handshake per RFC 8441 §5.1).
 pub fn remove_illegal_h2_request_headers(headers: &mut HeaderMap) {
     // A `TE` sender nominates it (RFC 9110 §10.1.4); its `trailers` is kept below.
-    for name in connection_header_names(headers).filter(|name| *name != header::TE) {
+    for name in connection_header_names(headers)
+        .filter(|name| *name != header::TE && is_removable_connection_header(name))
+    {
         while headers.remove(&name).is_some() {
             tracing::trace!(
                 header = %name,
@@ -393,6 +398,25 @@ where
 mod tests {
     use super::*;
     use crate::{Request, Response, StatusCode, Version};
+
+    #[test]
+    fn early_data_survives_h2_request_conversion() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONNECTION,
+            HeaderValue::from_static("early-data, x-hop"),
+        );
+        headers.append(header::EARLY_DATA, HeaderValue::from_static("0"));
+        headers.append(header::EARLY_DATA, HeaderValue::from_static("invalid"));
+        headers.insert("x-hop", HeaderValue::from_static("private"));
+        remove_illegal_h2_request_headers(&mut headers);
+        assert_eq!(
+            values(&headers, &header::EARLY_DATA),
+            [b"0".as_slice(), b"invalid"]
+        );
+        assert!(!headers.contains_key("x-hop"));
+        assert!(!headers.contains_key(header::CONNECTION));
+    }
 
     fn values<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Vec<&'a [u8]> {
         headers

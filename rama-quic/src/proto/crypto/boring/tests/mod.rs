@@ -46,7 +46,7 @@ use rama_tls_boring::client::{BoringExtensionOrder, BoringPermuteExtensions};
 trait TestTlsProvider: QuicClientConfigProvider + QuicServerConfigProvider {}
 impl<T: QuicClientConfigProvider + QuicServerConfigProvider> TestTlsProvider for T {}
 
-fn configs() -> (TlsClientConfig, TlsServerConfig) {
+pub(super) fn configs() -> (TlsClientConfig, TlsServerConfig) {
     configs_for([rama_net::address::Domain::from_static("localhost")])
 }
 
@@ -115,7 +115,7 @@ fn transfer(
     Ok(progress)
 }
 
-fn handshake(
+pub(super) fn handshake(
     client: &mut dyn Session,
     server: &mut dyn Session,
 ) -> Result<(), rama_quic_proto::TransportError> {
@@ -188,7 +188,9 @@ fn check_session(client: &mut dyn Session, server: &mut dyn Session, resumed: bo
 #[test]
 fn full_resumed_and_early_handshakes() {
     let (client, server) = configs();
-    let options = TlsOptions::default().with_early_data(true);
+    let options = TlsOptions::default()
+        .with_early_data(true)
+        .with_early_data_context(b"rama-quic-test");
     let client: Arc<dyn crypto::ClientConfig> =
         Arc::new(QuicClientConfig::from_rama(&client, options).unwrap());
     let server: Arc<dyn crypto::ServerConfig> =
@@ -211,7 +213,9 @@ fn full_resumed_and_early_handshakes() {
 #[test]
 fn changed_transport_settings_reject_early_data_without_losing_resumption() {
     let (client, server) = configs();
-    let options = TlsOptions::default().with_early_data(true);
+    let options = TlsOptions::default()
+        .with_early_data(true)
+        .with_early_data_context(b"rama-quic-test");
     let client = Arc::new(QuicClientConfig::from_rama(&client, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server, options).unwrap());
     let mut server_params = params(Side::Server);
@@ -247,7 +251,9 @@ fn changed_transport_settings_reject_early_data_without_losing_resumption() {
 #[test]
 fn ticket_cache_belongs_to_the_client_configuration() {
     let (client_tls, server_tls) = configs();
-    let options = TlsOptions::default().with_early_data(true);
+    let options = TlsOptions::default()
+        .with_early_data(true)
+        .with_early_data_context(b"rama-quic-test");
     let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
     let mut c = client
@@ -309,7 +315,9 @@ fn the_newest_ticket_picks_the_version_to_resume() {
 #[test]
 fn a_ticket_from_another_version_does_not_resume() {
     let (client_tls, server_tls) = configs();
-    let options = TlsOptions::default().with_early_data(true);
+    let options = TlsOptions::default()
+        .with_early_data(true)
+        .with_early_data_context(b"rama-quic-test");
     let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
 
@@ -656,7 +664,9 @@ fn a_full_ticket_cache_evicts_its_oldest_entry() {
     let (client_tls, server_tls) = configs_for(
         (0..HANDSHAKES).map(|index| rama_net::address::Domain::try_from(host(index)).unwrap()),
     );
-    let options = TlsOptions::default().with_early_data(true);
+    let options = TlsOptions::default()
+        .with_early_data(true)
+        .with_early_data_context(b"rama-quic-test");
     let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
 
@@ -926,7 +936,9 @@ fn both_directions_interoperate_with_rustls() {
     use crate::proto::crypto::rustls;
     for boring_client in [true, false] {
         let (client, server) = configs();
-        let options = TlsOptions::default().with_early_data(true);
+        let options = TlsOptions::default()
+            .with_early_data(true)
+            .with_early_data_context(b"rama-quic-test");
         let client: Arc<dyn crypto::ClientConfig> = if boring_client {
             Arc::new(QuicClientConfig::from_rama(&client, options).unwrap())
         } else {
@@ -995,7 +1007,9 @@ async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
     for (client_backend, server_backend) in pairs {
         tokio::time::timeout(Duration::from_secs(10), async {
             let (client_tls, server_tls) = configs();
-            let options = TlsOptions::default().with_early_data(true);
+            let options = TlsOptions::default()
+                .with_early_data(true)
+                .with_early_data_context(b"rama-quic-test");
             let client_config =
                 ClientConfig::try_from_rama_tls_with_provider(&client_tls, options, client_backend)
                     .unwrap();
@@ -1120,7 +1134,9 @@ fn transport_parameters_are_parsed_once_however_the_handshake_is_split() {
 #[test]
 fn cached_quic_draws_resume_without_crossing_profile_policy_or_version() {
     let (base, server_tls) = configs();
-    let options = TlsOptions::default().with_early_data(true);
+    let options = TlsOptions::default()
+        .with_early_data(true)
+        .with_early_data_context(b"rama-quic-test");
     let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), options);
     let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
     for version in [Version::V1, Version::V2] {
@@ -1161,7 +1177,8 @@ fn cached_quic_draws_resume_without_crossing_profile_policy_or_version() {
                 .clone()
                 .start_session(version, &params(Side::Server))
                 .unwrap();
-            assert_eq!(c.early_crypto().is_some(), resumed);
+            // A captured extension order disables early data but retains ordinary resumption.
+            assert!(c.early_crypto().is_none());
             let mut hello = Vec::new();
             while let Some(event) = c.poll_handshake().unwrap() {
                 let HandshakeEvent::Data(level, bytes) = event else {

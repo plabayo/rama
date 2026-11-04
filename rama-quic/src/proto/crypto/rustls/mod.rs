@@ -69,6 +69,7 @@ pub(crate) use super::config::NoInitialCipherSuite;
 
 /// A rustls TLS session
 pub(crate) struct TlsSession {
+    early_data_context: Option<[u8; 32]>,
     alpn_policy: AlpnPolicy,
     /// Put the peer's certificate chain in the handshake summary.
     store_peer_chain: bool,
@@ -204,6 +205,12 @@ impl crypto::Session for TlsSession {
             Box::new(RustlsHeaderKey(keys.header)),
             Box::new(RustlsPacketKey(keys.packet)),
         ))
+    }
+
+    fn early_data_context_matches(&self, context: &[u8]) -> bool {
+        self.early_data_context.is_some_and(|configured| {
+            configured == crate::proto::crypto::config::application_context(context)
+        })
     }
 
     fn early_data_accepted(&self) -> Option<bool> {
@@ -530,6 +537,7 @@ impl crypto::ClientConfig for QuicClientConfig {
         let quic_version = version;
         let version = interpret_version(version)?;
         Ok(Box::new(TlsSession {
+            early_data_context: None,
             alpn_policy: self.alpn_policy,
             store_peer_chain: self.store_peer_chain,
             version,
@@ -597,23 +605,33 @@ impl TryFrom<Arc<rustls::ClientConfig>> for QuicClientConfig {
 /// - The `rama_tls_rustls::dep::rustls::ServerConfig` must have TLS 1.3 support enabled for conversion to succeed.
 ///
 pub(crate) struct QuicServerConfig {
+    early_data_context: Option<[u8; 32]>,
     alpn_policy: AlpnPolicy,
     store_peer_chain: bool,
     inner: Arc<rustls::ServerConfig>,
     /// `inner` per (version, early data allowed), built on first use. Tickets and stored
-    /// sessions are tagged with the version so one version's cannot resume another's
+    /// sessions are tagged with the version and compatibility context, so incompatible
+    /// settings reject old tickets and one version's cannot resume another's
     /// (RFC 9369 §5). rustls labels 0-RTT keys with the session's version, but a client sends
     /// 0-RTT only in its original version (RFC 9369 §4.1), so a session moved to another
     /// version refuses early data instead of failing to open it.
-    scoped: Mutex<HashMap<(rama_quic_proto::Version, bool), Arc<rustls::ServerConfig>>>,
+    scoped: Mutex<ScopedServerConfigs>,
     initial: Suite,
 }
 
-/// Tags every ticket with the version that issued it and refuses the others' (RFC 9369 §5).
+/// The bounded configuration cache also owns the reusable context encoding buffer.
+#[derive(Default)]
+struct ScopedServerConfigs {
+    configs:
+        HashMap<(rama_quic_proto::Version, bool), (Option<[u8; 32]>, Arc<rustls::ServerConfig>)>,
+    encoded: Vec<u8>,
+}
+
+/// Tags tickets with their QUIC version and application/transport compatibility context.
 #[derive(Debug)]
 struct VersionedTicketer {
     inner: Arc<dyn rustls::server::ProducesTickets>,
-    version: rama_quic_proto::Version,
+    scope: [u8; 37],
 }
 
 impl rustls::server::ProducesTickets for VersionedTicketer {
@@ -624,28 +642,26 @@ impl rustls::server::ProducesTickets for VersionedTicketer {
         self.inner.lifetime()
     }
     fn encrypt(&self, plain: &[u8]) -> Option<Vec<u8>> {
-        let mut tagged = self.version.to_be_bytes().to_vec();
+        let mut tagged = self.scope.to_vec();
         tagged.extend_from_slice(plain);
         self.inner.encrypt(&tagged)
     }
     fn decrypt(&self, cipher: &[u8]) -> Option<Vec<u8>> {
         let plain = self.inner.decrypt(cipher)?;
-        plain
-            .strip_prefix(&self.version.to_be_bytes())
-            .map(<[u8]>::to_vec)
+        plain.strip_prefix(&self.scope).map(<[u8]>::to_vec)
     }
 }
 
-/// Keys stored sessions by version, so a session ID from one version misses in another.
+/// Keys stored sessions by version and application/transport compatibility context.
 #[derive(Debug)]
 struct VersionedSessionStorage {
     inner: Arc<dyn rustls::server::StoresServerSessions>,
-    version: rama_quic_proto::Version,
+    scope: [u8; 37],
 }
 
 impl VersionedSessionStorage {
     fn key(&self, key: &[u8]) -> Vec<u8> {
-        let mut tagged = self.version.to_be_bytes().to_vec();
+        let mut tagged = self.scope.to_vec();
         tagged.extend_from_slice(key);
         tagged
     }
@@ -671,26 +687,51 @@ impl QuicServerConfig {
         &self,
         version: rama_quic_proto::Version,
         early_data: bool,
+        params: &TransportParameters,
     ) -> Arc<rustls::ServerConfig> {
-        self.scoped
-            .lock()
-            .entry((version, early_data))
-            .or_insert_with(|| {
-                let mut config = (*self.inner).clone();
-                config.ticketer = Arc::new(VersionedTicketer {
-                    inner: self.inner.ticketer.clone(),
-                    version,
-                });
-                config.session_storage = Arc::new(VersionedSessionStorage {
-                    inner: self.inner.session_storage.clone(),
-                    version,
-                });
-                if !early_data {
-                    config.max_early_data_size = 0;
-                }
-                Arc::new(config)
-            })
-            .clone()
+        let mut scoped = self.scoped.lock();
+        let context = if self.early_data_context.is_none() && self.inner.max_early_data_size == 0 {
+            // Ordinary sessions cannot issue or accept early keys. Version scoping
+            // suffices, without serializing and hashing transport settings.
+            None
+        } else {
+            Some(crypto::config::server_early_context(
+                params,
+                self.early_data_context,
+                &mut scoped.encoded,
+            ))
+        };
+        let slot = scoped.configs.entry((version, early_data));
+        if let std::collections::hash_map::Entry::Occupied(entry) = &slot
+            && entry.get().0 == context
+        {
+            return entry.get().1.clone();
+        }
+        let mut scope = [0; 37];
+        scope[..4].copy_from_slice(&version.to_be_bytes());
+        // An explicit marker separates ordinary sessions from every possible
+        // context digest, including an all-zero digest.
+        if let Some(context) = context {
+            scope[4] = 1;
+            scope[5..].copy_from_slice(&context);
+        }
+        let mut config = (*self.inner).clone();
+        config.ticketer = Arc::new(VersionedTicketer {
+            inner: self.inner.ticketer.clone(),
+            scope,
+        });
+        config.session_storage = Arc::new(VersionedSessionStorage {
+            inner: self.inner.session_storage.clone(),
+            scope,
+        });
+        if !early_data {
+            config.max_early_data_size = 0;
+        }
+        let config = Arc::new(config);
+        // At most one configuration for each version/early flag: mutable
+        // transport configurations cannot grow this cache without bound.
+        slot.insert_entry((context, config.clone()));
+        config
     }
 }
 
@@ -706,12 +747,13 @@ impl QuicServerConfig {
     ) -> Result<Self, rustls::Error> {
         let inner = Self::inner(cert_chain, key)?;
         Ok(Self {
+            early_data_context: Some(crypto::config::application_context(b"rama-quic-test")),
             alpn_policy: AlpnPolicy::OutOfBandAgreement,
             store_peer_chain: false,
             // We're confident that the *ring* default provider contains TLS13_AES_128_GCM_SHA256
             initial: initial_suite_from_provider(inner.crypto_provider())
                 .expect("no initial cipher suite found"),
-            scoped: Mutex::new(HashMap::default()),
+            scoped: Mutex::default(),
             inner: Arc::new(inner),
         })
     }
@@ -726,9 +768,10 @@ impl QuicServerConfig {
     ) -> Result<Self, NoInitialCipherSuite> {
         match initial.suite.common.suite {
             CipherSuite::TLS13_AES_128_GCM_SHA256 => Ok(Self {
-                scoped: Mutex::new(HashMap::default()),
+                scoped: Mutex::default(),
                 inner,
                 initial,
+                early_data_context: Some(crypto::config::application_context(b"rama-quic-test")),
                 alpn_policy: AlpnPolicy::OutOfBandAgreement,
                 store_peer_chain: false,
             }),
@@ -774,11 +817,12 @@ impl TryFrom<Arc<rustls::ServerConfig>> for QuicServerConfig {
 
     fn try_from(inner: Arc<rustls::ServerConfig>) -> Result<Self, Self::Error> {
         Ok(Self {
+            early_data_context: None,
             alpn_policy: AlpnPolicy::OutOfBandAgreement,
             store_peer_chain: false,
             initial: initial_suite_from_provider(inner.crypto_provider())
                 .ok_or(NoInitialCipherSuite { specific: false })?,
-            scoped: Mutex::new(HashMap::default()),
+            scoped: Mutex::default(),
             inner,
         })
     }
@@ -796,6 +840,7 @@ impl QuicServerConfig {
             return Err(TransportError::INTERNAL_ERROR("unsupported QUIC version"));
         };
         Ok(Box::new(TlsSession {
+            early_data_context: self.early_data_context,
             alpn_policy: self.alpn_policy,
             store_peer_chain: self.store_peer_chain,
             version,
@@ -838,7 +883,7 @@ impl crypto::ServerConfig for QuicServerConfig {
         version: rama_quic_proto::Version,
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
-        self.start_with(self.config_for(version, true), version, params)
+        self.start_with(self.config_for(version, true, params), version, params)
     }
 
     fn supports_compatible_negotiation(&self) -> bool {
@@ -851,7 +896,11 @@ impl crypto::ServerConfig for QuicServerConfig {
         negotiated: rama_quic_proto::Version,
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
-        self.start_with(self.config_for(negotiated, false), negotiated, params)
+        self.start_with(
+            self.config_for(negotiated, false, params),
+            negotiated,
+            params,
+        )
     }
 }
 
@@ -876,7 +925,8 @@ impl QuicDynamicServerConfig {
         provider: &Arc<rustls::crypto::CryptoProvider>,
         options: config::TlsOptions,
         store_peer_chain: bool,
-    ) -> Result<Self, NoInitialCipherSuite> {
+    ) -> Result<Self, config::TlsConfigError> {
+        options.validate_server()?;
         Ok(Self {
             dynamic,
             initial: initial_suite_from_provider(provider)

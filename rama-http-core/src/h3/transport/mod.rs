@@ -69,6 +69,11 @@ pub trait Connection: Clone + Debug + ExtensionsRef + Send + Sync + 'static {
     /// Where this client's early data stands.
     fn early_data(&self) -> EarlyData;
 
+    /// Whether server TLS acceptance is bound to this application's encoded
+    /// compatibility context. Return false when no context was configured.
+    /// This is not evidence that any particular request arrived early.
+    fn early_data_context_matches(&self, context: &[u8]) -> bool;
+
     /// The qlog sink HTTP/3 events are written to.
     fn qlog_control(&self) -> Option<ConnectionQlogControl>;
 
@@ -289,6 +294,10 @@ impl Connection for rama_quic::Connection {
 
     fn local_stream_limit(&self, dir: Dir) -> u64 {
         Self::local_stream_limit(self, dir)
+    }
+
+    fn early_data_context_matches(&self, context: &[u8]) -> bool {
+        Self::early_data_context_matches(self, context)
     }
 
     fn early_data(&self) -> EarlyData {

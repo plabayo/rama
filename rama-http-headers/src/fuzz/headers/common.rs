@@ -17,8 +17,8 @@ use crate::{
     Authorization, CacheControl, CapsuleProtocol, Connection, ContentDisposition, ContentEncoding,
     ContentLength, ContentLocation, ContentRange, ContentSecurityPolicy, ContentType, Cookie,
     CrossOriginEmbedderPolicy, CrossOriginEmbedderPolicyReportOnly, CrossOriginOpenerPolicy,
-    CrossOriginOpenerPolicyReportOnly, CrossOriginResourcePolicy, Date, ETag, Expect, Expires,
-    Host, IfMatch, IfModifiedSince, IfNoneMatch, IfRange, IfUnmodifiedSince, LastEventId,
+    CrossOriginOpenerPolicyReportOnly, CrossOriginResourcePolicy, Date, ETag, EarlyData, Expect,
+    Expires, Host, IfMatch, IfModifiedSince, IfNoneMatch, IfRange, IfUnmodifiedSince, LastEventId,
     LastModified, Location, Origin, PermissionsPolicy, Pragma, Priority, ProxyAuthorization,
     ProxyStatus, Range, Referer, ReferrerPolicy, RetryAfter, SecWebSocketAccept,
     SecWebSocketExtensions, SecWebSocketKey, SecWebSocketProtocol, SecWebSocketVersion, Server,
@@ -281,6 +281,7 @@ pub(super) const HEADERS: &[ValuesExercise] = &[
         sink(h.is_weak());
         etag_preconditions(&h);
     }),
+    decode!(EarlyData),
     decode!(Expect),
     decode!(Expires, |h| {
         sink(SystemTime::from(h));

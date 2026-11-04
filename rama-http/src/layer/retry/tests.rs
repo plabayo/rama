@@ -6,13 +6,18 @@
 use super::*;
 use crate::BodyExtractExt;
 use crate::service::web::response::IntoResponse;
-use crate::{Request, Response};
+use crate::{
+    Request, Response,
+    body::{CollectOptions, SizeHint},
+    request::Parts,
+};
 use parking_lot::Mutex;
 use rama_core::error::BoxError;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
+use std::error::Error as _;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -81,7 +86,8 @@ async fn retry_limit() {
     });
 
     let err = svc.serve(request("hello")).await.unwrap_err();
-    assert_eq!(err.to_string(), "service error: error forever");
+    assert_eq!(err.to_string(), "service error");
+    assert_eq!(err.source().unwrap().to_string(), "error forever");
     assert_eq!(error_counter.load(Ordering::Acquire), 3);
 }
 
@@ -110,7 +116,8 @@ async fn retry_error_inspection() {
     });
 
     let err = svc.serve(request("hello")).await.unwrap_err();
-    assert_eq!(err.to_string(), "service error: reject");
+    assert_eq!(err.to_string(), "service error");
+    assert_eq!(err.source().unwrap().to_string(), "reject");
 }
 
 #[tokio::test]
@@ -130,7 +137,8 @@ async fn retry_cannot_clone_request() {
     let svc = RetryLayer::new(CannotClone).into_layer(Svc);
 
     let err = svc.serve(request("hello")).await.unwrap_err();
-    assert_eq!(err.to_string(), "service error: failed");
+    assert_eq!(err.to_string(), "service error");
+    assert_eq!(err.source().unwrap().to_string(), "failed");
 }
 
 #[tokio::test]
@@ -186,7 +194,8 @@ async fn retry_mutating_policy() {
     });
 
     let err = svc.serve(request("hello")).await.unwrap_err();
-    assert_eq!(err.to_string(), "service error: out of retries");
+    assert_eq!(err.to_string(), "service error");
+    assert_eq!(err.source().unwrap().to_string(), "out of retries");
     assert_eq!(response_counter.load(Ordering::Acquire), 3);
 }
 
@@ -310,6 +319,10 @@ struct StampingRetry(Arc<Mutex<usize>>);
 struct RetryRound(usize);
 
 impl Policy<Response, Error> for StampingRetry {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
         req: Request<RetryBody>,
@@ -326,7 +339,10 @@ impl Policy<Response, Error> for StampingRetry {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -358,6 +374,10 @@ async fn policy_stamps_reach_the_next_attempt() {
 struct RetryServerErrors(Arc<Mutex<usize>>);
 
 impl Policy<Response, Error> for RetryServerErrors {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
         req: Request<RetryBody>,
@@ -377,7 +397,10 @@ impl Policy<Response, Error> for RetryServerErrors {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -473,6 +496,10 @@ fn request(s: &'static str) -> Request<RetryBody> {
 struct RetryErrors;
 
 impl Policy<Response, Error> for RetryErrors {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
 
@@ -487,7 +514,10 @@ impl Policy<Response, Error> for RetryErrors {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -495,6 +525,10 @@ impl Policy<Response, Error> for RetryErrors {
 struct Limit(Arc<Mutex<usize>>);
 
 impl Policy<Response, Error> for Limit {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
 
@@ -511,7 +545,10 @@ impl Policy<Response, Error> for Limit {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -519,6 +556,10 @@ impl Policy<Response, Error> for Limit {
 struct UnlessErr(InnerError);
 
 impl Policy<Response, Error> for UnlessErr {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
 
@@ -538,7 +579,10 @@ impl Policy<Response, Error> for UnlessErr {
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }
 
@@ -546,6 +590,10 @@ impl Policy<Response, Error> for UnlessErr {
 struct CannotClone;
 
 impl Policy<Response, Error> for CannotClone {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
 
@@ -571,6 +619,10 @@ impl Policy<Response, Error> for MutatingPolicy
 where
     Error: Into<BoxError>,
 {
+    fn prepare_body(&self, _: &Parts, _: bool, _: &SizeHint) -> Option<CollectOptions> {
+        Some(CollectOptions::new())
+    }
+
     async fn retry(
         &self,
         _req: Request<RetryBody>,
@@ -588,6 +640,9 @@ where
     }
 
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
-        Some(req.clone())
+        Some(Request::from_parts(
+            req.clone_parts(),
+            req.body().try_clone()?,
+        ))
     }
 }

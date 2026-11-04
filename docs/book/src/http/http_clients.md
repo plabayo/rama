@@ -20,6 +20,8 @@ As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramapr
 
 See for a full and tested "high level" example of _a_ http client at <https://github.com/plabayo/rama/tree/main/examples/src/http_high_level_client.rs>.
 
+For opt-in resumed requests and gateway policy, see [Early data and HTTP 425](./early_data.md).
+
 More client examples:
 
 - [/examples/src/http3_client_server.rs](https://github.com/plabayo/rama/tree/main/examples/src/http3_client_server.rs):
