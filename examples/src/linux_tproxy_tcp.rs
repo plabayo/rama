@@ -147,6 +147,11 @@ use ::{
     },
     std::time::Duration,
 };
+#[cfg(target_os = "linux")]
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 
 #[cfg(not(target_os = "linux"))]
 use rama::error::{BoxError, BoxErrorExt};
@@ -177,6 +182,13 @@ async fn main() {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     if let Err(err) = run().await {
         tracing::error!(error = %err, "linux tproxy tcp example failed");

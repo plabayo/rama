@@ -39,6 +39,10 @@
 
 #[cfg(target_family = "unix")]
 mod unix_example {
+    use rama::telemetry::{
+        DefaultListeners, DefaultSpanAdapters,
+        event::{EventDispatcher, Listeners, SpanAdapters},
+    };
     use rama::{
         bytes::Bytes,
         futures::{FutureExt, SinkExt, StreamExt},
@@ -64,6 +68,13 @@ mod unix_example {
                     .from_env_lossy(),
             )
             .init();
+
+        let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+            .with_group(DefaultSpanAdapters::tracing)
+            .build();
+        let _listeners = Listeners::new(EventDispatcher::global())
+            .with_group(DefaultListeners::tracing)
+            .build();
 
         let path_a = random_tmp_path("rama_example_unix_datagram_a");
         let path_b = random_tmp_path("rama_example_unix_datagram_b");

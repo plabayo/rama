@@ -39,6 +39,10 @@ async fn main() {
 
     use tokio::sync::oneshot;
 
+    use rama::telemetry::{
+        DefaultListeners, DefaultSpanAdapters,
+        event::{EventDispatcher, Listeners, SpanAdapters},
+    };
     use rama::{
         graceful::Shutdown,
         net::apple::xpc::{XpcEndpoint, XpcMessage, XpcServer},
@@ -59,6 +63,13 @@ async fn main() {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let graceful = Shutdown::new(async { drop(shutdown_rx.await) });

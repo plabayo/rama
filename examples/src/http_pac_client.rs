@@ -34,6 +34,10 @@
     reason = "example: panic-on-error is the standard pattern for demos"
 )]
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,6 +80,13 @@ async fn main() {
         .with(fmt::layer())
         .with(LevelFilter::INFO)
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     tokio::spawn(serve_body(ORIGIN_ADDRESS, FROM_ORIGIN));
     tokio::spawn(serve_body(PROXY_ADDRESS, FROM_PROXY));

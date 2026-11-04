@@ -61,6 +61,10 @@
 //! INFO quic_terminating_relay: relay: stream relayed, 11 up and 15 down
 //! ```
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use rama::{
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
@@ -211,6 +215,13 @@ async fn main() -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let settings = Settings::from_args()?;
     let (cert, key) = &settings.identity;

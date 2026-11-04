@@ -139,6 +139,16 @@ fn main() -> Result<(), BoxError> {
     };
 
     let runtime = build_runtime().context("build tokio runtime")?;
+    #[cfg(feature = "dial9")]
+    let _dial9_span_adapters = dial9_enabled_from_env().then(|| {
+        use rama::telemetry::{
+            DefaultSpanAdapters,
+            event::{EventDispatcher, SpanAdapters},
+        };
+        SpanAdapters::new(EventDispatcher::global())
+            .with_group(DefaultSpanAdapters::dial9)
+            .build()
+    });
     // Keep command futures off Windows' smaller process-main stack.
     let result = runtime
         .block_on(async { rama::rt::spawn(run(cmds)).await })

@@ -20,6 +20,10 @@
 //! cargo run -p rama-examples --bin http_grpc_job_client --features=grpc,http-full -- grpc health
 //! ```
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 use std::{
     pin::Pin,
     sync::{
@@ -83,6 +87,13 @@ async fn main() -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let jobs = JobStore::default();
     let job_service = JobServiceServer::new(JobApi { jobs: jobs.clone() });

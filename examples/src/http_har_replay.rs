@@ -19,6 +19,10 @@
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
 )]
 
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters, Subscriptions},
+};
 use rama::{
     Layer, Service,
     extensions::ExtensionsRef,
@@ -59,7 +63,7 @@ const HAR_REQ_ID_HEADER: &str = "x-har-req-id";
 
 #[tokio::main]
 async fn main() {
-    setup_tracing();
+    let _telemetry = setup_tracing();
 
     let (shutdown_txt, shutdown_rx) = oneshot::channel();
 
@@ -154,7 +158,7 @@ fn rewrite_request_uri_to_local_server(req: &mut Request, addr: SocketAddress) {
     uri.set_authority(Authority::from(addr));
 }
 
-fn setup_tracing() {
+fn setup_tracing() -> (Subscriptions, Subscriptions) {
     tracing::subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -163,6 +167,15 @@ fn setup_tracing() {
                 .from_env_lossy(),
         )
         .init();
+
+    (
+        SpanAdapters::new(EventDispatcher::global())
+            .with_group(DefaultSpanAdapters::tracing)
+            .build(),
+        Listeners::new(EventDispatcher::global())
+            .with_group(DefaultListeners::tracing)
+            .build(),
+    )
 }
 
 async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {

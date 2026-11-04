@@ -39,6 +39,10 @@ use ::{
     std::str::FromStr,
     tokio::task::JoinSet,
 };
+use rama::telemetry::{
+    DefaultListeners, DefaultSpanAdapters,
+    event::{EventDispatcher, Listeners, SpanAdapters},
+};
 
 #[derive(Debug, Clone, Copy)]
 enum RecordType {
@@ -72,6 +76,13 @@ async fn main() -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    let _span_adapters = SpanAdapters::new(EventDispatcher::global())
+        .with_group(DefaultSpanAdapters::tracing)
+        .build();
+    let _listeners = Listeners::new(EventDispatcher::global())
+        .with_group(DefaultListeners::tracing)
+        .build();
 
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
 
