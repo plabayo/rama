@@ -335,8 +335,7 @@ final class SystemLifecycleTests: XCTestCase {
 
             XCTAssertTrue(f.ctx.isDone)
             XCTAssertEqual(core.tcpFlowCount, 0)
-            let err = f.flow.closeReadErrors.first.flatMap { $0 as? NWError }
-            XCTAssertEqual(err, .posix(.ENETDOWN))
+            XCTAssertEqual(f.flow.lastCloseReadError as? NWError, .posix(.ENETDOWN))
         }
     }
 
@@ -418,8 +417,7 @@ final class SystemLifecycleTests: XCTestCase {
             XCTAssertTrue(f.ctx.isDone)
             XCTAssertEqual(f.conn.cancelCount, 1, "one teardown only")
             XCTAssertEqual(f.flow.closeReadCallCount, 1)
-            let err = f.flow.closeReadErrors.first.flatMap { $0 as? NWError }
-            XCTAssertEqual(err, .posix(.EADDRNOTAVAIL))
+            XCTAssertEqual(f.flow.lastCloseReadError as? NWError, .posix(.EADDRNOTAVAIL))
         }
     }
 

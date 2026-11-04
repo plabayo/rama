@@ -558,7 +558,7 @@ final class TcpFlowContext: @unchecked Sendable {
 
     static func postReadyFailureError() -> Error {
         NSError(
-            domain: "rama.tproxy.tcp", code: -1,
+            domain: "rama.tproxy.tcp", code: Int(ECONNRESET),
             userInfo: [NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"])
     }
 
@@ -580,7 +580,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// engine is gone, leaking the connection + its NECP entry.
     func applyEngineDetached() {
         let err = NSError(
-            domain: "rama.tproxy.engine-detached", code: -1,
+            domain: "rama.tproxy.engine-detached", code: Int(ECONNABORTED),
             userInfo: [NSLocalizedDescriptionKey: "engine detached; flow dropped"])
         applyFullTeardown(error: err, driveForwarder: true)
     }
@@ -592,7 +592,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// `stateQueue` maintenance watchdog.
     func applyDrainBackstop() {
         let err = NSError(
-            domain: "rama.tproxy.drain-backstop", code: -1,
+            domain: "rama.tproxy.drain-backstop", code: Int(ETIMEDOUT),
             userInfo: [
                 NSLocalizedDescriptionKey: "graceful close drain stalled; flow force-dropped"
             ])
@@ -617,7 +617,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// alive-but-idle remainder.
     func applyIdleTimeout() {
         let err = NSError(
-            domain: "rama.tproxy.idle-timeout", code: -1,
+            domain: "rama.tproxy.idle-timeout", code: Int(ETIMEDOUT),
             userInfo: [
                 NSLocalizedDescriptionKey:
                     "promoted flow idle past timeout; flow force-dropped"
@@ -637,7 +637,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// became active is never evicted. See `TransparentProxyCore.reapIdleUnderPressure`.
     func applyPressureEvicted() {
         let err = NSError(
-            domain: "rama.tproxy.pressure-evicted", code: -1,
+            domain: "rama.tproxy.pressure-evicted", code: Int(ECONNABORTED),
             userInfo: [
                 NSLocalizedDescriptionKey:
                     "idle flow evicted under nexus-flow pressure; flow force-dropped"
@@ -651,10 +651,10 @@ final class TcpFlowContext: @unchecked Sendable {
     /// hanging until an idle reaper.
     func applyWakeDeadPath() {
         let err = NSError(
-            domain: "rama.tproxy.wake-dead-path", code: -1,
+            domain: "rama.tproxy.wake-dead-path", code: Int(ECONNRESET),
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "established egress path not satisfied after system wake; flow reset"
+                    "established egress path not viable after recovery allowance; flow reset"
             ])
         applyFullTeardown(error: err, driveForwarder: true)
     }

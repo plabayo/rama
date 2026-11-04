@@ -322,6 +322,27 @@ final class TcpFlowTeardownTests: XCTestCase {
             fx.flow.lastCloseReadError, "applyPostReadyFailure(nil) must synthesise an error")
     }
 
+    /// Apps see only the close code, truncated to 16 bits, as their errno.
+    func testSyntheticTeardownsSurfacePosixErrno() {
+        let cases: [(String, (TcpFlowContext) -> Void, Int32)] = [
+            ("dead path", { $0.applyWakeDeadPath() }, ECONNRESET),
+            ("post-ready failure without error", { $0.applyPostReadyFailure(nil) }, ECONNRESET),
+            ("engine detached", { $0.applyEngineDetached() }, ECONNABORTED),
+            ("drain backstop", { $0.applyDrainBackstop() }, ETIMEDOUT),
+            ("idle timeout", { $0.applyIdleTimeout() }, ETIMEDOUT),
+            ("pressure evicted", { $0.applyPressureEvicted() }, ECONNABORTED),
+        ]
+        for (name, teardown, expected) in cases {
+            let fx = Fixture()
+            teardown(fx.ctx)
+            for (half, error) in [("read", fx.flow.lastCloseReadError), ("write", fx.flow.lastCloseWriteError)] {
+                let code = (error as NSError?)?.code ?? 0
+                XCTAssertEqual(
+                    Int32(UInt16(truncatingIfNeeded: code)), expected, "\(name) close-\(half) errno")
+            }
+        }
+    }
+
     /// `applyPostReadyFailure` with an explicit error must
     /// forward THAT error to the flow's close, not the
     /// synthesised one.

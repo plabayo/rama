@@ -206,11 +206,6 @@ final class MockTcpFlow: TcpFlowLike, @unchecked Sendable {
         return _closeReadErrors.count
     }
 
-    var closeReadErrors: [Error?] {
-        lock.lock(); defer { lock.unlock() }
-        return _closeReadErrors
-    }
-
     var closeWriteCallCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _closeWriteErrors.count

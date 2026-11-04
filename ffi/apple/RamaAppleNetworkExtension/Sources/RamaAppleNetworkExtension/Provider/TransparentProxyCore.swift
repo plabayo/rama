@@ -626,7 +626,7 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     private func engineDetachedError() -> NSError {
         NSError(
-            domain: "rama.tproxy.engine-detached", code: -1,
+            domain: "rama.tproxy.engine-detached", code: Int(ECONNABORTED),
             userInfo: [NSLocalizedDescriptionKey: "engine detached; flow dropped"])
     }
 

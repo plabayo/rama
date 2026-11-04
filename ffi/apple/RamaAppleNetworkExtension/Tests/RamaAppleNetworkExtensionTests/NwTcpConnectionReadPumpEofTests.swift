@@ -687,6 +687,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
 
         wait(for: [escalated], timeout: 1.0)
         XCTAssertEqual(observed.get()?.domain, "rama.tproxy.egress-read")
+        XCTAssertEqual(observed.get()?.code, Int(ECONNABORTED), "apps see the close code as errno")
         XCTAssertTrue(
             observed.get()?.localizedDescription.contains("consumer closed") == true)
         XCTAssertEqual(mock.pendingReceiveCount, 0)
