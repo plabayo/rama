@@ -3,7 +3,7 @@
 
 use rama::{
     Layer, Service, ServiceInput,
-    error::{BoxError, error_chain, extra::OpaqueError},
+    error::{BoxError, CauseExt as _, error_chain, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
     http::{
@@ -187,7 +187,7 @@ fn forwarding_service(
             ),
             RemoveRequestHeaderLayer::hop_by_hop(),
             ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
-                if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) {
+                if error.has_cause::<Elapsed>() {
                     error_response(
                         StatusCode::GATEWAY_TIMEOUT,
                         "upstream HTTP connection timed out",
@@ -248,9 +248,7 @@ fn mitm(
                 probe.extensions().insert(TargetHttpVersion(version));
                 match preflight.serve(probe).await {
                     Ok(()) => (),
-                    Err(error)
-                        if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) =>
-                    {
+                    Err(error) if error.has_cause::<Elapsed>() => {
                         return Err(error_response(
                             StatusCode::GATEWAY_TIMEOUT,
                             format!("requested {version:?} connection timed out"),

@@ -13,7 +13,11 @@ use ::{
     rama_net::uri::util::percent_encoding::{AsciiSet, CONTROLS, percent_decode, percent_encode},
 };
 use base64::Engine as _;
-use rama_core::{error::BoxError, extensions::Extension, telemetry::tracing};
+use rama_core::{
+    error::{BoxError, error_chain},
+    extensions::Extension,
+    telemetry::tracing,
+};
 use rama_http::headers::{ContentType, HeaderMapExt as _};
 use rama_utils::str::arcstr::ArcStr;
 
@@ -639,9 +643,7 @@ impl Status {
 }
 
 fn find_status_in_source_chain(err: &(dyn Error + 'static)) -> Option<Status> {
-    let mut source = Some(err);
-
-    while let Some(err) = source {
+    for err in error_chain(err) {
         if let Some(status) = err.downcast_ref::<Status>() {
             return Some(
                 StatusInner {
@@ -677,8 +679,6 @@ fn find_status_in_source_chain(err: &(dyn Error + 'static)) -> Option<Status> {
         {
             return Some(http_err);
         }
-
-        source = err.source();
     }
 
     None

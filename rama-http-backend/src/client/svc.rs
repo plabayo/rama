@@ -427,7 +427,9 @@ impl<Body> HttpClientService<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::{ServiceInput, bytes::Bytes, futures::stream, rt::Executor};
+    use rama_core::{
+        ServiceInput, bytes::Bytes, error::CauseExt as _, futures::stream, rt::Executor,
+    };
     use rama_http_core::h2::server as http2_server;
     use rama_http_types::{
         Body,
@@ -654,7 +656,7 @@ mod tests {
                     ConnectionErrorKind::Unavailable
                 }
             );
-            assert!(error_chain(error.as_ref()).any(|error| error.is::<HttpError>()));
+            assert!(error.has_cause::<HttpError>());
             peer.await.unwrap();
         }
     }

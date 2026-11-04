@@ -21,13 +21,14 @@ use std::{
     io::{Error as IoError, ErrorKind as IoErrorKind},
     net::SocketAddr,
     pin::Pin,
+    ptr,
     sync::Arc,
 };
 
 use parking_lot::Mutex;
 use rama_core::{
     Service,
-    error::{ArcError, BoxError, BoxErrorExt as _, error_chain},
+    error::{ArcError, BoxError, BoxErrorExt as _, CauseExt as _, ErrorList, error_chain},
     extensions::ExtensionsRef,
     futures::{StreamExt as _, stream},
     telemetry::tracing,
@@ -522,33 +523,68 @@ where
     }
 }
 
-// Keep the first terminal failure when a later address merely times out. An
-// authentication failure takes precedence, including when an outer speculative
-// deadline cancels the race. Only failed dials acquire this lock or share errors.
+// The first terminal failure classifies the race; an authentication failure replaces it.
 #[derive(Default)]
-struct ConnectFailures(Mutex<Option<ConnectionError>>);
+struct ConnectFailures(Mutex<Option<TerminalFailure>>);
+
+/// Each failure carries its QUIC classification into the race, which keeps it
+/// when it adds its own diagnostics around the failures.
+fn classified(
+    error: BoxError,
+    domain: ConnectionErrorDomain,
+    kind: ConnectionErrorKind,
+) -> BoxError {
+    if error.is::<ConnectionError>() {
+        error
+    } else {
+        ConnectionError::new(error, domain, kind).into()
+    }
+}
+
+struct TerminalFailure {
+    error: ArcError,
+    domain: ConnectionErrorDomain,
+    kind: ConnectionErrorKind,
+}
 
 impl ConnectFailures {
     fn record(&self, error: BoxError, attempt: &ConnectionAttempt) -> BoxError {
         let (domain, kind) = classify_connect_error(error.as_ref());
         if domain == Transport && matches!(kind, Unavailable | Timeout) {
-            return error;
+            return classified(error, domain, kind);
         }
         attempt.reject_with_kind(kind);
         let mut terminal = self.0.lock();
         if terminal.is_none() || kind == Authentication {
             let error = ArcError::from_box_error(error);
-            *terminal = Some(ConnectionError::new(error.clone(), domain, kind));
-            return error.into();
+            *terminal = Some(TerminalFailure {
+                error: error.clone(),
+                domain,
+                kind,
+            });
+            return classified(error.into(), domain, kind);
         }
-        error
+        classified(error, domain, kind)
     }
 
+    /// The race's error, classified by the saved terminal failure if there is
+    /// one. That failure is added as primary when the race's error lacks it.
     fn finish(&self, error: BoxError) -> ConnectionError {
-        self.0.lock().take().unwrap_or_else(|| {
+        let Some(terminal) = self.0.lock().take() else {
             let (domain, kind) = classify_connect_error(error.as_ref());
-            ConnectionError::new(error, domain, kind)
-        })
+            return ConnectionError::new(error, domain, kind);
+        };
+        // Not found within the walk bound means added again: a duplicate beats a lost failure.
+        let target = terminal.error.as_error();
+        let source = if error.any_cause(|cause| ptr::addr_eq(cause, target)) {
+            error
+        } else {
+            let mut failures = ErrorList::with_capacity(2);
+            failures.push(error);
+            failures.push_primary(terminal.error);
+            Box::new(failures)
+        };
+        ConnectionError::new(source, terminal.domain, terminal.kind)
     }
 }
 

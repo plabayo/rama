@@ -10,7 +10,7 @@ use crate::h3::{
 };
 use rama_core::{
     bytes::{Bytes, BytesMut},
-    error::{BoxError, BoxErrorExt as _, error_chain},
+    error::{BoxError, BoxErrorExt as _, CauseExt as _},
     extensions::Extensions,
     futures::stream,
     rt::{Executor, spawn},
@@ -402,9 +402,7 @@ async fn memory_response_failure_provenance_separates_peer_reset_from_applicatio
         send.reset(VarInt::from_u32(Code::H3_REQUEST_CANCELLED.value() as u32))
             .unwrap();
         let error = body.frame().await.unwrap().unwrap_err();
-        let cause = error_chain(&error)
-            .find_map(|cause| cause.downcast_ref::<Error>())
-            .unwrap();
+        let cause = error.find_cause::<Error>().unwrap();
         assert_eq!(cause.scope(), ErrorScope::Stream);
         assert!(cause.is_remote_failure());
 
@@ -492,9 +490,7 @@ async fn memory_received_body_length_and_trailer_errors_are_remote() {
                 .collect()
                 .await
                 .unwrap_err();
-            let cause = error_chain(&error)
-                .find_map(|cause| cause.downcast_ref::<Error>())
-                .unwrap();
+            let cause = error.find_cause::<Error>().unwrap();
             assert_eq!(cause.code(), Code::H3_MESSAGE_ERROR);
             assert!(cause.is_remote_failure());
             assert!(pair.client.close_reason().is_none());
@@ -563,9 +559,7 @@ async fn memory_trailers_after_a_short_body_are_malformed() {
         let data = body.frame().await.unwrap().unwrap();
         assert_eq!(data.into_data().unwrap(), b"x"[..]);
         let error = body.frame().await.unwrap().unwrap_err();
-        let cause = error_chain(&error)
-            .find_map(|cause| cause.downcast_ref::<Error>())
-            .unwrap();
+        let cause = error.find_cause::<Error>().unwrap();
         assert_eq!(cause.code(), Code::H3_MESSAGE_ERROR);
         assert!(cause.is_remote_failure());
         assert!(pair.client.close_reason().is_none());

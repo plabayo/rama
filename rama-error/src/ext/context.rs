@@ -1,22 +1,73 @@
-use core::fmt::{self, Write as _};
+use core::{
+    any::Any,
+    fmt::{self, Write as _},
+    panic::Location,
+};
 
+use super::opaque::StaticStrError;
 use crate::{
     BoxError,
     chain::DEFAULT_MAX_DEPTH,
-    error_chain_with_limit,
-    std::{Box, String},
+    error_chain_with_limit, error_source,
+    std::{Box, String, Vec},
 };
 
-pub(super) struct ErrorWithContext {
-    source: BoxError,
-    fields: Option<crate::std::Vec<ContextField>>,
+/// The error behind every context wrapper.
+///
+/// Context added to a bare static message takes that message inline, so the
+/// chain gets no extra link for it.
+pub(crate) struct ErrorWithContext {
+    source: Source,
+    fields: Fields,
+    /// Where the static message was created, or where the first context was
+    /// added to another error.
+    pub(crate) location: &'static Location<'static>,
+    /// Where the first context was added to a static message.
+    context_location: Option<&'static Location<'static>>,
+}
+
+enum Source {
+    Static(&'static str),
+    Boxed(BoxError),
 }
 
 impl ErrorWithContext {
+    #[track_caller]
     pub(super) fn new(source: BoxError) -> Self {
         Self {
-            source,
-            fields: None,
+            source: Source::Boxed(source),
+            fields: Fields::new(),
+            location: Location::caller(),
+            context_location: None,
+        }
+    }
+
+    #[track_caller]
+    pub(super) fn from_static_str(message: &'static str) -> Self {
+        Self {
+            source: Source::Static(message),
+            fields: Fields::new(),
+            location: Location::caller(),
+            context_location: None,
+        }
+    }
+
+    /// The node a bare static message becomes when context is first added to it.
+    #[track_caller]
+    pub(super) fn from_static_error(error: StaticStrError) -> Self {
+        Self {
+            source: Source::Static(error.message),
+            fields: Fields::new(),
+            location: error.location,
+            context_location: Some(Location::caller()),
+        }
+    }
+
+    /// Run before adding context to an existing value of this type.
+    #[track_caller]
+    pub(super) fn note_context_location(&mut self) {
+        if matches!(self.source, Source::Static(_)) && self.context_location.is_none() {
+            self.context_location = Some(Location::caller());
         }
     }
 
@@ -24,9 +75,9 @@ impl ErrorWithContext {
     where
         T: fmt::Debug + fmt::Display + Send + Sync + 'static,
     {
-        self.fields.get_or_insert_default().push(ContextField {
+        self.fields.push(ContextField {
             key: None,
-            value: Box::new(value),
+            value: ContextValueRepr::new(value),
         });
     }
 
@@ -35,14 +86,10 @@ impl ErrorWithContext {
         T: fmt::Debug + fmt::Display + Send + Sync + 'static,
     {
         let key = key.trim();
-        if key.is_empty() {
-            self.insert_value(value);
-        } else {
-            self.fields.get_or_insert_default().push(ContextField {
-                key: Some(key),
-                value: Box::new(value),
-            });
-        }
+        self.fields.push(ContextField {
+            key: (!key.is_empty()).then_some(key),
+            value: ContextValueRepr::new(value),
+        });
     }
 
     #[inline(always)]
@@ -53,54 +100,200 @@ impl ErrorWithContext {
         let str = value.into();
         self.insert_key_value(key, str);
     }
+
+    /// The wrapped error; `None` for a static message.
+    pub(crate) fn source_ref(&self) -> Option<&(dyn crate::StdError + 'static)> {
+        match &self.source {
+            Source::Static(_) => None,
+            Source::Boxed(source) => Some(source.as_ref()),
+        }
+    }
+
+    pub(crate) fn fields(&self) -> impl Iterator<Item = &ContextField> {
+        self.fields.iter()
+    }
 }
 
-trait ContextValue: fmt::Debug + fmt::Display + Send + Sync + 'static {}
-impl<T: ?Sized + fmt::Debug + fmt::Display + Send + Sync + 'static> ContextValue for T {}
+/// Context fields, the first two stored inline: most errors carry at most two.
+struct Fields {
+    inline: [Option<ContextField>; 2],
+    spill: Vec<ContextField>,
+}
 
-type BoxContextValue = Box<dyn ContextValue>;
+impl Fields {
+    const fn new() -> Self {
+        Self {
+            inline: [None, None],
+            spill: Vec::new(),
+        }
+    }
 
-#[derive(Debug)]
-struct ContextField {
+    fn push(&mut self, field: ContextField) {
+        match self.inline.iter_mut().find(|slot| slot.is_none()) {
+            Some(slot) => *slot = Some(field),
+            None => self.spill.push(field),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inline[0].is_none()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &ContextField> {
+        self.inline
+            .iter()
+            .map_while(Option::as_ref)
+            .chain(&self.spill)
+    }
+}
+
+trait ContextValue: Any + fmt::Debug + fmt::Display + Send + Sync {}
+impl<T: Any + fmt::Debug + fmt::Display + Send + Sync> ContextValue for T {}
+
+/// A `&'static str` needs no allocation; anything else is boxed.
+enum ContextValueRepr {
+    Str(&'static str),
+    Boxed(Box<dyn ContextValue>),
+}
+
+impl ContextValueRepr {
+    fn new<T: ContextValue>(value: T) -> Self {
+        match (&value as &dyn Any).downcast_ref::<&'static str>() {
+            Some(str) => Self::Str(str),
+            None => Self::Boxed(Box::new(value)),
+        }
+    }
+
+    fn display(&self) -> &dyn fmt::Display {
+        match self {
+            Self::Str(str) => str,
+            Self::Boxed(value) => value,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        match self {
+            Self::Str(str) => str,
+            Self::Boxed(value) => &**value as &dyn Any,
+        }
+    }
+}
+
+/// One piece of context added with the [`ErrorExt`](crate::ErrorExt) or
+/// [`ErrorContext`](crate::ErrorContext) methods.
+///
+/// Read them with [`CauseExt::context_fields`](crate::CauseExt::context_fields)
+/// or [`CauseExt::context_value`](crate::CauseExt::context_value).
+///
+/// ```
+/// use rama_error::{BoxError, BoxErrorExt, CauseExt, ErrorExt};
+///
+/// #[derive(Debug, PartialEq)]
+/// struct Port(u16);
+///
+/// let error = BoxError::from_static_str("connect failed")
+///     .context_field("attempt", 2u8)
+///     .context_debug_field("port", Port(443))
+///     .context_hex_field("flags", 0x1fu8)
+///     .context("giving up");
+///
+/// let fields: Vec<_> = error
+///     .context_fields()
+///     .map(|field| (field.key(), field.value().to_string()))
+///     .collect();
+/// assert_eq!(
+///     fields,
+///     [
+///         (Some("attempt"), "2".to_owned()),
+///         (Some("port"), "Port(443)".to_owned()),
+///         (Some("flags"), "1f".to_owned()),
+///         (None, "giving up".to_owned()),
+///     ]
+/// );
+///
+/// // Debug and hex fields keep the type they were added with.
+/// assert_eq!(error.context_value::<Port>("port"), Some(&Port(443)));
+/// assert_eq!(error.context_value::<u8>("flags"), Some(&0x1f));
+/// assert_eq!(error.context_value::<u8>("attempt"), Some(&2));
+/// assert_eq!(error.context_value::<u16>("attempt"), None);
+/// ```
+pub struct ContextField {
     key: Option<&'static str>,
-    value: BoxContextValue,
+    value: ContextValueRepr,
 }
 
+impl ContextField {
+    /// The key, `None` for a value added without one.
+    #[must_use]
+    pub fn key(&self) -> Option<&'static str> {
+        self.key
+    }
+
+    /// The value as it is displayed, before quoting and escaping.
+    #[must_use]
+    pub fn value(&self) -> &dyn fmt::Display {
+        self.value.display()
+    }
+
+    /// The value as the type it was added with.
+    ///
+    /// Values added with the `_debug` and `_hex` methods are found as their
+    /// original type, `_str` values as [`String`].
+    #[must_use]
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        let value = self.value.as_any();
+        value
+            .downcast_ref::<T>()
+            .or_else(|| value.downcast_ref::<DebugContextValue<T>>().map(|v| &v.0))
+            .or_else(|| value.downcast_ref::<HexContextValue<T>>().map(|v| &v.0))
+    }
+}
+
+impl fmt::Debug for ContextField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextField")
+            .field("key", &self.key)
+            .field("value", &DisplayAsDebug(self.value()))
+            .finish()
+    }
+}
+
+/// Debug output of a context value, with control characters escaped.
 struct DisplayAsDebug<'a>(&'a dyn fmt::Display);
 
 impl<'a> fmt::Debug for DisplayAsDebug<'a> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self.0, f)
+        write_escaped_display(f, self.0)
     }
 }
 
-pub(super) struct DebugContextValue<T: fmt::Debug + Send + Sync + 'static>(pub(super) T);
+pub(super) struct DebugContextValue<T>(pub(super) T);
 
-impl<T: fmt::Debug + Send + Sync + 'static> fmt::Debug for DebugContextValue<T> {
+impl<T: fmt::Debug> fmt::Debug for DebugContextValue<T> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.0, f)
     }
 }
 
-impl<T: fmt::Debug + Send + Sync + 'static> fmt::Display for DebugContextValue<T> {
+impl<T: fmt::Debug> fmt::Display for DebugContextValue<T> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.0, f)
     }
 }
 
-pub(super) struct HexContextValue<T: fmt::Debug + Send + Sync + 'static>(pub(super) T);
+pub(super) struct HexContextValue<T>(pub(super) T);
 
-impl<T: fmt::Debug + Send + Sync + 'static> fmt::Debug for HexContextValue<T> {
+impl<T: fmt::Debug> fmt::Debug for HexContextValue<T> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:x?}", self.0)
     }
 }
 
-impl<T: fmt::Debug + Send + Sync + 'static> fmt::Display for HexContextValue<T> {
+impl<T: fmt::Debug> fmt::Display for HexContextValue<T> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
@@ -109,6 +302,8 @@ impl<T: fmt::Debug + Send + Sync + 'static> fmt::Display for HexContextValue<T> 
 
 struct LogfmtEscaper<'a, 'b> {
     f: &'a mut fmt::Formatter<'b>,
+    /// Escape the logfmt structural characters too, not only control characters.
+    quoted: bool,
 }
 
 impl<'a, 'b> fmt::Write for LogfmtEscaper<'a, 'b> {
@@ -122,7 +317,7 @@ impl<'a, 'b> fmt::Write for LogfmtEscaper<'a, 'b> {
         loop {
             let mut found = None;
             for (i, ch) in rest.char_indices() {
-                if needs_escape(ch) {
+                if needs_escape(ch, self.quoted) {
                     found = Some((i, ch));
                     break;
                 }
@@ -143,11 +338,11 @@ impl<'a, 'b> fmt::Write for LogfmtEscaper<'a, 'b> {
 }
 
 #[inline]
-fn needs_escape(ch: char) -> bool {
+fn needs_escape(ch: char, quoted: bool) -> bool {
     // Backslash and quote are the logfmt structural escapes; everything that
     // is a Unicode control (C0, DEL, C1) is escaped to avoid terminal-escape
     // injection and to keep log records single-line and printable.
-    matches!(ch, '\\' | '"') || ch.is_control()
+    (quoted && matches!(ch, '\\' | '"')) || ch.is_control()
 }
 
 fn write_escaped(f: &mut fmt::Formatter<'_>, ch: char) -> fmt::Result {
@@ -167,34 +362,39 @@ fn write_logfmt_display_value_always_quoted(
 ) -> fmt::Result {
     f.write_str("\"")?;
     {
-        let mut esc = LogfmtEscaper { f };
+        let mut esc = LogfmtEscaper { f, quoted: true };
         write!(&mut esc, "{v}")?;
     }
     f.write_str("\"")
 }
 
+/// Write `v` with control characters escaped, so it stays on one printable line.
+pub(crate) fn write_escaped_display(
+    f: &mut fmt::Formatter<'_>,
+    v: &dyn fmt::Display,
+) -> fmt::Result {
+    write!(LogfmtEscaper { f, quoted: false }, "{v}")
+}
+
 impl fmt::Display for ContextField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.key {
-            Some(key) => {
-                write!(f, "{key}=")?;
-                write_logfmt_display_value_always_quoted(f, self.value.as_ref())
-            }
-            None => write_logfmt_display_value_always_quoted(f, self.value.as_ref()),
+        if let Some(key) = self.key {
+            write!(f, "{key}=")?;
         }
+        write_logfmt_display_value_always_quoted(f, self.value())
     }
 }
 
-struct DebugFields<'a>(&'a [ContextField]);
+struct DebugFields<'a>(&'a Fields);
 
 impl fmt::Debug for DebugFields<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut map = f.debug_map();
-        for field in self.0 {
-            match field.key {
-                Some(key) => map.entry(&key, &DisplayAsDebug(field.value.as_ref())),
-                None => map.entry(&"<none>", &DisplayAsDebug(field.value.as_ref())),
-            };
+        for field in self.0.iter() {
+            map.entry(
+                &field.key.unwrap_or("<none>"),
+                &DisplayAsDebug(field.value()),
+            );
         }
         map.finish()
     }
@@ -203,53 +403,80 @@ impl fmt::Debug for DebugFields<'_> {
 impl fmt::Debug for ErrorWithContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut ds = f.debug_struct("ErrorWithContext");
-        ds.field("source", &self.source);
-
-        if let Some(fields) = self.fields.as_ref().filter(|v| !v.is_empty()) {
-            ds.field("fields", &DebugFields(fields.as_slice()));
-        } else {
-            ds.field("fields", &None::<()>);
+        match &self.source {
+            Source::Static(message) => ds.field("message", message),
+            Source::Boxed(source) => ds.field("source", source),
+        };
+        ds.field("location", &DisplayAsDebug(self.location));
+        if let Some(location) = self.context_location {
+            ds.field("context_location", &DisplayAsDebug(location));
         }
-
+        if self.fields.is_empty() {
+            ds.field("fields", &None::<()>);
+        } else {
+            ds.field("fields", &DebugFields(&self.fields));
+        }
         ds.finish()
     }
 }
 
 impl ErrorWithContext {
-    fn fmt_inline_fields(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(fields) = self.fields.as_ref().filter(|v| !v.is_empty()) {
-            f.write_str(" | ")?;
-            let mut fields_iter = fields.iter();
-            if let Some(field) = fields_iter.next() {
-                write!(f, "{field}")?;
-            }
-            for field in fields_iter {
-                write!(f, " {field}")?;
-            }
+    pub(crate) fn fmt_inline_fields(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut fields = self.fields.iter();
+        if let Some(field) = fields.next() {
+            write!(f, " | {field}")?;
+        }
+        for field in fields {
+            write!(f, " {field}")?;
         }
         Ok(())
+    }
+
+    fn fmt_source(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.source {
+            Source::Static(message) => f.write_str(message),
+            Source::Boxed(source) => write!(f, "{source}"),
+        }
     }
 }
 
 impl fmt::Display for ErrorWithContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !f.alternate() {
-            write!(f, "{}", self.source)?;
-            self.fmt_inline_fields(f)?;
-            return Ok(());
+            self.fmt_source(f)?;
+            return self.fmt_inline_fields(f);
         }
 
-        writeln!(f, "{}", self.source)?;
-        if let Some(fields) = self.fields.as_ref().filter(|v| !v.is_empty()) {
+        self.fmt_source(f)?;
+        f.write_str("\n")?;
+        let origin = match &self.source {
+            Source::Static(_) => Some(self.location),
+            Source::Boxed(source) => location_of(source.as_ref()),
+        };
+        let added = match &self.source {
+            Source::Static(_) => self.context_location,
+            Source::Boxed(_) => Some(self.location),
+        };
+        match (origin, added) {
+            (Some(origin), Some(added))
+                if (origin.file(), origin.line()) != (added.file(), added.line()) =>
+            {
+                writeln!(f, "  at {origin}")?;
+                writeln!(f, "  context added at {added}")?;
+            }
+            (Some(location), _) | (None, Some(location)) => writeln!(f, "  at {location}")?,
+            (None, None) => {}
+        }
+        if !self.fields.is_empty() {
             writeln!(f, "Context:")?;
-            for field in fields {
+            for field in self.fields.iter() {
                 writeln!(f, "  {field}")?;
             }
         }
 
         // Cap the cause-chain walk so a malformed Error impl that returns a
         // cycle from .source() cannot produce an unbounded loop here.
-        if let Some(source) = self.source.as_ref().source() {
+        if let Some(source) = self.source_ref().and_then(error_source) {
             writeln!(f, "Caused by:")?;
             for (idx, err) in error_chain_with_limit(source, DEFAULT_MAX_DEPTH + 1).enumerate() {
                 if idx == DEFAULT_MAX_DEPTH {
@@ -257,6 +484,9 @@ impl fmt::Display for ErrorWithContext {
                     break;
                 }
                 writeln!(f, "  {idx}: {err}")?;
+                if let Some(location) = location_of(err) {
+                    writeln!(f, "     at {location}")?;
+                }
             }
         }
 
@@ -264,9 +494,32 @@ impl fmt::Display for ErrorWithContext {
     }
 }
 
+/// Where a static message got its first context, when that is another line
+/// than where it was created.
+pub(crate) fn context_location_of(
+    error: &(dyn crate::StdError + 'static),
+) -> Option<&'static Location<'static>> {
+    let error = error.downcast_ref::<ErrorWithContext>()?;
+    let added = error.context_location?;
+    ((added.file(), added.line()) != (error.location.file(), error.location.line()))
+        .then_some(added)
+}
+
+/// Where an error made by this crate was created.
+pub(crate) fn location_of(
+    error: &(dyn crate::StdError + 'static),
+) -> Option<&'static Location<'static>> {
+    if let Some(error) = error.downcast_ref::<StaticStrError>() {
+        return Some(error.location);
+    }
+    error
+        .downcast_ref::<ErrorWithContext>()
+        .map(|error| error.location)
+}
+
 impl crate::StdError for ErrorWithContext {
     fn source(&self) -> Option<&(dyn crate::StdError + 'static)> {
-        Some(self.source.as_ref())
+        self.source_ref()
     }
 }
 
@@ -274,7 +527,7 @@ impl crate::StdError for ErrorWithContext {
 mod tests {
     use super::*;
 
-    use crate::{BoxErrorExt, ErrorExt, StdError};
+    use crate::{BoxErrorExt, ErrorContext as _, ErrorExt, StdError, extra::OpaqueError};
 
     #[derive(Debug, Clone)]
     struct BoomError;
@@ -286,6 +539,118 @@ mod tests {
     }
 
     impl core::error::Error for BoomError {}
+
+    fn line_of(error: &BoxError) -> u32 {
+        let location = location_of(error.as_ref()).expect("created by this crate");
+        assert_eq!(
+            location.file(),
+            file!(),
+            "the caller's file, not this crate's internals"
+        );
+        location.line()
+    }
+
+    #[test]
+    fn location_is_the_callers_line() {
+        let (error, line) = (BoxError::from_static_str("x"), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (BoomError.context("ctx"), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (BoomError.with_context_field("k", || "v"), line!());
+        assert_eq!(line_of(&error), line);
+
+        let res: Result<(), BoomError> = Err(BoomError);
+        let (error, line) = (res.context_debug_field("k", 1).unwrap_err(), line!());
+        assert_eq!(line_of(&error), line);
+
+        let res: Result<(), BoomError> = Err(BoomError);
+        let (error, line) = (res.with_context(|| "lazy").unwrap_err(), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (None::<u8>.context("missing").unwrap_err(), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (None::<u8>.into_box_error().unwrap_err(), line!());
+        assert_eq!(line_of(&error), line);
+
+        let (error, line) = (OpaqueError::from_static_str("x").into_box_error(), line!());
+        assert_eq!(line_of(&error), line);
+    }
+
+    #[test]
+    fn adding_context_again_keeps_the_first_location() {
+        let (error, line) = (BoomError.context("a"), line!());
+        let error = error.context("b");
+        assert_eq!(line_of(&error), line);
+    }
+
+    #[test]
+    fn location_shows_only_in_alternate_and_debug_output() {
+        let (error, line) = (BoomError.context_field("k", "v"), line!());
+        let at = format!("{}:{line}:", file!());
+        assert!(!format!("{error}").contains(&at), "{error}");
+        assert!(
+            format!("{error:#}").contains(&format!("  at {at}")),
+            "{error:#}"
+        );
+        assert!(format!("{error:?}").contains(&at), "{error:?}");
+
+        let (error, line) = (BoxError::from_static_str("bare"), line!());
+        let debug = format!("{error:?}");
+        assert!(debug.contains("\"bare\""), "{debug}");
+        assert!(debug.contains(&format!("{}:{line}:", file!())), "{debug}");
+        let (opaque, opaque_line) = (OpaqueError::from_static_str("op"), line!());
+        let debug = format!("{opaque:?}");
+        assert!(
+            debug.contains(&format!("{}:{opaque_line}:", file!())),
+            "{debug}"
+        );
+        assert_eq!(format!("{error}"), "bare");
+        let pretty = format!("{error:#}");
+        assert!(
+            pretty.starts_with(&format!("bare\n  at {}:{line}:", file!())),
+            "{pretty}"
+        );
+    }
+
+    #[test]
+    fn alternate_output_shows_origin_and_context_locations_when_they_differ() {
+        let (error, origin) = (BoxError::from_static_str("bare"), line!());
+        let (error, added) = (error.context_field("k", "v"), line!());
+        let pretty = format!("{error:#}");
+        assert!(
+            pretty.contains(&format!("  at {}:{origin}:", file!())),
+            "{pretty}"
+        );
+        assert!(
+            pretty.contains(&format!("  context added at {}:{added}:", file!())),
+            "{pretty}"
+        );
+
+        let (error, line) = (BoxError::from_static_str("b").context("c"), line!());
+        let pretty = format!("{error:#}");
+        assert!(
+            pretty.contains(&format!("  at {}:{line}:", file!())),
+            "{pretty}"
+        );
+        assert!(!pretty.contains("context added at"), "{pretty}");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn alternate_cause_list_includes_locations_and_io_wrapped_errors() {
+        let (inner, line) = (BoxError::from_static_str("inner"), line!());
+        let io = std::io::Error::other(inner);
+        let error = io.context("outer");
+        let pretty = format!("{error:#}");
+        assert!(pretty.contains("Caused by:\n  0: inner\n"), "{pretty}");
+        assert!(
+            pretty.contains(&format!("     at {}:{line}:", file!())),
+            "{pretty}"
+        );
+    }
 
     #[test]
     fn display_non_alternate_without_fields_is_source_only() {

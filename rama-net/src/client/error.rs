@@ -127,6 +127,23 @@ impl ConnectionError {
         }
     }
 
+    /// An error for `source` with exactly this classification.
+    pub(crate) fn with_classification(
+        source: BoxError,
+        (domain, kind, policy_scope): (
+            ConnectionErrorDomain,
+            ConnectionErrorKind,
+            ConnectionPolicyScope,
+        ),
+    ) -> Self {
+        Self {
+            source,
+            domain,
+            kind,
+            policy_scope,
+        }
+    }
+
     /// Create an error which occurred while establishing the transport path.
     pub fn transport(source: impl Into<BoxError>, kind: ConnectionErrorKind) -> Self {
         Self::new(source, ConnectionErrorDomain::Transport, kind)
@@ -207,6 +224,7 @@ impl ConnectionError {
     }
 
     /// Add context to the source error.
+    #[track_caller]
     pub fn context<M>(mut self, value: M) -> Self
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -216,6 +234,7 @@ impl ConnectionError {
     }
 
     /// Add context using [`fmt::LowerHex`] for its formatting.
+    #[track_caller]
     pub fn context_hex<M>(mut self, value: M) -> Self
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -225,6 +244,7 @@ impl ConnectionError {
     }
 
     /// Add context using [`fmt::Debug`] for its display formatting.
+    #[track_caller]
     pub fn context_debug<M>(mut self, value: M) -> Self
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -234,6 +254,7 @@ impl ConnectionError {
     }
 
     /// Add keyed context to the source error.
+    #[track_caller]
     pub fn context_field<M>(mut self, key: &'static str, value: M) -> Self
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -243,6 +264,7 @@ impl ConnectionError {
     }
 
     /// Add a keyed string-like context value to the source error.
+    #[track_caller]
     pub fn context_str_field<M>(mut self, key: &'static str, value: M) -> Self
     where
         M: Into<String>,
@@ -252,6 +274,7 @@ impl ConnectionError {
     }
 
     /// Add keyed context using [`fmt::LowerHex`] for its formatting.
+    #[track_caller]
     pub fn context_hex_field<M>(mut self, key: &'static str, value: M) -> Self
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -261,6 +284,7 @@ impl ConnectionError {
     }
 
     /// Add keyed context using [`fmt::Debug`] for its display formatting.
+    #[track_caller]
     pub fn context_debug_field<M>(mut self, key: &'static str, value: M) -> Self
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -270,6 +294,7 @@ impl ConnectionError {
     }
 
     /// Lazily add context to the source error.
+    #[track_caller]
     pub fn with_context<C, F>(mut self, create: F) -> Self
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -280,6 +305,7 @@ impl ConnectionError {
     }
 
     /// Lazily add context using [`fmt::LowerHex`] for its formatting.
+    #[track_caller]
     pub fn with_context_hex<C, F>(mut self, create: F) -> Self
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -290,6 +316,7 @@ impl ConnectionError {
     }
 
     /// Lazily add context using [`fmt::Debug`] for its display formatting.
+    #[track_caller]
     pub fn with_context_debug<C, F>(mut self, create: F) -> Self
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -300,6 +327,7 @@ impl ConnectionError {
     }
 
     /// Lazily add keyed context to the source error.
+    #[track_caller]
     pub fn with_context_field<C, F>(mut self, key: &'static str, create: F) -> Self
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -310,6 +338,7 @@ impl ConnectionError {
     }
 
     /// Lazily add a keyed string-like context value to the source error.
+    #[track_caller]
     pub fn with_context_str_field<C, F>(mut self, key: &'static str, create: F) -> Self
     where
         C: Into<String>,
@@ -320,6 +349,7 @@ impl ConnectionError {
     }
 
     /// Lazily add keyed context using [`fmt::LowerHex`] for its formatting.
+    #[track_caller]
     pub fn with_context_hex_field<C, F>(mut self, key: &'static str, create: F) -> Self
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -330,6 +360,7 @@ impl ConnectionError {
     }
 
     /// Lazily add keyed context using [`fmt::Debug`] for its display formatting.
+    #[track_caller]
     pub fn with_context_debug_field<C, F>(mut self, key: &'static str, create: F) -> Self
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -345,7 +376,7 @@ impl ConnectionError {
         self
     }
 
-    fn classification_in_source_chain(
+    pub(crate) fn classification_in_source_chain(
         source: &(dyn core::error::Error + 'static),
     ) -> Option<(
         ConnectionErrorDomain,
@@ -442,6 +473,17 @@ mod tests {
     }
 
     impl core::error::Error for TestError {}
+
+    #[test]
+    fn context_location_is_the_callers_line() {
+        let error = ConnectionError::unknown(TestError("x"));
+        let (error, line) = (error.context_field("k", "v"), line!());
+        let pretty = format!("{error:#}");
+        assert!(
+            pretty.contains(&format!("  at {}:{line}:", file!())),
+            "{pretty}"
+        );
+    }
 
     #[derive(Debug)]
     struct CyclicError;

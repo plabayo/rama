@@ -6,12 +6,11 @@
 //! asserts the same two things: the answer is a refusal rather than a wrong
 //! route, and the resolver still serves the next request.
 
-use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, CauseExt as _};
 use rama_core::futures::{Stream, stream};
 use rama_dns::client::resolver::DnsAddressResolver;
 use rama_js::{JsError, JsErrorKind};
@@ -91,14 +90,7 @@ fn fuel_bounded() -> PacResolverBuilder {
 
 /// The kind of the js error behind a resolver failure, if one caused it.
 fn js_error_kind(err: &BoxError) -> Option<JsErrorKind> {
-    let mut source: Option<&(dyn StdError + 'static)> = Some(err.as_ref());
-    while let Some(err) = source {
-        if let Some(js) = err.downcast_ref::<JsError>() {
-            return Some(js.kind());
-        }
-        source = err.source();
-    }
-    None
+    err.find_cause::<JsError>().map(JsError::kind)
 }
 
 /// Fail unless `result` is the engine cutting the script off.

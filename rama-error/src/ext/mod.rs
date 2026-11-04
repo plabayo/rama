@@ -8,6 +8,45 @@ mod backtrace;
 mod context;
 pub(super) mod opaque;
 
+pub use context::ContextField;
+pub(crate) use context::{
+    ErrorWithContext, context_location_of, location_of, write_escaped_display,
+};
+
+/// The error inside a wrapper whose one-line message is the inner error's (this
+/// crate's wrappers and custom `std::io::Error`s), plus the context that wrapper
+/// appends to that line.
+pub(crate) fn transparent_inner<'a>(
+    error: &'a (dyn core::error::Error + 'static),
+) -> Option<(
+    &'a (dyn core::error::Error + 'static),
+    Option<&'a ErrorWithContext>,
+)> {
+    if let Some(error) = error.downcast_ref::<ErrorWithContext>() {
+        return error.source_ref().map(|source| (source, Some(error)));
+    }
+    if let Some(error) = error.downcast_ref::<OpaqueError>() {
+        return Some((error.inner(), None));
+    }
+    #[cfg(target_has_atomic = "ptr")]
+    if let Some(error) = error.downcast_ref::<arc::ArcError>() {
+        return Some((error.as_error(), None));
+    }
+    #[cfg(feature = "std")]
+    if let Some(error) = error.downcast_ref::<backtrace::ErrorWithBacktrace>() {
+        return Some((error.source_ref(), None));
+    }
+    // A custom io error displays as the error it wraps.
+    #[cfg(feature = "std")]
+    if let Some(inner) = error
+        .downcast_ref::<std::io::Error>()
+        .and_then(std::io::Error::get_ref)
+    {
+        return Some((inner, None));
+    }
+    None
+}
+
 use crate::{
     BoxError,
     extra::OpaqueError,
@@ -25,29 +64,35 @@ pub trait ErrorContext: private::SealedErrorContext {
     type OpaqueContext;
 
     /// Return a err variant for [`Self::Context`] as [`BoxError`].
+    #[track_caller]
     fn into_box_error(self) -> Self::Context;
 
     /// Return a err variant for [`Self::OpaqueContext`] as [`OpaqueError`].
+    #[track_caller]
     fn into_opaque_error(self) -> Self::OpaqueContext;
 
     /// Add context to the contained error.
+    #[track_caller]
     fn context<M>(self, value: M) -> Self::Context
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static;
 
     /// Add context to the contained error,
     /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
+    #[track_caller]
     fn context_hex<M>(self, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Add context to the contained error,
     /// using [`fmt::Debug`] as [`fmt::Display`].
+    #[track_caller]
     fn context_debug<M>(self, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Add keyed context to the contained error.
+    #[track_caller]
     fn context_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static;
@@ -55,23 +100,27 @@ pub trait ErrorContext: private::SealedErrorContext {
     /// Same as [`Self::context_field`] but using a string-like value,
     /// this is useful in case you need to pass a string slice which is borrowed
     /// and thus cannot be passed as part of 'static error.
+    #[track_caller]
     fn context_str_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: Into<String>;
 
     /// Add keyed context to the contained error
     /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
+    #[track_caller]
     fn context_hex_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Add keyed context to the contained error
     /// using [`fmt::Debug`] as [`fmt::Display`].
+    #[track_caller]
     fn context_debug_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Lazily add a context to the contained error, if it exists.
+    #[track_caller]
     fn with_context<C, F>(self, cb: F) -> Self::Context
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -79,6 +128,7 @@ pub trait ErrorContext: private::SealedErrorContext {
 
     /// Lazily add a context to the contained error, if it exists.
     /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
+    #[track_caller]
     fn with_context_hex<C, F>(self, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -86,12 +136,14 @@ pub trait ErrorContext: private::SealedErrorContext {
 
     /// Lazily add a context to the contained error, if it exists.
     /// using [`fmt::Debug`] as [`fmt::Display`].
+    #[track_caller]
     fn with_context_debug<C, F>(self, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily add keyed context to the contained error, if it exists.
+    #[track_caller]
     fn with_context_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -100,6 +152,7 @@ pub trait ErrorContext: private::SealedErrorContext {
     /// Same as [`Self::with_context_field`] but using a string-like value,
     /// this is useful in case you need to pass a string slice which is borrowed
     /// and thus cannot be passed as part of 'static error.
+    #[track_caller]
     fn with_context_str_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: Into<String>,
@@ -107,6 +160,7 @@ pub trait ErrorContext: private::SealedErrorContext {
 
     /// Lazily add keyed context to the contained error, if it exists
     /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
+    #[track_caller]
     fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -114,6 +168,7 @@ pub trait ErrorContext: private::SealedErrorContext {
 
     /// Lazily add keyed context to the contained error, if it exists
     /// using [`fmt::Debug`] as [`fmt::Display`].
+    #[track_caller]
     fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -125,133 +180,200 @@ impl<T, E: Into<BoxError>> ErrorContext for Result<T, E> {
     type OpaqueContext = Result<T, OpaqueError>;
 
     #[inline(always)]
+    #[track_caller]
     fn into_box_error(self) -> Self::Context {
         self.map_err(Into::into)
     }
 
     #[inline(always)]
+    #[track_caller]
     fn into_opaque_error(self) -> Self::OpaqueContext {
         self.map_err(OpaqueError::from_box_error)
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context<M>(self, value: M) -> Self::Context
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static,
     {
-        self.map_err(|error| error.context(value))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.context(value)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_hex<M>(self, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static,
     {
-        self.map_err(|error| error.context_hex(value))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.context_hex(value)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_debug<M>(self, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static,
     {
-        self.map_err(|error| error.context_debug(value))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.context_debug(value)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static,
     {
-        self.map_err(|error| error.context_field(key, value))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.context_field(key, value)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_str_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: Into<String>,
     {
-        self.map_err(|error| error.context_str_field(key, value))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.context_str_field(key, value)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_hex_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static,
     {
-        self.map_err(|error| error.context_hex_field(key, value))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.context_hex_field(key, value)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_debug_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static,
     {
-        self.map_err(|error| error.context_debug_field(key, value))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.context_debug_field(key, value)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context<C, F>(self, cb: F) -> Self::Context
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
         F: FnOnce() -> C,
     {
-        self.map_err(|error| error.with_context(cb))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.with_context(cb)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_hex<C, F>(self, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C,
     {
-        self.map_err(|error| error.with_context_hex(cb))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.with_context_hex(cb)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_debug<C, F>(self, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C,
     {
-        self.map_err(|error| error.with_context_debug(cb))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.with_context_debug(cb)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
         F: FnOnce() -> C,
     {
-        self.map_err(|error| error.with_context_field(key, cb))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.with_context_field(key, cb)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_str_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: Into<String>,
         F: FnOnce() -> C,
     {
-        self.map_err(|error| error.with_context_str_field(key, cb))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.with_context_str_field(key, cb)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C,
     {
-        self.map_err(|error| error.with_context_hex_field(key, cb))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.with_context_hex_field(key, cb)),
+        }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C,
     {
-        self.map_err(|error| error.with_context_debug_field(key, cb))
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.with_context_debug_field(key, cb)),
+        }
     }
+}
+
+/// The error for a `None`, already a context node so the caller's context
+/// lands in the same allocation.
+#[track_caller]
+fn none_error<O>() -> BoxError {
+    let mut node = self::context::ErrorWithContext::from_static_str("Option is None");
+    node.insert_key_value("type", core::any::type_name::<O>());
+    Box::new(node)
 }
 
 /// Generates the [`ErrorContext`] methods for [`Option<T>`], which all share the
@@ -262,14 +384,13 @@ macro_rules! forward_none_context {
         fn $name:ident < $($gen:ident : [$($bound:tt)*]),+ > ( $($arg:ident : $argty:ty),* ) => ( $($carg:expr),* );
     )+) => {
         $(
+            #[track_caller]
             fn $name < $($gen),+ > (self, $($arg : $argty),*) -> Self::Context
             where $($gen : $($bound)*),+
             {
                 match self {
                     Some(value) => Ok(value),
-                    None => Err(BoxError::from_static_str("Option is None")
-                        .context_debug_field("type", core::any::type_name::<Self>())
-                        .$name($($carg),*)),
+                    None => Err(none_error::<Self>().$name($($carg),*)),
                 }
             }
         )+
@@ -280,15 +401,16 @@ impl<T> ErrorContext for Option<T> {
     type Context = Result<T, BoxError>;
     type OpaqueContext = Result<T, OpaqueError>;
 
+    #[track_caller]
     fn into_box_error(self) -> Self::Context {
         match self {
             Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())),
+            None => Err(none_error::<Self>()),
         }
     }
 
     #[inline(always)]
+    #[track_caller]
     fn into_opaque_error(self) -> Self::OpaqueContext {
         self.into_box_error().into_opaque_error()
     }
@@ -326,23 +448,27 @@ pub trait ErrorExt: private::SealedErrorExt {
     fn into_opaque_error(self) -> OpaqueError;
 
     /// Wrap the error in a context.
+    #[track_caller]
     fn context<M>(self, value: M) -> BoxError
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static;
 
     /// Wrap the error in a context,
     /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
+    #[track_caller]
     fn context_hex<M>(self, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Wrap the error in a context,
     /// using [`fmt::Debug`] as [`fmt::Display`].
+    #[track_caller]
     fn context_debug<M>(self, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Wrap the error in a keyed context.
+    #[track_caller]
     fn context_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static;
@@ -350,23 +476,27 @@ pub trait ErrorExt: private::SealedErrorExt {
     /// Same as [`Self::context_field`] but using a string-like value,
     /// this is useful in case you need to pass a string slice which is borrowed
     /// and thus cannot be passed as part of 'static error.
+    #[track_caller]
     fn context_str_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: Into<String>;
 
     /// Wrap the error in a keyed context,
     /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
+    #[track_caller]
     fn context_hex_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Wrap the error in a keyed context,
     /// using [`fmt::Debug`] as [`fmt::Display`].
+    #[track_caller]
     fn context_debug_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Lazily wrap the error with a context.
+    #[track_caller]
     fn with_context<C, F>(self, cb: F) -> BoxError
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -374,6 +504,7 @@ pub trait ErrorExt: private::SealedErrorExt {
 
     /// Lazily wrap the error with a context,
     /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
+    #[track_caller]
     fn with_context_hex<C, F>(self, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -381,12 +512,14 @@ pub trait ErrorExt: private::SealedErrorExt {
 
     /// Lazily wrap the error with a context,
     /// using [`fmt::Debug`] as [`fmt::Display`].
+    #[track_caller]
     fn with_context_debug<C, F>(self, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily wrap the error with keyed context.
+    #[track_caller]
     fn with_context_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -395,6 +528,7 @@ pub trait ErrorExt: private::SealedErrorExt {
     /// Same as [`Self::with_context_field`] but using a string-like value,
     /// this is useful in case you need to pass a string slice which is borrowed
     /// and thus cannot be passed as part of 'static error.
+    #[track_caller]
     fn with_context_str_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: Into<String>,
@@ -402,6 +536,7 @@ pub trait ErrorExt: private::SealedErrorExt {
 
     /// Lazily wrap the error with keyed context
     /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
+    #[track_caller]
     fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -409,6 +544,7 @@ pub trait ErrorExt: private::SealedErrorExt {
 
     /// Lazily wrap the error with keyed context
     /// using [`fmt::Debug`] as [`fmt::Display`].
+    #[track_caller]
     fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -430,23 +566,18 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         OpaqueError::from_box_error(self)
     }
 
+    #[track_caller]
     fn context<M>(self, value: M) -> BoxError
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static,
     {
-        let mut err = self.into();
-
-        if let Some(existing) = err.downcast_mut::<self::context::ErrorWithContext>() {
-            existing.insert_value(value);
-            return err;
-        }
-
-        let mut wrapped = self::context::ErrorWithContext::new(err);
-        wrapped.insert_value(value);
-        Box::new(wrapped)
+        let mut node = context_node(self.into());
+        node.insert_value(value);
+        node
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_hex<M>(self, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -455,6 +586,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_debug<M>(self, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -462,39 +594,28 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         self.context(self::context::DebugContextValue(value))
     }
 
+    #[track_caller]
     fn context_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: fmt::Debug + fmt::Display + Send + Sync + 'static,
     {
-        let mut err = self.into();
-
-        if let Some(existing) = err.downcast_mut::<self::context::ErrorWithContext>() {
-            existing.insert_key_value(key, value);
-            return err;
-        }
-
-        let mut wrapped = self::context::ErrorWithContext::new(err);
-        wrapped.insert_key_value(key, value);
-        Box::new(wrapped)
+        let mut node = context_node(self.into());
+        node.insert_key_value(key, value);
+        node
     }
 
+    #[track_caller]
     fn context_str_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: Into<String>,
     {
-        let mut err = self.into();
-
-        if let Some(existing) = err.downcast_mut::<self::context::ErrorWithContext>() {
-            existing.insert_key_value_str(key, value);
-            return err;
-        }
-
-        let mut wrapped = self::context::ErrorWithContext::new(err);
-        wrapped.insert_key_value_str(key, value);
-        Box::new(wrapped)
+        let mut node = context_node(self.into());
+        node.insert_key_value_str(key, value);
+        node
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_hex_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -503,6 +624,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn context_debug_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static,
@@ -511,6 +633,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context<C, F>(self, cb: F) -> BoxError
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -520,6 +643,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_hex<C, F>(self, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -529,6 +653,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_debug<C, F>(self, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -538,6 +663,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: fmt::Debug + fmt::Display + Send + Sync + 'static,
@@ -547,6 +673,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_str_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: Into<String>,
@@ -556,6 +683,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -565,6 +693,7 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
     }
 
     #[inline(always)]
+    #[track_caller]
     fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -579,16 +708,36 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         Box::new(self::backtrace::ErrorWithBacktrace::new(source))
     }
 }
+/// The context node to add context to: `error` itself when it already is one,
+/// a bare static message turned into one, or a new node wrapping `error`.
+#[track_caller]
+fn context_node(error: BoxError) -> Box<self::context::ErrorWithContext> {
+    let error = match error.downcast::<self::context::ErrorWithContext>() {
+        Ok(mut existing) => {
+            existing.note_context_location();
+            return existing;
+        }
+        Err(error) => error,
+    };
+    let node = match error.downcast::<self::opaque::StaticStrError>() {
+        Ok(error) => self::context::ErrorWithContext::from_static_error(*error),
+        Err(error) => self::context::ErrorWithContext::new(error),
+    };
+    Box::new(node)
+}
+
 pub trait BoxErrorExt: private::SealedBoxErrorExt {
     /// Create a [`BoxError`] from a static str.
     ///
     /// Use this instead of `"msg".context()` or
     /// some other method that turns it into a BoxError...
     /// Because the std rust library turns this into a `String` otherwise...
+    #[track_caller]
     fn from_static_str(e: &'static str) -> Self;
 }
 
 impl BoxErrorExt for BoxError {
+    #[track_caller]
     fn from_static_str(e: &'static str) -> Self {
         OpaqueError::from_static_str(e).into_box_error()
     }
