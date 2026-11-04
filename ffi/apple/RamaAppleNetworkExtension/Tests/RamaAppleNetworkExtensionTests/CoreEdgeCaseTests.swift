@@ -856,9 +856,9 @@ final class CoreEdgeCaseTests: XCTestCase {
     /// handler must cancel any pending `.waiting` tolerance work
     /// item so it doesn't fire on the now-healthy connection.
     func testDuplicateReadyAfterWaitingCancelsToleranceTimer() {
-        let savedTolerance = defaultEgressWaitingToleranceMs
-        defaultEgressWaitingToleranceMs = 200
-        defer { defaultEgressWaitingToleranceMs = savedTolerance }
+        let savedTolerance = defaultPathRecoveryMs
+        defaultPathRecoveryMs = 200
+        defer { defaultPathRecoveryMs = savedTolerance }
 
         let core = TransparentProxyCore()
         core.attachEngine(makeEngine())

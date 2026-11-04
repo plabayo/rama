@@ -319,7 +319,7 @@ let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
 /// opposite response half may remain quiet and legally resume later.
 ///
 /// `var` for tests that need a short linger to keep ARC-leak-check
-/// runtime bounded — same pattern as `defaultEgressWaitingToleranceMs`.
+/// runtime bounded — same pattern as `defaultPathRecoveryMs`.
 /// The terminal linger watchdog holds `connection` strongly until it fires;
 /// tests that assert `weakConn == nil` after teardown need to clamp
 /// this so the watchdog releases before the polling deadline.
@@ -332,64 +332,9 @@ nonisolated(unsafe) var defaultLingerCloseMs: UInt32 = 5_000
 /// not arm it because a still-active upload may remain quiet and resume.
 let defaultEgressEofGraceMs: UInt32 = 2_000
 
-/// Default tolerance window for a post-ready `NWConnection` sitting
-/// in `.waiting(_)`. `.waiting` after `.ready` means Network.framework
-/// has lost the underlying path (network change, peer unreachable,
-/// NECP path update) and is holding the connection in a recoverable
-/// state. Briefly is fine — Wi-Fi roams routinely cause sub-second
-/// `.waiting` blips. Sitting in `.waiting` for many seconds means the
-/// path will not come back on its own and the connection is
-/// effectively dead. After this window the state handler treats it
-/// as failed and tears the flow down.
-///
-/// `var` for tests that need a short tolerance to keep runtime
-/// bounded — same pattern as `writePumpMaxPendingBytes`. Production
-/// code paths read; tests override before invoking the lifecycle.
-nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
-
-/// Settle delay after `wake()` before the post-wake reconcile re-checks
-/// an established egress flow's cached viability (`lastPathViable`).
-/// Network.framework needs a brief moment after resume to re-evaluate
-/// paths and fire `viabilityUpdateHandler(false)` for a torn-down one;
-/// checking at the wake instant would race that and risk reaping a flow
-/// whose path is about to come back. Long enough for that re-evaluation,
-/// far shorter than the 60s maintenance watchdog that would otherwise be
-/// the only backstop for a flow wedged `.ready` over a dead path (the
-/// silent-death case `.waiting`/`.failed` never catches). A no-op
-/// (Power-Nap) sleep keeps viability `true` throughout, so those flows
-/// are never touched.
-///
-/// `var` for tests that need a short settle to keep runtime bounded —
-/// same pattern as `defaultEgressWaitingToleranceMs`.
-nonisolated(unsafe) var defaultPostWakePathRecheckMs: UInt32 = 1_500
-
-/// Mid-session sibling of `defaultPostWakePathRecheckMs`: settle delay
-/// before re-judging an established egress flow whose
-/// `viabilityUpdateHandler` reported `false` WITHOUT a system sleep —
-/// Wi-Fi roam, Wi-Fi↔Ethernet, VPN up/down. Long enough to ride out a
-/// roam blip (a path that recovers in the window is spared by the
-/// re-check), far shorter than the minutes-scale idle reapers that are
-/// otherwise the only backstop for a flow stranded `.ready` over a dead
-/// path mid-session (`.waiting`/`.failed` never fire for that strand).
-///
-/// Set to == `defaultEgressWaitingToleranceMs` ON PURPOSE: the two are
-/// the same dead-path budget seen through two signals. A path loss that
-/// ALSO drives the connection to `.waiting` arms the precise per-flow
-/// `.waiting` tolerance timer; the viability re-check must NOT preempt
-/// that timer (an earlier settle would silently shorten the carefully
-/// chosen recovery budget and reset a flow that was still inside it —
-/// e.g. an interface-pinned egress whose roam routinely exceeds a few
-/// seconds). Keeping them equal means the `.waiting` timer owns flows
-/// that report both signals, and the re-check is left to cover ONLY the
-/// silent-strand case where `.waiting` never fires. `handleEgressViabilityLoss`
-/// additionally defers to an armed `.waiting` timer (`postReadyWaitingArmed`)
-/// so a value below the tolerance still cannot preempt it. Do not set this
-/// below `defaultEgressWaitingToleranceMs` (see the guard test).
-///
-/// Ships ENABLED at `5_000`. Set to `0` to disable mid-session
-/// re-checks entirely — the kill switch, mirroring
-/// `defaultFlowPressureSoftCap`.
-nonisolated(unsafe) var defaultViabilityLossRecheckMs: UInt32 = 5_000
+/// One recovery budget for every path-loss signal of an established flow, so
+/// no signal cuts another's allowance short. `var` for tests.
+nonisolated(unsafe) var defaultPathRecoveryMs: UInt32 = 15_000
 
 /// Budget for an egress `NWConnection` in `.waiting(_)` *before* it
 /// ever reaches `.ready` (path down at connect — boot, wake, VPN

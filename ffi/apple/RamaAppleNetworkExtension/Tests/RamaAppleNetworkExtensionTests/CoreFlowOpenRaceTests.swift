@@ -185,18 +185,13 @@ final class CoreFlowOpenRaceTests: XCTestCase {
 
     // MARK: - CRIT-C: .ready reached over an already-non-viable path
 
-    /// `viabilityUpdateHandler` fires only on CHANGE. If the path goes
-    /// non-viable BEFORE `.ready`, the pre-ready re-check fires, no-ops (its
-    /// `egressReady` guard spares pre-ready flows) and CLEARS the coalescing
-    /// flag — and no further viability callback arrives after `.ready`. Without
-    /// `handleEgressReady` re-arming the re-check, the now-established flow would
-    /// strand `.ready` over a dead path until a wake/idle reaper. This pins the
-    /// fix: after the pre-ready re-check has fired-and-cleared, reaching `.ready`
-    /// must re-arm and reset the flow.
+    /// `viabilityUpdateHandler` fires only on change. A loss before `.ready`
+    /// starts no allowance (pre-ready flows belong to the connect budgets), so
+    /// reaching `.ready` over the still-dead path must start it.
     func testReadyReachedOverNonViablePathIsResetByRearmedRecheck() {
-        let prevRecheck = defaultViabilityLossRecheckMs
-        defaultViabilityLossRecheckMs = 20
-        defer { defaultViabilityLossRecheckMs = prevRecheck }
+        let prevRecheck = defaultPathRecoveryMs
+        defaultPathRecoveryMs = 20
+        defer { defaultPathRecoveryMs = prevRecheck }
 
         let fx = makeFixture()
         defer { tearDownFixture(fx) }
@@ -208,11 +203,9 @@ final class CoreFlowOpenRaceTests: XCTestCase {
         // Path goes non-viable while still connecting (pre-`.ready`).
         conn.simulateViability(false)
 
-        // Let the pre-ready re-check fire: it no-ops (egressReady is false) and
-        // clears `deadPathRecheckPending`, leaving the flow with NO armed
-        // re-check — exactly the stranding setup CRIT-C closes. Flow still live.
+        // Past the allowance: a pre-ready loss must not reset the connecting flow.
         Thread.sleep(forTimeInterval: 0.12)
-        XCTAssertEqual(fx.core.tcpFlowCount, 1, "pre-ready re-check must not reset a connecting flow")
+        XCTAssertEqual(fx.core.tcpFlowCount, 1, "pre-ready loss must not reset a connecting flow")
 
         // Now reach `.ready` over the still-dead path. No fresh viability
         // callback fires (no change), so `handleEgressReady` must re-arm.

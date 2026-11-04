@@ -522,15 +522,8 @@ final class TransparentProxyCore: @unchecked Sendable {
     ///     won't recover — reap now so it doesn't burn its connect timer.
     ///   * Established (`egressReady`): the egress `NWConnection` can
     ///     silently lose its path across a network-changing sleep yet stay
-    ///     `.ready` — neither `.waiting` nor `.failed` fires, so the
-    ///     per-flow `handleEgressState` reaper never runs and the flow
-    ///     wedges (peer unreachable → graceful drain never completes) until
-    ///     the 60s maintenance watchdog. Re-check viability after a short
-    ///     settle (`defaultPostWakePathRecheckMs`) and reset the ones whose
-    ///     path didn't come back, so a stale long-lived connection (e.g.
-    ///     Chrome reusing an HTTP/2 connection to a Google host) is reset
-    ///     promptly instead of hanging. A no-op (Power-Nap) sleep leaves the
-    ///     path viable, so those flows are kept.
+    ///     `.ready`; a flow whose path is lost at resume gets a fresh
+    ///     recovery allowance (`defaultPathRecoveryMs`).
     func handleSystemWake() {
         engine?.notifySystemWake()
         // Reconcile on each flow's own queue: the `egressReady` /
@@ -550,13 +543,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                     ctx.applySystemWake()
                     return
                 }
-                // Established: defer the verdict to a settle-delayed
-                // viability re-check (see `checkDeadPath`). Needs a
-                // `flowQueue` to schedule on; production contexts always
-                // have one (engine-less test contexts that don't are left
-                // to the per-flow `.failed`/watchdog paths, as before).
-                self?.scheduleDeadPathRecheck(
-                    ctx, afterMs: defaultPostWakePathRecheckMs, trigger: "wake")
+                self?.handleEgressPathLoss(ctx, trigger: "wake", restart: true)
             }
         }
         logLifecycle("system wake")
@@ -570,90 +557,71 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
     }
 
-    /// Schedule the settle-delayed dead-path re-check for one flow on its
-    /// own `flowQueue`. Shared by the post-wake reconcile and the
-    /// mid-session viability-loss trigger; coalesced via
-    /// `deadPathRecheckPending` so a burst of triggers (viability flapping
-    /// across a roam, wake + path change overlapping) keeps at most one
-    /// outstanding verdict per flow. Call on `flowQueue` (both triggers
-    /// do). No-op without a `flowQueue` (engine-less test contexts), as
-    /// before.
-    ///
-    /// Coalescing is across triggers, not just within one: if a viability
-    /// loss already armed a re-check, an overlapping `handleSystemWake` finds
-    /// `deadPathRecheckPending` set and rides the in-flight one rather than
-    /// scheduling its own. The verdict is identical either way (`checkDeadPath`
-    /// only reads `lastPathViable`/`egressReady`/`isDone`), so the only effect
-    /// is timing: the FIRST-scheduled trigger's settle wins, so the reset can
-    /// land up to `max(afterMs)` out — still far inside the idle reapers. Tests
-    /// that exercise ONE trigger in isolation pin the other's tunable to 0.
-    private func scheduleDeadPathRecheck(
-        _ ctx: TcpFlowContext, afterMs: UInt32, trigger: String
-    ) {
-        guard let queue = ctx.flowQueue else { return }
-        guard !ctx.deadPathRecheckPending else { return }
-        ctx.deadPathRecheckPending = true
-        queue.asyncAfter(
-            deadline: .now() + .milliseconds(Int(afterMs))
-        ) { [weak self, weak ctx] in
-            // Clear the coalescing flag even if the core died — a stuck
-            // `true` would suppress every future re-check for this flow.
+    /// Starts the recovery allowance without shortening a running one; wake
+    /// restarts it because resume is not network readiness. On `flowQueue`.
+    func handleEgressPathLoss(_ ctx: TcpFlowContext, trigger: String, restart: Bool = false) {
+        guard isPathRecoveryEligible(ctx), isEgressPathLost(ctx) else { return }
+        let deadline = DispatchTime.now() + .milliseconds(Int(defaultPathRecoveryMs))
+        if let current = ctx.pathRecoveryDeadline {
+            if restart && deadline > current { ctx.pathRecoveryDeadline = deadline }
+        } else {
+            ctx.pathRecoveryDeadline = deadline
+        }
+        armPathRecoveryTimer(ctx, trigger: trigger)
+    }
+
+    /// Viability or `.ready` came back: end the allowance once the path is
+    /// fully usable again. A pending timer then finds nothing to judge.
+    func handleEgressPathRecovered(_ ctx: TcpFlowContext) {
+        guard !isEgressPathLost(ctx) else { return }
+        ctx.pathRecoveryDeadline = nil
+    }
+
+    private func isEgressPathLost(_ ctx: TcpFlowContext) -> Bool {
+        !ctx.lastPathViable || ctx.postReadyWaiting
+    }
+
+    private func isPathRecoveryEligible(_ ctx: TcpFlowContext) -> Bool {
+        ctx.egressReady && ctx.connection != nil && !ctx.egressReset && !ctx.egressFailed
+            && ctx.isDone != true
+    }
+
+    private func armPathRecoveryTimer(_ ctx: TcpFlowContext, trigger: String) {
+        guard let queue = ctx.flowQueue, let deadline = ctx.pathRecoveryDeadline,
+            !ctx.pathRecoveryTimerArmed
+        else { return }
+        ctx.pathRecoveryTimerArmed = true
+        queue.asyncAfter(deadline: deadline) { [weak self, weak ctx] in
+            // Clear even if the core died: a stuck flag would block every re-arm.
             guard let ctx else { return }
-            ctx.deadPathRecheckPending = false
-            guard let self else { return }
-            self.checkDeadPath(ctx, trigger: trigger)
+            ctx.pathRecoveryTimerArmed = false
+            self?.checkPathRecovery(ctx, trigger: trigger)
         }
     }
 
-    /// Mid-session counterpart of the post-wake reconcile, fired by the
-    /// egress `viabilityUpdateHandler` reporting `false` while the
-    /// connection stays `.ready` — the silent strand a Wi-Fi roam /
-    /// interface switch / VPN toggle leaves behind, where neither
-    /// `.waiting` nor `.failed` ever fires. Schedules the same
-    /// settle-delayed verdict as wake: a path that recovers in the window
-    /// is spared, and pre-ready flows are spared by the verdict's
-    /// `egressReady` guard (the connect timeout / pre-ready waiting budget
-    /// own those). Disabled when `defaultViabilityLossRecheckMs == 0`.
-    func handleEgressViabilityLoss(_ ctx: TcpFlowContext) {
-        let settleMs = defaultViabilityLossRecheckMs
-        guard settleMs > 0 else { return }
-        // Defer to the precise per-flow `.waiting` tolerance timer when it is
-        // armed: that timer is the deliberately-chosen recovery budget for this
-        // exact path loss, and the coarser viability re-check must not preempt
-        // it (a shorter settle would reset a flow still inside its budget). The
-        // re-check still owns the silent-strand case where `.waiting` never
-        // fires. Belt-and-suspenders on top of the default being == the
-        // tolerance; this also holds if an operator misconfigures it lower.
-        guard !ctx.postReadyWaitingArmed else { return }
-        scheduleDeadPathRecheck(ctx, afterMs: settleMs, trigger: "path change")
-    }
-
-    /// Settle re-check for one established flow. MUST run on the flow's
-    /// own `flowQueue` so the `egressReady` / `lastPathViable` reads stay
-    /// single-threaded with the flow's other callbacks. Reached from two
-    /// triggers — the post-wake reconcile and a mid-session viability loss
-    /// — with the same verdict: reset iff the egress path is no longer
-    /// viable (the `viabilityUpdateHandler` last reported `false` and it
-    /// didn't recover during the settle window). Idempotent: if the flow
-    /// already tore down in the settle window (its NWConnection reported
-    /// `.failed` / `.waiting`, or it closed gracefully) the teardown's
-    /// sticky `done` flag makes this a no-op; if the path recovered,
-    /// `lastPathViable` is `true` again and it is left alone.
-    private func checkDeadPath(_ ctx: TcpFlowContext, trigger: String) {
-        guard ctx.egressReady, ctx.connection != nil, !ctx.egressReset, !ctx.egressFailed else {
+    /// Verdict when the recovery timer fires, on `flowQueue`. Eligibility,
+    /// loss and deadline are all re-read here: another signal may have
+    /// recovered the path, torn the flow down, or extended the allowance
+    /// since the timer was armed.
+    private func checkPathRecovery(_ ctx: TcpFlowContext, trigger: String) {
+        guard isPathRecoveryEligible(ctx), isEgressPathLost(ctx),
+            let deadline = ctx.pathRecoveryDeadline
+        else {
+            ctx.pathRecoveryDeadline = nil
             return
         }
-        // Don't act on a flow whose teardown already ran/started — it may
-        // still be observable here during the window before its async
-        // `removeTcpFlow` lands (e.g. a promoted flow that hit
-        // `applyPromotedTerminal`). `applyWakeDeadPath` would no-op on a
-        // `done` teardown anyway, but bailing here also avoids the
-        // misleading "resetting established flow" log line.
-        guard ctx.isDone != true else { return }
-        guard !ctx.lastPathViable else { return }
+        guard deadline <= .now() else {
+            armPathRecoveryTimer(ctx, trigger: trigger)
+            return
+        }
+        ctx.pathRecoveryDeadline = nil
         logLifecycle(
-            "\(trigger): egress path not viable after settle; resetting established flow")
-        ctx.applyWakeDeadPath()
+            "\(trigger): egress path not viable after recovery allowance; resetting established flow")
+        if ctx.postReadyWaiting {
+            ctx.applyPostReadyFailure(ctx.postReadyWaitingError)
+        } else {
+            ctx.applyWakeDeadPath()
+        }
     }
 
     private func engineDetachedError() -> NSError {
@@ -2917,11 +2885,11 @@ final class TransparentProxyCore: @unchecked Sendable {
             return gate
         }
 
-        /// Test hook: run the post-wake established-flow path re-check
-        /// synchronously, skipping the `defaultPostWakePathRecheckMs`
-        /// settle timer. Mirrors `testRunPeriodicMaintenance`.
-        func testCheckWakeDeadPath(_ ctx: TcpFlowContext) {
-            checkDeadPath(ctx, trigger: "wake")
+        /// Test hook: run the path-recovery verdict synchronously as if the
+        /// allowance just ran out. Mirrors `testRunPeriodicMaintenance`.
+        func testExpirePathRecovery(_ ctx: TcpFlowContext) {
+            if isEgressPathLost(ctx) { ctx.pathRecoveryDeadline = .now() }
+            checkPathRecovery(ctx, trigger: "wake")
         }
 
         /// Test hook: inspect the watchdog's "stuck since last tick" set.

@@ -57,41 +57,39 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
             fx.flow.closeReadCallCount, 1, "connect timeout rejected the flow; stale .ready adds nothing")
     }
 
-    /// `.ready` → `.waiting` → `.ready` recovery clears the
-    /// tolerance timer; flow stays untouched.
+    /// `.ready` → `.waiting` → `.ready` recovery ends the path-recovery
+    /// allowance; flow stays untouched.
     func testWaitingThenReadyRecoveryClearsTolerance() {
         let fx = Fixture()
         fx.session.egressReady = true
+        fx.session.ctx.egressReady = true
 
-        // .waiting arms tolerance.
         fx.session.handleEgressWaiting(nil)
-        XCTAssertNotNil(fx.session.waitingWork)
-        let tolerance = fx.session.waitingWork
+        XCTAssertTrue(fx.session.ctx.postReadyWaiting)
+        XCTAssertNotNil(fx.session.ctx.pathRecoveryDeadline)
 
-        // Recovery .ready cancels tolerance.
         fx.session.handleEgressReady(connection: fx.conn)
-        XCTAssertNil(fx.session.waitingWork, "recovery clears tolerance")
-        XCTAssertTrue(tolerance?.isCancelled ?? false, "tolerance timer was invalidated")
+        XCTAssertFalse(fx.session.ctx.postReadyWaiting)
+        XCTAssertNil(fx.session.ctx.pathRecoveryDeadline, "recovery ends the allowance")
         XCTAssertEqual(fx.flow.closeReadCallCount, 0, "flow untouched by recovery")
         XCTAssertEqual(fx.conn.cancelCount, 0)
     }
 
     /// `.ready` → `.waiting` → `.failed` (post-ready) triggers the
-    /// full teardown exactly once; the tolerance timer is cancelled
-    /// before it fires.
+    /// full teardown exactly once; the expired allowance adds nothing.
     func testWaitingThenFailedRunsFullTeardownOnce() {
         let fx = Fixture()
         fx.session.egressReady = true
+        fx.session.ctx.egressReady = true
         fx.session.handleEgressWaiting(nil)
-        let tolerance = fx.session.waitingWork
-        XCTAssertNotNil(tolerance)
+        XCTAssertNotNil(fx.session.ctx.pathRecoveryDeadline)
 
         fx.session.handleEgressFailed(nil)
+        fx.core.testExpirePathRecovery(fx.session.ctx)
 
         XCTAssertTrue(fx.session.ctx.isDone)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1, "post-ready failure closed the flow")
         XCTAssertEqual(fx.conn.cancelCount, 1)
-        XCTAssertTrue(tolerance?.isCancelled ?? false, "tolerance timer cancelled by failure")
     }
 
     /// Two `.failed` state callbacks in a row — only the first
@@ -108,19 +106,20 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)
     }
 
-    /// `.cancelled` after a tolerance timer was armed (e.g. due to
-    /// `.waiting`) invalidates the timer.
+    /// `.cancelled` during a path-recovery allowance tears down once; the
+    /// expired allowance then has nothing to judge.
     func testCancelledClearsArmedTolerance() {
         let fx = Fixture()
         fx.session.egressReady = true
+        fx.session.ctx.egressReady = true
         fx.session.handleEgressWaiting(nil)
-        XCTAssertNotNil(fx.session.waitingWork)
-        let tolerance = fx.session.waitingWork
+        XCTAssertNotNil(fx.session.ctx.pathRecoveryDeadline)
 
         fx.session.handleEgressCancelled()
+        fx.core.testExpirePathRecovery(fx.session.ctx)
 
-        XCTAssertNil(fx.session.waitingWork)
-        XCTAssertTrue(tolerance?.isCancelled ?? false)
+        XCTAssertTrue(fx.session.ctx.isDone)
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
     }
 
     /// Apply two different teardown variants in sequence — only

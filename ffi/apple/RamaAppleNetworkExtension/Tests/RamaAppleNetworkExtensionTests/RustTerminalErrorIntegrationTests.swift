@@ -166,12 +166,11 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
         let tail = Data((0..<(48 * 1024 + 17)).map { UInt8($0 % 251) })
         produceReadErrorAfterClientEOF(h, tail: tail)
         h.session.flowQueue.sync {
-            // An established egress losing its path arms a teardown timer.
+            // An established egress losing its path starts the recovery allowance.
             h.session.handleEgressWaiting(nil)
-            XCTAssertNotNil(h.session.waitingWork)
+            XCTAssertNotNil(h.session.ctx.pathRecoveryDeadline)
             h.session.closeEgressAfterRustDrain()
-            XCTAssertNil(h.session.waitingWork)
-            XCTAssertFalse(h.session.ctx.postReadyWaitingArmed)
+            XCTAssertNil(h.session.ctx.pathRecoveryDeadline)
             // A failure already queued before the reset changes nothing.
             h.session.handleEgressFailed(.posix(.ECONNRESET))
             XCTAssertFalse(h.session.ctx.isDone)
