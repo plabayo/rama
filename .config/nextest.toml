@@ -21,3 +21,14 @@ filter = """
 | (package(rama-js) & test(/a_slow_but_legitimate_script_completes_under_a_generous_limit$/))
 """
 threads-required = "num-test-threads"
+
+[[profile.ci.overrides]]
+# trybuild tests build a dependency graph of their own in a cold target dir; the gRPC one
+# spends 6-8 minutes of it on macOS and Windows runners.
+filter = """
+(package(rama-grpc-examples) & binary(compile))
+| (package(rama-macros) & binary(compiletest))
+| (package(rama-core) & binary(derive_extensions_ref))
+| (package(rama-utils) & binary(include_dir_no_compile))
+"""
+slow-timeout = { period = "60s", terminate-after = 20 }

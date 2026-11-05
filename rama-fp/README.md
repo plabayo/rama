@@ -46,7 +46,7 @@ independent provider check. BrowserStack's passed annotation precedes quit;
 only the local receipt and job pass require successful quit. Collection is not
 packet/replay acceptance.
 
-However, we have [a cron job that runs this script daily at 18h](../.github/workflows/BrowserStack.yml), so there is no need to ever run it yourself.
+However, we have [a cron job that runs this script daily at 18h](../.github/workflows/browser-fingerprinting.yml), so there is no need to ever run it yourself.
 It can also be triggered manually. Via [the Github Actions pane](https://github.com/plabayo/rama/actions).
 
 > Dashboard: <https://automate.browserstack.com/dashboard/v2>

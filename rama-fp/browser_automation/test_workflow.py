@@ -4,7 +4,12 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    NoSuchWindowException,
+    StaleElementReferenceException,
+    TimeoutException,
+)
 
 from browser_automation import workflow
 from browser_automation.workflow import (
@@ -344,6 +349,8 @@ class ChromeWebSocketOverH2Tests(unittest.TestCase):
 class FormSubmissionTests(unittest.TestCase):
     def test_replaced_form_is_found_again_and_submitted_once(self):
         driver = Mock()
+        # The page script replaces the form within the same, still marked, document.
+        driver.execute_script.return_value = False
         stale, current = Mock(), Mock()
         stale.send_keys.side_effect = StaleElementReferenceException()
         driver.find_element.side_effect = [NoSuchElementException(), stale, current]
@@ -352,8 +359,22 @@ class FormSubmissionTests(unittest.TestCase):
         self.assertEqual(driver.find_element.call_count, 3)
         current.send_keys.assert_called_once_with(workflow.Keys.ENTER)
 
+    def test_keypress_that_navigated_is_not_repeated_on_the_next_page(self):
+        for detached in (NoSuchWindowException(), StaleElementReferenceException()):
+            driver = Mock()
+            # Marking the form page, then the check finding a new, unmarked document.
+            driver.execute_script.side_effect = [None, True]
+            button = Mock()
+            button.send_keys.side_effect = detached
+            driver.find_element.return_value = button
+            with patch("selenium.webdriver.support.wait.time.sleep"):
+                workflow.submit_form(driver, 'form[method="GET"][action="/form"]')
+            driver.find_element.assert_called_once()
+            button.send_keys.assert_called_once_with(workflow.Keys.ENTER)
+
     def test_missing_button_fails_with_safe_phase_diagnostic(self):
         driver = Mock()
+        driver.execute_script.return_value = False
         driver.find_element.side_effect = NoSuchElementException("private provider data")
         with self.assertRaisesRegex(ValueError, "form submit button unavailable") as caught:
             workflow.submit_form(driver, 'form[action="/form"]', timeout=0)
