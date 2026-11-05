@@ -614,17 +614,18 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // which IS `flowQueue`, so we're already serialised here. A second
         // hop would re-order this write to AFTER work already queued ahead
         // of it: e.g. a recovery `viable=true` arriving just before a due
-        // `checkDeadPath` would land BEHIND the check, so the check
-        // reads a stale `false` and resets a flow whose path just came back.
+        // recovery verdict would land BEHIND it, so the verdict reads a
+        // stale `false` and resets a flow whose path just came back.
         // Direct assignment lands the value in FIFO order with the callback.
         connection.viabilityUpdateHandler = { [weak self] viable in
             guard let self else { return }
             self.withActiveEngineGeneration {
                 self.ctx.lastPathViable = viable
-                // Mid-session loss (roam / interface switch / VPN toggle):
-                // schedule the settle-delayed dead-path re-check now instead
-                // of waiting for a wake that never comes.
-                if !viable { self.core?.handleEgressViabilityLoss(self.ctx) }
+                if viable {
+                    self.core?.handleEgressPathRecovered(self.ctx)
+                } else {
+                    self.core?.handleEgressPathLoss(self.ctx, trigger: "path change")
+                }
             }
         }
     }
@@ -668,11 +669,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     func handleEgressReady(connection: any NwConnectionLike) {
         if egressReady {
-            // Duplicate `.ready` after a recovered `.waiting`. Cancel
-            // any pending tolerance timer.
-            waitingWork?.cancel()
-            waitingWork = nil
-            ctx.postReadyWaitingArmed = false
+            // Duplicate `.ready` after a recovered `.waiting`.
+            ctx.postReadyWaiting = false
+            ctx.postReadyWaitingError = nil
+            core?.handleEgressPathRecovered(ctx)
             ctx.egressWritePump?.connectionBecameReady()
             return
         }
@@ -694,14 +694,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // now-healthy connection down.
         waitingWork?.cancel()
         waitingWork = nil
-        ctx.postReadyWaitingArmed = false
-        // The egress reached `.ready`, but `viabilityUpdateHandler` fires only
-        // on CHANGE: if the path was already non-viable when we connected, it
-        // will NOT re-fire, so this established-but-non-viable flow would have
-        // no mid-session re-check and could strand until a wake/idle reaper —
-        // exactly the hang the re-check exists to prevent. Arm it now. No-op
-        // when the path is viable or the feature is disabled.
-        if !ctx.lastPathViable { core?.handleEgressViabilityLoss(ctx) }
+        // `viabilityUpdateHandler` fires only on change, so a path already
+        // non-viable at connect would never start the recovery allowance.
+        if !ctx.lastPathViable { core?.handleEgressPathLoss(ctx, trigger: "path change") }
 
         guard let session = sessionHandle else { return }
 
@@ -807,34 +802,21 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     }
 
     func handleEgressWaiting(_ error: NWError?) {
-        // One timer at a time.
-        if waitingWork != nil { return }
-
         if egressReady {
-            // Post-ready: established connection lost its path. Tolerate
-            // a brief blip, then tear down as failed.
+            // Post-ready: established connection lost its path. `.ready`
+            // recovery arrives FIFO on `flowQueue` and ends the allowance
+            // before a due verdict can read stale state.
             core?.logDebug(
                 "egress NWConnection waiting after flow opened: \(String(describing: error))"
             )
-            // `.ready` recovery is delivered via `stateUpdateHandler` in FIFO
-            // order (no re-dispatch hop), so a path that comes back cancels
-            // this timer (`handleEgressReady` → `waitingWork?.cancel()`)
-            // before it fires — no stale-timer reset of a recovered flow.
-            let work = DispatchWorkItem { [weak self] in
-                self?.ctx.postReadyWaitingArmed = false
-                self?.applyPostReadyTeardown(error: error)
-            }
-            waitingWork = work
-            // Mark the precise recovery budget as armed so the coarser
-            // mid-session viability re-check defers to it instead of
-            // preempting it (see `handleEgressViabilityLoss`).
-            ctx.postReadyWaitingArmed = true
-            flowQueue.asyncAfter(
-                deadline: .now() + .milliseconds(Int(defaultEgressWaitingToleranceMs)),
-                execute: work
-            )
+            ctx.postReadyWaiting = true
+            ctx.postReadyWaitingError = error
+            core?.handleEgressPathLoss(ctx, trigger: "waiting")
             return
         }
+
+        // One timer at a time.
+        if waitingWork != nil { return }
 
         // Pre-ready: connect never established, path is down (boot,
         // wake, VPN transition). Fail fast so the app can retry the
@@ -908,7 +890,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         timeoutWork = nil
         waitingWork?.cancel()
         waitingWork = nil
-        ctx.postReadyWaitingArmed = false
+        ctx.pathRecoveryDeadline = nil
     }
 
     private func applyPostReadyTeardown(error: NWError?) {

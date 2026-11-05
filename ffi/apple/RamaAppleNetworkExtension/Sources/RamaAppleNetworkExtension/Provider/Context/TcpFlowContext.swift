@@ -121,18 +121,15 @@ final class TcpFlowContext: @unchecked Sendable {
     /// Latest viability reported by the egress `NWConnection`'s
     /// `viabilityUpdateHandler`. `false` means Network.framework decided
     /// the path can't carry traffic (torn down across a network change /
-    /// sleep). The post-wake reconcile reads this (instead of allocating a
-    /// fresh `currentPath` snapshot per read) to decide whether an
-    /// established flow stranded on a dead path should be reset. Defaults
-    /// `true` so a flow we have no signal about is never reset. Mutated on
-    /// `flowQueue`; read off-queue by `checkDeadPath` (same relaxation
-    /// as `egressReady`).
+    /// sleep). The path-recovery allowance reads this (instead of allocating
+    /// a fresh `currentPath` snapshot per read). Defaults `true` so a flow we
+    /// have no signal about is never reset. Mutated and read on `flowQueue`.
     var lastPathViable = true
-    /// A settle-delayed dead-path re-check (post-wake reconcile or
-    /// mid-session viability-loss trigger) is already scheduled for this
-    /// flow — coalesces a burst of triggers into one outstanding verdict.
-    /// Set / cleared on `flowQueue`, like `lastPathViable`.
-    var deadPathRecheckPending = false
+    /// End of the running path-recovery allowance; `nil` while the path is
+    /// usable. Set / cleared on `flowQueue`, like `lastPathViable`.
+    var pathRecoveryDeadline: DispatchTime?
+    /// One recovery timer per flow; it re-arms itself when the deadline moved.
+    var pathRecoveryTimerArmed = false
     /// A terminal close signal (server EOF / egress close, `viaRust` mode) was
     /// observed. The egress read pump publishes it at the transport boundary
     /// before entering Rust so promotion cannot overtake the one-shot close
@@ -150,14 +147,10 @@ final class TcpFlowContext: @unchecked Sendable {
         get { maintenanceState.withLock { $0.drainClosePending } }
         set { maintenanceState.withLock { $0.drainClosePending = newValue } }
     }
-    /// A post-ready egress `.waiting` tolerance timer is currently armed
-    /// (`TcpFlowSession.handleEgressWaiting` armed it; cleared when it fires,
-    /// is cancelled on `.ready` recovery, or on teardown). That timer is the
-    /// PRECISE per-flow recovery budget for a path loss, so while it is armed
-    /// the coarser mid-session viability re-check must defer to it rather than
-    /// preempt it (see `handleEgressViabilityLoss` / `defaultViabilityLossRecheckMs`).
-    /// Set / cleared on `flowQueue`, like the other lifecycle flags.
-    var postReadyWaitingArmed = false
+    /// The established egress sits in `.waiting`; its error is the reset
+    /// reason if the allowance runs out. Mutated on `flowQueue`.
+    var postReadyWaiting = false
+    var postReadyWaitingError: NWError?
     /// Effective graceful-close linger budget for this flow (from the
     /// egress connect options, else `defaultLingerCloseMs`). Set once by
     /// `TcpFlowSession.startEgressConnection`; read by
@@ -565,7 +558,7 @@ final class TcpFlowContext: @unchecked Sendable {
 
     static func postReadyFailureError() -> Error {
         NSError(
-            domain: "rama.tproxy.tcp", code: -1,
+            domain: "rama.tproxy.tcp", code: Int(ECONNRESET),
             userInfo: [NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"])
     }
 
@@ -587,7 +580,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// engine is gone, leaking the connection + its NECP entry.
     func applyEngineDetached() {
         let err = NSError(
-            domain: "rama.tproxy.engine-detached", code: -1,
+            domain: "rama.tproxy.engine-detached", code: Int(ECONNABORTED),
             userInfo: [NSLocalizedDescriptionKey: "engine detached; flow dropped"])
         applyFullTeardown(error: err, driveForwarder: true)
     }
@@ -599,7 +592,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// `stateQueue` maintenance watchdog.
     func applyDrainBackstop() {
         let err = NSError(
-            domain: "rama.tproxy.drain-backstop", code: -1,
+            domain: "rama.tproxy.drain-backstop", code: Int(ETIMEDOUT),
             userInfo: [
                 NSLocalizedDescriptionKey: "graceful close drain stalled; flow force-dropped"
             ])
@@ -624,7 +617,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// alive-but-idle remainder.
     func applyIdleTimeout() {
         let err = NSError(
-            domain: "rama.tproxy.idle-timeout", code: -1,
+            domain: "rama.tproxy.idle-timeout", code: Int(ETIMEDOUT),
             userInfo: [
                 NSLocalizedDescriptionKey:
                     "promoted flow idle past timeout; flow force-dropped"
@@ -644,7 +637,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// became active is never evicted. See `TransparentProxyCore.reapIdleUnderPressure`.
     func applyPressureEvicted() {
         let err = NSError(
-            domain: "rama.tproxy.pressure-evicted", code: -1,
+            domain: "rama.tproxy.pressure-evicted", code: Int(ECONNABORTED),
             userInfo: [
                 NSLocalizedDescriptionKey:
                     "idle flow evicted under nexus-flow pressure; flow force-dropped"
@@ -652,18 +645,16 @@ final class TcpFlowContext: @unchecked Sendable {
         applyFullTeardown(error: err, driveForwarder: true)
     }
 
-    /// The settle-delayed dead-path re-check (post-wake reconcile, or the
-    /// mid-session viability-loss trigger) found this established flow's
-    /// egress path no longer viable: the path was torn down across a
-    /// network change but the NWConnection stayed `.ready`, so neither
-    /// `.waiting` nor `.failed` fired. Reset it so the client reconnects
-    /// instead of hanging until an idle reaper.
+    /// The path-recovery allowance ran out while the established egress
+    /// stayed `.ready` over a non-viable path, so neither `.waiting` nor
+    /// `.failed` will end it. Reset so the client reconnects instead of
+    /// hanging until an idle reaper.
     func applyWakeDeadPath() {
         let err = NSError(
-            domain: "rama.tproxy.wake-dead-path", code: -1,
+            domain: "rama.tproxy.wake-dead-path", code: Int(ECONNRESET),
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "established egress path not satisfied after system wake; flow reset"
+                    "established egress path not viable after recovery allowance; flow reset"
             ])
         applyFullTeardown(error: err, driveForwarder: true)
     }

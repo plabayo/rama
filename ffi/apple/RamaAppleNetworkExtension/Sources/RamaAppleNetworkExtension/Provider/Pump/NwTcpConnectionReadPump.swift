@@ -456,7 +456,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         if case .failure(let error) = terminal { return error }
         return NSError(
             domain: "rama.tproxy.egress-read",
-            code: -1,
+            code: Int(ECONNABORTED),
             userInfo: [NSLocalizedDescriptionKey: reason])
     }
 

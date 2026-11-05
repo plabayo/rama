@@ -155,63 +155,48 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.ctx.lastPathViable, "recovery must update synchronously too")
     }
 
-    /// The wired handler must also TRIGGER the mid-session dead-path
-    /// re-check on a loss (not just cache it) — through the REAL
-    /// `installEgressStateHandler` wiring, so the lifecycle tests' mirrored
-    /// handler can't drift from production. With the kill switch (`0`) it
-    /// schedules nothing; enabled, a `false` schedules the coalesced
-    /// re-check. The long settle keeps the timer from firing in-test (the
-    /// fixture dies first; the weak-ctx guard then no-ops).
+    /// The real `installEgressStateHandler` wiring starts the path-recovery
+    /// allowance on a loss and ends it on recovery, so the lifecycle tests'
+    /// mirrored handler can't drift from production.
     func testViabilityHandlerSchedulesMidSessionRecheck() {
-        let prev = defaultViabilityLossRecheckMs
-        defer { defaultViabilityLossRecheckMs = prev }
+        let fx = Fixture()
+        fx.session.ctx.egressReady = true
+        fx.session.installEgressStateHandler(connection: fx.conn)
 
-        // Kill switch: the real handler caches viability but schedules nothing.
-        defaultViabilityLossRecheckMs = 0
-        let fxOff = Fixture()
-        fxOff.session.installEgressStateHandler(connection: fxOff.conn)
-        fxOff.conn.simulateViability(false)
-        XCTAssertFalse(
-            fxOff.session.ctx.deadPathRecheckPending,
-            "kill switch (0) must schedule nothing")
-
-        // Enabled: the real handler schedules the coalesced re-check.
-        defaultViabilityLossRecheckMs = 60_000
-        let fxOn = Fixture()
-        fxOn.session.installEgressStateHandler(connection: fxOn.conn)
-        fxOn.conn.simulateViability(false)
-        XCTAssertTrue(
-            fxOn.session.ctx.deadPathRecheckPending,
-            "enabled loss must schedule the re-check through the real handler")
+        fx.conn.simulateViability(false)
+        XCTAssertNotNil(fx.session.ctx.pathRecoveryDeadline, "loss starts the allowance")
+        fx.conn.simulateViability(true)
+        XCTAssertNil(fx.session.ctx.pathRecoveryDeadline, "recovery ends it")
     }
 
     // MARK: - state-timer recovery (FIFO via direct dispatch)
 
-    /// With the `stateUpdateHandler` hop removed and the mock delivering
-    /// state async on the start queue (as NWConnection does), a `.ready`
-    /// recovery runs in FIFO order with a timer armed on `flowQueue` and
-    /// CANCELS it before it can fire — so a post-ready `.waiting` tolerance
-    /// timer never reaps a flow whose path came back. This is the structural
-    /// replacement for the per-timer state guards (no guard needed: the
-    /// handler cancels the timer in order).
+    /// A `.ready` recovery delivered through the installed handler ends the
+    /// allowance `.waiting` armed, so the flow outlives the original deadline.
     func testPostReadyWaitingTimerCancelledByReadyRecovery() {
+        let saved = defaultPathRecoveryMs
+        defaultPathRecoveryMs = 100
+        defer { defaultPathRecoveryMs = saved }
         let fx = Fixture()
-        // Start the connection so the mock delivers state async on flowQueue.
-        fx.session.installEgressStateHandler(connection: fx.conn)
-        fx.conn.start(queue: fx.session.flowQueue)
+        let queue = fx.session.flowQueue
+        queue.sync {
+            fx.session.ctx.egressReady = true
+            fx.session.egressReady = true
+            fx.session.installEgressStateHandler(connection: fx.conn)
+            fx.conn.start(queue: queue)
+        }
 
-        fx.session.egressReady = true                      // post-ready
-        fx.session.handleEgressWaiting(.posix(.ENETDOWN))  // arms tolerance timer (default ~5s)
-        fx.conn.transition(to: .ready)                     // recovery; delivered FIFO on flowQueue
+        fx.conn.transition(to: .waiting(.posix(.ENETDOWN)))
+        XCTAssertNotNil(queue.sync { fx.session.ctx.pathRecoveryDeadline }, ".waiting arms the allowance")
+        XCTAssertTrue(queue.sync { fx.session.ctx.pathRecoveryTimerArmed })
+        fx.conn.transition(to: .ready)
+        XCTAssertNil(queue.sync { fx.session.ctx.pathRecoveryDeadline }, ".ready ends it")
 
-        // After the (immediate) .ready handler runs, the timer is cancelled.
-        let exp = expectation(description: "ready handler processed")
-        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(100)) { exp.fulfill() }
+        let exp = expectation(description: "original deadline passed")
+        queue.asyncAfter(deadline: .now() + .milliseconds(300)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertFalse(
-            fx.session.ctx.isDone,
-            "the .ready handler must cancel the tolerance timer before it fires")
+        XCTAssertFalse(fx.session.ctx.isDone, "recovered flow outlives the original deadline")
         XCTAssertEqual(fx.conn.cancelCount, 0, "connection must not be cancelled")
     }
 
@@ -246,16 +231,16 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.egressReady, "egressReady flips even when session is nil")
     }
 
-    /// Duplicate `.ready` after a `.waiting` recovery cancels any
-    /// pending tolerance timer and is otherwise a no-op.
+    /// Duplicate `.ready` after a `.waiting` recovery ends the waiting
+    /// state and is otherwise a no-op.
     func testHandleEgressReadyDuplicateIsIdempotentAndClearsTolerance() {
         let fx = Fixture()
         fx.session.egressReady = true
-        let waiting = DispatchWorkItem {}
-        fx.session.waitingWork = waiting
+        fx.session.ctx.postReadyWaiting = true
+        fx.session.ctx.postReadyWaitingError = .posix(.ENETDOWN)
         fx.session.handleEgressReady(connection: fx.conn)
-        XCTAssertTrue(waiting.isCancelled, "tolerance timer cancelled on .ready recovery")
-        XCTAssertNil(fx.session.waitingWork)
+        XCTAssertFalse(fx.session.ctx.postReadyWaiting, "waiting ends on .ready recovery")
+        XCTAssertNil(fx.session.ctx.postReadyWaitingError)
     }
 
     // MARK: - handleEgressFailed (pre-ready)
@@ -395,15 +380,19 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.egressReady)
     }
 
-    /// `.waiting` after `.ready` arms a tolerance timer exactly once.
+    /// `.waiting` after `.ready` starts the recovery allowance; a duplicate
+    /// `.waiting` neither extends nor shortens it.
     func testHandleEgressWaitingPostReadyArmsTolerance() {
         let fx = Fixture()
         fx.session.egressReady = true
+        fx.session.ctx.egressReady = true
         fx.session.handleEgressWaiting(nil)
-        XCTAssertNotNil(fx.session.waitingWork)
-        let firstWork = fx.session.waitingWork
+        let first = fx.session.ctx.pathRecoveryDeadline
+        XCTAssertNotNil(first)
+        XCTAssertTrue(fx.session.ctx.pathRecoveryTimerArmed)
+        Thread.sleep(forTimeInterval: 0.01)
         fx.session.handleEgressWaiting(nil)
-        XCTAssertTrue(fx.session.waitingWork === firstWork, "duplicate .waiting does not re-arm")
+        XCTAssertEqual(fx.session.ctx.pathRecoveryDeadline, first, "duplicate .waiting keeps the deadline")
     }
 
     // MARK: - handleEgressCancelled
