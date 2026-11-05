@@ -11,7 +11,7 @@
 the `fastcgi` feature is enabled. Pair it with the `http` feature for the HTTP
 adaptive layers.
 
-## Where it sits
+## Where it fits
 
 ```dot process
 digraph {
@@ -54,28 +54,13 @@ either TCP or a Unix socket — rama ships two turnkey connectors that plug
 straight into `FastCgiClient` / `FastCgiHttpClient`. No custom `Service`
 impl needed.
 
-```rust,ignore
-use rama::gateway::fastcgi::{FastCgiHttpClient, FastCgiTcpConnector};
-
-// php-fpm at 127.0.0.1:9000, front controller at /var/www/index.php
-let client = FastCgiHttpClient::new(FastCgiTcpConnector::php_fpm(
-    "127.0.0.1:9000".parse()?,
-    "/var/www/index.php",
-));
-```
-
-Same shape over a Unix socket (Unix-family targets only):
-
-```rust,ignore
-use rama::gateway::fastcgi::{FastCgiHttpClient, FastCgiUnixConnector};
-
-let client = FastCgiHttpClient::new(FastCgiUnixConnector::php_fpm(
-    "/run/php/php8.3-fpm.sock",
-    "/var/www/index.php",
-));
-```
-
-`php_fpm(target, script)` stages the two CGI params php-fpm needs
+Wrap [`FastCgiTcpConnector`](https://ramaproxy.org/docs/rama/gateway/fastcgi/struct.FastCgiTcpConnector.html)
+in [`FastCgiHttpClient`](https://ramaproxy.org/docs/rama/gateway/fastcgi/struct.FastCgiHttpClient.html)
+to reach php-fpm over TCP (for example at `127.0.0.1:9000`), or use
+[`FastCgiUnixConnector`](https://ramaproxy.org/docs/rama/gateway/fastcgi/struct.FastCgiUnixConnector.html)
+for a Unix socket such as `/run/php/php8.3-fpm.sock` (Unix-family targets only).
+Both have a `php_fpm(target, script)` constructor, where `script` is the
+front controller path (for example `/var/www/index.php`). It stages the two CGI params php-fpm needs
 (`SCRIPT_FILENAME` set to `script`, `DOCUMENT_ROOT` to its parent dir).
 For non-PHP backends, drop the preset and use `new(target)` plus
 `.with_param(cgi::REDIRECT_STATUS, "200")` etc. as appropriate.
@@ -133,7 +118,7 @@ Practical cases this unlocks:
   [path pattern syntax](https://ramaproxy.org/docs/rama/net/uri/index.html#patterns-and-templates).
 
 - **Step-by-step migration.** Sitting on a legacy FastCGI stack (PHP, Python
-  via flup, Perl, …) that you want to replace with Rust *gradually*? Front it
+  via flup, Perl, ...) that you want to replace with Rust *gradually*? Front it
   with a rama HTTP server, port one endpoint at a time, and route the
   not-yet-ported paths back through `FastCgiHttpClient` to the legacy backend.
   The cutover is gradual and reversible.
@@ -151,13 +136,13 @@ In short: think of `FastCgiHttpClient` / `FastCgiHttpService` less as "the
 glue at the system edge" and more as "regular rama Services that happen to
 talk FastCGI on one side." They compose like any other.
 
-## HTTP ↔ FastCGI conversion
+## HTTP <-> FastCGI conversion
 
 When the `http` feature is enabled, `FastCgiHttpClient` and `FastCgiHttpService`
 do the legwork of mapping between HTTP and the CGI environment that backends
 expect. The emitted parameter set follows the nginx / php-fpm de-facto contract
 (`SCRIPT_NAME`, `REQUEST_URI`, `HTTPS`, `REDIRECT_STATUS`, `GATEWAY_INTERFACE=CGI/1.1`,
-`HTTP_*` headers, …). See
+`HTTP_*` headers, ...). See
 [`rama-fastcgi/specifications/nginx_fastcgi_params.md`](https://github.com/plabayo/rama/blob/main/rama-fastcgi/specifications/nginx_fastcgi_params.md)
 for the full reference.
 
@@ -170,7 +155,7 @@ request side. The response side currently buffers stdout up to
 Vendored under `rama-fastcgi/specifications/`:
 
 - [`fastcgi_spec.txt`](https://github.com/plabayo/rama/blob/main/rama-fastcgi/specifications/fastcgi_spec.txt) — FastCGI 1.0 (Open Market, 1996).
-- [`rfc3875.txt`](https://github.com/plabayo/rama/blob/main/rama-fastcgi/specifications/rfc3875.txt) — the semantics of the name-value pairs FastCGI carries.
+- [`rfc3875.txt`](https://github.com/plabayo/rama/blob/main/rama-fastcgi/specifications/rfc3875.txt) - the semantics of the name-value pairs FastCGI transports.
 - [`nginx_fastcgi_params.md`](https://github.com/plabayo/rama/blob/main/rama-fastcgi/specifications/nginx_fastcgi_params.md) — the de-facto convention guide.
 
 ## Examples

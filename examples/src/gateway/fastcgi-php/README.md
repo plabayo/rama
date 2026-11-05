@@ -1,4 +1,4 @@
-# rama × PHP-FPM via FastCGI
+# rama and PHP-FPM via FastCGI
 
 Two end-to-end demos that pair rama's `gateway::fastcgi` with a real PHP-FPM
 backend. Both are exercised in CI on `ubuntu-latest` via the shell scripts

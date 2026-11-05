@@ -1,8 +1,8 @@
 # 🦾 Operating Transparent Proxies
 
-Operating a transparent proxy is a fundamental departure from the "social contract" of system proxies. Here, we move away from asking applications for cooperation and instead use the operating system’s kernel to forcibly redirect traffic.
+Unlike system proxies, which applications may ignore, a transparent proxy does not depend on application support. The operating system's kernel redirects the traffic to the proxy.
 
-This approach is the most robust way to ensure that every byte of traffic—even from "proxy-unaware" applications or universal devices—passes through your Rama instance.
+This is the most reliable way to ensure that every byte of traffic - even from "proxy-unaware" applications or universal devices - passes through your Rama instance.
 
 > [!TIP]
 > In episode 31 of Netstack.FM (_Protocol Shorts: MITM Proxies and Transparent L4 Interception_)
@@ -12,7 +12,7 @@ This approach is the most robust way to ensure that every byte of traffic—even
 > and the differences and challenges that come with transparent proxies
 > in contrast to the more known HTTP/SOCKS5 proxies.
 
-## 1. Linux: The TPROXY Powerhouse
+## 1. Linux: TPROXY
 
 On Linux, transparent proxying is handled by the **Netfilter** framework. The preferred method is **TPROXY** because it allows your proxy to receive traffic on a local port while the kernel maintains the original destination IP and port in the socket metadata.
 
@@ -58,7 +58,7 @@ For a truly transparent experience that catches all apps, you typically need a *
 
 1. **ALE Layers:** You set filters at the **Application Layer Enforcement (ALE)** layers. These layers are hit exactly when an app tries to `connect()` or `bind()`.
 2. **Connect Redirection:** Your driver tells WFP to "Redirect" the connection. Instead of the packet going to the internet, WFP silently points the socket at `127.0.0.1:[RAMA_PORT]`.
-3. **Persistence:** Unlike Linux commands that disappear on reboot, WFP filters are persistent. You must manage the lifecycle of these filters carefully to ensure you don't "soft-brick" the machine’s internet if your proxy service stops.
+3. **Persistence:** Unlike Linux commands that disappear on reboot, WFP filters are persistent. You must manage the lifecycle of these filters carefully to ensure you don't "soft-brick" the machine's internet if your proxy service stops.
 
 * **Official Documentation:** [Microsoft: Windows Filtering Platform](https://learn.microsoft.com/en-us/windows/win32/fwp/windows-filtering-platform-start-page)
 * **Useful Tooling:** The **`AppId`** and **`UserId`** metadata provided at the ALE layer are essential for filtering "Work" traffic vs. "Personal" traffic.
@@ -71,7 +71,7 @@ in this dedicated chapter: [./transparent/windows.md](./transparent/windows.md).
 Operating a transparent proxy at scale usually requires more than just "grabbing" the traffic. You often need these auxiliary modules to make the system functional:
 
 * **DNS Interception:** If you are redirecting port 443, you must also handle DNS. Most transparent setups redirect UDP/53 to a local DNS resolver (like `unbound` or a Rama-based DNS service) to prevent "DNS Leaking",
-* **Conntrack (Connection Tracking):** On Linux, the `nf_conntrack` module is vital. It allows your proxy to remember the state of a connection so that return packets from the internet are correctly "de-proxied" back to the client.
+* **Conntrack (Connection Tracking):** On Linux, the `nf_conntrack` module is required. It allows your proxy to remember the state of a connection so that return packets from the internet are correctly "de-proxied" back to the client.
 * **BPF (Berkeley Packet Filter):** For ultra-high-performance filtering, **eBPF** on Linux can be used to drop or redirect packets before they even reach the standard firewall layers, significantly reducing CPU overhead for high-traffic gateways.
 
 ## Fail open Vs Fail closed

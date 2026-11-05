@@ -80,7 +80,7 @@ relied upon by rama-http-core or related to.
 
 ### Related, vendored in sibling crates
 
-To avoid duplication, the following load-bearing specifications live next
+To avoid duplication, the following specifications live next
 to the crate that owns their primary concern:
 
 * [rfc3986.txt](../../rama-net/specifications/uri/rfc3986.txt) —

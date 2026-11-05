@@ -41,6 +41,22 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 Embedded JavaScript execution for `rama`.
 
+- `JsRuntime` runs scripts on the current thread (`eval`, `exec`, `call`).
+- `JsWorker` owns a long-lived runtime on a dedicated thread: compile a script
+  once, then `call` into it from async code. It takes a bounded queue and an
+  optional timeout.
+- `JsRuntimeBuilder` configures both: host functions (`with_fn`), globals,
+  and limits for memory, loop iterations and execution time.
+
+The engine runs inside a WebAssembly component without WASI capabilities, so
+scripts get no host clock or randomness unless a host function provides them.
+The limits are guardrails, not a complete security boundary.
+
+The `interpreter` feature makes the Pulley interpreter backend available; select
+it with `JsRuntimeBuilder::with_backend(JsBackend::Interpreter)`. The `disk-cache`
+feature caches compiled code across process starts. Through the `rama` crate
+this is `rama::js`, enabled with the `js` feature.
+
 The embedded engine artifact contains SpiderMonkey, StarlingMonkey and
 ComponentizeJS. Their exact revisions, source links and license terms are in
 [the embedded engine notices](engine/starling/NOTICE.md). Rama's integration

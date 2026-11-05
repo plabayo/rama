@@ -12,7 +12,7 @@
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 
-[crates-badge]: https://img.shields.io/crates/v/rama-http-core-core.svg
+[crates-badge]: https://img.shields.io/crates/v/rama-http-core.svg
 [crates-url]: https://crates.io/crates/rama-http-core
 [docs-badge]: https://img.shields.io/docsrs/rama-http-core/latest
 [docs-url]: https://docs.rs/rama-http-core/latest/rama_http_core/index.html
@@ -40,6 +40,13 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 ## rama-http-core
 
 Rama http protocol implementation and low level utilities.
+
+- [`client`](src/client/mod.rs) and [`server`](src/server/mod.rs): HTTP/1.1 and
+  HTTP/2 connections over any byte stream, plus an auto-detecting HTTP/1.1 or
+  HTTP/2 server connection.
+- [`h2`](src/h2/mod.rs): the HTTP/2 implementation.
+- [`h3`](src/h3/mod.rs): the HTTP/3 client and server engine with QPACK,
+  gated behind the `quic` feature (the `rama` crate's `quic` feature enables it).
 
 Forked from [`hyper`] and [`hyper-util`] with the goals of contributing
 upstream where we can. Rama's requirements do not however match 1-on-1

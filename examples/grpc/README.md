@@ -24,7 +24,7 @@ it out of the box as long as you have the `protobuf` feature enabled (a default 
 This example uses the crate to set up a HealthServer that will run alongside the application service. In order to test it, you may use community tools like [grpc-health-probe](https://github.com/grpc-ecosystem/grpc-health-probe).
 
 For example, run the health server example
-(which toggles the serve status of the hello world example server every 250ms`):
+(which toggles the serve status of the hello world example server every 250ms):
 
 ```bash
 cargo run -p rama-grpc-examples --bin health-server

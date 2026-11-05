@@ -1,6 +1,6 @@
 # 🍎 Operating Transparent Proxies on macOS
 
-On macOS, transparent proxying is implemented using Apple’s **Network Extension** framework. Unlike Linux, where you directly manipulate packet flow using firewall rules, macOS provides a structured, system-managed environment for intercepting and handling traffic.
+On macOS, transparent proxying is implemented using Apple's **Network Extension** framework. Unlike Linux, where you directly manipulate packet flow using firewall rules, macOS provides a structured, system-managed environment for intercepting and handling traffic.
 
 This makes the model safer and more controlled, but also more opinionated. You do not intercept packets manually. Instead, you register a system extension that macOS invokes whenever matching traffic flows occur.
 
@@ -21,7 +21,7 @@ To run a transparent proxy on macOS, you need three components:
    A sandboxed system extension that implements `NETransparentProxyProvider` and receives intercepted traffic.
 
 3. **A Proxy Runtime**
-   In Rama’s case, this is typically a Rust static library that performs the actual proxying, MITM logic, and routing decisions.
+   In Rama's case, this is typically a Rust static library that performs the actual proxying, MITM logic, and routing decisions.
 
 Once installed and started, macOS owns the lifecycle of the extension. Your host application acts only as a controller.
 
@@ -173,7 +173,7 @@ Installation typically involves:
 
 Once installed:
 
-* The extension appears under **System Settings → Network → Filters & Proxies**
+* The extension appears under **System Settings -> Network -> Filters & Proxies**
 * The user or system can enable or disable it
 * The system persists its state across reboots
 

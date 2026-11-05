@@ -12,10 +12,13 @@
 ## Description
 
 A HAR file represents a chronological log of HTTP activity.
-Each entry contains a full request and its corresponding response, including headers, body payloads, status codes, timing data, and optional comments.
+Each entry contains a request and its corresponding response, with headers, status codes, timing data and optional comments.
+Body payloads are optional: a recorder may leave them out or truncate them,
+and sensitive headers may be redacted.
 
-HAR was originally designed for browser developer tools, but its usefulness extends far beyond debugging web pages.
-Because it is deterministic and self contained, a HAR file can act as a **frozen snapshot of (HTTP) network behavior**.
+HAR was originally designed for browser developer tools, but it is also useful outside of them.
+A HAR file records what was sent and received, so it can serve as a **snapshot of (HTTP) network behavior**.
+Replaying it reproduces that recorded data, not the timing, connection reuse or TLS details of the original exchange.
 
 Rama provides native support for working with HAR files, including converting them into strongly typed HTTP requests and responses.
 This makes HAR a practical building block for testing, replay, inspection, and traffic analysis.
@@ -37,12 +40,10 @@ Common use cases include:
 - **Offline development** without relying on flaky or unavailable services
 - **Security analysis** to review traffic for sensitive data or unexpected behavior
 
-Unlike hand written mocks, HAR captures reality.
-It includes edge cases, unusual headers, binary payloads, and timing patterns that are difficult to reproduce manually.
+Unlike hand written mocks, a HAR file is recorded from real traffic.
+It includes edge cases, unusual headers and binary payloads that are difficult to reproduce manually.
 
 ## Rama Support
-
-Rama treats HAR as a first class citizen.
 
 When the `http` feature is enabled, Rama allows you to:
 
@@ -53,7 +54,10 @@ When the `http` feature is enabled, Rama allows you to:
   [`rama::http::Response`](https://ramaproxy.org/docs/rama/http/struct.Response.html)
 - Replay traffic through a real HTTP client or server stack
 
-Because Rama’s HTTP types are shared across client, server, and middleware layers, HAR replay integrates naturally with tracing, compression, retries, and other layers.
+An entry without recorded body text converts to an empty body,
+so a replay of a truncated or body-less capture does not send the original payload.
+
+Because Rama's HTTP types are shared across client, server, and middleware layers, HAR replay integrates naturally with tracing, compression, retries, and other layers.
 
 There is no separate mocking framework.
 A HAR file simply becomes another source of HTTP traffic.
@@ -87,7 +91,7 @@ Because HAR captures payloads as text or base64, both textual and binary bodies 
 HAR replay gives you deterministic behavior.
 Every request and response is known in advance.
 
-Combined with Rama’s layering model, you can easily:
+Combined with Rama's layering model, you can easily:
 
 - Inject artificial latency
 - Add tracing or logging

@@ -19,7 +19,7 @@ for IPv4 and IPv6; TLS and QUIC processing remain aioquic's.
 harness's own regressions. `tests/datagram_cases.rs` has DATAGRAM in both Rama roles: the peer
 advertises a small `max_datagram_frame_size`, so what limits a datagram is the value it
 advertised rather than the path, and the local outgoing buffer is set small so a test can fill
-it deliberately.
+it on purpose.
 
 `tests/resumption.rs` has resumption and 0-RTT: a client that asked for early data offers it
 and the server accepts it, and a client that did not ask still resumes and offers none. Early

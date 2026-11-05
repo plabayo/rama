@@ -12,10 +12,10 @@
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 
-[crates-badge]: https://img.shields.io/crates/v/rama-unix.svg
-[crates-url]: https://crates.io/crates/rama-unix
-[docs-badge]: https://img.shields.io/docsrs/rama-unix/latest
-[docs-url]: https://docs.rs/rama-unix/latest/rama_unix/index.html
+[crates-badge]: https://img.shields.io/crates/v/rama-crypto.svg
+[crates-url]: https://crates.io/crates/rama-crypto
+[docs-badge]: https://img.shields.io/docsrs/rama-crypto/latest
+[docs-url]: https://docs.rs/rama-crypto/latest/rama_crypto/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
@@ -43,7 +43,7 @@ Crypto primitives and dependencies used by rama.
 
 This includes but is not limited to:
 - Certificates
-- Javascript object signing and encryption (JOSE): JWS, JWK, JWT, JWE...
+- JSON Object Signing and Encryption (JOSE): JWA, JWK and JWS (needs the `aws-lc` feature)
 - Public and private keys
 - Signing
 

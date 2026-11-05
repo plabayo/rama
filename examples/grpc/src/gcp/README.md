@@ -15,7 +15,7 @@ from the main page on the dashboard. When you have both of these items you can
 run the example like so:
 
 ```shell
-GCP_AUTH_TOKEN="<access-token>" cargo run --bin gcp-client -- <project-id>
+GCP_AUTH_TOKEN="<access-token>" cargo run -p rama-grpc-examples --bin gcp-pubsub-client -- <project-id>
 ```
 
 [OAuth playground]: https://developers.google.com/oauthplayground/

@@ -3,7 +3,7 @@
 <div class="book-article-intro">
     <img src="../img/proxy_llama_mitm.jpeg" alt="artistic representation of rama MITM proxy as llama snooping into cargo packages">
     <div>
-        A Man-In-The-Middle (MITM) proxy is a proxy that sits between the client and the server.
+        A Man-In-The-Middle (MITM) proxy is a proxy placed between the client and the server.
         While this positioning is common to all proxies, what distinguishes an MITM proxy is its
         active interpretation of application layer packets. Although it may modify packets as they pass through,
         its primary function is typically to inspect and track the traffic.
@@ -30,7 +30,7 @@
 
 - [/examples/src/mitm_ocsp_relay_gate.rs](https://github.com/plabayo/rama/tree/main/examples/src/mitm_ocsp_relay_gate.rs):
   Test harness behind the MITM OCSP-stapling gate: a local upstream TLS server
-  plus the boring relay proxy, exercising the mirror → issue → staple flow so an
+  plus the boring relay proxy, exercising the mirror -> issue -> staple flow so an
   external client (`curl --cert-status` / `openssl s_client -status`) can validate
   the stapled leaf. Driven by `scripts/ocsp-relay-gate.sh` (`just test-ocsp-gate`).
 
@@ -75,6 +75,6 @@ profile, WebSocket, and encryption adapters live in their owning crates. Combine
 The CLI inspector also exposes a machine API on the same authenticated web server.
 Start `rama serve proxy --mitm --inspect-json` for JSON readiness information, or
 use the token in the normal startup link. Send `Authorization: Bearer <token>` to
-`GET /api` for operation discovery and `/api/help` for the observe → select hosts →
-intercept → export workflow. No browser session or MCP server is required. A human
+`GET /api` for operation discovery and `/api/help` for the observe -> select hosts ->
+intercept -> export workflow. No browser session or MCP server is required. A human
 can continue using the GUI while an agent queries traffic or operates the controls.

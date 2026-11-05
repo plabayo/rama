@@ -27,10 +27,10 @@ here; see the cross-references at the bottom.
 * [rfc9110.txt](./uri/rfc9110.txt) — HTTP semantics. Defines the
   `http` / `https` URI schemes, default ports, the userinfo
   prohibition in transmitted request-targets, and effective
-  request URI reconstruction (§7.2).
+  request URI reconstruction (section 7.2).
 
 * [rfc9112.txt](./uri/rfc9112.txt) — HTTP/1.1 message syntax.
-  §3.2 specifies the four request-target forms (origin, absolute,
+  section 3.2 specifies the four request-target forms (origin, absolute,
   authority, asterisk) that [`src/uri/`](../src/uri) must round-trip.
 
 * [rfc9844.txt](./uri/rfc9844.txt) — IPv6 zone identifiers in user
@@ -43,7 +43,7 @@ here; see the cross-references at the bottom.
   by the optional `idna` feature.
 
 * [rfc6265.txt](./uri/rfc6265.txt) — HTTP cookies. Kept here
-  because its host canonicalization rules (§5.1.2-§5.1.4) must
+  because its host canonicalization rules (sections 5.1.2-5.1.4) must
   agree with the URI module's host normalization, otherwise
   cookie binding silently drifts.
 
@@ -130,13 +130,13 @@ IPv4 carried inside IPv6 addresses, extracted by
 
 * [rfc6052.txt](./ip/rfc6052.txt) — IPv4/IPv6 translation address
   format: prefix lengths, the reserved bits 64 to 71, the well-known
-  prefix `64:ff9b::/96` (§2.1–2.4).
+  prefix `64:ff9b::/96` (section 2.1-2.4).
 * [rfc8215.txt](./ip/rfc8215.txt) — the local-use translation
   prefix `64:ff9b:1::/48`.
-* [rfc3056.txt](./ip/rfc3056.txt) — 6to4: `2002:V4ADDR::/48` (§2).
+* [rfc3056.txt](./ip/rfc3056.txt) — 6to4: `2002:V4ADDR::/48` (section 2).
 * [rfc4380.txt](./ip/rfc4380.txt) — Teredo address layout and the
-  obfuscated client address (§4); `2001::/32` is the IANA-assigned
-  Teredo prefix. IPv4-compatible addresses: [rfc4291.txt](./ip/rfc4291.txt) §2.5.5.1.
+  obfuscated client address (section 4); `2001::/32` is the IANA-assigned
+  Teredo prefix. IPv4-compatible addresses: [rfc4291.txt](./ip/rfc4291.txt) section 2.5.5.1.
 
 ### GeoIP / MMDB
 
@@ -152,7 +152,7 @@ IPv4 carried inside IPv6 addresses, extracted by
   authored by MaxMind and licensed under
   [Creative Commons Attribution-ShareAlike 3.0](https://creativecommons.org/licenses/by-sa/3.0/)
   (the MaxMind-DB *repository code* is Apache-2.0/MIT, but the
-  specification text carries its own CC-BY-SA license — see the footer
+  specification text has its own CC-BY-SA license — see the footer
   of the vendored file). It is reproduced here verbatim with its
   original attribution and license notice intact. We do **not** ship any
   MaxMind (or other vendor) database files: those are separately

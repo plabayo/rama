@@ -88,7 +88,7 @@ Messages can be either text or binary.
 > RFC: Bootstrapping WebSockets with HTTP/2: <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc8441.txt>
 
 While traditional WebSockets rely on HTTP/1.1's `Upgrade` and `Connection: upgrade` headers to switch protocols,
-HTTP/2 doesn’t support these connection-wide semantics due to its stream-multiplexing architecture.
+HTTP/2 doesn't support these connection-wide semantics due to its stream-multiplexing architecture.
 Instead, RFC 8441 introduces a new mechanism: an **extended CONNECT method** combined with a new pseudo-header
 `:protocol: websocket`. When the `SETTINGS_ENABLE_CONNECT_PROTOCOL` flag is set, clients may initiate a
 WebSocket stream by issuing a `CONNECT` request with additional pseudo-headers like `:scheme`, `:path`, and
@@ -96,7 +96,7 @@ WebSocket stream by issuing a `CONNECT` request with additional pseudo-headers l
 
 Despite the different handshake, once established,
 **the resulting stream behaves just like a WebSocket TCP connection** from the perspective of the application:
-bidirectional, message-based communication with binary or text frames. HTTP/2’s stream-layer features like
+bidirectional, message-based communication with binary or text frames. HTTP/2's stream-layer features like
 prioritization and flow control also apply, enabling better resource sharing.
 
 The core WebSocket protocol (RFC 6455) remains unchanged beyond the handshake;
@@ -112,7 +112,7 @@ can relay WebSockets, mirroring what the upstream server announces.
 
 RFC 9220 reuses the same Extended CONNECT mechanism on an HTTP/3 request stream:
 the handshake is a `CONNECT` request with `:protocol: websocket`, and the stream that follows
-carries the WebSocket frames.
+transports the WebSocket frames.
 
 As with HTTP/2, a server has to opt in, by announcing Extended CONNECT in its settings,
 and a client only starts such a handshake once it has seen that announcement.
@@ -125,7 +125,7 @@ The `ws_over_h3` example shows both sides.
 
 > 📚 Rust Docs: <https://ramaproxy.org/docs/rama/http/ws/index.html>
 
-With Rama’s `ws` or `http-full` feature enabled, full WebSocket support is built-in for both
+With Rama's `ws` or `http-full` feature enabled, full WebSocket support is built-in for both
 [**servers**](../web_servers.md) and [**clients**](./http_clients.md). You can:
 
 - Accept WebSocket upgrades and handle messages asynchronously
@@ -137,7 +137,7 @@ also already handled for you automatically when you use the runtime API, so this
 As such, you'll see that high level functionality such as a ws client/server or the built-in ws echo server
 only handle the text/binary messages.
 
-There’s no hardcoded opinion about message format. Text, binary, newline-delimited, JSON, MessagePack—it’s your protocol, Rama just streams it. How you decode them is up to you. See the examples for inspiration.
+There's no hardcoded opinion about message format. Text, binary, newline-delimited, JSON, MessagePack—it's your protocol, Rama just streams it. How you decode them is up to you. See the examples for inspiration.
 
 ### Flexible transport support
 
@@ -150,20 +150,21 @@ flexibility that Rama offers for all HTTP layers:
 - Need secure WebSocket (WSS)? TLS is fully supported out of the box—no special handling required.
 - Want to route through a proxy protocol like HAProxy, or use remote proxies such as HTTP or SOCKS5?
   That works the same way as any other HTTP request in Rama.
-- Prefer using UNIX domain sockets instead of TCP? That’s supported too—just plug it in.
+- Prefer using UNIX domain sockets instead of TCP? That's supported too—just plug it in.
 
 ### WebSocket support in rama binary
 
 The [rama CLI tool](../deploy/rama-cli.md) has WebSocket support:
 
-- server-side in the echo and fingerprint commands.
+- server-side in the `rama serve echo` and `rama serve fp` commands.
   - E.g. for the echo command you can enable it using `--ws`
   - the public `https://echo.ramaproxy.org` website accepts also WebSocket connections on any endpoint
-- client side with a Terminal User Interface (TUI) via the `rama ws` command
+- client side with a Terminal User Interface (TUI) by sending to a `ws://` or `wss://` URI,
+  e.g. `rama wss://echo.ramaproxy.org` (short for `rama send wss://echo.ramaproxy.org`)
   - this can be a useful client to quickly test out a WebSocket service or a MITM WS Proxy;
 
 <div class="book-article-image-center">
-<img src="../img/rama_ws_client_tui_demo.gif" alt="visual demo of the rama ws command and its TUI">
+<img src="../img/rama_ws_client_tui_demo.gif" alt="visual demo of the rama WebSocket client and its TUI">
 </div>
 
 ### Examples
@@ -191,4 +192,4 @@ you can find inspiration on how to MITM proxy WebSocket traffic. As often it is 
 way to achieve it, but in case you didn't know yet how to begin doing so,
 it might be sufficient to get you started at least.
 
-Rama’s WebSocket types integrate with its typed headers and upgrade machinery, giving you seamless access to the WebSocket handshake and stream lifecycle.
+Rama's WebSocket types integrate with its typed headers and upgrade machinery, giving you direct access to the WebSocket handshake and stream lifecycle.

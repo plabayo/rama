@@ -39,7 +39,7 @@ The nightly job uses this same command and uploads that one receipt directory.
 
 Each cell records requested and resolved browser identity, its origin, successful
 per-flow protocols and session/quit outcomes. Generic errors remain failed cells;
-“unsupported” needs a separately verified provider disposition. Receipts contain
+"unsupported" needs a separately verified provider disposition. Receipts contain
 no cookies, session IDs or exception messages. Session start means the driver
 context yielded; quit success means WebDriver's quit call returned. Neither is an
 independent provider check. BrowserStack's passed annotation precedes quit;

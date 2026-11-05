@@ -27,7 +27,7 @@ many common patterns that are similar to other proxies, including your own previ
 
 This is where Rama steps in. Rama enables you to develop network proxies tailored to your specific
 use case while providing reusable components for the common patterns. It allows you to focus on
-what makes your proxy unique while leveraging shared functionality.
+what makes your proxy unique and reuse the rest.
 
 ## Alternatives
 
@@ -54,12 +54,12 @@ both forward and reverse proxies.
 ## More than proxies
 
 During Rama's initial development, we discovered that its advantages extend beyond proxy development
-to [web servers](./web_servers.md) and clients (not just [http clients](./http/http_clients.md)):
+to [web servers](./web_servers.md) and clients, including but not limited to [http clients](./http/http_clients.md):
 
 * Utilize Async Method Traits for efficient asynchronous operations;
-* Leverage modular [Tower](https://github.com/tower-rs/tower)-like middleware with extensions;
+* Use modular [Tower](https://github.com/tower-rs/tower)-like middleware with extensions;
 * Maintain full control over your web stack from the Transport Layer (TCP, UDP, QUIC) through TLS and HTTP;
-* Ensure the integrity of your proxied data. E.g. for HTTP/1.1preserving header casing and order;
+* Ensure the integrity of your proxied data. E.g. for HTTP/1.1, preserving header casing and order;
 
 Continue reading this book to learn more about using Rama for these various purposes.
 

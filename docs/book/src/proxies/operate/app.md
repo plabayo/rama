@@ -36,4 +36,4 @@ These are useful because they stay "pinned" to that specific app. You might want
 
 ## Why use this over a System Proxy?
 
-The beauty of application-specific proxying is **isolation**. Because the proxy logic is contained within the environment of a single process, you don't risk breaking your entire machine if your Rama instance goes down or if you're experimenting with a "noisy" MITM configuration. It’s the safest way to iterate during development before you decide to "go global" with a system-wide or transparent setup.
+The beauty of application-specific proxying is **isolation**. Because the proxy logic is contained within the environment of a single process, you don't risk breaking your entire machine if your Rama instance goes down or if you're experimenting with a "noisy" MITM configuration. It's the safest way to iterate during development before you decide to "go global" with a system-wide or transparent setup.

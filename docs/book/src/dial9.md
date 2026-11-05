@@ -1,7 +1,7 @@
 # 🐕 dial9
 
 [dial9] records Tokio scheduling and rama protocol activity for offline diagnostics.
-Enable rama’s optional Dial9 support and attach an application-owned recorder.
+Enable rama's optional Dial9 support and attach an application-owned recorder.
 One recorder can serve multiple runtimes; the application chooses storage,
 profiling sources and when recording starts or stops.
 
@@ -16,7 +16,7 @@ their own events to the same flow. The [Apple transparent proxy example] shows
 an integration at a synchronous runtime boundary.
 
 Recording has a cost. Start with lifecycle events and measure your workload
-before adding profiling sources. Tokio’s unstable instrumentation expands task
+before adding profiling sources. Tokio's unstable instrumentation expands task
 coverage; platform support and further options are described [upstream][dial9].
 
 [dial9]: https://github.com/dial9-rs/dial9

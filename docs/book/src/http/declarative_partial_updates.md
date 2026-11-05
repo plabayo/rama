@@ -18,7 +18,7 @@ incrementally:
 
 - `<?marker name="x">` processing instructions in the shell mark insertion
   points.
-- `<template for="x">…</template>` blocks emitted later in the same response
+- `<template for="x">...</template>` blocks emitted later in the same response
   carry the rendered fragment; the parser swaps each template's contents into
   the matching marker as it appears.
 
@@ -29,10 +29,10 @@ HTTP/1.1 200 OK
 Content-Type: text/html; charset=utf-8
 Transfer-Encoding: chunked
 
-  -- chunk 1: the shell with <?marker …> placeholders, flushed immediately
-  -- chunk 2: <template for="ping">…</template>   (200ms later)
-  -- chunk 3: <template for="herd">…</template>   (900ms later)
-  -- chunk 4: <template for="recs">…</template>   (1500ms later)
+  -- chunk 1: the shell with <?marker ...> placeholders, flushed immediately
+  -- chunk 2: <template for="ping">...</template>   (200ms later)
+  -- chunk 3: <template for="herd">...</template>   (900ms later)
+  -- chunk 4: <template for="recs">...</template>   (1500ms later)
 ```
 
 Native support shipped in Chrome 148+ behind
@@ -46,7 +46,7 @@ from `unpkg.com/template-for-polyfill`).
 > fragment chunk — the trailing `<wbr>` gives every template an element
 > sibling at its own arrival, mirroring the spirit of Google's
 > [photo-album demo][demo]. Markers also support the **range form**
-> `<?start name="x">…<?end>` ([`start`] / [`end`]): the skeleton between
+> `<?start name="x">...<?end>` ([`start`] / [`end`]): the skeleton between
 > is replaced wholesale on swap, so no CSS gymnastics to hide loading
 > chrome — drop a `<wbr>` (or any element) right after `<?end>` though, so
 > it isn't last-sibling either. See Google's [explainer][exp] for the spec.
