@@ -736,6 +736,8 @@ pub struct TransparentProxyConfig {
     /// no "0 means unset" path. It stays at least 64 KiB below the aggregate
     /// payload cap so one TCP waiter cannot black-hole UDP/QUIC/H3 replies.
     tcp_write_pump_max_pending_bytes: usize,
+    /// Maximum TCP payload view/read size; independent of the total writer budget.
+    tcp_payload_view_max_bytes: usize,
     /// Exact core/process-lifetime envelope shared by every Swift TCP/UDP
     /// writer and retained TCP replay/cutover buffer. Engine replacement
     /// reconfigures the same object, so retiring generations cannot stack caps.
@@ -786,6 +788,7 @@ impl TransparentProxyConfig {
             // isn't dead code and the documented per-flow cap is what's
             // actually applied at runtime.
             tcp_write_pump_max_pending_bytes: kib(256),
+            tcp_payload_view_max_bytes: kib(64),
             writer_memory_max_bytes: DEFAULT_WRITER_MEMORY_MAX_BYTES,
             writer_memory_max_items: DEFAULT_WRITER_MEMORY_MAX_ITEMS,
             flow_pressure_soft_cap: DEFAULT_FLOW_PRESSURE_SOFT_CAP,
@@ -829,6 +832,25 @@ impl TransparentProxyConfig {
                 .saturating_sub(WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES)
                 .max(MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES),
         )
+    }
+
+    /// Maximum TCP payload view/read size, defaulting to 64 KiB.
+    ///
+    /// This is a chunk limit, not a TCP window or an allocation reservation.
+    /// The effective value cannot exceed the writer cap or the headroom beside
+    /// one writer retry and the minimum UDP reserve. Getters apply the bounds
+    /// independently of builder order. Larger source allocations remain charged
+    /// in full until their last view is released.
+    #[must_use]
+    pub fn tcp_payload_view_max_bytes(&self) -> usize {
+        self.tcp_payload_view_max_bytes
+            .min(self.tcp_write_pump_max_pending_bytes())
+            .min(
+                self.writer_memory_max_bytes
+                    .saturating_sub(self.tcp_write_pump_max_pending_bytes())
+                    .saturating_sub(WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES)
+                    .max(1),
+            )
     }
 
     /// Core/process-lifetime Swift retained-payload budget.
@@ -970,6 +992,16 @@ impl TransparentProxyConfig {
                 MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
                 MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
             );
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the maximum TCP payload view/read size. Zero is clamped to one.
+        /// See [`Self::tcp_payload_view_max_bytes`] for effective safety bounds.
+        /// This does not increase the aggregate payload budget or writer cap.
+        pub fn tcp_payload_view_max_bytes(mut self, bytes: usize) -> Self {
+            self.tcp_payload_view_max_bytes = bytes.max(1);
             self
         }
     }
@@ -1139,6 +1171,62 @@ mod transparent_proxy_config_tests {
         }
         for raw in [0, 4, u32::MAX] {
             assert_eq!(TransparentProxyFlowAction::from_raw_strict(raw), Err(raw));
+        }
+    }
+
+    #[test]
+    fn tcp_payload_view_default_and_bounds() {
+        assert_eq!(
+            TransparentProxyConfig::new().tcp_payload_view_max_bytes(),
+            kib(64)
+        );
+        for size in [kib(64), kib(128), kib(256)] {
+            let config = TransparentProxyConfig::new().with_tcp_payload_view_max_bytes(size);
+            assert_eq!(config.tcp_payload_view_max_bytes(), size);
+            assert_eq!(
+                config.writer_memory_max_bytes(),
+                DEFAULT_WRITER_MEMORY_MAX_BYTES
+            );
+        }
+        assert_eq!(
+            TransparentProxyConfig::new()
+                .with_tcp_payload_view_max_bytes(0)
+                .tcp_payload_view_max_bytes(),
+            1
+        );
+        assert_eq!(
+            TransparentProxyConfig::new()
+                .with_tcp_payload_view_max_bytes(usize::MAX)
+                .tcp_payload_view_max_bytes(),
+            kib(256)
+        );
+        assert_eq!(
+            TransparentProxyConfig::new()
+                .with_tcp_payload_view_max_bytes(kib(256))
+                .with_tcp_write_pump_max_pending_bytes(17)
+                .tcp_payload_view_max_bytes(),
+            17
+        );
+    }
+
+    #[test]
+    fn tcp_payload_view_preserves_reserves_independent_of_builder_order() {
+        let first = TransparentProxyConfig::new()
+            .with_tcp_payload_view_max_bytes(kib(256))
+            .with_tcp_write_pump_max_pending_bytes(MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES)
+            .with_writer_memory_max_bytes(MIN_WRITER_MEMORY_MAX_BYTES);
+        let last = TransparentProxyConfig::new()
+            .with_writer_memory_max_bytes(MIN_WRITER_MEMORY_MAX_BYTES)
+            .with_tcp_write_pump_max_pending_bytes(MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES)
+            .with_tcp_payload_view_max_bytes(kib(256));
+        for config in [first, last] {
+            assert_eq!(config.tcp_payload_view_max_bytes(), kib(64));
+            assert!(
+                config.tcp_payload_view_max_bytes()
+                    + config.tcp_write_pump_max_pending_bytes()
+                    + WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES
+                    <= config.writer_memory_max_bytes()
+            );
         }
     }
 

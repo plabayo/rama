@@ -78,15 +78,21 @@ final class NativeTcpConnection: NwConnectionLike, @unchecked Sendable {
         content: Data?, contentContext: NWConnection.ContentContext, isComplete: Bool,
         completion: NWConnection.SendCompletion
     ) {
-        switch completion {
-        case .contentProcessed(let handler):
-            rama_nw_tcp_send(native, content, contentContext.isFinal, isComplete) { error in
-                handler(Self.error(error))
+        // Data -> NSData bridging can create autoreleased owners of the entire
+        // retained root. Drain those per send, even when the caller's dispatch
+        // queue batches work without draining its pool. The native shim still
+        // retains the payload until dispatch_data's destructor runs.
+        autoreleasepool {
+            switch completion {
+            case .contentProcessed(let handler):
+                rama_nw_tcp_send(native, content, contentContext.isFinal, isComplete) { error in
+                    handler(Self.error(error))
+                }
+            case .idempotent:
+                rama_nw_tcp_send(native, content, contentContext.isFinal, isComplete, nil)
+            @unknown default:
+                preconditionFailure("unsupported Network.framework send completion")
             }
-        case .idempotent:
-            rama_nw_tcp_send(native, content, contentContext.isFinal, isComplete, nil)
-        @unknown default:
-            preconditionFailure("unsupported Network.framework send completion")
         }
     }
 

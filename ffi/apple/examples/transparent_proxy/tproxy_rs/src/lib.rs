@@ -470,6 +470,9 @@ impl DemoTransparentProxyHandler {
             // the handler and use the transparent-provider passthrough contract.
             // Loopback is intentionally left handled.
             .with_exclude_ip_scopes(IpScopes::LOCAL.difference(IpScopes::LOOPBACK));
+        if let Some(max_view_bytes) = demo_config.tcp_payload_view_max_bytes {
+            proxy_config = proxy_config.with_tcp_payload_view_max_bytes(max_view_bytes);
+        }
         if let Some(max_pending_bytes) = demo_config.tcp_write_pump_max_pending_bytes {
             proxy_config = proxy_config.with_tcp_write_pump_max_pending_bytes(max_pending_bytes);
         }

@@ -34,6 +34,7 @@ trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn udp_channel_capacity(&self) -> usize;
     fn udp_ingress_per_flow_max_bytes(&self) -> usize;
     fn udp_ingress_global_max_bytes(&self) -> usize;
+    fn tcp_payload_view_max_bytes(&self) -> usize;
     fn writer_memory_max_bytes(&self) -> usize;
     fn writer_memory_max_items(&self) -> usize;
     fn udp_ingress_probe_lease(&self) -> Duration;
@@ -79,6 +80,10 @@ where
 
     fn udp_ingress_global_max_bytes(&self) -> usize {
         self.udp_ingress_global_max_bytes()
+    }
+
+    fn tcp_payload_view_max_bytes(&self) -> usize {
+        self.tcp_payload_view_max_bytes()
     }
 
     fn writer_memory_max_bytes(&self) -> usize {
@@ -163,6 +168,10 @@ impl BoxedTransparentProxyEngine {
 
     pub fn udp_ingress_global_max_bytes(&self) -> usize {
         self.0.udp_ingress_global_max_bytes()
+    }
+
+    pub fn tcp_payload_view_max_bytes(&self) -> usize {
+        self.0.tcp_payload_view_max_bytes()
     }
 
     pub fn writer_memory_max_bytes(&self) -> usize {

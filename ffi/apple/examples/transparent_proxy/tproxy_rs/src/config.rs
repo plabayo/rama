@@ -28,6 +28,8 @@ pub struct DemoProxyConfig {
     /// Optional Rust->Swift writer-pump cap exported in the startup config.
     /// Absent keeps the engine's 256 KiB production default.
     pub tcp_write_pump_max_pending_bytes: Option<usize>,
+    /// Maximum TCP view/read chunk in bytes; absent keeps the 64 KiB default.
+    pub tcp_payload_view_max_bytes: Option<usize>,
     // Egress TCP_NODELAY. The engine already defaults this ON (the relay
     // is the only Nagle decision-maker in the path); this knob exists to
     // opt back into Nagle for experiments.
@@ -87,6 +89,7 @@ impl Default for DemoProxyConfig {
             peek_duration_s: 8.,
             tcp_connect_timeout_ms: None,
             tcp_write_pump_max_pending_bytes: None,
+            tcp_payload_view_max_bytes: None,
             tcp_no_delay: true,
             // Keep in sync with `policy::DomainExclusionList::default()`
             // — that's the engine-internal fallback; this is the
@@ -224,6 +227,7 @@ mod tests {
                 "udp_e2e_diagnostic_endpoints":["1.1.1.1:53","8.8.8.8:53"]
                 ,"udp_ingress_probe_lease_ms":500
                 ,"tcp_write_pump_max_pending_bytes":16384
+                ,"tcp_payload_view_max_bytes":262144
             }"#,
         ))
         .expect("valid test config");
@@ -242,6 +246,7 @@ mod tests {
         assert_eq!(config.udp_e2e_diagnostic_endpoints.len(), 2);
         assert_eq!(config.udp_ingress_probe_lease_ms, Some(500));
         assert_eq!(config.tcp_write_pump_max_pending_bytes, Some(16_384));
+        assert_eq!(config.tcp_payload_view_max_bytes, Some(262_144));
     }
 
     #[test]
