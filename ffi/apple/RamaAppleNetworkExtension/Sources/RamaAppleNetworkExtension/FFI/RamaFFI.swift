@@ -63,6 +63,7 @@ struct RamaTransparentProxyConfigBridge {
     /// TCP and UDP writer. This remains enabled when live-flow hardCap is zero.
     var writerMemoryMaxBytes: Int = WriterMemoryPolicy.default.maxBytes
     var writerMemoryMaxItems: Int = WriterMemoryPolicy.default.maxItems
+    var tcpPayloadViewMaxBytes: Int = WriterMemoryPolicy.defaultTcpPayloadViewMaxBytes
     var tcpStartInFlightHardCap: UInt32
     var tcpStartInFlightSoftCap: UInt32
     var tcpStartLatencyBreakerP95Ms: UInt32
@@ -741,6 +742,8 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
                     rama_transparent_proxy_engine_writer_memory_max_bytes(p)),
                 writerMemoryMaxItems: clampedFFISizeToInt(
                     rama_transparent_proxy_engine_writer_memory_max_items(p)),
+                tcpPayloadViewMaxBytes: clampedFFISizeToInt(
+                    rama_transparent_proxy_engine_tcp_payload_view_max_bytes(p)),
                 tcpStartInFlightHardCap: out.tcp_start_in_flight_hard_cap,
                 tcpStartInFlightSoftCap: out.tcp_start_in_flight_soft_cap,
                 tcpStartLatencyBreakerP95Ms: out.tcp_start_latency_breaker_p95_ms,

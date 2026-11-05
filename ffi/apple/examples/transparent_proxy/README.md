@@ -429,6 +429,30 @@ org.ramaproxy.example.tproxy.dev.provider.systemextension/Contents/Info.plist \
   | grep -E 'NEMach|TProxy|XpcService|BundleVersion'
 ```
 
+### TCP payload view sizing
+
+`TransparentProxyConfig::with_tcp_payload_view_max_bytes(bytes)` controls the
+maximum Swift TCP read/promotion/write view, independently of the per-writer
+queue and aggregate retained-payload budget. The default remains 64 KiB.
+The example accepts `"tcp_payload_view_max_bytes": 262144` in its opaque JSON
+config to request 256 KiB when creating a new engine. This is a deployment
+setting, not a live per-flow control or a TCP socket/window size.
+
+The effective value is clamped to at least one byte, the configured writer cap
+(default 256 KiB), and headroom beside one writer retry plus the minimum UDP
+reserve. Increasing it does not increase the default 64 MiB aggregate envelope
+or preallocate that many bytes per flow. Swift retains and charges the complete
+backing allocation until its last owner releases it. At the minimum aggregate
+budget with an 8 MiB writer, even a requested 256 KiB view is clamped to 64 KiB.
+Rust and Swift artifacts must be rebuilt together for the added FFI getter.
+
+Keep 64 KiB as the general default: local loopback comparisons found 256 KiB
+improved download throughput and CPU use, but increased CPU use for concurrent
+uploads without improving throughput. Use the setting for deployment-specific
+measurements before raising it. Run `just bench-tcp-payload-views --out PATH`
+from this directory to compare 64/128/256 KiB; local result artifacts belong in
+`benchmarks/`, which is excluded from git.
+
 ### Allocator memory snapshot
 
 The signed container can query the already-running provider without launching

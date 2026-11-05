@@ -386,6 +386,11 @@ where
         self.udp_ingress_budget.max_retained_bytes()
     }
 
+    /// Effective maximum Swift TCP payload view/read size.
+    pub fn tcp_payload_view_max_bytes(&self) -> usize {
+        self.transparent_proxy_config.tcp_payload_view_max_bytes()
+    }
+
     /// Exact process/core-lifetime payload cap shared by Swift payload owners.
     pub fn writer_memory_max_bytes(&self) -> usize {
         self.transparent_proxy_config.writer_memory_max_bytes()

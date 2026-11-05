@@ -42,3 +42,6 @@ docs/audit
 # TNMT
 mutants.out/
 mutants.out.old/
+
+# Local Apple transparent-proxy benchmark artifacts
+/ffi/apple/examples/transparent_proxy/benchmarks/
