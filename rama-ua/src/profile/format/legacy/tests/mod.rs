@@ -15,6 +15,7 @@ use crate::profile::{
         http::{Http1Settings, Http2Settings},
         identity::{ConnectionContext, ProfileKey},
         js::JsProfileWebApis,
+        scope::ProfileObservationScope,
         ua::{UserAgentProfile, UserAgentSourceInfo},
     },
 };
@@ -83,6 +84,7 @@ fn row() -> UserAgentProfileInput {
 
 fn capture(field: &LegacyFieldCapture) -> ProfileCapture {
     ProfileCapture {
+        revision: 0,
         profile: ProfileKey::new("legacy-library/1"),
         flow: None,
         connection: ConnectionContext::default(),
@@ -396,6 +398,13 @@ fn legacy_row_batch_is_atomic_bounded_and_uses_the_live_profile_identity() {
     assert_eq!(batch.profile.bytes, expected.bytes);
     assert!(batch.buckets.iter().all(|bucket| {
         bucket.value.validated_domain(limits.value_bytes).unwrap() == CanonicalDomain::LegacyField
+    }));
+    // Legacy rows predate capture revisions, so newer live captures supersede them.
+    assert!(batch.buckets.iter().all(|bucket| {
+        ProfileObservationScope::from_canonical(&bucket.scope, limits.value_bytes)
+            .unwrap()
+            .revision
+            == 0
     }));
     let exact = batch.profile.bytes.len()
         + batch

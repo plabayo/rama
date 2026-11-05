@@ -219,6 +219,7 @@ fn export_orders_selected_scopes_canonically() {
     use rama::ua::profile::{
         analysis::profile::ProfileAnalysisLimits,
         capture::{
+            CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
             joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
             observation::ProfileCapture,
@@ -243,6 +244,7 @@ fn export_orders_selected_scopes_canonically() {
             .observe(
                 100,
                 &ProfileCapture {
+                    revision: CAPTURE_REVISION,
                     profile: profile.clone(),
                     flow: None,
                     connection: ConnectionContext::default(),

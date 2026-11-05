@@ -615,6 +615,7 @@ fn static_initial_association_is_admitted_without_a_native_metadata_compiler() {
                     flow: None,
                     connection: ConnectionContext::default(),
                     structure: ValueId([4; 32]),
+                    revision: 0,
                 },
             },
         };

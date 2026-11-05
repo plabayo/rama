@@ -193,7 +193,8 @@ fn compile_lowered(
     config.set_permute_extensions(false);
     config.set_grease(false);
     config.set_grease_signature_schemes(false);
-    config.set_grease_values(GreaseValues::Pinned);
+    // GREASE slots get values drawn per connection, as browsers do.
+    config.set_grease_values(GreaseValues::Fresh);
     config.set_client_hello_padding(Padding::Off);
     config.set_unknown_values(UnknownValues::Preserve);
 
@@ -429,7 +430,7 @@ fn compile_lowered(
     Ok(config)
 }
 
-// Keep the captured list order with unsupported entries removed. GREASE stays literal.
+// Keep the captured list order with unsupported entries removed. GREASE slots stay in place.
 fn supported_only(
     report: &mut ProfilePreservationReport,
     item: LoweredProfileItem,

@@ -302,6 +302,7 @@ mod tests {
     use super::*;
     use rama::ua::profile::{
         capture::{
+            CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
             joint::{
                 CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
@@ -441,6 +442,7 @@ mod tests {
     fn archive_joint(joint: JointCapture, connection: ConnectionContext) -> Vec<u8> {
         let profile = ProfileKey::new("comparison-test");
         let capture = ProfileCapture {
+            revision: CAPTURE_REVISION,
             profile: profile.clone(),
             flow: None,
             connection,

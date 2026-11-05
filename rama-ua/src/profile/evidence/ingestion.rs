@@ -172,7 +172,7 @@ pub struct RetentionWindow {
 
 impl Default for RetentionWindow {
     fn default() -> Self {
-        Self { days: 14 }
+        Self { days: 30 }
     }
 }
 
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn retention_rejects_expired_retry_future_day_and_unsupported_query() {
-        let window = RetentionWindow::default();
+        let window = RetentionWindow { days: 14 };
         assert_eq!(window.first_day(100, 14).unwrap(), 87);
         for day in 87..=100 {
             window.validate_observation(100, day).unwrap();

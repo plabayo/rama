@@ -416,6 +416,7 @@ impl LegacyFieldCapture {
         let mut buckets = Vec::new();
         for field in fields {
             let capture = ProfileCapture {
+                revision: 0,
                 profile: key.clone(),
                 flow: None,
                 connection: ConnectionContext::default(),

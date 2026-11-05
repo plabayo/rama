@@ -194,7 +194,9 @@ fn tls_analysis_uses_the_common_classifier_and_preserves_psk_last() {
             .sum::<usize>(),
         120 * 6
     );
-    assert_eq!(analysis.variants.len(), 120);
+    // Orders the shuffle explains merge; replay draws a fresh order per connection.
+    assert_eq!(analysis.variants.len(), 1);
+    assert_eq!(extensions.variants.len(), 1);
 }
 
 #[test]
@@ -427,5 +429,79 @@ fn settings_ack_timing_does_not_move_later_order_paths() {
             OrderAnalysisConfig::default()
         )
         .unwrap(),
+    );
+}
+
+#[test]
+fn network_hints_move_into_their_own_distribution() {
+    let request = |rtt: &str, downlink: &str| {
+        HeaderCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            version: Version::HTTP_11,
+            fields: [("accept", "*/*"), ("rtt", rtt), ("downlink", downlink)]
+                .iter()
+                .map(|(name, value)| HeaderOccurrence {
+                    name: HeaderName::from_static(name),
+                    occurrence: 0,
+                    sensitive: false,
+                    representation: None,
+                    value: HeaderValueSource::Profile(value.as_bytes().into()),
+                })
+                .collect(),
+        }
+        .canonical(&HeaderCapturePolicy::default())
+        .unwrap()
+    };
+    let values = [
+        request("50", "1.5"),
+        request("100", "10"),
+        request("50", "1.5"),
+        request("150", "2.35"),
+    ];
+    let analysis = analyze_capture_bucket(
+        &bucket(&values, CanonicalDomain::Headers),
+        OrderAnalysisConfig::default(),
+    )
+    .unwrap();
+
+    assert_eq!(analysis.variants.len(), 1);
+    let read = HeaderCapture::from_canonical(
+        &analysis.variants[0].value.canonical().unwrap(),
+        &HeaderCapturePolicy::default(),
+    )
+    .unwrap();
+    for field in read.fields.iter().skip(1) {
+        assert!(matches!(&field.value, HeaderValueSource::Profile(value) if value.is_empty()));
+    }
+
+    let mut combinations: Vec<_> = analysis
+        .network_hints
+        .iter()
+        .map(|hint| {
+            let AnalyzedOrderWeight::Counted(ObservationWeight::Exact(count)) = hint.weight else {
+                panic!("unexpected weight {:?}", hint.weight)
+            };
+            let fields: Vec<_> = hint
+                .fields
+                .iter()
+                .map(|(name, value)| (name.to_string(), String::from_utf8(value.to_vec()).unwrap()))
+                .collect();
+            (fields, count)
+        })
+        .collect();
+    combinations.sort();
+    let pair = |rtt: &str, downlink: &str| {
+        vec![
+            ("rtt".to_owned(), rtt.to_owned()),
+            ("downlink".to_owned(), downlink.to_owned()),
+        ]
+    };
+    assert_eq!(
+        combinations,
+        [
+            (pair("100", "10"), 1),
+            (pair("150", "2.35"), 1),
+            (pair("50", "1.5"), 2),
+        ]
     );
 }

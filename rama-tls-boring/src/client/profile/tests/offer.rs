@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 use rama_boring::ssl::Padding;
 
@@ -6,6 +8,7 @@ use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::{
     CipherSuite, ExtensionId, ProtocolVersion, SupportedGroup,
     client::{ClientHandshake, ClientHello, ClientHelloExtension},
+    is_grease_u16,
 };
 use rama_ua::profile::capture::tls::TlsCapturedExtension;
 
@@ -24,13 +27,7 @@ fn compiled_settings_reproduce_retained_tls_fields_with_fresh_crypto() {
             TlsCaptureLimits::default(),
         )
         .unwrap();
-        assert_eq!(
-            capture
-                .canonical(TlsCaptureLimits::default())
-                .unwrap()
-                .bytes,
-            actual.canonical(TlsCaptureLimits::default()).unwrap().bytes
-        );
+        assert_eq!(replay_form(&capture), replay_form(&actual));
         observations.push(hello);
     }
     // Canonical equality above excludes cryptographic material, while the
@@ -66,7 +63,11 @@ fn unsupported_safari_ciphers_are_preserved_in_the_native_client_hello() {
         TlsCaptureLimits::default(),
     )
     .unwrap();
-    assert_eq!(actual.ciphers, captured.ciphers);
+    // GREASE cipher slots stay in place with values drawn for the connection.
+    assert_eq!(
+        actual.with_grease_placeholders().unwrap().ciphers,
+        captured.with_grease_placeholders().unwrap().ciphers
+    );
 }
 
 #[test]
@@ -538,11 +539,8 @@ fn assert_admitted_emission_matches(captured: &TlsCapture, policy: TlsClientConf
     )
     .unwrap();
     assert_eq!(
-        captured
-            .canonical(TlsCaptureLimits::default())
-            .unwrap()
-            .bytes,
-        actual.canonical(TlsCaptureLimits::default()).unwrap().bytes,
+        replay_form(captured),
+        replay_form(&actual),
         "admitted capture must match the actual prepared native first flight"
     );
 }
@@ -659,10 +657,7 @@ fn counted_server_padding_replays_exact_native_tcp_values() {
             TlsCaptureLimits::default(),
         )
         .unwrap();
-        assert_eq!(
-            source.canonical(TlsCaptureLimits::default()).unwrap().bytes,
-            actual.canonical(TlsCaptureLimits::default()).unwrap().bytes,
-        );
+        assert_eq!(replay_form(&source), replay_form(&actual),);
     }
 }
 
@@ -814,13 +809,7 @@ fn legacy_tls12_offer_replays_without_tls13_fields() {
         TlsCaptureLimits::default(),
     )
     .unwrap();
-    assert_eq!(
-        capture
-            .canonical(TlsCaptureLimits::default())
-            .unwrap()
-            .bytes,
-        actual.canonical(TlsCaptureLimits::default()).unwrap().bytes
-    );
+    assert_eq!(replay_form(&capture), replay_form(&actual));
 }
 
 fn trust_anchors_body(hello: &ClientHello) -> Option<&[u8]> {
@@ -867,4 +856,38 @@ fn captured_trust_anchors_are_replayed_and_a_caller_list_replaces_them() {
     assert!(report.is_exact(), "{report:?}");
     let replayed = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
     assert_eq!(trust_anchors_body(&replayed), None);
+}
+
+#[test]
+fn replayed_grease_slots_draw_fresh_values_per_connection() {
+    let recapture = |hello: &ClientHello| {
+        TlsCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            TlsCaptureTransport::Tcp,
+            hello,
+            TlsCaptureLimits::default(),
+        )
+        .unwrap()
+    };
+    let captured = recapture(&hello_from_data(
+        TlsConnectorData::try_from(&wire_variant()).unwrap(),
+    ));
+    let (config, report) = compile_tcp(&captured, None).unwrap();
+    assert!(report.is_exact(), "{report:?}");
+    let expected = replay_form(&captured);
+    let mut drawn = BTreeSet::new();
+    for _ in 0..8 {
+        let replayed = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+        // Same GREASE slots as the capture, but values drawn for this connection.
+        assert_eq!(replay_form(&recapture(&replayed)), expected);
+        drawn.extend(
+            replayed
+                .cipher_suites()
+                .iter()
+                .copied()
+                .map(u16::from)
+                .filter(|&cipher| is_grease_u16(cipher)),
+        );
+    }
+    assert!(drawn.len() > 1, "{drawn:?}");
 }

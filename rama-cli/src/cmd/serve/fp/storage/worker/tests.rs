@@ -5,12 +5,13 @@ use rama::{
     http::{HeaderMap, HeaderValue, Method, Version},
     ua::profile::{
         capture::{
+            CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
             headers::HeaderCapturePolicy,
             joint::{CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
             order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
         },
-        evidence::transaction::IngestionBatchLimits,
+        evidence::{ingestion::RetentionWindow, transaction::IngestionBatchLimits},
         format::canonical::ValueId,
         model::identity::{ConnectionContext, ConnectionIpFamily, FlowKey, ProfileKey},
     },
@@ -23,7 +24,11 @@ use tokio::{
 
 fn limits() -> StoreLimits {
     StoreLimits {
-        ingestion: IngestionBatchLimits::default(),
+        // The day arithmetic below is written for a 14-day window.
+        ingestion: IngestionBatchLimits {
+            retention: RetentionWindow { days: 14 },
+            ..IngestionBatchLimits::default()
+        },
         capture: JointCaptureLimits::default(),
         retained: [32, 32, 64, 128, 64, 2048, mib(4)],
         checkpoint_bytes: kib(16),
@@ -63,6 +68,7 @@ fn capture(connection: bool) -> ProfileCapture {
         }
     };
     ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: ProfileKey::new("queue-test"),
         flow: if connection {
             None

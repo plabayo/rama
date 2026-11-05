@@ -284,6 +284,13 @@ pub(crate) async fn export_counted_profiles(
             source.dropped_scopes(),
         )?;
     }
+    if source.superseded_scopes() > 0 {
+        writeln!(
+            io::stderr(),
+            "Profile export: {} stored scopes left out for a newer capture revision.",
+            source.superseded_scopes(),
+        )?;
+    }
     Ok(())
 }
 

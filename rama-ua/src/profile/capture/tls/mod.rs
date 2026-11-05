@@ -16,6 +16,7 @@ use crate::profile::{
 };
 
 mod codec;
+mod grease;
 #[cfg(feature = "tls")]
 mod representative;
 pub(in crate::profile) mod structure;

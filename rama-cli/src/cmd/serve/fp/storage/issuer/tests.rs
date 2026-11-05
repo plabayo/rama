@@ -1,8 +1,11 @@
 use super::*;
 
+/// The day arithmetic below is written for a 14-day window.
+const RETENTION: RetentionWindow = RetentionWindow { days: 14 };
+
 fn begin(issuer: &mut SequenceIssuer, day: u32, nonce: u8) -> PendingSequence<'_> {
     issuer
-        .begin(day, day, RetentionWindow::default(), || Ok([nonce; 12]))
+        .begin(day, day, RETENTION, || Ok([nonce; 12]))
         .unwrap()
 }
 
@@ -14,9 +17,7 @@ fn rejections_do_not_strand_sequences_or_consume_runs() {
     first.finish(WriteDisposition::Rejected);
     for _ in 0..10_000 {
         let rejected = issuer
-            .begin(100, 100, RetentionWindow::default(), || {
-                panic!("rejection rotated run")
-            })
+            .begin(100, 100, RETENTION, || panic!("rejection rotated run"))
             .unwrap();
         assert_eq!(rejected.attempt().observation, id);
         rejected.finish(WriteDisposition::Rejected);
@@ -96,21 +97,21 @@ fn runs_rotate_only_after_expiry_or_sequence_exhaustion() {
 fn rejected_time_or_entropy_does_not_assign_an_observation() {
     let mut issuer = SequenceIssuer::new(false);
     issuer
-        .begin(100, 100, RetentionWindow::default(), || {
+        .begin(100, 100, RETENTION, || {
             Err(ProfileDataError::Invalid("entropy unavailable").into())
         })
         .unwrap_err();
     assert!(issuer.run.is_none());
     begin(&mut issuer, 100, 1).finish(WriteDisposition::Confirmed);
     issuer
-        .begin(101, 100, RetentionWindow::default(), || {
+        .begin(101, 100, RETENTION, || {
             panic!("existing run requested entropy")
         })
         .unwrap()
         .finish(WriteDisposition::Rejected);
     for (now, observed) in [(100, 100), (101, 102), (101, 87)] {
         issuer
-            .begin(now, observed, RetentionWindow::default(), || {
+            .begin(now, observed, RETENTION, || {
                 panic!("invalid time requested entropy")
             })
             .unwrap_err();
@@ -129,9 +130,7 @@ fn retained_observations_arriving_before_the_current_run_rotate_without_loss() {
     let first = begin(&mut issuer, 101, 1);
     let original = first.attempt().observation;
     first.finish(WriteDisposition::Confirmed);
-    let older = issuer
-        .begin(101, 100, RetentionWindow::default(), || Ok([2; 12]))
-        .unwrap();
+    let older = issuer.begin(101, 100, RETENTION, || Ok([2; 12])).unwrap();
     assert_eq!(older.attempt().observation_day, 100);
     assert_ne!(older.attempt().observation.run, original.run);
     assert_eq!(older.attempt().observation.sequence, 1);

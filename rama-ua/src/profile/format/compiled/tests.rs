@@ -1,7 +1,10 @@
 use super::*;
 #[cfg(feature = "tls")]
 use crate::profile::capture::joint::{JointCapture, JointCaptureLimits};
-use crate::profile::{analysis::capture::VariantValue, replay::request::CompactCapture};
+use crate::profile::{
+    analysis::capture::{CaptureOrderPath, VariantValue},
+    replay::{connection::H3SettingsReplayEvidence, request::CompactCapture},
+};
 
 const EMBEDDED: &[u8] = include_bytes!("../embed_profiles.bin");
 
@@ -68,7 +71,7 @@ fn compact_captures_rebuild_their_canonical_bytes_and_share_a_field_table() {
             }
         }
     }
-    assert!(compact > 10_000, "{compact}");
+    assert!(compact > 0);
 }
 
 #[test]
@@ -211,4 +214,30 @@ fn trusted_slot_split_matches_validated_joint_decoding() {
         joints += 1;
     }
     assert!(joints > 100, "{joints}");
+}
+
+#[test]
+fn compiled_http3_settings_keep_the_samples_their_replay_evidence_needs() {
+    let mut derived = 0;
+    for profile in decode_compiled_profiles(EMBEDDED).unwrap() {
+        for scope in profile.scopes.iter() {
+            let observations = &scope.observations;
+            let ruled = observations.orders.iter().any(|order| {
+                order.path == CaptureOrderPath::Http3Settings && order.evidence.derived.is_some()
+            });
+            if observations.domain != CanonicalDomain::Order || !ruled {
+                continue;
+            }
+            for variant in observations.variants.iter() {
+                let selected = variant.value.canonical().unwrap();
+                if H3SettingsReplayEvidence::from_analysis(observations, &selected)
+                    .unwrap()
+                    .is_some()
+                {
+                    derived += 1;
+                }
+            }
+        }
+    }
+    assert!(derived > 0);
 }

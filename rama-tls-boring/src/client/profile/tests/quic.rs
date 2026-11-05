@@ -111,13 +111,7 @@ fn compiled_quic_offer_uses_fresh_keys_and_current_transport_parameters() {
     let first = hello(&config, &current_parameters);
     let second = hello(&config, &current_parameters);
     for actual in [&first, &second] {
-        assert_eq!(
-            source.canonical(TlsCaptureLimits::default()).unwrap().bytes,
-            captured(actual)
-                .canonical(TlsCaptureLimits::default())
-                .unwrap()
-                .bytes
-        );
+        assert_eq!(replay_form(&source), replay_form(&captured(actual)));
         let parameters = actual
             .extensions()
             .iter()
@@ -233,11 +227,8 @@ fn counted_server_padding_replays_exact_native_quic_values() {
         .unwrap();
         assert!(report.is_exact(), "{report:?}");
         assert_eq!(
-            source.canonical(TlsCaptureLimits::default()).unwrap().bytes,
-            captured(&hello(&compiled, &parameters))
-                .canonical(TlsCaptureLimits::default())
-                .unwrap()
-                .bytes,
+            replay_form(&source),
+            replay_form(&captured(&hello(&compiled, &parameters))),
         );
     }
 }

@@ -410,6 +410,7 @@ impl RequestSelection {
                         table,
                         original,
                         self.effective.cookie_layout,
+                        &self.effective.network_hints,
                         &mut report,
                         qpack_headers.as_mut().map(|choices| &mut choices.headers),
                     )?);
@@ -527,6 +528,7 @@ fn replay_headers(
     table: &FieldTable,
     original: &HeaderMap,
     cookie_layout: CookieLayoutEvidence,
+    network_hints: &[(Box<str>, Box<[u8]>)],
     report: &mut ProfilePreservationReport,
     mut encoding: Option<&mut HeaderMap<FieldPreferences>>,
 ) -> Result<HeaderMap, ProfileReplayError> {
@@ -605,7 +607,15 @@ fn replay_headers(
         });
         let value = match &table.get(*field).value {
             PlannedValue::Profile(value) => {
-                let mut profile = value.clone();
+                let name = table.get(*field).name.as_str();
+                // An empty network hint is a placeholder for the value drawn for this request.
+                let drawn = network_hints
+                    .iter()
+                    .find(|(hint, _)| value.is_empty() && hint.as_ref() == name)
+                    .map(|(_, drawn)| HeaderValue::from_bytes(drawn))
+                    .transpose()
+                    .map_err(|_error| ProfileDataError::Invalid("drawn network hint value"))?;
+                let mut profile = drawn.unwrap_or_else(|| value.clone());
                 if original_value.is_some_and(|caller| caller.as_bytes() != profile.as_bytes()) {
                     report.push(ProfilePreservationDifference::CallerValueReplaced {
                         name: table.get(*field).name.clone(),

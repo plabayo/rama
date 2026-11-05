@@ -52,6 +52,7 @@ fn selection_for_version(fields: Vec<HeaderOccurrence>, version: Version) -> Req
         analysis_revision: 2,
         effective: PreparedRequestProfile {
             cookie_layout: CookieLayoutEvidence::Unknown,
+            network_hints: Box::default(),
             scope: ValueId([4; 32]),
             capture: capture.into(),
             flow: FlowKey::Http {
@@ -495,4 +496,26 @@ fn mixed_qpack_families_select_native_current_field_boundary_preferences() {
         assert_eq!(preferences.headers[name].representation, expected);
         assert_eq!(replayed.headers.as_ref().unwrap()[name], "current");
     }
+}
+
+#[test]
+fn network_hint_placeholders_replay_the_values_drawn_for_the_request() {
+    let mut selection = selection(vec![
+        field("rtt", 0, profile(b"")),
+        field("downlink", 0, profile(b"")),
+        field("ect", 0, profile(b"4g")),
+    ]);
+    selection.effective.network_hints = vec![
+        (Box::from("rtt"), Box::from(&b"100"[..])),
+        (Box::from("downlink"), Box::from(&b"10"[..])),
+        (Box::from("ect"), Box::from(&b"3g"[..])),
+    ]
+    .into();
+
+    let replayed = selection.replay_request(&HeaderMap::new()).unwrap();
+    let headers = replayed.headers.unwrap();
+    assert_eq!(headers["rtt"], "100");
+    assert_eq!(headers["downlink"], "10");
+    // Only placeholders take drawn values; a captured value stays as captured.
+    assert_eq!(headers["ect"], "4g");
 }

@@ -27,7 +27,7 @@ pub(super) struct ViewCommand {
     #[arg(long)]
     authorized: bool,
     /// Database freshness window, including the current partial UTC day.
-    #[arg(long, default_value_t = 14)]
+    #[arg(long, default_value_t = 30)]
     days: u32,
     /// Print a text summary; also used automatically outside a terminal.
     #[arg(short = 's', long)]

@@ -32,6 +32,7 @@ fn scope(index: u8) -> CanonicalValue {
         flow: None,
         connection: ConnectionContext::default(),
         structure: ValueId([index; 32]),
+        revision: 0,
     }
     .canonical(kib(1))
     .unwrap()
@@ -284,7 +285,10 @@ fn ingestion_batch_enforces_run_auth_day_and_bucket_ownership() {
 
 #[test]
 fn ingestion_expired_run_cannot_restart_after_checkpoint_pruning() {
-    let limits = IngestionBatchLimits::default();
+    let limits = IngestionBatchLimits {
+        retention: RetentionWindow { days: 14 },
+        ..IngestionBatchLimits::default()
+    };
     let run = run();
     assert_eq!(&run.run.0[..4], &[0, 0, 0, 100]);
     assert_eq!(run.run.created_day(), 100);
