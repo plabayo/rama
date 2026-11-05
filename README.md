@@ -186,8 +186,10 @@ Learn how to install and use it in the [`rama` CLI chapter](https://ramaproxy.or
 - **Safety:** Rama avoids unsafe code where possible. Low-level protocol code and
   FFI-backed crates use unsafe where needed.
 - **Supply chain:** dependencies are audited with [`cargo vet`](https://github.com/mozilla/cargo-vet).
-- **Performance:** Rama's default HTTP implementation is based on Hyper internals
-  and is designed for production network services.
+- **Performance:** Rama is built for production network services, whatever the
+  protocol: hot paths avoid copies where they can, memory and other resources are
+  explicitly bounded, and protocol stacks are tracked with benchmarks such as the
+  [QUIC benchmarks](https://github.com/plabayo/rama/tree/main/rama-quic/e2e/bench).
 - **Roadmap:** planned work is tracked in [GitHub milestones](https://github.com/plabayo/rama/milestones).
 
 ## All rama and other crates developed by Plabayo

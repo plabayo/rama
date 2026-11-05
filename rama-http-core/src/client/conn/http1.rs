@@ -219,7 +219,7 @@ where
     /// Dropping the returned future is the supported way to cancel an
     /// in-flight HTTP/1 request. Because HTTP/1 has no in-protocol way to
     /// abort a single request without affecting the shared connection,
-    /// hyper closes the underlying connection when a request future is
+    /// the underlying connection is closed when a request future is
     /// dropped before completion. Any subsequent calls on the same
     /// [`SendRequest`] will return a `canceled` error.
     ///

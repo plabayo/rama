@@ -48,11 +48,8 @@ Rama http protocol implementation and low level utilities.
 - [`h3`](src/h3/mod.rs): the HTTP/3 client and server engine with QPACK,
   gated behind the `quic` feature (the `rama` crate's `quic` feature enables it).
 
-Forked from [`hyper`] and [`hyper-util`] with the goals of contributing
-upstream where we can. Rama's requirements do not however match 1-on-1
-with [`hyper`] given we want the ability to be able to deviate from RFC's
-where is required and also expose more low level control than is required
-for most other http purposes.
+It exposes more low level control than most HTTP purposes need, and can
+deviate from the RFCs where real-world clients and servers require it.
 
 This crate is used by [`rama-http-backend`] and thus also [`rama`].
 
@@ -63,7 +60,5 @@ Learn more about [`rama`]:
 - Github: <https://github.com/plabayo/rama>
 - Book: <https://ramaproxy.org/book/>
 
-[`hyper`]: https://github.com/hyperium/hyper
-[`hyper-util`]: https://github.com/hyperium/hyper-util
 [`rama`]: https://github.com/plabayo/rama
 [`rama-http-backend`]: https://github.com/plabayo/rama/tree/main/rama-http-backend
