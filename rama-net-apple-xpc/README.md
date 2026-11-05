@@ -36,7 +36,8 @@ This crate wraps the low-level `libXPC` C API through bindgen-generated bindings
 
 - listening for Mach service connections;
 - connecting to XPC services as a client;
-- exchanging dictionary/array/scalar XPC messages;
+- exchanging XPC messages: each top-level message is a dictionary, which can hold
+  arrays and scalar values;
 - applying peer identity and entitlement requirements before activation;
 - integrating client connection setup into Rama's `Service` model.
 

@@ -92,7 +92,7 @@ the run; certificate checks remain enabled. Firefox H3 seeds a profile-local
 [Alt-Svc test route](https://github.com/mozilla/gecko-dev/blob/master/netwerk/protocol/http/nsHttpHandler.cpp#L2665)
 to the owned UDP listener and permits that private test root
 without disabling certificate validation. BrowserStack and these local runs share the journey and
-protocol assertions. Chromium uses the temporary certificate’s specific
+protocol assertions. Chromium uses the temporary certificate's specific
 SPKI exception; certificate verification is not disabled globally. Configured
 Chromium H3 fixtures seed only the local QUIC route and certificate trust.
 WebSocket support follows the installed browser defaults; experimental protocol
@@ -385,7 +385,7 @@ flow/response report and local server diagnostics.
 
 Captured TLS cipher advertisements are preserved when at least one suite is
 negotiable. The preservation report separately flags suites BoringSSL cannot
-negotiate (including Safari’s legacy 3DES suites); an identical ClientHello
+negotiate (including Safari's legacy 3DES suites); an identical ClientHello
 does not imply identical negotiation capabilities. An entirely unsupported
 offer falls back to the native cipher list and reports that lowering.
 

@@ -14,11 +14,8 @@ In Rama, we aim for clarity: **If it is an error, it should behave like one.** T
 
 ## Type Erasure with `BoxError`
 
-When the specific concrete type of an error matters less than the fact that a failure occurred, Rama uses **`BoxError`**.
-
-```rust
-pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
-```
+When the specific concrete type of an error matters less than the fact that a failure occurred, Rama uses **[`BoxError`]**,
+a type alias for `Box<dyn std::error::Error + Send + Sync + 'static>`.
 
 This is a type-erased trait object used at abstraction boundaries. While you can *downcast* a `BoxError` to check for a specific type, keep in mind that standard downcasting only inspects the top-level wrapper, not the entire cause chain.
 
@@ -47,45 +44,25 @@ The `.backtrace()` method captures a stack trace at the moment of the call.
 
 Often, you want to add context directly to a `Result` or an `Option` at the call site. The [`ErrorContext`] trait enables this:
 
-* **For `Result<T, E>**`: Turns the error into a context-enriched `BoxError`.
-* **For `Option<T>**`: Converts `None` into a `BoxError` (starting with the message "Option is None") and attaches your context.
+* **For `Result<T, E>`**: Turns the error into a context-enriched `BoxError`.
+* **For `Option<T>`**: Converts `None` into a `BoxError` (starting with the message "Option is None") and attaches your context.
 
 ### Examples
 
-**Option Example:**
+On an `Option`, chaining `context_field` and `context` turns a `None` into a `BoxError` with that context,
+which `?` can then return early.
 
-```rust
-use rama_error::ErrorContext;
-
-let value: Option<usize> = None;
-// Short-circuit using '?' with enriched info
-let value = value.context_field("user_id", 42).context("session missing")?;
-```
-
-**Result Example:**
-
-```rust
-use rama_error::{ErrorContext, ErrorExt};
-
-fn perform_io() -> Result<(), std::io::Error> { 
-    /* ... */ 
-    Ok(())
-}
-
-let res = perform_io()
-    .context_field("request_id", "abc-123")
-    .with_context(|| "failed to process storage");
-
-if let Err(err) = res {
-    // Standard display: "io error | request_id="abc-123" "failed to process storage""
-    eprintln!("{}", err);
-}
-```
+On a `Result`, the same methods (or their lazy `with_context` variants) wrap the original error, such as a `std::io::Error`,
+into a `BoxError`. Its standard display shows the source error, then ` | `, then the context fields.
 
 ## Error Composition
 
 While `BoxError` is excellent for high-level reporting, you may want explicit, domain-specific error types for your own logic.
 
-Rama does not force a specific macro-based approach. We recommend defining errors as standard Rust `structs` or `enums` and implementing `std::error::Error`. For background on modern error design, see [Sabrina Jewson’s "Errors in Rust"](https://sabrinajewson.org/blog/errors).
+Rama does not force a specific macro-based approach. We recommend defining errors as standard Rust `structs` or `enums` and implementing `std::error::Error`. For background on modern error design, see [Sabrina Jewson's "Errors in Rust"](https://sabrinajewson.org/blog/errors).
 
 For complex HTTP errors, you can explore Rama's own [HTTP rejection macros](https://github.com/plabayo/rama/blob/main/rama-http/src/utils/macros/http_error.rs) as inspiration. And, as always, Rama plays well with community standards like `thiserror` or `anyhow` if they better fit your workflow.
+
+[`BoxError`]: https://ramaproxy.org/docs/rama/error/type.BoxError.html
+[`ErrorExt`]: https://ramaproxy.org/docs/rama/error/trait.ErrorExt.html
+[`ErrorContext`]: https://ramaproxy.org/docs/rama/error/trait.ErrorContext.html

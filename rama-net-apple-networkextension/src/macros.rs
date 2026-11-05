@@ -324,6 +324,19 @@ macro_rules! __transparent_proxy_ffi_emit {
         /// The caller must uphold *Engine handles* (see `transparent_proxy_ffi!`).
         // SAFETY: unique symbol; see *Linking* on `transparent_proxy_ffi!`.
         #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_tcp_payload_view_max_bytes(
+            engine: *mut RamaTransparentProxyEngine,
+        ) -> usize {
+            if engine.is_null() { return 0; }
+            // SAFETY: as in `rama_transparent_proxy_get_config`.
+            unsafe { &*engine }.tcp_payload_view_max_bytes()
+        }
+
+        /// # Safety
+        ///
+        /// The caller must uphold *Engine handles* (see `transparent_proxy_ffi!`).
+        // SAFETY: unique symbol; see *Linking* on `transparent_proxy_ffi!`.
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_engine_writer_memory_max_bytes(
             engine: *mut RamaTransparentProxyEngine,
         ) -> usize {

@@ -169,20 +169,13 @@ Protobuf is the common case, not a requirement. Two pieces let you define and se
 - `rama::http::grpc::define_service!` generates the same client and server stubs, from a service definition written directly in Rust (without any build.rs).
 - `rama::http::grpc::serde::SerdeCodec` (de)serializes messages with [serde], so the stubs work with your own types. Note that any custom codec is possible here, so [serde] is not a requirement.
 
-```rust,ignore
-rama::http::grpc::define_service! {
-    package = "rama.examples.echo.v1";
-    codec = JsonCodec;
-
-    /// Echoes back what it is given.
-    service Echo {
-        /// Echo a message once.
-        rpc UnaryEcho(EchoRequest) -> EchoResponse;
-        /// Echo a message once per word it contains.
-        rpc ServerStreamingEcho(EchoRequest) -> stream EchoResponse;
-    }
-}
-```
+A [`define_service!`](https://ramaproxy.org/docs/rama/http/grpc/macro.define_service.html) invocation
+takes a `package` name, a `codec` such as
+[`JsonCodec`](https://ramaproxy.org/docs/rama/http/grpc/serde/type.JsonCodec.html),
+and a `service` block that lists each `rpc` with its request and response types
+(prefix a type with `stream` for streaming). See
+[`examples/src/grpc_json_echo/echo.rs`](https://github.com/plabayo/rama/blob/main/examples/src/grpc_json_echo/echo.rs)
+for a full definition.
 
 ### Choosing a Codec
 
@@ -294,21 +287,12 @@ This is a useful reminder that "gRPC" in the wild often means a family of deploy
 
 ## Where it Fits in Rama
 
-If you are already reading the Rama book from top to bottom, gRPC sits at an interesting intersection:
+If you are already reading the Rama book from top to bottom, gRPC builds on several earlier chapters:
 
 - from [Transport Protocols](../transport.md) you inherit the idea that transport is configurable
 - from [Web Servers](../web_servers.md) you inherit the server-side composition model
 - from [Http Clients](./http_clients.md) you inherit the client-side stack model
 - from the intro chapters you inherit the core `Service` and `Layer` abstractions
-
-That combination is what makes Rama's gRPC story feel different from a narrower RPC framework.
-
-You are not forced to choose between:
-
-- a nice typed RPC surface
-- full control over the lower networking stack
-
-Rama gives you both.
 
 ## More examples
 
@@ -332,20 +316,10 @@ If you want to start with the shortest path:
 4. run the combined HTTP and gRPC job service
 5. move on to the streaming and compression examples
 
-That sequence gives you a practical ramp from "typed RPC over the network" to "production-leaning gRPC service composition in Rama".
+That sequence goes from a single typed RPC call to multiple services, streaming and compression.
 
 ## ttRPC: a sibling protocol
 
-For low-overhead environments there is also **ttRPC** ("gRPC for low-memory environments"), the RPC
-protocol used by container runtimes such as containerd and their plugins (shims, the kata-agent, NRI).
-It keeps gRPC's ideas — Protobuf messages, a service/method model, unary and streaming calls, a status
-model — but drops the HTTP/2 substrate in favour of a tiny length-prefixed frame directly on the byte
-stream. It is therefore a sibling to gRPC, not a flavour of HTTP.
-
-Rama ships it as its own crate pair, mirroring the gRPC ones: [`rama-ttrpc`](https://crates.io/crates/rama-ttrpc)
-(runtime) and [`rama-ttrpc-build`](https://crates.io/crates/rama-ttrpc-build) (codegen). As with
-`rama-grpc` there is no transport layer of its own — you bring the connection from any rama transport
-(`rama-tcp` / `rama-unix` / `rama-udp`) and hand the stream to a `Client` or `ServerConnection`. See the
-runnable example:
-
-- [`examples/src/ttrpc_server.rs`](https://github.com/plabayo/rama/blob/main/examples/src/ttrpc_server.rs): serve a ttRPC `Greeter` over a rama-tcp connection
+ttRPC ("gRPC for low-memory environments") keeps gRPC's Protobuf service model but
+runs on a small length-prefixed framing instead of HTTP/2. Rama supports it with the
+`ttrpc` feature; see the [ttRPC chapter](./ttrpc.md).

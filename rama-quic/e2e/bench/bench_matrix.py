@@ -463,6 +463,7 @@ def start_server(spec, certs, volume, testcase, args, label="server"):
     quiet("rm", "-f", f"{PREFIX}-server")
     options, trailing = role_options(spec, "server")
     docker("run", "-d", "--name", f"{PREFIX}-server", "--cap-add", "NET_ADMIN",
+           "--ulimit", "nofile=8192:8192",
            "--network", RIGHT_NET, "--ip", SERVER_IP, "--ip6", SERVER_IP6,
            "-e", "ROLE=server", "-e", f"TESTCASE={testcase}", *options,
            "-v", f"{volume}:/www:ro", "-v", f"{certs}:/certs:ro", spec["image"], *trailing)
@@ -498,6 +499,7 @@ def run_client(spec, certs, testcase, names, args, expected, label="client"):
     docker("volume", "create", downloads)
     options, trailing = role_options(spec, "client")
     command = ["run", "-d", "--name", name, "--cap-add", "NET_ADMIN",
+               "--ulimit", "nofile=8192:8192",
                "--network", LEFT_NET, "--ip", CLIENT_IP, "--ip6", CLIENT_IP6,
                "--add-host", f"{SERVER_NAME}:{SERVER_IP}", "--add-host", f"sim:{LEFT_GATEWAY}",
                "-e", "ROLE=client", "-e", f"TESTCASE={testcase}", "-e", f"REQUESTS={requests_for(names)}",
@@ -656,10 +658,10 @@ def main():
         args.out = args.out / "h3"
         if args.svg not in ("", "none"):
             args.svg = str(Path(args.svg) / "h3")
-    if args.platform is None:
+    if args.platform is None and not args.report:
         info = json.loads(docker("info", "--format", "{{json .}}").stdout)
         args.platform = f"linux/{docker_arch(info.get('Architecture'))}"
-    if args.rama_tag is None:
+    if args.rama_tag is None and not args.report:
         args.rama_tag = args.platform.split("/")[-1]
     svg_dir = None if args.svg in ("", "none") else Path(args.svg)
     if args.report:

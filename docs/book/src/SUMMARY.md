@@ -5,12 +5,11 @@
 - [Why Rama](./why_rama.md)
 - [Built with Rust](./rust.md)
 - [Do It Yourself](./diy.md)
-- [Web Servers](./web_servers.md)
-- [Transport Protocols](./transport.md)
 
 # Rama 101
 
 - [📦 `rama` crate](./crate.md)
+  - [Feature flags](./feature_flags.md)
 - [Intro to `rama`](./intro.md)
     - [🗼 Services all the way down 🐢](./intro/services_all_the_way_down.md)
     - [Service Stack](./intro/service_stack.md)
@@ -25,18 +24,32 @@
     - [🧘 Zen of Services](./intro/service_zen.md)
     - [🔭 Telemetry](./intro/telemetry.md)
     - [👤 User Agent](./intro/user_agent.md)
+        - [User Agent Emulation](./intro/user_agent_emulation.md)
         - [🎯 Capturing your own profiles](./intro/user_agent_capture.md)
     - [🏗 Patterns used inside rama](./intro/patterns.md)
 
-# Protocols
+# Transport and Protocols
 
+- [Transport Protocols](./transport.md)
+  - [QUIC](./quic.md)
+- [TLS and certificates](./tls.md)
 - [dns](./dns.md)
 - [🍎 Apple XPC](./xpc.md)
 
-# Gateways
+# Intro to HTTP
 
-- [Gateway](./gateway/intro.md)
-  - [FastCGI](./gateway/fastcgi.md)
+- [Web Servers](./web_servers.md)
+- [Http Clients](./http/http_clients.md)
+  - [Early data and HTTP 425](./http/early_data.md)
+- [HTTP/3](./http/http3.md)
+- [gRPC](./http/grpc.md)
+  - [ttRPC](./http/ttrpc.md)
+- [Server-Sent Events (SSE)](./http/sse.md)
+- [Declarative Partial Updates](./http/declarative_partial_updates.md)
+- [WebSockets (WS)](./http/ws.md)
+- [HTTP Archive format (HAR)](./http/har.md)
+- [RSS and Atom Feeds](./http/rss.md)
+- [Binary Bodies and Multipart Uploads](./http/multipart.md)
 
 # Intro to Proxies
 
@@ -58,27 +71,26 @@
   - [Application Proxies](./proxies/operate/app.md)
   - [System Proxies](./proxies/operate/system.md)
   - [🔀 Proxy Auto Configuration](./proxies/operate/pac.md)
+    - [PAC runtimes and performance](./proxies/operate/pac_runtime.md)
   - [⛶ Transparent Proxies](./proxies/operate/transparent.md)
     - [🍎 Operating Transparent Proxies on macOS](./proxies/operate/transparent/macos.md)
     - [🪟 Operating Transparent Proxies on Windows](./proxies/operate/transparent/windows.md)
   - [Proxies and VPNs](./proxies/operate/proxies_and_vpns.md)
 
-# Intro to HTTP
+# Gateways
 
-- [Http Clients](./http/http_clients.md)
-  - [Early data and HTTP 425](./http/early_data.md)
-- [gRPC](./http/grpc.md)
-- [Server-Sent Events (SSE)](./http/sse.md)
-- [Declarative Partial Updates](./http/declarative_partial_updates.md)
-- [WebSockets (WS)](./http/ws.md)
-- [HTTP Archive format (HAR)](./http/har.md)
-- [RSS and Atom Feeds](./http/rss.md)
-- [Binary Bodies and Multipart Uploads](./http/multipart.md)
+- [Gateway](./gateway/intro.md)
+  - [FastCGI](./gateway/fastcgi.md)
+
+# Data and scripting
+
+- [Streaming JSON](./json.md)
+- [Embedded JavaScript](./js.md)
+- [Inspection](./inspect.md)
 
 # Deploy
 
 - [Overview of deploying options](./deploy/overview.md)
-- [🚀 Rama x Shuttle](./deploy/shuttle.md)
 - [⌨️ `rama` binary](./deploy/rama-cli.md)
 
 # Appendices

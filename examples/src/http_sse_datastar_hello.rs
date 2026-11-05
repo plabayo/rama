@@ -565,7 +565,7 @@ pub mod controller {
         </div>
 
         <p>
-            <a href="https://ramaproxy.org/book/sse.html">SSE events</a> will be streamed from the backend to the frontend.
+            <a href="https://ramaproxy.org/book/http/sse.html">SSE events</a> will be streamed from the backend to the frontend.
         </p>
         <p>
             Learn more <a href="https://ramaproxy.org/book/web_servers.html#datastar">in the rama book</a>.

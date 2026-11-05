@@ -7,15 +7,17 @@ certificates under `/certs`, HTTP/0.9 over ALPN `hq-interop`. Rama's image (buil
 can be measured without writing any peer code: one image serves, another fetches, the fetch
 is timed from the client container's own start and finish timestamps.
 
-The simulator stays out. The runner’s IPv4 and IPv6 subnets are kept, with a plain forwarding container
+The simulator stays out. The runner's IPv4 and IPv6 subnets are kept, with a plain forwarding container
 where the simulator would be, because the endpoint base image routes through that gateway.
 The endpoint setup scripts require both address families even for IPv4 requests.
-The two temporary benchmark bridges use Docker’s `nat-unprotected` gateway mode so
+The two temporary benchmark bridges use Docker's `nat-unprotected` gateway mode so
 Docker does not drop packets destined for the other subnet before they reach the forwarder.
 This permits direct access to unpublished ports on those benchmark networks by hosts with
 routes to them; it does not change daemon-wide settings or other Docker networks.
 Every pair crosses the same forwarder, so cells compare fairly with one another; absolute
 numbers describe this host's path, not the implementations in isolation.
+The runner sets the client and server open-file limit to 8,192. The 3,000-request case
+otherwise exhausts quiche's client descriptors and ngtcp2's server descriptors.
 
 ## Run
 
@@ -97,6 +99,17 @@ matrix makes so that every column measures the implementation and not its script
 
 Everything else runs exactly as the image ships it: quic-go with its GSO client, aioquic's
 Python client, and so on. That is the comparison people actually get.
+
+## Chart run
+
+The charts below come from the 2026-11-04/05 Linux run of Rama commit `3952f3669`,
+built with Rust 1.99.1. The Rama images were built without Docker layer cache;
+Quinn was rebuilt from its maintained 0.11 branch at `77a51bdc5`, also with Rust
+1.99.1. The matrix used `--repeat 5 --handshake-runs 5`. All 256 cells ran; 15
+small-request cells were rerun with the higher open-file limit and have five
+verified samples each. The aioquic client to ngtcp2 server `parallel` cell remains
+`n/a`: repeated attempts ended with aioquic `ConnectionError` before all 256
+transfers finished. No throughput is inferred for that pair.
 
 ## Charts
 

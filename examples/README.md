@@ -67,7 +67,7 @@ See also [the gRPC examples README at ./grpc/README.md](./grpc/README.md) for th
 
 ### Streaming HTML
 
-- [`http_declarative_partial_updates`](./src/http_declarative_partial_updates.rs) - stream an HTML shell with `<?marker …>` placeholders, then fill them in out-of-order via `<template for=…>` as each async fragment completes ([Chrome declarative partial updates](https://developer.chrome.com/blog/declarative-partial-updates))
+- [`http_declarative_partial_updates`](./src/http_declarative_partial_updates.rs) - stream an HTML shell with `<?marker ...>` placeholders, then fill them in out-of-order via `<template for=...>` as each async fragment completes ([Chrome declarative partial updates](https://developer.chrome.com/blog/declarative-partial-updates))
 
 ### Server-Sent Events (SSE)
 - [`http_sse`](./src/http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
@@ -174,7 +174,7 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 
 - [`haproxy_client_ip.rs`](./src/haproxy_client_ip.rs) -
   shows how to support, optionally, HaProxy (v1/v2) in a rama web service,
-  supporting load balancers that support the proagation of client IP address.
+  supporting load balancers that support the propagation of client IP address.
 
 ### FastCGI
 
@@ -224,8 +224,9 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
   Demonstrates fetching CA material over XPC, using the same service-driven anonymous-channel setup
   that can later be moved behind a named Mach service with peer requirements.
 - [`../ffi/apple/examples/transparent_proxy`](../ffi/apple/examples/transparent_proxy) - A practical
-  Apple Network Extension demo that uses the same pattern to keep the MITM CA private key out of
-  the opaque startup config and request it from the host app over local XPC instead.
+  Apple Network Extension demo that uses the same request/reply pattern as its control plane. The
+  extension generates and keeps the MITM CA; the host app only receives the CA certificate over
+  local XPC to manage its trust setting.
 
 ## Network and Transport
 - [`native_dns.rs`](./src/native_dns.rs) - Resolve domains using Rama's native DNS resolver,
@@ -236,7 +237,7 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
   - and tokio's basic `lookup_host` on everything else
 - [`quic_client_server.rs`](./src/quic_client_server.rs) - Authenticated QUIC client and server on one shared graceful runtime, exchanging a bidirectional request and a unidirectional upload
 - [`quic_h3_mitm_proxy.rs`](./src/quic_h3_mitm_proxy.rs) - Conditional QUIC interception: peeks each association's ClientHello, terminates HTTP/3 for chosen server names and forwards the rest untouched (executable end-to-end coverage in the integration suite)
-- [`quic_terminating_relay.rs`](./src/quic_terminating_relay.rs) - Terminating QUIC relay: presents its own identity downstream and authenticates the origin upstream, carrying client-initiated bidirectional streams
+- [`quic_terminating_relay.rs`](./src/quic_terminating_relay.rs) - Terminating QUIC relay: presents its own identity downstream and authenticates the origin upstream, relaying client-initiated bidirectional streams
 - [`tcp_listener_fd_passing.rs`](./src/tcp_listener_fd_passing.rs) - FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
 - [`tcp_listener_hello.rs`](./src/tcp_listener_hello.rs) - Basic TCP listener example
 - [`tcp_listener_layers.rs`](./src/tcp_listener_layers.rs) - TCP listener with layers
@@ -273,11 +274,11 @@ Check each example's documentation for specific feature requirements and usage i
 
 Feel free to contribute new examples or improve existing ones. When adding a new example:
 
-1. Include comprehensive documentation at the top of the file
+1. Document the example at the top of the file
 2. Add clear usage instructions
 3. Include any necessary feature flags
 4. Add the example to this README in the appropriate category
-5. Add comprehensive e2e test(s) for the example
+5. Add e2e test(s) for the example
 
 ### QUIC relay wire verification
 

@@ -2,7 +2,7 @@
 
 Binaries built with the Rama framework can be deployed in many different ways,
 much like most other Rust frameworks. However, not everyone is familiar with running binaries
-in production-like environments, so we’re happy to list a few options here.
+in production-like environments, so we're happy to list a few options here.
 
 ### Rama CLI
 
@@ -15,7 +15,7 @@ The Rama CLI is available as a Docker image, which can be found at <https://hub.
 It uses the following Dockerfile: <https://github.com/plabayo/rama/blob/main/rama-cli/infra/Dockerfile>.
 
 Feel free to use it as inspiration for the Dockerfile of your own Rama-based project. We are not Docker experts,
-but you’re welcome to send a PR with any improvements.
+but you're welcome to send a PR with any improvements.
 
 ### Bare-metal
 
@@ -23,11 +23,16 @@ Running your Rama-based project on a bare-metal server or VM is, of course, poss
 There's not much to elaborate on here—it's as simple as:
 
 ```bash
-cargo build --release .
-cargo run ./target/release/<my-binary>
+cargo build --release
+./target/release/<my-binary>
 ```
 
 For more details, refer to external documentation on cross-platform building, CI/CD options, automation, Cargo, and more.
+
+### Shuttle
+
+This book used to have a guide for deploying Rama on Shuttle. Shuttle no longer exists,
+so deploy a Rama project like any other Rust binary.
 
 ### WASM
 

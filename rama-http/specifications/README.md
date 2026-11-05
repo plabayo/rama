@@ -49,7 +49,7 @@ and even rama net crates.
 * [rfc4287.txt](./rfc4287.txt)
   The Atom Syndication Format. Defines `<feed>`, `<entry>`, text constructs, and RFC 3339 dates.
 
-* [RFC 822 §5](https://www.rfc-editor.org/rfc/rfc822#section-5)  
+* [RFC 822 section 5](https://www.rfc-editor.org/rfc/rfc822#section-5)  
   Internet Message Format date/time used in RSS 2.0 `<pubDate>` and `<lastBuildDate>`.
 
 * [iTunes Podcast Tag Specification](https://podcasters.apple.com/support/823-podcast-requirements)  

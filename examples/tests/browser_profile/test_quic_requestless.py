@@ -99,6 +99,15 @@ class RequestlessQuicTests(unittest.TestCase):
             "clean close": (0x1C, [scalar("quic.cc.error_code", b"\x00")], False),
             "app close": (0x1D, [scalar("quic.cc.error_code.app", b"\x01")], True),
             "app no error": (0x1D, [scalar("quic.cc.error_code.app", b"\x00")], False),
+            "h3 no error": (
+                0x1D, [scalar("quic.cc.error_code.app", b"\x41\x00", show=0x100)], False
+            ),
+            "h3 error": (
+                0x1D, [scalar("quic.cc.error_code.app", b"\x41\x01", show=0x101)], True
+            ),
+            "transport 0x100": (
+                0x1C, [scalar("quic.cc.error_code", b"\x41\x00", show=0x100)], True
+            ),
             "close without code": (0x1C, [], True),
         }
         for name, (kind, fields, excludes) in cases.items():

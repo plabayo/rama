@@ -1,19 +1,22 @@
 # Web Servers
 
-Rama is a powerful and flexible service framework that excels at building web services, though it takes a different approach than traditional web frameworks. While Rama is often associated with proxy services, it's equally capable of building robust web applications and APIs.
+Rama builds web services too, with a different approach than traditional web frameworks. It is best known for proxies, but web applications and APIs work just as well.
 
 If your service surface is RPC-oriented rather than REST-oriented, also see the dedicated [gRPC chapter](./http/grpc.md). gRPC in Rama often builds on top of the same HTTP server machinery, while still being treated as its own protocol layer.
 
 ## Philosophy
 
-Rama's approach to web services is built on the principle of empowerment through control and flexibility. Rather than providing high-level abstractions that make certain patterns easier but limit your options, Rama gives you direct access to the underlying layers while still providing ergonomic tools for common tasks.
+A Rama web service is a regular `Service` in the same stack as the transport and TLS layers below it:
 
-This philosophy means:
-- Full control over your network stack
-- Direct access to transport layers when needed
-- No "magic" or hidden behavior
-- The ability to build exactly what you need, how you need it
-- Seamless integration with proxy services when required
+- Routing: [`Router`](https://ramaproxy.org/docs/rama/http/service/web/struct.Router.html),
+  [`WebService`](https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html)
+  and the `match_service!` macro map requests to endpoints
+- Extraction: endpoint functions take typed extractors (path, query, headers, body, ...)
+  and return anything that implements `IntoResponse`
+- Middleware: the same `Layer`s are used for web services, clients and proxies
+- Transport: you choose and configure the listener (TCP, Unix, TLS, HTTP versions) yourself,
+  and can reach connection-level data from within a handler
+- Proxying: web endpoints and proxy services can be served from the same stack
 
 ## Use Cases
 
@@ -35,7 +38,7 @@ Common examples include:
 
 ## Comparison with Axum
 
-[Axum](https://docs.rs/axum/latest/axum) is an excellent web framework that shares many similarities with Rama. Both run on Tokio and can be used to build web services. The key differences are:
+[Axum](https://docs.rs/axum/latest/axum) is a web framework that shares many similarities with Rama. Both run on Tokio and can be used to build web services. The key differences are:
 
 - **Philosophy**: Axum focuses on providing high-level abstractions for common web patterns, while Rama emphasizes control and flexibility
 - **Scope**: Axum is specifically designed for web services, while Rama is a broader service framework that includes web capabilities
@@ -61,26 +64,13 @@ only values wrapped in `PreEscaped(...)` are written verbatim. The
 `html!` macro is special: it always prepends `<!DOCTYPE html>` so that
 its output is a complete page.
 
-```rust,no_run
-use rama::http::protocols::html::{body, h1, html, p};
-use rama::http::service::web::response::IntoResponse;
-
-async fn home(name: String) -> impl IntoResponse {
-    html!(body!(
-        h1!("Hello, ", name, "!"),
-        p!("Welcome to ", strong_tag("rama")),
-    ))
-}
-
-# fn strong_tag(_: &str) -> &str { "" }
-```
+Element macros nest as arguments of each other, and the result can be
+returned from a handler as `impl IntoResponse`. See [`html!`](https://ramaproxy.org/docs/rama/http/protocols/html/macro.html.html) and
+[`PreEscaped`](https://ramaproxy.org/docs/rama/http/protocols/html/struct.PreEscaped.html) in the API docs.
 
 For [web components] and any other custom-named element, use the
-runtime-tag-name `custom!` macro:
-
-```rust,ignore
-custom!("user-icon", "data-user-id" = 42, size = "lg")
-```
+runtime-tag-name [`custom!`](https://ramaproxy.org/docs/rama/http/protocols/html/macro.custom.html) macro, which takes the
+tag name as its first argument, followed by the usual attributes and children.
 
 Implementing the
 [`IntoHtml`](https://ramaproxy.org/docs/rama/http/protocols/html/trait.IntoHtml.html)
@@ -120,18 +110,16 @@ Rama rust docs:
 - Embedded JS Script: <https://ramaproxy.org/docs/rama/http/service/web/response/struct.DatastarScript.html>
 
 <div class="book-article-image-center">
-<img style="width: 50%" src="img/rama_datastar.jpg" alt="llama cruising through space empowered by the powerfull rama/datastar combo">
+<img style="width: 50%" src="img/rama_datastar.jpg" alt="llama cruising through space with rama and datastar">
 </div>
 
 You can join the discord server of [🚀 Datastar](https://data-star.dev) at <https://discord.gg/sGfFuw9k>,
 after which you can join [the #general-rust channel](https://discord.com/channels/1296224603642925098/1315397669954392146)
 for any datastar specific help.
 
-Combining [🚀 Datastar](https://data-star.dev) with 🦙 Rama (ラマ) provides a powerful foundation for your web application—one that **empowers you to build and scale without limitations**.
-
 The core concept of datastar is to keep one long lived connection per user (agent) session open,
 through which you stream your data(star) events (SSE). While your client interacts with the server
-via regular HTTP calls. This paradigm is often referred to as ommand Query Responsibility Segregation (CQRS).
+via regular HTTP calls. This paradigm is often referred to as Command Query Responsibility Segregation (CQRS).
 Covering CQRS properly is out of scope of this doc as well as the knowledge of the author.
 You can however start your journey in that rabbit hole by reading these resources:
 
@@ -156,7 +144,7 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 
 ### Server-Sent Events (SSE)
 
-See [./http/sse.md].
+See the [SSE chapter](./http/sse.md).
 
 ### Anti-Bot Examples
 

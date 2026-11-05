@@ -1282,16 +1282,76 @@ final class WriterMemoryBudgetTests: XCTestCase {
         XCTAssertTrue(released.get())
     }
 
+    func testPayloadViewSizesClampToWriterAndKeepReserveCalculationConsistent() {
+        for kib in [64, 128, 256] {
+            let policy = WriterMemoryPolicy(
+                maxBytes: 512 * 1024, maxItems: 16,
+                tcpWaiterMaxBytes: 256 * 1024,
+                tcpPayloadViewMaxBytes: kib * 1024)
+            XCTAssertEqual(policy.tcpPayloadViewMaxBytes, min(kib, 192) * 1024)
+            XCTAssertEqual(policy.udpPressureReserveBytes, (256 - min(kib, 192)) * 1024)
+            XCTAssertEqual(policy.tcpTransitMaxBytes, min(kib, 192) * 1024)
+            let smallerWriter = WriterMemoryPolicy(
+                maxBytes: 512 * 1024, maxItems: 16,
+                tcpWaiterMaxBytes: 17 * 1024,
+                tcpPayloadViewMaxBytes: kib * 1024)
+            XCTAssertEqual(smallerWriter.tcpPayloadViewMaxBytes, 17 * 1024)
+        }
+        XCTAssertEqual(WriterMemoryPolicy.default.tcpPayloadViewMaxBytes, 64 * 1024)
+    }
+
+    func testLargerRequestedViewPreservesProductionMinimumBudget() {
+        for kib in [64, 128, 256] {
+            let policy = WriterMemoryPolicy(
+                maxBytes: 8 * 1024 * 1024 + 128 * 1024, maxItems: 256,
+                tcpWaiterMaxBytes: 8 * 1024 * 1024,
+                tcpPayloadViewMaxBytes: kib * 1024)
+            XCTAssertEqual(policy.tcpPayloadViewMaxBytes, 64 * 1024)
+            XCTAssertEqual(policy.udpPressureReserveBytes, 64 * 1024)
+            XCTAssertEqual(policy.tcpTransitMaxBytes, 64 * 1024)
+            let budget = WriterMemoryBudget(policy: policy)
+            var cursor = budget.makeTcpTransitCursor(Data(repeating: 1, count: 64 * 1024))
+            XCTAssertNotNil(cursor)
+            XCTAssertTrue(budget.tryReserve(bytes: policy.tcpWaiterMaxBytes))
+            XCTAssertNotNil(budget.tryReserveUdp(bytes: 64 * 1024))
+            budget.release(bytes: policy.tcpWaiterMaxBytes)
+            budget.releaseUdp(bytes: 64 * 1024, items: 1, pressureBytes: 0, pressureItems: 0)
+            cursor = nil
+            XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        }
+    }
+
+    func testPayloadViewReconfigurationKeepsLiveRootCharged() {
+        let budget = WriterMemoryBudget()
+        var cursor = budget.makeTcpTransitCursor(Data(repeating: 0x42, count: 256 * 1024 + 19))
+        XCTAssertNotNil(cursor)
+        for kib in [128, 256, 64] {
+            budget.reconfigure(policy: WriterMemoryPolicy(
+                maxBytes: 64 * 1024 * 1024, maxItems: 65536,
+                tcpWaiterMaxBytes: 256 * 1024, tcpPayloadViewMaxBytes: kib * 1024))
+            XCTAssertEqual(budget.tcpPayloadViewMaxBytes, kib * 1024)
+            XCTAssertEqual(budget.snapshot().retainedBytes, 256 * 1024 + 19)
+            XCTAssertEqual(cursor?.prefix(maxBytes: budget.tcpPayloadViewMaxBytes).count, kib * 1024)
+        }
+        cursor = nil
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+    }
+
     func testTcpTransitSubcapPreservesLargeWaiterAndUdpReserveWithNoCopyRoot() {
+        for kib in [64, 128, 256] { assertTransitReserve(viewBytes: kib * 1024) }
+    }
+
+    private func assertTransitReserve(viewBytes: Int) {
         let kib = 1024
         let policy = WriterMemoryPolicy(
-            maxBytes: 512 * kib,
+            maxBytes: 1024 * kib,
             maxItems: 16,
-            tcpWaiterMaxBytes: 128 * kib,
+            tcpWaiterMaxBytes: 256 * kib,
+            tcpPayloadViewMaxBytes: viewBytes,
             udpPressureReserveBytes: 32 * kib,
             udpPressureReserveItems: 3)
-        XCTAssertEqual(policy.tcpPayloadViewMaxBytes, 64 * kib)
-        XCTAssertEqual(policy.tcpTransitMaxBytes, 352 * kib)
+        XCTAssertEqual(policy.tcpPayloadViewMaxBytes, viewBytes)
+        XCTAssertEqual(policy.tcpTransitMaxBytes, 736 * kib)
         XCTAssertEqual(policy.tcpTransitMaxItems, 12)
 
         let budget = WriterMemoryBudget(policy: policy)

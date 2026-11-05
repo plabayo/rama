@@ -25,11 +25,11 @@ Status (updates and errata) last checked on 2026-10-23 against
 
 * [rfc9931.txt](./rfc9931.txt)  
   Security Considerations for Optimistic Protocol Transitions in HTTP/1.1.
-  Replaces RFC 9298 §5's optimistic-sending text and adds HTTP/1.1 CONNECT
+  Replaces RFC 9298 section 5's optimistic-sending text and adds HTTP/1.1 CONNECT
   requirements (updates RFC 9112). No errata.
 
 * [rfc6570.txt](./rfc6570.txt)  
-  URI Template, levels 1–3 as restricted by RFC 9298 §2. Errata: one verified,
+  URI Template, levels 1-3 as restricted by RFC 9298 section 2. Errata: one verified,
   one rejected.
 
 ### Related, vendored in sibling crates

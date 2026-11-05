@@ -56,7 +56,7 @@ Here are some examples that demonstrate working with transport layer services:
   request and a unidirectional upload;
 - [/examples/src/quic_terminating_relay.rs](https://github.com/plabayo/rama/tree/main/examples/src/quic_terminating_relay.rs):
   a terminating QUIC relay, presenting its own identity to the client and authenticating the
-  origin itself, carrying client-initiated bidirectional streams between them;
+  origin itself, relaying client-initiated bidirectional streams between them;
 - [/examples/src/udp_codec.rs](https://github.com/plabayo/rama/tree/main/examples/src/udp_codec.rs):
   an example showing how to work with UDP using codecs for message framing;
 - [/examples/src/udp_over_tcp.rs](https://github.com/plabayo/rama/tree/main/examples/src/udp_over_tcp.rs):

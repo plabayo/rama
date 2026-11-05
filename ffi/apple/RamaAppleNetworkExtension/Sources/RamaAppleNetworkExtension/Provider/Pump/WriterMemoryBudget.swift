@@ -17,6 +17,7 @@ struct WriterMemoryPolicy: Sendable, Equatable {
     static let maxRepresentableBytes = Int((UInt64(1) << 40) - 1)
     static let maxRepresentableItems = Int((UInt64(1) << 23) - 1)
     static let minimumUdpPressureReserveBytes = 64 * 1024
+    static let defaultTcpPayloadViewMaxBytes = 64 * 1024
 
     let maxBytes: Int
     let maxItems: Int
@@ -31,13 +32,15 @@ struct WriterMemoryPolicy: Sendable, Equatable {
 
     /// Maximum zero-copy TCP read/promotion view handed across the Rust FFI or
     /// into one direct-forwarded write. This is independent of the larger FIFO
-    /// waiter cap used for Rust→Swift writer callbacks.
-    var tcpPayloadViewMaxBytes: Int { min(64 * 1024, tcpWaiterMaxBytes) }
+    /// waiter cap used for Rust→Swift writer callbacks. The 64 KiB default
+    /// bounds individual operations; engine configuration may request a larger view,
+    /// clamped to writer capacity and the headroom left beside the UDP minimum.
+    let tcpPayloadViewMaxBytes: Int
 
     /// Read-side roots may survive in Rust, a promotion cursor, and a writer
     /// simultaneously. Cap that physical transit population below the global
     /// envelope so it can never consume the UDP reserve or the capacity needed
-    /// to grant one maximum-sized FIFO TCP waiter. The separate 64 KiB cap
+    /// to grant one maximum-sized FIFO TCP waiter. The separate payload-view cap
     /// limits individual views only; a waiter can represent a larger callback.
     var tcpTransitMaxBytes: Int {
         max(0, maxBytes - udpPressureReserveBytes - tcpWaiterMaxBytes)
@@ -51,6 +54,7 @@ struct WriterMemoryPolicy: Sendable, Equatable {
         maxBytes: Int,
         maxItems: Int,
         tcpWaiterMaxBytes: Int? = nil,
+        tcpPayloadViewMaxBytes: Int = Self.defaultTcpPayloadViewMaxBytes,
         udpPressureReserveBytes: Int = 1024 * 1024,
         udpPressureReserveItems: Int = 256
     ) {
@@ -62,7 +66,17 @@ struct WriterMemoryPolicy: Sendable, Equatable {
         self.maxBytes = maxBytes
         self.maxItems = maxItems
         self.tcpWaiterMaxBytes = tcpWaiterMaxBytes
-        let transitViewBytes = min(64 * 1024, tcpWaiterMaxBytes)
+        precondition(tcpPayloadViewMaxBytes > 0)
+        // Production's minimum envelope leaves 64 KiB each for a read and UDP
+        // beside the largest writer. Larger views must fit without taking that
+        // UDP minimum. Preserve legacy small policies whose transit subcap
+        // was already smaller than one view.
+        let viewHeadroom = maxBytes - tcpWaiterMaxBytes
+            - min(udpPressureReserveBytes, Self.minimumUdpPressureReserveBytes)
+        let transitViewBytes = min(
+            tcpPayloadViewMaxBytes, tcpWaiterMaxBytes,
+            max(Self.defaultTcpPayloadViewMaxBytes, viewHeadroom))
+        self.tcpPayloadViewMaxBytes = transitViewBytes
         self.udpPressureReserveBytes = min(
             udpPressureReserveBytes,
             max(0, maxBytes - tcpWaiterMaxBytes - transitViewBytes))

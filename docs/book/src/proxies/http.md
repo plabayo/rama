@@ -45,9 +45,9 @@ this is expected, however there are typically differences:
 - The use cases of a reverse proxy are very wide, while
   those of the http proxy are pretty specific.
 
-The most common use case of an http(s) proxy is to
-conceal the MAC (~L3) and IP address (~L4) of the client, and have the request
-originate instead from the http(s) proxy.
+The most common use case of an http(s) proxy is to hide the IP address (L3)
+of the client: the proxy opens its own connection to the target server,
+so the server sees the proxy's IP address instead of the client's.
 
 ```
 
@@ -85,17 +85,18 @@ HTTP Proxy relaying HTTPS requests
 
 In case the client request is encrypted (TLS) it will typically make a
 plaintext (http/1.1) request with the "CONNECT" method to the proxy,
-whom on the behalve of the client will establish an encrypted tunnel
-to the target (server), from there it will:
+which on behalf of the client opens a TCP connection to the target (server).
+The TLS handshake itself happens between client and server, through that tunnel.
+From there the proxy will:
 
-- either just copy the data between the two connections as they are;
-- or it might act as [a MITM proxy](./mitm.md) and actually read and
-  possibly even modify the incoming (http) request prior to sending
-  it to the target client. In this case it might even act
+- either just copy the bytes between the two connections as they are,
+  without seeing the decrypted traffic (a regular CONNECT tunnel);
+- or act as [a MITM proxy](./mitm.md): terminate the client's TLS itself,
+  open its own TLS connection to the target, and read and possibly
+  modify the (http) requests in between. In this case it might even act
   as [a distortion proxy](./distort.md).
 
-In case we are dealing with TLS-encrypted traffic it does mean that the client
-most likely will have to accept/approve the authority of the proxy's TLS certification,
+Only the MITM case requires the client to trust the proxy's TLS certificate,
 given it will not match the expected target (server) TLS certificate. Depending on the
 client's network policies this might be handled automatically due to the use
 of a non-public [root certificate](https://en.wikipedia.org/wiki/Root_certificate).
@@ -184,5 +185,5 @@ HTTP Proxy MITM'ing HTTPS requests
 > Flow a MITM proxy handling HTTPS traffic
 >
 > step (4) to (6) can be done before step (3).
-> However rrama by default does these `proxy ↔ server` steps
+> However rrama by default does these `proxy <-> server` steps
 > lazilly only when the first actual http(s) request is received.

@@ -12,7 +12,7 @@
 //! Server `IntoResponse` support is also supported, including with `Keep-Alive` support.
 //! See <https://ramaproxy.org/docs/rama/http/service/web/response/struct.Sse.html> for more info.
 //!
-//! Learn more about SSE at <https://ramaproxy.org/book/sse.html>.
+//! Learn more about SSE at <https://ramaproxy.org/book/http/sse.html>.
 //!
 //! ## Examples
 //!

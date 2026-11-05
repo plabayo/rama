@@ -2,9 +2,19 @@
 
 ## Supported Versions
 
-| Version  | Supported          |
-|----------|--------------------|
-| >= 0.0.0 | :white_check_mark: |
+| Version                                                | Supported          |
+|--------------------------------------------------------|--------------------|
+| `main`                                                 | :white_check_mark: |
+| latest release, until `main` works towards a new major | :white_check_mark: |
+| older releases                                         | :x:                |
+
+Security fixes land on `main` and ship with the next release. Once `main` works
+towards a new major release (before 1.0: a new `0.y`), we do not make patch
+releases for the already released major version, as that would mean maintaining
+multiple branches.
+
+Need fixes backported to a released version? That is available under a partner
+contract, see [ramaproxy.com](https://ramaproxy.com).
 
 ## Reporting a Vulnerability
 

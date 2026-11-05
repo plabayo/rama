@@ -38,8 +38,8 @@ If you already know what you want to build, jump to the relevant proxy or web se
 
 ## A new model for programmable networking
 
-Rama is more than a toolkit.  
-It is a mindset shift for designing dynamic, composable network services.
+In Rama every part of the network stack is a `Service`,
+and middleware is added as `Layer`s around those services.
 
 Traditional frameworks tend to hide or abstract away the networking layers.  
 Rama exposes them, while still giving you safe, ergonomic building blocks.
@@ -51,7 +51,8 @@ You choose:
 - which layers apply  
 - whether you operate at transport-, application-, some layer in between or all over the place.
 
-This enables use cases that are difficult or impossible in conventional frameworks.
+This lets you, for example, inspect a TLS ClientHello, rewrite HTTP headers
+and pick the upstream connection in the same service stack.
 
 ## Batteries included
 
@@ -60,7 +61,7 @@ Rama ships with a large set of capabilities so you can focus on your unique logi
 ### Highlights
 
 - **Transports:** TCP, UDP, QUIC, UDS, middleware, instrumentation  
-- **HTTP:** 1.1 and 2, automatic protocol detection, routing, middleware  
+- **HTTP:** 1.1, 2 and 3 (HTTP/3 needs the `quic` feature and a TLS backend), automatic protocol detection, routing, middleware  
 - **TLS:** Rustls and BoringSSL support  
 - **Proxy protocols:** HTTP CONNECT, HTTPS CONNECT, SOCKS5, HAProxy PROXY protocol  
 - **Web protocols:** SSE, WebSocket  
@@ -70,11 +71,11 @@ Rama ships with a large set of capabilities so you can focus on your unique logi
 - **Diagnostics:** HAR and cURL export  
 - **Utilities:** error handling, graceful shutdown, connection pooling
 
-The detailed feature matrix in the repository readme or website.
+The detailed feature matrix can be found in the repository readme or on the website.
 
 ## A framework built for proxies
 
-Rama’s core strength is proxy development.
+Rama's core strength is proxy development.
 See [the intro to proxy chapters](./proxies/intro.md) for
 learning more about the various kind of proxies.
 

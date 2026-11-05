@@ -41,6 +41,16 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 Error types and utilities for `rama`.
 
+- `BoxError`: the type-erased error used at service and layer boundaries.
+- `ErrorExt`: adds context values, key-value context fields and backtraces to
+  any error that converts into a `BoxError`.
+- `ErrorContext`: the same context methods on `Result` and `Option`, for use with `?`.
+- `CauseExt` and `error_chain`: walk an error's source chain and find causes by type.
+- `ErrorList`: reports several failures as one error.
+
+Through the `rama` crate this is `rama::error`. See the
+[errors chapter](https://ramaproxy.org/book/intro/errors.html) of the book.
+
 Crate used by the end-user `rama` crate and `rama` "http" crate authors alike.
 
 Learn more about `rama`:

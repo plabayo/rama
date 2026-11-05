@@ -6,7 +6,10 @@ version = 2
 # Remove these once wasmtime-internal-cache accepts a compatible fixed zstd
 # release: zstd >=0.14.3 with zstd-safe >=8.2.0.
 # Upstream fix: https://github.com/bytecodealliance/wasmtime/pull/15003
+# pin-utils only reaches the build through loom's `futures` feature, a cfg(loom)
+# dev-dependency of rama-utils; remove once loom drops it.
 ignore = [
+    { id = "RUSTSEC-2026-0441", reason = "Unmaintained only; loom uses pin_mut! in cfg(loom) dev builds and no loom release drops it." },
     { id = "RUSTSEC-2026-0391", reason = "Wasmtime cache creates fresh encode_all/decode_all contexts; it does not reuse borrowed contexts." },
     { id = "RUSTSEC-2026-0398", reason = "Wasmtime cache does not enable or use seekable decoding." },
     { id = "RUSTSEC-2026-0403", reason = "Wasmtime cache uses decode_all/read::Decoder, which this advisory excludes, rather than the streaming writer." },

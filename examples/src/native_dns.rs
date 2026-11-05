@@ -1,9 +1,7 @@
 //! Resolve one or more domains using Rama's native DNS support.
 //!
-//! - On Apple platforms this example uses `AppleDnsResolver`.
-//! - On Windows platforms this example uses `WindowsDnsResolver`.
-//! - On other platforms it exits successfully after printing
-//!   that the example is Apple/Windows only for now.
+//! `NativeDnsResolver` is the platform resolver: `AppleDnsResolver` on Apple platforms,
+//! `WindowsDnsResolver` on Windows, `LinuxDnsResolver` on Linux and `TokioDnsResolver` elsewhere.
 //!
 //! ```sh
 //! cargo run -p rama-examples --bin native_dns --features=dns -- localhost

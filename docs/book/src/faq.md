@@ -90,23 +90,25 @@ Please consult [./web_servers.md](./web_servers.md) for more information.
 Rama's code is written in a very generic manner, which combined with the fact that it is written with a tokio
 multithreaded work-stealing environment and at the same time with the goal to provide you with high level ergonomical features, results in a pretty complicated set of trait bounds and restrictions of all kinds.
 
-As such it is very easy to write code — especially when you're new to `rama` — which will give a compiler error for which you have no clue how to resolve it. Sometimes the answer can be found in the compiler output if you know at what line to spot, but at times the answer might honestly not be there at all.
+As such it is very easy to write code — especially when you're new to `rama` — which will give a compiler error for which you have no clue how to resolve it. Sometimes the answer can be found in the compiler output if you know at what line to spot, but at times the answer is not there at all.
 
-Axum had similar issues at the past and they solved it as far as we know by:
-
-- Boxing services and other core types where possible to erase complicated type signatures;
-- Provide debug macros for code stacks to more easily figure out what is missing;
-
-For `rama` we try to box as little as possible, and we do not provide such `debug` macros.
+`rama` boxes as little as possible, so long type signatures show up in these errors.
 
 > [!NOTE]
-> You can learn more about about [Dynamic- vs Static dispatch here](./intro/dynamic_dispatch.md).
+> You can learn more about [Dynamic- vs Static dispatch here](./intro/dynamic_dispatch.md).
 
-Most commonly you might get this error, especially the difficult ones, for high level http service handlers. In which case the problem is usually on of these:
+Most commonly you get these errors for high level http service handlers. For a function that is not a valid
+endpoint the compiler reports "`...` is not a valid web endpoint", with notes on the rules it has to follow.
+The cause is usually one of these:
 
-- add a service struct or function which does not derive `Clone` (a requirement);
+- add a service struct or function which does not implement `Clone` (a requirement);
 - use something which is not `Send/Sync/'static`, while it is expected to be;
-- return a Result as the output of an `Endpoint` service/fn (when using the `WebService` router), instead of only returning the happy path value;
+- return `impl IntoResponse` while an extractor's `Rejection` cannot be converted into an `ErrorResponse`;
+- return `Result<O, E>` while `E` does not implement `From<Rejection>` for every extractor argument;
+- return `Result<O, E>` where `O` does not implement `IntoResponse` or `E` does not implement `Into<ErrorResponse>`
+  (implementing `IntoResponse` for `E` is enough).
+
+The full rules are documented at [`EndpointServiceFn`](https://ramaproxy.org/docs/rama/http/service/web/trait.EndpointServiceFn.html).
 
 There are other possibilities to get long wielded compiler errors as well. It is not feasible to list all possible reasons here, but know most likely it is among the lines of the examples above. If not, and you continue to be stuck, to feel free to join our discord at <https://discord.gg/29EetaSYCD> and reach out for help. We're here for you.
 
@@ -119,13 +121,14 @@ why by checking `git diff` or a similar VCS action.
 The most common reasons for this is if:
 
 1. you have a very large function which also contains deeply nested generic types;
-2. you have a lot of [`Either`] service/layer stuff within your [Service stacks](./intro/service_stack.md).
+2. you have a lot of [`Either`] or optional service/layer stuff within your [Service stacks](./intro/service_stack.md).
 
-It's especially (2) that can slow you down if you overuse it. This usually comes op in case you use
-plenty of `Option<Layer<L>>` code to optionally create a layer based on a certain input/config variable.
-While this might seem like a good idea, and it can be if used sparsly, it can really slow you down once you
-use a couple of these. This is because under the hood this results in `Either<L::Service, S>`, meaning your
-`S` service (stack) will be twice in that signature. Do that a couple of times and you very quickly have a very long long type.
+It's especially (2) that can slow you down if you overuse it. This usually comes up in case you use
+plenty of `Option<L>` layers to optionally create a layer based on a certain input/config variable.
+While this might seem like a good idea, and it can be if used sparingly, it can really slow you down once you
+use a couple of these. This is because under the hood this results in a [`MaybeLayeredService<S, L>`],
+which holds either `L::Service` or your `S` service (stack), so the compiler has to type check
+and generate code for both branches. Do that a couple of times and the number of branches multiplies.
 
 Therefore it is recommended for optional layers/services to instead provide an option to create the same kind of layer/service
 type, but in a "nop" mode. Meaning the (middleware) service would essentially do nothing more then passing the request and response.
@@ -136,6 +139,7 @@ Please do [open an issue](https://github.com/plabayo/rama/issues) if you notice 
 Another option is to use [`Either`] on the internal policy/config items used by your layer.
 
 [`Either`]: https://ramaproxy.org/docs/rama/combinators/enum.Either.html
+[`MaybeLayeredService<S, L>`]: https://ramaproxy.org/docs/rama/layer/struct.MaybeLayeredService.html
 
 ## In the echo server, why are tls.ja3 and tls.ja4 profiles null?
 
@@ -169,17 +173,8 @@ You should raise the soft file descriptor limit at startup using
 A practical default for proxies is `65_535`.
 The function will automatically clamp the requested value to the system hard limit.
 
-Example:
-
-```rust,norun
-use rama::unix::utils::raise_nofile;
-
-fn main() -> std::io::Result<()> {
-    raise_nofile(65_535)?;
-    // start your proxy
-    Ok(())
-}
-````
+Call it once at the start of `main`, before you bind any listeners.
+It returns a `std::io::Result<()>`, so you can propagate or log a failure.
 
 If raising the limit fails or has no effect, your system hard limit may be too low.
 In that case, increase it via your service manager or OS configuration,

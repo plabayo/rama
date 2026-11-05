@@ -6,9 +6,9 @@ because its QUIC connections use UDP.
 
 Rama supports two MASQUE protocols:
 
-- **CONNECT-UDP** carries UDP payloads to a particular host and port. Use it to
+- **CONNECT-UDP** tunnels UDP payloads to a particular host and port. Use it to
   reach an HTTP/3 server or another UDP service through a proxy.
-- **CONNECT-IP** carries complete IPv4 or IPv6 packets. It is a building block
+- **CONNECT-IP** tunnels complete IPv4 or IPv6 packets. It is a building block
   for VPNs, access to private networks and tunnels between sites.
 
 <div class="book-article-image-center">
