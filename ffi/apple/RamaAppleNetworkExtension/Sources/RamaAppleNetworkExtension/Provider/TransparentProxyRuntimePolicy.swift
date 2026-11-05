@@ -109,7 +109,8 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
         udpIngressPerFlowMaxBytes: Int = 256 * 1024,
         udpIngressGlobalMaxBytes: Int = 16 * 1024 * 1024,
         writerMemoryMaxBytes: Int = WriterMemoryPolicy.default.maxBytes,
-        writerMemoryMaxItems: Int = WriterMemoryPolicy.default.maxItems
+        writerMemoryMaxItems: Int = WriterMemoryPolicy.default.maxItems,
+        tcpPayloadViewMaxBytes: Int = WriterMemoryPolicy.defaultTcpPayloadViewMaxBytes
     ) {
         let pressureSoftCap = normalizedFlowPressureSoftCap(
             softCap: flowPressureSoftCap,
@@ -154,7 +155,8 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
         self.writerMemory = WriterMemoryPolicy(
             maxBytes: writerMemoryMaxBytes,
             maxItems: writerMemoryMaxItems,
-            tcpWaiterMaxBytes: effectiveTcpWritePumpMaxPendingBytes)
+            tcpWaiterMaxBytes: effectiveTcpWritePumpMaxPendingBytes,
+            tcpPayloadViewMaxBytes: tcpPayloadViewMaxBytes)
         self.tcpStartAdmission = TcpStartAdmissionPolicy(
             hardCap: tcpStartInFlightHardCap,
             softCap: tcpStartSoftCap,
@@ -184,7 +186,8 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
             udpIngressPerFlowMaxBytes: startup.udpIngressPerFlowMaxBytes,
             udpIngressGlobalMaxBytes: startup.udpIngressGlobalMaxBytes,
             writerMemoryMaxBytes: startup.writerMemoryMaxBytes,
-            writerMemoryMaxItems: startup.writerMemoryMaxItems)
+            writerMemoryMaxItems: startup.writerMemoryMaxItems,
+            tcpPayloadViewMaxBytes: startup.tcpPayloadViewMaxBytes)
     }
 
     /// Compatibility snapshot for engine-less and narrowly-scoped unit tests.

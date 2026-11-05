@@ -56,13 +56,13 @@ Rama gives you:
   breaks naive emitters). The streaming writer commits the channel/feed
   header before any item is seen, so declaring the recognised extensions
   on the root keeps the document namespace-well-formed regardless of what
-  the item stream actually carries.
+  the item stream actually contains.
 - **Lenient parsing by default, strict opt-in.** Unknown elements are skipped;
   malformed entities and missing required fields are tolerated. A strict mode
   is available on every reader entry point for the cases where you'd rather
   see the structural violation than silently absorb it.
 - **Lossless round-trip** for both formats across all supported extensions.
-  Parse → mutate → re-serialize is the proxy/aggregator case and is a first-class
+  Parse -> mutate -> re-serialize is the proxy/aggregator case and is a first-class
   goal: every field the writer emits, the parser reads back.
 - **Resolved-namespace routing** — extension elements are matched by their
   namespace URI rather than by literal prefix, so a feed declaring
@@ -85,7 +85,7 @@ Rama gives you:
   The in-memory whole-feed adapters are thin conveniences on top of the same
   streams.
 - **Partial results on failure.** If an item partway through a feed fails to
-  parse, the error carries the header and every item that succeeded before it,
+  parse, the error contains the header and every item that succeeded before it,
   so a client doesn't lose the rest of a long feed to one bad entry. A lossy
   drain variant is also provided for the common "skip and keep going" case.
 - **A format-agnostic `Feed` umbrella** for callers that want to consume a feed
@@ -98,13 +98,13 @@ Rama gives you:
 
 The ready-to-run examples cover the common shapes:
 
-- [`http_rss_blog.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_rss_blog.rs)
-  — serve an RSS 2.0 feed and an Atom 1.0 feed from the same router.
-- [`http_rss_podcast.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_rss_podcast.rs)
-  — serve a podcast feed with iTunes + Podcasting 2.0 extensions, both as a
+- [`http_rss_blog.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_rss_blog.rs):
+  serve an RSS 2.0 feed and an Atom 1.0 feed from the same router.
+- [`http_rss_podcast.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_rss_podcast.rs):
+  serve a podcast feed with iTunes + Podcasting 2.0 extensions, both as a
   one-shot response and as a streamed response.
 
-These are the canonical "how do I…" references; they're tested in CI so they
+These are the canonical "how do I..." references; they're tested in CI so they
 won't drift away from the API.
 
 ## Use cases

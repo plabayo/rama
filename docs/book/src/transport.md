@@ -1,11 +1,11 @@
 # Transport Protocols
 
 Transport protocols form the foundation of communication in networked applications.
-In Rama, they’re not just a substrate—they’re fully integrated, layered services,
-treated with the same flexibility and modularity as higher-level components.
+In Rama, they are services and layers like any other component,
+with the same flexibility and modularity as higher-level protocols.
 This chapter explores how Rama supports and enhances [TCP][rama-tcp],
-[UDP][rama-udp], [QUIC][rama-quic], and [Unix sockets][rama-unix], emwpoering you to build
-robust and performant network applications.
+[UDP][rama-udp], [QUIC][rama-quic], and [Unix sockets][rama-unix], for building
+reliable and fast network applications.
 
 Rama's layered architecture starts at the transport layer and goes *all the way up*.
 This is a distinguishing trait: in most frameworks, transport is considered a
@@ -30,11 +30,11 @@ real-time telemetry, or custom RPC protocols.
 > layering QUIC in between for the same ordered and reliable
 > connection-oriented communication traditionally offered by TCP.
 
-[QUIC][rama-quic] sits between the two. It runs over UDP and carries many independent
+[QUIC][rama-quic] is in between the two. It runs over UDP and multiplexes many independent
 streams on one connection, each of them ordered and reliable on its own. Ordering is
 per-stream, not connection-wide: a stream that loses a packet does not hold up the others,
-which is what distinguishes it from carrying several exchanges over one TCP connection. It
-also carries unreliable [DATAGRAM][rfc-9221] frames, which are neither ordered nor
+which is what distinguishes it from sending several exchanges over one TCP connection. It
+also supports unreliable [DATAGRAM][rfc-9221] frames, which are neither ordered nor
 retransmitted and are bounded by what one packet can hold.
 
 Rama's QUIC is the transport itself. HTTP/3 is not part of it.
@@ -56,7 +56,7 @@ Another dimension in transport protocol design is **remote** vs **local** commun
 Unix sockets are especially useful for high-performance, secure inter-process communication (IPC).
 They avoid the overhead of TCP while retaining the benefits of stream or datagram semantics.
 In Rama, using Unix (Domain) Sockets (UDS) is as simple as switching out
-the transport service—your layers, middleware, and application logic don’t need to change.
+the transport service—your layers, middleware, and application logic don't need to change.
 
 ## Use Cases and Trade-offs
 
@@ -82,7 +82,7 @@ This transport-first model is also part of why Rama's [gRPC support](./http/grpc
 - For connectionless communication using datagrams there is no client or server,
   and for those there are only the sockets to work with, regardless of which party:
   - UDP: <https://ramaproxy.org/docs/rama/udp/struct.UdpSocket.html>
-  - Unix: <https://ramaproxy.org/docs/rama/unix/struct.UnixSocket.html>
+  - Unix: <https://ramaproxy.org/docs/rama/unix/struct.UnixDatagram.html>
 - QUIC has one endpoint type for both roles, since a single endpoint may act as client and
   server for different connections:
   - <https://ramaproxy.org/docs/rama/quic/struct.Endpoint.html>
@@ -120,10 +120,8 @@ e.g. to discover which devices exist prior to binding, or for diagnostics (`rama
 
 ## Examples
 
-These examples show how easy it is to set up and extend Rama’s transport services,
-and how they integrate seamlessly with the rest of the stack.
-
-Rama doesn’t just support networking—it *is* networking, from transport to application.
+These examples show how to set up Rama's transport services
+and connect them to the rest of the stack.
 
 - TCP:
   - [/examples/src/tcp_listener_fd_passing.rs](https://github.com/plabayo/rama/blob/main/examples/src/tcp_listener_fd_passing.rs):
@@ -137,7 +135,7 @@ Rama doesn’t just support networking—it *is* networking, from transport to a
     `--features=quic,rustls,ring`
   - [/examples/src/quic_terminating_relay.rs](https://github.com/plabayo/rama/blob/main/examples/src/quic_terminating_relay.rs):
     a terminating relay: it presents its own identity to the client and authenticates the
-    origin itself, over two independent handshakes, and carries client-initiated bidirectional
+    origin itself, over two independent handshakes, and relays client-initiated bidirectional
     streams between them.
     It relays neither unidirectional nor server-initiated streams. It needs an origin to
     relay to and that origin's certificate
@@ -150,7 +148,7 @@ Rama doesn’t just support networking—it *is* networking, from transport to a
     QUIC with your own TLS provider, here GnuTLS, through `rama::quic::tls::provider`
 - UDP:
   - [/examples/src/udp_codec.rs](https://github.com/plabayo/rama/blob/main/examples/src/udp_codec.rs):
-    an example which leverages `BytesCodec` to create a UDP client and server which speak a custom protocol
+    an example which uses `BytesCodec` to create a UDP client and server which speak a custom protocol
   - [/examples/src/udp_over_tcp.rs](https://github.com/plabayo/rama/blob/main/examples/src/udp_over_tcp.rs):
     tunnels UDP datagrams over a single TCP connection (with `u16` length-prefix framing on the TCP side),
     useful for reaching a UDP service from a TCP-only network. Inspired by Jon Gjengset's

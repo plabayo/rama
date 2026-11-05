@@ -47,7 +47,7 @@ transport parameters and first flight, HTTP/3 SETTINGS and header order.
    rama send --emulate=profiles.json --http3 -H 'User-Agent: <the captured User-Agent>' https://example.com/
    ```
 
-   [Verifying a fingerprint with Wireshark](./user_agent.md#verifying-a-fingerprint-with-wireshark)
+   [Verifying a fingerprint with Wireshark](./user_agent_emulation.md#verifying-a-fingerprint-with-wireshark)
    shows how to compare the result with the original.
 
 ## With the MITM proxy

@@ -64,7 +64,7 @@ route plan around an arbitrary connector stack. This keeps route discovery
 (such as static configuration, middleware or PAC) separate from the protocol
 connectors that establish one selected route.
 
-`ProxyAddress` itself is deliberately not an extension. Wrap it in
+`ProxyAddress` itself is not an extension. Wrap it in
 `ProxyRoute::Proxy`, or include it in `ProxyRoutes`, so direct and proxied
 connections use one unambiguous extension model.
 

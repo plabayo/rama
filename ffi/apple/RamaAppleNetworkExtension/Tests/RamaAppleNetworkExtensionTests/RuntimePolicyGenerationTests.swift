@@ -9,6 +9,25 @@ final class RuntimePolicyGenerationTests: XCTestCase {
         TestFixtures.ensureInitialized()
     }
 
+    func testPayloadViewConfigurationCrossesRustFFIAndRuntimePolicy() throws {
+        for (requested, writer, expected) in [
+            (nil as Int?, 256 * 1024, 64 * 1024),
+            (128 * 1024, 256 * 1024, 128 * 1024),
+            (256 * 1024, 256 * 1024, 256 * 1024),
+            (256 * 1024, 17, 17),
+            (0, 256 * 1024, 1),
+        ] {
+            let engine = try XCTUnwrap(RamaTransparentProxyEngineHandle(
+                engineConfigJson: TestFixtures.engineConfigJson(
+                    tcpWritePumpMaxPendingBytes: writer, tcpPayloadViewMaxBytes: requested)))
+            let startup = try XCTUnwrap(engine.config())
+            XCTAssertEqual(startup.tcpPayloadViewMaxBytes, expected)
+            let policy = TransparentProxyRuntimePolicy(startup: startup)
+            XCTAssertEqual(policy.writerMemory.tcpPayloadViewMaxBytes, expected)
+            XCTAssertEqual(policy.writerMemory.maxBytes, 64 * 1024 * 1024)
+        }
+    }
+
     private func makeEngine() -> RamaTransparentProxyEngineHandle {
         guard
             let engine = RamaTransparentProxyEngineHandle(

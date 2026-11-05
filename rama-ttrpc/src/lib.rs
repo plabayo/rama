@@ -15,8 +15,8 @@
 //!
 //! Like `rama-grpc`, this crate has **no transport layer**. A [`Client`] or
 //! [`ServerConnection`] is built from any already-connected stream (anything that is
-//! `AsyncRead + AsyncWrite`). Establish that stream with rama's `rama-tcp` / `rama-unix` /
-//! `rama-udp` capabilities (or an in-memory `tokio::io::duplex` pair), then hand it over:
+//! `AsyncRead + AsyncWrite`). Establish that stream with `rama-tcp` or `rama-unix`
+//! (optionally with TLS), or use an in-memory `tokio::io::duplex` pair, then hand it over:
 //!
 //! # Rama
 //!

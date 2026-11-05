@@ -39,7 +39,7 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-quic
 
-QUIC for Rama — the transport that carries HTTP/3 and MASQUE. It gives you QUIC
+QUIC for Rama - the transport under HTTP/3 and MASQUE. It gives you QUIC
 client and server endpoints: encrypted, multiplexed streams and unreliable datagrams
 over UDP, with the loss recovery, congestion control, connection migration and
 path-MTU discovery a real deployment needs. TLS 1.3 comes from the shared `rama-tls`

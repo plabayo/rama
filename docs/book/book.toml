@@ -12,6 +12,10 @@ site-url = "/book/"
 cname = "ramaproxy.org"
 admonitions = true
 
+[output.html.redirect]
+"/deploy/shuttle.html" = "overview.html"
+"/sse.html" = "http/sse.html"
+
 [output.html.print]
 enable = false
 

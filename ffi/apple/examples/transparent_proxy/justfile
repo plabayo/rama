@@ -264,3 +264,7 @@ test-apple-crates:
 # Default production objects must exclude the private API; opt-in must include it.
 test-private-api-trait *ARGS:
     uv run --frozen --project ../../../../scripts/ci python ./scripts/check_private_api_trait.py {{ARGS}}
+
+# Release component benchmark: production Swift pumps, native TCP, synthetic NE.
+bench-tcp-payload-views *ARGS: build-tproxy-rs-debug
+    python3 scripts/payload_view_benchmark.py {{ARGS}}

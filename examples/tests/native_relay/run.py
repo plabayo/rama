@@ -95,7 +95,8 @@ def build_binaries(args):
         "--edges",
         "normal,build,dev",
     ]
-    graph = subprocess.check_output(graph_command, cwd=ROOT, text=True, timeout=60)
+    # Runs before any build, so it may still fetch the registry index and crate sources.
+    graph = subprocess.check_output(graph_command, cwd=ROOT, text=True, timeout=600)
     (root / "dependency-graph.txt").write_text(graph)
     if "rama-ua v" in graph:
         raise ValueError("native fixture dependency graph contains rama-ua")

@@ -1,6 +1,6 @@
 # Native relay wire test
 
-Runs an independent Go client → Rama MITM relay → Go origin over TLS/H1,
+Runs an independent Go client -> Rama MITM relay -> Go origin over TLS/H1,
 TLS/H2 or QUIC/H3 (v1/v2). Rama uses `http-full,boring` with UA disabled.
 Both network legs are captured and decrypted independently with tshark.
 

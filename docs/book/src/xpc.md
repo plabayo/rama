@@ -30,7 +30,7 @@ cannot match:
 ## Core Terminology
 
 **Mach port** — The kernel primitive underlying XPC. A Mach port is a unidirectional channel
-capable of carrying messages and kernel resources (file descriptors, memory, other ports).
+able to transfer messages and kernel resources (file descriptors, memory, other ports).
 XPC manages Mach ports on your behalf; you never touch them directly.
 
 **Service name** — The name used to locate a listener through launchd, the macOS service
@@ -50,10 +50,12 @@ an XPC message and sent to a third process, which can then call `into_connection
 establish a peer connection without knowing any service name. Endpoints are the key to
 bootstrapping connections without launchd registration.
 
-**Message** — A typed value sent over a connection. XPC messages are always rooted in
-either a dictionary or another primitive type. In Rama, messages are represented by
+**Message** - A typed value sent over a connection. A top-level XPC message must be a
+dictionary; arrays and scalar values go inside it. In Rama, messages are represented by
 `XpcMessage`, an enum covering all native XPC types: booleans, integers, floats, strings,
 binary data, file descriptors, UUIDs, dates, endpoints, arrays, and dictionaries.
+`send` and `send_request` return `XpcError::InvalidMessage` for a top-level message
+that is not a `Dictionary`.
 
 **Event handler** — XPC connections are event-driven. In Rama, the event handler is bridged
 into a Tokio channel; you receive events by calling `conn.recv().await`.
@@ -137,13 +139,16 @@ This is how configuration, start/stop commands, and telemetry flow between the s
 extension and the UI.
 
 See [Operating Transparent Proxies on macOS](./proxies/operate/transparent/macos.md).
-The transparent-proxy Apple FFI demo in this repo also uses raw XPC for host-side
-CA-key retrieval, which is a practical reference for this control-plane pattern.
+The transparent-proxy Apple FFI demo in this repo also uses raw XPC for this control plane:
+the extension owns the CA private key, and the host app requests only the CA certificate
+over XPC to manage its trust settings.
 
-**Endpoint hand-off** — A server can accept a connection, create an `XpcEndpoint` from it,
-and embed that endpoint in a message to a third process. The third process calls
-`endpoint.into_connection()` to establish a direct channel — no service name required.
-This pattern avoids launchd registration for dynamically created services.
+**Endpoint hand-off** - A process creates an anonymous listener with
+`XpcEndpoint::anonymous_channel` and embeds the returned endpoint in a message to another
+process. That process calls `endpoint.into_connection()` to establish a direct channel -
+no service name required. This pattern avoids launchd registration for dynamically created
+services. `XpcEndpoint::from_connection` also works on a connection this process created,
+but returns `XpcError::EndpointUnsupported` for a peer connection accepted by a listener.
 
 **Privilege separation** — A Rust daemon can offload sensitive operations (keychain access,
 network configuration, certificate management) to a privileged XPC service, keeping the

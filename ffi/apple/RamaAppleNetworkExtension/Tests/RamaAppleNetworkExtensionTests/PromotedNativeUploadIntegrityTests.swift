@@ -226,10 +226,10 @@ final class ForwarderRef: @unchecked Sendable {
 
 /// Promoted forwarder and both production writers over a `NativeTcpConnection`.
 /// Every abnormal callback is recorded as a failure so the test stops early.
-private final class NativeForwarderHarness {
+final class NativeForwarderHarness {
     let queue = DispatchQueue(label: "rama.test.native-upload", autoreleaseFrequency: .workItem)
     let connection: NativeTcpConnection
-    let budget = WriterMemoryBudget()
+    let budget: WriterMemoryBudget
     let client: TcpClientWritePump
     let egress: NwTcpConnectionWritePump
     let forwarder: TcpDirectForwarder
@@ -239,13 +239,15 @@ private final class NativeForwarderHarness {
 
     init(
         port: UInt16, flow: any TcpFlowReadable & TcpFlowWritable, milestones: Milestones,
-        cap: Int, closeClientWrite: @escaping (Error?) -> Void = { _ in }
+        cap: Int, budget: WriterMemoryBudget = WriterMemoryBudget(),
+        closeClientWrite: @escaping (Error?) -> Void = { _ in }
     ) throws {
         guard
             let connection = NativeTcpConnection(
                 host: "127.0.0.1", port: port, parameters: makeTcpNwParameters(nil).native)
         else { throw PeerError("NativeTcpConnection could not be constructed") }
         self.connection = connection
+        self.budget = budget
         let queue = queue
         let terminals = terminals
         let pauseChecks = pauseChecks
@@ -273,7 +275,10 @@ private final class NativeForwarderHarness {
             egressWritePump: egress, writerMemoryBudget: budget, queue: queue,
             logger: { _ in }, drainStallDeadline: .seconds(30),
             onDrainStall: { milestones.fail("drain stalled") },
-            onReadError: { milestones.fail("read: \($0)") },
+            onReadError: { error in
+                milestones.fail("read: \(error); retained=\(budget.snapshot().retainedBytes)"
+                    + " transit=\(budget.testTcpTransitSnapshot.retainedBytes)")
+            },
             writeChunkLimit: cap,
             closeClientWrite: { error in
                 closeClientWrite(error)
@@ -539,23 +544,41 @@ final class ScriptedPeer: @unchecked Sendable {
 
     /// Returns the byte count read before the client's FIN.
     func readToEnd(
-        into digest: inout SHA256, chunk: Int = 65536, pacingMicros: useconds_t = 0
+        into digest: inout SHA256, chunk: Int = 65536, pacingMicros: useconds_t = 0,
+        bytesPerSecond: Int? = nil
     ) throws -> Int {
         let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: chunk, alignment: 1)
         defer { buffer.deallocate() }
         let deadline = Date().addingTimeInterval(operationTimeout * 3)
         var count = 0
+        let started = DispatchTime.now().uptimeNanoseconds
         while true {
             let n = Darwin.recv(fd, buffer.baseAddress, chunk, 0)
             if n > 0 {
                 digest.update(bufferPointer: UnsafeRawBufferPointer(rebasing: buffer[0..<n]))
                 count += n
                 if pacingMicros > 0 { usleep(pacingMicros) }
+                if let rate = bytesPerSecond {
+                    let due = started + UInt64(Double(count) / Double(rate) * 1e9)
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    if due > now { usleep(useconds_t((due - now) / 1000)) }
+                }
             } else if n == 0 {
                 return count
             } else {
                 try retry("recv", deadline: deadline)
             }
+        }
+    }
+
+    func echoUntilEOF() throws {
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        let deadline = Date().addingTimeInterval(operationTimeout * 3)
+        while true {
+            let n = Darwin.recv(fd, &buffer, buffer.count, 0)
+            if n > 0 { try send(Data(buffer.prefix(n))) }
+            else if n == 0 { return }
+            else { try retry("echo recv", deadline: deadline) }
         }
     }
 

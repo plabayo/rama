@@ -12,7 +12,7 @@
 
 SSE provides a lightweight and efficient alternative to more complex real-time
 communication mechanisms like WebSockets, especially when communication is
-strictly **server → client**. It relies on standard HTTP and text-based formatting,
+strictly **server -> client**. It relies on standard HTTP and text-based formatting,
 making it friendly for browsers and intermediaries like proxies or load balancers.
 
 Rama offers support for `SSE` both as a client and a server.
@@ -66,9 +66,9 @@ The browser parses these into `MessageEvent`s and exposes them via the [`EventSo
 
 > 📚 Rust Docs: <https://ramaproxy.org/docs/rama/http/sse/index.html>
 
-If you enable Rama’s `http` feature, **full SSE support is built-in** — for both server and client side, no additional libraries required.
+If you enable Rama's `http` feature, **full SSE support is built-in** — for both server and client side, no additional libraries required.
 
-Unlike the browser’s `EventSource` API which only allows you to *receive* string messages, **Rama gives you full access** to:
+Unlike the browser's `EventSource` API which only allows you to *receive* string messages, **Rama gives you full access** to:
 
 - **Sending and receiving** events asynchronously
 - Using **arbitrary data formats** (plain strings, JSON, custom types)
@@ -120,7 +120,7 @@ With Rama you can:
 - Send data as Strings, structured Json or custom type implementations, all with automatic newline splitting;
 - Optionally implement your own **retry strategies** by extracting `retry` hints from events
 
-Since Rama’s stream model is async and composable, you can easily wrap event producers or consumers with middlewares that:
+Since Rama's stream model is async and composable, you can easily wrap event producers or consumers with middlewares that:
 - Filter or enrich events
 - Buffer or debounce messages
 
@@ -138,6 +138,6 @@ in WebSockets.
 
 If your goal is to render an initial HTML page whose slowest panels should not
 hold back the rest, see [Declarative Partial Updates](./declarative_partial_updates.md):
-the server streams an HTML shell first, then `<template for=…>` blocks fill in
+the server streams an HTML shell first, then `<template for=...>` blocks fill in
 the markers out-of-order on a regular `text/html` response — no `EventSource`
 required.

@@ -25,15 +25,20 @@ synchronous applications use the same composed stacks at their boundary.
 |---|---|
 | [`Service`], [`Layer`] | Core service and middleware traits |
 | [`BlockingService`], [`rt::blocking`] | Synchronous boundaries for async services, streams, and I/O |
-| [`http`] | HTTP clients, servers, services, layers, WebSockets, gRPC |
+| [`http`] | HTTP/1.1, HTTP/2 and HTTP/3 clients, servers, services, layers, WebSockets, gRPC |
 | [`icap`] | Internet Content Adaptation Protocol (ICAP) |
-| [`proxy`] | Proxy primitives, SOCKS5, MASQUE (CONNECT-UDP), HAProxy PROXY protocol |
+| [`gateway`] | Application server gateways such as FastCGI |
+| [`ttrpc`] | ttRPC clients and servers |
+| [`proxy`] | Proxy primitives, SOCKS5, MASQUE (CONNECT-UDP, CONNECT-IP), HAProxy PROXY protocol |
 | [`tcp`], [`udp`], `unix` | Transport listeners, connectors, and streams |
 | [`quic`] | QUIC endpoints, connections, ordered streams, and unreliable datagrams |
 | [`tls`] | TLS abstractions, Rustls, BoringSSL, ACME |
+| [`crypto`] | Certificates, PEM, ASN.1, OCSP, CRL, JOSE, digests and native root certificates |
 | [`dns`] | DNS resolvers and related types |
-| [`net`] | Network addresses, sockets, forwarding, fingerprints |
+| [`net`] | Network addresses, sockets, forwarding, fingerprints; `net::apple` on Apple targets |
 | [`ua`] | User-Agent parsing, profiles, and emulation |
+| [`inspect`] | Protocol-independent inspection, interception and capture storage |
+| [`json`] | Streaming JSON tokenizer, JSONPath selection and rewriting |
 | [`js`] | Embedded JavaScript runtime and Proxy Auto-Configuration (PAC) support via [`js::pac`] |
 | [`telemetry`] | tracing, OpenTelemetry, and dial9 integration |
 | [`utils`] | Utilities, including Tower compatibility |
@@ -53,7 +58,7 @@ synchronous applications use the same composed stacks at their boundary.
 | Adapt HTTP through ICAP | [`icap::http::layer`] |
 | Build standalone ICAP services | [`icap::client`], [`icap::server`] |
 | Build SOCKS5 proxy flows | [`proxy::socks5`] |
-| Build MASQUE CONNECT-UDP clients and proxies | [`proxy::masque`] |
+| Build MASQUE CONNECT-UDP and CONNECT-IP clients and proxies | [`proxy::masque`] |
 | Build Linux transparent proxy flows | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/src/linux_tproxy_tcp.rs) |
 | Build Apple transparent proxy flows | [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) |
 

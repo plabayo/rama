@@ -36,8 +36,8 @@ System-provided PAC URLs require a PAC resolver service. The [`rama-pac`](https:
 
 The Rama CLI installs these layers automatically. Its routing precedence is `NO_PROXY`, an explicit `--proxy`, proxy environment variables, and finally the operating-system settings. Existing route decisions are preserved unless a layer explicitly opts into overwriting them.
 
-## A Final Warning: The "Respect" Factor
+## System Proxies Are Not Enforced
 
-It is vital to remember that **System Proxies are not enforced.** Unlike a [Transparent Proxy](./transparent.md) which "snatches" packets at the kernel level, a System Proxy is merely a flag in the OS settings. It is a "social contract." While browsers like Chrome and Safari are very good at respecting this contract, many other applications—such as CLI tools, high-performance games, or poorly written background services—completely ignore these settings.
+A System Proxy is only a setting in the OS, unlike a [Transparent Proxy](./transparent.md), which redirects packets at the kernel level. Applications decide themselves whether to use it. Browsers generally do, but many other applications - such as CLI tools, games, or background services - ignore these settings and connect directly, bypassing your Rama proxy.
 
-If an application is hard-coded to ignore the system's "suggestion," its traffic will bypass your Rama proxy entirely. If you require **strict enforcement** where no packet can escape without your say-so, you must look toward [Transparent Interception](./transparent.md).
+If all traffic must go through the proxy, use [Transparent Interception](./transparent.md) instead.

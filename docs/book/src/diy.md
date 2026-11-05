@@ -1,6 +1,6 @@
 # Do It Yourself (DIY)
 
-In the context of Rama, "Do It Yourself" represents our commitment to flexibility and extensibility. While Rama provides a comprehensive set of tools and services out of the box, we understand that every project has unique requirements. This chapter explains how you can extend and customize Rama to fit your specific needs, whether that means creating custom services, implementing your own middleware, or integrating with different networking libraries.
+Rama ships many services and layers, but every project has its own needs. This chapter shows how to extend Rama: write your own services, your own middleware, or integrate other networking libraries.
 
 Rust's tagline states:
 
@@ -23,7 +23,7 @@ Rama's tagline is:
 
 We take modularity seriously. Rama's design is built around the [Tower](https://github.com/tower-rs/tower)-like concept, allowing services to be stacked and branched (see [the service intro chapters](./intro/services_all_the_way_down.md) for more details). This enables middlewares (called `Layer`s) and other `Service`s to be combined, stacked, and reused for various purposes.
 
-This design also empowers you to build your own services:
+This design also lets you build your own services:
 
 - Want to use `curl` for your HTTP server/client logic? No problem - use the relevant crates in your own `Service`s and you're good to go. For examples of custom HTTP services, see [the Web Servers chapter](./web_servers.md).
 - Prefer `openssl`, `gnutls`, or something else for your TLS server/client logic? Go ahead and define your own `Service`s. Learn more about TLS configuration in [the TLS proxies chapter](./proxies/tls.md).

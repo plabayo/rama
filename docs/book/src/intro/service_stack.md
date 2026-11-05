@@ -5,8 +5,8 @@ They might also contain as one of its properties another `Service` that somehow 
 
 An easy example of this is [a `Timeout` service](https://github.com/plabayo/rama/blob/main/rama-core/src/layer/timeout/mod.rs)
 which contains any other `Service` but will return a timeout 'error' in case that service took more
-then the defined deadline to produce a result. A service such as `Timeout` is referred to as a `Layer` and
-is usually created using an implementation of the `Layer` trait, as defined in
+than the defined deadline to produce a result. A service such as `Timeout` is a middleware service and
+is usually created by a `Layer`, here `TimeoutLayer`, which implements the `Layer` trait as defined in
 <https://github.com/plabayo/rama/blob/main/rama-core/src/layer/mod.rs>.
 
 You can nest `Service`s as deep as you want and some can even contain multiple ones that are either

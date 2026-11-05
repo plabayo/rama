@@ -775,6 +775,11 @@ size_t rama_transparent_proxy_engine_udp_ingress_per_flow_max_bytes(
 size_t rama_transparent_proxy_engine_udp_ingress_global_max_bytes(
     RamaTransparentProxyEngine* engine
 );
+/// Effective maximum TCP payload view/read size (not a TCP window).
+/// Returns zero for a NULL engine; live engines return at least one byte.
+size_t rama_transparent_proxy_engine_tcp_payload_view_max_bytes(
+    RamaTransparentProxyEngine* engine
+);
 size_t rama_transparent_proxy_engine_writer_memory_max_bytes(
     RamaTransparentProxyEngine* engine
 );

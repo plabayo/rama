@@ -2,7 +2,7 @@
 
 <div class="book-article-intro">
     <div>
-        The PROXY protocol is designed to safely transport connection information—such as a client’s original IP and port—across one or more layers of TCP proxies or load balancers, without requiring protocol-specific logic in the intermediary.
+        The PROXY protocol is designed to safely transport connection information—such as a client's original IP and port—across one or more layers of TCP proxies or load balancers, without requiring protocol-specific logic in the intermediary.
         <p>— <a href="https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt">HAProxy PROXY Protocol Spec</a></p>
     </div>
 </div>
@@ -11,7 +11,7 @@
 
 - [/examples/src/haproxy_client_ip.rs](https://github.com/plabayo/rama/tree/main/examples/src/haproxy_client_ip.rs):
   shows how to support, optionally, HaProxy (v1/v2) in a rama web service,
-  supporting load balancers that support the proagation of client IP address.
+  supporting load balancers that support the propagation of client IP address.
 
 ## Description
 
@@ -70,7 +70,7 @@ PROXY v1 flow
 
 ### PROXY protocol v2
 
-The v2 format is a binary header, allowing for more efficient parsing and extensibility (e.g., SSL info, unique ID, namespaces). Rama’s implementation fully supports parsing v2 headers including TLV extensions where needed.
+The v2 format is a binary header, allowing for more efficient parsing and extensibility (e.g., SSL info, unique ID, namespaces). Rama's implementation fully supports parsing v2 headers including TLV extensions where needed.
 
 > 📖 rama docs: <https://ramaproxy.org/docs/rama/proxy/haproxy/protocol/v2/index.html>
 

@@ -49,10 +49,10 @@ or written. Alternative-service discovery is disabled by default in the CLI.
 
 `--http3` requires HTTP/3 directly, without an advertisement or `--alt-svc`.
 Explicit HTTP version flags continue to constrain selection when `--alt-svc`
-is enabled. `rama send --http3 wss://…` opens a WebSocket over HTTP/3 with
+is enabled. `rama send --http3 wss://...` opens a WebSocket over HTTP/3 with
 Extended CONNECT (RFC 9220) when the server enables it; WebSockets use HTTP/3
 only with `--http3`, never through alternative-service discovery. Without a
-terminal on stdin and stdout, `rama send ws(s)://…` sends each input line as a
+terminal on stdin and stdout, `rama send ws(s)://...` sends each input line as a
 text message and prints received messages, which suits scripts and pipes.
 
 ## Proxies
@@ -179,10 +179,13 @@ infrastructure behind it.
 
 ## Install
 
+The latest release on crates.io is `0.4.0`. This page follows the `main` branch,
+so some commands are not in that release yet, such as `rama inspect` and `rama ua`.
+
 ### Cargo
 
 ```sh
-cargo install rama-cli@0.3.0
+cargo install rama-cli@0.4.0
 ```
 
 This will install `rama-cli` from source and make it available
@@ -191,7 +194,7 @@ a pre-built binary when available for your platform you can do so
 using [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall):
 
 ```sh
-cargo binstall rama-cli@0.3.0
+cargo binstall rama-cli@0.4.0
 ```
 
 ### Pre-Built Binaries
@@ -240,7 +243,7 @@ opting in to pre-releases or pinning a specific version:
 
 ```
 curl https://raw.githubusercontent.com/plabayo/rama/main/rama-cli/scripts/install.sh | bash -s -- --pre
-curl https://raw.githubusercontent.com/plabayo/rama/main/rama-cli/scripts/install.sh | bash -s -- --version 0.3.0
+curl https://raw.githubusercontent.com/plabayo/rama/main/rama-cli/scripts/install.sh | bash -s -- --version 0.4.0
 ```
 
 ## Docker
@@ -271,5 +274,5 @@ Apple-provided tooling.
 ## Privacy
 
 The Rama CLI tool collects no data of the user or sends anything to any of our servers.
-It is a tool to empower you and fully at your control. The full open source code
+It is a tool fully under your control. The full open source code
 can be found without compromises on [our GitHub repository](https://github.com/plabayo/rama/).

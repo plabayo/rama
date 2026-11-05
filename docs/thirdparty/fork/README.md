@@ -174,8 +174,9 @@ not be kept in sync with upstream — they are now part of `rama`.
       for streaming responses, and rama's error and string utilities.
     - Fewer dependencies: the CSS selector parser is hand-rolled for the
       streaming-safe subset, dropping `cssparser` and Servo's `selectors`.
-  - Not carried over: lol-html's memory budget (`MemorySettings`); rama's tokenizer
-    buffers an incomplete construct without a byte limit.
+  - Not taken over: lol-html's memory budget (`MemorySettings`). Instead rama's tokenizer
+    caps the bytes it buffers for one incomplete construct (4 MiB by default, set with
+    `max_buffered_bytes` on the tokenizer or rewriter); this is not a limit on the whole heap.
   - License:
     - Original: <https://github.com/cloudflare/lol-html/blob/1d5ee9e88f235cdab283ba0f0efd0561497d4d56/LICENSE>
     - Type: BSD-3-Clause
@@ -189,11 +190,11 @@ not be kept in sync with upstream — they are now part of `rama`.
     `rama-grpc-build`). ttRPC is "gRPC for low-memory environments"
     (containerd shims, kata-agent, NRI) — a length-prefixed framing directly on the stream
     instead of HTTP/2, so it is a sibling to `rama-grpc`, not part of it. Trapeze's
-    `trapeze-macros` (`service!` / `include_protos!`) were not carried over: like `rama-grpc`,
+    `trapeze-macros` (`service!` / `include_protos!`) were not taken over: like `rama-grpc`,
     codegen goes through a build script plus a declarative `include_proto!`.
   - Reasons for forking:
     - Integration with the rest of the rama ecosystem — no bundled transport layer
-      (connections come from `rama-tcp` / `rama-unix` / `rama-udp`, mirroring `rama-grpc`),
+      (connections are byte streams from e.g. `rama-tcp` or `rama-unix`, mirroring `rama-grpc`),
       rama's error and structured `tracing` conventions, and workspace lint compliance
       (no `unwrap` / `expect` / `panic` in production code).
     - Aligning the `prost` toolchain with the rest of rama, so ttRPC and gRPC share one protobuf stack.

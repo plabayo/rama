@@ -39,7 +39,22 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-tls-acme
 
-ACME support for rama.
+ACME (RFC 8555) client and protocol types for rama.
+
+1. Create an `AcmeClient` from a directory URL, or with `AcmeClient::new_for_provider`
+   and an `AcmeProvider` (Let's Encrypt, ZeroSSL, Google Trust Services).
+2. Create or load an `Account` with an `EcdsaKey`. Store the key
+   (`EcdsaKey::pkcs8_der`) to load the same account again with `load_account`.
+3. Create an `Order` with `Account::try_new_order`, serve the HTTP-01 or
+   TLS-ALPN-01 challenge, then `notify_challenge_ready` and wait for the
+   authorizations to finish.
+4. `finalize` the order with a CSR and download the certificate chain.
+
+The [`proto`](src/proto/) module has the ACME wire types for clients and servers.
+Through the `rama` crate this is `rama::tls::acme`, enabled with the `acme` feature.
+Examples: [`acme_http_challenge`](../examples/src/acme_http_challenge.rs),
+[`acme_tls_challenge_using_rustls`](../examples/src/acme_tls_challenge_using_rustls.rs)
+and [`acme_tls_challenge_using_boring`](../examples/src/acme_tls_challenge_using_boring.rs).
 
 Crate used by the end-user `rama` crate.
 
