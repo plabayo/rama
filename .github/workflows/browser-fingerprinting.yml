@@ -1,4 +1,4 @@
-name: Browserstack Fingerprinting
+name: Browser Fingerprinting
 
 on:
   repository_dispatch:
@@ -9,7 +9,7 @@ on:
 permissions: {}
 
 jobs:
-  run:
+  browserstack:
     permissions:
       contents: read
     # These integration tests necessarily authenticate; never cache this job.

@@ -18,12 +18,25 @@ jobs:
       id: lychee
       uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
       with:
-        args: --verbose --no-progress './**/*.md' './**/*.html' './**/*.rst' --max-concurrency 8 --max-retries 6 --retry-wait-time 5
+        args: --cache --verbose --no-progress './**/*.md' './**/*.html' './**/*.rst' --max-concurrency 8 --max-retries 6 --retry-wait-time 5
+        fail: false
+        token: ${{ secrets.GITHUB_TOKEN }}
+    # lychee 0.24.2 never retries a rejected 5xx status, so one transient 503 fails the run.
+    # The recheck reuses cached successes; lychee never reads errors back from its cache.
+    - name: Wait before rechecking failed links
+      if: steps.lychee.outputs.exit_code != 0
+      run: sleep 120
+    - name: Recheck failed links
+      id: recheck
+      if: steps.lychee.outputs.exit_code != 0
+      uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+      with:
+        args: --cache --verbose --no-progress './**/*.md' './**/*.html' './**/*.rst' --max-concurrency 8 --max-retries 6 --retry-wait-time 5
         token: ${{ secrets.GITHUB_TOKEN }}
     - id: result
       if: always()
       env:
-        LYCHEE_EXIT: ${{ steps.lychee.outputs.exit_code }}
+        LYCHEE_EXIT: ${{ steps.recheck.outputs.exit_code || steps.lychee.outputs.exit_code }}
       run: |
         if [[ -n "$LYCHEE_EXIT" && "$LYCHEE_EXIT" != 0 ]]; then
           echo 'failed=true' >> "$GITHUB_OUTPUT"

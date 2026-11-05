@@ -26,8 +26,20 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 def submit_form(driver, form_selector, timeout=30):
-    """Wait for a fresh submit button while the page replaces its form DOM."""
+    """Wait for a fresh submit button while the page replaces its form DOM.
+
+    Safari can report a detached element or window for the keypress that navigated; an
+    unmarked document then means the form was submitted, not that its button is missing.
+    """
+    marked = False
+
     def activate(browser):
+        nonlocal marked
+        if not marked:
+            browser.execute_script("window.ramaFpFormPage = true")
+            marked = True
+        elif browser.execute_script("return window.ramaFpFormPage !== true") is True:
+            return True
         browser.find_element(
             By.CSS_SELECTOR, form_selector + ' button[type="submit"]'
         ).send_keys(Keys.ENTER)
