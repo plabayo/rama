@@ -930,6 +930,7 @@ jobs:
             ${{ runner.temp }}/browser-evidence/headers.diagnostics.json
             ${{ runner.temp }}/browser-evidence/replay.diagnostics.json
             ${{ runner.temp }}/browser-evidence/comparison.json
+            ${{ runner.temp }}/browser-evidence/archive-comparison.json
             ${{ runner.temp }}/browser-evidence/summary.json
             ${{ runner.temp }}/browser-evidence/tls-comparison.json
             ${{ runner.temp }}/browser-evidence/capture-fields.json

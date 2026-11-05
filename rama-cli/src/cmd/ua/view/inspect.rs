@@ -195,8 +195,9 @@ struct ProfileView<'a> {
 
 impl Serialize for ProfileView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut output = serializer.serialize_struct("Profile", 2)?;
+        let mut output = serializer.serialize_struct("Profile", 3)?;
         output.serialize_field("key", &self.profile.key)?;
+        output.serialize_field("components", &self.profile.components)?;
         output.serialize_field(
             "scopes",
             &Sequence(self.profile.scopes.iter().map(|scope| ScopeView {
