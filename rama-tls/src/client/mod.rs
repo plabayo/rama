@@ -50,9 +50,9 @@ mod pool;
 #[doc(inline)]
 pub use config::{
     ClientAuth, ClientAuthData, ServerTrustSource, ServerVerifyMode, TlsClientAuth,
-    TlsClientConfig, TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet,
-    TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors,
-    TlsServerVerify, TlsStoreServerCertChain, TlsStoreServerHello,
+    TlsClientConfig, TlsEncryptedClientHello, TlsServerCertPin, TlsServerCertPinCheck,
+    TlsServerCertPinSet, TlsServerCertPins, TlsServerIdentity, TlsServerName, TlsServerTrust,
+    TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain, TlsStoreServerHello,
 };
 #[cfg(feature = "http")]
 pub use http::{http_alpn_override, negotiated_http_version};

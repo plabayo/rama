@@ -13,7 +13,7 @@ use rama_tls::client::TlsPoolComponent;
 /// Shape of an ECH GREASE extension, applied independently of its enable switch.
 ///
 /// Invalid shapes are rejected when building the connector, before it writes a
-/// ClientHello. TLS 1.3 and [`super::BoringClientConfigExt::set_encrypted_client_hello`] must
+/// ClientHello. TLS 1.3 and [`rama_tls::client::TlsClientConfig::set_encrypted_client_hello`] must
 /// also be enabled. A usable real ECH configuration takes precedence.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]

@@ -288,6 +288,16 @@ mod pool_tests {
     use rama_tls::keylog::NoopKeyLogSink;
 
     #[test]
+    fn the_ech_intent_is_not_read_by_rustls() {
+        for enabled in [false, true] {
+            let config = TlsClientConfig::new().with_encrypted_client_hello(enabled);
+            let view = RustlsTlsConnectorConfig::from_extensions(config.as_extensions());
+            assert!(view.is_empty());
+            assert_eq!(view.pool_id(), None);
+        }
+    }
+
+    #[test]
     fn every_comparable_override_preserves_presence_and_value() {
         type Insert = fn(&Extensions, u8);
         let cases: &[(&str, Insert)] = &[

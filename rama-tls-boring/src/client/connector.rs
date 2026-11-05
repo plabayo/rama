@@ -989,11 +989,14 @@ mod tests {
         client::{ConnectRequest, ConnectionErrorDomain},
     };
     use rama_tls::client::{
-        NegotiatedTlsParameters, ServerVerifyMode, TlsServerName, TlsServerVerify,
-        TlsStoreServerHello,
+        ClientHelloExtension, ECHClientHello, NegotiatedTlsParameters, ServerVerifyMode,
+        TlsServerName, TlsServerVerify, TlsStoreServerHello,
     };
 
-    use crate::server::TlsAcceptorLayer;
+    use crate::{
+        client::{BoringClientConfigExt as _, ech::EchGrease, tests::hello_from_data},
+        server::TlsAcceptorLayer,
+    };
     use rama_crypto::cert::generate_server_auth;
     use rama_net::stream::service::EchoService;
     use rama_tls::client::{ClientAuth, ClientAuthData};
@@ -1270,6 +1273,46 @@ mod tests {
             .expect("connector data");
 
         assert_eq!(data.server_name, Some(host));
+    }
+
+    #[test]
+    fn request_ech_intent_overrides_the_connector_default() {
+        let shape = EchGrease::Shape {
+            kdf_id: 1,
+            aead_id: 3,
+            encapsulated_key_len: 32,
+            payload_len: 208,
+        };
+        for base_value in [None, Some(false), Some(true)] {
+            for request_value in [None, Some(false), Some(true)] {
+                let mut base = TlsClientConfig::new().with_ech_grease(shape);
+                if let Some(value) = base_value {
+                    base.set_encrypted_client_hello(value);
+                }
+                let mut request = TlsClientConfig::new();
+                if let Some(value) = request_value {
+                    request.set_encrypted_client_hello(value);
+                }
+                let data = TlsConnector::secure(())
+                    .with_base_config(base)
+                    .connector_data(request.as_extensions(), None, None)
+                    .expect("connector data");
+                let outer = hello_from_data(data)
+                    .extensions()
+                    .iter()
+                    .find_map(|extension| match extension {
+                        ClientHelloExtension::EncryptedClientHello(ECHClientHello::Outer(
+                            outer,
+                        )) => Some(outer.payload.len()),
+                        _ => None,
+                    });
+                let expected = request_value.or(base_value).unwrap_or(false).then_some(208);
+                assert_eq!(
+                    outer, expected,
+                    "base {base_value:?}, request {request_value:?}"
+                );
+            }
+        }
     }
 
     /// An input whose forwarded context names another host than its own target.
