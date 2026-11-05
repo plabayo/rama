@@ -15,28 +15,10 @@ It all boils down to the `Service` trait that can be found at
 > and why it is such an excellent solution to this design space. You can find it
 > at <https://github.com/tower-rs/tower/blob/master/guides/README.md> 📚. A must read if you haven't already.
 
-[The trait](https://github.com/plabayo/rama/blob/main/rama-core/src/service/svc.rs)
-can be represented in reduced form as follows:
-
-```rust,noplayground
-/// A [`Service`] that produces rama services,
-/// to serve given an input, be it transport layer streams, application layer http requests,
-/// or something else entirely.
-pub trait Service<S, Input>: Send + Sync + 'static {
-    /// The type of output returned by the service.
-    type Output: Send + 'static;
-
-    /// The type of error returned by the service.
-    type Error: Send + 'static;
-
-    /// Serve a an output or error for the given input,
-    /// using the given context.
-    fn serve(
-        &self,
-        input: Input,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_;
-}
-```
+[The `Service` trait](https://ramaproxy.org/docs/rama/service/trait.Service.html) is generic over an `Input`
+(a transport stream, an http request, or something else entirely) and declares two associated types, `Output` and `Error`.
+Its `serve` method takes `&self` and the input, and returns a `Send` future that resolves to a `Result<Self::Output, Self::Error>`.
+The trait itself requires `Sized + Send + Sync + 'static`.
 
 This trait is an [async trait](https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html) only supported
 [in Stable Rust since version 1.75](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html) of the Rust Language.

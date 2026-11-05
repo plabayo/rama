@@ -1,7 +1,7 @@
 [![rama banner](../docs/img/rama_banner.jpeg)](https://ramaproxy.org/)
 
 [![Crates.io][crates-badge]][crates-url]
-[![Docs.rs][docs-badge]][docs-url]
+[![rama-cli book chapter][docs-badge]][docs-url]
 [![MIT License][license-mit-badge]][license-mit-url]
 [![Apache 2.0 License][license-apache-badge]][license-apache-url]
 [![rust version][rust-version-badge]][rust-version-url]
@@ -12,10 +12,10 @@
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 
-[crates-badge]: https://img.shields.io/crates/v/rama.svg
-[crates-url]: https://crates.io/crates/rama
-[docs-badge]: https://img.shields.io/docsrs/rama/latest
-[docs-url]: https://docs.rs/rama/latest/rama/index.html
+[crates-badge]: https://img.shields.io/crates/v/rama-cli.svg
+[crates-url]: https://crates.io/crates/rama-cli
+[docs-badge]: https://img.shields.io/badge/book-rama--cli-blue
+[docs-url]: https://ramaproxy.org/book/deploy/rama-cli.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg

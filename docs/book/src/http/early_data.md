@@ -58,7 +58,7 @@ remains handshake-first; opaque QUIC forwarding is unaffected.
 ## Try it and explore the APIs
 
 The [`http_early_data` example](https://github.com/plabayo/rama/blob/main/examples/src/http_early_data.rs)
-uses **H3 client -> H3 gateway -> H1 origin** deliberately: an existing HTTP/1
+uses **H3 client -> H3 gateway -> H1 origin** to show that an existing HTTP/1
 backend can sit behind an early-data-aware H3 front end.
 
 ```sh

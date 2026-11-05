@@ -3,7 +3,7 @@
 <div class="book-article-intro">
     <img src="../img/rama_inspect.jpg" alt="artistical representation of rama protocol inspection as llama examining packages with a magnifying glass">
     <div>
-        Protocol inspection is the ability to examine and understand the underlying protocols being used in network traffic. This capability is crucial for proxies that need to handle multiple protocols or perform deep packet inspection for security and monitoring purposes.
+        Protocol inspection is the ability to examine and understand the underlying protocols being used in network traffic. Proxies need it to handle multiple protocols on one listener, or to inspect traffic for security and monitoring.
     </div>
 </div>
 
@@ -79,7 +79,7 @@ Multi-Protocol Proxy Flow
 
 ### MITM Protocol Inspection
 
-For MITM proxies, protocol inspection is crucial for:
+MITM proxies use protocol inspection for:
 
 1. **TLS Traffic**: Determining if traffic is TLS-encrypted
 2. **Protocol Selection**: Choosing appropriate decryption and inspection methods
@@ -134,17 +134,15 @@ Some rama examples that built on top of protocol inspection:
   is another advanced demonstration of Rama's protocol inspection and routing capabilities.
   This example showcases how to build a **single, unified proxy server** that intelligently handles
   HTTP, HTTPS (HTTP within TLS) and SOCKS5 traffic all within the same listener,
-  leveraging various `PeekRouter` and service composition patterns for robust multi-protocol support.
+  using `PeekRouter`s and service composition.
 - [`proxy_connectivity_check.rs`](https://github.com/plabayo/rama/tree/main/examples/src/proxy_connectivity_check.rs)
-  is not about protocool inspection but does leverage socks5 and http protocol inspections for various purposes,
+  is not about protocol inspection but does use socks5 and http protocol inspection for various purposes,
   including to hijack very specific http data without forcing all socks5 proxy traffic to be http.
 
-When writing technical docs, it’s easy to fall into that "instruction manual" trap where everything is a sterile list. If you want to sound more like a peer sharing advice over coffee, the trick is to weave those best practices into a narrative flow using a conversational tone.
+## Performance and Security
 
-Here is a more human-led version of those best practices:
-
-## Getting it Right: Performance and Security
-
-When you're building out your proxy logic, the real goal is to keep things moving as fast as possible without leaving the door open for trouble. You’ll want to be efficient with how you detect protocols; try to identify what you're looking at using the absolute minimum number of bytes. It's often best to set up a "fast-path" for the protocols you expect to see most often, so the bulk of your traffic isn't stuck in a heavy detection loop.
-
-Of course, speed doesn't matter if the system isn't secure. You should always validate protocol signatures and make sure your code can gracefully handle malformed traffic—because "garbage in" shouldn't mean "crash out." From a performance standpoint, keep an eye on your buffering strategies. Excessive buffering can lead to latency spikes, so it’s worth tailoring your memory usage to the specific protocol you're handling. Ultimately, a bit of intentionality in how you structure these early handshakes goes a long way in making the whole system feel snappier and more resilient.
+- Detect a protocol from as few bytes as possible, and check the protocols you expect most often first.
+- Bound how many bytes you peek and how long you wait for them, so a slow or silent client
+  cannot hold a connection open in the detection phase.
+- Treat peeked bytes as untrusted: validate protocol signatures, and route malformed or
+  unknown input to a fallback service (or drop it) instead of failing the listener.

@@ -85,8 +85,9 @@ almost never need to understand all of it — the crate name tells you which
   - `rama-http-macros` — proc-macros (e.g. the type-safe HTML templating).
 - **Transport & network** — `rama-net` (shared net types), `rama-tcp`,
   `rama-udp`, `rama-unix`.
-- **TLS** — `rama-tls-boring` (BoringSSL, the default backend),
-  `rama-tls-rustls`, `rama-tls-acme`.
+- **TLS** - `rama-tls-boring` (BoringSSL) and `rama-tls-rustls`, selected with the
+  `boring` or `rustls` feature of `rama` (neither is on by default; `rama-cli` uses
+  `boring`), plus `rama-tls-acme`.
 - **Protocols & proxies** — `rama-dns`, `rama-socks5`, `rama-haproxy`,
   `rama-fastcgi`, `rama-icap`, `rama-ws`, `rama-masque`, `rama-grpc`, `rama-proxy`,
   `rama-ua`.
@@ -94,7 +95,7 @@ almost never need to understand all of it — the crate name tells you which
   `rama-error`, `rama-utils`, `rama-crypto`, `rama-tower`.
 
 The full annotated list of every crate lives in the
-[README](./README.md#--rama-crates). When in doubt, the crate name is the
+[README](./README.md#all-rama-and-other-crates-developed-by-plabayo). When in doubt, the crate name is the
 department sign: HTTP work lives under one of the `rama-http*` crates, TLS under
 `rama-tls-*`, and so on.
 
@@ -109,8 +110,9 @@ This way you can for example run the regular tests using:
 cargo test --all-features --workspace
 ```
 
-`cargo test` and `cargo nextest` run the same tests; `just test` uses nextest because it
-is faster. Heavier tests, such as the end-to-end ones that start example or `rama`
+`cargo test` and `cargo nextest` run the same unit and integration tests; `just test` uses
+nextest because it is faster. Nextest does not run doctests: `just test-doc` runs them
+with `cargo test --doc`, and `just qa` runs both. Heavier tests, such as the end-to-end ones that start example or `rama`
 processes, are `#[ignore]`d with a reason; run them with `-- --ignored` (or nextest's
 `--run-ignored=only`). Suites that need their own harness have `test = false` in their
 manifest and a recipe of their own, such as `just test-js-interpreter`.

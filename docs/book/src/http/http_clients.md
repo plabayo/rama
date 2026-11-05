@@ -50,7 +50,7 @@ before choosing a proxy route and consulting the connection pool.
 
 `HttpServiceConnector` returns the underlying connection unchanged. Compose
 `AltSvcLayer::new(cache)` separately with `MapEstablishedConnection`; the easy
-client does this automatically. The layer resolves each request’s origin, learns response
+client does this automatically. The layer resolves each request's origin, learns response
 headers and sets `Alt-Used` from the established endpoint. An optional H2 observer
 feeds ALTSVC frames into the same cache. Advertisements are not automatically
 forwarded. To send H2 advertisements, enable `set_alt_svc(true)` before the server
@@ -96,7 +96,7 @@ Rama clients can pin the server leaf through `TlsServerCertPins`, backend
 agnostic for rustls and BoringSSL. The standard pin is the SHA-256 of the
 leaf's public key (`TlsServerCertPin::SpkiSha256`), exchanged in the usual
 `sha256/<base64>` format and printed by `rama probe tls`. Parsing also accepts
-a PEM certificate, deriving its key pin. It survives
+a PEM certificate, deriving its key pin. It remains valid across
 certificate renewal as long as the key pair is unchanged. Pin the exact
 DER-encoded certificate (`TlsServerCertPin::ExactDer`) only when you control
 the certificate file itself.
@@ -111,29 +111,17 @@ server names applies globally; otherwise only when the effective TLS server
 name matches — never inferred from certificate contents. If no set applies,
 pinning imposes no check and normal verification continues.
 
-```rust
-let pins = TlsServerCertPins::new(
-    TlsServerCertPinSet::try_new([api_current_key_pin, api_next_key_pin])?
-        .with_server_name(Host::from_static("api.example.com")),
-)
-.with_pin_set(
-    TlsServerCertPinSet::new("sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M=".parse::<TlsServerCertPin>()?)
-        .with_server_name(Host::from_static("login.example.com")),
-);
-```
+Build a [`TlsServerCertPins`](https://ramaproxy.org/docs/rama/tls/client/struct.TlsServerCertPins.html) from one or more
+[`TlsServerCertPinSet`](https://ramaproxy.org/docs/rama/tls/client/struct.TlsServerCertPinSet.html) values (`new`, then
+`with_pin_set` for each extra set). Each set is made with `new` or `try_new` from
+[`TlsServerCertPin`](https://ramaproxy.org/docs/rama/tls/client/enum.TlsServerCertPin.html) values, which parse from the
+`sha256/<base64>` form, and is scoped to a host with `with_server_name`.
 
 The default trust roots come from the native store, with Rama's bundled Mozilla
 (CCADB) roots as an empty-store fallback. Extend those roots with a private CA,
-or select the bundled roots explicitly for OS-independent behavior:
-
-```rust
-let tls_config = TlsClientConfig::default_http()
-    .try_with_extra_server_trust_anchors(private_ca_certificates.clone())?;
-
-let portable_tls_config = TlsClientConfig::default_http()
-    .with_webpki_roots()
-    .try_with_extra_server_trust_anchors(private_ca_certificates)?;
-```
+or select the bundled roots explicitly for OS-independent behavior. On
+[`TlsClientConfig`](https://ramaproxy.org/docs/rama/tls/client/struct.TlsClientConfig.html), `try_with_extra_server_trust_anchors`
+adds private CA certificates to the roots, and `with_webpki_roots` selects the bundled roots.
 
 Use `try_with_server_trust_anchors` instead for a custom-only store. These common
 settings have the same semantics with rustls and BoringSSL. Normal chain,
@@ -144,13 +132,9 @@ The native store is read once, as a snapshot. To let the operating system judge
 each chain instead, including enterprise trust settings, its distrust decisions
 and revocation, select its verifier. It is available on Apple platforms, Windows
 and Android; elsewhere it verifies against the native roots. Additional anchors
-are trusted next to what the operating system trusts:
-
-```rust
-let tls_config = TlsClientConfig::default_http()
-    .with_platform_verifier()
-    .try_with_extra_server_trust_anchors(private_ca_certificates)?;
-```
+are trusted next to what the operating system trusts. Select it with
+`TlsClientConfig::with_platform_verifier`; it composes with
+`try_with_extra_server_trust_anchors`.
 
 Operators can adjust trust through the environment. `SSL_CERT_FILE` and
 `SSL_CERT_DIR` replace the native roots, as OpenSSL and most TLS tools do; the
@@ -158,18 +142,13 @@ platform verifier ignores them. `SSL_CERT_EXTRA_FILE` and `SSL_CERT_EXTRA_DIR`
 add roots instead, for both the native roots and the platform verifier.
 
 A chain policy rejects certificate chains on top of any of these, and also when
-verification is disabled. `DistrustedServerKeys` refuses every chain containing
+verification is disabled. [`DistrustedServerKeys`](https://ramaproxy.org/docs/rama/tls/client/struct.DistrustedServerKeys.html) refuses every chain containing
 one of the given public keys, at any position, so a distrusted CA is caught
-under each of its certificates, cross-signed ones included:
+under each of its certificates, cross-signed ones included. It parses from the
+same `sha256/<base64>` pin format and is installed with
+`TlsClientConfig::with_server_cert_chain_policy`.
 
-```rust
-let distrusted: DistrustedServerKeys =
-    "sha256/xg6kqyS+uaJikboVvZPxNOYXMD3XPakJAakHSfGau/M=".parse()?;
-let tls_config = TlsClientConfig::default_http()
-    .with_server_cert_chain_policy(distrusted);
-```
-
-Implement `TlsServerCertChainPolicy` for other rules. Rama's verifiers hand it the
+Implement [`TlsServerCertChainPolicy`](https://ramaproxy.org/docs/rama/tls/client/trait.TlsServerCertChainPolicy.html) for other rules. Rama's verifiers hand it the
 path they built, ending at the trust anchor; without verification, or with a
 custom rustls verifier, it sees the chain as the server presented it. Without
 verification a policy only judges what the server chose to present, so it

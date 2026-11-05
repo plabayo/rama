@@ -103,7 +103,7 @@ Step by step:
    * block
 4. If redirected, the proxy handles the connection
 
-From the application’s perspective, this is completely transparent.
+From the application's perspective, this is completely transparent.
 
 ## 4. Runtime Configuration
 
@@ -223,8 +223,8 @@ After installing the driver, you typically want to verify:
 
 Useful checks:
 
-* `msinfo32` → System Drivers
-* `services.msc` → Base Filtering Engine
+* `msinfo32` -> System Drivers
+* `services.msc` -> Base Filtering Engine
 * registry under
   `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services`
 * WFP objects such as provider, sublayer, filters

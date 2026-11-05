@@ -39,7 +39,20 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-dns
 
-Dns support for rama.
+DNS support for rama.
+
+- [`client`](src/client/mod.rs): the `DnsResolver` traits and the built-in
+  resolvers: the platform-native `NativeDnsResolver`, the `getaddrinfo`-backed
+  `TokioDnsResolver`, `HickoryDnsResolver` (with the `hickory` feature),
+  `DenyAllDnsResolver` and `EmptyDnsResolver`. Chain, tuple and variant
+  adapters combine resolvers, and `DnsConnector` resolves before connecting.
+- A process-wide resolver, used by default and initialised to `NativeDnsResolver`
+  on first use. Install another one with `init_global_dns_resolver` or
+  `try_init_global_dns_resolver` before the first lookup.
+- [`wire`](src/wire/mod.rs): DNS record types and an RFC 1035 message parser.
+
+Through the `rama` crate this is `rama::dns`, enabled with the `dns` feature
+(`dns-hickory` adds Hickory). See the [`native_dns` example](../examples/src/native_dns.rs).
 
 Crate used by the end-user `rama` crate.
 

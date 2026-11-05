@@ -8,11 +8,11 @@ A Layer 3 proxy, often called a <b>Network Layer Proxy</b> or <b>IP Proxy</b>, o
 
 ## The "Postman" of the Network
 
-If a Layer 7 proxy is like a translator who reads your letter to ensure it’s polite before sending it, a **Layer 3 proxy** is like a postman. The postman doesn't care what’s inside the envelope—whether it’s a web request, a database query, or a VoIP call—they only cares about the address on the outside.
+If a Layer 7 proxy is like a translator who reads your letter to ensure it's polite before sending it, a **Layer 3 proxy** is like a postman. The postman doesn't care what's inside the envelope - whether it's a web request, a database query, or a VoIP call - they only care about the address on the outside.
 
 ### Key Characteristics of L3 Proxies
 
-* **Protocol Agnostic:** Because it operates at the network layer, it can handle any traffic that sits on top of IP, including TCP, UDP, ICMP, and GRE.
+* **Protocol Agnostic:** Because it operates at the network layer, it can handle any traffic that runs on top of IP, including TCP, UDP, ICMP, and GRE.
 * **Transparent by Nature:** Often implemented as a "routed hop" or gateway, these proxies can intercept traffic without the client application ever knowing a proxy is involved.
 * **High Throughput:** Since the proxy doesn't need to decrypt or parse complex application-layer data (like HTTP headers or JSON payloads), it can process packets significantly faster than L7 proxies.
 
@@ -55,8 +55,15 @@ Using Rama as a Layer 3 proxy allows you to build powerful network infrastructur
 * **DDoS Mitigation:** Scrub incoming IP traffic at high speeds before it reaches your application servers.
 * **IP-in-IP Tunneling:** Bridge two disjoint networks by encapsulating L3 packets from one network into the payload of another.
 
-When using Rama to build a L3 proxy you can also combine it with the smoltcp feature in rama TCP
-such that you can still MITM/inspect L4-L7 data operating on top of TCP.
+For IP-over-HTTP, [`rama::proxy::masque::connect_ip`](https://ramaproxy.org/docs/rama/proxy/masque/connect_ip/index.html)
+(feature `masque`) implements CONNECT-IP ([RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)).
+`ConnectIpConnector` opens a tunnel over an existing HTTP client, and `ConnectIpService` accepts
+tunnels on the server side, with a `ConnectIpPolicy` that denies all prefixes unless you allow them.
+Both sides get a `ConnectIpSession` that sends and receives whole IP packets.
+
+Rama does not provide the packet side: no TUN device, NAT, routing or host address configuration.
+Your application reads packets from and writes packets to its own TUN device or user-space IP stack,
+and installs any assigned addresses and routes itself.
 
 That said... Most of the times you do not want to build a L3 proxy,
 but instead are looking for what we call [transparent proxies](./transparent.md). These are

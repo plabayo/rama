@@ -27,7 +27,7 @@ bounds the number of in-flight inputs (optionally with a backoff), and
 bounds inputs per period. A rate policy runs in one of two modes: an
 *abort* mode, where over-budget inputs fail with
 [`RateLimitReached`](https://ramaproxy.org/docs/rama/layer/limit/policy/struct.RateLimitReached.html)
-(it carries a `retry_after`, and `.into_response()` turns it into a
+(it has a `retry_after`, and `.into_response()` turns it into a
 `429 Too Many Requests` with a `Retry-After` header), and a *wait* mode,
 where over-budget inputs are paced instead of rejected.
 
@@ -45,11 +45,11 @@ rather than while the input occupies a concurrency slot.
 (`rama::net::rate`) is the per-key sibling of `RatePolicy`: every key gets
 its own lazily-created bucket, stored in a bounded, idle-evicting cache
 (size the key bound above your expected client count, so it stays a memory
-backstop rather than an availability limit). At capacity, a new key fails
+bound rather than an availability limit). At capacity, a new key fails
 closed instead of evicting a live bucket and resetting its budget. Key on the
 client IP with
-[`ClientIpRateKey`](https://ramaproxy.org/docs/rama/net/rate/struct.ClientIpRateKey.html)
-— it honours `Forwarded` information over the socket peer address and
+[`ClientIpRateKey`](https://ramaproxy.org/docs/rama/net/rate/struct.ClientIpRateKey.html):
+it honours `Forwarded` information over the socket peer address and
 aggregates IPv6 clients to a `/64` by default, so a single client cannot
 escape its bucket by rotating within its allocation. Size aggregation and
 capacity together: one `/48` contains 65 536 `/64`s, exactly the default key
@@ -135,7 +135,7 @@ Every datagram is charged once where it enters the proxy, to the principal and t
 tunnel. Empty, unknown-context and oversized datagrams are charged too, so a client cannot
 send junk for free. A datagram over budget is dropped and counted in the tunnel's
 `ConnectUdpStats`; it never waits, because a delayed datagram would only add latency to a
-protocol that recovers loss itself. The HTTP/3 connection carrying tunnels can also take a
+protocol that recovers loss itself. The HTTP/3 connection that holds the tunnels can also take a
 [throttle](#bandwidth-throttling-streams): its datagrams then spend from the connection's
 budget in the same drop-not-wait way.
 

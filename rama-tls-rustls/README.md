@@ -12,8 +12,8 @@
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 
-[crates-badge]: https://img.shields.io/crates/v/rama-tls.svg
-[crates-url]: https://crates.io/crates/rama-tls
+[crates-badge]: https://img.shields.io/crates/v/rama-tls-rustls.svg
+[crates-url]: https://crates.io/crates/rama-tls-rustls
 [docs-badge]: https://img.shields.io/docsrs/rama-tls-rustls/latest
 [docs-url]: https://docs.rs/rama-tls-rustls/latest/rama_tls_rustls/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg

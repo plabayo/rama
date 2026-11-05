@@ -21,14 +21,9 @@ to help you automate this process. The latter is faster then _true_ dynamic disp
 
 ## 🤷 Either
 
-```rust
-pub enum Either<A, B> {
-    A(A),
-    B(B),
-}
-```
+An `Either<A, B>` is an enum with one variant per type: `A(A)` or `B(B)`.
 
-Rama provides [the `rama::utils::combinator::Either`](https://ramaproxy.org/docs/rama/combinators/enum.Either.html) combinator,
+Rama provides [the `rama::combinators::Either`](https://ramaproxy.org/docs/rama/combinators/enum.Either.html) combinator,
 for two variants, up to nine ([`Either9`](https://ramaproxy.org/docs/rama/combinators/enum.Either9.html)). These have as the sole purpose
 to provide you with an easy way to dynamically dispatch a [`Layer`](https://ramaproxy.org/docs/rama/layer/trait.Layer.html)s, [`Service`](https://ramaproxy.org/docs/rama/service/trait.Service.html)s, [`retry::Policy`](https://ramaproxy.org/docs/rama/http/layer/retry/trait.Policy.html) and a [`limit::Policy`](https://ramaproxy.org/docs/rama/layer/limit/policy/trait.Policy.html).
 

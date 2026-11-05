@@ -33,7 +33,7 @@ including cross-signed copies, and a separate private test CA. This is an illust
 not an automatically maintained revocation service. The public certificate fixtures come
 from incident attachments [9664066](https://bugzilla.mozilla.org/attachment.cgi?id=9664066)
 and [9664067](https://bugzilla.mozilla.org/attachment.cgi?id=9664067); no compromised private
-keys are included. `denied-ca.key.pem` is a deliberately public test-only key and must never
+keys are included. `denied-ca.key.pem` is a public test-only key and must never
 be used for real trust or signing.
 
 For a public demo, visit [g3.emsign.filippo.io](https://g3.emsign.filippo.io/) or
@@ -71,7 +71,7 @@ does not perform nested QUIC interception.
 
 Intercepted QUIC connections use the shared MASQUE transport settings (1350-byte initial
 MTU and three-minute idle timeout) and HTTP/3 receive budgets. These are negotiated before
-HTTP requests reveal whether a connection carries MASQUE, so they also apply to ordinary
+HTTP requests reveal whether a connection is used for MASQUE, so they also apply to ordinary
 intercepted QUIC traffic. The larger initial MTU makes room for an inner QUIC Initial in a
 native datagram; reducing it to 1200 prevents those tunnels from establishing.
 
@@ -177,7 +177,7 @@ Distribution mode:
 - packaging: system extension (`.systemextension`)
 - signing: `Developer ID`
 - Network Extension sysext entitlement payload: `app-proxy-provider-systemextension`
-- container app also carries `com.apple.developer.system-extension.install`
+- container app also has `com.apple.developer.system-extension.install`
 - intended for direct distribution outside the Mac App Store
 
 For the App IDs, the practical setup is:
@@ -344,7 +344,7 @@ recipe therefore does not claim complete Rust race coverage.
 
 A non-admin developer cannot usually rely on self-service `Developer ID` signing the way they can rely on `Apple Development` signing in Xcode.
 
-So this example deliberately demonstrates both:
+So this example demonstrates both:
 
 - the local-developer workflow companies need for day-to-day development
 - the Developer ID system-extension workflow companies need for shipping a directly distributed macOS L4 proxy
@@ -385,13 +385,13 @@ layer was reset — it does *not* prove the original runtime bug is fixed.
 
 ### Decision tree
 
-1. `systemextensionsctl list | grep 'org\.ramaproxy\.example\.tproxy'`
-   — if nothing is registered or the state is not `[activated enabled]`,
+1. `systemextensionsctl list | grep 'org\.ramaproxy\.example\.tproxy'`:
+   if nothing is registered or the state is not `[activated enabled]`,
    run `just install-tproxy-dev` and approve in System Settings.
 2. Replay logs (`log show --last 5m ...`, see commands below) and
    inspect for these patterns:
-   - `code=7`, `Plugin failed`, `Plugin was disabled`: provider crashed
-     — check `/Library/Logs/DiagnosticReports/` for a fresh `.ips`.
+   - `code=7`, `Plugin failed`, `Plugin was disabled`: provider crashed:
+     check `/Library/Logs/DiagnosticReports/` for a fresh `.ips`.
    - `failed activation: error = 1: Operation not permitted` on the XPC
      service: launchd rejected the Mach service registration. Run
      `just install-tproxy-dev-reset-profile` to force `sysextd` to
@@ -497,8 +497,8 @@ Rust retained payloads, runtime overhead, and Apple framework allocations.
 
 ### Wire capture (for diagnosing TLS / handshake issues)
 
-`tcpdump` on `en0` captures the **egress** side (provider →
-upstream). The **ingress** side (browser → provider) lives in
+`tcpdump` on `en0` captures the **egress** side (provider ->
+upstream). The **ingress** side (browser -> provider) lives in
 the kernel's NECP pipe — no interface, not visible to
 `tcpdump`. Egress is usually enough to spot a malformed
 ClientHello, missing SNI, wrong ALPN, or an upstream alert.
@@ -527,7 +527,7 @@ that file and the egress handshake becomes plaintext.
 Symptom: after the machine sleeps and wakes, internet stops — apps hang,
 nothing loads — and it stays broken until the proxy is restarted. The
 provider is still alive (same PID) and still *intercepts* flows; the
-egress side just carries no data.
+egress side just moves no data.
 
 Reproduce deterministically (locks the screen for ~100s — detach the
 Xcode debugger first, an attached debugger keeps the machine awake):
@@ -548,7 +548,7 @@ done
 
 Capture **while still broken** (within minutes — `log show` only keeps
 `.info`/`.debug` for a short rolling window). Note the predicate adds
-`com.apple.network`, which carries the egress `NWConnection` / NECP path
+`com.apple.network`, which logs the egress `NWConnection` / NECP path
 detail the standard bundle predicate omits:
 
 ```sh
@@ -604,11 +604,11 @@ just test-egress-policy-deep Wi-Fi
 
 CI covers Debug, Release, ASan and TSan without system changes, reusing full-suite
 coverage. The focused harness rejects skipped required tests and uploads evidence.
-On macOS 12–13, it reports the proxy-configuration tests that require macOS 14.
+On macOS 12-13, it reports the proxy-configuration tests that require macOS 14.
 
 `just test-private-api-availability` checks private API exports in the newest
 installed Xcode's macOS/iOS SDKs and calls them on macOS and an iOS simulator.
-Pass `--stable` to use the runner’s system-selected Xcode. Daily unstable CI discovers GitHub's
+Pass `--stable` to use the runner's system-selected Xcode. Daily unstable CI discovers GitHub's
 newest Xcode runner, selects its newest Xcode (including betas), and downloads a
 matching iOS runtime. It also runs
 Apple FFI/NE tests, Release and sanitizer egress tests, XPC checks, and an unsigned
@@ -854,13 +854,13 @@ agent at it, or grep the NDJSON log alongside the binary trace.
 [netstack.fm ep. 37](https://netstack.fm/episodes/dial9-from-black-box-to-insight-in-tokio), and
 [`production_use.rs`](https://github.com/dial9-rs/dial9/blob/HEAD/dial9/examples/production_use.rs)
 for operator knobs (CPU profiling, S3 upload, schedule-event capture)
-the demo deliberately keeps off by default.
+the demo keeps off by default.
 
 ### QUIC interception policy and browser testing
 
 The demo uses `QuicPeekFallbackPolicy::ALL`: every un-inspectable association is
 forwarded untouched, including malformed flights, exhausted peek budgets and
-expired deadlines. This is best-effort interception. A client can deliberately
+expired deadlines. This is best-effort interception. A client can intentionally
 avoid inspection; do not treat this configuration as an enforcement boundary.
 The `tproxy quic fail-open fallback:` log message records the rejection class
 without client metadata.

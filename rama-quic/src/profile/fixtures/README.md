@@ -14,7 +14,7 @@ The `rama-standard-initial-*.hex` files are our own loopback test client flight,
 produced on 2026-10-09 with the default Rustls/ring client configuration. They
 contain no customer traffic. They pin the protected packet bytes for passive
 observer regression; `rama-standard-first-flight.json` pins the decoded summary.
-Live ClientHello randomness is deliberately not compared byte-for-byte with this
+Live ClientHello randomness is not compared byte-for-byte with this
 single sample. The live profile tests separately check the configured wire shape.
 
 `chrome-155-initial-*.hex` are two owned loopback datagrams from Chrome 155's

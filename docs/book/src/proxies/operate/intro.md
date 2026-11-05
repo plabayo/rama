@@ -1,21 +1,21 @@
 # Operate Proxies
 
-Once you’ve moved past the "how" of building a proxy, you run into the "where": how do you actually get a packet to leave its intended path and visit your Rama gateway? Building a high-performance engine is only half the story; the real challenge is the steering problem. It turns out that convincing an operating system or a stubborn application to route its data through you is often the messiest part of the job.
+After building a proxy, the next question is how traffic reaches it. Applications and operating systems connect directly by default, and getting their traffic routed through your Rama proxy is often the harder part of operating one. There are four common setups, described below.
 
-## The Voluntary Handshake
+## Application Proxy Settings
 
-Some applications are "polite". They are designed with proxy awareness in mind, meaning they actively look for instructions on where to send their data. We see this most often in development environments where you might set an environment variable like `http_proxy` or manually toggle a setting in a browser. This is the simplest way to get traffic to your proxy because the application is doing the heavy lifting for you.
+Some applications support proxies themselves: they read a setting such as the `http_proxy` environment variable or a browser's proxy configuration, and connect to the proxy instead of the target. This is the simplest setup, because the application does the routing.
 
 ## Managed Rules and PAC Files
 
-In more complex or corporate environments, we move into the world of "System Proxies". Instead of configuring every single app, you tell the Operating System itself how to behave. This is often where **PAC (Proxy Auto-Configuration)** files come into play. A PAC file is essentially a tiny bit of logic—a JavaScript function—that acts as a traffic cop. It tells the system: "If the user is going to an internal company site, let them through directly; but if they are heading to the open web, send them through the Rama proxy."
+In larger or corporate environments, proxies are configured as "System Proxies": instead of configuring every application, you set the proxy in the operating system, and applications that read those settings use it. This is often where **PAC (Proxy Auto-Configuration)** files come in. A PAC file is a JavaScript function that returns, per request, whether to connect directly or through a proxy. For example: connect directly to internal company sites, and use the Rama proxy for everything else.
 
-## The VPN Dance
+## Proxies and VPNs
 
-Things get significantly more complicated when a VPN enters the mix. Because a VPN tries to own the entire network stack at a very low level, it can easily "blind" a proxy or, worse, create an infinite routing loop where the proxy tries to send data to itself forever. Learning to operate a proxy alongside a VPN is about understanding precedence—making sure your proxy sees the data at the right moment before it gets swallowed by an encrypted tunnel.
+A VPN changes routing at a low level. It can route traffic past the proxy, or create a routing loop where the proxy's own upstream traffic is sent back to the proxy. Operating a proxy alongside a VPN means controlling the order: the proxy has to see the traffic before the VPN encrypts it.
 
-## Invisible Interception
+## Transparent Interception
 
-Finally, there are the cases where the client has no idea a proxy even exists. This is **Transparent Proxying**. Whether you're dealing with a legacy IoT device that doesn't have proxy settings, or a locked-down laptop where you can't change the config, you have to resort to "snatching" the traffic. By using tools like TPROXY on Linux or Network Extensions on macOS—you can intercept data invisibly. It is the most powerful way to operate, but it requires a deep understanding of the platform-specific hooks that make it possible.
+With **Transparent Proxying** the client is not configured for a proxy at all. The operating system redirects its traffic to the proxy, using mechanisms such as TPROXY on Linux or Network Extensions on macOS. Use it for clients without proxy settings, such as IoT devices, or for machines where you cannot change the application configuration. It covers all applications, but each platform has its own interception mechanism to set up.
 
-This is also the option which you will want to use if you wish to play nice with other technologies such as VPNs.
+This is also the option to use if the proxy has to work alongside other technologies such as VPNs.

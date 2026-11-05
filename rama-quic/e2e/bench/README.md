@@ -7,10 +7,10 @@ certificates under `/certs`, HTTP/0.9 over ALPN `hq-interop`. Rama's image (buil
 can be measured without writing any peer code: one image serves, another fetches, the fetch
 is timed from the client container's own start and finish timestamps.
 
-The simulator stays out. The runner’s IPv4 and IPv6 subnets are kept, with a plain forwarding container
+The simulator stays out. The runner's IPv4 and IPv6 subnets are kept, with a plain forwarding container
 where the simulator would be, because the endpoint base image routes through that gateway.
 The endpoint setup scripts require both address families even for IPv4 requests.
-The two temporary benchmark bridges use Docker’s `nat-unprotected` gateway mode so
+The two temporary benchmark bridges use Docker's `nat-unprotected` gateway mode so
 Docker does not drop packets destined for the other subnet before they reach the forwarder.
 This permits direct access to unpublished ports on those benchmark networks by hosts with
 routes to them; it does not change daemon-wide settings or other Docker networks.

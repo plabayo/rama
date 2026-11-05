@@ -24,6 +24,8 @@ And of course as a reminder, if you want to use Rama but are still learning Rust
 - [Service Stack](./intro/service_stack.md)
 - [🍔 Middlewares and ☘️ Leaf Services](./intro/terminology.md)
 - [Network Layers](./intro/network_layers.md)
+- [🚦 Limits: concurrency, rate & bandwidth](./intro/limits.md)
+- [⛌ Service Branches](./intro/service_branches.md)
 - [☀️ State](./intro/state.md)
 - [🧱 Modular](./intro/modular.md)
 - [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)
@@ -31,6 +33,9 @@ And of course as a reminder, if you want to use Rama but are still learning Rust
 - [🧘 Zen of Services](./intro/service_zen.md)
 - [🔭 Telemetry](./intro/telemetry.md)
 - [👤 User Agent](./intro/user_agent.md)
+    - [User Agent Emulation](./intro/user_agent_emulation.md)
+    - [🎯 Capturing your own profiles](./intro/user_agent_capture.md)
+- [🏗 Patterns used inside rama](./intro/patterns.md)
 
 ## Rama 101: Blog Series
 
@@ -49,11 +54,11 @@ A series of blog articles to introduce you to Rama. In case you are new to netwo
 
 Recording of a talk we gave as an introduction to Rama at FOSDEM 2026:
 
-Modern networking software often forces developers to choose between rigid, off-the-shelf frameworks and the painstaking effort of building everything from scratch. Rama takes a different path. It’s a modular Rust framework that lets you move and transform packets across the network stack, without giving up control, safety, or composability.
+The talk introduces Rama, a modular Rust framework for moving and transforming packets across the network stack.
 
-In this talk, I explore together with the audience how Rama’s philosophy of layers, services, and extensions turns network programming into a flexible and enjoyable experience. You’ll see how its building blocks span multiple layers of abstraction. From transport and TLS up to HTTP, and a lot more in between. All while you can still easily plug in your own logic or replace existing components. It also shows how you can build network stacks that aren't possible anywhere else, and all without a sweat. For example socks5 over TLS. Why not.
+It covers how Rama's layers, services and extensions fit together, and how its building blocks span transport, TLS and HTTP, with the option to plug in your own logic or replace existing components. One example is a network stack that runs socks5 over TLS.
 
-Through practical examples, we’ll look at how Rama empowers developers to build everything from proxies and servers to custom network tools, while still benefiting from Rust’s performance and safety guarantees. Whether you’re curious about programmable networking, Rust’s async ecosystem, or just want to build things your own way, this talk will show you how Rama helps you do it, all with elegance and confidence.
+Through practical examples, the talk shows how to build proxies, servers and custom network tools with Rama. It also covers programmable networking and Rust's async ecosystem.
 
 More information about rama itself can be found at https://ramaproxy.org/, which is developed and maintained by https://plabayo.tech/, a FOSS, consulting and commercial technology (small family) company from Ghent.
 

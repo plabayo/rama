@@ -47,9 +47,9 @@ Examples of routers:
 
 The match concept is pretty powerful, be it by using [the `Matcher` trait](https://ramaproxy.org/docs/rama/matcher/trait.Matcher.html) or rolling out your own concept of matching. It allows you to stay modular and minimal in your approach.
 
-Take a typical http client for example. As part of its work it needs to establish a connection to the target server. In the case of port `8080` this would be a plain `tcp` connection (for `http/1.1`), but in the case of port `443` that would require the `tcp` stream to be handled by a `Tls` client first (e.g. for `h2`).
+Take a typical http client for example. As part of its work it needs to establish a connection to the target server. For an `http://` URI this would be a plain `tcp` connection (e.g. for `http/1.1`), but for an `https://` URI the `tcp` stream has to be handled by a `Tls` client first (e.g. for `h2`). The port does not matter: `https://example.com:8080` still uses TLS.
 
-Using the tuple matchers you can wrap these two different flows in a two-element tuple with a [`SocketMatcher`](https://ramaproxy.org/docs/rama/net/stream/matcher/struct.SocketMatcher.html) to match on the port (for example). And in fact that is more or less what [the EasyHttpWebClient](https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html) does by default if you do not specify your own "Connection" service. We hope you can make happy use of it yourself.
+[The EasyHttpWebClient](https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html) does this by default if you do not specify your own "Connection" service: its auto TLS connector checks whether the target protocol is secure and only then runs the TLS handshake. You can build similar branches yourself with the tuple matchers and matchers such as [`SocketMatcher`](https://ramaproxy.org/docs/rama/net/stream/matcher/struct.SocketMatcher.html).
 
 ## Fallible middleware services
 

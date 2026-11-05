@@ -38,11 +38,11 @@ spec is always one click from the code that materialises it.
   * JA4H (HTTP):
     <https://github.com/FoxIO-LLC/ja4/blob/main/technical_details/JA4H.md>
 * Implementations:
-  * [`src/fingerprint/ja4/tls.rs`](../../src/fingerprint/ja4/tls.rs)
-    — `Ja4::compute` builds the `q/t13d / GREASE-aware` raw string
+  * [`src/fingerprint/ja4/tls.rs`](../../src/fingerprint/ja4/tls.rs):
+    `Ja4::compute` builds the `q/t13d / GREASE-aware` raw string
     and the truncated SHA-256 hash from the ClientHello extensions.
-  * [`src/fingerprint/ja4/http.rs`](../../src/fingerprint/ja4/http.rs)
-    — `Ja4H::compute` extracts the HTTP method, version,
+  * [`src/fingerprint/ja4/http.rs`](../../src/fingerprint/ja4/http.rs):
+    `Ja4H::compute` extracts the HTTP method, version,
     cookie/referer presence, the `Accept-Language` value, and the
     ordered header list to derive the JA4H string and 12-character
     truncated hash.

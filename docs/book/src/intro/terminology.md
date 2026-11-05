@@ -32,7 +32,7 @@ struct Compression<Example>
     serve(request):
         request = Compression::decompress(request)
         response = inner.serve(request)?
-        return Ok(Compression::decompress(response))
+        return Ok(Compression::compress(response))
 
 struct Example
     serve(request):
