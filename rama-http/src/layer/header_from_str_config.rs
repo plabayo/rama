@@ -1,11 +1,14 @@
 //! Extract a header config from a request or response and insert it into [`Extensions`].
 //!
+//! By default a single `T` is parsed from the header. Use [`Repeated`] as the mode
+//! to parse all comma-separated values of all matching headers into a container `C`.
+//!
 //! [`Extensions`]: rama_core::extensions::Extensions
 //!
 //! # Example
 //!
 //! ```rust
-//! use rama_http::layer::header_from_str_config::HeaderFromStrConfigLayer;
+//! use rama_http::layer::header_from_str_config::{HeaderFromStrConfigLayer, Repeated};
 //! use rama_http::service::web::WebService;
 //! use rama_http::{Body, Request, StatusCode, HeaderName};
 //! use rama_core::{extensions::{Extension, ExtensionsRef}, Service, Layer};
@@ -31,8 +34,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let service = HeaderFromStrConfigLayer::<ProxyLabel, ProxyLabels>::required(HeaderName::from_static("x-proxy-labels"))
-//!         .with_repeat(true)
+//!     let service = HeaderFromStrConfigLayer::<ProxyLabel, Repeated<ProxyLabels>>::required(HeaderName::from_static("x-proxy-labels"))
 //!         .into_layer(WebService::default()
 //!             .with_get("/", async |req: Request| {
 //!                 let labels: &ProxyLabels = req.extensions().get_ref().unwrap();
@@ -64,20 +66,37 @@ use std::iter::FromIterator;
 use std::str::FromStr;
 use std::{fmt, marker::PhantomData};
 
-/// A [`Service`] which extracts a header CSV config from a request or response
+/// Mode in which a single `T` is parsed from the header and inserted as-is.
+#[derive(Debug)]
+pub struct Single(());
+
+/// Mode in which all comma-separated values of all matching headers
+/// are parsed as `T` and inserted collected into a container `C`.
+pub struct Repeated<C>(PhantomData<fn() -> C>);
+
+impl<C> fmt::Debug for Repeated<C> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple("Repeated")
+            .field(&format_args!("{}", std::any::type_name::<C>()))
+            .finish()
+    }
+}
+
+/// A [`Service`] which extracts a header config from a request or response
 /// and inserts it into the [`Extensions`] of that object.
+///
+/// The mode `M` is either [`Single`] (default) or [`Repeated`].
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 #[derive(ExtensionsRef)]
-pub struct HeaderFromStrConfigService<T, S, C = Vec<T>> {
+pub struct HeaderFromStrConfigService<T, S, M = Single> {
     inner: S,
     header_name: HeaderName,
     optional: bool,
-    repeat: bool,
-    _marker: PhantomData<fn() -> (T, C)>,
+    _marker: PhantomData<fn() -> (T, M)>,
 }
 
-impl<T, S, C> HeaderFromStrConfigService<T, S, C> {
+impl<T, S, M> HeaderFromStrConfigService<T, S, M> {
     define_inner_service_accessors!();
 
     /// Create a new [`HeaderFromStrConfigService`] with the given inner service
@@ -88,7 +107,6 @@ impl<T, S, C> HeaderFromStrConfigService<T, S, C> {
             inner,
             header_name,
             optional: false,
-            repeat: false,
             _marker: PhantomData,
         }
     }
@@ -101,22 +119,12 @@ impl<T, S, C> HeaderFromStrConfigService<T, S, C> {
             inner,
             header_name,
             optional: true,
-            repeat: false,
             _marker: PhantomData,
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Toggle repeat on/off. When repeat is enabled the
-        /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-        pub fn repeat(mut self, repeat: bool) -> Self {
-            self.repeat = repeat;
-            self
         }
     }
 }
 
-impl<T, S, C> fmt::Debug for HeaderFromStrConfigService<T, S, C>
+impl<T, S, M> fmt::Debug for HeaderFromStrConfigService<T, S, M>
 where
     S: fmt::Debug,
 {
@@ -125,16 +133,15 @@ where
             .field("inner", &self.inner)
             .field("header_name", &self.header_name)
             .field("optional", &self.optional)
-            .field("repeat", &self.repeat)
             .field(
                 "_marker",
-                &format_args!("{}", std::any::type_name::<fn() -> (T, C)>()),
+                &format_args!("{}", std::any::type_name::<fn() -> (T, M)>()),
             )
             .finish()
     }
 }
 
-impl<T, S, C> Clone for HeaderFromStrConfigService<T, S, C>
+impl<T, S, M> Clone for HeaderFromStrConfigService<T, S, M>
 where
     S: Clone,
 {
@@ -143,23 +150,15 @@ where
             inner: self.inner.clone(),
             header_name: self.header_name.clone(),
             optional: self.optional,
-            repeat: self.repeat,
             _marker: PhantomData,
         }
     }
 }
 
-impl<T, S, Body, E, C> Service<Request<Body>> for HeaderFromStrConfigService<T, S, C>
+impl<T, S, Body, E> Service<Request<Body>> for HeaderFromStrConfigService<T, S, Single>
 where
     S: Service<Request<Body>, Error = E>,
-    T: FromStr<Err: Into<BoxError> + Send + Sync + 'static>
-        + Send
-        + Sync
-        + Clone
-        + std::fmt::Debug
-        + Extension
-        + 'static,
-    C: FromIterator<T> + Send + Sync + Clone + std::fmt::Debug + Extension + 'static,
+    T: FromStr<Err: Into<BoxError> + Send + Sync + 'static> + Extension,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
@@ -167,41 +166,14 @@ where
     type Error = BoxError;
 
     async fn serve(&self, request: Request<Body>) -> Result<Self::Output, Self::Error> {
-        if self.repeat {
-            let headers = request.headers().get_all(&self.header_name);
-            let mut parsed_values = headers
-                .into_iter()
-                .flat_map(|value| {
-                    value.to_str().into_iter().flat_map(|string| {
-                        string
-                            .split(',')
-                            .filter_map(|x| match x.trim() {
-                                "" => None,
-                                y => Some(y),
-                            })
-                            .map(|x| x.parse::<T>().into_box_error())
-                    })
-                })
-                .peekable();
-
-            if parsed_values.peek().is_none() {
-                if !self.optional {
-                    return Err(HeaderValueErr::HeaderMissing(self.header_name.to_string()).into());
-                }
-            } else {
-                let values = parsed_values.collect::<Result<C, _>>()?;
-                request.extensions().insert(values);
+        match request.header_str(&self.header_name) {
+            Ok(s) => {
+                let cfg: T = s.parse().into_box_error()?;
+                request.extensions().insert(cfg);
             }
-        } else {
-            match request.header_str(&self.header_name) {
-                Ok(s) => {
-                    let cfg: T = s.parse().into_box_error()?;
-                    request.extensions().insert(cfg);
-                }
-                Err(HeaderValueErr::HeaderMissing(_)) if self.optional => (),
-                Err(err) => {
-                    return Err(err.into());
-                }
+            Err(HeaderValueErr::HeaderMissing(_)) if self.optional => (),
+            Err(err) => {
+                return Err(err.into());
             }
         }
 
@@ -209,43 +181,98 @@ where
     }
 }
 
-/// Layer which extracts a header CSV config for the given HeaderName
-/// from a request or response and inserts it into the [`Extensions`] of that object.
-///
-/// [`Extensions`]: rama_core::extensions::Extensions
-pub struct HeaderFromStrConfigLayer<T, C = Vec<T>> {
-    header_name: HeaderName,
-    optional: bool,
-    repeat: bool,
-    _marker: PhantomData<fn() -> (T, C)>,
+impl<T, S, C> HeaderFromStrConfigService<T, S, Repeated<C>>
+where
+    T: FromStr<Err: Into<BoxError> + Send + Sync + 'static>,
+    C: FromIterator<T>,
+{
+    fn parse_repeated<Body>(&self, request: &Request<Body>) -> Result<Option<C>, BoxError> {
+        let mut parsed_values = request
+            .headers()
+            .get_all(&self.header_name)
+            .into_iter()
+            .flat_map(|value| {
+                value.to_str().into_iter().flat_map(|string| {
+                    string
+                        .split(',')
+                        .filter_map(|x| match x.trim() {
+                            "" => None,
+                            y => Some(y),
+                        })
+                        .map(|x| x.parse::<T>().into_box_error())
+                })
+            })
+            .peekable();
+
+        if parsed_values.peek().is_none() {
+            return Ok(None);
+        }
+        parsed_values.collect::<Result<C, _>>().map(Some)
+    }
 }
 
-impl<T, C: fmt::Debug> fmt::Debug for HeaderFromStrConfigLayer<T, C> {
+impl<T, S, Body, E, C> Service<Request<Body>> for HeaderFromStrConfigService<T, S, Repeated<C>>
+where
+    S: Service<Request<Body>, Error = E>,
+    T: FromStr<Err: Into<BoxError> + Send + Sync + 'static> + 'static,
+    C: FromIterator<T> + Extension,
+    Body: Send + Sync + 'static,
+    E: Into<BoxError> + Send + Sync + 'static,
+{
+    type Output = S::Output;
+    type Error = BoxError;
+
+    async fn serve(&self, request: Request<Body>) -> Result<Self::Output, Self::Error> {
+        match self.parse_repeated(&request)? {
+            Some(values) => {
+                request.extensions().insert(values);
+            }
+            None if self.optional => (),
+            None => {
+                return Err(HeaderValueErr::HeaderMissing(self.header_name.to_string()).into());
+            }
+        }
+
+        self.inner.serve(request).await.into_box_error()
+    }
+}
+
+/// Layer which extracts a header config for the given HeaderName
+/// from a request or response and inserts it into the [`Extensions`] of that object.
+///
+/// The mode `M` is either [`Single`] (default) or [`Repeated`].
+///
+/// [`Extensions`]: rama_core::extensions::Extensions
+pub struct HeaderFromStrConfigLayer<T, M = Single> {
+    header_name: HeaderName,
+    optional: bool,
+    _marker: PhantomData<fn() -> (T, M)>,
+}
+
+impl<T, M> fmt::Debug for HeaderFromStrConfigLayer<T, M> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("HeaderFromStrConfigLayer")
             .field("header_name", &self.header_name)
             .field("optional", &self.optional)
-            .field("repeat", &self.repeat)
             .field(
                 "_marker",
-                &format_args!("{}", std::any::type_name::<fn() -> (T, C)>()),
+                &format_args!("{}", std::any::type_name::<fn() -> (T, M)>()),
             )
             .finish()
     }
 }
 
-impl<T, C> Clone for HeaderFromStrConfigLayer<T, C> {
+impl<T, M> Clone for HeaderFromStrConfigLayer<T, M> {
     fn clone(&self) -> Self {
         Self {
             header_name: self.header_name.clone(),
             optional: self.optional,
-            repeat: self.repeat,
             _marker: PhantomData,
         }
     }
 }
 
-impl<T, C> HeaderFromStrConfigLayer<T, C> {
+impl<T, M> HeaderFromStrConfigLayer<T, M> {
     /// Create a new [`HeaderFromStrConfigLayer`] with the given header name,
     /// on which to extract the config,
     /// and which will fail if the header is missing.
@@ -253,7 +280,6 @@ impl<T, C> HeaderFromStrConfigLayer<T, C> {
         Self {
             header_name,
             optional: false,
-            repeat: false,
             _marker: PhantomData,
         }
     }
@@ -265,30 +291,19 @@ impl<T, C> HeaderFromStrConfigLayer<T, C> {
         Self {
             header_name,
             optional: true,
-            repeat: false,
             _marker: PhantomData,
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Toggle repeat on/off. When repeat is enabled the
-        /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
-        pub fn repeat(mut self, repeat: bool) -> Self {
-            self.repeat = repeat;
-            self
         }
     }
 }
 
-impl<T, S, C> Layer<S> for HeaderFromStrConfigLayer<T, C> {
-    type Service = HeaderFromStrConfigService<T, S, C>;
+impl<T, S, M> Layer<S> for HeaderFromStrConfigLayer<T, M> {
+    type Service = HeaderFromStrConfigService<T, S, M>;
 
     fn layer(&self, inner: S) -> Self::Service {
         HeaderFromStrConfigService {
             inner,
             header_name: self.header_name.clone(),
             optional: self.optional,
-            repeat: self.repeat,
             _marker: PhantomData,
         }
     }
@@ -298,7 +313,6 @@ impl<T, S, C> Layer<S> for HeaderFromStrConfigLayer<T, C> {
             inner,
             header_name: self.header_name,
             optional: self.optional,
-            repeat: self.repeat,
             _marker: PhantomData,
         }
     }
@@ -413,7 +427,7 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::required(
+        let service = HeaderFromStrConfigService::<ProxyId, _>::required(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -437,11 +451,11 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::required(
-            inner_service,
-            HeaderName::from_static("x-proxy-labels"),
-        )
-        .with_repeat(true);
+        let service =
+            HeaderFromStrConfigService::<ProxyLabel, _, Repeated<ProxyLabelList>>::required(
+                inner_service,
+                HeaderName::from_static("x-proxy-labels"),
+            );
 
         service.serve(request).await.unwrap();
     }
@@ -465,11 +479,11 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelSet>::required(
-            inner_service,
-            HeaderName::from_static("x-proxy-labels"),
-        )
-        .with_repeat(true);
+        let service =
+            HeaderFromStrConfigService::<ProxyLabel, _, Repeated<ProxyLabelSet>>::required(
+                inner_service,
+                HeaderName::from_static("x-proxy-labels"),
+            );
 
         service.serve(request).await.unwrap();
     }
@@ -494,11 +508,11 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelQueue>::required(
-            inner_service,
-            HeaderName::from_static("x-proxy-labels"),
-        )
-        .with_repeat(true);
+        let service =
+            HeaderFromStrConfigService::<ProxyLabel, _, Repeated<ProxyLabelQueue>>::required(
+                inner_service,
+                HeaderName::from_static("x-proxy-labels"),
+            );
 
         service.serve(request).await.unwrap();
     }
@@ -521,11 +535,11 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::required(
-            inner_service,
-            HeaderName::from_static("x-proxy-labels"),
-        )
-        .with_repeat(true);
+        let service =
+            HeaderFromStrConfigService::<ProxyLabel, _, Repeated<ProxyLabelList>>::required(
+                inner_service,
+                HeaderName::from_static("x-proxy-labels"),
+            );
 
         service.serve(request).await.unwrap();
     }
@@ -546,7 +560,7 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::optional(
+        let service = HeaderFromStrConfigService::<ProxyId, _>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -570,11 +584,11 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::optional(
-            inner_service,
-            HeaderName::from_static("x-proxy-labels"),
-        )
-        .with_repeat(true);
+        let service =
+            HeaderFromStrConfigService::<ProxyLabel, _, Repeated<ProxyLabelList>>::optional(
+                inner_service,
+                HeaderName::from_static("x-proxy-labels"),
+            );
 
         service.serve(request).await.unwrap();
     }
@@ -592,7 +606,7 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::optional(
+        let service = HeaderFromStrConfigService::<ProxyId, _>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -614,11 +628,11 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::optional(
-            inner_service,
-            HeaderName::from_static("x-proxy-labels"),
-        )
-        .with_repeat(true);
+        let service =
+            HeaderFromStrConfigService::<ProxyLabel, _, Repeated<ProxyLabelList>>::optional(
+                inner_service,
+                HeaderName::from_static("x-proxy-labels"),
+            );
 
         service.serve(request).await.unwrap();
     }
@@ -634,7 +648,7 @@ mod test {
         let inner_service =
             rama_core::service::service_fn(async |_req: Request<()>| Ok::<_, Infallible>(()));
 
-        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::required(
+        let service = HeaderFromStrConfigService::<ProxyId, _>::required(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -657,11 +671,11 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyLabel, _, ProxyLabelList>::required(
-            inner_service,
-            HeaderName::from_static("x-proxy-labels"),
-        )
-        .with_repeat(true);
+        let service =
+            HeaderFromStrConfigService::<ProxyLabel, _, Repeated<ProxyLabelList>>::required(
+                inner_service,
+                HeaderName::from_static("x-proxy-labels"),
+            );
 
         let result = service.serve(request).await;
         assert!(result.is_err());
@@ -679,7 +693,7 @@ mod test {
         let inner_service =
             rama_core::service::service_fn(async |_req: Request<()>| Ok::<_, Infallible>(()));
 
-        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::required(
+        let service = HeaderFromStrConfigService::<ProxyId, _>::required(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -703,11 +717,10 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::required(
+        let service = HeaderFromStrConfigService::<ProxyId, _, Repeated<ProxyIdList>>::required(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
-        )
-        .with_repeat(true);
+        );
 
         let result = service.serve(request).await;
         assert!(result.is_err());
@@ -725,7 +738,7 @@ mod test {
         let inner_service =
             rama_core::service::service_fn(async |_req: Request<()>| Ok::<_, Infallible>(()));
 
-        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::optional(
+        let service = HeaderFromStrConfigService::<ProxyId, _>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
@@ -749,13 +762,69 @@ mod test {
             Ok::<_, Infallible>(())
         });
 
-        let service = HeaderFromStrConfigService::<ProxyId, _, ProxyIdList>::optional(
+        let service = HeaderFromStrConfigService::<ProxyId, _, Repeated<ProxyIdList>>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
-        )
-        .with_repeat(true);
+        );
 
         let result = service.serve(request).await;
         assert!(result.is_err());
+    }
+
+    #[derive(Debug, Clone, Extension)]
+    struct PortList(Vec<u16>);
+
+    impl FromIterator<u16> for PortList {
+        fn from_iter<T: IntoIterator<Item = u16>>(iter: T) -> Self {
+            Self(iter.into_iter().collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_header_config_layer_single_without_container() {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("https://www.example.com")
+            .header("x-proxy-id", "42")
+            .body(())
+            .unwrap();
+
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let id: &ProxyId = req.extensions().get_ref().unwrap();
+            assert_eq!(id.0, 42);
+
+            Ok::<_, Infallible>(())
+        });
+
+        let service =
+            HeaderFromStrConfigLayer::<ProxyId>::required(HeaderName::from_static("x-proxy-id"))
+                .into_layer(inner_service);
+
+        service.serve(request).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_header_config_layer_repeat_value_not_an_extension() {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("https://www.example.com")
+            .header("x-ports", "80, 443")
+            .header("x-ports", "8080")
+            .body(())
+            .unwrap();
+
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let ports: &PortList = req.extensions().get_ref().unwrap();
+            assert_eq!(ports.0, [80, 443, 8080]);
+
+            Ok::<_, Infallible>(())
+        });
+
+        let service = HeaderFromStrConfigLayer::<u16, Repeated<PortList>>::required(
+            HeaderName::from_static("x-ports"),
+        )
+        .into_layer(inner_service);
+
+        service.serve(request).await.unwrap();
     }
 }
