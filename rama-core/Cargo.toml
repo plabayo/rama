@@ -37,6 +37,7 @@ std = [
     "dep:ahash",
     "dep:parking_lot",
     "dep:serde_json",
+    "dep:slab",
     "dep:tokio",
     "dep:tokio-graceful",
     "dep:tokio-stream",
@@ -73,6 +74,7 @@ rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
+slab = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "rt", "rt-multi-thread", "sync", "time"], optional = true }
 tokio-graceful = { workspace = true, optional = true }
 tokio-stream = { workspace = true, features = ["full"], optional = true }
@@ -88,9 +90,13 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage
 quickcheck = { workspace = true }
 rand = { workspace = true }
 rustversion = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-test = { workspace = true }
 trybuild = { workspace = true, features = ["diff"] }
+
+# tokio rewrites itself under `cfg(loom)`; rama-core needs its signal and io modules.
+[target.'cfg(rama_loom)'.dev-dependencies]
+loom = { workspace = true, features = ["futures"] }
 
 [lints]
 workspace = true

@@ -305,7 +305,7 @@ zstd = "0.14.3"
 [workspace.lints.rust]
 unreachable_pub = "deny"
 unused_imports = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)', 'cfg(rama_loom)'] }
 # Each unsafe op in an `unsafe fn` needs its own `unsafe {}` block and proof.
 unsafe_op_in_unsafe_fn = "warn"
 

@@ -4,3 +4,6 @@
 pub use ::tokio_graceful::{
     Shutdown, ShutdownBuilder, ShutdownGuard, WeakShutdownGuard, default_signal,
 };
+
+#[doc(hidden)]
+pub mod tree;
