@@ -2,12 +2,12 @@ github.com/dunglas/httpsfv v1.1.2 h1:432E+FKy2DLMbVcZeAnOuM7nhyJ4vTiH7b9iXJ/Dkmc
 github.com/dunglas/httpsfv v1.1.2/go.mod h1:zID2mqw9mFsnt7YC3vYQ9/cjq30q41W+1AnDwH8TiMg=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0/go.mod h1:3IOHRbJIc+L6YKMwfDtJAM9Vj9k0YY4muhuyUYk5tbk=
-github.com/quic-go/masque-go v0.6.0 h1:piZ0JD1/UBExBRRg/GmNp9bxqr4BnxWO34bcLMmakAc=
-github.com/quic-go/masque-go v0.6.0/go.mod h1:IR7oB2S6Xf51rYa61ZfM69n06UKTzE+5qNZ85+5oE34=
+github.com/quic-go/masque-go v0.6.1-0.20261103032005-bb2f118a5733 h1:voLYKssvCICwP2ouAIrUdpbjcQxKSekeZH0F6Zp0LPQ=
+github.com/quic-go/masque-go v0.6.1-0.20261103032005-bb2f118a5733/go.mod h1:xZkowVaLJq2b8m8ky9nHZ3hDEDh4A1uyIb0F18PqBRs=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
 github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
-github.com/quic-go/quic-go v0.64.1 h1:BCNTP+6x6++OPKrGST2FR3f1tycx8O3QOA3QQv09g70=
-github.com/quic-go/quic-go v0.64.1/go.mod h1:RAro2j2yN9a9EiPACLHT9IB2NXCvGQmmo/alT0yYI0w=
+github.com/quic-go/quic-go v0.65.0 h1:BJQSjdTvLPLmWtaCupUphRbgxgpZhdO/GMpr9Eoe3B4=
+github.com/quic-go/quic-go v0.65.0/go.mod h1:RAro2j2yN9a9EiPACLHT9IB2NXCvGQmmo/alT0yYI0w=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 github.com/yosida95/uritemplate/v3 v3.0.2 h1:Ed3Oyj9yrmi9087+NczuL5BwkIc4wvTb5zIM+UJPGz4=
