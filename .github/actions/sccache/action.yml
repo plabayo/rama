@@ -4,11 +4,20 @@ description: Cache host Rust compilation through GitHub Actions storage.
 runs:
   using: composite
   steps:
+    # The cache only speeds builds up: a failed download (such as a release 5xx)
+    # falls back to an uncached build instead of failing the job.
     - name: Install sccache
+      id: install
+      continue-on-error: true
       uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       with:
         version: v0.18.0
+    - name: Skip compiler cache
+      if: steps.install.outcome != 'success'
+      shell: bash
+      run: echo "::warning::sccache install failed; building without compiler cache"
     - name: Enable compiler cache
+      if: steps.install.outcome == 'success'
       shell: bash
       env:
         CACHE_WRITE_ALLOWED: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

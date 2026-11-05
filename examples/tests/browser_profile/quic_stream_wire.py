@@ -141,6 +141,8 @@ CONNECTION_CLOSE = {
     0x1C: ("quic.cc.error_code",),
     0x1D: ("quic.cc.error_code.app", "quic.cc.error_code"),
 }
+# HTTP/3 closes idle or requestless connections with H3_NO_ERROR (0x100).
+CLEAN_CLOSE_CODES = {0x1C: {0}, 0x1D: {0, 0x100}}
 
 
 def bidirectional_stream(frame, kind):
@@ -158,7 +160,7 @@ def closed_with_error(frame, kind):
         return False
     names = [name for name in CONNECTION_CLOSE[kind] if values(frame, name)]
     # An unreadable error code cannot prove a clean close.
-    return not names or varint_field(frame, names[0])[0] != 0
+    return not names or varint_field(frame, names[0])[0] not in CLEAN_CLOSE_CODES[kind]
 
 
 def requestless_connections(data, server_port):
