@@ -18,6 +18,7 @@ mod hello;
 #[doc(inline)]
 pub use hello::{
     ClientHello, ClientHelloExtension, ECHClientHello, client_hello_extension_is_connection_bound,
+    trust_anchors_identifier_list,
 };
 
 #[cfg(test)]

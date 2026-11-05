@@ -68,6 +68,28 @@ pub fn client_hello_extension_is_connection_bound(id: ExtensionId) -> bool {
     )
 }
 
+/// Returns the identifier sequence of a `trust_anchors` extension body, without its
+/// outer length, or `None` when the body is not a u16-length list of non-empty,
+/// u8-length identifiers that fits one extension.
+#[must_use]
+pub fn trust_anchors_identifier_list(body: &[u8]) -> Option<&[u8]> {
+    let (length, ids) = body
+        .split_first_chunk::<2>()
+        .filter(|_| body.len() <= usize::from(u16::MAX))?;
+    if usize::from(u16::from_be_bytes(*length)) != ids.len() {
+        return None;
+    }
+    let mut rest = ids;
+    while let Some((&length, tail)) = rest.split_first() {
+        let length = usize::from(length);
+        if length == 0 || tail.len() < length {
+            return None;
+        }
+        rest = &tail[length..];
+    }
+    Some(ids)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 /// When a client first connects to a server, it is required to send
 /// the ClientHello as its first message.
@@ -490,6 +512,38 @@ mod tests {
         let without =
             ClientHello::new(ProtocolVersion::TLSv1_3, Vec::new(), Vec::new(), Vec::new());
         assert_eq!(without.ext_key_share_groups(), None);
+    }
+
+    #[test]
+    fn trust_anchor_bodies_need_a_matching_list_of_non_empty_identifiers() {
+        assert_eq!(trust_anchors_identifier_list(&[0, 0]), Some(&[][..]));
+        assert_eq!(
+            trust_anchors_identifier_list(&[0, 5, 1, 7, 2, 8, 9]),
+            Some(&[1, 7, 2, 8, 9][..])
+        );
+        for body in [
+            &[][..],
+            &[0],
+            &[0, 1],
+            &[0, 1, 0],
+            &[0, 2, 2, 1],
+            &[0, 3, 1, 1],
+            &[0, 2, 1, 1, 1],
+        ] {
+            assert_eq!(trust_anchors_identifier_list(body), None, "{body:?}");
+        }
+        // A whole extension body is at most u16::MAX bytes.
+        let mut ids = [[1, 42]].repeat(32_765).concat();
+        ids.extend([2, 17, 34]);
+        let body = |ids: &[u8]| {
+            let mut body = u16::try_from(ids.len()).unwrap().to_be_bytes().to_vec();
+            body.extend_from_slice(ids);
+            body
+        };
+        assert_eq!(body(&ids).len(), usize::from(u16::MAX));
+        assert!(trust_anchors_identifier_list(&body(&ids)).is_some());
+        ids.extend([1, 42]);
+        assert_eq!(trust_anchors_identifier_list(&body(&ids)), None);
     }
 
     #[test]
