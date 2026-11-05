@@ -433,6 +433,11 @@ final class SystemLifecycleTests: XCTestCase {
     /// past its idle timeout is reaped during a running allowance, and the
     /// later verdict adds no second teardown.
     func testIdleBackstopPreemptsRunningAllowance() {
+        // Backdate by seconds, not the 900s default: a fresh CI VM has less
+        // uptime than that, and `DispatchTime` clamps at boot.
+        let savedIdleMs = defaultPromotedIdleTimeoutMs
+        defaultPromotedIdleTimeoutMs = 1_000
+        defer { defaultPromotedIdleTimeoutMs = savedIdleMs }
         withRecoveryAllowance(unreachableAllowanceMs) {
             let core = TransparentProxyCore()
             let flow = MockTcpFlow()
