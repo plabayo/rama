@@ -65,8 +65,8 @@ pub enum TransportShape {
 ///
 /// `transport` describes the required wire shape, not a prepared connection.
 /// QUIC callers must check the actual native parameter length before output.
-/// `anchors` supplies current trust-anchor identifiers when the capture contains
-/// their advertisement. Captured parameter, ticket and secret bytes are never
+/// `anchors` replaces captured trust-anchor identifiers, and supplies them for
+/// length-only captures. Captured parameter, ticket and secret bytes are never
 /// reused. This function does not prepare an SSL session or establish backend
 /// support for an entire captured connection: the owning connector must also
 /// bind the destination, caller policy, session state and other selected slots.
@@ -343,11 +343,23 @@ fn compile_lowered(
                     );
                 }
             }
+            (ExtensionId::TRUST_ANCHORS, Value::Literal(body)) => {
+                let requested = match anchors {
+                    Some(anchors) => {
+                        if anchors.extension_body() != Some(body.as_ref()) {
+                            lower(report, LoweredProfileItem::TlsTrustAnchors);
+                        }
+                        anchors.clone()
+                    }
+                    None => BoringRequestedTrustAnchors::from_raw_extension_body(body.clone()),
+                };
+                requested.identifier_list()?;
+                config.set_requested_trust_anchors(requested);
+            }
             (ExtensionId::TRUST_ANCHORS, Value::ConnectionLength(length)) => match anchors {
                 Some(anchors) => {
                     anchors.identifier_list()?;
                     if anchors.extension_body().map(<[u8]>::len) != Some(usize::from(*length)) {
-                        // Current trust anchors are connection-owned; keep the caller's.
                         lower(report, LoweredProfileItem::TlsTrustAnchors);
                     }
                     config.set_requested_trust_anchors(anchors.clone());

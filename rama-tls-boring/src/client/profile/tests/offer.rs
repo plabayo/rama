@@ -5,7 +5,7 @@ use crate::client::BoringExtensionPresence;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::{
     CipherSuite, ExtensionId, ProtocolVersion, SupportedGroup,
-    client::{ClientHandshake, ClientHello},
+    client::{ClientHandshake, ClientHello, ClientHelloExtension},
 };
 use rama_ua::profile::capture::tls::TlsCapturedExtension;
 
@@ -821,4 +821,50 @@ fn legacy_tls12_offer_replays_without_tls13_fields() {
             .bytes,
         actual.canonical(TlsCaptureLimits::default()).unwrap().bytes
     );
+}
+
+fn trust_anchors_body(hello: &ClientHello) -> Option<&[u8]> {
+    hello
+        .extensions()
+        .iter()
+        .find_map(|extension| match extension {
+            ClientHelloExtension::Opaque { id, data } if *id == ExtensionId::TRUST_ANCHORS => {
+                Some(data.as_slice())
+            }
+            _ => None,
+        })
+}
+
+#[test]
+fn captured_trust_anchors_are_replayed_and_a_caller_list_replaces_them() {
+    let ids = |ids: &[&[u8]]| BoringRequestedTrustAnchors::try_from_ids(ids).unwrap();
+    let populated = ids(&[&[0x82, 0xdf, 0x13, 2, 1], &[0xd6, 0x79, 9, 1]]);
+    let same_length = ids(&[&[1; 5], &[2; 4]]);
+    for advertised in [populated, ids(&[])] {
+        let source = wire_variant().with_requested_trust_anchors(advertised.clone());
+        let captured = TlsCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            TlsCaptureTransport::Tcp,
+            &hello_from_data(TlsConnectorData::try_from(&source).unwrap()),
+            TlsCaptureLimits::default(),
+        )
+        .unwrap();
+        for (caller, emitted, exact) in [
+            (None, &advertised, true),
+            (Some(&advertised), &advertised, true),
+            (Some(&same_length), &same_length, false),
+        ] {
+            let (config, report) = compile_tcp(&captured, caller).unwrap();
+            assert_eq!(report.is_exact(), exact, "{report:?}");
+            if !exact {
+                assert_eq!(lowered(&report), [LoweredProfileItem::TlsTrustAnchors]);
+            }
+            let replayed = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+            assert_eq!(trust_anchors_body(&replayed), emitted.extension_body());
+        }
+    }
+    let (config, report) = compile_tcp(&capture(), None).unwrap();
+    assert!(report.is_exact(), "{report:?}");
+    let replayed = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+    assert_eq!(trust_anchors_body(&replayed), None);
 }

@@ -58,7 +58,6 @@ pub fn client_hello_extension_is_connection_bound(id: ExtensionId) -> bool {
             | ExtensionId::EXTERNAL_SESSION_ID
             | ExtensionId::QUIC_TRANSPORT_PARAMETERS
             | ExtensionId::DNSSEC_CHAIN
-            | ExtensionId::TRUST_ANCHORS
             | ExtensionId::RENEGOTIATION_INFO
             | ExtensionId::Unknown(
                 RESERVED_EXTENSION_ID
@@ -518,6 +517,7 @@ mod tests {
             ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION,
             ExtensionId::SUPPORTED_VERSIONS,
             ExtensionId::KEY_SHARE,
+            ExtensionId::TRUST_ANCHORS,
             ExtensionId::from(0x1234_u16),
         ] {
             assert!(!client_hello_extension_is_connection_bound(id), "{id}");

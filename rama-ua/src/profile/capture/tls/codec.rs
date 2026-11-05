@@ -4,6 +4,24 @@ use crate::profile::format::canonical::{
 };
 use rama_tls::{ExtensionId, client::client_hello_extension_is_connection_bound};
 
+// A u16-length list of non-empty, u8-length identifiers, as BoringSSL accepts it.
+fn is_trust_anchors_body(body: &[u8]) -> bool {
+    let Some((length, mut ids)) = body.split_first_chunk::<2>() else {
+        return false;
+    };
+    if usize::from(u16::from_be_bytes(*length)) != ids.len() {
+        return false;
+    }
+    while let Some((&size, rest)) = ids.split_first() {
+        let size = usize::from(size);
+        if size == 0 || rest.len() < size {
+            return false;
+        }
+        ids = &rest[size..];
+    }
+    true
+}
+
 impl TlsCapturedExtension {
     fn wire_length(&self) -> Result<usize, ProfileDataError> {
         let size = match &self.value {
@@ -78,6 +96,9 @@ impl TlsCapturedExtension {
                 }
                 if id == ExtensionId::SERVER_PADDING_REQUEST && bytes.len() != size_of::<u16>() {
                     return Err(ProfileDataError::Invalid("server padding request length"));
+                }
+                if id == ExtensionId::TRUST_ANCHORS && !is_trust_anchors_body(bytes) {
+                    return Err(ProfileDataError::Invalid("TLS trust anchors body"));
                 }
                 !client_hello_extension_is_connection_bound(id)
                     && !matches!(
@@ -211,7 +232,8 @@ impl TlsCapturedExtension {
             TlsCapturedExtensionValue::ConnectionLength(size) => {
                 budget.take(0, 2)?;
                 let id = ExtensionId::from(self.id);
-                client_hello_extension_is_connection_bound(id)
+                // Length-only trust anchors stay decodable without synthesizing identifiers.
+                (client_hello_extension_is_connection_bound(id) || id == ExtensionId::TRUST_ANCHORS)
                     && (id != ExtensionId::PADDING || *size == 0)
             }
         };

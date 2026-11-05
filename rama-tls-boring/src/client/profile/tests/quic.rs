@@ -4,7 +4,7 @@ use super::*;
 use rama_boring::{
     error::ErrorStack,
     ssl::{
-        SslCipherRef,
+        Padding, SslCipherRef,
         quic::{EncryptionLevel, HandshakeStatus, QuicConnection, QuicMethod},
     },
 };
@@ -77,7 +77,7 @@ fn source(parameters: &[u8]) -> TlsCapture {
         .with_alpn(vec![ApplicationProtocol::HTTP_3].into())
         .with_min_version(ProtocolVersion::TLSv1_3)
         .with_max_version(ProtocolVersion::TLSv1_3)
-        .with_client_hello_padding(rama_boring::ssl::Padding::Off);
+        .with_client_hello_padding(Padding::Off);
     captured(&hello(&config, parameters))
 }
 
@@ -218,7 +218,7 @@ fn counted_server_padding_replays_exact_native_quic_values() {
             .with_alpn(vec![ApplicationProtocol::HTTP_3].into())
             .with_min_version(ProtocolVersion::TLSv1_3)
             .with_max_version(ProtocolVersion::TLSv1_3)
-            .with_client_hello_padding(rama_boring::ssl::Padding::Off)
+            .with_client_hello_padding(Padding::Off)
             .with_server_padding_request(bytes);
         let source = captured(&hello(&original, &parameters));
         let mut report = ProfilePreservationReport::default();
@@ -240,4 +240,41 @@ fn counted_server_padding_replays_exact_native_quic_values() {
                 .bytes,
         );
     }
+}
+
+#[test]
+fn quic_replays_captured_trust_anchors() {
+    let parameters = [0x0f, 4, 1, 2, 3, 4];
+    let anchors = BoringRequestedTrustAnchors::try_from_ids([[0xd6, 0x79, 9, 1]]).unwrap();
+    let source = captured(&hello(
+        &wire_variant()
+            .with_alpn(vec![ApplicationProtocol::HTTP_3].into())
+            .with_min_version(ProtocolVersion::TLSv1_3)
+            .with_max_version(ProtocolVersion::TLSv1_3)
+            .with_client_hello_padding(Padding::Off)
+            .with_requested_trust_anchors(anchors.clone()),
+        &parameters,
+    ));
+    let mut report = ProfilePreservationReport::default();
+    let config = wire::compile(
+        TransportShape::Quic {
+            parameters_len: parameters.len(),
+        },
+        &source,
+        None,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.is_exact(), "{report:?}");
+    let replayed = hello(&config, &parameters);
+    let body = replayed
+        .extensions()
+        .iter()
+        .find_map(|extension| match extension {
+            ClientHelloExtension::Opaque { id, data } if *id == ExtensionId::TRUST_ANCHORS => {
+                Some(data.as_slice())
+            }
+            _ => None,
+        });
+    assert_eq!(body, anchors.extension_body());
 }
