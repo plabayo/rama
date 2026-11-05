@@ -89,6 +89,12 @@ mod http_listener_hello;
 mod http_mitm_proxy_boring;
 #[cfg(all(
     feature = "http-full",
+    feature = "boring",
+    feature = "ua-embed-profiles"
+))]
+mod http_mitm_proxy_emulate_boring;
+#[cfg(all(
+    feature = "http-full",
     feature = "rustls",
     feature = "aws-lc",
     feature = "ring"

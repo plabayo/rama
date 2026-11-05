@@ -152,6 +152,11 @@ path = "src/http_mitm_proxy_boring.rs"
 required-features = ["http-full", "boring"]
 
 [[bin]]
+name = "http_mitm_proxy_emulate_boring"
+path = "src/http_mitm_proxy_emulate_boring.rs"
+required-features = ["ua-embed-profiles", "http-full", "boring"]
+
+[[bin]]
 name = "http_mitm_relay_proxy_boring"
 path = "src/http_mitm_relay_proxy_boring.rs"
 required-features = ["http-full", "boring"]

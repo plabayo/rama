@@ -23,6 +23,12 @@
   and usually the kind of approach more desired for MITM proxies,
   especially transparent proxies.
 
+- [/examples/src/http_mitm_proxy_emulate_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_emulate_boring.rs):
+  Unlike the relays above, which mirror the client, this proxy terminates TLS and
+  sends each request through its own client that emulates a captured browser profile
+  (TLS ClientHello, HTTP/2 settings and headers). Each client chooses the profile
+  with proxy-auth username labels, such as `john-ua_chrome-ua_macos`.
+
 - [/examples/src/tls_mitm_relay_client_auth.rs](https://github.com/plabayo/rama/tree/main/examples/src/tls_mitm_relay_client_auth.rs):
   A self-contained mTLS relay that authenticates an ingress client and maps it to
   a different upstream identity. Also demonstrates independent ingress admission

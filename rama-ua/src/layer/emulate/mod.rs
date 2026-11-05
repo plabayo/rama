@@ -35,3 +35,6 @@ pub use selected::SelectedUserAgentProfile;
 
 mod source;
 pub use source::{ProfileSelectFallback, ProfileSource};
+
+mod username;
+pub use username::ProfileSelectorUsernameParser;
