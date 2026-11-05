@@ -98,8 +98,7 @@ mod http_mitm_proxy_rustls;
     feature = "http-full",
     feature = "rustls",
     feature = "aws-lc",
-    feature = "boring",
-    feature = "ua-embed-profiles"
+    feature = "boring"
 ))]
 mod http_mitm_relay_proxy_boring;
 #[cfg(feature = "http-full")]

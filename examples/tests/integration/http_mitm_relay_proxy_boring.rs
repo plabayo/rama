@@ -205,7 +205,6 @@ async fn test_http_mitm_relay_proxy() {
 
     let mut runner =
         utils::ExampleRunner::interactive(utils::example!("http_mitm_relay_proxy_boring"));
-    // Rebuilding the embedded UA database is CPU-heavy in unoptimized CI builds.
     runner
         .wait_for_tcp_within(([127, 0, 0, 1], 62049), Duration::from_secs(60))
         .await;
