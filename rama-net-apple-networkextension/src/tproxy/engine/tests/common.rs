@@ -193,13 +193,13 @@ pub(super) fn stop_paused_engine(engine: TransparentProxyEngine<TestHandler>) {
     // A current-thread fixture has no background workers to poll the ordinary
     // blocking stop. Drive its graceful drain before dropping the runtime.
     engine.udp_ingress_budget.close_flow_releases();
-    let pair = engine.shutdown.lock().take().expect("live test engine");
+    let root = engine.shutdown.lock().take().expect("live test engine");
     engine.rt.as_ref().unwrap().block_on_borrowed(async {
-        _ = pair.trigger.send(());
-        pair.shutdown
-            .shutdown_with_limit(Duration::from_secs(1))
+        root.cancel(Cause::Owner);
+        tokio::time::timeout(Duration::from_secs(1), root.join())
             .await
-            .expect("paused engine must drain");
+            .expect("paused engine must drain")
+            .expect("paused engine is not aborted");
     });
     drop(engine);
 }

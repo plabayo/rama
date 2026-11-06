@@ -22,7 +22,7 @@
 use rama::{
     Layer, Service,
     extensions::ExtensionsRef,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Request, Response,
         body::util::BodyExt,
@@ -63,7 +63,9 @@ async fn main() {
 
     let (shutdown_txt, shutdown_rx) = oneshot::channel();
 
-    let graceful = Shutdown::new(shutdown_rx);
+    let scope = Scope::new()
+        .with_grace(Duration::from_secs(1))
+        .with_signal(shutdown_rx);
 
     let har_json = std::env::args()
         .nth(1)
@@ -84,7 +86,7 @@ async fn main() {
 
     tokio::spawn(run_server(ADDRESS, log_file.clone()));
 
-    let exec = Executor::graceful(graceful.guard());
+    let exec = Executor::from(scope.clone());
     let traffic_writer = BidirectionalWriter::stdout_unbounded(
         &exec,
         Some(rama::http::layer::traffic_writer::WriterMode::All),
@@ -141,10 +143,7 @@ async fn main() {
     drop(client);
     shutdown_txt.send(()).unwrap();
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(1))
-        .await
-        .unwrap();
+    scope.join().await.unwrap();
 }
 
 fn rewrite_request_uri_to_local_server(req: &mut Request, addr: SocketAddress) {

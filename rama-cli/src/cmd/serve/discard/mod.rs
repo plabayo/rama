@@ -8,7 +8,6 @@ use rama::{
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext},
     futures::TryStreamExt,
-    graceful::ShutdownGuard,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
@@ -97,9 +96,7 @@ impl fmt::Display for Mode {
 }
 
 /// run the rama echo service
-pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
-
+pub async fn run(exec: Executor, cfg: CliCommandDiscard) -> Result<(), BoxError> {
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
             let maybe_tls_cfg = if cfg.mode == Mode::Tls {

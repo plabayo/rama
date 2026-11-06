@@ -17,6 +17,7 @@ use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::{
     bytes::{Bytes, BytesMut},
+    futures::FutureExt as _,
     rt::Executor,
     telemetry::tracing::{Instrument, Span},
 };
@@ -357,19 +358,21 @@ impl Endpoint {
         ));
         let lifecycle = rc.shared.lifecycle.clone();
         let inner = rc.0.clone();
-        let cancellation = executor.guard().map(|guard| guard.clone_weak());
+        let scope = executor.scope().clone_weak();
         executor.into_spawn_task(async move {
-            let cancel = async {
-                match cancellation {
-                    Some(guard) => guard.cancelled().await,
-                    None => std::future::pending().await,
+            // The hard phase of the scope, or a stop that grants no budget.
+            let (stop_scope, stop_lifecycle) = (&scope, &lifecycle);
+            let hard = || async move {
+                tokio::select! {
+                    () = stop_scope.aborted() => (),
+                    () = stop_lifecycle.forced() => (),
                 }
             };
             // `Some(graceful)` once the endpoint stops: graceful when shutdown cancelled it.
             let stop = tokio::select! {
                 _ = lifecycle.join() => None,
                 _ = lifecycle.requested() => Some(false),
-                _ = cancel => Some(true),
+                () = scope.cancelled() => Some(true),
             };
             let mut forced = false;
             if let Some(graceful) = stop {
@@ -385,7 +388,8 @@ impl Endpoint {
                 }
                 if graceful {
                     // Each leased connection closes once let go, within half the budget (the
-                    // rest is for the closes), or at once when shutdown is requested meanwhile.
+                    // rest is for the closes), or at once when shutdown is requested or the
+                    // scope is aborted meanwhile.
                     let leases = async {
                         loop {
                             let released = inner.shared.close_leases_released.notified();
@@ -409,6 +413,7 @@ impl Endpoint {
                         tokio::select! {
                             () = leases => (),
                             () = lifecycle.requested() => (),
+                            () = hard() => (),
                         }
                     })
                     .await;
@@ -420,10 +425,15 @@ impl Endpoint {
                     );
                 }
                 let remaining = shutdown_budget.saturating_sub(started.elapsed());
-                if tokio::time::timeout(remaining, lifecycle.join())
-                    .await
-                    .is_err()
-                {
+                let joined = tokio::select! {
+                    joined = tokio::time::timeout(remaining, lifecycle.join()) => joined.is_ok(),
+                    () = hard() => {
+                        // Woken drivers get one poll to put their close on the wire.
+                        tokio::task::yield_now().await;
+                        lifecycle.join().now_or_never().is_some()
+                    }
+                };
+                if !joined {
                     forced = true;
                     lifecycle.abort();
                     lifecycle.join().await;
@@ -747,6 +757,12 @@ impl Endpoint {
     /// call [`close()`](Self::close) and then [`wait_idle()`](Self::wait_idle) before this.
     pub async fn shutdown(&self) -> ShutdownOutcome {
         self.inner.shared.lifecycle.request();
+        self.inner.shared.lifecycle.completed().await
+    }
+
+    /// As [`Self::shutdown`], granting no budget: drivers that do not join at once are aborted.
+    pub(crate) async fn shutdown_now(&self) -> ShutdownOutcome {
+        self.inner.shared.lifecycle.force();
         self.inner.shared.lifecycle.completed().await
     }
 

@@ -290,12 +290,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             };
             ReplySockets::new(bind, reader)
         });
-        let cancelled = async {
-            match exec.guard() {
-                Some(guard) => guard.cancelled().await,
-                None => std::future::pending().await,
-            }
-        };
+        let cancelled = exec.cancelled();
         let mut cancelled = std::pin::pin!(cancelled);
         loop {
             let (mut datagram, local, via_reply_socket) = tokio::select! {
@@ -458,7 +453,8 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 }
             }
             let service = service.clone();
-            exec.spawn_task(async move {
+            // Ended at the hard phase, whatever the service does by then.
+            exec.spawn_abortable_task(async move {
                 if let Err(error) = service.serve(socket).await {
                     let error: BoxError = error.into();
                     tracing::debug!(%error, "datagram association ended with an error");

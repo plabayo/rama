@@ -667,12 +667,12 @@ async fn a_failed_destination_keeps_the_shorter_idle_deadline() {
 async fn a_failed_destination_stops_draining_when_its_receiver_is_dropped() {
     for drop_before_send_fails in [false, true] {
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let shutdown = rama_core::graceful::Shutdown::new(async move {
+        let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
             _ = stopped.await;
         });
         let (a, peer) = tokio::io::duplex(kib(256));
         let socket = ConnectUdpSocket::new(
-            &Executor::graceful(shutdown.guard()),
+            &Executor::from(shutdown.clone()),
             HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
             LOCAL,
             PEER,
@@ -697,7 +697,7 @@ async fn a_failed_destination_stops_draining_when_its_receiver_is_dropped() {
         // input left to drain and no reason to keep the graceful task alive.
         let started = Instant::now();
         stop.send(()).unwrap();
-        shutdown.shutdown().await;
+        shutdown.join().await.expect("graceful shutdown");
         assert_eq!(
             Instant::now(),
             started,

@@ -105,10 +105,10 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
         icap_uri.as_str(),
     ]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     assert!(inspector_address.is_some(), "inspector listener bound");
 
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);

@@ -28,7 +28,7 @@ use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,
     futures::FutureExt,
-    graceful::{Shutdown, ShutdownGuard},
+    graceful::{Cause, Scope, WeakScope},
     io::BridgeIo,
     rt::{Executor, OwnedRuntimeHandle},
     service::Service,
@@ -130,13 +130,13 @@ pub const DEFAULT_UDP_MAX_FLOW_LIFETIME: Duration = Duration::from_mins(15);
 /// unaffected.
 pub const DEFAULT_UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Default backstop on how long `engine.stop()` waits for engine-level
-/// graceful guards to drop. Tuned via
+/// Default backstop on how long `engine.stop()` waits for the engine
+/// scope to drain. Tuned via
 /// [`TransparentProxyEngineBuilder::with_stop_drain_max_wait`].
 ///
 /// A normal stop completes promptly after every per-flow service task
 /// observes cancellation and emits its structured/Dial9 close epilogue.
-/// Engine-level guards also cover any
+/// The engine scope is also held by any
 /// [`TransparentProxyHandler::on_system_sleep`] /
 /// [`TransparentProxyHandler::on_system_wake`] hook tasks. This bound
 /// therefore backstops either a flow task or handler hook stuck on
@@ -308,42 +308,12 @@ pub struct TransparentProxyEngine<H> {
     /// `None` ⇒ fall back to `decision_deadline`; see the builder
     /// doc on [`TransparentProxyEngineBuilder::app_message_deadline`].
     app_message_deadline: Option<Duration>,
-    /// Backstop on `shutdown_blocking`'s wait for engine guards to
-    /// drop; see [`DEFAULT_STOP_DRAIN_MAX_WAIT`].
+    /// Backstop on `shutdown_blocking`'s wait for the engine scope to
+    /// drain; see [`DEFAULT_STOP_DRAIN_MAX_WAIT`].
     stop_drain_max_wait: Duration,
-    /// Engine-wide [`Shutdown`] + its `oneshot` trigger, held together
-    /// so they move as a unit (the trigger fires the `Shutdown`'s inner
-    /// future). `None` after `shutdown_blocking` has taken them — the
-    /// engine is terminally stopped.
-    shutdown: parking_lot::Mutex<Option<ShutdownPair>>,
-}
-
-/// Pair of an engine-wide [`Shutdown`] and the [`oneshot::Sender`]
-/// that fires its inner future.
-///
-/// Kept together because they must move atomically: firing the trigger
-/// resolves the inner future, which lets the [`Shutdown`] propagate
-/// cancellation to all outstanding [`ShutdownGuard`]s; once the trigger
-/// is `send()`-ed it is consumed, and firing again would need a fresh
-/// `Shutdown`.
-struct ShutdownPair {
-    shutdown: Shutdown,
-    trigger: oneshot::Sender<()>,
-}
-
-/// Build a fresh [`ShutdownPair`] bound to the engine's runtime.
-///
-/// Kept private to this module — every construction site needs the
-/// same `rt.enter()` ceremony so the [`Shutdown`]'s inner future is
-/// spawned on the engine's runtime, not whatever runtime the caller
-/// happens to be on.
-fn build_shutdown_pair(rt: &TransparentProxyAsyncRuntime) -> ShutdownPair {
-    let (trigger, rx) = oneshot::channel::<()>();
-    let _enter = rt.enter();
-    let shutdown = Shutdown::new(async move {
-        _ = rx.await;
-    });
-    ShutdownPair { shutdown, trigger }
+    /// Engine-wide root [`Scope`]: every flow and hook runs in it, and stop cancels it.
+    /// `None` after `shutdown_blocking` has taken it — the engine is terminally stopped.
+    shutdown: parking_lot::Mutex<Option<Scope>>,
 }
 
 impl<H> TransparentProxyEngine<H>
@@ -412,28 +382,28 @@ where
     /// — the handler's future runs detached so the Swift sleep
     /// completion isn't gated on it.
     pub fn notify_system_sleep(&self) {
-        let Some((guard, rt)) = self.live() else {
+        let Some((scope, rt)) = self.live() else {
             tracing::trace!("notify_system_sleep ignored: engine already stopped");
             return;
         };
-        let exec = Executor::graceful(guard);
+        let exec = Executor::from(scope);
         let handler = self.handler.clone();
         _ = rt.spawn(async move { handler.on_system_sleep(exec).await });
     }
 
     /// Symmetric counterpart of [`Self::notify_system_sleep`].
     pub fn notify_system_wake(&self) {
-        let Some((guard, rt)) = self.live() else {
+        let Some((scope, rt)) = self.live() else {
             tracing::trace!("notify_system_wake ignored: engine already stopped");
             return;
         };
-        let exec = Executor::graceful(guard);
+        let exec = Executor::from(scope);
         let handler = self.handler.clone();
         _ = rt.spawn(async move { handler.on_system_wake(exec).await });
     }
 
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
-        let Some((guard, rt)) = self.live() else {
+        let Some((scope, rt)) = self.live() else {
             tracing::error!(
                 message_len = message.len(),
                 "handle_app_message called after transparent proxy engine was already stopped"
@@ -441,7 +411,7 @@ where
             return None;
         };
 
-        let exec = Executor::graceful(guard);
+        let exec = Executor::from(scope);
         let handler = self.handler.clone();
         // Worst-case time we let a user-supplied app-message handler
         // run. Apple's `NETransparentProxyProvider` dispatches
@@ -502,10 +472,10 @@ where
         OnDemand: Fn() + Send + Sync + 'static,
         OnClosed: Fn() + Send + Sync + 'static,
     {
-        let Some((guard, rt)) = self.live() else {
+        let Some((scope, rt)) = self.live() else {
             tracing::error!(
                 protocol = ?meta.protocol,
-                "shutdown_guard called after transparent proxy engine was already stopped; passing tcp flow through"
+                "flow arrived after transparent proxy engine was already stopped; passing tcp flow through"
             );
             return SessionFlowAction::Passthrough;
         };
@@ -528,13 +498,13 @@ where
         let decision_deadline_action = self.decision_deadline_action;
         let flow_id = meta.flow_id;
         let protocol = meta.protocol;
-        let exec = Executor::graceful(guard.clone());
+        let exec = Executor::from(scope.clone());
         let handler = self.handler.clone();
         let provider_pid = self.provider_pid;
         let provider_generation = self.provider_generation;
 
         let future = new_tcp_session_flow_action(
-            guard,
+            scope,
             exec,
             meta,
             provider_pid,
@@ -598,10 +568,10 @@ where
         OnClosed: Fn() + Send + Sync + 'static,
         OnDemand: Fn(u64) + Send + Sync + 'static,
     {
-        let Some((guard, rt)) = self.live() else {
+        let Some((scope, rt)) = self.live() else {
             tracing::error!(
                 protocol = ?meta.protocol,
-                "shutdown_guard called after transparent proxy engine was already stopped; passing udp flow through"
+                "flow arrived after transparent proxy engine was already stopped; passing udp flow through"
             );
             return SessionFlowAction::Passthrough;
         };
@@ -622,13 +592,13 @@ where
         let decision_deadline_action = self.decision_deadline_action;
         let flow_id = meta.flow_id;
         let protocol = meta.protocol;
-        let exec = Executor::graceful(guard.clone());
+        let exec = Executor::from(scope.clone());
         let handler = self.handler.clone();
         let provider_pid = self.provider_pid;
         let provider_generation = self.provider_generation;
 
         let future = new_udp_session_flow_action(
-            guard,
+            scope,
             exec,
             meta,
             provider_pid,
@@ -691,23 +661,20 @@ where
         self.decision_concurrency.snapshot()
     }
 
-    fn shutdown_guard(&self) -> Option<ShutdownGuard> {
-        self.shutdown
-            .lock()
-            .as_ref()
-            .map(|pair| pair.shutdown.guard())
+    fn engine_scope(&self) -> Option<Scope> {
+        self.shutdown.lock().clone()
     }
 
-    /// Shutdown guard + runtime of a live engine; `None` once stopped.
+    /// Engine scope + runtime of a live engine; `None` once stopped.
     ///
-    /// The two are taken together in `shutdown_blocking` (pair first),
-    /// so observing a guard here implies the runtime is still present —
+    /// The two are taken together in `shutdown_blocking` (scope first),
+    /// so observing the scope here implies the runtime is still present —
     /// but callers get one combined liveness check instead of relying
     /// on that ordering.
-    fn live(&self) -> Option<(ShutdownGuard, &TransparentProxyAsyncRuntime)> {
-        let guard = self.shutdown_guard()?;
+    fn live(&self) -> Option<(Scope, &TransparentProxyAsyncRuntime)> {
+        let scope = self.engine_scope()?;
         let rt = self.rt.as_ref()?;
-        Some((guard, rt))
+        Some((scope, rt))
     }
 }
 
@@ -750,8 +717,9 @@ struct TcpSessionPendingData {
     flow_close_reason: CloseReasonCell,
     /// Per-flow metadata inserted into `TcpFlow` extensions at activate.
     meta: TransparentProxyFlowMeta,
-    /// Flow-scoped guard, cloned into the per-flow stream executor.
-    flow_guard: ShutdownGuard,
+    /// Flow scope, observed only: the service task holds it, so a session kept without
+    /// activation never holds up an engine stop.
+    flow_scope: WeakScope,
     /// Runtime handle, used to back the promote handle from `activate`
     /// (which Swift may call from an external, non-Tokio thread).
     rt_handle: OwnedRuntimeHandle,
@@ -1169,7 +1137,7 @@ impl TransparentProxyTcpSession {
             egress_close_reason,
             flow_close_reason,
             meta,
-            flow_guard,
+            flow_scope,
             rt_handle,
             egress_connect_options: _,
         } = pending;
@@ -1194,7 +1162,13 @@ impl TransparentProxyTcpSession {
             paused_drain_wait,
             tcp_write_chunk_limit,
         );
-        let ingress_stream = TcpFlow::new(ingress_inner, Some(Executor::graceful(flow_guard)));
+        let Some(flow_scope) = flow_scope.into_scope() else {
+            tracing::debug!(
+                "TransparentProxyTcpSession::activate called after its flow ended; ignoring"
+            );
+            return;
+        };
+        let ingress_stream = TcpFlow::new(ingress_inner, Some(Executor::from(flow_scope)));
         ingress_stream.extensions().insert_arc(meta_arc);
         if let Some(remote) = remote_endpoint {
             ingress_stream.extensions().insert(ConnectorTarget(remote));
@@ -1250,7 +1224,7 @@ impl TransparentProxyTcpSession {
             .is_err()
         {
             // Same situation as the UDP path: service task ended before
-            // activate (parent_guard cancelled, panic). The BridgeIo we
+            // activate (engine scope cancelled, panic). The BridgeIo we
             // built is dropped on send failure, which closes the per-flow
             // ingress / egress channels — subsequent `on_client_bytes` etc.
             // will report `Closed`.
@@ -1343,7 +1317,7 @@ impl TransparentProxyTcpSession {
         //   1. callback_active = false — any in-flight stream dispatch
         //      blocks here on the same sync mutex; further dispatches
         //      short-circuit.
-        //   2. flow_stop_tx — fires `flow_guard.cancelled()` so the
+        //   2. flow_stop_tx — fires `flow_scope.cancelled()` so the
         //      forwarder's biased select picks the shutdown arm and the
         //      flow-level idle watcher exits.
         //   3. drain wakers — wake any stream write side parked on a
@@ -1351,13 +1325,12 @@ impl TransparentProxyTcpSession {
         //      (now `Closed`), and unwinds.
         //   4. drop senders — natural EOF for the stream read sides.
         //   5. detach (NOT abort) the service task: its biased
-        //      `idle_guard.cancelled()` arm (from (2)) breaks the serve
+        //      `idle_scope.cancelled()` arm (from (2)) breaks the serve
         //      loop and runs the close epilogue; aborting would lose it.
         *self.callback_active.lock() = false;
-        // The receiver lives inside `flow_shutdown`'s inner future
-        // and is dropped only when that future ends — which itself
-        // only ends when this `send(())` or the parent guard
-        // fires. Send-then-Err therefore means "engine-level
+        // The receiver lives inside the flow scope's signal, which is
+        // dropped once that scope is cancelled — by this `send(())` or
+        // with the engine scope. Send-then-Err therefore means "engine-level
         // shutdown raced ahead of this cancel"; trace-log so a
         // future "cancel did nothing" mystery has a breadcrumb.
         if let Some(tx) = self.flow_stop_tx.take()
@@ -1394,7 +1367,7 @@ impl Drop for TransparentProxyTcpSession {
     reason = "internal helper threading TPROXY engine state to the per-flow handler; bundling into a struct adds noise without simplifying call sites"
 )]
 async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
-    parent_guard: ShutdownGuard,
+    parent: Scope,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
     _provider_pid: u32,
@@ -1462,18 +1435,11 @@ where
     );
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
-    // Keep the engine drain joined to this task through its close epilogue.
-    // The child shutdown future drops its own parent guard as soon as it
-    // propagates cancellation; without this clone, engine stop may then tear
-    // down the runtime before the task records its structured/Dial9 close.
-    let service_parent_guard = parent_guard.clone();
-    let flow_shutdown = Shutdown::new(async move {
-        tokio::select! {
-            _ = flow_stop_rx => {}
-            _ = parent_guard.cancelled() => {}
-        }
+    // Cancelled by the flow's own stop or with the engine. The service task holds this child,
+    // which holds the engine scope, so engine stop waits for the task's close epilogue.
+    let flow_scope = parent.child().with_signal(async move {
+        _ = flow_stop_rx.await;
     });
-    let flow_guard = flow_shutdown.guard();
 
     let (client_tx, client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
     let (bridge_tx, bridge_rx) = oneshot::channel::<BridgeIo<TcpFlow, NwTcpStream>>();
@@ -1512,8 +1478,8 @@ where
     // Service task waits for BridgeIo, then serves it under a flow-level
     // idle backstop + cancellation watch.
     //
-    // Spawn through the rama `Executor` (graceful-aware) instead of
-    // `flow_guard.spawn_task` directly, so that with the `dial9`
+    // Spawn through the rama `Executor` of the flow scope instead of
+    // `tokio::spawn` directly, so that with the `dial9`
     // feature on the inner `tokio::spawn` is replaced by
     // `dial9::spawn` — giving per-future wake-event
     // tracking on this long-lived per-flow service task.
@@ -1523,7 +1489,7 @@ where
     let ingress_reason_cell = ingress_close_reason.clone();
     let egress_reason_cell = egress_close_reason.clone();
     let flow_reason_cell = flow_close_reason.clone();
-    let idle_guard = flow_guard.clone();
+    let idle_scope = flow_scope.clone();
     // Published before `serve` drops, so the close callbacks see how it ended.
     let signals_for_close = signals.clone();
 
@@ -1565,15 +1531,14 @@ where
     // Boxed: the future embeds the whole per-flow service stack, and this
     // spawn runs on Swift dispatch threads with 512 KiB stacks — moving it
     // by value through the spawn chain overflows them in debug builds.
-    let service_task = Executor::graceful(flow_guard.clone()).spawn_task(Box::pin(async move {
-        let _service_parent_guard = service_parent_guard;
+    let service_task = Executor::from(flow_scope.clone()).spawn_task(Box::pin(async move {
         let _task_guard = TcpFlowTaskGuard::new();
         let mut bridge_rx = bridge_rx;
         let bridge = tokio::select! {
             biased;
             // Shutdown must win a tie with activation so the pre-activation
             // close epilogue runs deterministically.
-            () = idle_guard.cancelled() => Err(BridgeCloseReason::Shutdown),
+            () = idle_scope.cancelled() => Err(BridgeCloseReason::Shutdown),
             bridge = &mut bridge_rx => bridge.map_err(|_recv_error| BridgeCloseReason::Shutdown),
         };
         let Ok(bridge) = bridge else {
@@ -1613,7 +1578,7 @@ where
         };
 
         // Run the service, applying the idle timeout and watching the flow
-        // guard here (the streams don't). On idle/shutdown we drop `serve`,
+        // scope here (the streams don't). On idle/shutdown we drop `serve`,
         // whose streams' `Drop` fires the gated close callbacks.
         // Include cancellation's destruction of the pinned service future in
         // the panic boundary. Its destructors run before the byte/reason
@@ -1645,7 +1610,7 @@ where
             loop {
                 tokio::select! {
                     biased;
-                    () = idle_guard.cancelled() => {
+                    () = idle_scope.cancelled() => {
                         signals_for_close.record_terminal_error(BridgeCloseReason::Shutdown);
                         break BridgeCloseReason::Shutdown;
                     }
@@ -1760,7 +1725,7 @@ where
         egress_close_reason,
         flow_close_reason,
         meta,
-        flow_guard,
+        flow_scope: flow_scope.clone_weak(),
         rt_handle,
         egress_connect_options,
     };
@@ -1986,7 +1951,7 @@ impl TransparentProxyUdpSession {
         // Swift-bound UDP callback before the FFI session frees those boxes.
         *self.callback_active.lock() = false;
         // Signal cooperative shutdown so the service task's
-        // `flow_guard.cancelled()` arm fires; the task then runs its
+        // `flow_scope.cancelled()` arm fires; the task then runs its
         // close epilogue (`emit_udp_session_close_event`, dial9
         // `record_flow_closed`, `closed_sink()`) before returning.
         // Dropping `flow_stop_tx` triggers `flow_shutdown`'s inner
@@ -2010,7 +1975,7 @@ impl TransparentProxyUdpSession {
         // would skip the close epilogue: the future would be dropped
         // mid-`select!` and never reach
         // `emit_udp_session_close_event` / `record_flow_closed` /
-        // `closed_sink`. The `flow_guard.cancelled()` arm in the
+        // `closed_sink`. The `flow_scope.cancelled()` arm in the
         // service task is the cooperative mechanism that lets the
         // task exit promptly while still emitting the close events.
         // The runtime keeps polling the detached task until its
@@ -2064,7 +2029,7 @@ impl Drop for TransparentProxyUdpSession {
     reason = "internal helper threading TPROXY engine state to the per-UDP-flow handler; bundling into a struct adds noise without simplifying call sites"
 )]
 async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
-    parent_guard: ShutdownGuard,
+    parent: Scope,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
     _provider_pid: u32,
@@ -2136,16 +2101,10 @@ where
     );
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
-    // Keep the engine drain joined to this task through its close epilogue.
-    // See the matching TCP path above for why the child guard is insufficient.
-    let service_parent_guard = parent_guard.clone();
-    let flow_shutdown = Shutdown::new(async move {
-        tokio::select! {
-            _ = flow_stop_rx => {}
-            _ = parent_guard.cancelled() => {}
-        }
+    // As on the TCP path: a child cancelled by the flow's stop or with the engine.
+    let flow_scope = parent.child().with_signal(async move {
+        _ = flow_stop_rx.await;
     });
-    let flow_guard = flow_shutdown.guard();
 
     let (client_tx, client_rx) = mpsc::channel::<Datagram>(udp_channel_capacity);
     let (activate_tx, activate_rx) = oneshot::channel::<()>();
@@ -2231,7 +2190,7 @@ where
             received_control.on_channel_capacity_released()
         })),
         Some(Arc::new(move || closed_control.close())),
-        Some(Executor::graceful(flow_guard.clone())),
+        Some(Executor::from(flow_scope.clone())),
     );
     flow.extensions().insert_arc(meta_arc.clone());
     if let Some(remote) = meta_arc.remote_endpoint.clone() {
@@ -2243,13 +2202,12 @@ where
     // Spawn through the rama `Executor` so dial9 wake-event tracking
     // is applied when the feature is on (see TCP path for context).
     let meta_for_close = meta_arc;
-    let flow_guard_for_task = flow_guard.clone();
+    let flow_scope_for_task = flow_scope.clone();
     let idle_notify_for_task = idle_notify.clone();
     #[cfg(feature = "dial9")]
     let byte_counters_for_close = byte_counters.clone();
     // Boxed for the same small-FFI-stack reason as the TCP service task.
-    let service_task = Executor::graceful(flow_guard).spawn_task(Box::pin(async move {
-        let _service_parent_guard = service_parent_guard;
+    let service_task = Executor::from(flow_scope).spawn_task(Box::pin(async move {
         let lifetime_fut = async {
             if let Some(deadline) = udp_lifetime_deadline {
                 tokio::time::sleep_until(deadline).await;
@@ -2264,7 +2222,7 @@ where
         // in the same poll; cooperative shutdown still has highest priority.
         let activation = tokio::select! {
             biased;
-            () = flow_guard_for_task.cancelled() => Err(BridgeCloseReason::Shutdown),
+            () = flow_scope_for_task.cancelled() => Err(BridgeCloseReason::Shutdown),
             () = &mut lifetime_fut => {
                 tracing::warn!(
                     target: "rama_apple_ne::tproxy",
@@ -2324,7 +2282,7 @@ where
         // Drive `service.serve(flow)` to completion, but observe up to
         // three additional terminators:
         //
-        //   * `flow_guard.cancelled()` — fires when Swift calls
+        //   * `flow_scope.cancelled()` — fires when Swift calls
         //     `on_client_close` (which sends through `flow_stop_tx`) or
         //     when the engine itself is shutting down. Without this
         //     arm `on_client_close` would have to `task.abort()` the
@@ -2375,7 +2333,7 @@ where
                 wait_for_udp_idle(timeout, notify).await;
             };
             tokio::select! {
-                () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
+                () = flow_scope_for_task.cancelled() => BridgeCloseReason::Shutdown,
                 res = &mut serve_fut => {
                     match res {
                         Ok(service_result) => {
@@ -2565,10 +2523,8 @@ impl<H> Drop for TransparentProxyEngine<H> {
 }
 
 /// Slack added to `stop_drain_max_wait` to form the OUTER hard cap on
-/// `shutdown_blocking`. The inner [`Shutdown::shutdown_with_limit`]
-/// only time-limits its guard-drop phase; its earlier
-/// cancellation-propagation phase is unbounded and could wedge if the
-/// runtime is starved. The outer bound is an OS-level
+/// `shutdown_blocking`. The inner `timeout(max_wait, join())` runs on
+/// the runtime being stopped, so a starved runtime may never fire it. The outer bound is an OS-level
 /// `recv_timeout` owned by the stopping thread — deliberately NOT a
 /// tokio timer, which lives on the very runtime being suspected of
 /// being wedged and then can never fire (all-workers-blocked means no
@@ -2580,9 +2536,9 @@ const STOP_HARD_CAP_SLACK: Duration = Duration::from_secs(2);
 
 /// Grace granted to the runtime's worker-thread join after a CLEAN
 /// drain, before `shutdown_blocking` stops waiting and deliberately
-/// leaks any straggler thread. A clean drain means all engine guards
-/// dropped, so workers park and join in microseconds; this only bites
-/// a task blocked in a syscall/FFI call that never held a guard. On
+/// leaks any straggler thread. A clean drain means every engine scope
+/// holder is gone, so workers park and join in microseconds; this only bites
+/// a task blocked in a syscall/FFI call that never held the scope. On
 /// the wedged path the join is skipped entirely ([`Duration::ZERO`]).
 const RUNTIME_DISPOSE_GRACE: Duration = Duration::from_secs(1);
 
@@ -2609,7 +2565,7 @@ fn clamp_timer_duration(duration: Duration, headroom: Duration) -> Duration {
 
 impl<H> TransparentProxyEngine<H> {
     fn shutdown_blocking(&mut self, reason: i32) {
-        let Some(pair) = self.shutdown.lock().take() else {
+        let Some(root) = self.shutdown.lock().take() else {
             return;
         };
 
@@ -2617,12 +2573,11 @@ impl<H> TransparentProxyEngine<H> {
         // Unlink deferred releases even if a wedged runtime never polls its
         // coordinator's shutdown branch. Late retained payload drops stay inert.
         self.udp_ingress_budget.close_flow_releases();
-        let ShutdownPair { shutdown, trigger } = pair;
-        _ = trigger.send(());
+        root.cancel(Cause::Reason("transparent proxy engine stop"));
 
         // Two-layer bound so teardown always returns:
-        //   - INNER `shutdown_with_limit(max_wait)`: the graceful
-        //     "wait for engine guards to drop, but not forever" cap. A
+        //   - INNER `timeout(max_wait, join())`: the graceful
+        //     "wait for the engine scope to drain, but not forever" cap. A
         //     correct stop resolves after flow close epilogues and lifecycle
         //     hooks finish; this only bites one wedged on un-timed I/O (see
         //     [`DEFAULT_STOP_DRAIN_MAX_WAIT`]).
@@ -2647,7 +2602,10 @@ impl<H> TransparentProxyEngine<H> {
 
         let (drained_tx, drained_rx) = std::sync::mpsc::sync_channel(1);
         _ = rt.spawn(async move {
-            let outcome = shutdown.shutdown_with_limit(max_wait).await;
+            let outcome = match tokio::time::timeout(max_wait, root.join()).await {
+                Ok(Ok(elapsed)) => Ok(elapsed),
+                Ok(Err(_)) | Err(_) => Err(()),
+            };
             _ = drained_tx.send(outcome);
         });
 
@@ -2666,9 +2624,9 @@ impl<H> TransparentProxyEngine<H> {
                     tracing::warn!(
                         reason,
                         ?max_wait,
-                        "transparent proxy engine stop timed out waiting for guards to \
-                         drop; proceeding (a flow task or handler hook likely holds a \
-                         guard with un-timed I/O)"
+                        "transparent proxy engine stop timed out waiting for its scope to \
+                         drain; proceeding (a flow task or handler hook likely holds it \
+                         with un-timed I/O)"
                     );
                     false
                 }

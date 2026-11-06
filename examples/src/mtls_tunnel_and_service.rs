@@ -35,7 +35,7 @@
 
 use rama::{
     Layer,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         layer::trace::TraceLayer,
         server::HttpServer,
@@ -82,7 +82,9 @@ async fn main() {
         )
         .init();
 
-    let shutdown = Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     let (tls_client_data, tls_server_data) = {
         let (client_cert_chain, client_priv_key) = self_signed_client_auth().unwrap();
@@ -111,11 +113,10 @@ async fn main() {
     };
 
     // create mtls web server
-    shutdown.spawn_task_fn(async |guard| {
-        let executor = Executor::graceful(guard.clone());
-
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let tcp_service = TlsAcceptorLayer::new(tls_server_data).into_layer(
-            HttpServer::auto(executor.clone()).service(
+            HttpServer::auto(exec.clone()).service(
                 TraceLayer::new_for_http().into_layer(
                     WebService::default()
                         .with_get("/", Redirect::temporary("/hello"))
@@ -129,7 +130,7 @@ async fn main() {
             server.port = %SERVER_AUTHORITY.port,
             "start mtls (https) web service",
         );
-        TcpListener::bind_address(SERVER_AUTHORITY.to_string(), executor)
+        TcpListener::bind_address(SERVER_AUTHORITY.to_string(), exec)
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener ({SERVER_AUTHORITY}): mtls (https): web service: {e}")
@@ -139,14 +140,14 @@ async fn main() {
     });
 
     // create mtls tunnel proxy
-    shutdown.spawn_task_fn(async |guard| {
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         tracing::info!(
             server.address = %TUNNEL_AUTHORITY.ip_addr,
             server.port = %TUNNEL_AUTHORITY.port,
             "start mTLS TCP Tunnel Proxy",
         );
 
-        let exec = Executor::graceful(guard.clone());
         let forwarder = (
             TraceErrLayer::new(),
             IoToProxyBridgeIoLayer::new(SERVER_AUTHORITY).with_connector(
@@ -165,8 +166,5 @@ async fn main() {
             .await;
     });
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

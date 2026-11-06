@@ -7,7 +7,6 @@ use rama::{
     Service,
     cli::{ForwardKind, service::ip::IpServiceBuilder},
     error::{BoxError, BoxErrorExt as _, ErrorContext},
-    graceful::ShutdownGuard,
     net::{
         address::{SocketAddress, ip::geo::IpGeoDb},
         tls::ApplicationProtocol,
@@ -90,12 +89,10 @@ pub struct CliCommandIp {
 
 /// run the rama ip service
 pub async fn run(
-    graceful: ShutdownGuard,
+    exec: Executor,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandIp,
 ) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
-
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
     let geo_db = crate::utils::geo::load_geo_db_from_env();
 

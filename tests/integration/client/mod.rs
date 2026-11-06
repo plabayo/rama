@@ -1,7 +1,7 @@
 use rama::http::body::util::BodyExt as _;
 use rama::{
     Layer, Service,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Body, HeaderValue, Request, Response, Version, client::EasyHttpWebClient, header,
         header::HOST, server::HttpServer,
@@ -103,9 +103,9 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
 async fn connection_pooling_detects_closed_connections(version: Version, delay: Option<Duration>) {
     let direct_connection = MockConnectorService::new(move || {
         let token = CancellationToken::new();
-        let shutdown = Shutdown::new(token.clone().cancelled_owned());
+        let shutdown = Scope::new().with_signal(token.clone().cancelled_owned());
 
-        let executor = Executor::graceful(shutdown.guard());
+        let executor = Executor::from(shutdown);
         let http_server = HttpServer::auto(executor).service(service_fn(move |_req: Request| {
             // Trigger graceful shutdown after single response
             let token = token.clone();

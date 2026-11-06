@@ -503,10 +503,10 @@ async fn mitm_certificate_portal_is_hijacked_over_http_and_https() {
         ca_arg.as_str(),
     ]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     assert!(inspector_address.is_some(), "inspector listener bound");
 
     let ca_pem = tokio::fs::read(&ca_path).await.unwrap();

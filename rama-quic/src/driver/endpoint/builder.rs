@@ -82,7 +82,7 @@ impl EndpointBuilder {
 
     rama_utils::macros::generate_set_and_with! {
         /// How long a shutdown gives the drivers before it stops waiting and forces them. Zero
-        /// forces immediately.
+        /// forces immediately, as an abort of the executor's scope does.
         pub fn shutdown_budget(mut self, value: Duration) -> Self {
             self.shutdown_budget = value;
             self

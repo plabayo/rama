@@ -39,10 +39,10 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
         ca_arg.as_str(),
     ]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     let ui_address = inspector_address.expect("inspector listener bound");
 
     let dashboard_client = EasyHttpWebClient::connector_builder()

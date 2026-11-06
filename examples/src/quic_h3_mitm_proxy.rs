@@ -110,7 +110,7 @@ use rama::{
         pki_types::{CertificateDer, pem::PemObject as _},
     },
     error::{BoxError, ErrorContext as _},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         HeaderName, HeaderValue,
         layer::set_header::SetResponseHeaderLayer,
@@ -180,8 +180,10 @@ async fn main() -> Result<(), BoxError> {
         .init();
     let args = Args::parse();
 
-    let graceful = Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     let (ca_crt, ca_key) = generate_certificate_authority_x509(&SelfSignedCaConfig {
         subject: CertificateSubject {
@@ -271,15 +273,12 @@ async fn main() -> Result<(), BoxError> {
             queued_bytes: NonZeroUsize::new(mib(16)).expect("nonzero"),
         },
     );
-    graceful.spawn_task(async move {
+    exec.clone().into_spawn_task(async move {
         if let Err(error) = demux.serve(exec, association).await {
             tracing::error!(%error, "QUIC MITM proxy listener failed");
         }
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .context("graceful shutdown")?;
+    scope.join().await.context("graceful shutdown")?;
     Ok(())
 }

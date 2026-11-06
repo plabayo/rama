@@ -4,8 +4,8 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::ExtensionsRef,
-    graceful::ShutdownGuard,
-    io::{BridgeIo, GracefulIo, Io, rewind::Rewind},
+    graceful::{Cause, Scope, WeakScope, enter_scope_with},
+    io::{AbortableIo, BridgeIo, Io, rewind::Rewind},
     layer::{
         ArcLayer, ConsumeErrLayer,
         consume_err::{StaticOutput, Trace},
@@ -27,6 +27,7 @@ use rama_http::{
     service::web::response::IntoResponse,
 };
 use rama_http_core::{
+    client::conn::http2::TransportEndSignal,
     h2::server::inspect_client_initial_settings,
     server::conn::{
         auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
@@ -50,7 +51,6 @@ use tokio::{
     sync::{Mutex, watch},
     time::Instant,
 };
-use tokio_util::sync::CancellationToken;
 
 use crate::{
     client::{HttpClientService, SendAttempts, http_connect, http2_eager_handshake},
@@ -120,15 +120,15 @@ impl DefaultErrorResponse {
         response
     }
 
-    /// Once ingress is cancelled, `GracefulIo` may cut the transport before
+    /// Once ingress is aborted, `AbortableIo` may cut the transport before
     /// this response is written; it only exists because the service
     /// contract requires one.
     #[inline(always)]
     fn cancel_ingress_and_return_best_effort_response(
         version: Version,
-        close_ingress: &CancellationToken,
+        close_ingress: &WeakScope,
     ) -> Response {
-        close_ingress.cancel();
+        close_ingress.abort(CLOSE_INGRESS);
         Self::response_for_version(version, false)
     }
 }
@@ -192,6 +192,7 @@ pub struct HttpMitmRelay<M = DefaultMiddleware, P = bool> {
     eager_peer_settings_timeout: Duration,
     max_mirrored_h2_connection_credit: u32,
     forbidden_trailers: ForbiddenTrailers,
+    grace: Option<Duration>,
 }
 
 impl HttpMitmRelay {
@@ -222,6 +223,7 @@ impl HttpMitmRelay {
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
             max_mirrored_h2_connection_credit: DEFAULT_MAX_MIRRORED_H2_CONNECTION_CREDIT,
             forbidden_trailers: ForbiddenTrailers::AllowAll,
+            grace: None,
         }
     }
 }
@@ -242,6 +244,7 @@ impl<M, P> HttpMitmRelay<M, P> {
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
             max_mirrored_h2_connection_credit: self.max_mirrored_h2_connection_credit,
             forbidden_trailers: self.forbidden_trailers,
+            grace: self.grace,
         }
     }
 
@@ -260,6 +263,7 @@ impl<M, P> HttpMitmRelay<M, P> {
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
             max_mirrored_h2_connection_credit: self.max_mirrored_h2_connection_credit,
             forbidden_trailers: self.forbidden_trailers,
+            grace: self.grace,
         }
     }
 
@@ -311,6 +315,17 @@ impl<M, P> HttpMitmRelay<M, P> {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// How long the ingress may keep going once the transport of its h2 egress connection
+        /// ended, before it is cut. The budget starts when that connection's transport task
+        /// stops; a `GOAWAY` only ends new requests. Earlier limits of a parent scope still
+        /// apply. Unbounded by default.
+        pub fn grace(mut self, grace: Option<Duration>) -> Self {
+            self.grace = grace;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Which trailer fields the relay forwards although their definitions do not allow
         /// them in trailers. Defaults to [`ForbiddenTrailers::AllowAll`]: a relay forwards
         /// trailers as received, except fields that frame or route the message.
@@ -344,8 +359,7 @@ where
         &self,
         BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
-        let token = CancellationToken::new();
-        let request_guard = self.exec.guard().cloned();
+        let request_exec = self.exec.clone();
         let (egress_health, egress_health_rx) = watch::channel(None);
         let egress_health = Arc::new(egress_health);
 
@@ -425,10 +439,17 @@ where
         }
         egress_stream.extensions().insert(egress_params);
 
+        // Cancelled by the h2 egress transport task as it ends, eager or lazy: its hard phase is
+        // that instant plus `grace`, however late the relay observes it.
+        let egress_end = self.grace.map(|grace| {
+            let end = Scope::new().with_grace(grace);
+            egress_stream
+                .extensions()
+                .insert(TransportEndSignal::new(end.clone_weak()));
+            end.into_weak_scope()
+        });
         let relay_state = if egress_is_h2 {
-            let exec = request_guard
-                .clone()
-                .map_or_else(Executor::default, Executor::graceful);
+            let exec = request_exec.clone();
             let (conn, peer_handle) = tokio::time::timeout_at(
                 deadline,
                 http2_eager_handshake::<_, Body>(egress_stream, exec),
@@ -496,16 +517,29 @@ where
 
         let forbidden_trailers = self.forbidden_trailers.clone();
         let authority = self.authority.clone();
+        // The ingress drains once the h2 egress stops taking requests (GOAWAY included), and is
+        // cut `grace` after the egress transport ended; the server makes its connection a child.
+        let Ok(relay_scope) = enter_scope_with(ingress_stream.extensions(), self.exec.scope())
+        else {
+            return Err(BoxError::from_static_str("the ingress scope is closed"));
+        };
+        let relay_scope = relay_scope.with_signal(egress_h2_gone(egress_health_rx));
+        let relay_scope = match egress_end {
+            Some(end) => relay_scope.with_hard_signal(end.aborted()),
+            None => relay_scope,
+        };
+        // Aborting the relay scope cuts the ingress: its I/O, and the server's connection with it.
+        let close_ingress = relay_scope.clone_weak();
         let result = http_server
-            .serve_with_graceful_shutdown(
-                GracefulIo::new(token.clone().cancelled_owned(), ingress_stream),
+            .serve(
+                AbortableIo::new(&relay_scope, ingress_stream),
                 service_fn(move |req: Request| {
                     // Inherited by the forwarded request and the upstream's response.
                     req.extensions().insert(forbidden_trailers.clone());
                     let relay_state = relay_state.clone();
                     let authority = authority.clone();
-                    let close_ingress = token.clone();
-                    let guard = request_guard.clone();
+                    let close_ingress = close_ingress.clone();
+                    let exec = request_exec.clone();
                     let egress_health = egress_health.clone();
                     async move {
                         let req = match authority.validate(req).await {
@@ -516,7 +550,7 @@ where
                         let resp = handle_relay_request(
                             &relay_state,
                             req,
-                            guard,
+                            exec,
                             close_ingress,
                             &egress_health,
                         )
@@ -539,15 +573,18 @@ where
                         Ok(resp)
                     }
                 }),
-                egress_h2_gone(egress_health_rx),
             )
             .await
             .context("serve HTTP MITM relay");
+        drop(relay_scope);
 
         tracing::debug!("HTTP MITM Relay: Shutdown: done");
         result
     }
 }
+
+/// Why a relay cuts its ingress on its own.
+const CLOSE_INGRESS: Cause = Cause::Reason("MITM relay closes the ingress");
 
 #[derive(Debug, Clone, Copy)]
 enum RelayMode {
@@ -644,8 +681,8 @@ where
 async fn handle_relay_request<Egress, Middleware>(
     relay_state: &Arc<Mutex<RelayState<Egress, Middleware>>>,
     req: Request,
-    guard: Option<ShutdownGuard>,
-    close_ingress: CancellationToken,
+    exec: Executor,
+    close_ingress: WeakScope,
     egress_health: &EgressHealth,
 ) -> Response
 where
@@ -683,7 +720,7 @@ where
             let resp = serve_http1_request(
                 &mut *state,
                 req,
-                guard,
+                exec,
                 &method,
                 &uri,
                 version,
@@ -712,7 +749,7 @@ where
                 relay_connect_http2_if_needed(
                     &mut *state,
                     req,
-                    guard,
+                    exec,
                     close_ingress.clone(),
                     egress_health,
                 )
@@ -741,11 +778,11 @@ where
 async fn serve_http1_request<Egress, Middleware>(
     state: &mut RelayState<Egress, Middleware>,
     req: Request,
-    guard: Option<ShutdownGuard>,
+    exec: Executor,
     method: &Method,
     uri: &Uri,
     version: Version,
-    close_ingress: CancellationToken,
+    close_ingress: WeakScope,
 ) -> Result<Response, BoxError>
 where
     Egress: Io + Unpin + ExtensionsRef,
@@ -754,7 +791,7 @@ where
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
         > + Clone,
 {
-    let req = match relay_connect_http1_if_needed(state, req, guard, close_ingress.clone()).await {
+    let req = match relay_connect_http1_if_needed(state, req, exec, close_ingress.clone()).await {
         Ok(req) => req,
         Err(resp) => return Ok(resp),
     };
@@ -789,7 +826,7 @@ where
                         "upstream MITM relay request failed: {err}"
                     );
                     *state = RelayState::Closed;
-                    close_ingress.cancel();
+                    close_ingress.abort(CLOSE_INGRESS);
                     Err(err)
                 }
             }
@@ -810,8 +847,8 @@ where
 async fn relay_connect_http1_if_needed<Egress, Middleware>(
     state: &mut RelayState<Egress, Middleware>,
     req: Request,
-    guard: Option<ShutdownGuard>,
-    close_ingress: CancellationToken,
+    exec: Executor,
+    close_ingress: WeakScope,
 ) -> Result<Request, Response>
 where
     Egress: Io + Unpin + ExtensionsRef,
@@ -839,7 +876,7 @@ where
             ),
         ),
         RelayState::Uninitialized { .. } => {
-            let req = connect_relay(state, req, guard, close_ingress.clone()).await?;
+            let req = connect_relay(state, req, exec, close_ingress.clone()).await?;
             if let RelayState::Http1 { .. } = state {
                 Ok(req)
             } else {
@@ -859,8 +896,8 @@ where
 async fn relay_connect_http2_if_needed<Egress, Middleware>(
     state: &mut RelayState<Egress, Middleware>,
     req: Request,
-    guard: Option<ShutdownGuard>,
-    close_ingress: CancellationToken,
+    exec: Executor,
+    close_ingress: WeakScope,
     egress_health: &EgressHealth,
 ) -> Result<(Middleware::Service, Arc<ConnectionHealthWatcher>, Request), Response>
 where
@@ -890,7 +927,7 @@ where
         ),
         RelayState::Uninitialized { .. } => {
             let version = req.version();
-            let req = connect_relay(state, req, guard, close_ingress.clone()).await?;
+            let req = connect_relay(state, req, exec, close_ingress.clone()).await?;
             if let RelayState::Http2 { client, health } = state {
                 egress_health.send_replace(Some(health.clone()));
                 Ok((client.clone(), health.clone(), req))
@@ -911,8 +948,8 @@ where
 async fn connect_relay<Egress, Middleware>(
     state: &mut RelayState<Egress, Middleware>,
     req: Request,
-    guard: Option<ShutdownGuard>,
-    close_ingress: CancellationToken,
+    exec: Executor,
+    close_ingress: WeakScope,
 ) -> Result<Request, Response>
 where
     Egress: Io + Unpin + ExtensionsRef,
@@ -940,7 +977,6 @@ where
         );
     };
 
-    let exec = guard.map_or_else(Executor::default, Executor::graceful);
     // The lazy connector reads request-scoped knobs, whereas the eager connector
     // reads the IO. Carry the relay's egress budget across without replacing an
     // explicit request override.

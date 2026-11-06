@@ -10,8 +10,12 @@ use std::{
 
 use parking_lot::Mutex;
 use rama_core::{
-    Layer as _, Service, ServiceInput, error::BoxError, extensions::ExtensionsRef as _,
-    futures::stream, graceful::Shutdown, service::service_fn,
+    Layer as _, Service, ServiceInput,
+    error::BoxError,
+    extensions::ExtensionsRef as _,
+    futures::stream,
+    graceful::{Cause, Scope},
+    service::service_fn,
 };
 use rama_http::layer::follow_redirect::FollowRedirect;
 use rama_http_types::{
@@ -742,13 +746,13 @@ async fn drain_completion_does_not_revive_a_retired_connection() {
 #[tokio::test]
 async fn executor_shutdown_cancels_drains_and_retires_their_connection() {
     let (trigger, signal) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = signal.await;
     });
     let rest = Arc::new(Notify::new());
     let harness = harness(
         one_connection(Some(Default::default())),
-        Executor::graceful(shutdown.guard()),
+        Executor::from(shutdown.clone()),
         stalling(&rest),
     );
     let drain = harness.drain.clone().unwrap();
@@ -862,10 +866,10 @@ async fn recorded_until(events: &Arc<Mutex<Vec<&'static str>>>, len: usize) {
 #[tokio::test]
 async fn shutdown_invalidates_before_releasing_and_is_not_delayed() {
     let (trigger, signal) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = signal.await;
     });
-    let exec = Executor::graceful(shutdown.guard());
+    let exec = Executor::from(shutdown.clone());
     let events = Arc::default();
     drop(recorded(
         pending_body(),
@@ -878,10 +882,77 @@ async fn shutdown_invalidates_before_releasing_and_is_not_delayed() {
     tokio::task::yield_now().await;
     assert!(events.lock().is_empty(), "draining holds the lease");
     trigger.send(()).unwrap();
-    timeout(LIMIT, shutdown.shutdown())
+    timeout(LIMIT, shutdown.join())
         .await
-        .expect("a cancelled drain does not hold up shutdown");
+        .expect("a cancelled drain does not hold up shutdown")
+        .expect("not aborted");
     assert_eq!(*events.lock(), ["invalidate", "release"]);
+}
+
+#[tokio::test]
+async fn body_dropped_before_its_scope_closes_is_drained() {
+    let root = Scope::new();
+    let exec = Executor::from(root.clone());
+    let events = Arc::default();
+    drop(recorded(
+        Body::from("unread"),
+        &events,
+        &exec,
+        &Default::default(),
+    ));
+    assert_eq!(drains_started(), 1);
+    drop(exec);
+    timeout(LIMIT, root.join())
+        .await
+        .expect("the drain ends")
+        .expect("not aborted");
+    assert_eq!(*events.lock(), ["release"]);
+}
+
+#[tokio::test]
+async fn body_dropped_after_its_scope_closed_starts_no_drain() {
+    let root = Scope::new();
+    let exec = Executor::from(root.clone());
+    let events = Arc::default();
+    let body = recorded(Body::from("unread"), &events, &exec, &Default::default());
+    drop(exec);
+    root.cancel(Cause::Owner);
+    timeout(LIMIT, root.join())
+        .await
+        .expect("nothing holds the scope")
+        .expect("not aborted");
+    drop(body);
+    assert_eq!(drains_started(), 0);
+    assert_eq!(*events.lock(), ["invalidate", "release"]);
+}
+
+#[tokio::test]
+async fn body_dropped_after_a_cancel_with_no_holder_left_starts_no_drain() {
+    let root = Scope::new();
+    let weak = root.clone_weak();
+    let exec = Executor::from(root.child());
+    let events = Arc::default();
+    let body = recorded(Body::from("unread"), &events, &exec, &Default::default());
+    drop(exec);
+    root.cancel(Cause::Owner);
+    drop(root);
+    // Cancelled with no holder left: the scope admits no new work.
+    drop(body);
+    assert_eq!(drains_started(), 0);
+    assert_eq!(*events.lock(), ["invalidate", "release"]);
+    timeout(LIMIT, weak.drained()).await.expect("drained");
+}
+
+#[tokio::test]
+async fn body_of_an_unscoped_executor_is_drained() {
+    let events = Arc::default();
+    drop(recorded(
+        Body::from("unread"),
+        &events,
+        &Executor::new(),
+        &Default::default(),
+    ));
+    assert_eq!(drains_started(), 1);
 }
 
 #[test]

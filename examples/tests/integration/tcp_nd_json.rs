@@ -2,8 +2,9 @@ use super::utils;
 use ahash::{HashSet, HashSetExt as _};
 use rama::extensions::Extensions;
 use rama::futures::StreamExt;
-use rama::graceful::Shutdown;
+use rama::graceful::Scope;
 use rama::net::address::HostWithPort;
+use rama::rt::Executor;
 use rama::stream::codec::FramedRead;
 use rama::stream::json::JsonDecoder;
 use rama::tcp::client::default_tcp_connect;
@@ -18,13 +19,17 @@ async fn test_tcp_nd_json() {
     utils::init_tracing();
 
     let (exit_tx, exit_rx) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(exit_rx);
+    let scope = Scope::new()
+        .with_grace(Duration::from_secs(5))
+        .with_signal(exit_rx);
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("tcp_nd_json"));
     runner.wait_for_tcp(([0, 0, 0, 0], 62042)).await;
 
-    shutdown.spawn_task_fn(async move |guard| {
-        guard.cancelled().await;
+    let exec = Executor::from(scope.clone());
+    let cancelled = exec.cancelled();
+    exec.into_spawn_task(async move {
+        cancelled.await;
         tracing::info!("exit runner");
         drop(runner);
         tracing::info!("runner dropped");
@@ -64,9 +69,6 @@ async fn test_tcp_nd_json() {
     tracing::info!("trigger shutdown...");
     exit_tx.send(()).unwrap();
     tracing::info!("...wait for shutdown...");
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(5))
-        .await
-        .unwrap();
+    scope.join().await.unwrap();
     tracing::info!("bye");
 }

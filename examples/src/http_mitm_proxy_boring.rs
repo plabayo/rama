@@ -31,6 +31,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
+    graceful::Scope,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue,
         client::{EasyHttpWebClient, Http3Connector},
@@ -88,12 +89,14 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
     let mitm_svc = new_mitm_svc(&exec).context("build MITM relay service")?;
 
-    graceful.spawn_task_fn(async move |guard| {
-        let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
+    exec.clone().into_spawn_task(async move {
+        let tcp_service = TcpListener::build(exec.clone())
             .bind_address("127.0.0.1:62017")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62017");
@@ -109,7 +112,7 @@ async fn main() -> Result<(), BoxError> {
         );
         // Ordinary HTTP forwarding has its own connector and needs the same TCP protection.
         // Keep the default client's TLS, proxy, HTTP/3, and pooling behavior.
-        let client_exec = Executor::graceful(guard.clone());
+        let client_exec = exec.clone();
         let tls_config = TlsClientConfig::default_http();
         let h3 = Http3Connector::builder(client_exec.clone())
             .with_tls_config(tls_config.clone())
@@ -141,7 +144,7 @@ async fn main() -> Result<(), BoxError> {
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
                 ProxyAuthLayer::new(basic!("john", "secret")),
-                UpgradeLayer::new(Executor::graceful(guard), MethodMatcher::CONNECT, connect),
+                UpgradeLayer::new(exec, MethodMatcher::CONNECT, connect),
                 (
                     ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                     MapResponseBodyLayer::new_boxed_streaming_body(),
@@ -170,10 +173,7 @@ async fn main() -> Result<(), BoxError> {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .context("graceful shutdown")?;
+    scope.join().await.context("graceful shutdown")?;
 
     Ok(())
 }

@@ -4,7 +4,6 @@ use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
-    futures::FutureExt as _,
     rt::Executor,
     telemetry::tracing,
 };
@@ -176,11 +175,7 @@ impl SharedQuicEndpoint {
             }
             Source::Managed(managed) => managed,
         };
-        if self
-            .executor
-            .guard()
-            .is_some_and(|guard| guard.cancelled().now_or_never().is_some())
-        {
+        if self.executor.scope().is_cancelled() {
             return Err(BoxError::from_static_str("QUIC connector is shutting down"));
         }
         let Some(profile) = profile else {

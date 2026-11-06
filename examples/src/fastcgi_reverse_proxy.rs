@@ -44,6 +44,7 @@ use rama::{
     gateway::fastcgi::{
         FastCgiClientRequest, FastCgiHttpClient, FastCgiHttpService, FastCgiServer,
     },
+    graceful::Scope,
     http::{
         Request, Response, StatusCode, body::util::BodyExt, server::HttpServer,
         service::web::response::IntoResponse,
@@ -77,20 +78,21 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     // Spawn the FastCGI backend: a plain HTTP echo handler wrapped in FastCgiHttpService
     // so it can accept FastCGI connections from the proxy.
     {
-        let exec = exec.clone();
-        let tcp = TcpListener::bind_address(BACKEND_ADDR, exec)
+        let tcp = TcpListener::bind_address(BACKEND_ADDR, exec.clone())
             .await
             .expect("bind fastcgi backend");
         let service = Arc::new(FastCgiServer::new(FastCgiHttpService::new(service_fn(
             echo_http,
         ))));
-        graceful.spawn_task(tcp.serve(service));
+        exec.spawn_task(tcp.serve(service));
         tracing::info!("FastCGI backend listening on {BACKEND_ADDR}");
     }
 
@@ -99,19 +101,16 @@ async fn main() {
 
     // Spawn the HTTP reverse proxy that translates HTTP to FastCGI.
     {
-        let exec2 = Executor::graceful(graceful.guard());
-        let tcp = TcpListener::bind_address(PROXY_ADDR, exec)
+        let tcp = TcpListener::bind_address(PROXY_ADDR, exec.clone())
             .await
             .expect("bind http proxy");
         let proxy = Arc::new(FastCgiProxyService::new());
-        graceful.spawn_task(tcp.serve(HttpServer::auto(exec2).service(proxy)));
+        exec.clone()
+            .into_spawn_task(tcp.serve(HttpServer::auto(exec).service(proxy)));
         tracing::info!("HTTP→FastCGI reverse proxy listening on {PROXY_ADDR}");
     }
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 // ---------------------------------------------------------------------------

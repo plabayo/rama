@@ -33,6 +33,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
+    graceful::Scope,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue,
         client::EasyHttpWebClient,
@@ -83,15 +84,17 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     let ua_db =
         Arc::new(UserAgentDatabase::try_embedded().context("load embedded user-agent database")?);
     let mitm_svc = new_mitm_svc(&exec, ua_db).context("build MITM service")?;
 
-    graceful.spawn_task_fn(async move |guard| {
-        let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
+    exec.clone().into_spawn_task(async move {
+        let tcp_service = TcpListener::build(exec.clone())
             .bind_address("127.0.0.1:62049")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62049");
@@ -104,18 +107,14 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         );
-        let http_service = HttpServer::auto(exec).service(Arc::new(
+        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
                 ProxyAuthLayer::new(basic!("john", "secret")),
-                UpgradeLayer::new(
-                    Executor::graceful(guard.clone()),
-                    MethodMatcher::CONNECT,
-                    connect,
-                ),
+                UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect),
                 (
                     RemoveRequestHeaderLayer::hop_by_hop(),
                     SetRequestHeaderLayer::overriding(
@@ -134,7 +133,7 @@ async fn main() -> Result<(), BoxError> {
                 ),
             )
                 .into_layer(
-                    EasyHttpWebClient::default_with_executor(Executor::graceful(guard))
+                    EasyHttpWebClient::default_with_executor(exec)
                         .with_isolate_forward_proxy_auth_error(true),
                 ),
         ));
@@ -144,10 +143,7 @@ async fn main() -> Result<(), BoxError> {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .context("graceful shutdown")?;
+    scope.join().await.context("graceful shutdown")?;
 
     Ok(())
 }

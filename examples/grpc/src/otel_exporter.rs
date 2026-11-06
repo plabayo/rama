@@ -44,6 +44,7 @@
 use rama::{
     Layer,
     extensions::{Extension, Extensions},
+    graceful::Scope,
     http::{
         client::EasyHttpWebClient,
         grpc,
@@ -138,12 +139,14 @@ async fn main() {
     // state for our custom app metrics
     let state = Arc::new(Metrics::new());
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     // http web service
-    graceful.spawn_task_fn(async |guard| {
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         // http service
-        let exec = Executor::graceful(guard);
         let http_service = HttpServer::auto(exec.clone()).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
                 WebService::default().with_get("/", async |ext: Extensions| {
@@ -169,8 +172,5 @@ async fn main() {
     });
 
     // wait for graceful shutdown
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .unwrap();
+    scope.join().await.unwrap();
 }

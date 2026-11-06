@@ -31,7 +31,7 @@
 
 use rama::{
     Layer, Service,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Body, BodyLimitLayer, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -80,7 +80,9 @@ async fn main() {
         )
         .init();
 
-    let shutdown = Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     let tls_service_data = TlsServerConfig::new()
@@ -90,8 +92,8 @@ async fn main() {
         .with_keylog(KeyLogIntent::Environment);
 
     // create tls proxy
-    shutdown.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard);
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let tcp_service = TcpListener::build(exec.clone())
             .bind_address("127.0.0.1:62016")
             .await
@@ -131,10 +133,7 @@ async fn main() {
             .await;
     });
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {

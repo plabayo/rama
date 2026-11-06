@@ -59,7 +59,7 @@ use rama::{
     conversion::RamaTryFrom,
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
     rt::Executor,
@@ -96,7 +96,9 @@ async fn main() {
         )
         .init();
 
-    let shutdown = Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(3));
     let dynamic_config_provider = Arc::new(DynamicConfig);
     let tls_config = TlsServerConfig::new().with_dynamic_config(dynamic_config_provider);
 
@@ -104,8 +106,8 @@ async fn main() {
         .unwrap_or_else(|_| "127.0.0.1:64804".to_owned());
 
     // create http server
-    shutdown.spawn_task_fn(async move |guard| {
-        let exec = Executor::graceful(guard.clone());
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
 
         let tcp_service = (
@@ -121,10 +123,7 @@ async fn main() {
             .await;
     });
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(3))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Clone)]

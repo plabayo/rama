@@ -31,6 +31,7 @@
 use rama::{
     Layer,
     futures::async_stream::stream_fn,
+    graceful::Scope,
     http::{
         layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         matcher::HttpMatcher,
@@ -68,8 +69,10 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62050), exec.clone())
         .await
@@ -82,7 +85,7 @@ async fn main() {
         "http's tcp listener ready to serve",
     );
 
-    graceful.spawn_task(async {
+    exec.clone().into_spawn_task(async move {
         let router = Arc::new(
             Router::new().with_match_route(
                 "/test",
@@ -100,10 +103,7 @@ async fn main() {
         listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 pub mod handlers {

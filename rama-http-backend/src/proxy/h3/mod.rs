@@ -381,7 +381,7 @@ where
                 // bounds this wait.
                 let received = tokio::select! {
                     received = &mut receiving => received?,
-                    () = cancelled(&self.exec) => {
+                    () = self.exec.cancelled() => {
                         egress_guard.disarm();
                         return Ok(());
                     }
@@ -476,7 +476,7 @@ where
         // Declared after the server state, so it closes ingress before that state's clean stop.
         let mut ingress_guard = DropGuard::new(move || close_ended(&close_ingress));
         let mut upstream_draining = upstream_draining;
-        let mut cancelled = pin!(cancelled(&self.exec));
+        let mut cancelled = pin!(self.exec.cancelled());
         let forwarding = IoForwardService::new(self.exec.clone());
         let mut requests = FuturesUnordered::new();
         let mut draining = false;
@@ -608,13 +608,6 @@ where
 }
 
 /// Resolves once graceful shutdown starts; never without a guard.
-async fn cancelled(exec: &Executor) {
-    match exec.guard() {
-        Some(guard) => guard.cancelled().await,
-        None => std::future::pending().await,
-    }
-}
-
 /// Close a hop the relay did not drain.
 fn close_ended(connection: &impl transport::Connection) {
     let code = VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32);

@@ -38,7 +38,6 @@ use rama::{
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext, error_chain},
     extensions::ExtensionsRef,
-    graceful::ShutdownGuard,
     http::{
         BodyLimitLayer, Method, Request, Response, StatusCode,
         client::{EasyHttpWebClient, masque_quic_transport},
@@ -1521,17 +1520,17 @@ fn build_icap_adaptation(
 
 /// Run the Rama proxy service.
 pub async fn run(
-    graceful: ShutdownGuard,
+    exec: Executor,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandProxy,
 ) -> Result<(), BoxError> {
-    run_with_dashboard_token(graceful, http3_endpoints, cfg, None)
+    run_with_dashboard_token(exec, http3_endpoints, cfg, None)
         .await
         .map(|_| ())
 }
 
 async fn run_with_dashboard_token(
-    graceful: ShutdownGuard,
+    exec: Executor,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandProxy,
     dashboard_token_override: Option<Arc<str>>,
@@ -1539,7 +1538,6 @@ async fn run_with_dashboard_token(
     #[cfg(test)]
     let dashboard_token_override =
         dashboard_token_override.or_else(|| Some(Arc::from(TEST_DASHBOARD_TOKEN)));
-    let exec = Executor::graceful(graceful);
     let listeners = resolve_listeners(&cfg);
     let requested_mitm_address = resolve_mitm_address(&cfg, &listeners);
     let inherited_mitm_listener =

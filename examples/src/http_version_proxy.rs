@@ -36,6 +36,7 @@ use rama::{
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, BoxErrorExt as _, error_chain},
     extensions::{Extensions, ExtensionsRef as _},
+    graceful::Scope,
     http::{
         Body, Request, Response, StatusCode, Version,
         client::{EasyHttpWebClient, Http3Connector},
@@ -428,8 +429,10 @@ async fn main() -> Result<(), BoxError> {
         .with_env_filter(rama::telemetry::tracing::subscriber::EnvFilter::from_default_env())
         .init();
 
-    let shutdown = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(shutdown.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(15));
+    let exec = Executor::from(scope.clone());
 
     match args.mode {
         Mode::Mitm {
@@ -450,7 +453,7 @@ async fn main() -> Result<(), BoxError> {
             rama::telemetry::tracing::info!("HTTP version MITM proxy listening on {listen}");
 
             let service = HttpServer::auto(exec.clone()).service(mitm(exec, web, preflight));
-            shutdown.spawn_task(async move {
+            Executor::from(scope.clone()).into_spawn_task(async move {
                 listener.serve(service).await;
             });
         }
@@ -517,7 +520,7 @@ async fn main() -> Result<(), BoxError> {
             let mut http = HttpServer::auto(exec.clone());
             http.h2_mut().set_enable_connect_protocol();
             let tcp = TlsAcceptorLayer::new(tcp_tls).into_layer(http.service(forwarder.clone()));
-            shutdown.spawn_task(async move {
+            exec.spawn_task(async move {
                 listener.serve(tcp).await;
             });
 
@@ -525,13 +528,11 @@ async fn main() -> Result<(), BoxError> {
                 "HTTP/1, HTTP/2 and HTTP/3 ingress listening on {listen}"
             );
             let service = http3.service(forwarder);
-            shutdown.spawn_task(endpoint.serve(exec, service));
+            exec.clone().into_spawn_task(endpoint.serve(exec, service));
         }
     }
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(15))
-        .await?;
+    scope.join().await?;
 
     Ok(())
 }

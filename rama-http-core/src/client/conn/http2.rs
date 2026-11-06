@@ -7,8 +7,9 @@ use std::time::Duration;
 use std::{fmt, sync::Arc};
 
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::futures::future::Either;
+use rama_core::graceful::WeakScope;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::proto::h2::frame::EarlyFrame;
@@ -21,6 +22,24 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::body::Incoming as IncomingBody;
 use crate::client::dispatch::{self, TrySendError};
 use crate::proto;
+
+/// In the extensions of an HTTP/2 client's I/O: the scope cancelled once the connection's
+/// transport task ends, so its cancel instant is the end of the connection itself.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
+pub struct TransportEndSignal(WeakScope);
+
+impl TransportEndSignal {
+    /// Cancel `scope` once the transport ends.
+    #[must_use]
+    pub fn new(scope: WeakScope) -> Self {
+        Self(scope)
+    }
+
+    pub(crate) fn into_inner(self) -> WeakScope {
+        self.0
+    }
+}
 
 /// The sender side of an established connection.
 pub struct SendRequest<B> {

@@ -6,7 +6,7 @@ use rama_core::{
     Service,
     extensions::{ExtensionsRef, Ingress},
     futures::{StreamExt, stream::FuturesUnordered},
-    graceful::ShutdownGuard,
+    graceful::{Scope, WeakScope},
     telemetry::tracing,
 };
 use rama_http::service::web::response::IntoResponse;
@@ -17,10 +17,37 @@ use rama_http_core::{
 use rama_http_types::Request;
 use std::convert::Infallible;
 
+/// Serves until the graceful phase of `scope`, drains with a GOAWAY, and drops
+/// the connection at the hard phase of `scope`.
 pub(super) async fn serve<C, S, R>(
     conn: C,
     config: Config,
-    guard: Option<ShutdownGuard>,
+    scope: Scope,
+    service: S,
+) -> HttpServeResult
+where
+    C: transport::Connection,
+    S: Service<Request, Output = R, Error = Infallible> + Clone,
+    R: IntoResponse + Send + 'static,
+{
+    // Boxed: an HTTP/3 connection future is large, and this keeps callers' futures small.
+    let serving = scope.run_until_aborted(Box::pin(serve_until_aborted(
+        conn,
+        config,
+        scope.clone_weak(),
+        service,
+    )));
+    if let Some(result) = serving.await {
+        return result;
+    }
+    tracing::debug!(cause = ?scope.abort_cause(), "hard phase: dropping the HTTP/3 connection");
+    Ok(())
+}
+
+async fn serve_until_aborted<C, S, R>(
+    conn: C,
+    config: Config,
+    scope: WeakScope,
     service: S,
 ) -> HttpServeResult
 where
@@ -34,12 +61,7 @@ where
     let (mut connection, driver) = server::handshake(conn, config)?;
     let driver = driver.run();
     let mut driver = std::pin::pin!(driver);
-    let cancelled = async {
-        match guard.as_ref() {
-            Some(guard) => guard.cancelled().await,
-            None => std::future::pending().await,
-        }
-    };
+    let cancelled = scope.cancelled();
     let mut cancelled = std::pin::pin!(cancelled);
     let mut requests = FuturesUnordered::new();
     let service = RamaHttpService::new(service);

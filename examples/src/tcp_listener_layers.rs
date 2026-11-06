@@ -28,6 +28,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
     net::stream::{
         Socket,
@@ -59,8 +60,10 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     let listener = TcpListener::bind_address("0.0.0.0:62501", exec)
         .await
@@ -92,10 +95,7 @@ async fn main() {
     )
         .into_layer(EchoService::new());
 
-    graceful.spawn_task(listener.serve(svc));
+    Executor::from(scope.clone()).into_spawn_task(listener.serve(svc));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

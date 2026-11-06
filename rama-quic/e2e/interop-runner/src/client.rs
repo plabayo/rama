@@ -9,7 +9,7 @@ use clap::Parser;
 use rama::{
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef as _,
-    graceful::Shutdown,
+    graceful::Scope,
     net::{tls::ApplicationProtocol, uri::Uri},
     quic::{
         Connection, Endpoint, EndpointConfig, NegotiatedTlsParameters,
@@ -112,10 +112,10 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .await
         .context("create downloads directory")?;
     let (finished, is_finished) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         let _ = is_finished.await;
     });
-    let executor = Executor::graceful(shutdown.guard());
+    let executor = Executor::from(shutdown.clone());
     let mut builder = Endpoint::build(executor.clone());
     if testcase == TestCase::MultiConnect {
         // Keep the per-attempt deadline within the complete batch budget.
@@ -251,7 +251,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         result = batch => result.context("download batch timed out").and_then(|result| result),
         _ = interrupted => Err(BoxError::from("download batch interrupted by shutdown signal")),
     };
-    // Release our own shutdown guard before joining the remaining producers.
+    // Release our own hold on the scope before joining the remaining producers.
     drop(executor);
     endpoint.close(
         if testcase == TestCase::Http3 {
@@ -264,7 +264,9 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let outcome = shutdown_endpoint(&endpoint, outcome).await;
     drop(endpoint);
     let _ = finished.send(());
-    shutdown.shutdown().await;
+    // The scope is cancelled once something waits on it; then wait for every holder.
+    shutdown.cancelled().await;
+    let _ = shutdown.join().await;
     outcome
 }
 

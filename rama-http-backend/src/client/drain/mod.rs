@@ -24,7 +24,7 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extension, Extensions},
-    graceful::WeakShutdownGuard,
+    graceful::WeakScope,
     rt::Executor,
     telemetry::tracing,
 };
@@ -177,26 +177,24 @@ impl Drop for DrainPermit {
 /// Marks an HTTP/1 client connection, with the executor its abandoned
 /// response bodies are drained on.
 ///
-/// Holds the shutdown guard weakly: an idle pooled connection must not delay
-/// a graceful shutdown.
+/// Holds the scope weakly: an idle pooled connection must not delay a graceful shutdown.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
 pub(super) struct Http1DrainRuntime {
-    guard: Option<WeakShutdownGuard>,
+    scope: WeakScope,
 }
 
 impl Http1DrainRuntime {
     pub(super) fn new(exec: &Executor) -> Self {
         Self {
-            guard: exec.guard().map(|guard| guard.clone_weak()),
+            scope: exec.scope().clone_weak(),
         }
     }
 
-    fn executor(&self) -> Executor {
-        match &self.guard {
-            Some(guard) => Executor::graceful(guard.clone().upgrade()),
-            None => Executor::new(),
-        }
+    /// The executor a drain runs on, holding the drain open while it runs; `None` once the
+    /// scope is closed for good, which admits no new work.
+    fn executor(&self) -> Option<Executor> {
+        self.scope.clone().into_scope().map(Executor::from)
     }
 }
 
@@ -291,6 +289,10 @@ impl<C: Send + 'static> Drop for Http1DrainBody<C> {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
+        let Some(executor) = runtime.executor() else {
+            tracing::trace!("http1 response body dropped: scope closed, closing connection");
+            return;
+        };
         let Some(permit) = self.drain.try_acquire() else {
             tracing::trace!("http1 response body dropped: drain limit reached, closing connection");
             return;
@@ -302,9 +304,7 @@ impl<C: Send + 'static> Drop for Http1DrainBody<C> {
         let max_bytes = self.drain.config.max_bytes;
         // The task owns the body, its lease and the permit: whatever ends it,
         // a cancellation or shutdown included, releases them as above.
-        runtime
-            .executor()
-            .spawn_cancellable_task(drain(body, permit, max_bytes, started, deadline));
+        executor.spawn_cancellable_task(drain(body, permit, max_bytes, started, deadline));
     }
 }
 

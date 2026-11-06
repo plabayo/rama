@@ -28,14 +28,22 @@
     reason = "test fixtures"
 )]
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    future::Future as _,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Poll, Waker},
+    time::Duration,
+};
 
 use rama_core::{
     Layer, Service,
     bytes::Bytes,
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
-    graceful::Shutdown,
+    graceful::{Cause, Scope, attach_scope},
     io::BridgeIo,
     layer::{ArcLayer, ConsumeErrLayer},
     rt::Executor,
@@ -145,6 +153,22 @@ where
     }
 }
 
+/// Holds the relay future unpolled while paused.
+#[derive(Default)]
+struct PollGate {
+    paused: AtomicBool,
+    waker: parking_lot::Mutex<Option<Waker>>,
+}
+
+impl PollGate {
+    fn resume(&self) {
+        self.paused.store(false, Ordering::Release);
+        if let Some(waker) = self.waker.lock().take() {
+            waker.wake();
+        }
+    }
+}
+
 struct Harness {
     client: h2_client::SendRequest<Bytes>,
     client_conn: JoinHandle<Result<(), h2::Error>>,
@@ -153,6 +177,7 @@ struct Harness {
     arrived: watch::Receiver<bool>,
     release: watch::Sender<bool>,
     _shutdown: DropGuard,
+    poll_gate: Arc<PollGate>,
 }
 
 async fn harness(mode: EgressMode) -> Harness {
@@ -160,11 +185,29 @@ async fn harness(mode: EgressMode) -> Harness {
 }
 
 async fn harness_with(mode: EgressMode, middleware: Middleware) -> Harness {
+    harness_with_grace(mode, middleware, None).await
+}
+
+async fn harness_with_grace(
+    mode: EgressMode,
+    middleware: Middleware,
+    grace: Option<Duration>,
+) -> Harness {
+    harness_in_scope(mode, middleware, grace, None).await
+}
+
+/// As [`harness_with_grace`], with `ingress_scope` in the ingress connection's extensions.
+async fn harness_in_scope(
+    mode: EgressMode,
+    middleware: Middleware,
+    grace: Option<Duration>,
+    ingress_scope: Option<Scope>,
+) -> Harness {
     let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(64));
     let (relay_egress_stream, origin_stream) = tokio::io::duplex(kib(64));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
 
     let (origin_tx, origin_rx) = oneshot::channel();
     tokio::spawn(async move {
@@ -188,12 +231,16 @@ async fn harness_with(mode: EgressMode, middleware: Middleware) -> Harness {
             .insert(TargetHttpVersion(Version::HTTP_2));
     }
 
-    let relay_exec = Executor::graceful(graceful.guard());
-    let relay = tokio::spawn(async move {
-        let mut relay = HttpMitmRelay::new(relay_exec);
+    let relay_exec = Executor::from(graceful.clone());
+    let relay_work = async move {
+        let mut relay = HttpMitmRelay::new(relay_exec).maybe_with_grace(grace);
         // The origin controls closure in these propagation fixtures.
         relay.h2_mut().maybe_set_idle_timeout(None);
-        let io = BridgeIo(MockSocket::new(relay_ingress_stream), egress);
+        let ingress = MockSocket::new(relay_ingress_stream);
+        if let Some(scope) = ingress_scope {
+            attach_scope(ingress.extensions(), &scope);
+        }
+        let io = BridgeIo(ingress, egress);
         match middleware {
             Middleware::Propagate => {
                 relay
@@ -219,6 +266,19 @@ async fn harness_with(mode: EgressMode, middleware: Middleware) -> Harness {
                     .await
             }
         }
+    };
+    // Lets a test hold the relay future unpolled while its spawned egress tasks run on.
+    let poll_gate = Arc::new(PollGate::default());
+    let relay = tokio::spawn({
+        let poll_gate = poll_gate.clone();
+        let mut relay_work = Box::pin(relay_work);
+        std::future::poll_fn(move |cx| {
+            *poll_gate.waker.lock() = Some(cx.waker().clone());
+            if poll_gate.paused.load(Ordering::Acquire) {
+                return Poll::Pending;
+            }
+            relay_work.as_mut().poll(cx)
+        })
     });
 
     let (client, client_conn) = h2_client::handshake(MockSocket::new(client_stream))
@@ -234,6 +294,7 @@ async fn harness_with(mode: EgressMode, middleware: Middleware) -> Harness {
         arrived,
         release,
         _shutdown: token.drop_guard(),
+        poll_gate,
     }
 }
 
@@ -700,4 +761,194 @@ async fn request_failure_with_healthy_egress_keeps_ingress() {
         b"ok"
     );
     assert!(!h.client_conn.is_finished());
+}
+
+/// Egress gone while a request is stuck on the ingress: the ingress drains, and the relay
+/// grace bounds how long that drain may take.
+async fn stuck_request_on_a_draining_ingress(grace: Option<Duration>) -> Option<Duration> {
+    let mut h = harness_with_grace(EgressMode::Eager, Middleware::Propagate, grace).await;
+    let origin = h.origin().await;
+    let held = h.send(get(HOLD_PATH, &[])).await;
+    h.arrived
+        .wait_for(|arrived| *arrived)
+        .await
+        .expect("the request reaches the gate");
+
+    let gone = tokio::time::Instant::now();
+    close_origin(origin, OriginClose::Eof).await;
+    let ended = timeout(Duration::from_secs(30), &mut h.relay).await.ok()?;
+    ended
+        .expect("relay task")
+        .expect("a relay cut by its grace ends without error");
+    let _cut = held.await.expect_err("the stuck request is cut");
+    Some(gone.elapsed())
+}
+
+#[tokio::test(start_paused = true)]
+async fn relay_grace_cuts_a_stuck_draining_ingress() {
+    let took = stuck_request_on_a_draining_ingress(Some(Duration::from_secs(2)))
+        .await
+        .expect("the relay ends within its grace");
+    assert!(
+        (Duration::from_secs(2)..Duration::from_millis(2100)).contains(&took),
+        "{took:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn without_relay_grace_a_stuck_draining_ingress_is_waited_for() {
+    assert!(stuck_request_on_a_draining_ingress(None).await.is_none());
+}
+
+/// A `GOAWAY` only stops new requests: the relay grace starts once the egress transport
+/// ended, so a response still streaming after it is delivered whole, also once a sibling
+/// request was refused and its dispatch ended.
+#[tokio::test(start_paused = true)]
+async fn relay_grace_does_not_start_at_an_egress_goaway() {
+    let mut h = harness_with_grace(
+        EgressMode::Eager,
+        Middleware::Propagate,
+        Some(Duration::from_secs(2)),
+    )
+    .await;
+    let mut origin = h.origin().await;
+
+    let download = h.send(get("/download", &[])).await;
+    let (_req, mut respond) = next_stream(&mut origin).await;
+    let mut body_tx = respond
+        .send_response(
+            rama_http_types::Response::builder()
+                .status(StatusCode::OK)
+                .body(())
+                .unwrap(),
+            false,
+        )
+        .expect("send response head");
+    body_tx
+        .send_data(Bytes::from_static(b"part-1;"), false)
+        .expect("send part 1");
+
+    let racer = h.send(get("/racer", &[HOLD_HEADER])).await;
+    let (download, racer, ()) = tokio::join!(read_body(download), racer, async {
+        h.arrived
+            .wait_for(|arrived| *arrived)
+            .await
+            .expect("racer reached relay middleware");
+
+        origin.graceful_shutdown();
+        let drive = drain_origin(&mut origin);
+        let finish = async {
+            h.release.send_replace(true);
+            sleep(Duration::from_secs(5)).await;
+            // fails when the relay dropped the stream, the client
+            // side assertion below reports that
+            drop(body_tx.send_data(Bytes::from_static(b"part-2"), true));
+        };
+        tokio::join!(drive, finish);
+    });
+
+    assert_eq!(
+        download.expect("a response streaming past the grace after a GOAWAY is not cut"),
+        b"part-1;part-2",
+    );
+    let err = racer.expect_err("racer cannot be served by a GOAWAY'd egress");
+    assert_eq!(err.reason(), Some(Reason::REFUSED_STREAM), "got: {err:?}");
+
+    h.assert_ingress_went_away().await;
+}
+
+/// A lazily negotiated h2 egress gets the same budget once its transport ends.
+#[tokio::test(start_paused = true)]
+async fn a_lazy_h2_egress_end_starts_the_relay_grace() {
+    let mut h = harness_with_grace(
+        EgressMode::Lazy,
+        Middleware::Propagate,
+        Some(Duration::from_secs(2)),
+    )
+    .await;
+    let first = h.send(get("/first", &[])).await;
+    let mut origin = h.origin().await;
+    let (_req, respond) = next_stream(&mut origin).await;
+    respond_ok(respond, b"first");
+    let (body, ()) = tokio::join!(read_body(first), async {
+        tokio::select! {
+            biased;
+            accepted = origin.accept() => panic!("unexpected stream: {accepted:?}"),
+            () = sleep(Duration::from_millis(50)) => (),
+        }
+    });
+    assert_eq!(body.unwrap(), b"first");
+    let _held = h.send(get(HOLD_PATH, &[])).await;
+    h.arrived.wait_for(|arrived| *arrived).await.unwrap();
+    close_origin(origin, OriginClose::Eof).await;
+    timeout(Duration::from_secs(3), &mut h.relay)
+        .await
+        .expect("the 2s grace applies to a lazily negotiated h2 egress")
+        .expect("relay task")
+        .expect("a relay cut by its grace ends without error");
+}
+
+/// The grace counts from the end of the egress transport, not from when the relay next looks.
+#[tokio::test(start_paused = true)]
+async fn the_relay_grace_counts_from_the_egress_end_not_the_next_poll() {
+    let mut h = harness_with_grace(
+        EgressMode::Eager,
+        Middleware::Propagate,
+        Some(Duration::from_secs(2)),
+    )
+    .await;
+    let origin = h.origin().await;
+    let _held = h.send(get(HOLD_PATH, &[])).await;
+    h.arrived.wait_for(|arrived| *arrived).await.unwrap();
+    h.poll_gate.paused.store(true, Ordering::Release);
+    close_origin(origin, OriginClose::Eof).await;
+    let closed_at = tokio::time::Instant::now();
+    // The egress transport task runs on while the relay future stays unpolled.
+    sleep(Duration::from_secs(5)).await;
+    h.poll_gate.resume();
+    timeout(Duration::from_secs(3), &mut h.relay)
+        .await
+        .expect("relay ends")
+        .expect("relay task")
+        .expect("a relay cut by its grace ends without error");
+    let elapsed = closed_at.elapsed();
+    assert!(
+        elapsed <= Duration::from_millis(5100),
+        "an elapsed budget restarted at the next poll: {elapsed:?}"
+    );
+}
+
+/// A parent limit earlier than the relay grace still cuts the relay.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_parent_abort_cuts_before_the_relay_grace() {
+    let parent = Scope::new();
+    let mut h = harness_in_scope(
+        EgressMode::Eager,
+        Middleware::Propagate,
+        Some(Duration::from_secs(10)),
+        Some(parent.clone()),
+    )
+    .await;
+    let origin = h.origin().await;
+    let held = h.send(get(HOLD_PATH, &[])).await;
+    h.arrived
+        .wait_for(|arrived| *arrived)
+        .await
+        .expect("the request reaches the gate");
+
+    let gone = tokio::time::Instant::now();
+    close_origin(origin, OriginClose::Eof).await;
+    sleep(Duration::from_secs(1)).await;
+    parent.abort(Cause::Owner);
+    timeout(Duration::from_secs(30), &mut h.relay)
+        .await
+        .expect("the parent abort ends the relay")
+        .expect("relay task")
+        .expect("an aborted relay ends without error");
+    let _cut = held.await.expect_err("the stuck request is cut");
+    assert!(
+        gone.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        gone.elapsed()
+    );
 }

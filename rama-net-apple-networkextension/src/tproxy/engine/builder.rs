@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use rama_core::{
     error::{BoxError, ErrorContext},
+    graceful::Scope,
     rt::Executor,
 };
 
@@ -307,8 +308,8 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Backstop on how long `engine.stop()` waits for engine-level
-        /// graceful guards to drop before proceeding. Defaults to
+        /// Backstop on how long `engine.stop()` waits for the engine
+        /// scope to drain before proceeding. Defaults to
         /// [`DEFAULT_STOP_DRAIN_MAX_WAIT`] (5 seconds). A normal stop
         /// resolves after per-flow close epilogues and lifecycle hooks
         /// finish. This bound only bites a flow task or handler hook
@@ -432,10 +433,9 @@ where
         let provider_pid = std::process::id();
         let provider_generation = super::next_provider_generation();
 
-        let pair = super::build_shutdown_pair(&rt);
-        let guard = pair.shutdown.guard();
+        let root = Scope::new();
         let ctx = TransparentProxyServiceContext {
-            executor: Executor::graceful(guard.clone()),
+            executor: Executor::from(root.clone()),
             opaque_config,
             provider_pid,
             provider_generation,
@@ -456,7 +456,7 @@ where
             udp_ingress_global_max_bytes,
             udp_ingress_probe_lease,
         ));
-        udp_ingress_budget.start_coordinator(&rt, guard);
+        udp_ingress_budget.start_coordinator(&rt, root.clone_weak());
 
         Ok(TransparentProxyEngine {
             rt: Some(rt),
@@ -488,7 +488,7 @@ where
             // mutators (none today) would naturally reflect.
             app_message_deadline,
             stop_drain_max_wait: stop_drain_max_wait.unwrap_or(super::DEFAULT_STOP_DRAIN_MAX_WAIT),
-            shutdown: parking_lot::Mutex::new(Some(pair)),
+            shutdown: parking_lot::Mutex::new(Some(root)),
         })
     }
 }

@@ -113,12 +113,9 @@ async fn forwarding_in_either_direction_extends_the_shared_idle_deadline() {
 }
 
 #[tokio::test]
-async fn graceful_shutdown_cancels_a_live_tunnel() {
-    let (trigger, signal) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama_core::graceful::Shutdown::new(async move {
-        _ = signal.await;
-    });
-    let exec = Executor::graceful(shutdown.guard());
+async fn the_hard_phase_ends_a_live_tunnel_and_the_graceful_one_does_not() {
+    let scope = rama_core::graceful::Scope::new();
+    let exec = Executor::from(scope.clone());
     let (left, _client) = socket(&Native::default());
     let (right, _origin) = socket(&Native::default());
     let relay = spawn(async move {
@@ -127,14 +124,13 @@ async fn graceful_shutdown_cancels_a_live_tunnel() {
             .serve(BridgeIo(left, right))
             .await
     });
-    trigger.send(()).unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(3),
-        shutdown.shutdown_with_limit(Duration::from_secs(2)),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    scope.cancel(rama_core::graceful::Cause::Owner);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !relay.is_finished(),
+        "a datagram tunnel cannot drain: it keeps relaying"
+    );
+    scope.abort(rama_core::graceful::Cause::Owner);
     assert!(
         matches!(relay.await.unwrap(), Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted)
     );

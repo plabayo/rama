@@ -69,7 +69,7 @@ Rama ships with a large set of capabilities so you can focus on your unique logi
 - **Fingerprinting:** JA3, JA4, JA4H, PeetPrint, Akamai h2
 - **User Agent emulation:** HTTP + TLS profiles for distortion proxies  
 - **Diagnostics:** HAR and cURL export  
-- **Utilities:** error handling, graceful shutdown, connection pooling
+- **Utilities:** error handling, graceful scopes (two-phase shutdown), connection pooling
 
 The detailed feature matrix can be found in the repository readme or on the website.
 

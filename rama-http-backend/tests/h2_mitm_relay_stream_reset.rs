@@ -30,7 +30,7 @@
 //! touches no existing source.
 
 use rama_core::{
-    Service, futures::future::join_all, graceful::Shutdown, io::BridgeIo, layer::ArcLayer,
+    Service, futures::future::join_all, graceful::Scope, io::BridgeIo, layer::ArcLayer,
     rt::Executor,
 };
 use rama_http::{
@@ -59,7 +59,7 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(64));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
     // Build an h2 request tagged with `id` so the upstream can pick which
@@ -75,7 +75,8 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
     };
 
     // ── Upstream: low-level h2 server that resets exactly one stream. ──
-    graceful.spawn_task_fn(async move |guard| {
+    let guard = graceful.clone();
+    Executor::from(guard.clone()).into_spawn_task(async move {
         let _guard = guard;
         let mut conn = h2_server::handshake(MockSocket::new(server_stream))
             .await
@@ -116,8 +117,9 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
     // `serve_http2_request`'s `Err` arm, the fix's code path. `ArcLayer`
     // boxes the egress client to `Error = BoxError` (still `Into<BoxError>`)
     // without consuming errors, mirroring the production relay middleware.
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    Executor::from(guard.clone()).into_spawn_task(async move {
+        HttpMitmRelay::new(Executor::from(guard))
             .with_http_middleware((
                 SetRequestHeaderLayer::overriding(
                     HeaderName::from_static("x-observed-req"),
@@ -141,7 +143,7 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         make_h2_request("0"),
-        Executor::graceful(graceful.guard()),
+        Executor::from(graceful.clone()),
     )
     .await
     .expect("client h2 connect to relay")
@@ -205,5 +207,5 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }

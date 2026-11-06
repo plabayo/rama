@@ -7,7 +7,7 @@ use super::IdleGuard;
 
 use crate::conn::LingeringClose;
 
-use rama_core::graceful::ShutdownGuard;
+use rama_core::graceful::{Cause, Scope, enter_scope_with};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
 use rama_core::{
@@ -72,8 +72,9 @@ const LINGER_BUF_SIZE: usize = kib(4);
 /// and copies the bytes of both the source and target [`Io`]s
 /// bidirectionally.
 ///
-/// The service observes shutdown via the [`ShutdownGuard`] of the
-/// [`Executor`] passed at construction (if any), enforces an optional
+/// The bridge stops at the hard phase of its connection's scope (the most recent
+/// [`Scope`] in its extensions, else that of the [`Executor`] passed at construction),
+/// enforces an optional
 /// idle timeout that closes the bridge when neither direction has made
 /// byte progress within the configured window, and emits a single
 /// structured close event when the bridge ends.
@@ -215,9 +216,18 @@ impl IoForwardService {
         }
     }
 
-    /// The shutdown guard wired through the [`Executor`], if any.
-    fn shutdown_guard(&self) -> Option<ShutdownGuard> {
-        self.executor.guard().cloned()
+    /// The scope a bridge over `io` runs in, below the scope its connection runs in and the
+    /// executor's; the bridge holds it and stops at its hard phase. A byte stream has no way
+    /// to drain, so a graceful phase changes nothing. A connection arriving in a closing
+    /// scope stops at once.
+    fn stop(&self, io: &impl ExtensionsRef) -> Stop {
+        let scope =
+            enter_scope_with(io.extensions(), self.executor.scope()).unwrap_or_else(|_closed| {
+                let scope = Scope::new();
+                scope.abort(Cause::Reason("the connection's scope is closed"));
+                scope
+            });
+        Stop { scope }
     }
 }
 
@@ -241,13 +251,14 @@ where
             self.idle_timeout
                 .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
                 .unwrap_or(0),
-            self.executor.guard().is_some(),
+            !self.executor.scope().is_never(),
         );
 
+        let stop = self.stop(&left);
         let bridge = run_bridge(
             left,
             right,
-            self.shutdown_guard(),
+            stop,
             self.idle_timeout,
             self.first_byte_timeout,
             self.first_byte_timeout_start,
@@ -431,11 +442,31 @@ impl std::error::Error for IoForwardError {
     }
 }
 
+/// When a bridge stops before its peers are done, see [`IoForwardService`].
+#[derive(Debug, Clone)]
+struct Stop {
+    scope: Scope,
+}
+
+impl Stop {
+    #[cfg(test)]
+    fn never() -> Self {
+        Self {
+            scope: Scope::never(),
+        }
+    }
+
+    /// The hard phase of the scope: whatever is left is dropped, with no grace of its own.
+    async fn aborted(&self) {
+        self.scope.aborted().await;
+    }
+}
+
 #[expect(clippy::too_many_arguments)]
 async fn run_bridge<S, T>(
     left: S,
     right: T,
-    guard: Option<ShutdownGuard>,
+    stop: Stop,
     idle_timeout: Option<Duration>,
     first_byte_timeout: Option<Duration>,
     first_byte_timeout_start: FirstByteTimeoutStart,
@@ -524,7 +555,7 @@ where
         run_select_loop(
             l_to_r,
             r_to_l,
-            guard.as_ref(),
+            &stop,
             idle_timeout,
             first_byte_timeout,
             first_byte_timeout_start,
@@ -554,10 +585,16 @@ where
     let left_pending_shutdown = !aborts.aborted(Side::Left) && !left_w_shut.load(Ordering::Acquire);
     let right_pending_shutdown =
         !aborts.aborted(Side::Right) && !right_w_shut.load(Ordering::Acquire);
-    let (left_err, right_err) = tokio::join!(
-        close_within(left_pending_shutdown, &mut left_w, shutdown_grace),
-        close_within(right_pending_shutdown, &mut right_w, shutdown_grace),
-    );
+    let (left_err, right_err) = tokio::select! {
+        biased;
+        () = stop.aborted() => (None, None),
+        closed = async {
+            tokio::join!(
+                close_within(left_pending_shutdown, &mut left_w, shutdown_grace),
+                close_within(right_pending_shutdown, &mut right_w, shutdown_grace),
+            )
+        } => closed,
+    };
     // A reset found by this last close is reflected too, unless an earlier one already was;
     // an expired grace window is not a reset.
     for (err, side_reason) in [
@@ -587,7 +624,7 @@ where
     {
         // The upstream closes now, not once the client is done.
         drop((right_r, right_w));
-        linger_drain(&mut left_r, linger, guard.as_ref()).await;
+        linger_drain(&mut left_r, linger, &stop).await;
     }
 
     IoForwardOutcome {
@@ -743,7 +780,7 @@ struct Ends<'a> {
 async fn run_select_loop<F1, F2>(
     mut l_to_r: std::pin::Pin<&mut F1>,
     mut r_to_l: std::pin::Pin<&mut F2>,
-    guard: Option<&ShutdownGuard>,
+    stop: &Stop,
     idle_timeout: Option<Duration>,
     first_byte_timeout: Option<Duration>,
     first_byte_timeout_start: FirstByteTimeoutStart,
@@ -803,12 +840,7 @@ where
             _ => None,
         };
 
-        let cancelled = async {
-            match guard {
-                Some(g) => g.cancelled().await,
-                None => std::future::pending().await,
-            }
-        };
+        let cancelled = stop.aborted();
 
         tokio::select! {
             biased;
@@ -1118,7 +1150,7 @@ enum Side {
 
 /// Read and discard until the peer ends its stream or a bound of `linger` is
 /// hit, so that the side is not closed with unread input.
-async fn linger_drain<R>(reader: &mut R, linger: LingeringClose, guard: Option<&ShutdownGuard>)
+async fn linger_drain<R>(reader: &mut R, linger: LingeringClose, stop: &Stop)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -1136,12 +1168,7 @@ where
     // One timer for both bounds, moved only when it fires: cheaper than
     // resetting it on every read.
     let mut timer = std::pin::pin!(tokio::time::sleep_until(deadline(last_data)));
-    let mut cancelled = std::pin::pin!(async {
-        match guard {
-            Some(guard) => guard.cancelled().await,
-            None => std::future::pending().await,
-        }
-    });
+    let mut cancelled = std::pin::pin!(stop.aborted());
     let end = loop {
         let room = linger.max_bytes().map_or(buf.len(), |max| {
             usize::try_from(max.saturating_sub(discarded)).map_or(buf.len(), |n| n.min(buf.len()))
@@ -1226,7 +1253,7 @@ mod tests {
 
     use super::*;
 
-    use rama_core::{ServiceInput, graceful::Shutdown};
+    use rama_core::{ServiceInput, graceful::attach_scope};
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
@@ -1331,19 +1358,130 @@ mod tests {
         assert_eq!(*writes.lock(), [b"\x00\x00\x00\x05hello".to_vec()]);
     }
 
-    async fn shutdown_pair() -> (Shutdown, tokio::sync::oneshot::Sender<()>) {
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown = Shutdown::new(async move {
-            _ = rx.await;
-        });
-        (shutdown, tx)
+    #[tokio::test]
+    async fn scope_cancel_keeps_relaying_and_abort_stops_the_bridge() {
+        let root = Scope::new();
+        let svc = IoForwardService::new(Executor::from(root.clone()));
+
+        let (mut a_user, a_proxy) = duplex(64);
+        let (mut b_user, b_proxy) = duplex(64);
+
+        let task = tokio::spawn(async move { svc.serve(bridge(a_proxy, b_proxy)).await.unwrap() });
+
+        root.cancel(Cause::Owner);
+        // Graceful phase: a byte stream cannot drain, so it keeps flowing.
+        a_user.write_all(b"hello").await.unwrap();
+        let mut buf = [0u8; 5];
+        b_user.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"hello");
+        assert!(!task.is_finished());
+
+        root.abort(Cause::Owner);
+        let outcome = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("an aborted bridge stops at once")
+            .unwrap();
+        assert!(
+            matches!(outcome.reason, BridgeCloseReason::Shutdown),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_aborted_scope_starts_no_close_grace() {
+        let root = Scope::new();
+        let svc = IoForwardService::new(Executor::from(root.clone()))
+            .with_shutdown_grace(Duration::from_secs(60));
+        let (_a_user, a_proxy) = duplex(64);
+        let (_b_user, b_proxy) = duplex(64);
+        let a_proxy = PendingShutdownIo { inner: a_proxy };
+        let task = tokio::spawn(async move { svc.serve(bridge(a_proxy, b_proxy)).await.unwrap() });
+        tokio::task::yield_now().await;
+
+        let start = tokio::time::Instant::now();
+        root.abort(Cause::Owner);
+        let outcome = task.await.unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
+        assert!(
+            matches!(outcome.reason, BridgeCloseReason::Shutdown),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_abort_cuts_a_close_grace_under_way() {
+        let root = Scope::new();
+        let svc = IoForwardService::new(Executor::from(root.clone()))
+            .with_shutdown_grace(Duration::from_secs(60));
+        let (a_user, a_proxy) = duplex(64);
+        let (_b_user, b_proxy) = duplex(64);
+        let a_proxy = PendingShutdownIo { inner: a_proxy };
+        let task = tokio::spawn(async move { svc.serve(bridge(a_proxy, b_proxy)).await.unwrap() });
+
+        // The client ends: the bridge closes the other writers, and the pending one waits.
+        drop(a_user);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(!task.is_finished());
+        let start = tokio::time::Instant::now();
+        root.abort(Cause::Owner);
+        task.await.unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
+    /// The bridge holds the scope it runs in while it relays: a retained context alone does not.
+    #[tokio::test]
+    async fn a_running_bridge_holds_its_connection_scope() {
+        let svc = IoForwardService::new(Executor::new());
+        let (a_user, a_proxy) = duplex(64);
+        let (_b_user, b_proxy) = duplex(64);
+        let connection = Scope::new();
+        let io = bridge(a_proxy, b_proxy);
+        attach_scope(io.0.extensions(), &connection);
+        let weak = connection.clone_weak();
+        drop(connection);
+
+        let task = tokio::spawn(async move { svc.serve(io).await.unwrap() });
+        tokio::task::yield_now().await;
+        let mut drained = std::pin::pin!(weak.drained());
+        assert!(rama_core::futures::poll!(drained.as_mut()).is_pending());
+        drop(a_user);
+        drop(_b_user);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("the bridge ends with its peers")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), drained)
+            .await
+            .expect("drained once the bridge ended");
+    }
+
+    #[tokio::test]
+    async fn the_connection_scope_in_the_extensions_stops_the_bridge() {
+        let svc = IoForwardService::new(Executor::new());
+
+        let (_a_user, a_proxy) = duplex(64);
+        let (_b_user, b_proxy) = duplex(64);
+        let connection = Scope::new();
+        let io = bridge(a_proxy, b_proxy);
+        attach_scope(io.0.extensions(), &connection);
+
+        let task = tokio::spawn(async move { svc.serve(io).await.unwrap() });
+        tokio::task::yield_now().await;
+        connection.abort(Cause::Owner);
+        let outcome = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("an aborted bridge stops at once")
+            .unwrap();
+        assert!(
+            matches!(outcome.reason, BridgeCloseReason::Shutdown),
+            "{outcome:?}"
+        );
     }
 
     #[tokio::test]
     async fn forward_shutdown_drops_idle_bridge() {
-        let (shutdown, trigger) = shutdown_pair().await;
-        let guard = shutdown.guard();
-        let svc = IoForwardService::new(Executor::graceful(guard));
+        let root = Scope::new();
+        let svc = IoForwardService::new(Executor::from(root.clone()));
 
         let (_a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);
@@ -1355,7 +1493,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         let started = Instant::now();
-        trigger.send(()).unwrap();
+        root.abort(Cause::Owner);
         tokio::time::timeout(Duration::from_secs(2), task)
             .await
             .expect("bridge did not unwind within 2s")
@@ -1365,14 +1503,12 @@ mod tests {
             elapsed < Duration::from_millis(500),
             "bridge took {elapsed:?} to unwind on shutdown",
         );
-        drop(shutdown);
     }
 
     #[tokio::test]
     async fn forward_shutdown_drops_active_bridge() {
-        let (shutdown, trigger) = shutdown_pair().await;
-        let guard = shutdown.guard();
-        let svc = IoForwardService::new(Executor::graceful(guard));
+        let root = Scope::new();
+        let svc = IoForwardService::new(Executor::from(root.clone()));
 
         let (mut a_user, a_proxy) = duplex(64);
         let (mut b_user, b_proxy) = duplex(64);
@@ -1387,7 +1523,7 @@ mod tests {
         assert_eq!(&buf, b"hello");
 
         let started = Instant::now();
-        trigger.send(()).unwrap();
+        root.abort(Cause::Owner);
         tokio::time::timeout(Duration::from_secs(2), task)
             .await
             .expect("bridge did not unwind within 2s")
@@ -1397,7 +1533,6 @@ mod tests {
             elapsed < Duration::from_millis(500),
             "bridge took {elapsed:?} to unwind on shutdown",
         );
-        drop(shutdown);
     }
 
     #[tokio::test]
@@ -1478,6 +1613,45 @@ mod tests {
         );
     }
 
+    /// Writes pass through; shutting down never completes.
+    struct PendingShutdownIo {
+        inner: tokio::io::DuplexStream,
+    }
+
+    impl tokio::io::AsyncRead for PendingShutdownIo {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut self.inner), cx, buf)
+        }
+    }
+
+    impl tokio::io::AsyncWrite for PendingShutdownIo {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            tokio::io::AsyncWrite::poll_write(std::pin::Pin::new(&mut self.inner), cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            tokio::io::AsyncWrite::poll_flush(std::pin::Pin::new(&mut self.inner), cx)
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn forward_first_byte_disarmed_on_upstream_eof_before_byte() {
         // A clean upstream EOF (no byte ever written) is a `PeerEofRight`, not a
@@ -1488,44 +1662,6 @@ mod tests {
             .with_first_byte_timeout(Duration::from_millis(10))
             .with_first_byte_timeout_start(FirstByteTimeoutStart::BridgeOpen)
             .with_shutdown_grace(Duration::from_millis(100));
-
-        struct PendingShutdownIo {
-            inner: tokio::io::DuplexStream,
-        }
-
-        impl tokio::io::AsyncRead for PendingShutdownIo {
-            fn poll_read(
-                mut self: std::pin::Pin<&mut Self>,
-                cx: &mut std::task::Context<'_>,
-                buf: &mut tokio::io::ReadBuf<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
-                tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut self.inner), cx, buf)
-            }
-        }
-
-        impl tokio::io::AsyncWrite for PendingShutdownIo {
-            fn poll_write(
-                mut self: std::pin::Pin<&mut Self>,
-                cx: &mut std::task::Context<'_>,
-                buf: &[u8],
-            ) -> std::task::Poll<std::io::Result<usize>> {
-                tokio::io::AsyncWrite::poll_write(std::pin::Pin::new(&mut self.inner), cx, buf)
-            }
-
-            fn poll_flush(
-                mut self: std::pin::Pin<&mut Self>,
-                cx: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
-                tokio::io::AsyncWrite::poll_flush(std::pin::Pin::new(&mut self.inner), cx)
-            }
-
-            fn poll_shutdown(
-                self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
-                std::task::Poll::Pending
-            }
-        }
 
         let (a_user, a_proxy) = duplex(64);
         let a_proxy = PendingShutdownIo { inner: a_proxy };
@@ -2534,7 +2670,7 @@ mod tests {
     async fn linger_drain_ends_an_always_ready_reader_at_its_timeout() {
         let linger = LingeringClose::new().with_timeout(Duration::from_millis(100));
         let started = Instant::now();
-        linger_drain(&mut AlwaysReady, linger, None).await;
+        linger_drain(&mut AlwaysReady, linger, &Stop::never()).await;
         let elapsed = started.elapsed();
         assert!(
             elapsed >= Duration::from_millis(100),
@@ -2544,20 +2680,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn linger_drain_sees_a_shutdown_while_the_reader_is_always_ready() {
-        let (shutdown, trigger) = shutdown_pair().await;
-        let guard = shutdown.guard();
-        tokio::spawn(async move {
+    async fn linger_drain_ends_at_the_hard_phase() {
+        let root = Scope::new();
+        let stop = Stop {
+            scope: root.clone(),
+        };
+        let aborter = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            _ = trigger.send(());
+            root.abort(Cause::Owner);
         });
         let started = Instant::now();
-        linger_drain(&mut AlwaysReady, patient_linger(), Some(&guard)).await;
+        linger_drain(&mut AlwaysReady, patient_linger(), &stop).await;
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_secs(2),
-            "shutdown seen after {elapsed:?}"
+            "abort seen after {elapsed:?}"
         );
+        aborter.await.unwrap();
     }
 
     #[tokio::test]
@@ -2579,7 +2718,7 @@ mod tests {
         for max in [1, 1000, 4096, 10_000] {
             let mut reader = Counting(0);
             let linger = patient_linger().with_max_bytes(max);
-            linger_drain(&mut reader, linger, None).await;
+            linger_drain(&mut reader, linger, &Stop::never()).await;
             assert_eq!(reader.0, max, "read past its limit");
         }
     }
@@ -2592,7 +2731,7 @@ mod tests {
             LingeringClose::new().with_max_bytes(0),
         ] {
             let mut reader = ScriptedIo::erroring(std::io::ErrorKind::Other);
-            linger_drain(&mut reader, linger, None).await;
+            linger_drain(&mut reader, linger, &Stop::never()).await;
             assert!(!reader.errored, "{linger:?} still read");
         }
     }
@@ -2880,7 +3019,7 @@ mod tests {
             .with_idle_timeout(Duration::MAX)
             .with_timeout(Duration::MAX);
         let mut reader = ScriptedIo::erroring(std::io::ErrorKind::ConnectionReset);
-        linger_drain(&mut reader, linger, None).await;
+        linger_drain(&mut reader, linger, &Stop::never()).await;
         assert!(reader.errored);
     }
 
@@ -2954,8 +3093,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn lingering_close_is_cut_short_by_shutdown() {
-        let (shutdown, trigger) = shutdown_pair().await;
-        let svc = IoForwardService::new(Executor::graceful(shutdown.guard()))
+        let root = Scope::new();
+        let svc = IoForwardService::new(Executor::from(root.clone()))
             .with_idle_timeout(Duration::from_millis(20))
             .with_lingering_close(patient_linger());
         let Chain {
@@ -2966,12 +3105,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!bridge.is_finished(), "the bridge should be lingering");
         let started = Instant::now();
-        trigger.send(()).unwrap();
+        root.abort(Cause::Owner);
         tokio::time::timeout(Duration::from_secs(2), bridge)
             .await
             .expect("shutdown did not cut lingering short")
             .unwrap();
         assert!(started.elapsed() < Duration::from_millis(500));
-        drop((client, origin, shutdown));
+        drop((client, origin));
     }
 }

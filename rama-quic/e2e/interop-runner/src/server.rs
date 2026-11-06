@@ -9,7 +9,7 @@ use clap::Parser;
 use rama::{
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, ErrorContext as _},
-    graceful::Shutdown,
+    graceful::Scope,
     net::{socket::SocketOptions, tls::ApplicationProtocol},
     quic::{
         Connection, Endpoint, EndpointConfig, RecvStream, SendStream,
@@ -76,10 +76,10 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
             .context("resolve document root")?,
     );
     let (finished, is_finished) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         let _ = is_finished.await;
     });
-    let executor = Executor::graceful(shutdown.guard());
+    let executor = Executor::from(shutdown.clone());
     let tls = TlsServerConfig::new()
         .with_alpn(smallvec![ApplicationProtocol::from(testcase.alpn())])
         .with_keylog(KeyLogIntent::Environment)
@@ -170,7 +170,9 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let outcome = shutdown_endpoint(&endpoint, outcome).await;
     drop(endpoint);
     let _ = finished.send(());
-    shutdown.shutdown().await;
+    // The scope is cancelled once something waits on it; then wait for every holder.
+    shutdown.cancelled().await;
+    let _ = shutdown.join().await;
     outcome
 }
 

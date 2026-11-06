@@ -42,7 +42,7 @@ mod unix_example {
 
     use rama::{
         error::BoxError,
-        graceful::Shutdown,
+        graceful::{Cause, Scope},
         http::Request,
         http::server::HttpServer,
         http::service::web::response::Json,
@@ -162,8 +162,8 @@ mod unix_example {
         // Give parent time to set up
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let shutdown = Shutdown::default();
-        let guard = shutdown.guard();
+        let scope = Scope::new().with_default_signal();
+        let exec = Executor::from(scope.clone());
 
         tracing::info!("\n=== Child Process ===");
         tracing::info!("Connecting to parent...");
@@ -183,31 +183,26 @@ mod unix_example {
         tracing::info!("✓ Reconstructed listener on {addr}");
 
         // Convert to rama listener
-        let listener = TcpListener::try_from_std_tcp_listener(
-            std_listener,
-            Executor::graceful(guard.clone()),
-        )?;
+        let listener = TcpListener::try_from_std_tcp_listener(std_listener, exec.clone())?;
         tracing::info!("✓ Converted to rama::tcp::TcpListener");
 
         // Start serving
         tracing::info!("\n=== Child now serving ===");
         tracing::info!("Will serve for 10 seconds, then exit\n");
 
-        let http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(service_fn(
-            |_req: Request| async move {
-                Ok::<_, Infallible>(Json(json!({
-                    "message": "Hello from child process!",
-                    "pid": std::process::id(),
-                    "zero_downtime": true
-                })))
-            },
-        ));
+        let http_service = HttpServer::auto(exec).service(service_fn(|_req: Request| async move {
+            Ok::<_, Infallible>(Json(json!({
+                "message": "Hello from child process!",
+                "pid": std::process::id(),
+                "zero_downtime": true
+            })))
+        }));
 
         // Shutdown after 10 seconds
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(10)).await;
             tracing::info!("\n=== Child shutting down ===");
-            shutdown.shutdown().await;
+            scope.cancel(Cause::Owner);
         });
 
         listener.serve(http_service).await;

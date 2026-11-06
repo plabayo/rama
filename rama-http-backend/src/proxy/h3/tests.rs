@@ -1070,8 +1070,8 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
             let relay_ingress = config(true);
             let relay_egress = config(true);
             let (trigger, signal) = oneshot::channel();
-            let shutdown = rama_core::graceful::Shutdown::new(async move { _ = signal.await; });
-            let exec = Executor::graceful(shutdown.guard());
+            let shutdown = rama_core::graceful::Scope::new().with_signal(async move { _ = signal.await; });
+            let exec = Executor::from(shutdown.clone());
             let relay = spawn(async move {
                 Http3MitmRelay::new(exec).with_http_middleware((
                     MapInputLayer::new(|request: Request| {
@@ -1140,7 +1140,7 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
             }
             assert_eq!(value, b"opaque control");
             trigger.send(()).unwrap();
-            let shutdown = spawn(shutdown.shutdown_with_limit(LIMIT));
+            let shutdown = spawn(async move { tokio::time::timeout(LIMIT, shutdown.join()).await.expect("drained in time").expect("not aborted") });
             browser.closed_or_draining().await;
             assert!(!relay.is_finished(), "the default relay must drain an open tunnel on shutdown");
             origin_session.send_capsule(CapsuleType::DATAGRAM, Bytes::from_static(b"after GOAWAY")).await.unwrap();
@@ -1165,7 +1165,7 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
             for endpoint in [&browser_endpoint, &ingress_endpoint, &egress_endpoint, &origin_endpoint] { endpoint.close(0u32, b"complete"); }
             tokio::join!(browser_endpoint.shutdown(), ingress_endpoint.shutdown(), egress_endpoint.shutdown(), origin_endpoint.shutdown());
             let _drivers = tokio::join!(browser_driver, origin_driver);
-            shutdown.await.unwrap().unwrap();
+            shutdown.await.unwrap();
         }
     }).await.unwrap();
 }

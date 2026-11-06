@@ -918,19 +918,20 @@ mod metrics {
     async fn a_tunnel_cut_by_graceful_shutdown_is_cancelled() {
         let collector = Collector::new();
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let shutdown = rama_core::graceful::Shutdown::new(async move {
+        let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
             _ = stopped.await;
         });
-        let service = proxy(&collector, Executor::graceful(shutdown.guard()));
+        let service = proxy(&collector, Executor::from(shutdown.clone()));
         let (_target, address) = target().await;
         let _client = open(&service, address).await;
         assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 1);
         // The service's executor holds a guard of its own.
         drop(service);
         stop.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(10), shutdown.shutdown())
+        tokio::time::timeout(Duration::from_secs(10), shutdown.join())
             .await
-            .expect("the tunnel lets the shutdown finish");
+            .expect("the tunnel lets the shutdown finish")
+            .expect("not aborted");
         ended(&collector, "cancelled", 1).await;
         assert_eq!(collector.value("connect_udp.tunnel.closed", &[]), 1);
         assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
@@ -941,7 +942,7 @@ mod metrics {
     async fn a_cancelled_tunnel_is_recorded_while_its_relay_keeps_a_sender() {
         let collector = Collector::new();
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let shutdown = rama_core::graceful::Shutdown::new(async move {
+        let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
             _ = stopped.await;
         });
         let kept = Arc::new(Mutex::new(None));
@@ -952,7 +953,7 @@ mod metrics {
                 std::future::pending::<Result<(), BoxError>>()
             }
         });
-        let service = proxy(&collector, Executor::graceful(shutdown.guard())).with_relay(relay);
+        let service = proxy(&collector, Executor::from(shutdown.clone())).with_relay(relay);
         let (_target, address) = target().await;
         let _client = open(&service, address).await;
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -969,9 +970,10 @@ mod metrics {
         assert!(kept.lock().is_some(), "the sender lives on");
         assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
         drop(kept.lock().take());
-        tokio::time::timeout(Duration::from_secs(10), shutdown.shutdown())
+        tokio::time::timeout(Duration::from_secs(10), shutdown.join())
             .await
-            .expect("the tunnel's pump ends once its last sender goes");
+            .expect("the tunnel's pump ends once its last sender goes")
+            .expect("not aborted");
         assert_eq!(collector.value("connect_udp.tunnel.closed", &[]), 1, "once");
         assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
     }

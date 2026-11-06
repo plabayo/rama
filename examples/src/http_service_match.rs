@@ -28,6 +28,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         Request,
         layer::trace::TraceLayer,
@@ -59,12 +60,14 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
-    graceful.spawn_task_fn(async |guard| {
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let addr = "127.0.0.1:62011";
         tracing::info!("running service at: {addr}");
-        let exec = Executor::graceful(guard);
         HttpServer::auto(exec)
             .listen(
                 addr,
@@ -86,8 +89,5 @@ async fn main() {
             .unwrap();
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

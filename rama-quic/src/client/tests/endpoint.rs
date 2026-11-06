@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
-    graceful::Shutdown,
+    graceful::{Cause, Scope},
     rt::{Executor, spawn},
 };
 use rama_net::{
@@ -22,7 +22,7 @@ use rama_quic_proto::{
 };
 use rama_tls::server::ServerAuthData;
 use rama_udp::test_utils::MemoryDatagramSocket;
-use tokio::{runtime::Runtime, sync::oneshot};
+use tokio::runtime::Runtime;
 
 use super::connector::connector;
 use crate::{
@@ -90,14 +90,9 @@ fn managed_endpoint_recovers_after_its_runtime_is_dropped() {
 
 #[tokio::test]
 async fn cancelled_executor_does_not_initialize_an_endpoint() {
-    let (cancel, cancelled) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
-        _ = cancelled.await;
-    });
-    let guard = shutdown.guard();
-    let shared = SharedQuicEndpoint::managed(Executor::graceful(guard.clone()));
-    cancel.send(()).unwrap();
-    guard.cancelled().await;
+    let scope = Scope::new();
+    let shared = SharedQuicEndpoint::managed(Executor::from(scope.clone()));
+    scope.cancel(Cause::Owner);
     _ = endpoint(&shared, None).await.unwrap_err();
     _ = endpoint(&shared, Some(&QuicProfile::standard()))
         .await

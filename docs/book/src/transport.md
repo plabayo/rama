@@ -87,8 +87,8 @@ This transport-first model is also part of why Rama's [gRPC support](./http/grpc
   server for different connections:
   - <https://ramaproxy.org/docs/rama/quic/struct.Endpoint.html>
   - built on an application's own executor with
-    <https://ramaproxy.org/docs/rama/quic/struct.EndpointBuilder.html>, so a graceful shutdown
-    the application holds a guard for stops the endpoint too
+    <https://ramaproxy.org/docs/rama/quic/struct.EndpointBuilder.html>, so the endpoint
+    shuts down with the scope of that executor, see [Graceful scopes](./intro/graceful.md)
 
 QUIC needs the `quic` feature and a TLS provider. Built-in providers use either `boring`,
 or `rustls` together with `ring` or `aws-lc`. Inject `BoringTlsProvider` or

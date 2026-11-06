@@ -16,6 +16,7 @@
     - [🍔 Middlewares and ☘️ Leaf Services](./intro/terminology.md)
     - [Network Layers](./intro/network_layers.md)
     - [🚦 Limits: concurrency, rate & bandwidth](./intro/limits.md)
+    - [Graceful scopes](./intro/graceful.md)
     - [⛌ Service Branches](./intro/service_branches.md)
     - [☀️ State](./intro/state.md)
     - [🧱 Modular](./intro/modular.md)

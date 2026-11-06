@@ -58,7 +58,7 @@ use rama::{
         },
         jose::EcdsaKey,
     },
-    graceful,
+    graceful::Scope,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
     net::tls::ApplicationProtocol,
@@ -110,7 +110,9 @@ async fn main() {
 
     let tls_config = TlsClientConfig::default().with_server_verify(ServerVerifyMode::Disable);
 
-    let graceful = crate::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
@@ -118,7 +120,7 @@ async fn main() {
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_rustls(tls_config)
-        .with_default_http_connector(Executor::graceful(graceful.guard()))
+        .with_default_http_connector(Executor::from(scope.clone()))
         .without_connection_pool()
         .build_client()
         .boxed();
@@ -173,11 +175,12 @@ async fn main() {
         })
         .with_alpn(smallvec![ApplicationProtocol::ACME_TLS]);
 
-    let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
+    let exec = Executor::from(scope.clone());
+    let challenge_server_handle = exec.clone().into_spawn_task(async move {
         let tcp_service =
             TlsAcceptorLayer::new(acceptor_data).layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind_address("127.0.0.1:5001", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:5001", exec)
             .await
             .expect("bind TCP Listener: tls")
             .serve(tcp_service)
@@ -209,11 +212,15 @@ async fn main() {
 
     tracing::info!(?cert_chain, "received certificiate");
     challenge_server_handle.abort();
+    // The ACME client holds the scope: let it go, so the shutdown waits for the server only.
+    drop(order);
+    drop(account);
+    drop(client);
 
     // create https server using the configured certificate
 
-    graceful.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard.clone());
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let http_service = HttpServer::auto(exec.clone()).service(service_fn(async || {
             Ok::<_, Infallible>("hello".into_response())
         }));
@@ -239,8 +246,8 @@ async fn main() {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
+    scope
+        .join_once_cancelled()
         .await
         .expect("graceful shutdown");
 }

@@ -8,7 +8,8 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef},
-    io::Io,
+    graceful::attach_scope,
+    io::{AbortableIo, Io},
     rt::Executor,
 };
 use rama_http::{StreamingBody, opentelemetry::version_as_protocol_version};
@@ -365,6 +366,10 @@ fn apply_h2_client_extensions_to_builder(
 
 #[derive(Debug, Clone, ExtensionsRef)]
 /// A [`Service`] which establishes an HTTP Connection.
+///
+/// A byte stream connection holds the scope of the executor until its transport is gone, an
+/// upgraded one included, and is cut at the hard phase of that scope. A QUIC connection holds
+/// it while open, kept so by its live bodies and tunnels, and is closed at that hard phase.
 pub struct HttpConnector<S, Body> {
     inner: S,
     exec: Executor,
@@ -433,6 +438,9 @@ impl ConnectionReusePolicy for UnclassifiedSecureTransport {
 /// HTTP connection.
 /// Custom QUIC transports can publish [`rama_net::tls::AlpnPolicy::OutOfBandAgreement`] in
 /// connection extensions when HTTP/3 was agreed through another mechanism.
+/// A byte stream holds the scope of `exec` until it is gone, after an upgrade too, and is cut
+/// at the hard phase of that scope. A QUIC connection holds it while open, kept so by its
+/// live bodies and tunnels, and is closed at that hard phase.
 pub async fn http_connect<T, Input, BodyConnection>(
     transport: T,
     input: Input,
@@ -579,6 +587,11 @@ where
     BodyConnection:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
+    // The transport holds the executor's scope wherever it goes, an upgrade included, and is
+    // cut at its hard phase.
+    let io = AbortableIo::new(exec.scope(), io);
+    // The connection runs in that scope too, so a pool drains it in its graceful phase.
+    attach_scope(io.extensions(), exec.scope());
     let extensions = io.extensions().clone();
     let server_host = input.target_authority().map(|authority| authority.host);
     let server_address = server_host
@@ -712,6 +725,10 @@ where
     BodyConnection:
         StreamingBody<Data: Send + Sync + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
+    // As in `http_stream_connect`: held until the transport goes, cut at the hard phase, and
+    // drained by a pool in the graceful phase.
+    let io = AbortableIo::new(exec.scope(), io);
+    attach_scope(io.extensions(), exec.scope());
     let extensions = io.extensions().clone();
 
     tracing::trace!("eager h2 client handshake");

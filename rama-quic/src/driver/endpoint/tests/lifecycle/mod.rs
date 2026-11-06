@@ -948,30 +948,29 @@ async fn idle_shutdown_releases_socket_with_retained_handles() {
 }
 
 #[tokio::test]
-async fn graceful_executor_joins_without_guard_cycles() {
-    let shutdown = rama_core::graceful::Shutdown::no_signal();
+async fn scoped_executor_joins_without_cycles() {
+    let scope = rama_core::graceful::Scope::new();
     let endpoint = endpoint(
         Some(configs().1),
-        Executor::graceful(shutdown.guard()),
+        Executor::from(scope.clone()),
         Duration::from_secs(1),
     );
     let addr = endpoint.local_addr().unwrap();
     let clone = endpoint.clone();
-    tokio::time::timeout(Duration::from_secs(2), shutdown.shutdown())
+    scope.cancel(rama_core::graceful::Cause::Owner);
+    tokio::time::timeout(Duration::from_secs(2), scope.join())
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(endpoint.shutdown().await, ShutdownOutcome::Drained);
     assert!(clone.accept().await.is_none());
     let _rebound = std::net::UdpSocket::bind(addr).unwrap();
 }
 
-/// A shutdown that starts when its sender fires.
-fn triggered_shutdown() -> (
-    tokio::sync::oneshot::Sender<()>,
-    rama_core::graceful::Shutdown,
-) {
+/// A scope cancelled when its sender fires.
+fn triggered_shutdown() -> (tokio::sync::oneshot::Sender<()>, rama_core::graceful::Scope) {
     let (trigger, triggered) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama_core::graceful::Shutdown::new(async move {
+    let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
         _ = triggered.await;
     });
     (trigger, shutdown)
@@ -982,7 +981,7 @@ fn triggered_shutdown() -> (
 async fn graceful_client_pair(
     client_config: &ClientConfig,
     server: &Endpoint,
-    shutdown: &rama_core::graceful::Shutdown,
+    shutdown: &rama_core::graceful::Scope,
     budget: Duration,
 ) -> (
     Endpoint,
@@ -990,7 +989,7 @@ async fn graceful_client_pair(
     crate::driver::connection::Connection,
     Vec<crate::driver::connection::Connection>,
 ) {
-    let client = endpoint(None, Executor::graceful(shutdown.guard()), budget);
+    let client = endpoint(None, Executor::from(shutdown.clone()), budget);
     let mut connections = Vec::new();
     let mut server_sides = Vec::new();
     for _ in 0..2 {
@@ -1022,7 +1021,7 @@ async fn graceful_shutdown_closes_a_leased_connection_after_its_lease() {
             graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(4)).await;
         let lease = leased.close_lease();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         tokio::time::timeout(Duration::from_millis(500), plain.closed())
             .await
             .expect("the unleased connection closes at once");
@@ -1035,7 +1034,7 @@ async fn graceful_shutdown_closes_a_leased_connection_after_its_lease() {
                 .expect("the leased connection closes once let go"),
             ConnectionError::LocallyClosed
         );
-        stopping.await.unwrap();
+        stopping.await.unwrap().unwrap();
         assert_eq!(client.open_connections(), 0);
     })
     .await
@@ -1055,14 +1054,14 @@ async fn a_held_lease_delays_only_a_graceful_close_and_within_its_budget() {
         let _lease = leased.close_lease();
         let started = tokio::time::Instant::now();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         leased.closed().await;
         let waited = started.elapsed();
         assert!(
             waited >= Duration::from_millis(400) && waited < Duration::from_secs(1),
             "{waited:?}"
         );
-        stopping.await.unwrap();
+        stopping.await.unwrap().unwrap();
 
         let (_trigger, explicit) = triggered_shutdown();
         let (client, _plain, leased, _explicit_server_sides) =
@@ -1087,7 +1086,7 @@ async fn each_leased_connection_closes_when_its_own_lease_goes() {
         let first_lease = first.close_lease();
         let second_lease = second.close_lease();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(first.close_reason().is_none() && second.close_reason().is_none());
         drop(first_lease);
@@ -1099,7 +1098,7 @@ async fn each_leased_connection_closes_when_its_own_lease_goes() {
         tokio::time::timeout(Duration::from_millis(500), second.closed())
             .await
             .expect("closed once its own lease went");
-        stopping.await.unwrap();
+        stopping.await.unwrap().unwrap();
     })
     .await
     .unwrap();
@@ -1117,7 +1116,7 @@ async fn an_explicit_shutdown_ends_the_lease_wait() {
             graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(8)).await;
         let _lease = leased.close_lease();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(leased.close_reason().is_none(), "closed under its lease");
         let started = tokio::time::Instant::now();
@@ -1128,7 +1127,7 @@ async fn an_explicit_shutdown_ends_the_lease_wait() {
             "{:?}",
             started.elapsed()
         );
-        stopping.await.unwrap();
+        stopping.await.unwrap().unwrap();
     })
     .await
     .unwrap();
@@ -1146,7 +1145,7 @@ async fn an_explicit_close_during_the_lease_wait_closes_leased_connections() {
             graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(8)).await;
         let _lease = leased.close_lease();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(leased.close_reason().is_none(), "closed under its lease");
         client.close(7u32, b"explicit");
@@ -1168,10 +1167,159 @@ async fn an_explicit_close_during_the_lease_wait_closes_leased_connections() {
         tokio::time::timeout(Duration::from_secs(1), stopping)
             .await
             .expect("no lease wait after an explicit close")
+            .unwrap()
             .unwrap();
     })
     .await
     .unwrap();
+}
+
+/// An abort of the endpoint's scope closes a leased connection at once, without the lease
+/// wait a graceful shutdown would give it.
+#[tokio::test]
+async fn a_scope_abort_does_not_wait_for_a_close_lease() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let shutdown = rama_core::graceful::Scope::new();
+        let (client, _plain, leased, _server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(4)).await;
+        let _lease = leased.close_lease();
+        let started = tokio::time::Instant::now();
+        shutdown.abort(rama_core::graceful::Cause::Owner);
+        tokio::time::timeout(Duration::from_millis(500), leased.closed())
+            .await
+            .expect("the abort closes the leased connection at once");
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            client.inner.shared.lifecycle.completed(),
+        )
+        .await
+        .expect("the abort ends the endpoint's shutdown at once");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
+    })
+    .await
+    .unwrap();
+}
+
+/// An abort during a graceful shutdown's lease wait closes the leased connection at once.
+#[tokio::test]
+async fn a_scope_abort_ends_a_running_lease_wait() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let shutdown = rama_core::graceful::Scope::new();
+        let (client, plain, leased, _server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(8)).await;
+        let _lease = leased.close_lease();
+        shutdown.cancel(rama_core::graceful::Cause::Owner);
+        tokio::time::timeout(Duration::from_millis(500), plain.closed())
+            .await
+            .expect("the unleased connection closes at once");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(leased.close_reason().is_none(), "closed under its lease");
+        let started = tokio::time::Instant::now();
+        shutdown.abort(rama_core::graceful::Cause::Owner);
+        tokio::time::timeout(Duration::from_millis(500), leased.closed())
+            .await
+            .expect("the abort ends the lease wait");
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            client.inner.shared.lifecycle.completed(),
+        )
+        .await
+        .expect("the abort ends the endpoint's shutdown at once");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
+    })
+    .await
+    .unwrap();
+}
+
+/// A supervised task that never ends holds a graceful shutdown for its whole budget, and an
+/// abort, before or during that drain, forces it at once.
+#[tokio::test]
+async fn a_scope_abort_forces_the_driver_drain() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let budget = Duration::from_secs(1);
+        let graceful = rama_core::graceful::Scope::new();
+        let drained = endpoint(None, Executor::from(graceful.clone()), budget);
+        drained.spawn_connection_task(std::future::pending());
+        let started = tokio::time::Instant::now();
+        graceful.cancel(rama_core::graceful::Cause::Owner);
+        assert_eq!(
+            drained.inner.shared.lifecycle.completed().await,
+            ShutdownOutcome::Forced
+        );
+        assert!(started.elapsed() >= budget, "{:?}", started.elapsed());
+
+        for cancel_first in [false, true] {
+            let scope = rama_core::graceful::Scope::new();
+            let aborted = endpoint(None, Executor::from(scope.clone()), Duration::from_secs(8));
+            aborted.spawn_connection_task(std::future::pending());
+            if cancel_first {
+                scope.cancel(rama_core::graceful::Cause::Owner);
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                assert!(
+                    rama_core::futures::FutureExt::now_or_never(
+                        aborted.inner.shared.lifecycle.completed()
+                    )
+                    .is_none(),
+                    "drained before the abort"
+                );
+            }
+            let started = tokio::time::Instant::now();
+            scope.abort(rama_core::graceful::Cause::Owner);
+            assert_eq!(
+                tokio::time::timeout(
+                    Duration::from_millis(500),
+                    aborted.inner.shared.lifecycle.completed(),
+                )
+                .await
+                .expect("the abort forces the drain at once"),
+                ShutdownOutcome::Forced
+            );
+            assert!(
+                started.elapsed() < Duration::from_millis(500),
+                "{:?}",
+                started.elapsed()
+            );
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// The endpoint's budget is for a graceful stop: serving that reaches its own hard phase stops
+/// the endpoint at once, even though the endpoint runs on another executor.
+#[tokio::test]
+async fn a_serving_scope_abort_does_not_wait_out_the_endpoint_budget() {
+    let serving = rama_core::graceful::Scope::new();
+    let served = endpoint(None, Executor::new(), Duration::from_secs(8));
+    served.spawn_connection_task(std::future::pending());
+    serving.abort(rama_core::graceful::Cause::Owner);
+    let service = rama_core::service::service_fn(|_connection: crate::Connection| async {
+        Ok::<_, std::convert::Infallible>(())
+    });
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        served.clone().serve(Executor::from(serving), service),
+    )
+    .await
+    .expect("the hard phase of the serving scope stops the endpoint at once");
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(
+        served.inner.shared.lifecycle.completed().await,
+        ShutdownOutcome::Forced
+    );
 }
 
 /// An attempt nobody answers still puts a close on the wire when the endpoint shuts down, and

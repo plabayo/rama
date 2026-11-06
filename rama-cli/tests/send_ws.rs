@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use rama::{
     Layer, Service,
     crypto::pem::PemEncode as _,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Method, Request, Response, Version,
         header::{HOST, SEC_WEBSOCKET_EXTENSIONS},
@@ -174,7 +174,7 @@ struct WsServer {
     address: SocketAddr,
     endpoint: Option<Endpoint>,
     stop: oneshot::Sender<()>,
-    shutdown: Shutdown,
+    shutdown: Scope,
 }
 
 impl WsServer {
@@ -200,8 +200,8 @@ impl WsServer {
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
     {
         let (stop, stopped) = oneshot::channel::<()>();
-        let shutdown = Shutdown::new(stopped);
-        let executor = Executor::graceful(shutdown.guard());
+        let shutdown = Scope::new().with_signal(stopped);
+        let executor = Executor::from(shutdown.clone());
         let echo = || ws.clone();
         let tls = TlsServerConfig::new().with_server_auth(auth);
         if version == Version::HTTP_3 {
@@ -280,7 +280,7 @@ impl WsServer {
             endpoint.close(0u32, b"test complete");
             within("the QUIC endpoint to shut down", endpoint.shutdown()).await?;
         }
-        self.shutdown.shutdown_with_limit(DEADLINE).await?;
+        self.shutdown.with_grace(DEADLINE).join().await?;
         Ok(())
     }
 }

@@ -32,6 +32,7 @@
 use rama::{
     Layer, Service,
     extensions::ExtensionsRef,
+    graceful::Scope,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -77,7 +78,9 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     #[cfg(feature = "boring")]
     let tls_service_data = TlsServerConfig::new()
@@ -91,7 +94,7 @@ async fn main() {
         .expect("self-signed")
         .with_alpn_http_auto();
 
-    let exec = Executor::graceful(graceful.guard());
+    let exec = Executor::from(scope.clone());
 
     let tcp_service = TcpListener::bind_address("127.0.0.1:62029", exec.clone())
         .await
@@ -128,12 +131,9 @@ async fn main() {
     let auto_socks5_acceptor =
         Socks5PeekRouter::new(socks5_acceptor).with_fallback(auto_tls_acceptor);
 
-    graceful.spawn_task(tcp_service.serve(auto_socks5_acceptor));
+    exec.into_spawn_task(tcp_service.serve(auto_socks5_acceptor));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {

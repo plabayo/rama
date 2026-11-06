@@ -30,6 +30,7 @@
 use rama::{
     Layer,
     extensions::Extensions,
+    graceful::Scope,
     http::{
         StatusCode,
         headers::exotic::XClacksOverhead,
@@ -66,7 +67,9 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     let router =
         Router::new()
@@ -83,13 +86,13 @@ async fn main() {
     );
 
     let tcp_svc = AbortableLayer::new().into_layer(
-        HttpServer::auto(Executor::graceful(graceful.guard()))
+        HttpServer::auto(Executor::from(scope.clone()))
             .service(Arc::new(http_middlewares.into_layer(router))),
     );
 
-    graceful.spawn_task_fn(async |guard| {
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         tracing::info!("running service at: {ADDRESS}");
-        let exec = Executor::graceful(guard);
         TcpListener::bind_address(ADDRESS, exec)
             .await
             .unwrap()
@@ -97,8 +100,5 @@ async fn main() {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

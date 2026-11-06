@@ -10,7 +10,6 @@ use rama::{
     combinators::{Either, Either7},
     error::{BoxError, ErrorContext},
     extensions::{Extension, ExtensionsRef},
-    graceful::ShutdownGuard,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue, Request,
         header::COOKIE,
@@ -35,7 +34,7 @@ use rama::{
         ws::handshake::server::{ServerWebSocket, WebSocketAcceptor},
     },
     layer::{
-        ConsumeErrLayer, Layer, LimitLayer, TimeoutLayer,
+        ConsumeErrLayer, Layer, LimitLayer, ScopeLayer,
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -104,7 +103,7 @@ pub struct CliCommandFingerprint {
     concurrent: usize,
 
     #[arg(short = 't', long, default_value_t = 60.)]
-    /// the timeout in seconds for each connection
+    /// the timeout in seconds for each connection; it drains from three quarters on
     ///
     /// (<= 0.0 = no timeout)
     timeout: f64,
@@ -153,7 +152,7 @@ pub struct CliCommandFingerprint {
 
 /// run the rama FP service
 pub async fn run(
-    graceful: ShutdownGuard,
+    exec: Executor,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandFingerprint,
 ) -> Result<(), BoxError> {
@@ -189,7 +188,6 @@ pub async fn run(
         Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
     };
 
-    let exec = Executor::graceful(graceful);
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {
@@ -385,10 +383,16 @@ where
     Response: IntoResponse + Send + 'static,
 {
     let (maybe_ha_proxy_layer, collection_layer) = connection_layers;
+    // Drain at three quarters of the connection timeout; drop what is left at the timeout.
+    let connection_scope = ScopeLayer::new().with_parent(exec.scope().clone());
     let connection_timeout = if cfg.timeout > 0. {
-        TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
+        let timeout = Duration::from_secs_f64(cfg.timeout);
+        let grace = timeout / 4;
+        connection_scope
+            .with_max_age(timeout.saturating_sub(grace))
+            .with_grace(grace)
     } else {
-        TimeoutLayer::never()
+        connection_scope
     };
     let connection_limit = LimitLayer::new(if cfg.concurrent > 0 {
         Either::A(ConcurrentPolicy::max_with_backoff(

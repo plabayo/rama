@@ -3,7 +3,8 @@ use std::time::Duration;
 use clap::{Args, Subcommand};
 use rama::{
     error::BoxError,
-    graceful,
+    graceful::{self, Scope},
+    rt::Executor,
     telemetry::tracing::{self, subscriber::filter::LevelFilter},
 };
 
@@ -29,7 +30,7 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
     let graceful_timeout = (cfg.graceful > 0.).then(|| Duration::from_secs_f64(cfg.graceful));
 
     let (etx, mut erx) = tokio::sync::mpsc::channel::<BoxError>(1);
-    let graceful = graceful::Shutdown::new(async move {
+    let scope = Scope::new().with_signal(async move {
         let mut signal = Box::pin(graceful::default_signal());
         tokio::select! {
             _ = signal.as_mut() => {
@@ -45,36 +46,34 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
             }
         }
     });
+    let scope = match graceful_timeout {
+        Some(grace) => scope.with_grace(grace),
+        None => scope,
+    };
 
+    let exec = Executor::from(scope.clone());
     let http3_endpoints = Http3Endpoints::default();
     match cfg.commands {
-        ServeSubcommand::Discard(cfg) => discard::run(graceful.guard(), cfg).await?,
-        ServeSubcommand::Echo(cfg) => {
-            echo::run(graceful.guard(), etx, http3_endpoints.clone(), cfg).await?
-        }
-        ServeSubcommand::Fp(cfg) => fp::run(graceful.guard(), http3_endpoints.clone(), cfg).await?,
-        ServeSubcommand::HttpTest(cfg) => {
-            httptest::run(graceful.guard(), http3_endpoints.clone(), cfg).await?
-        }
-        ServeSubcommand::Icap(cfg) => icap::run(graceful.guard(), cfg).await?,
-        ServeSubcommand::Fs(cfg) => fs::run(graceful.guard(), cfg).await?,
-        ServeSubcommand::Ip(cfg) => ip::run(graceful.guard(), http3_endpoints.clone(), cfg).await?,
-        ServeSubcommand::Proxy(cfg) => {
-            proxy::run(graceful.guard(), http3_endpoints.clone(), *cfg).await?
-        }
-        ServeSubcommand::Stunnel(cfg) => stunnel::run(graceful.guard(), cfg).await?,
+        ServeSubcommand::Discard(cfg) => discard::run(exec, cfg).await?,
+        ServeSubcommand::Echo(cfg) => echo::run(exec, etx, http3_endpoints.clone(), cfg).await?,
+        ServeSubcommand::Fp(cfg) => fp::run(exec, http3_endpoints.clone(), cfg).await?,
+        ServeSubcommand::HttpTest(cfg) => httptest::run(exec, http3_endpoints.clone(), cfg).await?,
+        ServeSubcommand::Icap(cfg) => icap::run(exec, cfg).await?,
+        ServeSubcommand::Fs(cfg) => fs::run(exec, cfg).await?,
+        ServeSubcommand::Ip(cfg) => ip::run(exec, http3_endpoints.clone(), cfg).await?,
+        ServeSubcommand::Proxy(cfg) => proxy::run(exec, http3_endpoints.clone(), *cfg).await?,
+        ServeSubcommand::Stunnel(cfg) => stunnel::run(exec, cfg).await?,
     }
 
-    let delay = match graceful_timeout {
-        Some(duration) => match graceful.shutdown_with_limit(duration).await {
-            Ok(delay) => delay,
-            Err(error) => {
-                // Drained or not, HTTP/3 peers learn of the exit now instead of at their idle timeout.
-                http3_endpoints.shutdown(Duration::from_millis(100)).await;
-                return Err(error.into());
-            }
-        },
-        None => graceful.shutdown().await,
+    // Serve until cancelled, also when no task holds the scope, such as a detached UDP server.
+    scope.cancelled().await;
+    let delay = match scope.join().await {
+        Ok(delay) => delay,
+        Err(error) => {
+            // Drained or not, HTTP/3 peers learn of the exit now instead of at their idle timeout.
+            http3_endpoints.shutdown(Duration::from_millis(100)).await;
+            return Err(error.into());
+        }
     };
 
     tracing::info!("gracefully shutdown with a delay of: {delay:?}");

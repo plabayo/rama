@@ -4,6 +4,7 @@
 //! duration of its use and that is returned to the pool on drop. Each pooled
 //! connection serves a single user at a time.
 
+use super::drain::ConnScope;
 #[cfg(feature = "opentelemetry")]
 use super::metrics;
 use super::reuse::LaneKey;
@@ -111,9 +112,34 @@ struct PooledConnection<C, ID> {
     /// Which requests may use the connection, `None` if it is dropped once
     /// returned. Read from [`ConnectionReuse`] once, when it is added.
     lane: Option<LaneKey>,
+    /// The scope it runs in, if any: dropped once returned after its cancel.
+    scope: Option<ConnScope>,
 }
 
+impl<C, ID> PooledConnection<C, ID> {
+    /// Whether the scope it runs in is cancelled: it is never handed out again. Reads the
+    /// scope, so call it outside the storage lock.
+    fn observe_drain(&self) -> bool {
+        self.scope.as_ref().is_some_and(ConnScope::observe)
+    }
+
+    /// Whether the scope it runs in was seen cancelled: safe under the storage lock.
+    fn is_drained(&self) -> bool {
+        self.scope.as_ref().is_some_and(ConnScope::is_drained)
+    }
+}
+
+/// Connections out of the pool, dropped once the storage lock is released: a socket's
+/// teardown and its scope's last reference both may run code.
+type Doomed<C> = Vec<(C, Option<ConnScope>)>;
+
 /// Connection pool that uses LRU to evict connections
+///
+/// A pooled connection follows the scope it runs in, the [`scope_context`] of its extensions:
+/// in its graceful phase an idle connection closes at once and a leased one once returned,
+/// while checkouts go on to dial new connections.
+///
+/// [`scope_context`]: rama_core::graceful::scope_context
 pub struct LruDropPool<C, ID> {
     storage: Arc<Mutex<VecDeque<PooledConnection<C, ID>>>>,
     retired: Arc<AtomicBool>,
@@ -151,18 +177,25 @@ impl<C, ID> Clone for ConnReturner<C, ID> {
 
 impl<C, ID> ConnReturner<C, ID> {
     fn return_conn(&self, mut conn: PooledConnection<C, ID>) {
-        if conn.lane.is_none() || self.retired.load(Ordering::Acquire) {
+        if conn.lane.is_none() || self.retired.load(Ordering::Acquire) || conn.observe_drain() {
             return;
         }
         if let Some(storage) = self.weak_storage.upgrade() {
-            // Ensure correct ordering by locking storage before loading the
-            // last used time.
-            let mut storage = storage.lock();
-            if self.retired.load(Ordering::Acquire) {
-                return;
-            }
-            conn.last_used = Instant::now();
-            storage.push_front(conn);
+            let refused = {
+                // Ensure correct ordering by locking storage before loading the
+                // last used time.
+                let mut storage = storage.lock();
+                // Under the lock its watcher takes after setting the flag: one returned after
+                // the cancel is never stored.
+                if self.retired.load(Ordering::Acquire) || conn.is_drained() {
+                    Some(conn)
+                } else {
+                    conn.last_used = Instant::now();
+                    storage.push_front(conn);
+                    None
+                }
+            };
+            drop(refused);
         }
     }
 }
@@ -234,7 +267,7 @@ impl<C, ID> LruDropPool<C, ID> {
     /// this pool.
     pub fn retire(&self) {
         self.retired.store(true, Ordering::Release);
-        // take, not clear: the sockets close after the lock is released
+        // take, not clear: the sockets and scopes go after the lock is released
         let idle = std::mem::take(&mut *self.storage.lock());
         drop(idle);
     }
@@ -292,7 +325,7 @@ impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
         &self,
         id: &ID,
         input: &Extensions,
-        doomed: &mut Vec<C>,
+        doomed: &mut Doomed<C>,
     ) -> Option<(usize, PooledConnection<C, ID>)> {
         if !id.is_reusable() {
             return None;
@@ -332,7 +365,7 @@ impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
                 (index, None) => {
                     let conn = storage.remove(index)?;
                     drop(storage);
-                    if is_broken(&conn) {
+                    if is_broken(&conn) || conn.observe_drain() {
                         park(conn, doomed);
                         continue;
                     }
@@ -398,7 +431,7 @@ where
         // Connections leaving the pool release their slot right away, but the
         // socket itself (TLS teardown, `close(2)`) only drops once the storage
         // lock is released.
-        let mut doomed: Vec<C> = Vec::new();
+        let mut doomed: Doomed<C> = Vec::new();
 
         if let Some(timeout) = self.idle_timeout {
             let mut storage = self.storage.lock();
@@ -445,9 +478,10 @@ where
                 },
                 None => None,
             };
-            // Last look before the handout: the connection may have closed
-            // while the policy or the resource provider ran.
-            if is_broken(&conn) {
+            // Last look before the handout: the connection may have closed,
+            // or its scope been cancelled, while the policy or the resource
+            // provider ran.
+            if is_broken(&conn) || conn.observe_drain() {
                 park(conn, &mut doomed);
                 continue;
             }
@@ -497,9 +531,12 @@ where
                         .map(|evicted| {
                             // the slot transfers to the caller, the socket drops later
                             let PooledConnection {
-                                pool_slot, conn, ..
+                                pool_slot,
+                                conn,
+                                scope,
+                                ..
                             } = evicted;
-                            doomed.push(conn);
+                            doomed.push((conn, scope));
                             pool_slot
                         })
                 }
@@ -542,6 +579,11 @@ where
 
         let reuse = conn.extensions().get_ref::<ConnectionReuse>();
         let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable());
+        let (scope, watcher) = ConnScope::of(conn.extensions()).unzip();
+        if let Some(watcher) = watcher {
+            let storage = Arc::downgrade(&self.storage);
+            watcher.spawn(move || drain_idle(&storage));
+        }
 
         Ok(LeasedConnection {
             admission,
@@ -553,6 +595,7 @@ where
                 conn,
                 pool_slot,
                 last_used: Instant::now(),
+                scope,
             }),
             pooled_conn_taken: false,
             got_response: AtomicBool::new(false),
@@ -562,14 +605,44 @@ where
     }
 }
 
-/// Free a discarded connection's pool slot now and park the connection itself
+/// Close the idle connections whose scope was seen cancelled: a leased one is dropped
+/// once returned instead.
+fn drain_idle<C, ID>(storage: &Weak<Mutex<VecDeque<PooledConnection<C, ID>>>>) {
+    let Some(storage) = storage.upgrade() else {
+        return;
+    };
+    let mut doomed = Vec::new();
+    {
+        let mut storage = storage.lock();
+        // One pass that keeps the LRU order of the rest.
+        let kept = std::mem::take(&mut *storage)
+            .into_iter()
+            .filter_map(|conn| {
+                if conn.is_drained() {
+                    trace!("LRU connection pool: dropping idle connection of a cancelled scope");
+                    park(conn, &mut doomed);
+                    None
+                } else {
+                    Some(conn)
+                }
+            })
+            .collect();
+        *storage = kept;
+    }
+    drop(doomed);
+}
+
+/// Free a discarded connection's pool slot now and park the connection and its scope
 /// for dropping outside the storage lock.
-fn park<C, ID>(pooled_conn: PooledConnection<C, ID>, doomed: &mut Vec<C>) {
+fn park<C, ID>(pooled_conn: PooledConnection<C, ID>, doomed: &mut Doomed<C>) {
     let PooledConnection {
-        conn, pool_slot, ..
+        conn,
+        pool_slot,
+        scope,
+        ..
     } = pooled_conn;
     drop(pool_slot);
-    doomed.push(conn);
+    doomed.push((conn, scope));
 }
 
 impl<C: Debug, ID: Debug> Debug for PooledConnection<C, ID> {
@@ -820,13 +893,19 @@ mod tests {
     use crate::client::{ConnectorService, EstablishedClientConnection};
     use rama_core::ServiceInput;
     use rama_core::extensions::ExtensionsRef;
+    use rama_core::graceful::{Cause, Scope, WeakScope, attach_scope};
     use rama_core::{Service, extensions::Extensions};
     use rama_utils::reactive::ChangeListener;
     use std::assert_matches;
     use std::sync::{Barrier, Weak, atomic::AtomicBool};
     use std::{
         convert::Infallible,
-        sync::atomic::{AtomicI16, Ordering},
+        sync::atomic::{AtomicI16, AtomicUsize, Ordering},
+        task::{Context, Poll},
+    };
+    use tokio::{
+        sync::{oneshot, oneshot::error::TryRecvError, watch},
+        time::timeout,
     };
     use tokio_test::assert_ok;
 
@@ -1717,5 +1796,348 @@ mod tests {
         let conn = svc.connect(ServiceInput::new(())).await.unwrap().conn;
 
         assert_eq!(conn.pooled_conn.conn[0], expected);
+    }
+
+    /// Bounds every wait of the draining tests.
+    const LIMIT: Duration = Duration::from_secs(10);
+
+    /// Dropped with the connection whose extensions hold it.
+    #[derive(Debug, Extension)]
+    struct Closes {
+        _signal: oneshot::Sender<()>,
+    }
+
+    /// Counts the connections dropped, through the one whose extensions hold it.
+    #[derive(Debug, Extension)]
+    struct Counted(watch::Sender<usize>);
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.send_modify(|dropped| *dropped += 1);
+        }
+    }
+
+    /// A connection running in `scope` (none: in no scope), and what tells it closed.
+    fn conn_in(scope: Option<&Scope>) -> (Conn, oneshot::Receiver<()>) {
+        let conn = Conn::new();
+        if let Some(scope) = scope {
+            attach_scope(conn.extensions(), scope);
+        }
+        let (signal, closed) = oneshot::channel();
+        conn.extensions().insert(Closes { _signal: signal });
+        (conn, closed)
+    }
+
+    fn is_closed(closed: &mut oneshot::Receiver<()>) -> bool {
+        matches!(closed.try_recv(), Err(TryRecvError::Closed))
+    }
+
+    async fn closes(closed: &mut oneshot::Receiver<()>) {
+        timeout(LIMIT, closed)
+            .await
+            .expect("the connection closes")
+            .unwrap_err();
+    }
+
+    /// Wait until no watcher, the only tasks these tests spawn, is left.
+    async fn watchers_end() {
+        let metrics = tokio::runtime::Handle::current().metrics();
+        timeout(LIMIT, async {
+            while metrics.num_alive_tasks() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("every watcher ends");
+    }
+
+    fn draining_pool(max: usize) -> LruDropPool<Conn, usize> {
+        LruDropPool::try_new(max, max)
+            .unwrap()
+            .with_drop_connection_if_no_response(false)
+    }
+
+    /// A signal that never completes and runs `0` once dropped, as a scope drops it on its
+    /// cancel.
+    struct OnDrop(Option<Box<dyn FnOnce() + Send>>);
+
+    impl Future for OnDrop {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            if let Some(on_drop) = self.0.take() {
+                on_drop();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scope_cancelled_by_its_deadline_is_observed_outside_the_storage_lock() {
+        let pool = draining_pool(1);
+        let storage = pool.storage.clone();
+        let lock_was_free = Arc::new(AtomicBool::new(false));
+        let observed = lock_was_free.clone();
+        let scope = Scope::new().with_signal(OnDrop(Some(Box::new(move || {
+            observed.store(storage.try_lock().is_some(), Ordering::SeqCst);
+        }))));
+        let (conn, mut closed) = conn_in(Some(&scope));
+        let held = add(&pool, conn).await;
+        let scope = scope.with_deadline(Instant::now());
+        drop(held);
+        assert!(lock_was_free.load(Ordering::SeqCst));
+        assert!(is_closed(&mut closed));
+        assert!(pool.storage.lock().is_empty());
+        drop(scope);
+        watchers_end().await;
+    }
+
+    #[tokio::test]
+    async fn a_signal_dropped_on_a_returns_deadline_can_retire_the_pool() {
+        let pool = draining_pool(1);
+        let retiring = pool.clone();
+        let scope = Scope::new().with_signal(OnDrop(Some(Box::new(move || retiring.retire()))));
+        let (conn, mut closed) = conn_in(Some(&scope));
+        let held = add(&pool, conn).await;
+        let scope = scope.with_deadline(Instant::now());
+        // On its own thread: a deadlock fails the test instead of hanging it.
+        let (done, returned) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(held);
+            let _sent = done.send(());
+        });
+        returned
+            .recv_timeout(LIMIT)
+            .expect("the return completes while the signal retires the pool");
+        assert!(is_closed(&mut closed));
+        assert!(pool.retired.load(Ordering::Acquire));
+        drop(scope);
+        watchers_end().await;
+    }
+
+    #[tokio::test]
+    async fn idle_connection_closes_once_its_scope_is_cancelled() {
+        let pool = draining_pool(2);
+        let scope = Scope::new();
+        let (conn, mut closed) = conn_in(Some(&scope));
+        drop(add(&pool, conn).await);
+        assert_eq!(pool.storage.lock().len(), 1);
+
+        scope.cancel(Cause::Owner);
+        closes(&mut closed).await;
+        assert!(pool.storage.lock().is_empty());
+        assert_eq!(pool.total_slots.available_permits(), 2);
+        watchers_end().await;
+    }
+
+    #[tokio::test]
+    async fn leased_connection_closes_once_returned_after_its_scope_is_cancelled() {
+        let pool = draining_pool(2);
+        let scope = Scope::new();
+        let (conn, mut closed) = conn_in(Some(&scope));
+        let leased = add(&pool, conn).await;
+
+        scope.cancel(Cause::Owner);
+        watchers_end().await;
+        assert!(!is_closed(&mut closed), "a leased connection keeps serving");
+        drop(leased);
+        assert!(is_closed(&mut closed));
+        assert!(pool.storage.lock().is_empty());
+        assert_eq!(pool.total_slots.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn checkout_right_after_the_cancel_dials_instead_of_reusing() {
+        let pool = draining_pool(2);
+        let scope = Scope::new();
+        let (conn, mut closed) = conn_in(Some(&scope));
+        drop(add(&pool, conn).await);
+
+        // Before the watcher ran: the checkout itself refuses the connection.
+        scope.cancel(Cause::Owner);
+        let result = pool.get_conn(&0, &Extensions::new(), None).await.unwrap();
+        assert_matches!(result, ConnectionResult::CreatePermit(_));
+        assert!(is_closed(&mut closed));
+        watchers_end().await;
+    }
+
+    #[tokio::test]
+    async fn connection_made_in_a_cancelled_scope_serves_its_checkout_and_closes() {
+        let pool = draining_pool(2);
+        let scope = Scope::new();
+        scope.cancel(Cause::Owner);
+        let (conn, mut closed) = conn_in(Some(&scope));
+        let leased = add(&pool, conn).await;
+        leased
+            .serve(ServiceInput::new((false, Duration::ZERO)))
+            .await
+            .unwrap();
+        // Another checkout meanwhile dials its own.
+        let (other, mut other_closed) = conn_in(Some(&scope));
+        let other = add(&pool, other).await;
+
+        drop(leased);
+        assert!(is_closed(&mut closed));
+        drop(other);
+        assert!(is_closed(&mut other_closed));
+        assert!(pool.storage.lock().is_empty());
+        assert_eq!(pool.total_slots.available_permits(), 2);
+        watchers_end().await;
+    }
+
+    #[tokio::test]
+    async fn connection_outside_the_cancelled_scope_is_kept() {
+        let pool = draining_pool(2);
+        let scope = Scope::new();
+        let (scoped, mut scoped_closed) = conn_in(Some(&scope));
+        let (unscoped, mut unscoped_closed) = conn_in(None);
+        let scoped = add(&pool, scoped).await;
+        let unscoped = add(&pool, unscoped).await;
+        drop((scoped, unscoped));
+
+        scope.cancel(Cause::Owner);
+        closes(&mut scoped_closed).await;
+        watchers_end().await;
+        assert!(!is_closed(&mut unscoped_closed));
+        assert_eq!(pool.storage.lock().len(), 1);
+        let result = pool.get_conn(&0, &Extensions::new(), None).await.unwrap();
+        assert_matches!(result, ConnectionResult::Connection(_));
+    }
+
+    #[tokio::test]
+    async fn watcher_ends_with_its_connection() {
+        let pool = draining_pool(1);
+        let scope = Scope::new();
+        let (conn, mut closed) = conn_in(Some(&scope));
+        drop(add(&pool, conn).await);
+        assert_eq!(
+            tokio::runtime::Handle::current()
+                .metrics()
+                .num_alive_tasks(),
+            1
+        );
+
+        // Evicted for a checkout of another id, before any cancel.
+        let result = pool.get_conn(&1, &Extensions::new(), None).await.unwrap();
+        assert_matches!(result, ConnectionResult::CreatePermit(_));
+        assert!(is_closed(&mut closed));
+        watchers_end().await;
+        scope.cancel(Cause::Owner);
+    }
+
+    /// Cancels its scope once armed, as the checkout that admits it looks.
+    #[derive(Debug)]
+    struct CancelOnAdmission {
+        armed: Arc<AtomicBool>,
+        scope: WeakScope,
+    }
+
+    #[derive(Debug, Extension)]
+    struct Binding;
+
+    impl ConnectionAdmissionPolicy for CancelOnAdmission {
+        fn try_acquire(
+            &self,
+            _: &Extensions,
+        ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+            if self.armed.load(Ordering::SeqCst) {
+                self.scope.cancel(Cause::Owner);
+            }
+            Ok(Some(ConnectionAdmissionLease::new(Arc::new(()), Binding)))
+        }
+
+        fn subscribe(&self, _: Weak<dyn ChangeListener>) {}
+
+        fn in_use(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_whose_scope_is_cancelled_during_admission_is_not_handed_out() {
+        let pool = draining_pool(1);
+        let scope = Scope::new();
+        let (conn, mut closed) = conn_in(Some(&scope));
+        let armed = Arc::new(AtomicBool::new(false));
+        conn.extensions
+            .insert(ConnectionAdmission::new(CancelOnAdmission {
+                armed: armed.clone(),
+                scope: scope.clone_weak(),
+            }));
+        drop(add(&pool, conn).await);
+        armed.store(true, Ordering::SeqCst);
+        let result = pool.get_conn(&0, &Extensions::new(), None).await.unwrap();
+        assert_matches!(result, ConnectionResult::CreatePermit(_));
+        assert!(is_closed(&mut closed));
+        watchers_end().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_checkouts_never_reuse_a_connection_after_its_cancel() {
+        const TASKS: usize = 8;
+        const ROUNDS: usize = 64;
+        let pool = draining_pool(TASKS);
+        let scope = Scope::new();
+        let created = Arc::new(AtomicUsize::new(0));
+        let (counter, mut dropped) = watch::channel(0_usize);
+
+        let workers: Vec<_> = (0..TASKS)
+            .map(|task| {
+                let (pool, scope, created, counter) = (
+                    pool.clone(),
+                    scope.clone(),
+                    created.clone(),
+                    counter.clone(),
+                );
+                tokio::spawn(async move {
+                    for round in 0..ROUNDS {
+                        if task == 0 && round == ROUNDS / 2 {
+                            scope.cancel(Cause::Owner);
+                        }
+                        // Observed before the checkout starts: it must not reuse.
+                        let cancelled = scope.is_cancelled();
+                        let input = Extensions::new();
+                        let checkout = pool.get_conn(&0, &input, None);
+                        let leased = match timeout(LIMIT, checkout).await.unwrap().unwrap() {
+                            ConnectionResult::Connection(leased) => {
+                                assert!(!cancelled, "reused after the cancel");
+                                leased
+                            }
+                            ConnectionResult::CreatePermit(permit) => {
+                                created.fetch_add(1, Ordering::SeqCst);
+                                let (conn, _closed) = conn_in(Some(&scope));
+                                conn.extensions().insert(Counted(counter.clone()));
+                                timeout(LIMIT, pool.create(0, conn, permit, &input))
+                                    .await
+                                    .unwrap()
+                                    .unwrap()
+                            }
+                        };
+                        tokio::task::yield_now().await;
+                        drop(leased);
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            timeout(LIMIT, worker).await.unwrap().unwrap();
+        }
+
+        let created = created.load(Ordering::SeqCst);
+        assert!(
+            created < TASKS * ROUNDS,
+            "connections were reused before the cancel"
+        );
+        timeout(LIMIT, dropped.wait_for(|dropped| *dropped == created))
+            .await
+            .expect("every connection closes")
+            .unwrap();
+        assert!(pool.storage.lock().is_empty());
+        assert_eq!(pool.total_slots.available_permits(), TASKS);
     }
 }

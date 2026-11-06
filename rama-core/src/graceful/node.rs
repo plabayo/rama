@@ -2,17 +2,23 @@
 
 use std::{
     future::Future,
+    mem::ManuallyDrop,
+    num::{NonZeroU64, NonZeroUsize},
     pin::Pin,
+    ptr::NonNull,
     task::{Context, Poll, Wake, Waker},
     time::Duration,
 };
 
+use rama_utils::collections::smallvec::SmallVec;
 use slab::Slab;
 use tokio::time::Instant;
 
 use super::{
     cause::Cause,
-    sync::{Arc, AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Mutex, Ordering, fence},
+    sync::{
+        Arc, AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Mutex, Ordering, fence, thread_local,
+    },
 };
 
 const CANCELLED: u8 = 1 << 0;
@@ -142,15 +148,38 @@ impl Node {
     }
 
     /// Makes sure every wake of an ancestor's waiters reaches this node's waiters.
+    #[inline]
     fn ensure_relayed(&self) {
-        // Acquire: pairs with the store below, so the relay chain is in place.
-        if self.relayed.load(Ordering::Acquire) {
-            return;
+        // Acquire: pairs with the store in `install_relay`, so the relay chain is in place.
+        if !self.relayed.load(Ordering::Acquire) {
+            self.install_relays();
         }
+    }
+
+    /// Relays this node and every ancestor that is not yet; once per node, off the poll path.
+    #[cold]
+    #[inline(never)]
+    fn install_relays(&self) {
+        // Installed from the relayed end down, without recursion: a deep tree costs no stack.
+        let mut missing: SmallVec<[&Self; 8]> = SmallVec::new();
+        let mut node = Some(self);
+        while let Some(current) = node {
+            if current.relayed.load(Ordering::Acquire) {
+                break;
+            }
+            missing.push(current);
+            node = current.parent();
+        }
+        for node in missing.iter().rev() {
+            node.install_relay();
+        }
+    }
+
+    /// Puts this node's relay on its parent's waiters; its parent must be relayed already.
+    fn install_relay(&self) {
         let Some(parent) = self.parent() else {
             return;
         };
-        parent.ensure_relayed();
         let mut relay = self.relay.lock();
         if relay.is_none() {
             let new = std::sync::Arc::new(Relay {
@@ -166,6 +195,20 @@ impl Node {
 
     pub(super) fn parent(&self) -> Option<&Self> {
         self.parent.as_deref()
+    }
+
+    /// This node and its ancestors, nearest first. Every walk over them is a loop, so a
+    /// deep tree costs no stack.
+    fn chain(&self) -> SmallVec<[&Self; 8]> {
+        let mut chain = SmallVec::new();
+        let mut node = Some(self);
+        while let Some(current) = node {
+            chain.push(current);
+            node = current.parent();
+        }
+        #[cfg(all(test, not(rama_loom)))]
+        walk_steps::add(chain.len());
+        chain
     }
 
     #[cfg(all(test, not(rama_loom)))]
@@ -212,19 +255,38 @@ impl Node {
     /// Publishes a phase once: picks the earliest reached candidate (plus `extra`) and fixes
     /// its instant and cause; later candidates never change a published phase.
     fn publish(&self, flag: u8, extra: Option<Candidate>) {
+        // Ancestors publish first, so a cause taken from them stays theirs.
+        let parent = match self.parent() {
+            Some(parent) => {
+                let _phase = parent.phase();
+                parent.candidates()
+            }
+            None => (None, None),
+        };
+        let _own = self.publish_with(flag, extra, as_parent(parent), false, true);
+    }
+
+    /// Publishes `flag` (or nothing for `0`) given the candidates of the parent, and returns
+    /// whether it published, plus the candidates of this node for its children if `children`.
+    /// Wakes its waiters if `wake`.
+    fn publish_with(
+        &self,
+        flag: u8,
+        extra: Option<Candidate>,
+        parent: Candidates,
+        children: bool,
+        wake: bool,
+    ) -> (Candidates, bool) {
         // `extra` is only cloned below: a caller's cause may run code when dropped, so its
         // last reference goes after every lock is released.
-        // Ancestors publish first, so a cause taken from them stays theirs.
-        if let Some(parent) = self.parent() {
-            let _phase = parent.phase();
-        }
         let mut published = false;
+        let mut own = (None, None);
         {
             let mut causes = self.causes.lock();
             // A candidate reached after `extra` would lose to it, so its instant serves as now.
             let now = extra.as_ref().map_or_else(Instant::now, |extra| extra.at);
             if flag == ABORTED && causes.abort.is_none() {
-                let (_, hard) = self.candidates_locked(&causes);
+                let (_, hard) = self.own_candidates(&causes, parent.clone());
                 if let Some(best) = pick(hard.filter(|c| c.at <= now), extra.clone()) {
                     self.aborted_at
                         .store(self.offset(best.at), Ordering::Relaxed);
@@ -234,8 +296,9 @@ impl Node {
                     published = true;
                 }
             }
-            if causes.cancel.is_none() && (flag == CANCELLED || causes.abort.is_some()) {
-                let (graceful, _) = self.candidates_locked(&causes);
+            if flag != 0 && causes.cancel.is_none() && (flag == CANCELLED || causes.abort.is_some())
+            {
+                let (graceful, _) = self.own_candidates(&causes, parent.clone());
                 let extra = if flag == CANCELLED {
                     extra.clone()
                 } else {
@@ -249,12 +312,18 @@ impl Node {
                     published = true;
                 }
             }
+            if children {
+                own = self.own_candidates(&causes, parent);
+            }
         }
         if published {
             self.drop_settled_signals();
         }
-        self.waiters.wake_all();
+        if wake && flag != 0 {
+            self.waiters.wake_all();
+        }
         drop(extra);
+        (own, published)
     }
 
     /// Drops the signals of every reached phase, so what they capture is not held until the
@@ -422,8 +491,8 @@ impl Node {
         }
     }
 
-    pub(super) fn times(&self) -> Times {
-        let parent = self.parent().map(Self::times).unwrap_or_default();
+    /// The times of this node, given those of its parent.
+    fn own_times(&self, parent: Times) -> Times {
         let flags = self.flags.load(Ordering::Acquire);
         let timed = flags & TIMED != 0;
         let mut times = Times::default();
@@ -468,22 +537,82 @@ impl Node {
     }
 
     /// Current phase; publishes a phase reached by time or through an ancestor.
+    #[inline]
     pub(super) fn phase(&self) -> Phase {
         let flags = self.flags.load(Ordering::Acquire);
         if let Some(phase) = self.quick_phase(flags) {
             return phase;
         }
-        let phase = self.times().phase();
+        self.phase_slow()
+    }
+
+    /// As [`Self::phase`], and whether the walk up published every phase reached on the way.
+    pub(super) fn phase_walked(&self) -> (Phase, bool) {
         let flags = self.flags.load(Ordering::Acquire);
-        if phase.hard && flags & ABORTED == 0 {
-            self.publish(ABORTED, None);
-        } else if phase.graceful && flags & CANCELLED == 0 {
-            self.publish(CANCELLED, None);
+        match self.quick_phase(flags) {
+            Some(phase) => (phase, false),
+            None => (self.phase_slow(), true),
         }
-        phase
+    }
+
+    /// The phase when a clock or an ancestor is involved; kept out of the quick path.
+    #[cold]
+    #[inline(never)]
+    fn phase_slow(&self) -> Phase {
+        // Root first: an ancestor publishes before its children, so a cause taken from it
+        // stays its own.
+        let chain = self.chain();
+        let mut times = Times::default();
+        let mut phases: SmallVec<[Phase; 8]> = SmallVec::with_capacity(chain.len());
+        for node in chain.iter().rev() {
+            times = node.own_times(times);
+            phases.push(times.phase());
+        }
+        let unpublished = |node: &Self, phase: &Phase| {
+            let flags = node.flags.load(Ordering::Acquire);
+            if phase.hard && flags & ABORTED == 0 {
+                ABORTED
+            } else if phase.graceful && flags & CANCELLED == 0 {
+                CANCELLED
+            } else {
+                0
+            }
+        };
+        if chain
+            .iter()
+            .rev()
+            .zip(&phases)
+            .any(|(node, phase)| unpublished(node, phase) != 0)
+        {
+            let mut candidates = (None, None);
+            let mut topmost = None;
+            for (depth, (node, phase)) in chain.iter().rev().zip(&phases).enumerate() {
+                let flag = unpublished(node, phase);
+                let children = depth + 1 < chain.len();
+                if flag == 0 && !children {
+                    break;
+                }
+                let (own, published) = node.publish_with(flag, None, candidates, children, false);
+                candidates = as_parent(own);
+                if published && topmost.is_none() {
+                    topmost = Some(*node);
+                }
+            }
+            // Once, at the topmost level that changed: every waiter below has relays up to
+            // it, so a wake per level would reach the same waiters once per ancestor.
+            if let Some(node) = topmost {
+                node.waiters.wake_all();
+            }
+        }
+        phases.last().copied().unwrap_or(Phase {
+            graceful: false,
+            hard: false,
+            next: None,
+        })
     }
 
     /// Phase from flags alone, when no clock is involved and nothing needs publishing.
+    #[inline]
     fn quick_phase(&self, own: u8) -> Option<Phase> {
         if own & ABORTED != 0 {
             return Some(Phase {
@@ -497,6 +626,8 @@ impl Node {
         }
         let mut node = self.parent();
         while let Some(current) = node {
+            #[cfg(all(test, not(rama_loom)))]
+            walk_steps::add(1);
             let flags = current.flags.load(Ordering::Acquire);
             if flags & (TIMED | ABORTED) != 0 || (flags & CANCELLED != 0 && own & CANCELLED == 0) {
                 return None;
@@ -517,24 +648,76 @@ impl Node {
         (causes.cancel.clone(), causes.abort.clone())
     }
 
-    fn candidates(&self) -> (Option<Candidate>, Option<Candidate>) {
-        let causes = self.causes.lock();
-        self.candidates_locked(&causes)
+    /// Publishes every phase reached on the way up, even when this node's own flags would end
+    /// the walk of [`Self::phase`] early.
+    pub(super) fn publish_up_the_chain(&self) {
+        let _phase = self.phase_slow();
     }
 
-    /// Scheduled graceful and hard candidates; a published phase is its only candidate.
-    fn candidates_locked(&self, causes: &Causes) -> (Option<Candidate>, Option<Candidate>) {
-        let (parent_graceful, parent_hard) = match self.parent() {
-            Some(parent) => {
-                let (graceful, hard) = parent.candidates();
-                let as_parent = |c: Candidate| Candidate {
-                    rank: RANK_PARENT,
-                    ..c
-                };
-                (graceful.map(as_parent), hard.map(as_parent))
+    /// Instant of the published graceful (or `hard`) phase, without publishing one reached by
+    /// time or through an ancestor first. A published phase never changes, so its cause can be
+    /// read later with [`Self::published_so_far`].
+    pub(super) fn published_at(&self, hard: bool) -> Option<Instant> {
+        let flag = if hard { ABORTED } else { CANCELLED };
+        // Acquire: pairs with the publication's Release, after it stored the instant.
+        if self.flags.load(Ordering::Acquire) & flag == 0 {
+            return None;
+        }
+        self.instant(if hard {
+            &self.aborted_at
+        } else {
+            &self.cancelled_at
+        })
+    }
+
+    /// Instants of the published graceful and hard phases, read together, without publishing
+    /// one reached by time or through an ancestor first. An abort publishes the cancel it
+    /// implies under the same lock, so a read between the two waits for that lock.
+    pub(super) fn published_both_at(&self) -> (Option<Instant>, Option<Instant>) {
+        let mut flags = self.flags.load(Ordering::Acquire);
+        if flags & ABORTED != 0 && flags & CANCELLED == 0 {
+            drop(self.causes.lock());
+            flags = self.flags.load(Ordering::Acquire);
+        }
+        let at = |flag: u8, field: &AtomicU64| {
+            if flags & flag == 0 {
+                None
+            } else {
+                self.instant(field)
             }
-            None => (None, None),
         };
+        (
+            at(CANCELLED, &self.cancelled_at),
+            at(ABORTED, &self.aborted_at),
+        )
+    }
+
+    /// Instant and cause of the published graceful (or `hard`) phase, without publishing one
+    /// reached by time or through an ancestor first.
+    pub(super) fn published_so_far(&self, hard: bool) -> Option<(Instant, Cause)> {
+        let causes = self.causes.lock();
+        let (cause, at) = if hard {
+            (&causes.abort, &self.aborted_at)
+        } else {
+            (&causes.cancel, &self.cancelled_at)
+        };
+        Some((self.instant(at)?, cause.clone()?))
+    }
+
+    /// Graceful and hard candidates of this node, from the root down.
+    fn candidates(&self) -> Candidates {
+        let mut candidates = (None, None);
+        for node in self.chain().iter().rev() {
+            let causes = node.causes.lock();
+            candidates = node.own_candidates(&causes, as_parent(candidates));
+        }
+        candidates
+    }
+
+    /// Scheduled graceful and hard candidates, given the parent's as parent candidates; a
+    /// published phase is its only candidate.
+    fn own_candidates(&self, causes: &Causes, parent: Candidates) -> Candidates {
+        let (parent_graceful, parent_hard) = parent;
         let flags = self.flags.load(Ordering::Acquire);
         let timed = flags & TIMED != 0;
 
@@ -611,22 +794,34 @@ impl Node {
     }
 
     /// Adds a holder to a node the caller already holds, so it cannot be closed.
+    #[inline]
     pub(super) fn retain_held(&self) {
         self.strong.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Removes a holder; the last one wakes drain observers and lets go of the parent.
+    #[inline]
     pub(super) fn release(&self) {
-        let mut node = Some(self);
-        while let Some(current) = node {
-            if current.strong.fetch_sub(1, Ordering::Release) & COUNT != 1 {
-                return;
-            }
-            // Acquire: the drain observer woken below sees everything the released holders did.
-            fence(Ordering::Acquire);
-            current.waiters.wake_all();
-            node = current.parent();
+        if self.strong.fetch_sub(1, Ordering::Release) & COUNT != 1 {
+            return;
         }
+        self.release_drained();
+    }
+
+    /// The rest of a release that drained this node: up the chain, then one wake.
+    fn release_drained(&self) {
+        let mut topmost = self;
+        while let Some(parent) = topmost.parent() {
+            if parent.strong.fetch_sub(1, Ordering::Release) & COUNT != 1 {
+                break;
+            }
+            topmost = parent;
+        }
+        // Acquire: the drain observers woken below see everything the released holders did.
+        fence(Ordering::Acquire);
+        // Once, at the topmost level that drained: every observer below has relays up to it,
+        // so a wake per level would reach the same observers once per ancestor.
+        topmost.waiters.wake_all();
     }
 
     /// Adds a holder unless the node is closed, or drained and cancelled (which closes it).
@@ -634,10 +829,57 @@ impl Node {
     /// Reviving a drained node takes its parent first, so a level never counts a live child
     /// without that child holding it.
     pub(super) fn try_retain(&self) -> bool {
+        // Publishes every phase reached along the chain once, so each level below only
+        // checks its own flags.
+        let _phase = self.phase();
+        // Levels waiting for their parent to be held, nearest last: revival walks up and
+        // then down without recursion, so a deep tree costs no stack.
+        let mut waiting: SmallVec<[&Self; 8]> = SmallVec::new();
+        let mut node = self;
+        loop {
+            let mut held = loop {
+                match node.retain_step() {
+                    Retain::Done(held) => break held,
+                    Retain::NeedsParent(parent) => {
+                        waiting.push(node);
+                        node = parent;
+                    }
+                }
+            };
+            // Each waiting level now has its parent held, or none will be revived.
+            let mut restart = None;
+            while let Some(child) = waiting.pop() {
+                if !held {
+                    return false;
+                }
+                if child
+                    .strong
+                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    held = true;
+                    continue;
+                }
+                // Its count moved meanwhile: let go of the parent and decide again.
+                if let Some(parent) = child.parent() {
+                    parent.release();
+                }
+                restart = Some(child);
+                break;
+            }
+            match restart {
+                Some(child) => node = child,
+                None => return held,
+            }
+        }
+    }
+
+    /// One revival decision for this level alone: held, refused, or needing its parent.
+    fn retain_step(&self) -> Retain<'_> {
         let mut word = self.strong.load(Ordering::Acquire);
         loop {
             if word & CLOSED != 0 {
-                return false;
+                return Retain::Done(false);
             }
             if word != 0 {
                 match self.strong.compare_exchange_weak(
@@ -646,36 +888,33 @@ impl Node {
                     Ordering::Relaxed,
                     Ordering::Acquire,
                 ) {
-                    Ok(_) => return true,
+                    Ok(_) => return Retain::Done(true),
                     Err(current) => word = current,
                 }
                 continue;
             }
-            if self.phase().graceful {
+            if self.flags.load(Ordering::Acquire) & (CANCELLED | ABORTED) != 0 {
                 match self
                     .strong
                     .compare_exchange(0, CLOSED, Ordering::AcqRel, Ordering::Acquire)
                 {
-                    Ok(_) => return false,
+                    Ok(_) => return Retain::Done(false),
                     Err(current) => word = current,
                 }
                 continue;
             }
-            if let Some(parent) = self.parent()
-                && !parent.try_retain()
-            {
-                return false;
-            }
-            match self
-                .strong
-                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return true,
-                Err(current) => {
-                    if let Some(parent) = self.parent() {
-                        parent.release();
+            match self.parent() {
+                // Reviving takes the parent first, so a level never counts a live child
+                // without that child holding it.
+                Some(parent) => return Retain::NeedsParent(parent),
+                None => {
+                    match self
+                        .strong
+                        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                    {
+                        Ok(_) => return Retain::Done(true),
+                        Err(current) => word = current,
                     }
-                    word = current;
                 }
             }
         }
@@ -696,7 +935,33 @@ impl Drop for Node {
         if let Some(relay) = relay {
             relay.close();
         }
+        // Ancestors this was the last reference to go one by one, not as nested drops.
+        #[cfg(not(all(rama_loom, test)))]
+        {
+            let mut parent = self.parent.take();
+            while let Some(node) = parent {
+                parent = Arc::into_inner(node).and_then(|mut node| node.parent.take());
+            }
+        }
     }
+}
+
+/// Graceful and hard candidates of a node.
+type Candidates = (Option<Candidate>, Option<Candidate>);
+
+/// Candidates of a parent, as its children see them.
+fn as_parent((graceful, hard): Candidates) -> Candidates {
+    let as_parent = |candidate: Candidate| Candidate {
+        rank: RANK_PARENT,
+        ..candidate
+    };
+    (graceful.map(as_parent), hard.map(as_parent))
+}
+
+/// One revival step of [`Node::try_retain`].
+enum Retain<'a> {
+    Done(bool),
+    NeedsParent(&'a Node),
 }
 
 impl Times {
@@ -883,9 +1148,59 @@ impl Relay {
     }
 
     fn forward(self: &std::sync::Arc<Self>) {
-        if self.register() {
-            self.child.wake_all();
+        if !self.register() {
+            return;
         }
+        // A wake reaching a deeper relay while this thread forwards is queued, not nested:
+        // a deep tree costs no stack. Each relay registers again before it is queued.
+        let queued = FORWARDING.with(|forwarding| match forwarding.borrow_mut().as_mut() {
+            Some(queue) => {
+                queue.push(self.child.clone());
+                true
+            }
+            None => false,
+        });
+        if queued {
+            return;
+        }
+        let _forwarding = Forwarding::start();
+        let mut next = Some(self.child.clone());
+        while let Some(waiters) = next {
+            waiters.wake_all();
+            next =
+                FORWARDING.with(|forwarding| forwarding.borrow_mut().as_mut().and_then(Vec::pop));
+        }
+    }
+}
+
+/// Waiters still to wake by the relay forwarding on this thread, if one is.
+type Forwarded = std::cell::RefCell<Option<Vec<std::sync::Arc<Waiters>>>>;
+
+#[cfg(not(all(rama_loom, test)))]
+thread_local! {
+    static FORWARDING: Forwarded = const { std::cell::RefCell::new(None) };
+}
+
+// Loom's macro takes no `const` initializer.
+#[cfg(all(rama_loom, test))]
+thread_local! {
+    static FORWARDING: Forwarded = std::cell::RefCell::new(None);
+}
+
+/// Marks this thread as forwarding until dropped, also on unwind.
+struct Forwarding;
+
+impl Forwarding {
+    fn start() -> Self {
+        FORWARDING.with(|forwarding| *forwarding.borrow_mut() = Some(Vec::new()));
+        Self
+    }
+}
+
+impl Drop for Forwarding {
+    fn drop(&mut self) {
+        // On unwind from a panicking waker, the waiters still queued are not woken.
+        FORWARDING.with(|forwarding| *forwarding.borrow_mut() = None);
     }
 }
 
@@ -903,65 +1218,78 @@ impl Wake for Relay {
 ///
 /// `wake_all` empties the list and bumps the generation, so a waiter whose generation is
 /// current knows its waker is still registered without taking the lock.
-#[derive(Default)]
 pub(super) struct Waiters {
     slots: Mutex<Slab<Waker>>,
+    // Starts at one, so a registration's generation is never zero and fits its niche.
     generation: AtomicU64,
+}
+
+impl Default for Waiters {
+    fn default() -> Self {
+        Self {
+            slots: Mutex::default(),
+            generation: AtomicU64::new(1),
+        }
+    }
 }
 
 /// A waiter's registration on one node.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Registration {
     index: usize,
-    generation: u64,
+    generation: NonZeroU64,
 }
 
 impl Waiters {
-    /// Registers `waker`; `same_waker` says it will wake the waker registered before.
+    /// Registers `waker`; `same_waker` says it will wake the waker registered before. Returns
+    /// the identity of the clone it keeps, `None` if it kept the one it had.
     ///
     /// Wakers are cloned and dropped outside the lock: their code may call back into the tree.
-    pub(super) fn register(
+    fn register(
         &self,
         registration: &mut Option<Registration>,
         waker: &Waker,
         same_waker: bool,
-    ) {
+    ) -> Option<WakerKey> {
         if same_waker && registration.is_some_and(|r| self.is_current(r)) {
-            return;
+            return None;
         }
         let new = waker.clone();
+        // A clone need not share the input's address: the identity is the clone's own.
+        let key = WakerKey::of(&new);
         let replaced = {
             let mut slots = self.slots.lock();
             let generation = self.generation.load(Ordering::Relaxed);
             match registration {
-                Some(current) if current.generation == generation => slots
+                Some(current) if current.generation.get() == generation => slots
                     .get_mut(current.index)
                     .map(|slot| std::mem::replace(slot, new)),
                 _ => {
                     *registration = Some(Registration {
                         index: slots.insert(new),
-                        generation,
+                        generation: NonZeroU64::new(generation).unwrap_or(NonZeroU64::MIN),
                     });
                     None
                 }
             }
         };
         drop(replaced);
+        Some(key)
     }
 
     /// Whether `registration` was not consumed by a wake yet.
     fn is_current(&self, registration: Registration) -> bool {
         // Acquire: pairs with the bump in `wake_all`.
-        registration.generation == self.generation.load(Ordering::Acquire)
+        registration.generation.get() == self.generation.load(Ordering::Acquire)
     }
 
     pub(super) fn deregister(&self, registration: Registration) {
-        if registration.generation != self.generation.load(Ordering::Acquire) {
+        if registration.generation.get() != self.generation.load(Ordering::Acquire) {
             return;
         }
         let removed = {
             let mut slots = self.slots.lock();
-            if registration.generation == self.generation.load(Ordering::Relaxed) {
+            if registration.generation.get() == self.generation.load(Ordering::Relaxed) {
                 slots.try_remove(registration.index)
             } else {
                 None
@@ -994,14 +1322,11 @@ impl Waiters {
 
 /// The data and vtable addresses of a waker, as compared by [`Waker::will_wake`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct WakerKey(usize, usize);
+struct WakerKey(usize, NonZeroUsize);
 
 impl WakerKey {
     fn of(waker: &Waker) -> Self {
-        Self(
-            waker.data().addr(),
-            std::ptr::from_ref(waker.vtable()).addr(),
-        )
+        Self(waker.data().addr(), NonNull::from(waker.vtable()).addr())
     }
 }
 
@@ -1022,14 +1347,17 @@ pub(super) struct Wait {
 struct WaitState {
     target: Target,
     registration: Option<Registration>,
-    // Identity of the registered waker. Only compared while its registration is current, and
-    // the registered clone keeps the waker's data alive until then, so it cannot be reused.
+    // Identity of the clone the waiters keep, not of the waker it was cloned from. Only
+    // compared while its registration is current, and that clone keeps its data alive until
+    // then, so its address cannot be reused.
     waker: Option<WakerKey>,
-    sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    // Released by `WaitState::clear_sleep`, so a wait without a timer never calls into its drop.
+    sleep: ManuallyDrop<Option<Pin<Box<tokio::time::Sleep>>>>,
     done: bool,
 }
 
 impl Wait {
+    #[inline]
     pub(super) fn new(node: Option<Arc<Node>>, target: Target) -> Self {
         Self {
             node,
@@ -1037,7 +1365,7 @@ impl Wait {
                 target,
                 registration: None,
                 waker: None,
-                sleep: None,
+                sleep: ManuallyDrop::new(None),
                 done: false,
             },
         }
@@ -1068,16 +1396,28 @@ impl WaitState {
     }
 
     fn register(&mut self, node: &Node, waker: &Waker) {
-        let key = WakerKey::of(waker);
-        let same_waker = self.waker == Some(key);
-        if !same_waker {
+        let same_waker = self.waker == Some(WakerKey::of(waker));
+        node.ensure_relayed();
+        if let Some(key) = node
+            .waiters
+            .register(&mut self.registration, waker, same_waker)
+        {
             self.waker = Some(key);
         }
-        node.ensure_relayed();
-        node.waiters
-            .register(&mut self.registration, waker, same_waker);
     }
 
+    #[inline]
+    fn clear_sleep(&mut self) {
+        if self.sleep.is_some() {
+            self.drop_sleep();
+        }
+    }
+
+    fn drop_sleep(&mut self) {
+        drop(self.sleep.take());
+    }
+
+    #[inline]
     fn deregister(&mut self, node: &Node) {
         if let Some(registration) = self.registration.take() {
             node.waiters.deregister(registration);
@@ -1109,10 +1449,10 @@ impl WaitState {
                 Err(next) => next,
             };
             let Some(at) = next else {
-                self.sleep = None;
+                self.clear_sleep();
                 return Poll::Pending;
             };
-            let sleep = match &mut self.sleep {
+            let sleep = match &mut *self.sleep {
                 Some(sleep) => {
                     if sleep.deadline() != at {
                         sleep.as_mut().reset(at);
@@ -1148,16 +1488,37 @@ impl Future for Wait {
         }
         state.deregister(node);
         state.waker = None;
-        state.sleep = None;
+        state.clear_sleep();
         state.done = true;
         Poll::Ready(())
     }
 }
 
 impl Drop for Wait {
+    #[inline]
     fn drop(&mut self) {
         if let Some(node) = self.node.as_deref() {
             self.state.deregister(node);
         }
+        self.state.clear_sleep();
+    }
+}
+
+/// Ancestors visited by the walks of this thread, so tests can bound how a walk scales.
+#[cfg(all(test, not(rama_loom)))]
+pub(super) mod walk_steps {
+    use std::cell::Cell;
+
+    std::thread_local! {
+        static STEPS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(in super::super) fn add(steps: usize) {
+        STEPS.with(|count| count.set(count.get() + steps));
+    }
+
+    /// The steps since the last call.
+    pub(in super::super) fn take() -> usize {
+        STEPS.with(|count| count.replace(0))
     }
 }

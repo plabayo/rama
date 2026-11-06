@@ -19,6 +19,7 @@ use rama_core::{
     error::BoxError,
     extensions::ExtensionsRef,
     futures::{Stream, future::FusedFuture, stream::FusedStream},
+    graceful::{Cause, WeakScope},
     rt::Executor,
     telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn},
 };
@@ -227,6 +228,10 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     let extensions = io.extensions().clone();
+    let transport_end = extensions
+        .get_ref::<crate::client::conn::http2::TransportEndSignal>()
+        .cloned()
+        .map(|signal| CancelOnDrop(signal.into_inner()));
     let (h2_tx, mut conn) = builder
         .handshake::<_, SendBuf<B::Data>>(io)
         .await
@@ -273,7 +278,7 @@ where
 
     exec.spawn_task(
         H2ClientFuture::Task {
-            task: ConnTask::new(conn, conn_drop_rx, cancel_tx),
+            task: ConnTask::new(conn, conn_drop_rx, cancel_tx, transport_end),
         }
         .instrument(task_span),
     );
@@ -428,6 +433,17 @@ pin_project! {
         cancel_tx: Option<oneshot::Sender<Infallible>>,
         #[pin]
         conn: ConnMapErr<T, B>,
+        // Dropped with the task: the transport has ended.
+        transport_end: Option<CancelOnDrop>,
+    }
+}
+
+/// Cancels its scope when dropped.
+struct CancelOnDrop(WeakScope);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel(Cause::Reason("h2 transport ended"));
     }
 }
 
@@ -440,11 +456,13 @@ where
         conn: ConnMapErr<T, B>,
         drop_rx: Receiver<Infallible>,
         cancel_tx: oneshot::Sender<Infallible>,
+        transport_end: Option<CancelOnDrop>,
     ) -> Self {
         Self {
             drop_rx,
             cancel_tx: Some(cancel_tx),
             conn,
+            transport_end,
         }
     }
 }

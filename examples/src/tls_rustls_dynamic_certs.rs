@@ -63,7 +63,7 @@ use rama::{
     conversion::RamaFrom,
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, ErrorContext},
-    graceful::Shutdown,
+    graceful::Scope,
     http::service::web::response::IntoResponse,
     http::{Request, Response, server::HttpServer},
     layer::ConsumeErrLayer,
@@ -97,7 +97,9 @@ async fn main() {
         )
         .init();
 
-    let shutdown = Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(3));
 
     // Dynamic certs using [`ResolvesServerCert`] in rustls are loaded synchronously, if you need to
     // load them in an async way, see example `tls_rustls_dynamic_config` for how to provide a different
@@ -120,8 +122,8 @@ async fn main() {
         });
 
     // create http server
-    shutdown.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard.clone());
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
 
         let tcp_service = (
@@ -137,10 +139,7 @@ async fn main() {
             .await;
     });
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(3))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Clone)]

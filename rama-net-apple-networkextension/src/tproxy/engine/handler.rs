@@ -168,11 +168,11 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     /// don't assume a quiesced data path. Opportunity to flush
     /// metrics, snapshot pending work, etc. Default: trace log.
     ///
-    /// The returned future runs detached on the engine's graceful
-    /// [`Executor`] and holds an engine shutdown guard until it
+    /// The returned future runs detached on the engine's
+    /// [`Executor`] and holds the engine scope until it
     /// completes. Bound any network I/O you do here with a timeout:
     /// an un-timed fetch over a link that dies across the suspend
-    /// would otherwise hold the guard and delay `engine` teardown
+    /// would otherwise hold the scope and delay `engine` teardown
     /// (capped, but not for free). Same applies to
     /// [`Self::on_system_wake`].
     fn on_system_sleep(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
@@ -188,7 +188,7 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     /// per-flow failure path; new flows arrive via `match_tcp_flow`
     /// / `match_udp_flow` as normal. Default: trace log.
     ///
-    /// See [`Self::on_system_sleep`] for the guard-holding /
+    /// See [`Self::on_system_sleep`] for the scope-holding /
     /// un-timed-I/O contract — it applies here too.
     fn on_system_wake(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
         tracing::debug!(

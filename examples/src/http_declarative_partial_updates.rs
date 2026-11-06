@@ -45,6 +45,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         Response,
         layer::{
@@ -185,8 +186,10 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     let listener = TcpListener::bind_address(SocketAddress::local_ipv4(64805), exec.clone())
         .await
@@ -200,7 +203,7 @@ async fn main() {
     );
     tracing::info!("open http://{bind_address} in your browser");
 
-    graceful.spawn_task(async move {
+    exec.clone().into_spawn_task(async move {
         let app = (
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
@@ -212,8 +215,5 @@ async fn main() {
         listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

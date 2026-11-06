@@ -7,7 +7,6 @@ use rama::{
     Service,
     combinators::Either,
     error::{BoxError, ErrorContext},
-    graceful::ShutdownGuard,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue, Request,
         headers::exotic::XClacksOverhead,
@@ -92,11 +91,10 @@ pub struct CliCommandHttpTest {
 
 /// run the rama http test service
 pub async fn run(
-    graceful: ShutdownGuard,
+    exec: Executor,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandHttpTest,
 ) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
     let tcp_version = cfg.http_version.tcp();
     let maybe_tls_server_config = cfg
         .secure

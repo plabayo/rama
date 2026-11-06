@@ -46,10 +46,10 @@ async fn shared_http_and_socks5_listener_forwards_end_to_end() {
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str()]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, _inspector_address) = start_proxy(&shutdown, cli.proxy).await;
 
     for scheme in ["http", "socks5h"] {
         let proxy = format!("{scheme}://{proxy_address}");
@@ -90,10 +90,10 @@ async fn http_proxy_forwards_trailers_as_received() {
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str()]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, _inspector_address) = start_proxy(&shutdown, cli.proxy).await;
 
     let request = Request::builder()
         .uri(format!("http://{origin}/trailers"))
@@ -135,10 +135,10 @@ async fn https_proxy_listener_forwards_end_to_end() {
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), "--protocol", "https"]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, _inspector_address) = start_proxy(&shutdown, cli.proxy).await;
 
     let proxy = format!("https://{proxy_address}");
     let (status, body) = get_via_proxy(origin, &proxy).await;
@@ -156,10 +156,10 @@ async fn default_mitm_dashboard_http_and_socks5_share_a_listener_end_to_end() {
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), "--mitm"]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, _inspector_address) = start_proxy(&shutdown, cli.proxy).await;
 
     for scheme in ["http", "socks5h"] {
         let (status, body) = get_via_proxy(origin, &format!("{scheme}://{proxy_address}")).await;
@@ -354,10 +354,10 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
     let mitm_arg = format!("--mitm={ui_address}");
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     assert!(inspector_address.is_some(), "inspector listener bound");
 
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);

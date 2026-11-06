@@ -4,7 +4,11 @@ use std::{
     task::Waker,
 };
 
-use rama_core::{error::BoxErrorExt as _, graceful::Shutdown, service::service_fn};
+use rama_core::{
+    error::BoxErrorExt as _,
+    graceful::{Cause, Scope},
+    service::service_fn,
+};
 use tokio::{
     sync::{mpsc::UnboundedReceiver, oneshot},
     time::timeout,
@@ -307,12 +311,12 @@ async fn graceful_shutdown_stops_serving_and_ends_its_associations() {
         let (_client, listener) = listener();
         inject(&listener, peer(1), b"live");
         let (signal, cancelled) = oneshot::channel::<()>();
-        let shutdown = Shutdown::new(async move {
+        let scope = Scope::new().with_signal(async move {
             cancelled.await.unwrap_err();
         });
         let (sockets, mut received) = tokio::sync::mpsc::unbounded_channel();
         let serving = tokio::spawn(DatagramDemux::new(listener, config()).serve(
-            Executor::graceful(shutdown.guard()),
+            Executor::from(scope.clone()),
             service_fn(move |socket: DemuxedSocket<_>| {
                 let sockets = sockets.clone();
                 async move {
@@ -332,7 +336,7 @@ async fn graceful_shutdown_stops_serving_and_ends_its_associations() {
             Err(DatagramError::Closed)
         ));
         drop(association);
-        shutdown.shutdown().await;
+        scope.join().await.unwrap();
     })
     .await
     .unwrap();
@@ -1455,4 +1459,39 @@ fn interface_local_multicast_keeps_distinct_zones() {
         Addresses::new(local, peer, Some(4)),
         Addresses::new(local, peer, Some(7))
     );
+}
+
+#[tokio::test]
+async fn a_served_association_ends_at_the_hard_phase() {
+    let (_client, listener) = listener();
+    inject(&listener, peer(1), b"held");
+    let scope = Scope::new();
+    let weak = scope.clone_weak();
+    let (accepted, mut accepted_rx) = tokio::sync::mpsc::unbounded_channel();
+    let serving = tokio::spawn(DatagramDemux::new(listener, config()).serve(
+        Executor::from(scope.clone()),
+        service_fn(move |socket: DemuxedSocket<_>| {
+            accepted.send(()).unwrap();
+            async move {
+                std::future::pending::<()>().await;
+                drop(socket);
+                Ok::<_, BoxError>(())
+            }
+        }),
+    ));
+    timeout(LIMIT, accepted_rx.recv()).await.unwrap().unwrap();
+
+    scope.cancel(Cause::Owner);
+    timeout(LIMIT, serving).await.unwrap().unwrap().unwrap();
+    assert!(
+        timeout(Duration::from_millis(100), weak.drained())
+            .await
+            .is_err(),
+        "the served association drains in the graceful phase"
+    );
+    scope.abort(Cause::Owner);
+    drop(scope);
+    timeout(LIMIT, weak.drained())
+        .await
+        .expect("the served task ends at the hard phase");
 }

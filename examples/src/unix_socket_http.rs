@@ -32,6 +32,7 @@
 mod unix_example {
     use rama::{
         Layer,
+        graceful::Scope,
         http::{
             layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
         },
@@ -55,8 +56,8 @@ mod unix_example {
             )
             .init();
 
-        let graceful = rama::graceful::Shutdown::default();
-        let exec = Executor::graceful(graceful.guard());
+        let scope = Scope::new().with_default_signal();
+        let exec = Executor::from(scope.clone());
 
         const PATH: &str = "/tmp/rama_example_unix_http.socket";
 
@@ -64,7 +65,7 @@ mod unix_example {
             .await
             .expect("bind Unix socket");
 
-        graceful.spawn_task(async move {
+        exec.clone().into_spawn_task(async move {
             tracing::info!(
                 file.path = %PATH,
                 "ready to unix-serve",
@@ -79,9 +80,9 @@ mod unix_example {
                 .await;
         });
 
-        let duration = graceful.shutdown().await;
+        let joined = scope.join().await.expect("graceful shutdown");
         tracing::info!(
-           shutdown.duration_ms = %duration.as_millis(),
+           shutdown.duration_ms = %joined.elapsed().as_millis(),
            "bye!",
         );
     }

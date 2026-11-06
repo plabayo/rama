@@ -51,7 +51,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, BoxErrorExt},
     extensions::ExtensionsRef,
-    graceful::{Shutdown, ShutdownGuard},
+    graceful::Scope,
     http::{
         layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         server::HttpServer,
@@ -89,32 +89,30 @@ async fn main() {
         )
         .init();
 
-    let shutdown = Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
-    spawn_https_server(shutdown.guard(), NAME_FOO, INTERFACE_FOO);
-    spawn_https_server(shutdown.guard(), NAME_BAR, INTERFACE_BAR);
-    spawn_https_server(shutdown.guard(), NAME_BAZ, INTERFACE_BAZ);
+    spawn_https_server(Executor::from(scope.clone()), NAME_FOO, INTERFACE_FOO);
+    spawn_https_server(Executor::from(scope.clone()), NAME_BAR, INTERFACE_BAR);
+    spawn_https_server(Executor::from(scope.clone()), NAME_BAZ, INTERFACE_BAZ);
 
-    shutdown.spawn_task_fn(async move |guard| {
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let socket_address = SocketAddress::default_ipv4(62026);
         tracing::info!(
             network.local.address = %socket_address.ip_addr,
             network.local.port = %socket_address.port,
             "[tcp] spawn sni router: bind and go",
         );
-        TcpListener::bind_address(socket_address, Executor::graceful(guard.clone()))
+        TcpListener::bind_address(socket_address, exec.clone())
             .await
             .expect("bind TCP Listener for SNI router")
-            .serve(SniRouter::new(SniRouterSvc {
-                exec: Executor::graceful(guard.clone()),
-            }))
+            .serve(SniRouter::new(SniRouterSvc { exec: exec.clone() }))
             .await;
     });
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 const NAME_FOO: &str = "foo";
@@ -178,7 +176,7 @@ where
     }
 }
 
-fn spawn_https_server(guard: ShutdownGuard, name: &'static str, socket_address: SocketAddress) {
+fn spawn_https_server(exec: Executor, name: &'static str, socket_address: SocketAddress) {
     let tls_server_config = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::generated_ca_for(
             format!("{name}.local")
@@ -187,19 +185,19 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, socket_address: 
         ))
         .expect("generated server auth");
 
-    guard.into_spawn_task_fn(async move |guard| {
+    exec.clone().into_spawn_task(async move {
         tracing::info!(
             host.name = %name,
             network.local.address = %socket_address.ip_addr,
             network.local.port = %socket_address.port,
             "[tcp] spawn https server: bind and go",
         );
-        TcpListener::bind_address(socket_address, Executor::graceful(guard.clone()))
+        TcpListener::bind_address(socket_address, exec.clone())
             .await
             .expect("bind TCP Listener for web server")
             .serve(
                 TlsAcceptorLayer::new(tls_server_config).into_layer(
-                    HttpServer::auto(Executor::graceful(guard)).service(
+                    HttpServer::auto(exec).service(
                         (
                             ArcLayer::new(),
                             TraceLayer::new_for_http(),

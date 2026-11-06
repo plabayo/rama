@@ -3,7 +3,6 @@
 use rama::{
     cli::{ForwardKind, service::fs::FsServiceBuilder},
     error::{BoxError, ErrorContext},
-    graceful::ShutdownGuard,
     http::service::fs::{DirectoryServeMode, ServeDirSymlinkPolicy},
     net::{address::SocketAddress, tls::ApplicationProtocol},
     rt::Executor,
@@ -102,8 +101,7 @@ pub struct CliCommandFs {
 }
 
 /// run the rama serve service
-pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
+pub async fn run(exec: Executor, cfg: CliCommandFs) -> Result<(), BoxError> {
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {

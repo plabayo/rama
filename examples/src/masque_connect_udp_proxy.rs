@@ -21,7 +21,7 @@ use rama::{
     dns::client::DnsConnector,
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef as _,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Body, Request, Version,
         body::util::BodyExt as _,
@@ -109,8 +109,10 @@ async fn run(command: Command) -> Result<(), BoxError> {
 }
 
 async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxError> {
-    let shutdown = Shutdown::default();
-    let exec = Executor::graceful(shutdown.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(5));
+    let exec = Executor::from(scope.clone());
 
     // CONNECT-UDP for UDP targets, resolved and checked by the proxy, and ordinary CONNECT
     // for TCP targets; any authentication layer goes in front of both.
@@ -165,26 +167,24 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
         listener.serve(TlsAcceptorLayer::new(tcp_tls).into_layer(http.service(service.clone()))),
     );
     exec.spawn_task(endpoint.serve(exec.clone(), h3.service(service)));
-    // Shutdown waits on the tasks' guards, not on this executor's.
+    // The join waits on the spawned tasks, not on this executor.
     drop(exec);
     tracing::info!("CONNECT-UDP proxy listening on TCP {tcp_address} and UDP {udp_address}");
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(5))
-        .await
-        .map(drop)
-        .map_err(Into::into)
+    scope.join().await.map(drop).map_err(Into::into)
 }
 
 async fn client(proxy: ProxyAddress, insecure: bool, url: &str) -> Result<(), BoxError> {
     let (finished, done) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
-        _ = done.await;
-    });
-    let result = exchange(Executor::graceful(shutdown.guard()), proxy, insecure, url).await;
+    let scope = Scope::new()
+        .with_grace(Duration::from_secs(1))
+        .with_signal(async move {
+            _ = done.await;
+        });
+    let result = exchange(Executor::from(scope.clone()), proxy, insecure, url).await;
     finished.send(()).unwrap_or_default();
     // Draining closes the QUIC connections, so no peer waits out an idle timeout.
-    shutdown.shutdown_with_limit(Duration::from_secs(1)).await?;
+    scope.join().await?;
     result
 }
 

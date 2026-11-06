@@ -75,6 +75,7 @@ use clap::Parser;
 use rama::{
     Layer as _,
     error::{BoxError, ErrorContext as _},
+    graceful::Scope,
     http::{
         HeaderValue,
         client::EasyHttpWebClient,
@@ -141,8 +142,10 @@ async fn main() -> Result<(), BoxError> {
     let icap_uri = icap_uri.unwrap_or_else(|| DEFAULT_ICAP_URI.to_owned());
     let target_host = Arc::new(target_host.parse::<Host>()?);
 
-    let graceful = rama::graceful::Shutdown::default();
-    let executor = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let executor = Executor::from(scope.clone());
 
     if embedded {
         let listener = TcpListener::bind_address(ICAP_ADDRESS, executor.clone()).await?;
@@ -151,7 +154,7 @@ async fn main() -> Result<(), BoxError> {
             adapt_response(request, Arc::clone(&service_target))
         }));
         let server = IcapServer::new(service, SERVICE_TAG)?;
-        graceful.spawn_task(listener.serve(server));
+        executor.spawn_task(listener.serve(server));
     }
 
     let connector = TlsConnector::auto(rama::dns::client::DnsConnector::new(
@@ -211,8 +214,8 @@ async fn main() -> Result<(), BoxError> {
     )
         .into_layer(direct);
     let listener = TcpListener::bind_address(PROXY_ADDRESS, executor.clone()).await?;
-    let server = HttpServer::auto(executor).service(proxy);
-    graceful.spawn_task(listener.serve(server));
+    let server = HttpServer::auto(executor.clone()).service(proxy);
+    executor.into_spawn_task(listener.serve(server));
 
     println!("HTTP proxy listening on http://{PROXY_ADDRESS}");
     if embedded {
@@ -223,9 +226,7 @@ async fn main() -> Result<(), BoxError> {
     }
     println!("try: curl -v -x http://{PROXY_ADDRESS} http://{TARGET_HOST}/");
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await?;
+    scope.join().await?;
     Ok(())
 }
 

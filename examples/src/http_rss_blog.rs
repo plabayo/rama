@@ -29,6 +29,7 @@ use std::{sync::Arc, time::Duration};
 use jiff::Timestamp;
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         protocols::html::{IntoHtml, p},
@@ -117,8 +118,10 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62055), exec.clone())
         .await
@@ -134,7 +137,7 @@ async fn main() {
         "fetch rss: curl http://{bind_address}/feed.rss  |  atom: curl http://{bind_address}/feed.atom"
     );
 
-    graceful.spawn_task(async move {
+    exec.clone().into_spawn_task(async move {
         let middlewares = (TraceLayer::new_for_http(), ErrorHandlerLayer::new());
         let app = middlewares.into_layer(Arc::new(
             Router::new()
@@ -144,10 +147,7 @@ async fn main() {
         listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 // ---------------------------------------------------------------------------

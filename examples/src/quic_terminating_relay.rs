@@ -65,7 +65,7 @@ use rama::{
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     futures::{FutureExt as _, future::select_all},
-    graceful::{Shutdown, WeakShutdownGuard, default_signal},
+    graceful::{Scope, WeakScope, default_signal},
     net::tls::ApplicationProtocol,
     quic::{
         ClientConfig, Connection, ConnectionError, Endpoint, ReadError, RecvStream, SendStream,
@@ -225,7 +225,7 @@ async fn main() -> Result<(), BoxError> {
     // does the serving task ending: dropping its side of this channel resolves the receiver,
     // so a fatal failure is reported without waiting for a signal that may never come.
     let (serving_ended, serving_ends) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let scope = Scope::new().with_signal(async move {
         tokio::select! {
             () = default_signal() => {}
             _ = serving_ends => {}
@@ -255,9 +255,9 @@ async fn main() -> Result<(), BoxError> {
     let (upstream, bounds) = (settings.upstream, settings.bounds);
     let upstream_name = settings.upstream_name;
     // What tells a connection that the relay itself is stopping, rather than its upstream.
-    let stopping = shutdown.guard_weak();
+    let stopping = scope.clone_weak();
     // Its outcome is joined below, so a failure in it fails this process.
-    let serving = shutdown.spawn_task(async move {
+    let serving = Executor::from(scope.clone()).into_spawn_task(async move {
         let outcome = serve_relay(
             &relay,
             &client,
@@ -272,8 +272,8 @@ async fn main() -> Result<(), BoxError> {
         outcome
     });
 
-    // The shutdown holds that task's guard, so it has ended by the time this returns.
-    let took = shutdown.shutdown().await;
+    // That task holds the scope, so it has ended by the time this returns.
+    let took = scope.join().await?;
     serving.await.context("the relay's serving task failed")??;
     tracing::info!("relay: stopped, shutdown joined in {took:?}");
     Ok(())
@@ -291,7 +291,7 @@ async fn serve_relay(
     origin: SocketAddr,
     name: &str,
     bounds: Bounds,
-    stopping: &WeakShutdownGuard,
+    stopping: &WeakScope,
 ) -> Result<(), BoxError> {
     let connections = Arc::new(Semaphore::new(bounds.connections));
     let mut carrying: Vec<JoinHandle<()>> = Vec::new();
@@ -383,7 +383,7 @@ async fn carry(
     origin: SocketAddr,
     name: &str,
     bounds: Bounds,
-    stopping: &WeakShutdownGuard,
+    stopping: &WeakScope,
 ) -> Result<(), BoxError> {
     tracing::info!("relay: a client connection, opening one upstream of its own");
     let upstream = match client.connect_with(upstream, origin, name) {
@@ -487,7 +487,7 @@ async fn open_and_relay(
 
 /// Not sent while the relay is stopping: both connections are closed by their endpoints then,
 /// and that is what the client should read.
-fn upstream_gone(downstream: &Connection, stopping: &WeakShutdownGuard) {
+fn upstream_gone(downstream: &Connection, stopping: &WeakScope) {
     if stopping.cancelled().now_or_never().is_none() {
         downstream.close(UPSTREAM_GONE, b"upstream closed");
     }

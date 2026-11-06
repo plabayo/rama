@@ -42,6 +42,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         Response,
         layer::trace::TraceLayer,
@@ -74,10 +75,12 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
-    graceful.spawn_task_fn(async move |guard| {
-        let exec = Executor::graceful(guard);
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         HttpServer::auto(exec)
             .listen(
                 "127.0.0.1:62028",
@@ -108,10 +111,7 @@ async fn main() {
             .expect("failed to run service");
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 async fn handle_upload(mut multipart: Multipart) -> Result<Response, MultipartRejection> {

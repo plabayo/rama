@@ -161,12 +161,8 @@ where
             let (ingress_to_egress, egress_to_ingress) = tokio::select! {
                 result = exchange => result?,
                 () = idle(observed, idle_timeout) => return Err(SessionError::Io(io::Error::new(io::ErrorKind::TimedOut, "datagram relay idle timeout"))),
-                () = async {
-                    match exec.guard() {
-                        Some(guard) => guard.cancelled().await,
-                        None => std::future::pending().await,
-                    }
-                } => return Err(SessionError::Io(io::Error::new(io::ErrorKind::Interrupted, "datagram relay shutdown"))),
+                // Datagrams cannot drain: the relay runs through the graceful phase.
+                () = exec.aborted() => return Err(SessionError::Io(io::Error::new(io::ErrorKind::Interrupted, "datagram relay shutdown"))),
             };
             guard.disarm();
             Ok(DatagramRelayOutcome {

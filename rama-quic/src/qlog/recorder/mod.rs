@@ -1113,7 +1113,7 @@ pub(super) struct Worker {
 impl<O: QlogOutput> OutputFactory for O {
     fn spawn(self: Box<Self>, mut worker: Worker) {
         let executor = std::mem::take(&mut worker.executor);
-        let graceful = executor.guard().cloned();
+        let cancelled = executor.cancelled();
         let shared = worker.shared.clone();
         let future = async move {
             let mut output = self;
@@ -1127,16 +1127,12 @@ impl<O: QlogOutput> OutputFactory for O {
                 ))
                 .catch_unwind();
                 let mut operation = std::pin::pin!(operation);
-                if let Some(guard) = graceful {
-                    tokio::select! {
-                        result = &mut operation => result,
-                        _ = guard.cancelled() => {
-                            worker.shared.drain();
-                            operation.await
-                        },
-                    }
-                } else {
-                    operation.await
+                tokio::select! {
+                    result = &mut operation => result,
+                    () = cancelled => {
+                        worker.shared.drain();
+                        operation.await
+                    },
                 }
             };
             let result =

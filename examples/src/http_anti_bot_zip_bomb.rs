@@ -30,6 +30,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         StatusCode,
         body::ZipBomb,
@@ -72,13 +73,15 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(8));
 
     let router = Router::new()
         .with_get("/", Html(r##"<h1>Rates Catalogue</h1><ul><li><a href="/api/rates/2024.csv">rates for 2024</a></li></ul>"##.to_owned()))
         .with_get("/api/rates/{year}.csv", api_rates_csv);
 
-    let exec = Executor::graceful(graceful.guard());
+    let exec = Executor::from(scope.clone());
     let app = HttpServer::auto(exec).service(
         (
             ArcLayer::new(),
@@ -91,17 +94,14 @@ async fn main() {
 
     let address = SocketAddress::local_ipv4(62036);
     tracing::info!("running service at: {address}");
-    let exec = Executor::graceful(graceful.guard());
+    let exec = Executor::from(scope.clone());
     let tcp_server = TcpListener::bind_address(address, exec)
         .await
         .expect("bind tcp server");
 
-    graceful.spawn_task(tcp_server.serve(app));
+    Executor::from(scope.clone()).into_spawn_task(tcp_server.serve(app));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(8))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Deserialize)]

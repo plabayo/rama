@@ -24,6 +24,7 @@
 use rama::{
     Layer,
     extensions::{Extension, ExtensionsRef},
+    graceful::Scope,
     http::{
         layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
@@ -61,9 +62,12 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
-    graceful.spawn_task_fn(async |guard| {
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let router = Router::new().with_get("/", Html(INDEX)).with_get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
@@ -127,23 +131,20 @@ async fn main() {
             )),
         );
 
-        let server = HttpServer::new_http1(Executor::graceful(guard.clone()))
+        let server = HttpServer::new_http1(exec.clone())
             .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(router));
         info!("open mini web chat @ http://127.0.0.1:62033");
         info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama')");
 
 
-        TcpListener::bind_address("127.0.0.1:62033", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:62033", exec)
             .await
             .expect("bind TCP Listener")
             .serve(AddInputExtensionLayer::new(State::default()).into_layer(server))
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug)]

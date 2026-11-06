@@ -48,7 +48,7 @@
 use rama::{
     Layer,
     extensions::ExtensionsRef,
-    graceful::Shutdown,
+    graceful::Scope,
     io::Io,
     layer::ConsumeErrLayer,
     net::{
@@ -94,11 +94,13 @@ async fn main() {
         .expect("self-signed")
         .with_keylog(KeyLogIntent::Environment);
 
-    let shutdown = Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     // create tls proxy
-    shutdown.spawn_task_fn(async move |guard| {
-        let exec = Executor::graceful(guard);
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let tcp_service = (
             TlsAcceptorLayer::new(acceptor_data),
             IoToProxyBridgeIoLayer::new(HostWithPort::local_ipv4(62800)).with_connector(
@@ -116,21 +118,19 @@ async fn main() {
     });
 
     // create http server
-    shutdown.spawn_task_fn(async |guard| {
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
             .into_layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind_address("127.0.0.1:62800", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:62800", exec)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)
             .await;
     });
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 async fn internal_tcp_service_fn<S>(mut stream: S) -> Result<(), Infallible>

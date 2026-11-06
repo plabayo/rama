@@ -53,7 +53,7 @@ async fn main() {
     use tokio::sync::oneshot;
 
     use rama::{
-        graceful::Shutdown,
+        graceful::Scope,
         net::apple::xpc::{XpcEndpoint, XpcMessage, XpcServer},
         rt::Executor,
         service::service_fn,
@@ -74,7 +74,9 @@ async fn main() {
         .init();
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let graceful = Shutdown::new(async { drop(shutdown_rx.await) });
+    let scope = Scope::new()
+        .with_grace(Duration::from_secs(5))
+        .with_signal(async { drop(shutdown_rx.await) });
 
     // Create anonymous channel: server connection + endpoint for the client.
     let (server_conn, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
@@ -92,19 +94,17 @@ async fn main() {
     // Server task: serve the anonymous listener through the higher-level XpcServer
     // adapter, which accepts the peer connection and dispatches message handling to
     // the Rama service above.
-    let server_task = graceful.spawn_task_fn(async move |guard| {
+    let exec = Executor::from(scope.clone());
+    let server_task = exec.clone().into_spawn_task(async move {
         info!(target: "xpc_echo::server", "ready, waiting for peer connection");
-        if let Err(err) = server
-            .serve_connection(server_conn, Executor::graceful(guard))
-            .await
-        {
+        if let Err(err) = server.serve_connection(server_conn, exec).await {
             error!(target: "xpc_echo::server", %err, "server error");
         }
         info!(target: "xpc_echo::server", "server stopped");
     });
 
     // Client task: connect via endpoint, send fire-and-forget then a request.
-    let client_task = graceful.spawn_task(async move {
+    let client_task = Executor::from(scope.clone()).into_spawn_task(async move {
         let client_conn = endpoint.into_connection().expect("into_connection");
 
         // 1. Fire-and-forget ping.
@@ -139,8 +139,5 @@ async fn main() {
 
     _ = tokio::join!(server_task, client_task);
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(5))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

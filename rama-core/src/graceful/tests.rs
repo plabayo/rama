@@ -17,7 +17,8 @@ use tokio::{
     time::{Instant, advance},
 };
 
-use super::{Cause, Scope, WeakScope};
+use super::{Cause, Scope, WeakScope, attach_scope, enter_scope, enter_scope_with, scope_context};
+use crate::extensions::Extensions;
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -172,7 +173,7 @@ fn never_scope_is_drained_and_never_ends_its_phases() {
     }
     drop(never);
     assert!(poll_noop(&mut weak.drained()).is_ready());
-    assert!(weak.upgrade().is_some_and(|scope| scope.is_never()));
+    assert!(weak.into_scope().is_some_and(|scope| scope.is_never()));
 }
 
 #[test]
@@ -562,7 +563,7 @@ fn signal_body_may_reenter_its_own_scope() {
                     cx.waker().wake_by_ref();
                     let mut nested = weak.cancelled();
                     assert!(poll_noop(&mut nested).is_pending());
-                    let _scope = weak.upgrade().map(|scope| {
+                    let _scope = weak.into_scope().map(|scope| {
                         scope
                             .with_hard_timeout(100 * SEC)
                             .with_grace(50 * SEC)
@@ -652,10 +653,10 @@ fn join_waits_for_strong_holders() {
         });
         tokio::task::yield_now().await;
         tx.send(()).unwrap();
-        let elapsed = root.join().await.unwrap();
+        let elapsed = root.join().await.unwrap().elapsed();
         assert_eq!(elapsed, 3 * SEC);
         worker.await.unwrap();
-        assert!(weak.clone().upgrade().is_none());
+        assert!(weak.clone().into_scope().is_none());
         assert!(weak.is_cancelled());
     });
 }
@@ -697,7 +698,7 @@ fn join_is_a_waitgroup() {
             tokio::time::sleep(SEC).await;
             drop(scope);
         });
-        assert_eq!(root.join().await.unwrap(), SEC);
+        assert_eq!(root.join().await.unwrap().elapsed(), SEC);
         worker.await.unwrap();
     });
 }
@@ -715,12 +716,12 @@ fn weak_upgrade_until_closed() {
     rt().block_on(async {
         let root = cancelled_root();
         let weak = root.clone_weak();
-        let upgraded = weak.clone().upgrade().unwrap();
+        let upgraded = weak.clone().into_scope().unwrap();
         drop(upgraded);
         root.join().await.unwrap();
-        assert!(weak.clone().upgrade().is_none());
+        assert!(weak.clone().into_scope().is_none());
         // A refused upgrade releases nothing it did not take.
-        assert!(weak.clone().upgrade().is_none());
+        assert!(weak.clone().into_scope().is_none());
         assert!(poll_noop(&mut weak.drained()).is_ready());
     });
 }
@@ -772,7 +773,7 @@ fn strong_holders_count_up_the_chain() {
 #[test]
 fn weak_scope_observes_and_drives_its_node() {
     let scope = Scope::new();
-    let weak = scope.clone().downgrade();
+    let weak = scope.clone().into_weak_scope();
     assert!(!weak.is_aborted());
     weak.abort(Cause::Reason("weak"));
     assert!(scope.is_cancelled());
@@ -783,13 +784,13 @@ fn weak_scope_observes_and_drives_its_node() {
 
 #[test]
 fn weak_never_scope_stays_inert() {
-    let weak = Scope::default().downgrade();
+    let weak = Scope::default().into_weak_scope();
     weak.cancel(Cause::Owner);
     weak.abort(Cause::Owner);
     assert!(!weak.is_cancelled());
     assert!(!weak.is_aborted());
     assert!(weak.cause().is_none());
-    let scope = weak.upgrade().unwrap();
+    let scope = weak.into_scope().unwrap();
     assert!(!scope.is_aborted());
     assert!(scope.cause().is_none());
 }
@@ -840,7 +841,7 @@ fn refused_child_upgrade_rolls_back_its_own_level() {
         let weak_child = child.clone_weak();
         drop(child);
         root.join().await.unwrap();
-        assert!(weak_child.clone().upgrade().is_none());
+        assert!(weak_child.clone().into_scope().is_none());
         // The child level took a count before the closed root refused; it must be given back.
         assert!(poll_noop(&mut weak_child.drained()).is_ready());
     });
@@ -998,7 +999,7 @@ fn join_of_a_never_scope_returns_at_once() {
     let mut join = Box::pin(Scope::never().join());
     assert!(matches!(
         poll_noop(&mut join),
-        Poll::Ready(Ok(Duration::ZERO))
+        Poll::Ready(Ok(joined)) if joined.elapsed() == Duration::ZERO
     ));
 }
 
@@ -1014,7 +1015,7 @@ fn join_returns_when_the_work_ends_before_any_signal() {
             }
         });
         let weak = root.clone_weak();
-        assert_eq!(root.join().await.unwrap(), 2 * SEC);
+        assert_eq!(root.join().await.unwrap().elapsed(), 2 * SEC);
         assert!(!weak.is_cancelled());
         worker.await.unwrap();
     });
@@ -1033,7 +1034,7 @@ fn join_of_a_child_ignores_holders_elsewhere_in_the_tree() {
                 drop(scope);
             }
         });
-        assert_eq!(flow.join().await.unwrap(), SEC);
+        assert_eq!(flow.join().await.unwrap().elapsed(), SEC);
         worker.await.unwrap();
         assert!(poll_noop(&mut root.drained()).is_pending());
     });
@@ -1287,39 +1288,39 @@ fn nested_late_descendant_observed_later_keeps_the_ancestor_anchor() {
 fn weak_cannot_revive_a_cancelled_scope_without_holders() {
     let scope = Scope::new();
     scope.cancel(Cause::Owner);
-    let weak = scope.downgrade();
-    assert!(weak.clone().upgrade().is_none());
+    let weak = scope.into_weak_scope();
+    assert!(weak.clone().into_scope().is_none());
     assert!(poll_noop(&mut weak.drained()).is_ready());
 }
 
 #[test]
 fn weak_revives_an_active_scope_without_holders() {
     let scope = Scope::new();
-    let weak = scope.downgrade();
-    let revived = weak.clone().upgrade().unwrap();
+    let weak = scope.into_weak_scope();
+    let revived = weak.clone().into_scope().unwrap();
     assert!(poll_noop(&mut weak.drained()).is_pending());
     revived.cancel(Cause::Owner);
     drop(revived);
-    assert!(weak.upgrade().is_none());
+    assert!(weak.into_scope().is_none());
 }
 
 #[test]
 fn revived_child_holds_its_parent_and_a_refused_one_holds_nothing() {
     let parent = Scope::new();
     let child = parent.child();
-    let weak_child = child.downgrade();
+    let weak_child = child.into_weak_scope();
     let weak_parent = parent.clone_weak();
     drop(parent);
     assert!(poll_noop(&mut weak_parent.drained()).is_ready());
 
-    let revived = weak_child.clone().upgrade().unwrap();
+    let revived = weak_child.clone().into_scope().unwrap();
     assert!(poll_noop(&mut weak_parent.drained()).is_pending());
     drop(revived);
     assert!(poll_noop(&mut weak_parent.drained()).is_ready());
 
     weak_parent.cancel(Cause::Owner);
-    assert!(weak_child.upgrade().is_none());
-    assert!(weak_parent.upgrade().is_none());
+    assert!(weak_child.into_scope().is_none());
+    assert!(weak_parent.into_scope().is_none());
 }
 
 #[test]
@@ -1342,4 +1343,1118 @@ fn panicking_driver_wakes_a_waiter_that_registered_during_its_drive() {
     drop(driver);
     assert!(counter.0.load(Ordering::SeqCst) > 0);
     assert!(poll(&mut *survivor.lock(), &waker).is_ready());
+}
+
+#[test]
+fn only_never_is_never() {
+    assert!(Scope::never().is_never());
+    assert!(Scope::default().is_never());
+    assert!(!Scope::new().is_never());
+    assert!(!Scope::never().child().is_never());
+    assert!(!Scope::never().with_timeout(SEC).is_never());
+}
+
+// ---- scopes below several parents ----
+
+#[test]
+fn child_of_ends_with_any_parent_and_holds_each() {
+    let a = Scope::new();
+    let b = Scope::new();
+    let work = Scope::child_of([&a, &b]);
+    let (weak_a, weak_b) = (a.clone_weak(), b.clone_weak());
+    drop((a, b));
+    let mut a_drained = weak_a.drained();
+    let mut b_drained = weak_b.drained();
+    assert!(poll_noop(&mut a_drained).is_pending());
+    assert!(poll_noop(&mut b_drained).is_pending());
+
+    assert!(!work.is_cancelled());
+    weak_b.cancel(Cause::Reason("b"));
+    assert!(work.is_cancelled());
+    assert!(!weak_a.is_cancelled(), "a part never reaches its parents");
+    assert_eq!(reason(work.cause().as_ref()), Some("b"));
+
+    drop(work);
+    assert!(poll_noop(&mut a_drained).is_ready());
+    assert!(poll_noop(&mut b_drained).is_ready());
+}
+
+#[test]
+fn child_of_one_lineage_is_a_single_child_of_the_deepest() {
+    let a = Scope::new();
+    let x = a.child();
+    let work = Scope::child_of([&a, &Scope::never(), &x, &x]);
+    assert!(work.node().is_some(), "one part");
+    x.cancel(Cause::Owner);
+    assert!(work.is_cancelled());
+
+    let root = Scope::child_of([&Scope::never()]);
+    assert!(!root.is_never());
+    assert!(!root.is_cancelled());
+}
+
+#[test]
+fn own_phases_of_a_composite_stay_below_its_parents() {
+    let a = Scope::new();
+    let b = Scope::new();
+    let work = Scope::child_of([&a, &b]);
+    work.cancel(Cause::Owner);
+    work.abort(Cause::Owner);
+    assert!(work.is_aborted());
+    assert!(!a.is_cancelled());
+    assert!(!b.is_cancelled());
+}
+
+#[test]
+fn a_composite_cause_is_fixed_once_observed() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        let clone = work.clone();
+        b.cancel(Cause::Reason("first seen"));
+        assert_eq!(reason(work.cause().as_ref()), Some("first seen"));
+        // Same instant on the paused clock: a recomputed tie would now pick the first part.
+        a.cancel(Cause::Reason("first part"));
+        assert_eq!(reason(clone.cause().as_ref()), Some("first seen"));
+        assert_eq!(reason(work.cause().as_ref()), Some("first seen"));
+    });
+}
+
+#[test]
+fn a_reached_composite_phase_wait_fixes_its_cause() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        b.cancel(Cause::Reason("first seen"));
+        assert!(poll_noop(&mut work.cancelled()).is_ready());
+        a.cancel(Cause::Reason("first part"));
+        assert_eq!(reason(work.cause().as_ref()), Some("first seen"));
+
+        b.abort(Cause::Reason("first seen"));
+        assert!(poll_noop(&mut work.aborted()).is_ready());
+        a.abort(Cause::Reason("first part"));
+        assert_eq!(reason(work.abort_cause().as_ref()), Some("first seen"));
+    });
+}
+
+#[test]
+fn a_reached_wait_of_a_weak_composite_fixes_its_cause() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        let weak = work.clone_weak();
+        b.abort(Cause::Reason("first seen"));
+        assert!(poll_noop(&mut weak.aborted()).is_ready());
+        a.abort(Cause::Reason("first part"));
+        assert_eq!(reason(work.cause().as_ref()), Some("first seen"));
+        assert_eq!(reason(work.abort_cause().as_ref()), Some("first seen"));
+    });
+}
+
+#[test]
+fn a_child_of_a_composite_inherits_its_fixed_cause() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        b.cancel(Cause::Reason("first seen"));
+        assert!(work.is_cancelled());
+        a.cancel(Cause::Reason("first part"));
+        let child = work.child();
+        assert_eq!(reason(child.cause().as_ref()), Some("first seen"));
+        assert_eq!(reason(child.child().cause().as_ref()), Some("first seen"));
+        let other = Scope::new();
+        let joint = Scope::child_of([&other, &work]);
+        assert_eq!(reason(joint.cause().as_ref()), Some("first seen"));
+
+        b.abort(Cause::Reason("first seen"));
+        assert!(work.is_aborted());
+        a.abort(Cause::Reason("first part"));
+        assert_eq!(reason(child.abort_cause().as_ref()), Some("first seen"));
+        assert_eq!(reason(joint.abort_cause().as_ref()), Some("first seen"));
+    });
+}
+
+#[test]
+fn a_child_made_before_the_phase_follows_its_composites_fact() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        let child = work.child();
+        b.cancel(Cause::Reason("first seen"));
+        assert!(work.is_cancelled());
+        a.cancel(Cause::Reason("first part"));
+        assert!(poll_noop(&mut child.cancelled()).is_ready());
+        assert_eq!(reason(child.cause().as_ref()), Some("first seen"));
+    });
+}
+
+#[test]
+fn a_child_observed_first_fixes_its_composite_alike() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        let child = work.child();
+        b.cancel(Cause::Reason("first seen"));
+        assert_eq!(reason(child.cause().as_ref()), Some("first seen"));
+        a.cancel(Cause::Reason("first part"));
+        assert_eq!(reason(work.cause().as_ref()), Some("first seen"));
+    });
+}
+
+#[test]
+fn an_own_phase_of_a_child_of_a_composite_is_its_own() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        let child = work.child();
+        child.cancel(Cause::Reason("own"));
+        assert_eq!(reason(child.cause().as_ref()), Some("own"));
+        a.cancel(Cause::Reason("parent"));
+        assert_eq!(reason(child.cause().as_ref()), Some("own"));
+        assert_eq!(reason(work.cause().as_ref()), Some("parent"));
+    });
+}
+
+#[test]
+fn a_scope_context_keeps_the_fixed_cause_of_its_composite() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        let extensions = Extensions::new();
+        attach_scope(&extensions, &work);
+        b.cancel(Cause::Reason("first seen"));
+        assert!(work.is_cancelled());
+        a.cancel(Cause::Reason("first part"));
+        let context = scope_context(&extensions).unwrap();
+        assert_eq!(reason(context.cause().as_ref()), Some("first seen"));
+    });
+}
+
+#[test]
+fn any_aborted_part_ends_a_grouped_join_at_once() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        let held = work.clone();
+        b.abort(Cause::Reason("b"));
+        let err = tokio::time::timeout(SEC, work.join())
+            .await
+            .expect("an aborted part ends the join at once")
+            .unwrap_err();
+        assert_eq!(reason(err.cause()), Some("b"));
+        drop(held);
+    });
+}
+
+#[test]
+fn a_grouped_join_waits_for_every_holder() {
+    let a = Scope::new();
+    let b = Scope::new();
+    let work = Scope::child_of([&a, &b]);
+    let weak = work.clone_weak();
+    let held = work.clone();
+    let mut join = Box::pin(work.join());
+    assert!(poll_noop(&mut join).is_pending());
+    drop(held);
+    assert!(matches!(poll_noop(&mut join), Poll::Ready(Ok(_))));
+    assert!(weak.into_scope().is_none(), "closed as a whole");
+}
+
+#[test]
+fn a_dropped_pending_grouped_join_closes_nothing() {
+    let a = Scope::new();
+    let b = Scope::new();
+    let work = Scope::child_of([&a, &b]);
+    let weak = work.clone_weak();
+    let held = work.clone();
+    let mut join = Box::pin(work.join());
+    assert!(poll_noop(&mut join).is_pending());
+    drop(join);
+    let revived = weak.into_scope().expect("nothing closed");
+    drop((held, revived));
+}
+
+#[test]
+fn into_scope_of_a_composite_is_all_or_nothing() {
+    let a = Scope::new();
+    let b = Scope::new();
+    let weak_a = a.clone_weak();
+    let work = Scope::child_of([&a, &b]);
+    let weak = work.clone_weak();
+    drop(a);
+    b.cancel(Cause::Owner);
+    drop(work);
+    // The part below b is cancelled without holders, which refuses it; the part below a,
+    // taken first, is released again.
+    assert!(weak.into_scope().is_none());
+    let mut a_drained = weak_a.drained();
+    assert!(poll_noop(&mut a_drained).is_ready());
+}
+
+#[test]
+fn every_wait_of_a_composite_releases_its_registrations() {
+    let a = Scope::new();
+    let b = Scope::new();
+    let work = Scope::child_of([&a, &b]);
+    for _ in 0..3 {
+        let mut cancelled = work.cancelled();
+        let mut aborted = work.aborted();
+        let mut drained = work.drained();
+        assert!(poll_noop(&mut cancelled).is_pending());
+        assert!(poll_noop(&mut aborted).is_pending());
+        assert!(poll_noop(&mut drained).is_pending());
+    }
+    // Each part keeps one relay on its parent while it lives, whatever the number of waits.
+    assert_eq!(waiter_count(&a), 1);
+    assert_eq!(waiter_count(&b), 1);
+    drop(work);
+    assert_eq!(waiter_count(&a), 0);
+    assert_eq!(waiter_count(&b), 0);
+}
+
+#[test]
+fn signals_on_a_composite_end_every_part_once() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let (cancel, cancelled) = oneshot::channel::<()>();
+        let (abort, aborted) = oneshot::channel::<()>();
+        let work = Scope::child_of([&a, &b])
+            .with_signal(cancelled)
+            .with_hard_signal(aborted);
+        let observer = work.clone();
+        cancel.send(()).unwrap();
+        observer.cancelled().await;
+        assert!(work.is_cancelled());
+        assert!(!work.is_aborted());
+        abort.send(()).unwrap();
+        work.aborted().await;
+        assert!(observer.is_aborted());
+        assert!(!a.is_cancelled() && !b.is_cancelled());
+    });
+}
+
+// ---- delayed signals and joins ----
+
+#[test]
+fn a_delayed_signal_cancels_after_its_delay() {
+    rt().block_on(async {
+        let (trigger, triggered) = oneshot::channel::<()>();
+        let scope = Scope::new().with_delayed_signal(triggered, 2 * SEC);
+        trigger.send(()).unwrap();
+        let start = Instant::now();
+        scope.cancelled().await;
+        assert_eq!(start.elapsed(), 2 * SEC);
+        assert!(matches!(scope.cause(), Some(Cause::Signal)));
+    });
+}
+
+#[test]
+fn a_delayed_signal_holds_back_no_ancestor() {
+    let parent = Scope::new();
+    let child = parent
+        .child()
+        .with_delayed_signal(std::future::pending::<()>(), 100 * SEC);
+    parent.cancel(Cause::Owner);
+    assert!(child.is_cancelled());
+}
+
+#[test]
+fn join_reports_the_cause_or_none() {
+    rt().block_on(async {
+        let idle = Scope::new();
+        let joined = idle.join().await.unwrap();
+        assert!(joined.cause().is_none());
+
+        let cancelled = Scope::new();
+        cancelled.cancel(Cause::Reason("done"));
+        let joined = cancelled.join().await.unwrap();
+        assert_eq!(reason(joined.cause()), Some("done"));
+    });
+}
+
+#[test]
+fn join_once_cancelled_waits_for_the_cancel_even_without_work() {
+    rt().block_on(async {
+        let root = Scope::new();
+        let weak = root.clone_weak();
+        tokio::spawn(async move {
+            tokio::time::sleep(SEC).await;
+            weak.cancel(Cause::Reason("signal"));
+        });
+        let start = Instant::now();
+        let joined = root.join_once_cancelled().await.unwrap();
+        assert_eq!(start.elapsed(), SEC);
+        assert_eq!(joined.elapsed(), Duration::ZERO, "the drain only");
+        assert_eq!(reason(joined.cause()), Some("signal"));
+    });
+}
+
+#[test]
+fn join_once_cancelled_waits_for_work_after_the_cancel() {
+    rt().block_on(async {
+        let root = Scope::new();
+        let finished_early = root.child();
+        drop(finished_early);
+        let work = root.child();
+        let weak = root.clone_weak();
+        tokio::spawn(async move {
+            tokio::time::sleep(SEC).await;
+            weak.cancel(Cause::Owner);
+            tokio::time::sleep(SEC).await;
+            drop(work);
+        });
+        let start = Instant::now();
+        let joined = root.join_once_cancelled().await.unwrap();
+        assert_eq!(start.elapsed(), 2 * SEC);
+        assert_eq!(joined.elapsed(), SEC);
+    });
+}
+
+#[test]
+fn a_dropped_join_once_cancelled_closes_nothing() {
+    let root = Scope::new();
+    let weak = root.clone_weak();
+    let held = root.clone();
+    let mut waiting_for_the_cancel = Box::pin(root.clone().join_once_cancelled());
+    assert!(poll_noop(&mut waiting_for_the_cancel).is_pending());
+    drop(waiting_for_the_cancel);
+
+    root.cancel(Cause::Owner);
+    let mut waiting_for_the_drain = Box::pin(root.join_once_cancelled());
+    assert!(poll_noop(&mut waiting_for_the_drain).is_pending());
+    drop(waiting_for_the_drain);
+    assert!(weak.into_scope().is_some(), "still held, so not closed");
+    drop(held);
+}
+
+// ---- the scope an input runs in ----
+
+#[test]
+fn entering_without_any_scope_makes_a_root() {
+    let extensions = Extensions::new();
+    let scope = enter_scope(&extensions).unwrap();
+    assert!(!scope.is_never());
+    assert!(scope_context(&extensions).is_some());
+}
+
+#[test]
+fn entering_with_only_an_own_scope_makes_its_child() {
+    let own = Scope::new();
+    let extensions = Extensions::new();
+    let scope = enter_scope_with(&extensions, &own).unwrap();
+    own.cancel(Cause::Owner);
+    assert!(scope.is_cancelled());
+}
+
+#[test]
+fn an_attached_never_scope_is_no_context() {
+    let extensions = Extensions::new();
+    attach_scope(&extensions, &Scope::never());
+    assert!(scope_context(&extensions).is_none());
+    assert!(!enter_scope(&extensions).unwrap().is_never());
+}
+
+#[test]
+fn a_closed_context_refuses_whatever_the_own_scope() {
+    for own in [None, Some(Scope::new())] {
+        let extensions = Extensions::new();
+        let context = Scope::new();
+        attach_scope(&extensions, &context);
+        context.cancel(Cause::Owner);
+        drop(context);
+        let _closed = match &own {
+            None => enter_scope(&extensions),
+            Some(own) => enter_scope_with(&extensions, own),
+        }
+        .unwrap_err();
+    }
+}
+
+#[test]
+fn an_entered_scope_follows_its_context_and_its_own_scope() {
+    for cancel_context in [true, false] {
+        let context = Scope::new();
+        let own = Scope::new();
+        let extensions = Extensions::new();
+        attach_scope(&extensions, &context);
+        let scope = enter_scope_with(&extensions, &own).unwrap();
+        if cancel_context {
+            context.cancel(Cause::Owner);
+        } else {
+            own.cancel(Cause::Owner);
+        }
+        assert!(scope.is_cancelled());
+        // It runs in the entered scope from now on.
+        assert!(scope_context(&extensions).unwrap().is_cancelled());
+    }
+}
+
+#[test]
+fn every_attached_scope_counts_not_only_the_latest() {
+    let extensions = Extensions::new();
+    let first = Scope::new();
+    let second = Scope::new();
+    attach_scope(&extensions, &first);
+    attach_scope(&extensions, &second);
+    let scope = enter_scope(&extensions).unwrap();
+    first.cancel(Cause::Owner);
+    assert!(scope.is_cancelled());
+}
+
+#[test]
+fn retained_extensions_hold_no_drain() {
+    rt().block_on(async {
+        let root = Scope::new();
+        let extensions = Extensions::new();
+        let entered = enter_scope_with(&extensions, &root).unwrap();
+        let retained = extensions.clone();
+        drop(entered);
+        tokio::time::timeout(SEC, root.join())
+            .await
+            .expect("retained extensions do not hold the drain")
+            .unwrap();
+        drop(retained);
+    });
+}
+
+// ---- deep trees cost heap, not stack ----
+
+const DEEP: usize = 20_000;
+const SMALL_STACK: usize = 256 * 1024;
+
+/// Runs `test` on a thread with a small stack: a recursive walk over a deep tree overflows it.
+fn on_a_small_stack(test: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .spawn(test)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// A chain of `DEEP` children below `root`, and its leaf.
+fn deep_chain(root: &Scope) -> (Vec<Scope>, Scope) {
+    let mut chain = Vec::with_capacity(DEEP);
+    let mut leaf = root.child();
+    for _ in 1..DEEP {
+        let next = leaf.child();
+        chain.push(leaf);
+        leaf = next;
+    }
+    (chain, leaf)
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "a deep tree is slow under Miri")]
+fn a_deep_tree_registers_propagates_and_tears_down_on_a_small_stack() {
+    on_a_small_stack(|| {
+        rt().block_on(async {
+            let root = Scope::new().with_grace(SEC);
+            let (chain, leaf) = deep_chain(&root);
+            let (flag, waker) = Flag::waker();
+            let mut cancelled = leaf.cancelled();
+            assert!(poll(&mut cancelled, &waker).is_pending());
+
+            root.cancel(Cause::Reason("root"));
+            assert!(
+                flag.woken(),
+                "the wake reached the leaf through every relay"
+            );
+            assert!(poll(&mut cancelled, &waker).is_ready());
+            assert_eq!(reason(leaf.cause().as_ref()), Some("root"));
+
+            // The root's grace reaches the leaf by time alone.
+            let start = Instant::now();
+            leaf.aborted().await;
+            assert_eq!(start.elapsed(), SEC);
+
+            let weak_root = root.clone_weak();
+            drop((chain, leaf, root));
+            assert!(poll_noop(&mut weak_root.drained()).is_ready());
+        });
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "a deep tree is slow under Miri")]
+fn a_deep_chain_is_revived_and_joined_on_a_small_stack() {
+    on_a_small_stack(|| {
+        rt().block_on(async {
+            let root = Scope::new();
+            let (chain, leaf) = deep_chain(&root);
+            let weak_leaf = leaf.clone_weak();
+            drop((chain, leaf));
+
+            let revived = weak_leaf.into_scope().expect("an active chain revives");
+            let mut join = Box::pin(root.clone().join());
+            assert!(
+                poll_noop(&mut join).is_pending(),
+                "the revived leaf holds the root"
+            );
+            drop(revived);
+            drop(root);
+            assert!(matches!(poll_noop(&mut join), Poll::Ready(Ok(_))));
+        });
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "a deep tree is slow under Miri")]
+fn a_deep_deadline_is_observed_on_a_small_stack() {
+    on_a_small_stack(|| {
+        rt().block_on(async {
+            let root = Scope::new().with_timeout(SEC);
+            let (_chain, leaf) = deep_chain(&root);
+            let start = Instant::now();
+            leaf.cancelled().await;
+            assert_eq!(start.elapsed(), SEC);
+            assert!(matches!(leaf.cause(), Some(Cause::Deadline)));
+        });
+    });
+}
+
+// ---- a waker whose clones live at other addresses ----
+
+mod waker_identity {
+    use std::{
+        future::Future,
+        pin::Pin,
+        ptr,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, RawWaker, RawWakerVTable, Waker},
+    };
+
+    use parking_lot::{Mutex, MutexGuard};
+
+    use super::super::{Cause, Scope};
+
+    /// One entry per live raw waker instance: a clone takes another entry for the same task,
+    /// a consuming wake or a drop frees its own.
+    static SLOTS: Mutex<[Option<Arc<AtomicUsize>>; 8]> = Mutex::new([const { None }; 8]);
+    /// The tests share `SLOTS`.
+    static SERIAL: Mutex<()> = Mutex::new(());
+    static TOKENS: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+    static VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_raw, wake_raw, wake_by_ref_raw, drop_raw);
+
+    fn slots() -> MutexGuard<'static, [Option<Arc<AtomicUsize>>; 8]> {
+        SLOTS.lock()
+    }
+
+    fn index(data: *const ()) -> usize {
+        TOKENS
+            .iter()
+            .position(|token| ptr::eq(data, ptr::from_ref(token).cast()))
+            .unwrap()
+    }
+
+    fn raw(slot: usize) -> RawWaker {
+        RawWaker::new(ptr::from_ref(&TOKENS[slot]).cast(), &VTABLE)
+    }
+
+    fn clone_raw(data: *const ()) -> RawWaker {
+        let mut slots = slots();
+        let task = slots[index(data)].clone().unwrap();
+        let free = slots.iter().position(Option::is_none).unwrap();
+        slots[free] = Some(task);
+        raw(free)
+    }
+
+    fn wake_raw(data: *const ()) {
+        let task = slots()[index(data)].take().unwrap();
+        task.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn wake_by_ref_raw(data: *const ()) {
+        let task = slots()[index(data)].clone().unwrap();
+        task.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn drop_raw(data: *const ()) {
+        drop(slots()[index(data)].take());
+    }
+
+    fn waker(slot: usize, task: Arc<AtomicUsize>) -> Waker {
+        {
+            let mut slots = slots();
+            assert!(slots[slot].is_none(), "the slot is free");
+            slots[slot] = Some(task);
+        }
+        // SAFETY: the data pointer of every raw waker made here or by `clone_raw` is the
+        // address of an element of the immutable static `TOKENS`, valid for `'static`, and
+        // the callbacks only compare it with those addresses, never dereferencing it. Each raw
+        // waker owns exactly one occupied `SLOTS` entry: this function fills a free entry
+        // before handing it out and `clone_raw` fills a different free one, while
+        // `wake_raw` and `drop_raw` empty the entry of the instance they consume and
+        // `wake_by_ref_raw` leaves it. So every callback finds the entry of a live instance,
+        // and an entry is reused only after its previous instance was consumed. The
+        // registry is behind a mutex and holds `Arc<AtomicUsize>`, so the callbacks are
+        // sound from any thread, as `Waker` requires.
+        unsafe { Waker::from_raw(raw(slot)) }
+    }
+
+    fn poll<F: Future + Unpin>(future: &mut F, waker: &Waker) -> bool {
+        Pin::new(future)
+            .poll(&mut Context::from_waker(waker))
+            .is_pending()
+    }
+
+    /// A waiter registered with a waker whose clone lives elsewhere, polled again by another
+    /// task's waker, which takes the dropped first waker's address if `reuse`.
+    fn the_latest_task_is_woken(reuse: bool) {
+        let _serial = SERIAL.lock();
+        let scope = Scope::new();
+        let mut waiter = scope.cancelled();
+        let old_task = Arc::new(AtomicUsize::new(0));
+        let new_task = Arc::new(AtomicUsize::new(0));
+
+        let first = waker(0, old_task.clone());
+        assert!(poll(&mut waiter, &first));
+        drop(first);
+        let second = waker(if reuse { 0 } else { 2 }, new_task.clone());
+        assert!(poll(&mut waiter, &second));
+
+        scope.cancel(Cause::Owner);
+        assert_eq!(new_task.load(Ordering::SeqCst), 1);
+        assert_eq!(old_task.load(Ordering::SeqCst), 0);
+        assert!(!poll(&mut waiter, &second));
+        drop(waiter);
+        drop(second);
+        assert!(
+            slots().iter().all(Option::is_none),
+            "every instance is released"
+        );
+    }
+
+    #[test]
+    fn a_new_waker_at_a_dropped_wakers_address_replaces_it() {
+        the_latest_task_is_woken(true);
+    }
+
+    #[test]
+    fn a_new_waker_at_another_address_replaces_it() {
+        the_latest_task_is_woken(false);
+    }
+}
+
+// ---- a panicking waker stays with its own wake ----
+
+struct PanicWake;
+
+impl Wake for PanicWake {
+    fn wake(self: Arc<Self>) {
+        panic!("a waker panics");
+    }
+}
+
+#[test]
+fn a_panicking_waker_leaves_later_scopes_on_the_thread_alone() {
+    let first_scope = Scope::new();
+    let mut first = first_scope.cancelled();
+    let bad = Waker::from(Arc::new(PanicWake));
+    assert!(poll(&mut first, &bad).is_pending());
+    assert!(catch_unwind(AssertUnwindSafe(|| first_scope.cancel(Cause::Owner))).is_err());
+
+    let next_scope = Scope::new();
+    let child = next_scope.child();
+    let mut next = child.cancelled();
+    let (flag, waker) = Flag::waker();
+    assert!(poll(&mut next, &waker).is_pending());
+    next_scope.cancel(Cause::Owner);
+    assert!(flag.woken());
+    assert!(poll(&mut next, &waker).is_ready());
+}
+
+#[test]
+fn a_panicking_branch_carries_no_wake_into_another_scope() {
+    let first_scope = Scope::new();
+    let a = first_scope.child();
+    let b = first_scope.child();
+    let mut first = a.cancelled();
+    let mut leftover = b.cancelled();
+    let bad = Waker::from(Arc::new(PanicWake));
+    assert!(poll(&mut first, &bad).is_pending());
+    assert!(poll(&mut leftover, &bad).is_pending());
+    assert!(catch_unwind(AssertUnwindSafe(|| first_scope.cancel(Cause::Owner))).is_err());
+
+    let next_scope = Scope::new();
+    let mut next = next_scope.cancelled();
+    let (flag, waker) = Flag::waker();
+    assert!(poll(&mut next, &waker).is_pending());
+    catch_unwind(AssertUnwindSafe(|| next_scope.cancel(Cause::Owner))).unwrap();
+    assert!(flag.woken());
+}
+
+#[test]
+fn a_panicking_drain_waker_of_one_parent_leaves_the_other_released() {
+    let a = Scope::new();
+    let b = Scope::new();
+    let work = Scope::child_of([&a, &b]);
+    let weak_a = a.into_weak_scope();
+    let weak_b = b.into_weak_scope();
+    let mut a_drained = weak_a.drained();
+    let bad = Waker::from(Arc::new(PanicWake));
+    assert!(poll(&mut a_drained, &bad).is_pending());
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(work))).is_err());
+    assert!(poll_noop(&mut weak_b.drained()).is_ready());
+    assert!(poll_noop(&mut weak_a.drained()).is_ready());
+}
+
+/// A panic payload whose destructor panics again.
+struct PanickingPayload;
+
+impl Drop for PanickingPayload {
+    fn drop(&mut self) {
+        panic!("a panic payload panics once dropped");
+    }
+}
+
+struct PayloadWake;
+
+impl Wake for PayloadWake {
+    fn wake(self: Arc<Self>) {
+        std::panic::panic_any(PanickingPayload);
+    }
+}
+
+#[test]
+fn a_panic_payload_that_panics_once_dropped_leaves_every_parent_released() {
+    let a = Scope::new();
+    let b = Scope::new();
+    let c = Scope::new();
+    let work = Scope::child_of([&a, &b, &c]);
+    let [a, b, c] = [a, b, c].map(Scope::into_weak_scope);
+    let mut a_drained = a.drained();
+    let mut b_drained = b.drained();
+    assert!(poll(&mut a_drained, &Waker::from(Arc::new(PanicWake))).is_pending());
+    assert!(poll(&mut b_drained, &Waker::from(Arc::new(PayloadWake))).is_pending());
+    catch_unwind(AssertUnwindSafe(|| drop(work))).unwrap_err();
+    assert!(poll_noop(&mut c.drained()).is_ready());
+    assert!(poll_noop(&mut b.drained()).is_ready());
+}
+
+type Parked = Arc<parking_lot::Mutex<Option<Pin<Box<dyn Future<Output = ()> + Send>>>>>;
+
+/// A signal that, once dropped, parks a drain wait of `scope` on a [`PayloadWake`] and panics.
+struct ParkThenPanic {
+    scope: WeakScope,
+    parked: Parked,
+}
+
+impl Future for ParkThenPanic {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+        Poll::Pending
+    }
+}
+
+impl Drop for ParkThenPanic {
+    fn drop(&mut self) {
+        let mut drained: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(self.scope.drained());
+        assert!(poll(&mut drained, &Waker::from(Arc::new(PayloadWake))).is_pending());
+        *self.parked.lock() = Some(drained);
+        panic!("a signal panics once dropped");
+    }
+}
+
+#[test]
+fn a_rollback_panic_payload_that_panics_once_dropped_keeps_the_first_panic() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        let weak = work.clone_weak();
+        drop(work);
+        let weak_a = a.into_weak_scope();
+        let parked = Parked::default();
+        // Parked while the first part, held again, holds `a`: the rollback wakes it.
+        let b = b
+            .with_signal(ParkThenPanic {
+                scope: weak_a.clone(),
+                parked: parked.clone(),
+            })
+            .with_deadline(Instant::now() + SEC);
+        advance(SEC).await;
+        let payload = catch_unwind(AssertUnwindSafe(|| weak.clone().into_scope())).unwrap_err();
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"a signal panics once dropped")
+        );
+        assert!(poll_noop(&mut weak_a.drained()).is_ready());
+        drop((b, parked));
+    });
+}
+
+#[test]
+fn a_panicking_waker_of_one_part_leaves_a_composite_cancel_whole() {
+    let a = Scope::new();
+    let b = Scope::new();
+    let work = Scope::child_of([&a, &b]);
+    let mut cancelled = work.cancelled();
+    let bad = Waker::from(Arc::new(PanicWake));
+    assert!(poll(&mut cancelled, &bad).is_pending());
+    assert!(catch_unwind(AssertUnwindSafe(|| work.cancel(Cause::Owner))).is_err());
+    assert!(work.parts().iter().all(|part| part.phase().graceful));
+
+    let work = Scope::child_of([&a, &b]);
+    let mut aborted = work.aborted();
+    assert!(poll(&mut aborted, &bad).is_pending());
+    assert!(catch_unwind(AssertUnwindSafe(|| work.abort(Cause::Owner))).is_err());
+    assert!(work.parts().iter().all(|part| part.phase().hard));
+}
+
+#[test]
+fn a_panicking_waker_of_one_part_leaves_a_composite_deadline_whole() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new();
+        let work = Scope::child_of([&a, &b]);
+        let mut cancelled = work.cancelled();
+        let bad = Waker::from(Arc::new(PanicWake));
+        assert!(poll(&mut cancelled, &bad).is_pending());
+        let deadline = Instant::now();
+        let work = catch_unwind(AssertUnwindSafe(|| work.clone().with_deadline(deadline)))
+            .err()
+            .map(|_| work)
+            .unwrap_or_else(|| panic!("the first part's waker panics"));
+        assert!(work.parts().iter().all(|part| part.phase().graceful));
+        drop(cancelled);
+    });
+}
+
+/// A signal that never completes and panics once dropped, as a scope drops it on its cancel.
+struct PanicOnDrop;
+
+impl Future for PanicOnDrop {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+        Poll::Pending
+    }
+}
+
+impl Drop for PanicOnDrop {
+    fn drop(&mut self) {
+        panic!("a signal panics once dropped");
+    }
+}
+
+#[test]
+fn a_panic_while_holding_a_part_again_lets_go_of_the_parts_held() {
+    rt().block_on(async {
+        let a = Scope::new();
+        let b = Scope::new()
+            .with_signal(PanicOnDrop)
+            .with_deadline(Instant::now() + SEC);
+        let work = Scope::child_of([&a, &b]);
+        let weak = work.clone_weak();
+        drop(work);
+        // Due, but published only once the second part is held again: its signal goes then.
+        advance(SEC).await;
+        catch_unwind(AssertUnwindSafe(|| weak.clone().into_scope())).unwrap_err();
+        let weak_a = a.into_weak_scope();
+        assert!(
+            poll_noop(&mut weak_a.drained()).is_ready(),
+            "the part held before the panic is let go"
+        );
+        drop(b);
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "a deep tree is slow under Miri")]
+fn a_deep_chain_of_composites_fixes_and_tears_down_on_a_small_stack() {
+    on_a_small_stack(|| {
+        rt().block_on(async {
+            let a = Scope::new();
+            let b = Scope::new();
+            let mut chain = Vec::with_capacity(DEEP);
+            let mut leaf = Scope::child_of([&a, &b]);
+            for _ in 1..DEEP {
+                let next = leaf.child();
+                chain.push(leaf);
+                leaf = next;
+            }
+            b.cancel(Cause::Reason("first seen"));
+            assert!(chain[0].is_cancelled());
+            a.cancel(Cause::Reason("first part"));
+            assert_eq!(reason(leaf.cause().as_ref()), Some("first seen"));
+            drop(chain);
+            drop(leaf);
+        });
+    });
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "a deep tree is slow under Miri")]
+fn the_first_observation_of_a_chain_of_composites_walks_each_node_a_bounded_number_of_times() {
+    for depth in [256, 2048] {
+        let a = Scope::new();
+        let b = Scope::new();
+        let mut chain = vec![Scope::child_of([&a, &b])];
+        for _ in 1..depth {
+            let next = chain.last().unwrap().child();
+            chain.push(next);
+        }
+        a.cancel(Cause::Owner);
+        let _before = super::node::walk_steps::take();
+        assert!(chain.last().unwrap().is_cancelled());
+        let steps = super::node::walk_steps::take();
+        // Each of the two parts walks its chain of `depth` nodes a few times, never once per
+        // composite above it.
+        assert!(steps <= 8 * depth, "{steps} steps at depth {depth}");
+        assert!(chain.iter().all(Scope::is_cancelled));
+    }
+}
+
+/// Ends `scope`'s graceful (or `hard`) phase with `reason`.
+fn end_phase(scope: &WeakScope, hard: bool, reason: &'static str) {
+    if hard {
+        scope.abort(Cause::Reason(reason));
+    } else {
+        scope.cancel(Cause::Reason(reason));
+    }
+}
+
+fn phase_cause(scope: &Scope, hard: bool) -> Option<&'static str> {
+    let cause = if hard {
+        scope.abort_cause()
+    } else {
+        scope.cause()
+    };
+    reason(cause.as_ref())
+}
+
+/// Runs `racer` once, at the `step`-th step of the next composite observation on this thread;
+/// the returned flag tells whether it ran.
+fn race_at_step(step: usize, racer: impl FnOnce() + 'static) -> Arc<AtomicBool> {
+    let ran = Arc::new(AtomicBool::new(false));
+    let mut racer = Some(racer);
+    let mut steps = 0;
+    let done = ran.clone();
+    super::sync::observation::set(Some(Box::new(move || {
+        steps += 1;
+        if steps == step
+            && let Some(racer) = racer.take()
+        {
+            racer();
+            done.store(true, Ordering::SeqCst);
+        }
+    })));
+    ran
+}
+
+/// One fresh tree per step, so the racing parent lands at every step of the first observation.
+fn race_each_step_of_a_composite_observation(hard: bool, pre_reached: bool) {
+    let mut raced = 0;
+    for step in 1..=16 {
+        rt().block_on(async {
+            let a = Scope::new();
+            let b = Scope::new();
+            let work = Scope::child_of([&a, &b]);
+            let child = work.child();
+            let (first, second, part) = if pre_reached {
+                (b.clone_weak(), a.clone_weak(), child.parts()[0].clone())
+            } else {
+                (a.clone_weak(), b.clone_weak(), child.parts()[1].clone())
+            };
+            if pre_reached {
+                end_phase(&first, hard, "first");
+            }
+            let ran = race_at_step(step, move || {
+                end_phase(&second, hard, "second");
+                // Published up to the part, as an observer of that part alone would.
+                let _phase = part.phase();
+            });
+            let observed = phase_cause(&child, hard);
+            super::sync::observation::set(None);
+            if ran.load(Ordering::SeqCst) && observed.is_some() {
+                raced += 1;
+            }
+            if !pre_reached {
+                end_phase(&first, hard, "first");
+            }
+            let child_cause = phase_cause(&child, hard);
+            if observed.is_some() {
+                assert_eq!(observed, child_cause, "step {step}");
+            }
+            assert_eq!(phase_cause(&work, hard), child_cause, "step {step}");
+        });
+    }
+    assert!(raced > 0, "no step raced an observation that saw a phase");
+}
+
+#[test]
+fn a_parent_ending_during_a_composite_observation_leaves_parent_and_child_agreeing() {
+    for hard in [false, true] {
+        race_each_step_of_a_composite_observation(hard, false);
+    }
+}
+
+#[test]
+fn a_part_ending_while_a_reached_composite_is_read_leaves_parent_and_child_agreeing() {
+    for hard in [false, true] {
+        race_each_step_of_a_composite_observation(hard, true);
+    }
+}
+
+/// As [`race_each_step_of_a_composite_observation`], for the cancel an observed abort implies.
+fn abort_each_step_of_an_abort_observation(of_child: bool) {
+    let mut raced = 0;
+    for step in 1..=16 {
+        rt().block_on(async {
+            let a = Scope::new();
+            let b = Scope::new();
+            let work = Scope::child_of([&a, &b]);
+            let child = work.child();
+            let observed = if of_child { &child } else { &work };
+            let (weak_b, part) = (b.clone_weak(), observed.parts()[1].clone());
+            let ran = race_at_step(step, move || {
+                weak_b.abort(Cause::Reason("b"));
+                let _phase = part.phase();
+            });
+            let aborted = reason(observed.abort_cause().as_ref());
+            super::sync::observation::set(None);
+            a.cancel(Cause::Reason("a"));
+            if aborted.is_some() {
+                if ran.load(Ordering::SeqCst) {
+                    raced += 1;
+                }
+                assert_eq!(reason(observed.cause().as_ref()), aborted, "step {step}");
+            }
+            assert_eq!(
+                reason(work.cause().as_ref()),
+                reason(child.cause().as_ref()),
+                "step {step}"
+            );
+        });
+    }
+    assert!(
+        raced > 0,
+        "no step raced an abort observation that saw the abort"
+    );
+}
+
+#[test]
+fn an_abort_observed_on_a_composite_fixes_the_cancel_it_implies() {
+    abort_each_step_of_an_abort_observation(false);
+}
+
+#[test]
+fn an_abort_observed_below_a_composite_fixes_the_cancel_it_implies() {
+    abort_each_step_of_an_abort_observation(true);
 }

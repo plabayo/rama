@@ -25,7 +25,7 @@ use rama::{
     Layer as _, Service as _,
     error::{BoxError, BoxErrorExt as _, extra::OpaqueError},
     extensions::{Egress, Extensions, ExtensionsRef as _},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Body, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
@@ -84,10 +84,12 @@ async fn main() -> Result<(), BoxError> {
 
 async fn run(args: Args) -> Result<(), BoxError> {
     let (stop, stopped) = oneshot::channel();
-    let shutdown = Shutdown::new(async {
-        _ = stopped.await;
-    });
-    let exec = Executor::graceful(shutdown.guard());
+    let scope = Scope::new()
+        .with_grace(Duration::from_secs(10))
+        .with_signal(async {
+            _ = stopped.await;
+        });
+    let exec = Executor::from(scope.clone());
     let processed = Arc::new(AtomicUsize::new(0));
     let origin_count = processed.clone();
     let origin = ValidateRequestHeaderLayer::custom_fn(require_confirmed).into_layer(service_fn(
@@ -273,8 +275,6 @@ async fn run(args: Args) -> Result<(), BoxError> {
     serving.await??;
     endpoint.shutdown().await;
     drop(exec);
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(10))
-        .await?;
+    scope.join().await?;
     Ok(())
 }

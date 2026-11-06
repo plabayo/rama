@@ -5,7 +5,7 @@
 
 use parking_lot::Mutex;
 use rama_core::{
-    ServiceInput, bytes::Bytes, extensions::ExtensionsRef as _, graceful::Shutdown, rt::Executor,
+    ServiceInput, bytes::Bytes, extensions::ExtensionsRef as _, graceful::Scope, rt::Executor,
     service::service_fn,
 };
 use rama_http::{
@@ -750,9 +750,9 @@ async fn graceful_executors_wait_for_capsule_session_tasks() {
     for version in [Version::HTTP_11, Version::HTTP_2] {
         tokio::time::timeout(LIMIT, async {
             let (stop, stopped) = oneshot::channel::<()>();
-            let shutdown = Shutdown::new(stopped);
-            let observer = shutdown.guard_weak();
-            let executor = Executor::graceful(shutdown.guard());
+            let shutdown = Scope::new().with_signal(stopped);
+            let observer = shutdown.clone_weak();
+            let executor = Executor::from(shutdown.clone());
             let (done, completed) = oneshot::channel();
             let done = Arc::new(Mutex::new(Some(done)));
             let service = RamaHttpService::new(service_fn(move |request: Request| {
@@ -776,7 +776,7 @@ async fn graceful_executors_wait_for_capsule_session_tasks() {
                 config(),
             );
             exchange(&mut session, b"before-shutdown").await;
-            let mut shutdown = pin!(shutdown.shutdown_with_limit(LIMIT));
+            let mut shutdown = pin!(tokio::time::timeout(LIMIT, shutdown.join()));
             stop.send(()).unwrap();
             observer.cancelled().await;
             poll_fn(|cx| {
@@ -792,7 +792,7 @@ async fn graceful_executors_wait_for_capsule_session_tasks() {
             assert_eq!(session.recv().await.unwrap(), None);
             drop(session);
             completed.await.unwrap();
-            shutdown.await.unwrap();
+            shutdown.await.unwrap().expect("not aborted");
         })
         .await
         .unwrap();

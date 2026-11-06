@@ -15,8 +15,8 @@ pub use prefix::PrefixedIo;
 mod abort;
 pub use abort::AbortIo;
 
-mod graceful;
-pub use graceful::{CancelIo, GracefulIo};
+mod abortable;
+pub use abortable::AbortableIo;
 
 pub mod peek;
 pub mod rewind;

@@ -65,6 +65,7 @@
 use rama::{
     Layer, Service,
     extensions::{Extension, Extensions, ExtensionsRef},
+    graceful::Scope,
     http::{
         Body, BodyLimitLayer, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -109,7 +110,9 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     #[derive(Deserialize)]
     /// API parameters for the lucky number endpoint
@@ -117,8 +120,8 @@ async fn main() {
         number: u32,
     }
 
-    graceful.spawn_task_fn(async move |guard| {
-                let exec = Executor::graceful(guard);
+    let exec = Executor::from(scope.clone());
+    exec.clone().into_spawn_task(async move {
         let tcp_service = TcpListener::build(exec.clone()).bind_address("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
 
         let http_service = HttpServer::auto(exec.clone())
@@ -180,10 +183,7 @@ async fn main() {
             ).into_layer(http_service)).await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {

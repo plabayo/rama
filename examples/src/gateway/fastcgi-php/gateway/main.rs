@@ -38,7 +38,7 @@ use rama::{
     Service,
     error::BoxError,
     gateway::fastcgi::{FastCgiClientRequest, FastCgiHttpClient, FastCgiTcpConnector},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Request, Response, StatusCode, layer::trace::TraceLayer, server::HttpServer,
         service::web::response::IntoResponse,
@@ -90,9 +90,10 @@ async fn main() {
             .to_owned()
     });
 
-    let shutdown = Shutdown::default();
-    let guard = shutdown.guard();
-    let exec = Executor::graceful(guard);
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     // ── TLS terminator (rustls + self-signed, HTTP/1.1 + HTTP/2) ─────────
     let tls_data = TlsServerConfig::new()
@@ -123,12 +124,9 @@ async fn main() {
         "rama-fastcgi-php gateway listening (HTTPS) on https://{listen}"
     );
 
-    shutdown.spawn_task(tcp.serve(TlsAcceptorLayer::new(tls_data).into_layer(http_server)));
+    exec.into_spawn_task(tcp.serve(TlsAcceptorLayer::new(tls_data).into_layer(http_server)));
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 /// HTTP service: forward to php-fpm via FastCGI, surfacing protocol-level

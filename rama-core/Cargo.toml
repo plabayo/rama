@@ -39,7 +39,6 @@ std = [
     "dep:serde_json",
     "dep:slab",
     "dep:tokio",
-    "dep:tokio-graceful",
     "dep:tokio-stream",
     "dep:tokio-util",
     "dep:tracing-appender",
@@ -76,7 +75,6 @@ serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
 slab = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "rt", "rt-multi-thread", "sync", "time"], optional = true }
-tokio-graceful = { workspace = true, optional = true }
 tokio-stream = { workspace = true, features = ["full"], optional = true }
 tokio-util = { workspace = true, features = ["codec", "io", "io-util"], optional = true }
 tracing = { workspace = true, default-features = false, features = ["attributes"] }

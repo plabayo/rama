@@ -20,7 +20,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef as _,
     futures::{StreamExt as _, stream::FuturesUnordered},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Body, Request, Response, Version,
         client::{EasyHttpConnectorBuilder, Http3Connector},
@@ -99,24 +99,24 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
     let (finished, completed) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = completed => {},
-        }
-    });
-    let exec = Executor::graceful(shutdown.guard());
+    let scope = Scope::new()
+        .with_grace(Duration::from_secs(15))
+        .with_signal(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = completed => {},
+            }
+        });
+    let exec = Executor::from(scope.clone());
     match args.mode {
         Mode::Server { listen, cert, key } => {
-            serve(&shutdown, exec.clone(), listen, cert, key).await?;
+            serve(exec.clone(), listen, cert, key).await?;
         }
         Mode::Client { ca, url, datagrams } => client(exec.clone(), ca, url, datagrams).await?,
     }
     _ = finished.send(());
     drop(exec);
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(15))
-        .await?;
+    scope.join().await?;
     tracing::info!("HTTP datagram echo shutdown joined");
     Ok(())
 }
@@ -223,7 +223,6 @@ async fn echo(request: Request) -> Result<Response, Infallible> {
 }
 
 async fn serve(
-    shutdown: &Shutdown,
     exec: Executor,
     listen: SocketAddress,
     cert: PathBuf,
@@ -249,7 +248,6 @@ async fn serve(
         .bind_address(listen)
         .await?;
     tracing::info!("HTTP datagram echo listening on {}", endpoint.local_addr()?);
-    let guard = shutdown.guard();
     let service = server.service(
         (ArcLayer::new(), ErrorHandlerLayer::new())
             .into_layer(Router::new().with_connect("/echo", service_fn(echo))),
@@ -257,7 +255,7 @@ async fn serve(
     let mut connections = FuturesUnordered::new();
     loop {
         let incoming = tokio::select! {
-            _ = guard.cancelled() => break,
+            () = exec.cancelled() => break,
             finished = connections.next(), if !connections.is_empty() => {
                 if let Some(Err(error)) = finished {
                     tracing::debug!(%error, "HTTP/3 connection task ended");
@@ -284,7 +282,6 @@ async fn serve(
         }));
     }
     drop(service);
-    drop(guard);
     let drained = tokio::time::timeout(Duration::from_secs(15), async {
         while let Some(result) = connections.next().await {
             result?;

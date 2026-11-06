@@ -28,7 +28,6 @@
 use rama::{
     Layer,
     error::{BoxError, ErrorContext as _},
-    graceful::ShutdownGuard,
     net::{
         address::{HostWithPort, SocketAddress},
         proxy::IoForwardService,
@@ -121,22 +120,20 @@ pub struct EntryNodeArgs {
     pub insecure: bool,
 }
 
-pub async fn run(guard: ShutdownGuard, cfg: StunnelCommand) -> Result<(), BoxError> {
+pub async fn run(exec: Executor, cfg: StunnelCommand) -> Result<(), BoxError> {
     match cfg.commands {
-        StunnelSubcommand::Exit(cfg) => run_exit_node(guard, cfg).await,
-        StunnelSubcommand::Entry(cfg) => run_entry_node(guard, cfg).await,
+        StunnelSubcommand::Exit(cfg) => run_exit_node(exec, cfg).await,
+        StunnelSubcommand::Entry(cfg) => run_entry_node(exec, cfg).await,
     }
 }
 
-async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(), BoxError> {
+async fn run_exit_node(exec: Executor, cfg: ExitNodeArgs) -> Result<(), BoxError> {
     let server_config = try_new_server_config_with_auth_files(
         cfg.cert.as_deref(),
         cfg.key.as_deref(),
         None,
-        Executor::graceful(graceful.clone()),
+        exec.clone(),
     )?;
-
-    let exec = Executor::graceful(graceful);
 
     let tcp_listener = TcpListener::bind_address(cfg.bind, exec.clone())
         .await
@@ -166,10 +163,9 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
     Ok(())
 }
 
-async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(), BoxError> {
+async fn run_entry_node(exec: Executor, cfg: EntryNodeArgs) -> Result<(), BoxError> {
     let tls_connector_data = build_tls_connector(&cfg)?;
 
-    let exec = Executor::graceful(graceful);
     let tcp_listener = TcpListener::bind_address(cfg.bind, exec.clone())
         .await
         .context("bind stunnel entry node")?;

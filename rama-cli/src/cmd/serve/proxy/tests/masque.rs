@@ -30,17 +30,17 @@ use tokio::{net::UdpSocket, sync::mpsc};
 use super::*;
 
 /// A proxy started from `args` on loopback, sharing `shutdown`.
-async fn proxy_with(shutdown: &rama::graceful::Shutdown, args: &[&str]) -> std::net::SocketAddr {
+async fn proxy_with(shutdown: &Scope, args: &[&str]) -> std::net::SocketAddr {
     let bind = loopback_bind_address().to_string();
     let mut argv = vec!["test", "--bind", bind.as_str()];
     argv.extend_from_slice(args);
     let cli = TestCli::parse_from(argv);
-    start_proxy(shutdown.guard(), cli.proxy).await.0
+    start_proxy(shutdown, cli.proxy).await.0
 }
 
-fn shutdown_pair() -> (tokio::sync::oneshot::Sender<()>, rama::graceful::Shutdown) {
+fn shutdown_pair() -> (tokio::sync::oneshot::Sender<()>, Scope) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
     (shutdown_tx, shutdown)
@@ -538,7 +538,7 @@ async fn a_dedicated_masque_bind_serves_its_custom_template_in_both_proxy_forms(
         "--masque-template",
         "/masque?h={target_host}&p={target_port}",
     ]);
-    let (proxy, _) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy, _) = start_proxy(&shutdown, cli.proxy).await;
     let template = "/masque?h={target_host}&p={target_port}";
     for version in VERSIONS {
         for scheme in ["masque", "https"] {

@@ -27,6 +27,7 @@
 use rama::{
     Layer,
     futures::{StreamExt as _, async_stream::stream_fn},
+    graceful::Scope,
     http::{
         Body,
         headers::ContentType,
@@ -90,8 +91,10 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62041), exec.clone())
         .await
@@ -107,7 +110,7 @@ async fn main() {
         "open http://{bind_address}/orders in your browser to see the service in action"
     );
 
-    graceful.spawn_task(async {
+    exec.clone().into_spawn_task(async move {
         let app = (
             ArcLayer::new(),
             TraceLayer::new_for_http(),
@@ -117,10 +120,7 @@ async fn main() {
         listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Clone, Serialize)]

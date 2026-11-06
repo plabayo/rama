@@ -64,6 +64,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::{Extension, ExtensionsRef},
+    graceful::Scope,
     http::{
         Body, BodyLimitLayer, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
@@ -118,15 +119,17 @@ async fn main() -> Result<(), BoxError> {
 
     let mitm_tls_service_data = new_mitm_tls_service_data();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
-    let exec = Executor::graceful(graceful.guard());
+    let exec = Executor::from(scope.clone());
     let state = State {
         mitm_tls_service_data,
         exec: exec.clone(),
     };
 
-    graceful.spawn_task(async {
+    exec.clone().into_spawn_task(async move {
         let tcp_service = TcpListener::build(exec.clone())
             .bind_address("127.0.0.1:62019")
             .await
@@ -165,10 +168,7 @@ async fn main() -> Result<(), BoxError> {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .context("graceful shutdown")?;
+    scope.join().await.context("graceful shutdown")?;
 
     Ok(())
 }

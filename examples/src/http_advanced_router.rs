@@ -54,7 +54,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
-    graceful,
+    graceful::Scope,
     http::{
         Body, Request, Response, StatusCode,
         headers::{ContentType, HttpResponseBuilderExt},
@@ -93,7 +93,9 @@ async fn main() -> Result<(), BoxError> {
         ))
         .init();
 
-    let graceful = graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     // Outer router: every endpoint produces (Response, CustomRouterError).
     let router = Router::new_with_state(Arc::new(AppState {
@@ -131,15 +133,12 @@ async fn main() -> Result<(), BoxError> {
         .into_layer(router);
 
     tracing::info!("running server at: {ADDRESS}");
-    HttpServer::auto(Executor::graceful(graceful.guard()))
+    HttpServer::auto(Executor::from(scope.clone()))
         .listen(ADDRESS, svc)
         .await
         .context("http listen")?;
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .context("shutdown")?;
+    scope.join().await.context("shutdown")?;
 
     Ok(())
 }

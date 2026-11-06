@@ -7,7 +7,6 @@ use rama::{
     Layer as _,
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
-    graceful::ShutdownGuard,
     http::{Body, Request as HttpRequest, Response as HttpResponse, body::util::BodyExt as _},
     icap::{
         codec::{Header, ResponseLine},
@@ -95,8 +94,7 @@ struct EchoOptions {
 }
 
 /// Run the ICAP echo service.
-pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIcap) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
+pub async fn run(exec: Executor, cfg: CliCommandIcap) -> Result<(), BoxError> {
     let tls = (cfg.secure || cfg.cert.is_some())
         .then(|| {
             try_new_server_config_with_auth_files(

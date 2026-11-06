@@ -22,7 +22,11 @@ use std::{
 };
 
 use rama_core::{
-    extensions::ExtensionsRef as _, graceful::Shutdown, rt::Executor, service::service_fn,
+    extensions::ExtensionsRef as _,
+    futures::FutureExt as _,
+    graceful::{Cause, Scope, WeakScope, scope_context},
+    rt::Executor,
+    service::service_fn,
 };
 use rama_net::{address::SocketAddress, stream::SocketInfo};
 use rama_quic::{Connection, ConnectionError, Endpoint};
@@ -110,6 +114,47 @@ async fn served_connections_carry_their_socket_info() {
         .expect("serving ends once the endpoint closes")
         .unwrap();
     assert!(server.is_closed());
+}
+
+#[tokio::test]
+async fn served_connections_carry_the_executor_scope() {
+    let identities = Identities::new();
+    let server = server(&identities).await;
+    let addr = server.local_addr().unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let release = Arc::new(Notify::new());
+    let service = service_fn({
+        let release = release.clone();
+        move |connection: Connection| {
+            tx.send(scope_context(connection.extensions()).and_then(WeakScope::into_scope))
+                .unwrap();
+            echo(connection, release.clone())
+        }
+    });
+    let root = Scope::new();
+    let served = tokio::spawn(server.clone().serve(Executor::from(root.clone()), service));
+
+    let client = client().await;
+    let connection = connect(&client, &identities, addr).await;
+    release.notify_one();
+    timeout(DEADLINE, exchange(&connection, b"scoped"))
+        .await
+        .expect("the exchange completes");
+    let scope = rx
+        .recv()
+        .await
+        .unwrap()
+        .expect("the connection carries the executor scope");
+    assert!(!scope.is_cancelled());
+    root.cancel(Cause::Owner);
+    assert!(scope.is_cancelled());
+    drop(scope);
+
+    connection.close(VarInt::from(0u32), b"done");
+    timeout(DEADLINE, served)
+        .await
+        .expect("serving ends once its connections ended after the cancel")
+        .unwrap();
 }
 
 #[tokio::test]
@@ -201,10 +246,10 @@ async fn cancellation_refuses_new_attempts_and_drains_served_connections() {
     let server = server(&identities).await;
     let addr = server.local_addr().unwrap();
     let (signal, signalled) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = signalled.await;
     });
-    let exec = Executor::graceful(shutdown.guard());
+    let exec = Executor::from(shutdown.clone());
     let release = Arc::new(Notify::new());
     let (accepted, mut accepted_rx) = mpsc::unbounded_channel();
     let service = service_fn({
@@ -224,7 +269,7 @@ async fn cancellation_refuses_new_attempts_and_drains_served_connections() {
     accepted_rx.recv().await.unwrap();
 
     signal.send(()).unwrap();
-    let shutdown = tokio::spawn(shutdown.shutdown());
+    let shutdown = tokio::spawn(shutdown.join());
 
     // An attempt that raced the signal is served too; once it is seen, every one is refused.
     timeout(DEADLINE, async {
@@ -269,7 +314,8 @@ async fn cancellation_refuses_new_attempts_and_drains_served_connections() {
     timeout(DEADLINE, shutdown)
         .await
         .expect("the graceful shutdown completes")
-        .unwrap();
+        .unwrap()
+        .expect("not aborted");
 }
 
 /// A handshake the client stops answering has nothing to drain: a graceful shutdown refuses it,
@@ -280,10 +326,10 @@ async fn a_pending_handshake_is_refused_by_a_graceful_shutdown() {
     let server = server(&identities).await;
     let addr = server.local_addr().unwrap();
     let (signal, signalled) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = signalled.await;
     });
-    let exec = Executor::graceful(shutdown.guard());
+    let exec = Executor::from(shutdown.clone());
     let release = Arc::new(Notify::new());
     let service = service_fn(move |connection: Connection| echo(connection, release.clone()));
     let served = tokio::spawn(server.clone().serve(exec, service));
@@ -330,17 +376,26 @@ async fn a_pending_handshake_is_refused_by_a_graceful_shutdown() {
 
     forward.store(true, Ordering::SeqCst);
     signal.send(()).unwrap();
-    timeout(Duration::from_secs(2), shutdown.shutdown())
+    timeout(Duration::from_secs(2), shutdown.join())
         .await
-        .expect("the shutdown does not wait for the handshake");
-    let refused = timeout(DEADLINE, attempt)
+        .expect("the shutdown does not wait for the handshake")
+        .expect("not aborted");
+    let refused = match timeout(DEADLINE, attempt)
         .await
         .expect("the client learns of the refusal")
-        .unwrap();
+        .unwrap()
+    {
+        Err(error) => error,
+        // The server's flight can reach the client just before the refusal: the handshake then
+        // completes on the client, and the refusal closes that connection.
+        Ok(connection) => timeout(DEADLINE, connection.closed())
+            .await
+            .expect("the client learns of the refusal"),
+    };
     assert!(
         matches!(
             &refused,
-            Err(ConnectionError::ConnectionClosed(close))
+            ConnectionError::ConnectionClosed(close)
                 if close.error_code == TransportErrorCode::CONNECTION_REFUSED
         ),
         "{refused:?}"
@@ -351,4 +406,54 @@ async fn a_pending_handshake_is_refused_by_a_graceful_shutdown() {
         .unwrap();
     assert!(server.is_closed());
     shim.abort();
+}
+
+/// A service that never ends holds a graceful drain, but not an abort: the hard phase ends
+/// serving and closes the served connections.
+#[tokio::test]
+async fn an_abort_ends_the_drain_of_served_connections() {
+    let identities = Identities::new();
+    let server = server(&identities).await;
+    let addr = server.local_addr().unwrap();
+    let shutdown = Scope::new();
+    let weak = shutdown.clone_weak();
+    let (accepted, mut accepted_rx) = mpsc::unbounded_channel();
+    let service = service_fn(move |connection: Connection| {
+        accepted.send(()).unwrap();
+        async move {
+            std::future::pending::<()>().await;
+            drop(connection);
+            Ok::<_, Infallible>(())
+        }
+    });
+    let served = tokio::spawn(
+        server
+            .clone()
+            .serve(Executor::from(shutdown.clone()), service),
+    );
+
+    let client = client().await;
+    let held = connect(&client, &identities, addr).await;
+    accepted_rx.recv().await.unwrap();
+
+    shutdown.cancel(Cause::Owner);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!served.is_finished(), "the held connection is still served");
+    assert!(held.close_reason().is_none());
+
+    shutdown.abort(Cause::Owner);
+    drop(shutdown);
+    timeout(Duration::from_secs(2), served)
+        .await
+        .expect("serving ends at the abort")
+        .unwrap();
+    assert!(server.is_closed());
+    // Every served task is gone with it: nothing holds the scope any more.
+    assert!(
+        weak.drained().now_or_never().is_some(),
+        "no served task outlives the serve"
+    );
+    timeout(Duration::from_secs(2), held.closed())
+        .await
+        .expect("the served connection is closed");
 }

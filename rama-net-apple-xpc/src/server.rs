@@ -1,8 +1,6 @@
 use std::{future::Future, sync::Arc};
 
-use rama_core::{
-    Service, error::BoxError, graceful::WeakShutdownGuard, rt::Executor, telemetry::tracing,
-};
+use rama_core::{Service, error::BoxError, rt::Executor, telemetry::tracing};
 
 use crate::{
     ReceivedXpcMessage, XpcConnection, XpcConnectionError, XpcError, XpcEvent, XpcListener,
@@ -70,13 +68,9 @@ where
         mut listener: XpcListener,
         executor: Executor,
     ) -> Result<(), BoxError> {
-        let weak_guard = executor.guard().map(|guard| guard.clone_weak());
-
         tracing::info!("xpc server listener loop started");
 
-        while let Some(peer) =
-            recv_with_optional_shutdown(weak_guard.clone(), listener.accept()).await
-        {
+        while let Some(peer) = recv_until(executor.cancelled(), listener.accept()).await {
             tracing::info!(
                 pid = peer.pid(),
                 asid = peer.asid(),
@@ -109,10 +103,8 @@ where
         mut connection: XpcConnection,
         executor: Executor,
     ) -> Result<(), BoxError> {
-        let weak_guard = executor.guard().map(|guard| guard.clone_weak());
-
         loop {
-            match recv_with_optional_shutdown(weak_guard.clone(), connection.recv()).await {
+            match recv_until(executor.cancelled(), connection.recv()).await {
                 None => break,
                 Some(XpcEvent::Connection(peer)) => {
                     tracing::info!(
@@ -137,14 +129,14 @@ where
 
     fn spawn_peer_task(&self, peer: XpcConnection, executor: &Executor) {
         let service = self.service.clone();
-        let weak_guard = executor.guard().map(|guard| guard.clone_weak());
+        let stop = executor.clone();
         let pid = peer.pid();
         let asid = peer.asid();
 
         tracing::info!(pid, asid, "xpc server spawning peer task");
 
         executor.spawn_cancellable_task(async move {
-            if let Err(err) = serve_peer(service, peer, weak_guard, pid, asid).await {
+            if let Err(err) = serve_peer(service, peer, &stop, pid, asid).await {
                 tracing::error!(%err, "xpc peer task failed");
             }
         });
@@ -154,7 +146,7 @@ where
 async fn serve_peer<S>(
     service: Arc<S>,
     mut peer: XpcConnection,
-    weak_guard: Option<WeakShutdownGuard>,
+    executor: &Executor,
     pid: i32,
     asid: i32,
 ) -> Result<(), BoxError>
@@ -163,7 +155,7 @@ where
 {
     tracing::info!(pid, asid, "xpc server peer task started");
     loop {
-        match recv_with_optional_shutdown(weak_guard.clone(), peer.recv()).await {
+        match recv_until(executor.cancelled(), peer.recv()).await {
             None => {
                 tracing::info!(pid, asid, "xpc server peer task stopped");
                 return Ok(());
@@ -253,18 +245,12 @@ fn log_connection_close(err: &XpcConnectionError, message: &'static str) {
     }
 }
 
-async fn recv_with_optional_shutdown<T>(
-    weak_guard: Option<WeakShutdownGuard>,
+async fn recv_until<T>(
+    cancelled: impl Future<Output = ()>,
     future: impl Future<Output = Option<T>>,
 ) -> Option<T> {
-    match weak_guard {
-        Some(weak_guard) => {
-            let mut cancelled = std::pin::pin!(weak_guard.into_cancelled());
-            tokio::select! {
-                _ = cancelled.as_mut() => None,
-                output = future => output,
-            }
-        }
-        None => future.await,
+    tokio::select! {
+        () = cancelled => None,
+        output = future => output,
     }
 }

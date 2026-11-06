@@ -89,7 +89,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, extra::OpaqueError},
     extensions::{Extension, ExtensionsRef},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         HeaderValue, Request, Response,
         client::EasyHttpWebClient,
@@ -137,8 +137,10 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let shutdown = Shutdown::default();
-    let exec = Executor::graceful(shutdown.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(8));
+    let exec = Executor::from(scope.clone());
 
     let tls_service_data = {
         // NOTE for production use:
@@ -214,21 +216,18 @@ async fn main() -> Result<(), BoxError> {
     );
 
     let https_svc = TlsAcceptorLayer::new(tls_service_data)
-        .into_layer(HttpServer::auto(Executor::graceful(shutdown.guard())).service(http_svc));
+        .into_layer(HttpServer::auto(Executor::from(scope.clone())).service(http_svc));
 
     let tcp_service = optional_dns_overwrite_layer_used_for_e2e_only.into_layer(SniRouter::new(
         SniRouterService {
             https_svc,
-            exec: Executor::graceful(shutdown.guard()),
+            exec: Executor::from(scope.clone()),
         },
     ));
 
-    shutdown.spawn_task(tcp_listener.serve(tcp_service));
+    Executor::from(scope.clone()).into_spawn_task(tcp_listener.serve(tcp_service));
 
-    let duration = shutdown
-        .shutdown_with_limit(Duration::from_secs(8))
-        .await
-        .context("graceful shutdown")?;
+    let duration = scope.join().await.context("graceful shutdown")?;
 
     tracing::info!("gracefully shutdown complete, duration: {duration:?}");
     Ok(())

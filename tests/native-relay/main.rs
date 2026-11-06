@@ -10,7 +10,7 @@ use rama::{
     combinators::Either,
     crypto::pki_types::CertificateDer,
     error::BoxError,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         core::h3::connection::Config as H3Config,
         layer::upgrade::mitm::HttpUpgradeMitmRelayLayer,
@@ -88,8 +88,10 @@ async fn relay_fixture() -> Result<(), BoxError> {
     let certificate = X509::from_pem(&fs::read(config.ca)?)?;
     let key = PKey::private_key_from_pem(&fs::read(config.key)?)?;
 
-    let shutdown = Shutdown::default();
-    let executor = Executor::graceful(shutdown.guard());
+    let shutdown = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(5));
+    let executor = Executor::from(shutdown.clone());
     let address = match config.protocol {
         Protocol::H1 | Protocol::H2 => {
             let listener = TcpListener::bind_address("127.0.0.1:0", executor.clone()).await?;
@@ -103,7 +105,9 @@ async fn relay_fixture() -> Result<(), BoxError> {
                     ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                     HttpUpgradeMitmRelayLayer::new(
                         executor.clone(),
-                        HttpWebSocketRelayServiceRequestMatcher::default_with_exec(executor),
+                        HttpWebSocketRelayServiceRequestMatcher::default_with_exec(
+                            executor.clone(),
+                        ),
                     ),
                     ArcLayer::new(),
                 ));
@@ -119,7 +123,7 @@ async fn relay_fixture() -> Result<(), BoxError> {
                 Either::B(ConsumeErrLayer::default().into_layer(tls))
             };
             let service = IoToProxyBridgeIoLayer::new(config.origin).into_layer(application);
-            shutdown.spawn_task_fn(move |_guard| async move {
+            executor.spawn_task(async move {
                 listener.serve(service).await;
             });
 
@@ -188,9 +192,10 @@ async fn relay_fixture() -> Result<(), BoxError> {
                     queued_bytes: NonZeroUsize::new(262144).expect("nonzero queue budget"),
                 },
             );
-            shutdown.spawn_task_fn(move |_guard| async move {
+            let demux_executor = executor.clone();
+            executor.spawn_task(async move {
                 demux
-                    .serve(executor, association)
+                    .serve(demux_executor, association)
                     .await
                     .expect("native fixture datagram demux");
             });
@@ -206,6 +211,9 @@ async fn relay_fixture() -> Result<(), BoxError> {
         )?,
     )?;
     fs::rename(pending, config.ready)?;
-    shutdown.shutdown_with_limit(Duration::from_secs(5)).await?;
+    drop(executor);
+    // Serve until the signal, then wait for the drain within its grace.
+    shutdown.cancelled().await;
+    shutdown.join().await?;
     Ok(())
 }

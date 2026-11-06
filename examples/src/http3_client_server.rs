@@ -16,7 +16,7 @@ use rama::{
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::BoxError,
     futures::{StreamExt as _, stream::FuturesUnordered},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Body, Method, Request, Response, Version,
         body::util::BodyExt as _,
@@ -84,13 +84,15 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
     let (finished, completed) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = completed => {},
-        }
-    });
-    let exec = Executor::graceful(shutdown.guard());
+    let scope = Scope::new()
+        .with_grace(Duration::from_secs(15))
+        .with_signal(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = completed => {},
+            }
+        });
+    let exec = Executor::from(scope.clone());
     match args.mode {
         Mode::Server { listen, cert, key } => {
             let auth = ServerAuthData {
@@ -113,12 +115,11 @@ async fn main() -> Result<(), BoxError> {
                 .bind_address(listen)
                 .await?;
             tracing::info!("HTTP/3 listening on {}", endpoint.local_addr()?);
-            let guard = shutdown.guard();
             let service = server.service(service_fn(echo));
             let mut connections = FuturesUnordered::new();
             loop {
                 let incoming = tokio::select! {
-                    _ = guard.cancelled() => break,
+                    () = exec.cancelled() => break,
                     finished = connections.next(), if !connections.is_empty() => {
                         if let Some(Err(error)) = finished {
                             tracing::debug!(%error, "HTTP/3 connection task ended");
@@ -145,7 +146,6 @@ async fn main() -> Result<(), BoxError> {
                 }));
             }
             drop(service);
-            drop(guard);
             let drained = tokio::time::timeout(Duration::from_secs(15), async {
                 while let Some(result) = connections.next().await {
                     result?;
@@ -214,9 +214,7 @@ async fn main() -> Result<(), BoxError> {
     }
     _ = finished.send(());
     drop(exec);
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(15))
-        .await?;
+    scope.join().await?;
     tracing::info!("HTTP/3 shutdown joined");
     Ok(())
 }

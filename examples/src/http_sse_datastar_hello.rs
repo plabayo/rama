@@ -48,7 +48,7 @@
 use rama::{
     Layer, Service,
     futures::async_stream::stream_fn,
-    graceful::ShutdownGuard,
+    graceful::Scope,
     http::{
         Request, Response, StatusCode,
         layer::{error_handling::ErrorHandler, trace::TraceLayer},
@@ -96,8 +96,10 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
     let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62051), exec.clone())
         .await
@@ -111,9 +113,9 @@ async fn main() {
     );
     tracing::info!("open http://{bind_address} in your browser to see the service in action");
 
-    let controller = Controller::new(graceful.guard());
+    let controller = Controller::new(exec.clone());
 
-    graceful.spawn_task(async {
+    exec.clone().into_spawn_task(async move {
         let app = Router::new_with_state(controller.clone())
             .with_get("/", handlers::index)
             .with_post("/start", handlers::start)
@@ -131,10 +133,7 @@ async fn main() {
         listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Clone)]
@@ -279,16 +278,16 @@ pub mod controller {
     impl Controller {
         const MESSAGE: &str = "Hello, Datastar!";
 
-        pub fn new(guard: ShutdownGuard) -> Self {
+        pub fn new(exec: Executor) -> Self {
             let (cmd_tx, cmd_rx) = mpsc::channel(8);
             let (msg_tx, msg_rx) = broadcast::channel(8);
 
             let exit_cmd_tx = cmd_tx.clone();
-            let weak_guard = guard.clone_weak();
+            let cancelled = exec.cancelled();
             tokio::spawn(
                 async move {
                     tracing::debug!("exit worker up and running awaiting cancellation");
-                    weak_guard.into_cancelled().await;
+                    cancelled.await;
                     tracing::trace!("shutdown initiated, send exit command to controller runtime");
                     if let Err(err) = exit_cmd_tx.send(Command::Exit).await {
                         tracing::error!("failed to send exit cmd: {err:?}")
@@ -311,7 +310,7 @@ pub mod controller {
                 msg_tx,
             };
 
-            guard.into_spawn_task(
+            exec.into_spawn_task(
                 controller
                     .clone()
                     .into_runtime(msg_rx, cmd_rx)

@@ -1,5 +1,6 @@
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::graceful::attach_scope;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use std::io;
@@ -237,16 +238,7 @@ impl UnixListener {
     where
         S: Service<UnixStream> + Clone,
     {
-        let guard = self.exec.guard().cloned();
-        let cancelled_fut = async {
-            if let Some(guard) = guard {
-                guard.cancelled().await;
-            } else {
-                // If there is no executor/guard, we never trigger shutdown this way
-                std::future::pending::<()>().await;
-            }
-        };
-        let mut cancelled_fut = pin!(cancelled_fut);
+        let mut cancelled_fut = pin!(self.exec.cancelled());
 
         loop {
             tokio::select! {
@@ -272,8 +264,10 @@ impl UnixListener {
 
                             let socket = UnixStream::new(socket);
                             socket.extensions().insert(UnixSocketInfo::new(local_addr, peer_addr));
+                            attach_scope(socket.extensions(), self.exec.scope());
 
-                            self.exec.spawn_task(async move {
+                            // Ended at the hard phase, whatever the service does by then.
+                            self.exec.spawn_abortable_task(async move {
                                 _ = service.serve(socket).await;
                             }.instrument(serve_span));
                         }
@@ -305,5 +299,59 @@ impl Drop for UnixSocketCleanup {
         if let Err(err) = std::fs::remove_file(&self.path) {
             tracing::debug!(file.path = ?self.path, "failed to remove unix listener's file socket {err:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{convert::Infallible, time::Duration};
+
+    use rama_core::{
+        graceful::{Cause, Scope},
+        service::service_fn,
+    };
+    use tokio::{sync::mpsc, time::timeout};
+
+    use super::*;
+
+    const LIMIT: Duration = Duration::from_secs(10);
+
+    #[tokio::test]
+    async fn a_served_connection_ends_at_the_hard_phase() {
+        let scope = Scope::new();
+        let weak = scope.clone_weak();
+        let dir = std::env::temp_dir().join(format!("rama-unix-hard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("served.sock");
+        _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind_path(&path, Executor::from(scope.clone()))
+            .await
+            .unwrap();
+        let (accepted, mut accepted_rx) = mpsc::unbounded_channel();
+        let serving = tokio::spawn(listener.serve(service_fn(move |stream: UnixStream| {
+            accepted.send(()).unwrap();
+            async move {
+                std::future::pending::<()>().await;
+                drop(stream);
+                Ok::<_, Infallible>(())
+            }
+        })));
+        let _client = tokio::net::UnixStream::connect(&path).await.unwrap();
+        accepted_rx.recv().await.unwrap();
+
+        scope.cancel(Cause::Owner);
+        timeout(LIMIT, serving).await.unwrap().unwrap();
+        assert!(
+            timeout(Duration::from_millis(100), weak.drained())
+                .await
+                .is_err(),
+            "the served connection drains in the graceful phase"
+        );
+        scope.abort(Cause::Owner);
+        drop(scope);
+        timeout(LIMIT, weak.drained())
+            .await
+            .expect("the served task ends at the hard phase");
+        _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -30,6 +30,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
+    graceful::Scope,
     http::{
         BodyLimitLayer, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -82,17 +83,18 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let exec = Executor::from(scope.clone());
 
-    let (har_toggle, har_toggle_ctl) =
-        har::toggle::mpsc_toggle(8, graceful.guard_weak().into_cancelled());
+    let (har_toggle, har_toggle_ctl) = har::toggle::mpsc_toggle(8, exec.cancelled());
     let har_layer = HARExportLayer::new(FileRecorder::default(), har_toggle);
     let mitm_svc =
         new_mitm_svc(&exec, har_layer.clone()).context("build HAR MITM relay service")?;
 
-    graceful.spawn_task_fn(async move |guard| {
-        let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
+    exec.clone().into_spawn_task(async move {
+        let tcp_service = TcpListener::build(exec.clone())
             .bind_address("127.0.0.1:62040")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62040");
@@ -129,7 +131,7 @@ async fn main() -> Result<(), BoxError> {
                 ConsumeErrLayer::default(),
                 ProxyAuthLayer::new(basic!("john", "secret")),
                 HijackLayer::new(DomainMatcher::exact("har.toggle.internal"), toggle_service),
-                UpgradeLayer::new(Executor::graceful(guard), MethodMatcher::CONNECT, connect),
+                UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect),
                 RemoveRequestHeaderLayer::hop_by_hop(),
                 MapOutputLayer::new(add_har_file_header),
                 MapResponseBodyLayer::new_boxed_streaming_body(),
@@ -154,10 +156,7 @@ async fn main() -> Result<(), BoxError> {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .context("graceful shutdown")?;
+    scope.join().await.context("graceful shutdown")?;
 
     Ok(())
 }

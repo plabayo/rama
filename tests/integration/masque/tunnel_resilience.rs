@@ -10,7 +10,7 @@ use rama::proxy::masque::limits::TunnelLimits;
 use rama::{
     Service as _,
     futures::future::join_all,
-    graceful::Shutdown,
+    graceful::Scope,
     net::{
         address::{HostWithPort, ProxyAddress, SocketAddress},
         client::{ConnectRequest, EstablishedClientConnection, ProxyRoute},
@@ -309,12 +309,12 @@ async fn a_graceful_proxy_shutdown_ends_every_tunnel_on_every_carrier() {
         let (target, _echo) = udp_echo().await;
         for carrier in Carrier::ALL {
             let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-            let shutdown = Shutdown::new(async move {
+            let shutdown = Scope::new().with_signal(async move {
                 _ = stopped.await;
             });
             let limits = TunnelLimits::new();
             let (proxy, fixture) = masque_proxy_on(
-                Executor::graceful(shutdown.guard()),
+                Executor::from(shutdown.clone()),
                 None,
                 DestinationScopePolicy::allow_private(),
                 carrier != Carrier::Http3Capsule,
@@ -330,9 +330,10 @@ async fn a_graceful_proxy_shutdown_ends_every_tunnel_on_every_carrier() {
             assert_eq!(limits.live_tunnels(), 1, "{carrier:?}");
 
             stop.send(()).unwrap();
-            timeout(Duration::from_secs(10), shutdown.shutdown())
+            timeout(Duration::from_secs(10), shutdown.join())
                 .await
-                .unwrap_or_else(|_| panic!("{carrier:?}: shutdown within 10s"));
+                .unwrap_or_else(|_| panic!("{carrier:?}: shutdown within 10s"))
+                .expect("not aborted");
             assert_eq!(limits.live_tunnels(), 0, "{carrier:?}");
             assert_eq!(egress.active(), 0, "{carrier:?}");
             let mut buffer = [0; 64];

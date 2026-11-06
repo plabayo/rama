@@ -43,7 +43,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
     futures::{StreamExt as _, stream},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Body, HeaderMap, Method, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
@@ -157,7 +157,7 @@ struct Server {
     accepted: Arc<AtomicUsize>,
     observations: Arc<Mutex<Vec<Observation>>>,
     replies: Arc<Mutex<VecDeque<Reply>>>,
-    shutdown: Shutdown,
+    shutdown: Scope,
     cancel: CancellationToken,
     task: JoinHandle<()>,
 }
@@ -165,8 +165,8 @@ struct Server {
 impl Server {
     async fn start(auth: ServerAuthData, version: Version) -> Self {
         let cancel = CancellationToken::new();
-        let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
-        let executor = Executor::graceful(shutdown.guard());
+        let shutdown = Scope::new().with_signal(cancel.clone().cancelled_owned());
+        let executor = Executor::from(shutdown.clone());
         let observations = Arc::new(Mutex::new(Vec::new()));
         let replies = Arc::new(Mutex::new(VecDeque::<Reply>::new()));
         let accepted = Arc::new(AtomicUsize::new(0));
@@ -342,9 +342,9 @@ impl Server {
             endpoint.close(0u32, b"done");
             timeout(TEST_TIMEOUT, endpoint.shutdown()).await.unwrap();
         }
-        self.shutdown
-            .shutdown_with_limit(TEST_TIMEOUT)
+        tokio::time::timeout(TEST_TIMEOUT, self.shutdown.join())
             .await
+            .unwrap()
             .unwrap();
         self.task.await.unwrap();
     }
@@ -601,8 +601,8 @@ async fn default_client_supports_h3_prior_knowledge() {
     let (auth, tls) = credentials();
     let server = Server::start(auth, Version::HTTP_3).await;
     let cancel = CancellationToken::new();
-    let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
-    let client = DefaultHttpWebClient::default_with_executor(Executor::graceful(shutdown.guard()));
+    let shutdown = Scope::new().with_signal(cancel.clone().cancelled_owned());
+    let client = DefaultHttpWebClient::default_with_executor(Executor::from(shutdown.clone()));
     for _ in 0..2 {
         let request = server.request();
         assert_eq!(request.version(), Version::HTTP_3);
@@ -613,7 +613,10 @@ async fn default_client_supports_h3_prior_knowledge() {
 
     drop(client);
     cancel.cancel();
-    shutdown.shutdown_with_limit(TEST_TIMEOUT).await.unwrap();
+    tokio::time::timeout(TEST_TIMEOUT, shutdown.join())
+        .await
+        .unwrap()
+        .unwrap();
     server.close().await;
 }
 
@@ -1172,8 +1175,8 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
     let alternative = Server::start(auth.clone(), Version::HTTP_2).await;
     let quic_alternative = Server::start(auth, Version::HTTP_3).await;
     let cancel = CancellationToken::new();
-    let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
-    let executor = Executor::graceful(shutdown.guard());
+    let shutdown = Scope::new().with_signal(cancel.clone().cancelled_owned());
+    let executor = Executor::from(shutdown.clone());
     let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), executor.clone())
         .await
         .unwrap();
@@ -1366,7 +1369,10 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
     assert_eq!(origin.request_count(), 10);
     quic_alternative.close().await;
     cancel.cancel();
-    shutdown.shutdown_with_limit(TEST_TIMEOUT).await.unwrap();
+    tokio::time::timeout(TEST_TIMEOUT, shutdown.join())
+        .await
+        .unwrap()
+        .unwrap();
     task.await.unwrap();
     origin.close().await;
     alternative.close().await;

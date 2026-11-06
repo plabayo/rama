@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex as SyncMutex;
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError};
-use rama_core::graceful::ShutdownGuard;
+use rama_core::graceful::Scope;
 use rama_core::telemetry::tracing;
 use rama_core::{Service, service::BoxService};
 use rama_js::{JsErrorKind, JsRuntime, JsRuntimeBuilder, JsWorker};
@@ -212,7 +212,7 @@ enum ScriptState {
 struct WorkerConfig {
     timeout: Option<Duration>,
     queue_capacity: Option<usize>,
-    graceful: Option<ShutdownGuard>,
+    scope: Option<Scope>,
 }
 
 struct LoadedScript {
@@ -597,7 +597,7 @@ impl LoadedScript {
     ) -> Result<Self, LoadError> {
         let mut builder = JsWorker::builder()
             .maybe_with_timeout(config.timeout)
-            .maybe_with_graceful(config.graceful.clone());
+            .maybe_with_scope(config.scope.clone());
         if let Some(capacity) = config.queue_capacity {
             builder.set_queue_capacity(capacity);
         }
@@ -713,7 +713,7 @@ pub struct PacResolverBuilder {
     timeout: Option<Duration>,
     wedge_cooldown: Duration,
     queue_capacity: Option<usize>,
-    graceful: Option<ShutdownGuard>,
+    scope: Option<Scope>,
     #[cfg(feature = "js-disk-cache")]
     javascript_disk_cache: Option<JavascriptDiskCache>,
 }
@@ -746,7 +746,7 @@ impl Default for PacResolverBuilder {
             timeout: None,
             wedge_cooldown: PacResolver::DEFAULT_WEDGE_COOLDOWN,
             queue_capacity: None,
-            graceful: None,
+            scope: None,
             #[cfg(feature = "js-disk-cache")]
             javascript_disk_cache: None,
         }
@@ -896,9 +896,10 @@ impl PacResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// Tie the worker to a graceful shutdown guard.
-        pub fn graceful(mut self, graceful: Option<ShutdownGuard>) -> Self {
-            self.graceful = graceful;
+        /// Run the worker in a [`Scope`]: once it is cancelled, the worker finishes its
+        /// accepted jobs and exits, and the scope's drain waits for that.
+        pub fn scope(mut self, scope: Option<Scope>) -> Self {
+            self.scope = scope;
             self
         }
     }
@@ -959,7 +960,7 @@ impl PacResolverBuilder {
             worker: WorkerConfig {
                 timeout,
                 queue_capacity: self.queue_capacity,
-                graceful: self.graceful,
+                scope: self.scope,
             },
             sanitize: self.sanitize,
             state: Mutex::new(ResolverState::default()),

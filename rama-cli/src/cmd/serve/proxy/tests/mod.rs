@@ -5,6 +5,7 @@ use rama::{
     bytes::Bytes,
     crypto::pki_types::{CertificateDer, pem::PemObject as _},
     extensions::Extensions,
+    graceful::Scope,
     http::{
         Body, HeaderValue, Method,
         body::util::BodyExt as _,
@@ -78,13 +79,17 @@ fn loopback_bind_address() -> std::net::SocketAddr {
 }
 
 async fn start_proxy(
-    guard: ShutdownGuard,
+    scope: &Scope,
     cfg: CliCommandProxy,
 ) -> (std::net::SocketAddr, Option<std::net::SocketAddr>) {
-    let (addresses, inspector) =
-        run_with_dashboard_token(guard, Http3Endpoints::default(), cfg, None)
-            .await
-            .unwrap();
+    let (addresses, inspector) = run_with_dashboard_token(
+        Executor::from(scope.clone()),
+        Http3Endpoints::default(),
+        cfg,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(addresses.len(), 1, "test expects one proxy listener");
     (addresses[0], inspector)
 }
@@ -456,13 +461,11 @@ async fn next_sse_event(body: &mut Body) -> String {
     String::from_utf8(bytes).expect("inspector event is UTF-8")
 }
 
-async fn shutdown_proxy(
-    shutdown_tx: tokio::sync::oneshot::Sender<()>,
-    shutdown: rama::graceful::Shutdown,
-) {
+async fn shutdown_proxy(shutdown_tx: tokio::sync::oneshot::Sender<()>, shutdown: Scope) {
     _ = shutdown_tx.send(());
     shutdown
-        .shutdown_with_limit(Duration::from_secs(5))
+        .with_grace(Duration::from_secs(5))
+        .join()
         .await
         .unwrap();
 }

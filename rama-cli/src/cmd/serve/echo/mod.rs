@@ -10,7 +10,6 @@ use rama::{
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
     combinators::Either,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt as _},
-    graceful::ShutdownGuard,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
@@ -148,7 +147,7 @@ impl fmt::Display for Mode {
 
 /// run the rama echo service
 pub async fn run(
-    graceful: ShutdownGuard,
+    exec: Executor,
     etx: Sender<BoxError>,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandEcho,
@@ -166,27 +165,21 @@ pub async fn run(
                         }
                     }
                 }),
-                Executor::graceful(graceful.clone()),
+                exec.clone(),
             )
         })
         .transpose()?;
 
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
-            bind_echo_tcp_service(graceful, cfg.clone(), maybe_tls_server_config).await?
+            bind_echo_tcp_service(exec, cfg.clone(), maybe_tls_server_config).await?
         }
         Mode::Udp => {
-            bind_echo_udp_service(graceful, cfg.clone(), maybe_tls_server_config, etx.clone())
-                .await?
+            bind_echo_udp_service(exec, cfg.clone(), maybe_tls_server_config, etx.clone()).await?
         }
         Mode::Http | Mode::Https => {
-            bind_echo_http_service(
-                graceful,
-                &http3_endpoints,
-                cfg.clone(),
-                maybe_tls_server_config,
-            )
-            .await?
+            bind_echo_http_service(exec, &http3_endpoints, cfg.clone(), maybe_tls_server_config)
+                .await?
         }
     }
 
@@ -194,12 +187,11 @@ pub async fn run(
 }
 
 async fn bind_echo_http_service(
-    graceful: ShutdownGuard,
+    exec: Executor,
     http3_endpoints: &Http3Endpoints,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
 ) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
     let geo_db = crate::utils::geo::load_geo_db_from_env();
     // Finish expensive initialization before exposing the listening sockets.
@@ -267,11 +259,10 @@ async fn bind_echo_http_service(
 }
 
 async fn bind_echo_tcp_service(
-    graceful: ShutdownGuard,
+    exec: Executor,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
 ) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
     if cfg.ws {
         return Err(BoxError::from_static_str(
             "websocket support is only possible in http(s) mode",
@@ -351,7 +342,7 @@ async fn bind_echo_tcp_service(
 }
 
 async fn bind_echo_udp_service(
-    graceful: ShutdownGuard,
+    exec: Executor,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
     etx: tokio::sync::mpsc::Sender<BoxError>,
@@ -399,7 +390,9 @@ async fn bind_echo_udp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "udp");
 
-    graceful.into_spawn_task_fn(move |guard| {
+    let task_exec = exec.clone();
+    // The receive loop ends at cancel; replies in flight still drain.
+    exec.spawn_cancellable_task({
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -417,7 +410,6 @@ async fn bind_echo_udp_service(
         });
 
         async move {
-            let weak_guard = guard.downgrade();
             let mut buf = [0; 1024];
 
             loop {
@@ -454,7 +446,7 @@ async fn bind_echo_udp_service(
 
                 let socket = shared_udp_socket.clone();
                 let data = buf[..len].to_vec();
-                weak_guard.clone().upgrade().into_spawn_task(async move {
+                task_exec.spawn_task(async move {
                     _ = permit;
                     match socket.send_to(&data, addr).await {
                         Ok(len) => {

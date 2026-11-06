@@ -1,4 +1,5 @@
-/// Completes on Ctrl+C, and on SIGTERM (unix) or close/shutdown events (windows).
+/// Completes on Ctrl+C, and on SIGTERM (unix) or Ctrl+Break, close and shutdown events
+/// (windows).
 pub async fn default_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
     #[cfg(unix)]
@@ -16,6 +17,11 @@ pub async fn default_signal() {
     }
     #[cfg(windows)]
     {
+        let ctrl_break = async {
+            let mut signal = tokio::signal::windows::ctrl_break()?;
+            signal.recv().await;
+            std::io::Result::Ok(())
+        };
         let ctrl_close = async {
             let mut signal = tokio::signal::windows::ctrl_close()?;
             signal.recv().await;
@@ -28,6 +34,7 @@ pub async fn default_signal() {
         };
         tokio::select! {
             _ = ctrl_c => {}
+            _ = ctrl_break => {}
             _ = ctrl_close => {}
             _ = ctrl_shutdown => {}
         }

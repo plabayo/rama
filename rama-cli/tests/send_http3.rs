@@ -8,7 +8,7 @@ use rama::{
     bytes::Bytes,
     crypto::pem::PemEncode as _,
     futures::stream,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Body, HeaderMap, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
@@ -173,7 +173,7 @@ struct Server {
     /// Original and negotiated QUIC version of every accepted connection.
     negotiated: Arc<Mutex<Vec<(QuicVersion, QuicVersion)>>>,
     stop: oneshot::Sender<()>,
-    shutdown: Shutdown,
+    shutdown: Scope,
     task: JoinHandle<()>,
 }
 
@@ -197,8 +197,8 @@ impl Server {
         versions: ServerVersionPolicy,
     ) -> TestResult<Self> {
         let (stop, stopped) = oneshot::channel::<()>();
-        let shutdown = Shutdown::new(stopped);
-        let executor = Executor::graceful(shutdown.guard());
+        let shutdown = Scope::new().with_signal(stopped);
+        let executor = Executor::from(shutdown.clone());
         let requests = Arc::new(Mutex::new(Vec::new()));
         let replies = Arc::new(Mutex::new(VecDeque::<Reply>::new()));
         let accepted = Arc::new(AtomicUsize::new(0));
@@ -339,7 +339,7 @@ impl Server {
             endpoint.close(0u32, b"test complete");
             timeout(DEADLINE, endpoint.shutdown()).await?;
         }
-        self.shutdown.shutdown_with_limit(DEADLINE).await?;
+        self.shutdown.with_grace(DEADLINE).join().await?;
         self.task.await?;
         Ok(())
     }
