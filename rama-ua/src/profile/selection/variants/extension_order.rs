@@ -95,15 +95,16 @@ pub(super) fn draw_extension_order(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::{BTreeMap, BTreeSet},
-        slice,
-    };
+    use std::collections::{BTreeMap, BTreeSet};
+    #[cfg(feature = "embed-profiles")]
+    use std::slice;
 
     use rama_tls::{grease_u16, is_grease_u16};
     use rama_utils::octets::kib;
 
     use super::*;
+    #[cfg(feature = "embed-profiles")]
+    use crate::profile::format::compiled::{decode_compiled_profiles, encode_compiled_profiles};
     use crate::profile::{
         analysis::profile::{AnalyzedProfile, ProfileAnalysisLimits, analyze_profile_evidence},
         capture::{
@@ -118,10 +119,7 @@ mod tests {
             ingestion::ObservationId,
             window::{ProfileWindowLimits, RetainedBucketWindow},
         },
-        format::{
-            canonical::ValueId,
-            compiled::{decode_compiled_profiles, encode_compiled_profiles},
-        },
+        format::canonical::ValueId,
         model::identity::{ConnectionContext, ProfileKey},
         selection::{DrawDomain, DrawKey, ProfileDrawContext, ProfileSeed},
     };
@@ -273,37 +271,43 @@ mod tests {
             .collect()
     }
 
+    fn assert_shuffled_with_grease_ends(profile: &AnalyzedProfile) {
+        let scope = profile
+            .scopes
+            .iter()
+            .find(|scope| {
+                scope.context.flow.is_none() && scope.observations.domain == CanonicalDomain::Joint
+            })
+            .unwrap();
+        // Every order the shuffle explains reads as one connection variant.
+        assert_eq!(scope.observations.variants.len(), 1);
+        let mut orders = BTreeSet::new();
+        for key in 0..64 {
+            let drawn = drawn_ids(scope, key);
+            assert_eq!(drawn, drawn_ids(scope, key));
+            assert_eq!(drawn.len(), FLOATING.len() + 2);
+            assert!(is_grease_u16(drawn[0]), "{drawn:?}");
+            assert!(is_grease_u16(drawn[drawn.len() - 1]), "{drawn:?}");
+            let mut floating = drawn[1..drawn.len() - 1].to_vec();
+            orders.insert(floating.clone());
+            floating.sort_unstable();
+            assert_eq!(floating, FLOATING);
+        }
+        assert!(orders.len() > 1, "{orders:?}");
+    }
+
     #[test]
     fn shuffled_connections_keep_their_grease_ends_and_draw_the_rest() {
-        let analyzed = analyzed();
+        assert_shuffled_with_grease_ends(&analyzed());
+    }
+
+    #[cfg(feature = "embed-profiles")]
+    #[test]
+    fn compiled_shuffled_connections_keep_their_grease_ends_and_draw_the_rest() {
         let compiled = decode_compiled_profiles(
-            &encode_compiled_profiles(slice::from_ref(&analyzed)).unwrap(),
+            &encode_compiled_profiles(slice::from_ref(&analyzed())).unwrap(),
         )
         .unwrap();
-        for profile in [&analyzed, &compiled[0]] {
-            let scope = profile
-                .scopes
-                .iter()
-                .find(|scope| {
-                    scope.context.flow.is_none()
-                        && scope.observations.domain == CanonicalDomain::Joint
-                })
-                .unwrap();
-            // Every order the shuffle explains reads as one connection variant.
-            assert_eq!(scope.observations.variants.len(), 1);
-            let mut orders = BTreeSet::new();
-            for key in 0..64 {
-                let drawn = drawn_ids(scope, key);
-                assert_eq!(drawn, drawn_ids(scope, key));
-                assert_eq!(drawn.len(), FLOATING.len() + 2);
-                assert!(is_grease_u16(drawn[0]), "{drawn:?}");
-                assert!(is_grease_u16(drawn[drawn.len() - 1]), "{drawn:?}");
-                let mut floating = drawn[1..drawn.len() - 1].to_vec();
-                orders.insert(floating.clone());
-                floating.sort_unstable();
-                assert_eq!(floating, FLOATING);
-            }
-            assert!(orders.len() > 1, "{orders:?}");
-        }
+        assert_shuffled_with_grease_ends(&compiled[0]);
     }
 }
