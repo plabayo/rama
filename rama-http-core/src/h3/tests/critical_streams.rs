@@ -5,7 +5,7 @@ use crate::h3::{
     client,
     connection::{Config, initial_control},
     control::Role,
-    observation::{H3Observer, SettingsObservation},
+    observation::{FirstRequestObservation, H3Observer, SettingsObservation},
     server,
 };
 use rama_core::{
@@ -20,7 +20,10 @@ use rama_http_types::{
         Code, FrameType, PseudoHeader, StreamType,
         control::{ClientControlFrame, ClientControlPreferences},
         critical_streams::{Order, Preferences, Startup},
-        observation::{FieldRepresentation, H3RequestObservation, ObservedEncoderInstruction},
+        observation::{
+            FieldRepresentation, H3ObservationSnapshot, H3RequestObservation,
+            ObservedEncoderInstruction,
+        },
         qpack::{
             FieldSectionBase,
             encoding::{FieldPreferences, HeaderPreferences, Representation},
@@ -648,4 +651,93 @@ async fn ordered_startup_keeps_peer_settings_live_and_cancellation_before_reques
             pair.close().await;
         }).await.unwrap();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn capacity_first_requests_wait_for_peer_settings_to_announce_the_capacity() {
+    for capacity_first in [false, true] {
+        let snapshot = timeout(LIMIT, first_request_prefix(capacity_first, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            announces_capacity(&snapshot),
+            capacity_first,
+            "{snapshot:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn capacity_first_requests_fall_back_when_encoder_credit_is_short() {
+    // The stream type takes the only byte, so the request goes out without the capacity.
+    let snapshot = timeout(LIMIT, first_request_prefix(true, Some(1)))
+        .await
+        .unwrap();
+    assert!(!announces_capacity(&snapshot), "{snapshot:?}");
+}
+
+fn announces_capacity(snapshot: &H3ObservationSnapshot) -> bool {
+    matches!(
+        snapshot.encoder_instructions.first(),
+        Some(ObservedEncoderInstruction::Capacity { capacity }) if *capacity > 0
+    )
+}
+
+/// The server's first-request observation of a client request submitted before its SETTINGS.
+async fn first_request_prefix(
+    capacity_first: bool,
+    uni_window: Option<u32>,
+) -> Arc<H3ObservationSnapshot> {
+    let remote = uni_window.map(|window| {
+        let mut transport = TransportConfig::default();
+        Config::default()
+            .configure_transport(&mut transport)
+            .unwrap();
+        transport.set_stream_receive_window_uni(window.into());
+        transport
+    });
+    let pair = Pair::in_memory(None, remote).await;
+    let server_config = Config {
+        observation: Some(Default::default()),
+        ..Config::default()
+    };
+    // The server driver starts late, so its SETTINGS follow the client's request.
+    let (mut server, server_driver) =
+        server::handshake(pair.server.clone(), server_config).unwrap();
+    let mut config = Config::default();
+    config.encoder.capacity_before_first_section = capacity_first;
+    let (mut client, driver) =
+        client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
+    let client_driver = spawn(driver.run());
+    let request = Request::builder()
+        .uri("https://localhost/capacity")
+        .body(Body::empty())
+        .unwrap();
+    let mut sending = pin!(client.send_request(request));
+    timeout(Duration::from_millis(10), sending.as_mut())
+        .await
+        .unwrap_err();
+    let server_driver = spawn(server_driver.run());
+    let serve = spawn(async move {
+        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        let observer = request
+            .extensions()
+            .get_ref::<H3Observer>()
+            .unwrap()
+            .clone();
+        response
+            .send_response(Response::new(Body::empty()))
+            .await
+            .unwrap();
+        observer.first_request(Instant::now() + LIMIT).await
+    });
+    sending.await.unwrap();
+    let FirstRequestObservation::Ready(snapshot) = serve.await.unwrap() else {
+        panic!("first request boundary was not published");
+    };
+    pair.client.close(0u32, b"test complete");
+    _ = client_driver.await.unwrap();
+    _ = server_driver.await.unwrap();
+    pair.close().await;
+    snapshot
 }

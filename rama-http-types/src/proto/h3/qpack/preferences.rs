@@ -16,6 +16,8 @@ pub struct EncoderPreferences {
     pub huffman: Option<bool>,
     /// Keep the first field section static/literal, then use the normal dynamic policy.
     pub defer_dynamic_first_section: Option<bool>,
+    /// Encode requests not sent early after peer SETTINGS, so the capacity can be announced first.
+    pub capacity_before_first_section: Option<bool>,
     /// Select the section Base policy; constrained fields can plan fresh insertions.
     pub field_section_base: Option<FieldSectionBase>,
 }
