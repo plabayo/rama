@@ -276,13 +276,12 @@ where
         network.protocol.version = version_as_protocol_version(Version::HTTP_2),
     );
 
-    let spawned = exec.try_spawn_task(
+    if let Err(refused) = exec.try_spawn_task(
         H2ClientFuture::Task {
             task: ConnTask::new(conn, conn_drop_rx, cancel_tx, transport_end),
         }
         .instrument(task_span),
-    );
-    if let Err(refused) = spawned {
+    ) {
         return Err(crate::Error::new_closed().with(refused.discard_task()));
     }
 

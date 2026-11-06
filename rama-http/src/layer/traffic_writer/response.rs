@@ -371,12 +371,11 @@ where
             let (capture, captured_body) = capture_body_channel();
             let captured_parts = parts.clone();
             let writer = Arc::clone(&self.writer);
-            let written = self.executor.try_spawn_abortable_task(async move {
+            if let Err(refused) = self.executor.try_spawn_abortable_task(async move {
                 writer
                     .write_response(Response::from_parts(captured_parts, captured_body))
                     .await;
-            });
-            if let Err(refused) = written {
+            }) {
                 tracing::debug!(%refused, "response not written: traffic writer scope closed");
             }
             Response::from_parts(

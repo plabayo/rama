@@ -247,10 +247,9 @@ where
                 Body::new(CaptureBody::new(body.map_err(Into::into), capture)),
             );
             let writer = Arc::clone(&self.writer);
-            let written = self.executor.try_spawn_abortable_task(async move {
+            if let Err(refused) = self.executor.try_spawn_abortable_task(async move {
                 writer.write_request(captured_request).await;
-            });
-            if let Err(refused) = written {
+            }) {
                 tracing::debug!(%refused, "request not written: traffic writer scope closed");
             }
             self.inner.serve(request).await.into_box_error()

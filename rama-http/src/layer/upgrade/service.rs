@@ -321,7 +321,7 @@ where
                         network.protocol.version = version_as_protocol_version(request.version()),
                     );
 
-                    let spawned = self.exec.try_spawn_task(
+                    if let Err(refused) = self.exec.try_spawn_task(
                         async move {
                             match crate::io::upgrade::handle_upgrade(request).await {
                                 Ok(upgraded) => {
@@ -350,8 +350,7 @@ where
                             }
                         }
                         .instrument(span),
-                    );
-                    if let Err(refused) = spawned {
+                    ) {
                         self.error_sink
                             .sink_error(refused.discard_task().context("http upgrade not served"));
                     }

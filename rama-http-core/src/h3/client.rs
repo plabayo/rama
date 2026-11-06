@@ -754,7 +754,7 @@ where
         let upload_lifetime = self.lifetime.clone();
         let allowed_trailers = request.extensions().get_arc::<ForbiddenTrailers>();
         let (_, request_body) = request.into_parts();
-        let task = self.executor.try_spawn_task(async move {
+        let Ok(task) = self.executor.try_spawn_task(async move {
             let _permit = upload_permit;
             let _lifetime = upload_lifetime;
             let result = body::send(
@@ -773,8 +773,7 @@ where
                 shared.fail(error);
             }
             result
-        });
-        let Ok(task) = task else {
+        }) else {
             // Dropping the refused upload drops Writer, resetting the request stream.
             return Err(Error::stream(
                 Code::H3_REQUEST_CANCELLED,

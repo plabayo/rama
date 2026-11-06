@@ -161,7 +161,7 @@ where
                 let error_sink = self.error_sink.clone();
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
-                let spawned = self.exec.try_spawn_task(async move {
+                if let Err(refused) = self.exec.try_spawn_task(async move {
                     tracing::debug!(
                         "HttpUpgradeMitmRelay: spawned task active"
                     );
@@ -187,8 +187,7 @@ where
                     if let Err(err) = relay_svc.serve(BridgeIo(ingress_stream, egress_stream)).await {
                         error_sink.sink_error(err.context("mitm relay handler failed"));
                     }
-                }.instrument(relay_upgrade_span));
-                if let Err(refused) = spawned {
+                }.instrument(relay_upgrade_span)) {
                     self.error_sink
                         .sink_error(refused.discard_task().context("mitm relay not spawned"));
                 }

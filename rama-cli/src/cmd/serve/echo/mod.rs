@@ -449,7 +449,7 @@ async fn bind_echo_udp_service(
                 let socket = shared_udp_socket.clone();
                 let data = buf[..len].to_vec();
                 // This loop's task holds the scope, so a reply is never refused.
-                let reply = task_exec.try_spawn_task(async move {
+                if task_exec.try_spawn_task(async move {
                     _ = permit;
                     match socket.send_to(&data, addr).await {
                         Ok(len) => {
@@ -459,8 +459,7 @@ async fn bind_echo_udp_service(
                             tracing::debug!("failed to send bytes sent to {addr}: {err}");
                         }
                     }
-                });
-                if reply.is_err() {
+                }).is_err() {
                     return;
                 }
             }

@@ -808,7 +808,7 @@ where
                 );
 
                 let exec = self.exec.clone().unwrap_or_default();
-                let spawned = exec.try_spawn_task(
+                if let Err(refused) = exec.try_spawn_task(
                     async move {
                         match upgrade::handle_upgrade(&req).await {
                             Ok(upgraded) => {
@@ -855,8 +855,7 @@ where
                         }
                     }
                     .instrument(span),
-                );
-                if let Err(refused) = spawned {
+                ) {
                     tracing::debug!(%refused, "ws upgrade refused");
                     return Ok(StatusCode::SERVICE_UNAVAILABLE.into_response());
                 }
