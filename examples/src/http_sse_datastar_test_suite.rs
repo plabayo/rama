@@ -85,7 +85,7 @@ async fn main() {
         "http's tcp listener ready to serve",
     );
 
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let router = Arc::new(
             Router::new().with_match_route(
                 "/test",

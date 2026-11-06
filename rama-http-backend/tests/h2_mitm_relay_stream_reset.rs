@@ -76,7 +76,7 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
 
     // ── Upstream: low-level h2 server that resets exactly one stream. ──
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         let _guard = guard;
         let mut conn = h2_server::handshake(MockSocket::new(server_stream))
             .await
@@ -118,7 +118,7 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
     // boxes the egress client to `Error = BoxError` (still `Into<BoxError>`)
     // without consuming errors, mirroring the production relay middleware.
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .with_http_middleware((
                 SetRequestHeaderLayer::overriding(

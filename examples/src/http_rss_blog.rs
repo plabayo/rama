@@ -137,7 +137,7 @@ async fn main() {
         "fetch rss: curl http://{bind_address}/feed.rss  |  atom: curl http://{bind_address}/feed.atom"
     );
 
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let middlewares = (TraceLayer::new_for_http(), ErrorHandlerLayer::new());
         let app = middlewares.into_layer(Arc::new(
             Router::new()

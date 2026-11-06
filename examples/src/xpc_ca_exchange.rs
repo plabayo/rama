@@ -107,7 +107,7 @@ async fn main() {
     }));
 
     let exec = Executor::from(scope.clone());
-    let server_task = exec.clone().into_spawn_task(async move {
+    let server_task = scope.spawn_task(async move {
         info!(target: "xpc_ca_exchange::server", "ready");
         if let Err(err) = server.serve_connection(server_conn, exec).await {
             error!(target: "xpc_ca_exchange::server", %err, "server error");
@@ -115,7 +115,7 @@ async fn main() {
         info!(target: "xpc_ca_exchange::server", "stopped");
     });
 
-    let client_task = Executor::from(scope.clone()).into_spawn_task(async move {
+    let client_task = scope.spawn_task(async move {
         let client_conn = endpoint.into_connection().expect("into_connection");
 
         let mut request = BTreeMap::new();

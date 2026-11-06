@@ -124,7 +124,7 @@ async fn main() {
         "rama-fastcgi-php gateway listening (HTTPS) on https://{listen}"
     );
 
-    exec.into_spawn_task(tcp.serve(TlsAcceptorLayer::new(tls_data).into_layer(http_server)));
+    scope.spawn_task(tcp.serve(TlsAcceptorLayer::new(tls_data).into_layer(http_server)));
 
     scope.join().await.expect("graceful shutdown");
 }

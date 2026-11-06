@@ -1751,7 +1751,7 @@ fn entering_without_any_scope_makes_a_root() {
 fn entering_with_only_an_own_scope_makes_its_child() {
     let own = Scope::new();
     let extensions = Extensions::new();
-    let scope = enter_scope_with(&extensions, &own).unwrap();
+    let scope = enter_scope_with(&extensions, &own.clone_weak()).unwrap();
     own.cancel(Cause::Owner);
     assert!(scope.is_cancelled());
 }
@@ -1774,7 +1774,7 @@ fn a_closed_context_refuses_whatever_the_own_scope() {
         drop(context);
         let _closed = match &own {
             None => enter_scope(&extensions),
-            Some(own) => enter_scope_with(&extensions, own),
+            Some(own) => enter_scope_with(&extensions, &own.clone_weak()),
         }
         .unwrap_err();
     }
@@ -1787,7 +1787,7 @@ fn an_entered_scope_follows_its_context_and_its_own_scope() {
         let own = Scope::new();
         let extensions = Extensions::new();
         attach_scope(&extensions, &context);
-        let scope = enter_scope_with(&extensions, &own).unwrap();
+        let scope = enter_scope_with(&extensions, &own.clone_weak()).unwrap();
         if cancel_context {
             context.cancel(Cause::Owner);
         } else {
@@ -1816,7 +1816,7 @@ fn retained_extensions_hold_no_drain() {
     rt().block_on(async {
         let root = Scope::new();
         let extensions = Extensions::new();
-        let entered = enter_scope_with(&extensions, &root).unwrap();
+        let entered = enter_scope_with(&extensions, &root.clone_weak()).unwrap();
         let retained = extensions.clone();
         drop(entered);
         tokio::time::timeout(SEC, root.join())
@@ -2208,13 +2208,13 @@ fn a_panicking_waker_of_one_part_leaves_a_composite_cancel_whole() {
     let bad = Waker::from(Arc::new(PanicWake));
     assert!(poll(&mut cancelled, &bad).is_pending());
     assert!(catch_unwind(AssertUnwindSafe(|| work.cancel(Cause::Owner))).is_err());
-    assert!(work.parts().iter().all(|part| part.phase().graceful));
+    assert!(work.parts().iter().all(|part| part.phase().graceful()));
 
     let work = Scope::child_of([&a, &b]);
     let mut aborted = work.aborted();
     assert!(poll(&mut aborted, &bad).is_pending());
     assert!(catch_unwind(AssertUnwindSafe(|| work.abort(Cause::Owner))).is_err());
-    assert!(work.parts().iter().all(|part| part.phase().hard));
+    assert!(work.parts().iter().all(|part| part.phase().hard()));
 }
 
 #[test]
@@ -2231,7 +2231,7 @@ fn a_panicking_waker_of_one_part_leaves_a_composite_deadline_whole() {
             .err()
             .map(|_| work)
             .unwrap_or_else(|| panic!("the first part's waker panics"));
-        assert!(work.parts().iter().all(|part| part.phase().graceful));
+        assert!(work.parts().iter().all(|part| part.phase().graceful()));
         drop(cancelled);
     });
 }

@@ -62,7 +62,7 @@ async fn main() {
         .with_alpn_http_1();
 
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let server = HttpServer::new_http1(exec.clone()).service(
             (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
                 Router::new().with_get("/", Html(INDEX)).with_get(

@@ -14,13 +14,13 @@ use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use crate::{
     Layer, Service,
     extensions::ExtensionsRef,
-    graceful::{Cause, Scope, ScopeClosed, enter_scope, enter_scope_with},
+    graceful::{Cause, Scope, ScopeClosed, WeakScope, enter_scope, enter_scope_with},
 };
 
 /// Runs every input in its own child [`Scope`], see the [module docs](self).
 #[derive(Debug, Clone, Default)]
 pub struct ScopeLayer {
-    parent: Option<Scope>,
+    parent: Option<WeakScope>,
     max_age: Option<Duration>,
     grace: Option<Duration>,
     hard_max_age: Option<Duration>,
@@ -40,8 +40,9 @@ impl ScopeLayer {
 
     generate_set_and_with! {
         /// Also run every input in `parent`, such as the scope of the executor that serves
-        /// it, besides the scope the input already runs in.
-        pub fn parent(mut self, parent: Option<Scope>) -> Self {
+        /// it, besides the scope the input already runs in. The layer does not hold it: an
+        /// input arriving once it is closed is refused.
+        pub fn parent(mut self, parent: Option<WeakScope>) -> Self {
             self.parent = parent;
             self
         }
@@ -73,20 +74,14 @@ impl ScopeLayer {
 
     /// The scope of an input: a new one in the scope it runs in.
     fn scope_for(&self, input: &impl ExtensionsRef) -> Result<Scope, ScopeClosed> {
-        let mut scope = match &self.parent {
+        let scope = match &self.parent {
             Some(parent) => enter_scope_with(input.extensions(), parent)?,
             None => enter_scope(input.extensions())?,
         };
-        if let Some(max_age) = self.max_age {
-            scope = scope.with_timeout(max_age);
-        }
-        if let Some(grace) = self.grace {
-            scope = scope.with_grace(grace);
-        }
-        if let Some(hard_max_age) = self.hard_max_age {
-            scope = scope.with_hard_timeout(hard_max_age);
-        }
-        Ok(scope)
+        Ok(scope
+            .maybe_with_timeout(self.max_age)
+            .maybe_with_grace(self.grace)
+            .maybe_with_hard_timeout(self.hard_max_age))
     }
 }
 

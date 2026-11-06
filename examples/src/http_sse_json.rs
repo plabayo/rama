@@ -125,7 +125,7 @@ async fn main() {
     );
     tracing::info!("open http://{bind_address} in your browser to see the service in action");
 
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let app = (
             ArcLayer::new(),
             TraceLayer::new_for_http(),

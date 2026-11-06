@@ -11,6 +11,20 @@
 //! full-duplex exchange when either peer waits for the other direction to make
 //! progress; use [`PerMessageFileWriter`] or another independent writer for
 //! such traffic.
+//!
+//! That output task holds the scope it was built with until it ends. Each
+//! capture is admitted when its message is served and is then written: it
+//! holds the writer's admission until its message is handed over. A cancel
+//! starts the drain: the task keeps taking what pending captures send, and while
+//! any is pending a newly served one is admitted too. Once the scope is
+//! cancelled and no capture is pending, admission closes for good: the task
+//! flushes what is queued and ends, and later captures are refused. A writer
+//! kept around therefore never holds up a shutdown. At the hard phase the task
+//! and its pending captures are dropped. Layers made with the writer's constructors, or
+//! with [`BidirectionalWriter::request_layer`] and
+//! [`BidirectionalWriter::response_layer`], admit captures this way; a layer
+//! made with `new` around a built-in writer has no admission, so a capture
+//! racing the cancel may be dropped.
 
 use crate::body::Frame;
 use crate::{
@@ -20,6 +34,7 @@ use crate::{
 };
 use rama_core::{
     extensions::{Extension, Extensions},
+    graceful::{Scope, WeakScope},
     rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
@@ -33,6 +48,54 @@ use tokio::{
     sync::mpsc::{Receiver, Sender, UnboundedSender, channel, unbounded_channel},
 };
 use uuid::Uuid;
+
+/// The next message for a writer task: any message until it is closed, then only those
+/// already queued, so the task flushes and ends instead of waiting for its senders.
+macro_rules! next_message {
+    ($rx:ident, $closed:ident, $open:ident) => {
+        if $open {
+            tokio::select! {
+                biased;
+                () = &mut $closed => {
+                    $open = false;
+                    $rx.close();
+                    $rx.recv().await
+                }
+                message = $rx.recv() => message,
+            }
+        } else {
+            $rx.recv().await
+        }
+    };
+}
+
+/// Admission of the captures an output task writes: each holds a child of the task's scope
+/// from its spawn until it handed over its message.
+struct Admission {
+    captures: WeakScope,
+}
+
+impl Admission {
+    fn new(scope: &Scope) -> Self {
+        Self {
+            captures: scope.child().into_weak_scope(),
+        }
+    }
+
+    /// The executor captures are spawned on; it refuses them once cancelled and drained.
+    fn executor(&self) -> Executor {
+        Executor::from(self.captures.clone())
+    }
+
+    /// Completes once the scope is cancelled and every capture admitted until then is in.
+    fn closed(&self) -> impl Future<Output = ()> + Send + 'static {
+        let captures = self.captures.clone();
+        async move {
+            captures.cancelled().await;
+            captures.drained().await;
+        }
+    }
+}
 
 mod file;
 #[doc(inline)]
@@ -59,10 +122,8 @@ pub enum WriterMode {
     Body,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 struct TrafficWriterId(Uuid);
-
-impl Extension for TrafficWriterId {}
 
 fn ensure_traffic_writer_id(extensions: &Extensions) -> TrafficWriterId {
     *extensions.get_ref_or_insert(|| TrafficWriterId(Uuid::new_v4()))
@@ -149,8 +210,10 @@ pub(super) fn capture_body_channel() -> (Sender<BodyCaptureEvent>, Body) {
 /// constructors, which differ only in receiver type and tracing span — both
 /// satisfied by passing `$rx` (`recv()` is common to both receivers).
 macro_rules! drive_bidirectional_writer {
-    ($writer:ident, $rx:ident, $req_headers:ident, $req_body:ident, $res_headers:ident, $res_body:ident) => {{
-        while let Some(msg) = $rx.recv().await {
+    ($writer:ident, $rx:ident, $closed:ident, $req_headers:ident, $req_body:ident, $res_headers:ident, $res_body:ident) => {{
+        let mut $closed = std::pin::pin!($closed);
+        let mut open = true;
+        while let Some(msg) = next_message!($rx, $closed, open) {
             match msg {
                 BidirectionalMessage::Request(req) => {
                     if let Err(err) =
@@ -181,9 +244,27 @@ macro_rules! drive_bidirectional_writer {
 }
 
 /// A writer that can write both requests and responses.
+///
+/// Make its layers with [`Self::request_layer`] and [`Self::response_layer`], so their
+/// captures are admitted by its output task, see the [module docs](self).
 #[derive(Clone)]
 pub struct BidirectionalWriter<S> {
     sender: S,
+    executor: Executor,
+}
+
+impl<S: Clone> BidirectionalWriter<S> {
+    /// A [`RequestWriterLayer`] writing requests to this writer.
+    #[must_use]
+    pub fn request_layer(&self) -> RequestWriterLayer<Self> {
+        RequestWriterLayer::new_with_executor(self.clone(), self.executor.clone())
+    }
+
+    /// A [`ResponseWriterLayer`] writing responses to this writer.
+    #[must_use]
+    pub fn response_layer(&self) -> ResponseWriterLayer<Self> {
+        ResponseWriterLayer::new_with_executor(self.clone(), self.executor.clone())
+    }
 }
 
 impl<S> std::fmt::Debug for BidirectionalWriter<S> {
@@ -197,7 +278,7 @@ impl<S> std::fmt::Debug for BidirectionalWriter<S> {
 impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
     /// Create a new [`BidirectionalWriter`] with a custom writer gated behind an unbounded sender.
     pub fn unbounded<W>(
-        executor: &Executor,
+        scope: &Scope,
         mut writer: W,
         request_mode: Option<WriterMode>,
         response_mode: Option<WriterMode>,
@@ -209,10 +290,14 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
         let (write_request_headers, write_request_body) = write_headers_body_flags(request_mode);
         let (write_response_headers, write_response_body) = write_headers_body_flags(response_mode);
 
-        executor.spawn_task(async move {
+        let admission = Admission::new(scope);
+        let closed = admission.closed();
+
+        scope.spawn_abortable_task(async move {
             drive_bidirectional_writer!(
                 writer,
                 rx,
+                closed,
                 write_request_headers,
                 write_request_body,
                 write_response_headers,
@@ -220,36 +305,39 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
             );
         });
 
-        Self { sender: tx }
+        Self {
+            sender: tx,
+            executor: admission.executor(),
+        }
     }
 
     /// Create a new [`BidirectionalWriter`] that prints requests and responses to stdout
     /// over an unbounded channel.
     #[must_use]
     pub fn stdout_unbounded(
-        executor: &Executor,
+        scope: &Scope,
         request_mode: Option<WriterMode>,
         response_mode: Option<WriterMode>,
     ) -> Self {
-        Self::unbounded(executor, tokio::io::stdout(), request_mode, response_mode)
+        Self::unbounded(scope, tokio::io::stdout(), request_mode, response_mode)
     }
 
     /// Create a new [`BidirectionalWriter`] that prints requests and responses to stderr
     /// over an unbounded channel.
     #[must_use]
     pub fn stderr_unbounded(
-        executor: &Executor,
+        scope: &Scope,
         request_mode: Option<WriterMode>,
         response_mode: Option<WriterMode>,
     ) -> Self {
-        Self::unbounded(executor, tokio::io::stderr(), request_mode, response_mode)
+        Self::unbounded(scope, tokio::io::stderr(), request_mode, response_mode)
     }
 }
 
 impl BidirectionalWriter<Sender<BidirectionalMessage>> {
     /// Create a new [`BidirectionalWriter`] with a custom writer gated behind a custom bounded channel.
     pub fn new<W>(
-        executor: &Executor,
+        scope: &Scope,
         mut writer: W,
         buffer: usize,
         request_mode: Option<WriterMode>,
@@ -267,11 +355,15 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             otel.kind = "consumer",
         );
 
-        executor.spawn_task(
+        let admission = Admission::new(scope);
+        let closed = admission.closed();
+
+        scope.spawn_abortable_task(
             async move {
                 drive_bidirectional_writer!(
                     writer,
                     rx,
+                    closed,
                     write_request_headers,
                     write_request_body,
                     write_response_headers,
@@ -281,7 +373,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             .instrument(span),
         );
 
-        Self { sender: tx }
+        Self {
+            sender: tx,
+            executor: admission.executor(),
+        }
     }
 
     /// Create a new [`BidirectionalWriter`] with a custom writer that only
@@ -291,7 +386,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
     /// deferred until the channel closes. Do not use body-writing modes here
     /// for unbounded or attacker-controlled bodies.
     pub fn last<W>(
-        executor: &Executor,
+        scope: &Scope,
         mut writer: W,
         request_mode: Option<WriterMode>,
         response_mode: Option<WriterMode>,
@@ -308,12 +403,17 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             otel.kind = "consumer",
         );
 
-        executor.spawn_task(
+        let admission = Admission::new(scope);
+        let closed = admission.closed();
+
+        scope.spawn_abortable_task(
             async move {
                 let mut last_request = None;
                 let mut last_response = None;
 
-                while let Some(msg) = rx.recv().await {
+                let mut closed = std::pin::pin!(closed);
+                let mut open = true;
+                while let Some(msg) = next_message!(rx, closed, open) {
                     match msg {
                         BidirectionalMessage::Request(req) => {
                             let (parts, body) = req.into_parts();
@@ -387,20 +487,23 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             .instrument(span),
         );
 
-        Self { sender: tx }
+        Self {
+            sender: tx,
+            executor: admission.executor(),
+        }
     }
 
     /// Create a new [`BidirectionalWriter`] that prints requests and responses to stdout
     /// over a bounded channel.
     #[must_use]
     pub fn stdout(
-        executor: &Executor,
+        scope: &Scope,
         buffer: usize,
         request_mode: Option<WriterMode>,
         response_mode: Option<WriterMode>,
     ) -> Self {
         Self::new(
-            executor,
+            scope,
             tokio::io::stdout(),
             buffer,
             request_mode,
@@ -414,24 +517,24 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
     /// See [`Self::last`] for its intentional full-body buffering semantics.
     #[must_use]
     pub fn stdout_last(
-        executor: &Executor,
+        scope: &Scope,
         request_mode: Option<WriterMode>,
         response_mode: Option<WriterMode>,
     ) -> Self {
-        Self::last(executor, tokio::io::stdout(), request_mode, response_mode)
+        Self::last(scope, tokio::io::stdout(), request_mode, response_mode)
     }
 
     /// Create a new [`BidirectionalWriter`] that prints requests and responses to stderr
     /// over a bounded channel.
     #[must_use]
     pub fn stderr(
-        executor: &Executor,
+        scope: &Scope,
         buffer: usize,
         request_mode: Option<WriterMode>,
         response_mode: Option<WriterMode>,
     ) -> Self {
         Self::new(
-            executor,
+            scope,
             tokio::io::stderr(),
             buffer,
             request_mode,
@@ -445,11 +548,11 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
     /// See [`Self::last`] for its intentional full-body buffering semantics.
     #[must_use]
     pub fn stderr_last(
-        executor: &Executor,
+        scope: &Scope,
         request_mode: Option<WriterMode>,
         response_mode: Option<WriterMode>,
     ) -> Self {
-        Self::last(executor, tokio::io::stderr(), request_mode, response_mode)
+        Self::last(scope, tokio::io::stderr(), request_mode, response_mode)
     }
 }
 
@@ -567,14 +670,10 @@ mod capture_tests {
 
     #[tokio::test]
     async fn last_writer_drains_messages_and_writes_only_the_final_exchange() {
-        let executor = Executor::new();
+        let scope = Scope::new();
         let (output, mut captured) = tokio::io::duplex(512);
-        let writer = BidirectionalWriter::last(
-            &executor,
-            output,
-            Some(WriterMode::All),
-            Some(WriterMode::All),
-        );
+        let writer =
+            BidirectionalWriter::last(&scope, output, Some(WriterMode::All), Some(WriterMode::All));
 
         writer
             .write_request(
@@ -623,9 +722,9 @@ mod capture_tests {
 
     #[tokio::test]
     async fn last_writer_replaces_a_failed_body_with_an_empty_body() {
-        let executor = Executor::new();
+        let scope = Scope::new();
         let (output, mut captured) = tokio::io::duplex(128);
-        let writer = BidirectionalWriter::last(&executor, output, Some(WriterMode::All), None);
+        let writer = BidirectionalWriter::last(&scope, output, Some(WriterMode::All), None);
         let body = Body::from_stream(rama_core::futures::stream::once(async {
             Err::<rama_core::bytes::Bytes, _>(io::Error::other("body failed"))
         }));

@@ -43,10 +43,11 @@ pub(super) async fn start(pool: Pool, exec: &Executor) -> Result<CollectionQueue
         counted::sampler_seeds(&mut client, candidates).await?
     };
     // Legacy backlog must not delay new collection or prevent serving requests.
-    exec.spawn_cancellable_task(legacy::backfill_partitions(pool.clone(), seeds, limits));
+    exec.try_spawn_cancellable_task(legacy::backfill_partitions(pool.clone(), seeds, limits))
+        .map_err(|refused| refused.discard_task())?;
     let (queue, receiver) = CollectionQueue::new(config, limits)?;
     let shutdown = exec.cancelled();
-    exec.spawn_task(async move {
+    exec.try_spawn_task(async move {
         if worker::run(
             receiver,
             PostgresSink {
@@ -65,7 +66,8 @@ pub(super) async fn start(pool: Pool, exec: &Executor) -> Result<CollectionQueue
         {
             tracing::error!("fingerprint collection worker stopped");
         }
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
     Ok(queue)
 }
 

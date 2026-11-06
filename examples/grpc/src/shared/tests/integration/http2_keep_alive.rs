@@ -44,7 +44,7 @@ async fn http2_keepalive_does_not_cause_panics() {
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let jh = exec.clone().into_spawn_task(async move {
+    let jh = scope.spawn_task(async move {
         let mut server = HttpServer::new_h2(exec.clone());
         server
             .h2_mut()
@@ -81,7 +81,7 @@ async fn http2_keepalive_does_not_cause_panics_on_client_side() {
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let jh = exec.clone().into_spawn_task(async move {
+    let jh = scope.spawn_task(async move {
         let mut server = HttpServer::new_h2(exec.clone());
         server
             .h2_mut()

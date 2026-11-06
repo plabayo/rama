@@ -1728,14 +1728,15 @@ async fn run_with_dashboard_token(
         let dashboard = standalone_dashboard_service(dashboard, local_address.into());
         let ui_exec = exec.clone();
         let ui_tcp_options = tcp_options.clone();
-        exec.clone().into_spawn_task(async move {
+        exec.try_spawn_task(async move {
             listener
                 .serve(
                     TcpStreamOptionsLayer::new(ui_tcp_options)
                         .into_layer(HttpServer::auto(ui_exec).service(dashboard)),
                 )
                 .await;
-        });
+        })
+        .map_err(|refused| refused.discard_task())?;
     }
 
     for (listener, local_address, protocols, masque_endpoint) in bound {
@@ -1935,7 +1936,7 @@ async fn run_with_dashboard_token(
                 "MASQUE proxy",
                 endpoint,
                 ConsumeErrLayer::trace_as_debug().into_layer(h3.service(tls_http_service)),
-            );
+            )?;
         }
         let tls_acceptor = TlsAcceptorService::new(
             https_config.clone().unwrap_or_else(TlsServerConfig::new),
@@ -2013,7 +2014,7 @@ async fn run_with_dashboard_token(
             print_inspector_ready(local_address, auth_token, cfg.inspect_json);
         }
 
-        exec.clone().into_spawn_task(async move {
+        exec.try_spawn_task(async move {
             match (plain_http_route, tls_enabled, socks5_enabled) {
                 (true, false, false) => listener.serve(tcp_layers.into_layer(http)).await,
                 (false, true, false) => listener.serve(tcp_layers.into_layer(https)).await,
@@ -2049,7 +2050,8 @@ async fn run_with_dashboard_token(
                     tracing::error!("proxy listener started without a configured protocol");
                 }
             }
-        });
+        })
+        .map_err(|refused| refused.discard_task())?;
     }
 
     Ok((bound_addresses, inspector_address))

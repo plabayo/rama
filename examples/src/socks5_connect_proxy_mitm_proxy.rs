@@ -88,7 +88,7 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         ));
-    exec.into_spawn_task(tcp_service.serve(socks5_acceptor));
+    scope.spawn_task(tcp_service.serve(socks5_acceptor));
 
     scope.join().await.context("graceful shutdown")?;
 

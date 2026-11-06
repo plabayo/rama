@@ -69,7 +69,7 @@ async fn main() {
         .with_alpn_http_2();
 
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let mut h2 = HttpServer::new_h2(exec.clone());
         h2.h2_mut().set_enable_connect_protocol(); // required for WS sockets
         let server = h2.service(

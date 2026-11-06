@@ -67,7 +67,7 @@ async fn main() {
         .with_grace(Duration::from_secs(30));
 
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let router = Router::new().with_get("/", Html(INDEX)).with_get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(

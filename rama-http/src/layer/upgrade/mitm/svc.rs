@@ -161,7 +161,7 @@ where
                 let error_sink = self.error_sink.clone();
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
-                self.exec.spawn_task(async move {
+                let spawned = self.exec.try_spawn_task(async move {
                     tracing::debug!(
                         "HttpUpgradeMitmRelay: spawned task active"
                     );
@@ -188,6 +188,10 @@ where
                         error_sink.sink_error(err.context("mitm relay handler failed"));
                     }
                 }.instrument(relay_upgrade_span));
+                if let Err(refused) = spawned {
+                    self.error_sink
+                        .sink_error(refused.discard_task().context("mitm relay not spawned"));
+                }
 
                 Ok(res.map(Body::new))
             } else {

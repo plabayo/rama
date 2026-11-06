@@ -1,5 +1,5 @@
 //! Client work spawned on an executor holds that executor's scope while it lives, and lets
-//! its join complete once released; retained metadata never holds it.
+//! its join complete once released; the client itself and retained metadata never hold it.
 
 #![expect(
     clippy::unwrap_used,
@@ -87,11 +87,12 @@ async fn serve_origin() -> Origin {
     );
     let accepted = Arc::new(AtomicUsize::new(0));
     let accepts = accepted.clone();
-    exec.spawn_task(listener.serve(service_fn(move |stream: TcpStream| {
+    exec.try_spawn_task(listener.serve(service_fn(move |stream: TcpStream| {
         accepts.fetch_add(1, Ordering::SeqCst);
         let http = http.clone();
         async move { http.serve(stream).await }
-    })));
+    })))
+    .unwrap();
     Origin {
         addr,
         accepted,
@@ -194,6 +195,30 @@ async fn established_http1_connection_holds_the_join_until_dropped() {
 #[tokio::test]
 async fn established_http2_connection_holds_the_join_until_dropped() {
     established_connection_holds_the_join_until_dropped(Version::HTTP_2).await;
+}
+
+#[tokio::test]
+async fn a_client_kept_around_does_not_hold_the_join() {
+    let addr = origin().await;
+    let root = Scope::new();
+    let client = connector(Executor::from(root.clone()));
+    let EstablishedClientConnection { conn, input } =
+        timeout(LIMIT, client.serve(request(addr, "/", Version::HTTP_11)))
+            .await
+            .unwrap()
+            .unwrap();
+    let response = timeout(LIMIT, conn.serve(input)).await.unwrap().unwrap();
+    assert_eq!(read_to_end(response).await, "done");
+    drop(conn);
+
+    let root = cancel(root);
+    assert_join_completes(root).await;
+
+    // Its scope is closed now: the client opens no new connection on it.
+    let refused = timeout(LIMIT, client.serve(request(addr, "/", Version::HTTP_11)))
+        .await
+        .unwrap();
+    assert!(refused.is_err(), "a closed scope admits no new connection");
 }
 
 #[tokio::test]

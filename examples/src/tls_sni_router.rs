@@ -93,12 +93,12 @@ async fn main() {
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
 
-    spawn_https_server(Executor::from(scope.clone()), NAME_FOO, INTERFACE_FOO);
-    spawn_https_server(Executor::from(scope.clone()), NAME_BAR, INTERFACE_BAR);
-    spawn_https_server(Executor::from(scope.clone()), NAME_BAZ, INTERFACE_BAZ);
+    spawn_https_server(&scope, NAME_FOO, INTERFACE_FOO);
+    spawn_https_server(&scope, NAME_BAR, INTERFACE_BAR);
+    spawn_https_server(&scope, NAME_BAZ, INTERFACE_BAZ);
 
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let socket_address = SocketAddress::default_ipv4(62026);
         tracing::info!(
             network.local.address = %socket_address.ip_addr,
@@ -176,7 +176,8 @@ where
     }
 }
 
-fn spawn_https_server(exec: Executor, name: &'static str, socket_address: SocketAddress) {
+fn spawn_https_server(scope: &Scope, name: &'static str, socket_address: SocketAddress) {
+    let exec = Executor::from(scope.clone());
     let tls_server_config = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::generated_ca_for(
             format!("{name}.local")
@@ -185,7 +186,7 @@ fn spawn_https_server(exec: Executor, name: &'static str, socket_address: Socket
         ))
         .expect("generated server auth");
 
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         tracing::info!(
             host.name = %name,
             network.local.address = %socket_address.ip_addr,

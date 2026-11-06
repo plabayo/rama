@@ -857,9 +857,8 @@ impl Builder {
     /// # use rama_http_types::Response;
     /// # use rama_core::extensions::{Extension, ExtensionsRef};
     ///
-    /// #[derive(Debug, Clone, PartialEq)]
+    /// #[derive(Debug, Clone, PartialEq, Extension)]
     /// struct MyExtension(&'static str);
-    /// impl Extension for MyExtension {}
     ///
     /// let response = Response::builder()
     ///     .extension(MyExtension("My Extension"))
@@ -888,13 +887,11 @@ impl Builder {
     /// ```
     /// # use rama_http_types::Response;
     /// # use rama_core::extensions::Extension;
-    /// #[derive(Debug, Clone, PartialEq)]
+    /// #[derive(Debug, Clone, PartialEq, Extension)]
     /// struct MyExtension(&'static str);
-    /// impl Extension for MyExtension {}
     ///
-    /// #[derive(Debug, Clone, PartialEq)]
+    /// #[derive(Debug, Clone, PartialEq, Extension)]
     /// struct MyCount(u32);
-    /// impl Extension for MyCount {}
     ///
     /// let res = Response::builder().extension(MyExtension("My Extension")).extension(MyCount(5));
     /// let extensions = res.extensions().unwrap();

@@ -23,11 +23,10 @@ mod tests {
         service::web::{WebService, extract::Text},
     };
     use rama_core::Service;
+    use rama_core::extensions::Extension;
 
-    #[derive(Debug)]
+    #[derive(Debug, Extension)]
     struct RequestLabel(&'static str);
-
-    impl rama_core::extensions::Extension for RequestLabel {}
 
     #[tokio::test]
     async fn owned_extensions_compose_with_text_body_extractor() {

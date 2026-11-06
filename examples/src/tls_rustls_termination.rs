@@ -100,7 +100,7 @@ async fn main() {
 
     // create tls proxy
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let tcp_service = (
             TlsAcceptorLayer::new(acceptor_data),
             IoToProxyBridgeIoLayer::new(HostWithPort::local_ipv4(62800)).with_connector(
@@ -119,7 +119,7 @@ async fn main() {
 
     // create http server
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
             .into_layer(service_fn(internal_tcp_service_fn));
 

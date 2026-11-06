@@ -257,7 +257,7 @@ async fn main() -> Result<(), BoxError> {
     // What tells a connection that the relay itself is stopping, rather than its upstream.
     let stopping = scope.clone_weak();
     // Its outcome is joined below, so a failure in it fails this process.
-    let serving = Executor::from(scope.clone()).into_spawn_task(async move {
+    let serving = scope.spawn_task(async move {
         let outcome = serve_relay(
             &relay,
             &client,

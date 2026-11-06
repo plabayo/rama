@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex as SyncMutex;
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError};
-use rama_core::graceful::Scope;
+use rama_core::graceful::{Scope, ScopeClosed, WeakScope};
 use rama_core::telemetry::tracing;
 use rama_core::{Service, service::BoxService};
 use rama_js::{JsErrorKind, JsRuntime, JsRuntimeBuilder, JsWorker};
@@ -212,7 +212,8 @@ enum ScriptState {
 struct WorkerConfig {
     timeout: Option<Duration>,
     queue_capacity: Option<usize>,
-    scope: Option<Scope>,
+    // Weak: a resolver kept around never holds a drain open, only its running worker does.
+    scope: Option<WeakScope>,
 }
 
 struct LoadedScript {
@@ -595,9 +596,17 @@ impl LoadedScript {
         lifetime: Arc<()>,
         activity: Arc<WorkerActivityState>,
     ) -> Result<Self, LoadError> {
+        // The worker holds the scope while it runs: a closed scope starts no worker.
+        let scope =
+            match &config.scope {
+                Some(scope) => Some(scope.to_scope().ok_or_else(|| {
+                    LoadError::Environment(ScopeClosed.context("spawn pac worker"))
+                })?),
+                None => None,
+            };
         let mut builder = JsWorker::builder()
             .maybe_with_timeout(config.timeout)
-            .maybe_with_scope(config.scope.clone());
+            .maybe_with_scope(scope);
         if let Some(capacity) = config.queue_capacity {
             builder.set_queue_capacity(capacity);
         }
@@ -960,7 +969,7 @@ impl PacResolverBuilder {
             worker: WorkerConfig {
                 timeout,
                 queue_capacity: self.queue_capacity,
-                scope: self.scope,
+                scope: self.scope.map(Scope::into_weak_scope),
             },
             sanitize: self.sanitize,
             state: Mutex::new(ResolverState::default()),

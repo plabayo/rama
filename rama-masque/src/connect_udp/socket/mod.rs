@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef},
-    rt::Executor,
+    graceful::Scope,
     telemetry::tracing,
 };
 use rama_http::{
@@ -354,14 +354,14 @@ where
     /// client side, the client's or a documented placeholder on the proxy side.
     /// IPv4-mapped IPv6 addresses are reported as IPv4.
     pub fn new(
-        exec: &Executor,
+        scope: &Scope,
         session: HttpDatagramSession<T>,
         local: SocketAddress,
         peer: SocketAddress,
         config: ConnectUdpSocketConfig,
     ) -> Self {
         Self::with_accounting(
-            exec,
+            scope,
             session,
             local,
             peer,
@@ -373,7 +373,7 @@ where
     /// As [`ConnectUdpSocket::new`], charging what the tunnel moves to its principal's
     /// budget and then to its own, and recording its end.
     pub(crate) fn with_accounting(
-        exec: &Executor,
+        scope: &Scope,
         session: HttpDatagramSession<T>,
         local: SocketAddress,
         peer: SocketAddress,
@@ -407,7 +407,7 @@ where
             }),
         });
         let (tx, rx) = mpsc::channel(config.queue.get());
-        exec.spawn_task(pump(sender, rx, shared.clone(), config.idle_timeout));
+        scope.spawn_task(pump(sender, rx, shared.clone(), config.idle_timeout));
         Self {
             receiver,
             shared,

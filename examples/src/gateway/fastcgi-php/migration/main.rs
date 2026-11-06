@@ -136,7 +136,7 @@ mod unix_impl {
             .expect("bind http listener");
         tracing::info!("rama-fastcgi-php migration listening on http://{listen}");
 
-        exec.into_spawn_task(tcp.serve(http_server));
+        scope.spawn_task(tcp.serve(http_server));
 
         scope.join().await.expect("graceful shutdown");
     }

@@ -163,10 +163,10 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
         .context("bind UDP")?;
     let udp_address = endpoint.local_addr()?;
 
-    exec.spawn_task(
+    scope.spawn_task(
         listener.serve(TlsAcceptorLayer::new(tcp_tls).into_layer(http.service(service.clone()))),
     );
-    exec.spawn_task(endpoint.serve(exec.clone(), h3.service(service)));
+    scope.spawn_task(endpoint.serve(exec.clone(), h3.service(service)));
     // The join waits on the spawned tasks, not on this executor.
     drop(exec);
     tracing::info!("CONNECT-UDP proxy listening on TCP {tcp_address} and UDP {udp_address}");

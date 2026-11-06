@@ -121,11 +121,13 @@ async fn icap_adapts_both_directions_of_an_http3_exchange() {
             while let Some(incoming) = endpoint.accept().await {
                 let server = server.clone();
                 let service = service.clone();
-                executor.spawn_task(async move {
-                    if let Ok(connection) = incoming.await {
-                        _ = server.serve(connection, service).await;
-                    }
-                });
+                executor
+                    .try_spawn_task(async move {
+                        if let Ok(connection) = incoming.await {
+                            _ = server.serve(connection, service).await;
+                        }
+                    })
+                    .unwrap();
             }
         }
     });

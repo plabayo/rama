@@ -333,7 +333,7 @@ async fn mitm_relays_a_clients_own_authenticated_masque_session() {
                     panic!("{version:?}: {error:?}; headers={headers:?}; body={body:?}");
                 }
                 let mut socket = ConnectUdpSocket::new(
-                    &Executor::new(),
+                    &Scope::new(),
                     HttpDatagramSession::with_config(
                         handle_upgrade(&response).await.unwrap(),
                         session_config(),

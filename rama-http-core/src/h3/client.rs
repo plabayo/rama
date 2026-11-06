@@ -754,7 +754,7 @@ where
         let upload_lifetime = self.lifetime.clone();
         let allowed_trailers = request.extensions().get_arc::<ForbiddenTrailers>();
         let (_, request_body) = request.into_parts();
-        let task = self.executor.spawn_task(async move {
+        let task = self.executor.try_spawn_task(async move {
             let _permit = upload_permit;
             let _lifetime = upload_lifetime;
             let result = body::send(
@@ -774,6 +774,13 @@ where
             }
             result
         });
+        let Ok(task) = task else {
+            // Dropping the refused upload drops Writer, resetting the request stream.
+            return Err(Error::stream(
+                Code::H3_REQUEST_CANCELLED,
+                "executor scope closed",
+            ));
+        };
         // Aborting the upload drops Writer, which resets partial output rather than FINishing it.
         struct Upload(Option<tokio::task::JoinHandle<Result<(), Error>>>);
         impl Drop for Upload {

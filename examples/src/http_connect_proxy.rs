@@ -121,7 +121,7 @@ async fn main() {
     }
 
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let tcp_service = TcpListener::build(exec.clone()).bind_address("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
 
         let http_service = HttpServer::auto(exec.clone())

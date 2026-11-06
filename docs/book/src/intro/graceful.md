@@ -24,10 +24,17 @@ through one executor and is served by another, gets a scope below all of them: i
 soon as any of them does.
 
 Holding a scope keeps its drain open, and joining a scope waits until nobody holds it
-anymore. An [`Executor`](https://ramaproxy.org/docs/rama/rt/struct.Executor.html) holds
-its scope in every task it spawns, so joining the root waits for all of them. A weak
-scope only observes: it is what travels with an input in its extensions, so a request
-that is kept around never holds up a shutdown.
+anymore. Only running work holds. Every task an
+[`Executor`](https://ramaproxy.org/docs/rama/rt/struct.Executor.html) spawns holds its
+scope until it ends, so joining the root waits for all of them, while the executor itself
+only observes, and so does a client, layer or service built with it: keeping one around
+never holds up a shutdown. A weak scope only observes too: it is what travels with an
+input in its extensions, so a request that is kept around never holds up a shutdown
+either.
+
+Once a scope is cancelled and nobody holds it anymore, it is closed and admits no new
+work. An executor of a closed scope refuses to spawn and hands the refused task back to
+its caller, together with the cause. Whoever holds a scope can always spawn on it.
 
 Components follow one rule:
 

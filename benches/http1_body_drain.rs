@@ -286,7 +286,7 @@ fn spawn_origin(transport: Transport, stats: Arc<Stats>) -> (SocketAddress, Serv
                 stream
             }
         });
-        exec.spawn_task(async move {
+        exec.try_spawn_task(async move {
             match tls {
                 None => listener.serve(count_tcp.into_layer(http)).await,
                 Some(config) => {
@@ -306,7 +306,8 @@ fn spawn_origin(transport: Transport, stats: Arc<Stats>) -> (SocketAddress, Serv
                         .await;
                 }
             }
-        });
+        })
+        .unwrap();
         addr
     });
     (addr, ServerRuntime(Some(runtime)))

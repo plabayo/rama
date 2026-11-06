@@ -221,17 +221,19 @@ impl WsServer {
                 (ArcLayer::new(), ErrorHandlerLayer::new())
                     .into_layer(Router::new().with_connect("/echo", echo())),
             );
-            executor.spawn_task({
+            shutdown.spawn_task({
                 let endpoint = endpoint.clone();
                 let executor = executor.clone();
                 async move {
                     while let Some(incoming) = endpoint.accept().await {
                         let service = service.clone();
-                        executor.spawn_task(async move {
-                            if let Ok(connection) = incoming.await {
-                                _ = rama::Service::serve(&service, connection).await;
-                            }
-                        });
+                        executor
+                            .try_spawn_task(async move {
+                                if let Ok(connection) = incoming.await {
+                                    _ = rama::Service::serve(&service, connection).await;
+                                }
+                            })
+                            .unwrap();
                     }
                 }
             });
@@ -261,7 +263,7 @@ impl WsServer {
                 ),
             ),
         );
-        executor.spawn_task(listener.serve(service));
+        shutdown.spawn_task(listener.serve(service));
         Ok(Self {
             address,
             endpoint: None,

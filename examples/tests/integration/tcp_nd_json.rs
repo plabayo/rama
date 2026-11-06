@@ -28,7 +28,7 @@ async fn test_tcp_nd_json() {
 
     let exec = Executor::from(scope.clone());
     let cancelled = exec.cancelled();
-    exec.into_spawn_task(async move {
+    scope.spawn_task(async move {
         cancelled.await;
         tracing::info!("exit runner");
         drop(runner);

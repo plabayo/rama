@@ -1531,7 +1531,7 @@ where
     // Boxed: the future embeds the whole per-flow service stack, and this
     // spawn runs on Swift dispatch threads with 512 KiB stacks — moving it
     // by value through the spawn chain overflows them in debug builds.
-    let service_task = Executor::from(flow_scope.clone()).spawn_task(Box::pin(async move {
+    let service_task = flow_scope.spawn_task(Box::pin(async move {
         let _task_guard = TcpFlowTaskGuard::new();
         let mut bridge_rx = bridge_rx;
         let bridge = tokio::select! {
@@ -2207,7 +2207,7 @@ where
     #[cfg(feature = "dial9")]
     let byte_counters_for_close = byte_counters.clone();
     // Boxed for the same small-FFI-stack reason as the TCP service task.
-    let service_task = Executor::from(flow_scope).spawn_task(Box::pin(async move {
+    let service_task = flow_scope.into_spawn_task(Box::pin(async move {
         let lifetime_fut = async {
             if let Some(deadline) = udp_lifetime_deadline {
                 tokio::time::sleep_until(deadline).await;

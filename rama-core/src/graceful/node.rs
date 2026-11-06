@@ -90,12 +90,55 @@ pub(super) struct Times {
     aborted: bool,
 }
 
+/// How far a node got: the hard phase comes with the graceful one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Stage {
+    Open,
+    Graceful,
+    Hard,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Phase {
-    pub(super) graceful: bool,
-    pub(super) hard: bool,
+    pub(super) stage: Stage,
     /// The next instant at which the phase changes by time alone.
     pub(super) next: Option<Instant>,
+}
+
+impl Phase {
+    const OPEN: Self = Self {
+        stage: Stage::Open,
+        next: None,
+    };
+
+    const HARD: Self = Self {
+        stage: Stage::Hard,
+        next: None,
+    };
+
+    /// The phase of a node only cancelled, or not even that, by its own flags.
+    const fn settled(cancelled: bool) -> Self {
+        Self {
+            stage: if cancelled {
+                Stage::Graceful
+            } else {
+                Stage::Open
+            },
+            next: None,
+        }
+    }
+
+    pub(super) fn graceful(self) -> bool {
+        self.stage >= Stage::Graceful
+    }
+
+    pub(super) fn hard(self) -> bool {
+        self.stage == Stage::Hard
+    }
+
+    pub(super) fn reached(self, hard: bool) -> bool {
+        if hard { self.hard() } else { self.graceful() }
+    }
 }
 
 /// Graceful or hard phase candidate, ordered by instant and then local-first rank.
@@ -481,11 +524,7 @@ impl Node {
             }
         }
         if quick {
-            Phase {
-                graceful: own & CANCELLED != 0,
-                hard: false,
-                next: None,
-            }
+            Phase::settled(own & CANCELLED != 0)
         } else {
             self.phase()
         }
@@ -570,9 +609,9 @@ impl Node {
         }
         let unpublished = |node: &Self, phase: &Phase| {
             let flags = node.flags.load(Ordering::Acquire);
-            if phase.hard && flags & ABORTED == 0 {
+            if phase.hard() && flags & ABORTED == 0 {
                 ABORTED
-            } else if phase.graceful && flags & CANCELLED == 0 {
+            } else if phase.graceful() && flags & CANCELLED == 0 {
                 CANCELLED
             } else {
                 0
@@ -604,22 +643,14 @@ impl Node {
                 node.waiters.wake_all();
             }
         }
-        phases.last().copied().unwrap_or(Phase {
-            graceful: false,
-            hard: false,
-            next: None,
-        })
+        phases.last().copied().unwrap_or(Phase::OPEN)
     }
 
     /// Phase from flags alone, when no clock is involved and nothing needs publishing.
     #[inline]
     fn quick_phase(&self, own: u8) -> Option<Phase> {
         if own & ABORTED != 0 {
-            return Some(Phase {
-                graceful: true,
-                hard: true,
-                next: None,
-            });
+            return Some(Phase::HARD);
         }
         if own & TIMED != 0 {
             return None;
@@ -634,11 +665,7 @@ impl Node {
             }
             node = current.parent();
         }
-        Some(Phase {
-            graceful: own & CANCELLED != 0,
-            hard: false,
-            next: None,
-        })
+        Some(Phase::settled(own & CANCELLED != 0))
     }
 
     /// Published graceful and hard causes.
@@ -828,7 +855,24 @@ impl Node {
     ///
     /// Reviving a drained node takes its parent first, so a level never counts a live child
     /// without that child holding it.
+    #[inline]
     pub(super) fn try_retain(&self) -> bool {
+        // A held node takes one more holder at once: neither its phase nor its parent matters.
+        let word = self.strong.load(Ordering::Acquire);
+        if word != 0
+            && word & CLOSED == 0
+            && self
+                .strong
+                .compare_exchange(word, word + 1, Ordering::Relaxed, Ordering::Acquire)
+                .is_ok()
+        {
+            return true;
+        }
+        self.try_retain_slow()
+    }
+
+    #[inline(never)]
+    fn try_retain_slow(&self) -> bool {
         // Publishes every phase reached along the chain once, so each level below only
         // checks its own flags.
         let _phase = self.phase();
@@ -967,19 +1011,11 @@ enum Retain<'a> {
 impl Times {
     pub(super) fn phase(&self) -> Phase {
         if self.aborted {
-            return Phase {
-                graceful: true,
-                hard: true,
-                next: None,
-            };
+            return Phase::HARD;
         }
         let needs_clock = (!self.cancelled && self.graceful.is_some()) || self.hard.is_some();
         if !needs_clock {
-            return Phase {
-                graceful: self.cancelled,
-                hard: false,
-                next: None,
-            };
+            return Phase::settled(self.cancelled);
         }
         let now = Instant::now();
         let hard = self.hard.is_some_and(|at| at <= now);
@@ -991,11 +1027,14 @@ impl Times {
         } else {
             None
         };
-        Phase {
-            graceful,
-            hard,
-            next,
-        }
+        let stage = if hard {
+            Stage::Hard
+        } else if graceful {
+            Stage::Graceful
+        } else {
+            Stage::Open
+        };
+        Phase { stage, next }
     }
 }
 
@@ -1380,8 +1419,8 @@ impl WaitState {
     fn check(&self, node: &Node, phase: Phase) -> Result<(), Option<Instant>> {
         let done = match self.target {
             Target::Drained => node.strong_count() == 0,
-            Target::Graceful => phase.graceful,
-            Target::Hard => phase.hard,
+            Target::Graceful => phase.graceful(),
+            Target::Hard => phase.hard(),
         };
         if done { Ok(()) } else { Err(phase.next) }
     }

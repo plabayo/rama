@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 use tokio::time::Instant;
 
 use super::{
@@ -150,93 +150,112 @@ impl Scope {
         Self { nodes }
     }
 
-    fn or_root(self) -> Self {
-        if self.is_never() { Self::new() } else { self }
+    fn make_root(&mut self) {
+        if self.is_never() {
+            *self = Self::new();
+        }
     }
 
-    /// Cancel this scope once `timeout` passed, counted from now.
-    #[must_use]
-    pub fn with_timeout(self, timeout: Duration) -> Self {
-        self.with_deadline(Instant::now() + timeout)
+    generate_set_and_with! {
+        /// Cancel this scope once `timeout` passed, counted from now.
+        #[no_unset]
+        pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.maybe_set_deadline(timeout.map(|timeout| Instant::now() + timeout));
+            self
+        }
     }
 
-    /// Cancel this scope at `deadline`; a deadline in the past counts from now.
-    #[must_use]
-    pub fn with_deadline(self, deadline: Instant) -> Self {
-        let scope = self.or_root();
-        scope
-            .nodes
-            .for_each(|node| node.tighten_deadline(false, deadline));
-        scope
+    generate_set_and_with! {
+        /// Cancel this scope at `deadline`; a deadline in the past counts from now.
+        #[no_unset]
+        pub fn deadline(mut self, deadline: Option<Instant>) -> Self {
+            if let Some(deadline) = deadline {
+                self.make_root();
+                self.nodes
+                    .for_each(|node| node.tighten_deadline(false, deadline));
+            }
+            self
+        }
     }
 
-    /// Abort this scope once `timeout` passed, counted from now.
-    #[must_use]
-    pub fn with_hard_timeout(self, timeout: Duration) -> Self {
-        self.with_hard_deadline(Instant::now() + timeout)
+    generate_set_and_with! {
+        /// Abort this scope once `timeout` passed, counted from now.
+        #[no_unset]
+        pub fn hard_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.maybe_set_hard_deadline(timeout.map(|timeout| Instant::now() + timeout));
+            self
+        }
     }
 
-    /// Abort this scope at `deadline`; a deadline in the past counts from now.
-    #[must_use]
-    pub fn with_hard_deadline(self, deadline: Instant) -> Self {
-        let scope = self.or_root();
-        scope
-            .nodes
-            .for_each(|node| node.tighten_deadline(true, deadline));
-        scope
+    generate_set_and_with! {
+        /// Abort this scope at `deadline`; a deadline in the past counts from now.
+        #[no_unset]
+        pub fn hard_deadline(mut self, deadline: Option<Instant>) -> Self {
+            if let Some(deadline) = deadline {
+                self.make_root();
+                self.nodes
+                    .for_each(|node| node.tighten_deadline(true, deadline));
+            }
+            self
+        }
     }
 
-    /// Abort this scope `grace` after it is cancelled, for any cause.
-    #[must_use]
-    pub fn with_grace(self, grace: Duration) -> Self {
-        let scope = self.or_root();
-        scope.nodes.for_each(|node| node.tighten_grace(grace));
-        scope
+    generate_set_and_with! {
+        /// Abort this scope `grace` after it is cancelled, for any cause.
+        #[no_unset]
+        pub fn grace(mut self, grace: Option<Duration>) -> Self {
+            if let Some(grace) = grace {
+                self.make_root();
+                self.nodes.for_each(|node| node.tighten_grace(grace));
+            }
+            self
+        }
     }
 
-    /// Cancel this scope when `signal` completes.
-    ///
-    /// The signal is polled by futures waiting on this scope or its children, never by a
-    /// spawned task; until one of them observed its completion, [`Scope::is_cancelled`]
-    /// does not report it.
-    #[must_use]
-    pub fn with_signal<F>(self, signal: F) -> Self
-    where
-        F: Future + Send + 'static,
-    {
-        let scope = self.or_root();
-        scope.nodes.add_signal(false, signal);
-        scope
+    generate_set_and_with! {
+        /// Cancel this scope when `signal` completes.
+        ///
+        /// The signal is polled by futures waiting on this scope or its children, never by a
+        /// spawned task; until one of them observed its completion, [`Scope::is_cancelled`]
+        /// does not report it.
+        pub fn signal(mut self, signal: impl Future + Send + 'static) -> Self {
+            self.make_root();
+            self.nodes.add_signal(false, signal);
+            self
+        }
     }
 
-    /// Cancel this scope `delay` after `signal` completes, as [`Scope::with_signal`] does
-    /// once the delay passed. Ancestor phases and hard limits still apply at once.
-    #[must_use]
-    pub fn with_delayed_signal<F>(self, signal: F, delay: Duration) -> Self
-    where
-        F: Future + Send + 'static,
-    {
-        self.with_signal(async move {
-            drop(signal.await);
-            tokio::time::sleep(delay).await;
-        })
+    generate_set_and_with! {
+        /// Cancel this scope `delay` after `signal` completes, as [`Scope::with_signal`] does
+        /// once the delay passed. Ancestor phases and hard limits still apply at once.
+        pub fn delayed_signal(
+            mut self,
+            signal: impl Future + Send + 'static,
+            delay: Duration,
+        ) -> Self {
+            self.set_signal(async move {
+                drop(signal.await);
+                tokio::time::sleep(delay).await;
+            });
+            self
+        }
     }
 
-    /// Cancel this scope on Ctrl+C, SIGTERM or the platform's equivalent, see [`default_signal`].
-    #[must_use]
-    pub fn with_default_signal(self) -> Self {
-        self.with_signal(default_signal())
+    generate_set_and_with! {
+        /// Cancel this scope on Ctrl+C, SIGTERM or the platform's equivalent, see [`default_signal`].
+        pub fn default_signal(mut self) -> Self {
+            self.set_signal(default_signal());
+            self
+        }
     }
 
-    /// Abort this scope when `signal` completes, polled as for [`Scope::with_signal`].
-    #[must_use]
-    pub fn with_hard_signal<F>(self, signal: F) -> Self
-    where
-        F: Future + Send + 'static,
-    {
-        let scope = self.or_root();
-        scope.nodes.add_signal(true, signal);
-        scope
+    generate_set_and_with! {
+        /// Abort this scope when `signal` completes, polled as for [`Scope::with_signal`].
+        pub fn hard_signal(mut self, signal: impl Future + Send + 'static) -> Self {
+            self.make_root();
+            self.nodes.add_signal(true, signal);
+            self
+        }
     }
 
     /// Cancel this scope; the first cause is kept. No effect on [`Scope::never`].
@@ -388,6 +407,19 @@ impl Scope {
 }
 
 impl WeakScope {
+    /// The weak handle of [`Scope::never`].
+    pub(crate) const fn never() -> Self {
+        Self {
+            nodes: Nodes::Never,
+        }
+    }
+
+    /// Hold the scope, as [`WeakScope::into_scope`] does, keeping this handle.
+    #[must_use]
+    pub fn to_scope(&self) -> Option<Scope> {
+        self.clone().into_scope()
+    }
+
     /// Hold the scope again: refused once it is closed, and once it has no holder left while
     /// cancelled (that closes it). A scope made by [`Scope::child_of`] is held again only as a
     /// whole.
@@ -632,7 +664,7 @@ impl Nodes {
     fn is_cancelled(&self) -> bool {
         match self {
             Self::Never => false,
-            Self::One(node) => node.phase().graceful,
+            Self::One(node) => node.phase().graceful(),
             Self::Many(composite) => composite.fact(false).is_some(),
         }
     }
@@ -641,7 +673,7 @@ impl Nodes {
     fn is_aborted(&self) -> bool {
         match self {
             Self::Never => false,
-            Self::One(node) => node.phase().hard,
+            Self::One(node) => node.phase().hard(),
             Self::Many(composite) => composite.fact(true).is_some(),
         }
     }
@@ -717,7 +749,7 @@ impl Composite {
         let mut walked: SmallVec<[bool; 8]> = SmallVec::with_capacity(self.nodes.len());
         for node in &self.nodes {
             let (phase, up) = node.phase_walked();
-            reached |= if hard { phase.hard } else { phase.graceful };
+            reached |= phase.reached(hard);
             walked.push(up);
             yield_point();
         }
@@ -929,6 +961,12 @@ impl Default for Scope {
     }
 }
 
+impl Default for WeakScope {
+    fn default() -> Self {
+        Self::never()
+    }
+}
+
 impl Clone for Scope {
     #[inline]
     fn clone(&self) -> Self {
@@ -976,8 +1014,8 @@ fn debug_scope(f: &mut fmt::Formatter<'_>, name: &str, nodes: &Nodes) -> fmt::Re
         Nodes::One(node) => {
             let phase = node.phase();
             f.debug_struct(name)
-                .field("cancelled", &phase.graceful)
-                .field("aborted", &phase.hard)
+                .field("cancelled", &phase.graceful())
+                .field("aborted", &phase.hard())
                 .field("strong", &node.strong_count())
                 .finish()
         }

@@ -18,6 +18,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     futures::FutureExt as _,
+    graceful::{ScopeClosed, WeakScope},
     rt::Executor,
     telemetry::tracing::{Instrument, Span},
 };
@@ -264,6 +265,10 @@ impl Endpoint {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(io::Error::other("no async runtime found"));
         }
+        // The supervisor holds the scope while the endpoint runs: a closed one starts none.
+        let Some(held) = executor.scope().to_scope() else {
+            return Err(io::Error::other(ScopeClosed));
+        };
         if config.handshake_timeout.is_zero()
             || now()
                 .checked_add(config.handshake_timeout)
@@ -358,8 +363,8 @@ impl Endpoint {
         ));
         let lifecycle = rc.shared.lifecycle.clone();
         let inner = rc.0.clone();
-        let scope = executor.scope().clone_weak();
-        executor.into_spawn_task(async move {
+        let scope = WeakScope::from(executor);
+        held.into_spawn_task(async move {
             // The hard phase of the scope, or a stop that grants no budget.
             let (stop_scope, stop_lifecycle) = (&scope, &lifecycle);
             let hard = || async move {

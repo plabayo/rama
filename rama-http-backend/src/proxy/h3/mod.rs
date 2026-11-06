@@ -365,9 +365,12 @@ where
             close_ended(&close_egress);
             drop(held);
         });
-        self.exec.clone().into_spawn_task(async move {
+        // Refused, the dropped driver closes egress.
+        if let Err(refused) = self.exec.try_spawn_task(async move {
             let _driver_result = driver.run().await;
-        });
+        }) {
+            return Err(refused.discard_task().into());
+        }
         let (received, peer) = {
             let mut origin_settings = pin!(sender.peer_settings());
             let peer = tokio::time::timeout_at(settings_deadline, &mut origin_settings)

@@ -63,7 +63,7 @@ async fn run_app<S: WebSocketIo>(app: tui::App<S>) -> Result<(), BoxError> {
     let exec = Executor::from(scope.clone());
     let signalled = scope.clone_weak();
 
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let mut app = app;
         let result = app.run(&exec).await;
         _ = tx.send(result);

@@ -92,7 +92,7 @@ async fn main() {
         let service = Arc::new(FastCgiServer::new(FastCgiHttpService::new(service_fn(
             echo_http,
         ))));
-        exec.spawn_task(tcp.serve(service));
+        scope.spawn_task(tcp.serve(service));
         tracing::info!("FastCGI backend listening on {BACKEND_ADDR}");
     }
 
@@ -105,8 +105,7 @@ async fn main() {
             .await
             .expect("bind http proxy");
         let proxy = Arc::new(FastCgiProxyService::new());
-        exec.clone()
-            .into_spawn_task(tcp.serve(HttpServer::auto(exec).service(proxy)));
+        scope.spawn_task(tcp.serve(HttpServer::auto(exec).service(proxy)));
         tracing::info!("HTTP→FastCGI reverse proxy listening on {PROXY_ADDR}");
     }
 

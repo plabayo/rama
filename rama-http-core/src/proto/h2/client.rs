@@ -276,12 +276,15 @@ where
         network.protocol.version = version_as_protocol_version(Version::HTTP_2),
     );
 
-    exec.spawn_task(
+    let spawned = exec.try_spawn_task(
         H2ClientFuture::Task {
             task: ConnTask::new(conn, conn_drop_rx, cancel_tx, transport_end),
         }
         .instrument(task_span),
     );
+    if let Err(refused) = spawned {
+        return Err(crate::Error::new_closed().with(refused.discard_task()));
+    }
 
     Ok(ClientTask {
         ping,
@@ -742,7 +745,12 @@ where
 
                         // Clear send task
                         let fut: H2ClientFuture<_, T> = H2ClientFuture::Pipe { pipe };
-                        self.executor.spawn_task(fut.instrument(pipe_span));
+                        // Refused, the dropped pipe resets the stream.
+                        if let Err(refused) =
+                            self.executor.try_spawn_task(fut.instrument(pipe_span))
+                        {
+                            debug!(%refused, "h2 request body not piped");
+                        }
                     }
                 }
             }
@@ -773,7 +781,10 @@ where
                 call_back: Some(f.cb),
             },
         };
-        self.executor.spawn_task(fut.instrument(send_span));
+        // Refused, the dropped callback fails the request.
+        if let Err(refused) = self.executor.try_spawn_task(fut.instrument(send_span)) {
+            debug!(%refused, "h2 request not sent");
+        }
     }
 }
 

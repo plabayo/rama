@@ -91,9 +91,9 @@ async fn main() -> Result<(), BoxError> {
 
     let ua_db =
         Arc::new(UserAgentDatabase::try_embedded().context("load embedded user-agent database")?);
-    let mitm_svc = new_mitm_svc(&exec, ua_db).context("build MITM service")?;
+    let mitm_svc = new_mitm_svc(&scope, ua_db).context("build MITM service")?;
 
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let tcp_service = TcpListener::build(exec.clone())
             .bind_address("127.0.0.1:62049")
             .await
@@ -149,7 +149,7 @@ async fn main() -> Result<(), BoxError> {
 }
 
 fn new_mitm_svc<Ingress, Egress>(
-    exec: &Executor,
+    scope: &Scope,
     ua_db: Arc<UserAgentDatabase>,
 ) -> Result<
     impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone,
@@ -159,6 +159,7 @@ where
     Ingress: Io + Unpin + ExtensionsRef,
     Egress: Io + Unpin + ExtensionsRef,
 {
+    let exec = Executor::from(scope.clone());
     let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
@@ -171,7 +172,7 @@ where
             HeaderValue::from_static("1"),
         ),
         ProfileEmulateRelayRequestModifierLayer,
-        RequestWriterLayer::stdout_unbounded(exec, Some(traffic_writer::WriterMode::Headers)),
+        RequestWriterLayer::stdout_unbounded(scope, Some(traffic_writer::WriterMode::Headers)),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-proxy"),
             HeaderValue::from_static(rama::utils::info::NAME),
@@ -184,7 +185,7 @@ where
     ));
     let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
         .with_known_non_http_protocol_methods()
-        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
+        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec)));
 
     let tls_mitm_relay =
         TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {

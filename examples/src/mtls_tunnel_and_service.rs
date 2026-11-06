@@ -114,7 +114,7 @@ async fn main() {
 
     // create mtls web server
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let tcp_service = TlsAcceptorLayer::new(tls_server_data).into_layer(
             HttpServer::auto(exec.clone()).service(
                 TraceLayer::new_for_http().into_layer(
@@ -141,7 +141,7 @@ async fn main() {
 
     // create mtls tunnel proxy
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         tracing::info!(
             server.address = %TUNNEL_AUTHORITY.ip_addr,
             server.port = %TUNNEL_AUTHORITY.port,

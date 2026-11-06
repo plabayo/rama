@@ -21,7 +21,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _},
     extensions::Extensions,
     futures::{StreamExt as _, stream::FuturesUnordered},
-    graceful::{Scope, default_signal},
+    graceful::{Scope, ScopeClosed, default_signal},
     http::{
         client::{EasyHttpConnectorBuilder, Http3Connector},
         layer::error_handling::ErrorHandlerLayer,
@@ -193,6 +193,8 @@ async fn serve(
             ),
         ),
     );
+    // Serving holds the scope, so every connection accepted until the cancel is admitted.
+    let scope = exec.scope().to_scope().ok_or(ScopeClosed)?;
     let mut connections = FuturesUnordered::new();
     loop {
         let incoming = tokio::select! {
@@ -209,7 +211,7 @@ async fn serve(
             },
         };
         let service = service.clone();
-        connections.push(exec.spawn_task(async move {
+        connections.push(scope.spawn_task(async move {
             let result: Result<(), BoxError> = async {
                 let connection = incoming.await?;
                 tracing::info!("accepted HTTP/3 connection");

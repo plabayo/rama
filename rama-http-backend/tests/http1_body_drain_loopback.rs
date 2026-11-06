@@ -73,7 +73,8 @@ async fn origin() -> Origin {
         let fail_body = fail_body.clone();
         move |request| respond(request, fail_body.clone())
     }));
-    exec.spawn_task(listener.serve(count.into_layer(http)));
+    exec.try_spawn_task(listener.serve(count.into_layer(http)))
+        .unwrap();
     Origin {
         addr,
         accepted,

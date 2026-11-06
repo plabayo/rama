@@ -132,7 +132,7 @@ async fn main() -> Result<(), BoxError> {
                     },
                 };
                 let service = service.clone();
-                connections.push(exec.spawn_task(async move {
+                connections.push(scope.spawn_task(async move {
                     let result: Result<(), BoxError> = async {
                         let connection = incoming.await?;
                         tracing::info!("accepted HTTP/3 connection");

@@ -762,10 +762,12 @@ async fn graceful_executors_wait_for_capsule_session_tasks() {
                     let protocol =
                         validate_capsule_request(&request, ViolationPolicy::Ignore).unwrap();
                     let upgrade = handle_upgrade(&request);
-                    executor.spawn_task(async move {
-                        echo(upgrade.await.unwrap()).await;
-                        done.lock().take().unwrap().send(()).unwrap();
-                    });
+                    executor
+                        .try_spawn_task(async move {
+                            echo(upgrade.await.unwrap()).await;
+                            done.lock().take().unwrap().send(()).unwrap();
+                        })
+                        .unwrap();
                     Ok::<_, Infallible>(
                         capsule_response::<Body>(request.version(), &protocol).unwrap(),
                     )

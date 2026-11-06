@@ -95,7 +95,7 @@ async fn main() {
     // adapter, which accepts the peer connection and dispatches message handling to
     // the Rama service above.
     let exec = Executor::from(scope.clone());
-    let server_task = exec.clone().into_spawn_task(async move {
+    let server_task = scope.spawn_task(async move {
         info!(target: "xpc_echo::server", "ready, waiting for peer connection");
         if let Err(err) = server.serve_connection(server_conn, exec).await {
             error!(target: "xpc_echo::server", %err, "server error");
@@ -104,7 +104,7 @@ async fn main() {
     });
 
     // Client task: connect via endpoint, send fire-and-forget then a request.
-    let client_task = Executor::from(scope.clone()).into_spawn_task(async move {
+    let client_task = scope.spawn_task(async move {
         let client_conn = endpoint.into_connection().expect("into_connection");
 
         // 1. Fire-and-forget ping.

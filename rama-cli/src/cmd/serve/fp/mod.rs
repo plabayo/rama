@@ -360,7 +360,7 @@ pub async fn run(
     let http_service = Arc::new(middlewares.into_layer(router));
 
     serve_http(
-        exec,
+        &exec,
         &http3_endpoints,
         &cfg,
         listeners,
@@ -371,7 +371,7 @@ pub async fn run(
 }
 
 fn serve_http<Response>(
-    exec: Executor,
+    exec: &Executor,
     http3_endpoints: &Http3Endpoints,
     cfg: &CliCommandFingerprint,
     listeners: HttpListeners,
@@ -427,7 +427,7 @@ where
                         .into_layer(http_service.clone()),
                 ),
             );
-        http3_endpoints.serve(&exec, "FP", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(exec, "FP", endpoint, Arc::new(http3_service))?;
     }
 
     let Some((tcp_listener, tcp_version)) = listeners.tcp.zip(cfg.http_version.tcp()) else {
@@ -453,7 +453,7 @@ where
     );
 
     let bind = cfg.bind;
-    exec.clone().into_spawn_task(async move {
+    exec.try_spawn_task_fn(move |exec| async move {
         match tcp_version {
             TcpHttpVersion::Auto => {
                 tracing::info!(
@@ -499,7 +499,8 @@ where
                     .await;
             }
         }
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }
@@ -644,7 +645,7 @@ mod tests {
                     .unwrap();
             let address = listeners.tcp.as_ref().unwrap().local_addr().unwrap();
             serve_http(
-                exec,
+                &exec,
                 &Http3Endpoints::default(),
                 &cfg,
                 listeners,

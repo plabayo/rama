@@ -223,7 +223,7 @@ impl TransferRules {
 }
 
 /// Immutable capabilities discovered with one successful OPTIONS exchange.
-#[derive(Clone)]
+#[derive(Clone, Extension)]
 pub struct ServiceCapabilities {
     response: Response,
     methods: SupportedMethods,
@@ -241,8 +241,6 @@ pub struct ServiceCapabilities {
     opt_body_type: Option<Bytes>,
     opt_body: Option<Bytes>,
 }
-
-impl Extension for ServiceCapabilities {}
 
 impl fmt::Debug for ServiceCapabilities {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

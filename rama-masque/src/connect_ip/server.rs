@@ -222,12 +222,16 @@ where
             Err(_elapsed) => return Ok(refuse(ProxyErrorType::DnsTimeout)),
         };
         config.principal_budget = lease.principal_spend();
+        // The tunnel holds the proxy's scope: a closed one admits no new tunnel.
+        let Some(scope) = self.exec.scope().to_scope() else {
+            return Ok(refuse(ProxyErrorType::ProxyInternalError));
+        };
         let Ok(response) = capsule_response::<Body>(version, &Protocol::CONNECT_IP) else {
             return Ok(refuse(ProxyErrorType::HttpRequestError));
         };
         response.extensions().insert(HttpDatagrams);
         let handler = self.handler.clone();
-        self.exec.spawn_cancellable_task(async move {
+        scope.spawn_cancellable_task(async move {
             let _lease = lease;
             let Ok(Ok(upgraded)) = tokio::time::timeout_at(deadline, upgrade).await else {
                 return;

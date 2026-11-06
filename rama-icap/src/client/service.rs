@@ -90,15 +90,11 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug, Eq, PartialEq)]
+    #[derive(Debug, Eq, PartialEq, Extension)]
     struct Marker(u8);
 
-    impl Extension for Marker {}
-
-    #[derive(Debug, Eq, PartialEq)]
+    #[derive(Debug, Eq, PartialEq, Extension)]
     struct WrappedMarker;
-
-    impl Extension for WrappedMarker {}
 
     #[tokio::test]
     async fn preserves_input_options_and_extensions() {

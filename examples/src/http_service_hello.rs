@@ -79,7 +79,7 @@ async fn main() {
     let sensitive_headers: Arc<[_]> = vec![header::AUTHORIZATION, header::COOKIE].into();
 
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let http_service = (
             ArcLayer::new(),
             CompressionLayer::new(),

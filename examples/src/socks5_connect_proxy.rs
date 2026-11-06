@@ -71,7 +71,7 @@ async fn main() {
         .expect("bind proxy to 127.0.0.1:62021");
     let socks5_acceptor =
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
-    Executor::from(scope.clone()).into_spawn_task(tcp_service.serve(socks5_acceptor));
+    scope.spawn_task(tcp_service.serve(socks5_acceptor));
 
     scope.join().await.expect("graceful shutdown");
 }

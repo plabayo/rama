@@ -188,7 +188,7 @@ async fn main() {
         .with_alpn(smallvec![rama::net::tls::ApplicationProtocol::ACME_TLS]);
 
     let exec = Executor::from(scope.clone());
-    let challenge_server_handle = exec.clone().into_spawn_task(async move {
+    let challenge_server_handle = scope.spawn_task(async move {
         let tcp_service =
             TlsAcceptorLayer::new(tls_server_config).layer(service_fn(internal_tcp_service_fn));
 
@@ -223,10 +223,6 @@ async fn main() {
         .expect("download certificate");
 
     challenge_server_handle.abort();
-    // The ACME client holds the scope: let it go, so the shutdown waits for the server only.
-    drop(order);
-    drop(account);
-    drop(client);
 
     let server_auth = ServerAuthData {
         cert_chain,
@@ -237,7 +233,7 @@ async fn main() {
     // create https server using the configured certificate
 
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let http_service = HttpServer::auto(exec.clone()).service(service_fn(async || {
             Ok::<_, Infallible>("hello".into_response())
         }));

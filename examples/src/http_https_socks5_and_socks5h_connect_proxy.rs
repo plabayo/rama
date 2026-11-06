@@ -131,7 +131,7 @@ async fn main() {
     let auto_socks5_acceptor =
         Socks5PeekRouter::new(socks5_acceptor).with_fallback(auto_tls_acceptor);
 
-    exec.into_spawn_task(tcp_service.serve(auto_socks5_acceptor));
+    scope.spawn_task(tcp_service.serve(auto_socks5_acceptor));
 
     scope.join().await.expect("graceful shutdown");
 }

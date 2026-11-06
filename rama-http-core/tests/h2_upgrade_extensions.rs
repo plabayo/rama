@@ -31,18 +31,14 @@ use tokio::{
     sync::mpsc,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Extension)]
 struct Transport(&'static str);
-impl Extension for Transport {}
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Extension)]
 struct StreamMarker(usize);
-impl Extension for StreamMarker {}
-#[derive(Debug)]
+#[derive(Debug, Extension)]
 struct MessageOnly;
-impl Extension for MessageOnly {}
-#[derive(Debug)]
+#[derive(Debug, Extension)]
 struct DropProbe(Arc<AtomicUsize>);
-impl Extension for DropProbe {}
 impl Drop for DropProbe {
     fn drop(&mut self) {
         self.0.fetch_add(1, Ordering::SeqCst);

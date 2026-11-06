@@ -65,7 +65,7 @@ mod unix_example {
             .await
             .expect("bind Unix socket");
 
-        exec.clone().into_spawn_task(async move {
+        scope.spawn_task(async move {
             tracing::info!(
                 file.path = %PATH,
                 "ready to unix-serve",

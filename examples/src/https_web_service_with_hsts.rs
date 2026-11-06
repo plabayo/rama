@@ -88,7 +88,7 @@ async fn main() {
 
     // create http service
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let tcp_service = TcpListener::build(exec.clone())
             .bind_address("127.0.0.1:62043")
             .await
@@ -107,7 +107,7 @@ async fn main() {
 
     // create https service
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let tcp_service = TcpListener::build(exec.clone())
             .bind_address("127.0.0.1:62044")
             .await

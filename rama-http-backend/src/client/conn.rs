@@ -8,7 +8,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef},
-    graceful::attach_scope,
+    graceful::{ScopeClosed, attach_scope},
     io::{AbortableIo, Io},
     rt::Executor,
 };
@@ -588,10 +588,15 @@ where
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     // The transport holds the executor's scope wherever it goes, an upgrade included, and is
-    // cut at its hard phase.
-    let io = AbortableIo::new(exec.scope(), io);
+    // cut at its hard phase. A closed scope admits no new connection.
+    let scope = exec
+        .scope()
+        .to_scope()
+        .ok_or(ScopeClosed)
+        .into_opaque_error()?;
+    let io = AbortableIo::new(&scope, io);
     // The connection runs in that scope too, so a pool drains it in its graceful phase.
-    attach_scope(io.extensions(), exec.scope());
+    attach_scope(io.extensions(), &scope);
     let extensions = io.extensions().clone();
     let server_host = input.target_authority().map(|authority| authority.host);
     let server_address = server_host
@@ -633,7 +638,7 @@ where
                 server.service.name = %server_address,
             );
 
-            exec.into_spawn_task(
+            scope.spawn_task(
                 async move {
                     if let Err(err) = conn.await {
                         log_connection_termination(&err);
@@ -683,7 +688,7 @@ where
                 server.service.name = %server_address,
             );
 
-            exec.into_spawn_task(
+            scope.spawn_task(
                 async move {
                     if let Err(err) = conn.await {
                         log_connection_termination(&err);
@@ -727,8 +732,13 @@ where
 {
     // As in `http_stream_connect`: held until the transport goes, cut at the hard phase, and
     // drained by a pool in the graceful phase.
-    let io = AbortableIo::new(exec.scope(), io);
-    attach_scope(io.extensions(), exec.scope());
+    let scope = exec
+        .scope()
+        .to_scope()
+        .ok_or(ScopeClosed)
+        .into_opaque_error()?;
+    let io = AbortableIo::new(&scope, io);
+    attach_scope(io.extensions(), &scope);
     let extensions = io.extensions().clone();
 
     tracing::trace!("eager h2 client handshake");
@@ -745,7 +755,7 @@ where
         network.protocol.version = version_as_protocol_version(Version::HTTP_2),
     );
 
-    exec.into_spawn_task(
+    scope.spawn_task(
         async move {
             if let Err(err) = conn.await {
                 log_connection_termination(&err);

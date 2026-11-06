@@ -264,19 +264,22 @@ impl Server {
                         let server = server.clone();
                         let handler = handler.clone();
                         let negotiated = negotiated.clone();
-                        executor.spawn_task(async move {
-                            // Compatible version negotiation needs the whole ClientHello, which
-                            // can span several Initials; accepting earlier keeps the client's version.
-                            if incoming.client_hello().await.is_err() {
-                                return;
-                            }
-                            if let Ok(connection) = incoming.await {
-                                negotiated
-                                    .lock()
-                                    .push((connection.original_version(), connection.version()));
-                                server.serve(connection, handler).await.unwrap_or_default();
-                            }
-                        });
+                        executor
+                            .try_spawn_task(async move {
+                                // Compatible version negotiation needs the whole ClientHello, which
+                                // can span several Initials; accepting earlier keeps the client's version.
+                                if incoming.client_hello().await.is_err() {
+                                    return;
+                                }
+                                if let Ok(connection) = incoming.await {
+                                    negotiated.lock().push((
+                                        connection.original_version(),
+                                        connection.version(),
+                                    ));
+                                    server.serve(connection, handler).await.unwrap_or_default();
+                                }
+                            })
+                            .unwrap();
                     }
                 }
             });

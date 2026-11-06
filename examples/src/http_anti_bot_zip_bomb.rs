@@ -99,7 +99,7 @@ async fn main() {
         .await
         .expect("bind tcp server");
 
-    Executor::from(scope.clone()).into_spawn_task(tcp_server.serve(app));
+    scope.spawn_task(tcp_server.serve(app));
 
     scope.join().await.expect("graceful shutdown");
 }

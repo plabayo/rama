@@ -10,7 +10,7 @@
 
 mod executor;
 #[doc(inline)]
-pub use executor::{Executor, spawn};
+pub use executor::{Executor, SpawnRefused, spawn};
 
 mod owned;
 #[doc(inline)]

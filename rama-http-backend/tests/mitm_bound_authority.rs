@@ -52,7 +52,7 @@ async fn check_relay(version: Version, eager: bool) {
 
         let upstream_seen = seen.clone();
         let guard = graceful.clone();
-        Executor::from(guard.clone()).into_spawn_task(async move {
+        graceful.spawn_task(async move {
             HttpServer::auto(Executor::from(guard))
                 .serve(
                     MockSocket::new(upstream),
@@ -68,7 +68,7 @@ async fn check_relay(version: Version, eager: bool) {
         let policy_allowed = allowed.clone();
         let middleware_allowed = allowed.clone();
         let guard = graceful.clone();
-        Executor::from(guard.clone()).into_spawn_task(async move {
+        graceful.spawn_task(async move {
             let egress = MockSocket::new(egress);
             if eager {
                 egress

@@ -142,7 +142,7 @@ pub async fn run(
         .context("build ip HTTP service")?;
 
     if let Some(endpoint) = listeners.http3 {
-        http3_endpoints.serve(&exec, "ip", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(&exec, "ip", endpoint, Arc::new(http3_service))?;
     }
     if let Some(tcp_listener) = listeners.tcp {
         serve_tcp(&exec, cfg.bind, tcp_listener, tcp_service)?;
@@ -195,7 +195,7 @@ fn serve_tcp(
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    exec.clone().into_spawn_task(async move {
+    exec.try_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -203,7 +203,8 @@ fn serve_tcp(
         );
 
         tcp_listener.serve(Arc::new(tcp_service)).await;
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }

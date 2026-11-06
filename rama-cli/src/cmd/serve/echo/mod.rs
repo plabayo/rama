@@ -229,7 +229,7 @@ async fn bind_echo_http_service(
         .context("build http(s) echo service")?;
 
     if let Some(endpoint) = listeners.http3 {
-        http3_endpoints.serve(&exec, "echo", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(&exec, "echo", endpoint, Arc::new(http3_service))?;
     }
 
     let Some(tcp_listener) = listeners.tcp else {
@@ -242,7 +242,7 @@ async fn bind_echo_http_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "http");
 
-    exec.spawn_task(async move {
+    exec.try_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -253,7 +253,8 @@ async fn bind_echo_http_service(
             .serve(Arc::new(tcp_service))
             .instrument(span)
             .await;
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }
@@ -328,7 +329,7 @@ async fn bind_echo_tcp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "tcp");
 
-    exec.spawn_task(async move {
+    exec.try_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -336,7 +337,8 @@ async fn bind_echo_tcp_service(
         );
 
         tcp_listener.serve(echo_svc).instrument(span).await;
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }
@@ -392,7 +394,7 @@ async fn bind_echo_udp_service(
 
     let task_exec = exec.clone();
     // The receive loop ends at cancel; replies in flight still drain.
-    exec.spawn_cancellable_task({
+    exec.try_spawn_cancellable_task({
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -446,7 +448,8 @@ async fn bind_echo_udp_service(
 
                 let socket = shared_udp_socket.clone();
                 let data = buf[..len].to_vec();
-                task_exec.spawn_task(async move {
+                // This loop's task holds the scope, so a reply is never refused.
+                let reply = task_exec.try_spawn_task(async move {
                     _ = permit;
                     match socket.send_to(&data, addr).await {
                         Ok(len) => {
@@ -457,10 +460,13 @@ async fn bind_echo_udp_service(
                         }
                     }
                 });
+                if reply.is_err() {
+                    return;
+                }
             }
         }
         .instrument(span)
-    });
+    }).map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }

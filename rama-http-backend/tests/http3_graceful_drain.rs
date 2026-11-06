@@ -7,8 +7,12 @@
 )]
 
 use rama_core::{
+    Layer as _, Service as _,
+    bytes::Bytes,
+    error::BoxError,
     extensions::ExtensionsRef as _,
     graceful::{Cause, Scope, WeakScope, scope_context},
+    layer::{ScopeLayer, scope::ScopeAborted},
     rt::Executor,
     service::service_fn,
 };
@@ -492,4 +496,146 @@ async fn default_connections_get_isolated_cancellable_scopes() {
         .expect("the aborted connection ends")
         .expect("task")
         .expect("served");
+}
+
+/// One request on a connection capped as the fingerprinting server caps them: a
+/// [`ScopeLayer`] over the HTTP/3 service of each QUIC connection, draining at `max_age` and
+/// dropping what is left `grace` later. The handler answers `answer_after` after the request
+/// arrived, or never.
+struct Capped {
+    /// When the client saw the GOAWAY, counted from the request's arrival.
+    goaway: Duration,
+    /// The response body, `None` when the request was cut.
+    body: Option<Bytes>,
+    /// What serving the connection returned, and when, counted from the request's arrival.
+    served: (Result<(), BoxError>, Duration),
+    closed: ConnectionError,
+}
+
+async fn capped(max_age: Duration, grace: Duration, answer_after: Option<Duration>) -> Capped {
+    let Endpoints {
+        server: server_endpoint,
+        client: client_endpoint,
+        client_config,
+        address,
+        ..
+    } = endpoints();
+    let root = Scope::new();
+    let exec = Executor::from(root.clone());
+    let arrived = Arc::new(Notify::new());
+    let respond = Arc::new(Notify::new());
+    let service = ScopeLayer::new()
+        .with_parent(exec.scope().clone())
+        .with_max_age(max_age)
+        .with_grace(grace)
+        .into_layer(HttpServer::new_http3(exec).service(service_fn({
+            let arrived = arrived.clone();
+            let respond = respond.clone();
+            move |_: Request| {
+                let arrived = arrived.clone();
+                let respond = respond.clone();
+                async move {
+                    arrived.notify_one();
+                    respond.notified().await;
+                    Ok::<_, Infallible>(Response::new(Body::from("done")))
+                }
+            }
+        })));
+    let (served_tx, served) = oneshot::channel();
+    tokio::spawn(async move {
+        let incoming = server_endpoint.accept().await.expect("incoming connection");
+        let connection = incoming.await.expect("accepted QUIC connection");
+        let result = service.serve(connection).await;
+        _ = served_tx.send((result, Instant::now()));
+    });
+
+    let connection = client_endpoint
+        .connect_with(client_config, address, "localhost")
+        .expect("start QUIC connection")
+        .await
+        .expect("connect QUIC");
+    let (mut requests, driver) =
+        client::handshake::<Body, _>(connection.clone(), Config::default(), Executor::new())
+            .expect("HTTP/3 client");
+    tokio::spawn(driver.run());
+    let draining = requests.closed_or_draining();
+    let request = Request::builder()
+        .uri("https://localhost/")
+        .body(Body::empty())
+        .expect("request");
+    // The sender is handed back: dropping it would close the connection from this side.
+    let exchange = tokio::spawn(async move {
+        let body = async {
+            let response = requests.send_request(request).await.ok()?;
+            Some(response.into_body().collect().await.ok()?.to_bytes())
+        }
+        .await;
+        (requests, body)
+    });
+
+    timeout(LIMIT, arrived.notified())
+        .await
+        .expect("the request arrives");
+    let start = Instant::now();
+    timeout(LIMIT, draining).await.expect("a GOAWAY arrives");
+    let goaway = start.elapsed();
+    if let Some(after) = answer_after {
+        tokio::time::sleep_until(start + after).await;
+        respond.notify_one();
+    }
+    let (_requests, body) = timeout(LIMIT, exchange)
+        .await
+        .expect("the exchange ends")
+        .expect("exchange task");
+    let (result, ended) = timeout(LIMIT, served)
+        .await
+        .expect("the connection is served to its end")
+        .expect("served");
+    let closed = timeout(LIMIT, connection.closed())
+        .await
+        .expect("the client connection closes");
+    drop(root);
+    Capped {
+        goaway,
+        body,
+        served: (result, ended - start),
+        closed,
+    }
+}
+
+#[tokio::test]
+async fn a_scope_layer_max_age_drains_with_a_goaway_and_finishes_the_running_request() {
+    let max_age = Duration::from_millis(300);
+    let capped = capped(max_age, LIMIT, Some(Duration::from_millis(700))).await;
+    assert!(
+        capped.goaway < Duration::from_millis(700),
+        "the GOAWAY comes at the max age, before the answer: {:?}",
+        capped.goaway
+    );
+    assert_eq!(capped.body.as_deref(), Some(b"done".as_slice()));
+    let (result, ended) = capped.served;
+    result.expect("a drained connection ends cleanly");
+    assert!(ended >= Duration::from_millis(700), "{ended:?}");
+    assert!(closed_cleanly(&capped.closed), "{:?}", capped.closed);
+}
+
+#[tokio::test]
+async fn a_scope_layer_grace_drops_a_request_still_running_after_the_max_age() {
+    let (max_age, grace) = (Duration::from_millis(300), Duration::from_millis(400));
+    let capped = capped(max_age, grace, None).await;
+    assert!(capped.goaway < max_age + grace, "{:?}", capped.goaway);
+    assert!(capped.body.is_none(), "the running request is cut");
+    let (result, ended) = capped.served;
+    let error = result.expect_err("the grace ran out");
+    let aborted = error
+        .downcast_ref::<ScopeAborted>()
+        .expect("a scope abort ends the connection");
+    assert!(
+        matches!(aborted.cause(), Some(Cause::GraceElapsed)),
+        "{aborted}"
+    );
+    assert!(
+        ended < LIMIT / 2,
+        "dropped at the end of the grace: {ended:?}"
+    );
 }

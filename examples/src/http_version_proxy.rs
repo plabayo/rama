@@ -453,7 +453,7 @@ async fn main() -> Result<(), BoxError> {
             rama::telemetry::tracing::info!("HTTP version MITM proxy listening on {listen}");
 
             let service = HttpServer::auto(exec.clone()).service(mitm(exec, web, preflight));
-            Executor::from(scope.clone()).into_spawn_task(async move {
+            scope.spawn_task(async move {
                 listener.serve(service).await;
             });
         }
@@ -520,7 +520,7 @@ async fn main() -> Result<(), BoxError> {
             let mut http = HttpServer::auto(exec.clone());
             http.h2_mut().set_enable_connect_protocol();
             let tcp = TlsAcceptorLayer::new(tcp_tls).into_layer(http.service(forwarder.clone()));
-            exec.spawn_task(async move {
+            scope.spawn_task(async move {
                 listener.serve(tcp).await;
             });
 
@@ -528,7 +528,7 @@ async fn main() -> Result<(), BoxError> {
                 "HTTP/1, HTTP/2 and HTTP/3 ingress listening on {listen}"
             );
             let service = http3.service(forwarder);
-            exec.clone().into_spawn_task(endpoint.serve(exec, service));
+            scope.spawn_task(endpoint.serve(exec, service));
         }
     }
 

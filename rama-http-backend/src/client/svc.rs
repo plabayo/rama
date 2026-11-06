@@ -403,18 +403,25 @@ impl<Body> HttpClientService<Body> {
         executor: Executor,
     ) -> Result<Self, Http3Error> {
         // The connection runs in the executor's scope, so a pool drains it in its graceful phase.
-        attach_scope(input.extensions(), executor.scope());
+        // A closed scope admits no new connection.
+        let Some(scope) = executor.scope().to_scope() else {
+            return Err(Http3Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "executor scope closed",
+            ));
+        };
+        attach_scope(input.extensions(), &scope);
         let extensions = input.extensions().clone();
         extensions.insert(MaxConcurrency::new(config.max_requests));
         let connection = input.clone();
-        let (sender, driver) = http3::handshake(input, config, executor.clone())?;
+        let aborted = executor.aborted();
+        let (sender, driver) = http3::handshake(input, config, executor)?;
         extensions.insert(sender.connection_admission());
         let driver_extensions = extensions.clone();
         let draining = sender.closed_or_draining();
-        let aborted = executor.aborted();
         // Holds the executor's scope while the connection is open, kept so by its live bodies and
         // tunnels, and closes the connection at the hard phase of that scope.
-        executor.into_spawn_task(async move {
+        scope.into_spawn_task(async move {
             let driver = driver.run();
             let mut driver = pin!(driver);
             let mut aborted = pin!(aborted);

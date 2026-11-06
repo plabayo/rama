@@ -248,11 +248,13 @@ impl Server {
                         accepted.fetch_add(1, Ordering::SeqCst);
                         let server = server.clone();
                         let handler = handler.clone();
-                        executor.spawn_task(async move {
-                            if let Ok(connection) = incoming.await {
-                                _ = server.serve(connection, handler).await;
-                            }
-                        });
+                        executor
+                            .try_spawn_task(async move {
+                                if let Ok(connection) = incoming.await {
+                                    _ = server.serve(connection, handler).await;
+                                }
+                            })
+                            .unwrap();
                     }
                 }
             });

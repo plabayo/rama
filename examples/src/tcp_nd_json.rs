@@ -109,7 +109,7 @@ async fn main() {
         "establish a (client) tcp connection to {bind_address} to see the service in action"
     );
 
-    exec.into_spawn_task(listener.serve(service_fn(serve_stream)));
+    scope.spawn_task(listener.serve(service_fn(serve_stream)));
 
     scope.join().await.expect("graceful shutdown");
 }

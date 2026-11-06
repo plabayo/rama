@@ -273,7 +273,7 @@ async fn main() -> Result<(), BoxError> {
             queued_bytes: NonZeroUsize::new(mib(16)).expect("nonzero"),
         },
     );
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         if let Err(error) = demux.serve(exec, association).await {
             tracing::error!(%error, "QUIC MITM proxy listener failed");
         }

@@ -91,7 +91,7 @@ async fn main() {
     );
 
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         tracing::info!("running service at: {ADDRESS}");
         TcpListener::bind_address(ADDRESS, exec)
             .await

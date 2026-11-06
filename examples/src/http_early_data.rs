@@ -107,7 +107,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
     let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone()).await?;
     let origin_address = listener.local_addr()?;
     let origin_server = HttpServer::new_http1(exec.clone()).service(origin);
-    let _origin = exec.spawn_task(listener.serve(origin_server));
+    let _origin = scope.spawn_task(listener.serve(origin_server));
 
     // A generic application retry rule may retry other 4xx responses. The 425
     // recovery helper handles 425 first, forwarding marked 425 unchanged. The

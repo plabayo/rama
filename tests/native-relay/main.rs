@@ -123,7 +123,7 @@ async fn relay_fixture() -> Result<(), BoxError> {
                 Either::B(ConsumeErrLayer::default().into_layer(tls))
             };
             let service = IoToProxyBridgeIoLayer::new(config.origin).into_layer(application);
-            executor.spawn_task(async move {
+            shutdown.spawn_task(async move {
                 listener.serve(service).await;
             });
 
@@ -193,7 +193,7 @@ async fn relay_fixture() -> Result<(), BoxError> {
                 },
             );
             let demux_executor = executor.clone();
-            executor.spawn_task(async move {
+            shutdown.spawn_task(async move {
                 demux
                     .serve(demux_executor, association)
                     .await

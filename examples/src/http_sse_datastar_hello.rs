@@ -113,9 +113,9 @@ async fn main() {
     );
     tracing::info!("open http://{bind_address} in your browser to see the service in action");
 
-    let controller = Controller::new(exec.clone());
+    let controller = Controller::new(&scope);
 
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let app = Router::new_with_state(controller.clone())
             .with_get("/", handlers::index)
             .with_post("/start", handlers::start)
@@ -278,12 +278,12 @@ pub mod controller {
     impl Controller {
         const MESSAGE: &str = "Hello, Datastar!";
 
-        pub fn new(exec: Executor) -> Self {
+        pub fn new(scope: &Scope) -> Self {
             let (cmd_tx, cmd_rx) = mpsc::channel(8);
             let (msg_tx, msg_rx) = broadcast::channel(8);
 
             let exit_cmd_tx = cmd_tx.clone();
-            let cancelled = exec.cancelled();
+            let cancelled = scope.clone_weak().cancelled();
             tokio::spawn(
                 async move {
                     tracing::debug!("exit worker up and running awaiting cancellation");
@@ -310,7 +310,7 @@ pub mod controller {
                 msg_tx,
             };
 
-            exec.into_spawn_task(
+            scope.spawn_task(
                 controller
                     .clone()
                     .into_runtime(msg_rx, cmd_rx)

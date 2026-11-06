@@ -290,6 +290,11 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             };
             ReplySockets::new(bind, reader)
         });
+        // Serving holds the scope, so every association opened until the cancel is admitted.
+        let Some(scope) = exec.scope().to_scope() else {
+            tracing::debug!("executor scope closed: not serving");
+            return Ok(());
+        };
         let cancelled = exec.cancelled();
         let mut cancelled = std::pin::pin!(cancelled);
         loop {
@@ -396,7 +401,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 }
             }
             let (sender, reply_lease) = match &reply {
-                Some(reply) if via_reply_socket => match reply.lease(local, &exec).await {
+                Some(reply) if via_reply_socket => match reply.lease(local, &scope).await {
                     Ok((sender, lease)) => (sender, Some(lease)),
                     Err(error) => {
                         tracing::debug!(%error, %local, "no datagram reply socket at destination");
@@ -454,7 +459,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             }
             let service = service.clone();
             // Ended at the hard phase, whatever the service does by then.
-            exec.spawn_abortable_task(async move {
+            scope.spawn_abortable_task(async move {
                 if let Err(error) = service.serve(socket).await {
                     let error: BoxError = error.into();
                     tracing::debug!(%error, "datagram association ended with an error");

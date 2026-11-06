@@ -58,7 +58,7 @@ async fn test_http_max_header_list_size_and_long_errors() {
         .unwrap();
     let addr = format!("http://{}", listener.local_addr().unwrap());
 
-    let jh = exec.clone().into_spawn_task(async move {
+    let jh = scope.spawn_task(async move {
         let mut http_server = HttpServer::new_h2(exec.clone());
         http_server.h2_mut().set_max_pending_accept_reset_streams(0);
 

@@ -144,7 +144,7 @@ async fn run_exit_node(exec: Executor, cfg: ExitNodeArgs) -> Result<(), BoxError
         .context("get local addr of tcp listener")?;
     let forward_addr = cfg.forward;
 
-    exec.clone().into_spawn_task(async move {
+    exec.try_spawn_task_fn(move |exec| async move {
         tracing::info!("Stunnel exit node is running...");
         tracing::info!(
             "Listening on {} and forwarding to {}",
@@ -158,7 +158,8 @@ async fn run_exit_node(exec: Executor, cfg: ExitNodeArgs) -> Result<(), BoxError
                 .into_layer(IoForwardService::new(exec)),
         );
         tcp_listener.serve(tcp_service).await;
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }
@@ -175,7 +176,7 @@ async fn run_entry_node(exec: Executor, cfg: EntryNodeArgs) -> Result<(), BoxErr
         .context("get local addr of tcp listener")?;
     let connect_authority = cfg.connect;
 
-    exec.clone().into_spawn_task(async move {
+    exec.try_spawn_task_fn(move |exec| async move {
         tracing::info!("Stunnel entry node is running...");
         tracing::info!(
             "Listening on {} and connecting to {}",
@@ -192,7 +193,8 @@ async fn run_entry_node(exec: Executor, cfg: EntryNodeArgs) -> Result<(), BoxErr
             .into_layer(IoForwardService::new(exec));
 
         tcp_listener.serve(tcp_service).await;
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }

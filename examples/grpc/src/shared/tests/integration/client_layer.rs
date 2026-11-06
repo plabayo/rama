@@ -46,7 +46,7 @@ async fn connect_supports_standard_rama_http_layers() {
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let jh = exec.clone().into_spawn_task(async move {
+    let jh = scope.spawn_task(async move {
         listener.serve(HttpServer::new_h2(exec).service(svc)).await;
     });
 

@@ -239,6 +239,41 @@ pub use rama_macros::paste;
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __generate_set_and_with {
+    // A value that can be set but never taken away again, such as a limit that only tightens:
+    // the `maybe_` variants are generated, `without_` and `unset_` are not.
+    (
+        $(#[doc = $doc:literal])*
+        #[no_unset]
+        $vis:vis fn $fn_name:ident(mut $self_token:ident, $param_name:ident: Option<$param_ty:ty> $(,)?) -> Self {
+            $($body:tt)*
+        }
+    ) => {
+        $crate::macros::paste! {
+            $(#[doc = $doc])*
+            #[must_use]
+            $vis fn [<maybe_with_ $fn_name>](mut $self_token, $param_name: Option<$param_ty>) -> Self {
+                $($body)*
+            }
+
+            $(#[doc = $doc])*
+            $vis fn [<maybe_set_ $fn_name>](&mut $self_token, $param_name: Option<$param_ty>) -> &mut Self {
+                $($body)*
+            }
+
+            $(#[doc = $doc])*
+            #[must_use]
+            $vis fn [<with_ $fn_name>](mut $self_token, $param_name: $param_ty) -> Self {
+                let $param_name: Option<$param_ty> = Some($param_name);
+                $($body)*
+            }
+
+            $(#[doc = $doc])*
+            $vis fn [<set_ $fn_name>](&mut $self_token, $param_name: $param_ty) -> &mut Self {
+                let $param_name: Option<$param_ty> = Some($param_name);
+                $($body)*
+            }
+        }
+    };
     (
         $(#[$outer_doc:meta])*
         $vis:vis fn $fn_name:ident(mut $self_token:ident) -> Self {
@@ -644,6 +679,38 @@ mod test {
 
         let builder = Builder::default().with_should_execute(AlsoABool(true));
         assert!(builder.should_execute)
+    }
+
+    #[test]
+    fn test_generate_set_and_with_no_unset() {
+        #[derive(Default)]
+        struct Limit {
+            max: Option<u32>,
+        }
+
+        impl Limit {
+            generate_set_and_with!(
+                /// Lower the limit; it can never be raised or removed again.
+                #[no_unset]
+                fn max(mut self, max: Option<u32>) -> Self {
+                    if let Some(max) = max {
+                        self.max = Some(self.max.map_or(max, |current| current.min(max)));
+                    }
+                    self
+                }
+            );
+        }
+
+        let limit = Limit::default().with_max(5).maybe_with_max(None);
+        assert_eq!(limit.max, Some(5));
+        let limit = limit.maybe_with_max(Some(3)).with_max(4);
+        assert_eq!(limit.max, Some(3));
+
+        let mut limit = Limit::default();
+        limit.maybe_set_max(None);
+        assert_eq!(limit.max, None);
+        limit.set_max(7).maybe_set_max(Some(2));
+        assert_eq!(limit.max, Some(2));
     }
 
     #[test]

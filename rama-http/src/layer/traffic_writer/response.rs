@@ -1,5 +1,5 @@
 use super::{
-    PerMessageFileWriter, TrafficWriterId, WriterMode, capture_body_channel,
+    Admission, PerMessageFileWriter, TrafficWriterId, WriterMode, capture_body_channel,
     ensure_traffic_writer_id, write_headers_body_flags,
 };
 use crate::io::write_http_response_streaming;
@@ -7,9 +7,9 @@ use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt as _};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::{Extension, ExtensionsRef};
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Layer, Service};
+use rama_core::{graceful::Scope, rt::Executor};
 use rama_http_types::CaptureBody;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt::Debug, io, path::PathBuf, sync::Arc};
@@ -32,8 +32,10 @@ async fn write_response_entry<W>(
 }
 
 macro_rules! drive_response_writer {
-    ($writer:ident, $rx:ident, $write_headers:ident, $write_body:ident) => {{
-        while let Some(response) = $rx.recv().await {
+    ($writer:ident, $rx:ident, $closed:ident, $write_headers:ident, $write_body:ident) => {{
+        let mut $closed = std::pin::pin!($closed);
+        let mut open = true;
+        while let Some(response) = next_message!($rx, $closed, open) {
             write_response_entry(&mut $writer, response, $write_headers, $write_body).await;
         }
         if let Err(err) = $writer.flush().await {
@@ -103,7 +105,7 @@ impl DoNotWriteResponse {
 impl ResponseWriterLayer<UnboundedSender<Response>> {
     /// Create a new [`ResponseWriterLayer`] that prints responses to an [`AsyncWrite`]r
     /// over an unbounded channel
-    pub fn writer_unbounded<W>(executor: &Executor, mut writer: W, mode: Option<WriterMode>) -> Self
+    pub fn writer_unbounded<W>(scope: &Scope, mut writer: W, mode: Option<WriterMode>) -> Self
     where
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
@@ -113,31 +115,34 @@ impl ResponseWriterLayer<UnboundedSender<Response>> {
         let span =
             tracing::trace_root_span!("TrafficWriter::response::unbounded", otel.kind = "consumer");
 
-        executor.spawn_task(
+        let admission = Admission::new(scope);
+        let closed = admission.closed();
+
+        scope.spawn_abortable_task(
             async move {
-                drive_response_writer!(writer, rx, write_headers, write_body);
+                drive_response_writer!(writer, rx, closed, write_headers, write_body);
             }
             .instrument(span),
         );
 
         Self {
             writer: tx,
-            executor: executor.clone(),
+            executor: admission.executor(),
         }
     }
 
     /// Create a new [`ResponseWriterLayer`] that prints responses to stdout
     /// over an unbounded channel.
     #[must_use]
-    pub fn stdout_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
-        Self::writer_unbounded(executor, stdout(), mode)
+    pub fn stdout_unbounded(scope: &Scope, mode: Option<WriterMode>) -> Self {
+        Self::writer_unbounded(scope, stdout(), mode)
     }
 
     /// Create a new [`ResponseWriterLayer`] that prints responses to stderr
     /// over an unbounded channel.
     #[must_use]
-    pub fn stderr_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
-        Self::writer_unbounded(executor, stderr(), mode)
+    pub fn stderr_unbounded(scope: &Scope, mode: Option<WriterMode>) -> Self {
+        Self::writer_unbounded(scope, stderr(), mode)
     }
 }
 
@@ -162,7 +167,7 @@ impl ResponseWriterLayer<Sender<Response>> {
     /// Create a new [`ResponseWriterLayer`] that prints responses to an [`AsyncWrite`]r
     /// over a bounded channel with a fixed buffer size.
     pub fn writer<W>(
-        executor: &Executor,
+        scope: &Scope,
         mut writer: W,
         buffer_size: usize,
         mode: Option<WriterMode>,
@@ -176,30 +181,33 @@ impl ResponseWriterLayer<Sender<Response>> {
         let span =
             tracing::trace_root_span!("TrafficWriter::response::bounded", otel.kind = "consumer");
 
-        executor.spawn_task(
+        let admission = Admission::new(scope);
+        let closed = admission.closed();
+
+        scope.spawn_abortable_task(
             async move {
-                drive_response_writer!(writer, rx, write_headers, write_body);
+                drive_response_writer!(writer, rx, closed, write_headers, write_body);
             }
             .instrument(span),
         );
         Self {
             writer: tx,
-            executor: executor.clone(),
+            executor: admission.executor(),
         }
     }
 
     /// Create a new [`ResponseWriterLayer`] that prints responses to stdout
     /// over a bounded channel with a fixed buffer size.
     #[must_use]
-    pub fn stdout(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
-        Self::writer(executor, stdout(), buffer_size, mode)
+    pub fn stdout(scope: &Scope, buffer_size: usize, mode: Option<WriterMode>) -> Self {
+        Self::writer(scope, stdout(), buffer_size, mode)
     }
 
     /// Create a new [`ResponseWriterLayer`] that prints responses to stderr
     /// over a bounded channel with a fixed buffer size.
     #[must_use]
-    pub fn stderr(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
-        Self::writer(executor, stderr(), buffer_size, mode)
+    pub fn stderr(scope: &Scope, buffer_size: usize, mode: Option<WriterMode>) -> Self {
+        Self::writer(scope, stderr(), buffer_size, mode)
     }
 }
 
@@ -270,29 +278,24 @@ impl<S: Debug, W> Debug for ResponseWriterService<S, W> {
 impl<S> ResponseWriterService<S, UnboundedSender<Response>> {
     /// Create a new [`ResponseWriterService`] that prints responses to an [`AsyncWrite`]r
     /// over an unbounded channel
-    pub fn writer_unbounded<W>(
-        executor: &Executor,
-        writer: W,
-        mode: Option<WriterMode>,
-        inner: S,
-    ) -> Self
+    pub fn writer_unbounded<W>(scope: &Scope, writer: W, mode: Option<WriterMode>, inner: S) -> Self
     where
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
-        let layer = ResponseWriterLayer::writer_unbounded(executor, writer, mode);
+        let layer = ResponseWriterLayer::writer_unbounded(scope, writer, mode);
         layer.into_layer(inner)
     }
 
     /// Create a new [`ResponseWriterService`] that prints responses to stdout
     /// over an unbounded channel.
-    pub fn stdout_unbounded(executor: &Executor, mode: Option<WriterMode>, inner: S) -> Self {
-        Self::writer_unbounded(executor, stdout(), mode, inner)
+    pub fn stdout_unbounded(scope: &Scope, mode: Option<WriterMode>, inner: S) -> Self {
+        Self::writer_unbounded(scope, stdout(), mode, inner)
     }
 
     /// Create a new [`ResponseWriterService`] that prints responses to stderr
     /// over an unbounded channel.
-    pub fn stderr_unbounded(executor: &Executor, mode: Option<WriterMode>, inner: S) -> Self {
-        Self::writer_unbounded(executor, stderr(), mode, inner)
+    pub fn stderr_unbounded(scope: &Scope, mode: Option<WriterMode>, inner: S) -> Self {
+        Self::writer_unbounded(scope, stderr(), mode, inner)
     }
 }
 
@@ -316,7 +319,7 @@ impl<S> ResponseWriterService<S, Sender<Response>> {
     /// Create a new [`ResponseWriterService`] that prints responses to an [`AsyncWrite`]r
     /// over a bounded channel with a fixed buffer size.
     pub fn writer<W>(
-        executor: &Executor,
+        scope: &Scope,
         writer: W,
         buffer_size: usize,
         mode: Option<WriterMode>,
@@ -325,30 +328,20 @@ impl<S> ResponseWriterService<S, Sender<Response>> {
     where
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
-        let layer = ResponseWriterLayer::writer(executor, writer, buffer_size, mode);
+        let layer = ResponseWriterLayer::writer(scope, writer, buffer_size, mode);
         layer.into_layer(inner)
     }
 
     /// Create a new [`ResponseWriterService`] that prints responses to stdout
     /// over a bounded channel with a fixed buffer size.
-    pub fn stdout(
-        executor: &Executor,
-        buffer_size: usize,
-        mode: Option<WriterMode>,
-        inner: S,
-    ) -> Self {
-        Self::writer(executor, stdout(), buffer_size, mode, inner)
+    pub fn stdout(scope: &Scope, buffer_size: usize, mode: Option<WriterMode>, inner: S) -> Self {
+        Self::writer(scope, stdout(), buffer_size, mode, inner)
     }
 
     /// Create a new [`ResponseWriterService`] that prints responses to stderr
     /// over a bounded channel with a fixed buffer size.
-    pub fn stderr(
-        executor: &Executor,
-        buffer_size: usize,
-        mode: Option<WriterMode>,
-        inner: S,
-    ) -> Self {
-        Self::writer(executor, stderr(), buffer_size, mode, inner)
+    pub fn stderr(scope: &Scope, buffer_size: usize, mode: Option<WriterMode>, inner: S) -> Self {
+        Self::writer(scope, stderr(), buffer_size, mode, inner)
     }
 }
 
@@ -378,11 +371,14 @@ where
             let (capture, captured_body) = capture_body_channel();
             let captured_parts = parts.clone();
             let writer = Arc::clone(&self.writer);
-            self.executor.spawn_task(async move {
+            let written = self.executor.try_spawn_abortable_task(async move {
                 writer
                     .write_response(Response::from_parts(captured_parts, captured_body))
                     .await;
             });
+            if let Err(refused) = written {
+                tracing::debug!(%refused, "response not written: traffic writer scope closed");
+            }
             Response::from_parts(
                 parts,
                 Body::new(CaptureBody::new(body.map_err(Into::into), capture)),
@@ -432,8 +428,8 @@ mod tests {
     };
 
     use rama_core::{
-        Layer as _, Service as _, bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor,
-        service::service_fn,
+        Layer as _, Service as _, bytes::Bytes, extensions::ExtensionsRef as _, graceful::Scope,
+        rt::Executor, service::service_fn,
     };
     use tokio::io::AsyncReadExt as _;
 
@@ -443,10 +439,10 @@ mod tests {
 
     #[tokio::test]
     async fn shared_response_writer_flushes_when_channel_closes() {
-        let executor = Executor::new();
+        let scope = Scope::new();
         let (output, mut captured) = tokio::io::duplex(128);
         let layer = ResponseWriterLayer::writer_unbounded(
-            &executor,
+            &scope,
             tokio::io::BufWriter::new(output),
             Some(WriterMode::All),
         );
@@ -595,11 +591,10 @@ mod tests {
                 Ok::<_, Infallible>(Response::new(body))
             }
         });
-        let executor = Executor::new();
+        let scope = Scope::new();
         let (writer, mut output) = tokio::io::duplex(64);
-        let service =
-            ResponseWriterLayer::writer_unbounded(&executor, writer, Some(WriterMode::Body))
-                .into_layer(inner);
+        let service = ResponseWriterLayer::writer_unbounded(&scope, writer, Some(WriterMode::Body))
+            .into_layer(inner);
 
         let first_request = Request::builder()
             .header("x-long-lived", "true")
@@ -663,10 +658,10 @@ mod tests {
                     .unwrap(),
             )
         });
-        let executor = Executor::new();
+        let scope = Scope::new();
         let (writer, mut output) = tokio::io::duplex(128);
         let service =
-            ResponseWriterLayer::writer_unbounded(&executor, writer, Some(WriterMode::Headers))
+            ResponseWriterLayer::writer_unbounded(&scope, writer, Some(WriterMode::Headers))
                 .into_layer(inner);
 
         let response = service.serve(Request::new(Body::empty())).await.unwrap();

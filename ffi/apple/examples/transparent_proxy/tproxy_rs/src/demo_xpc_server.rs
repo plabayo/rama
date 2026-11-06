@@ -313,12 +313,13 @@ pub(crate) fn spawn_xpc_server(
         .with_context_debug_field("serviceName", || service_name.clone())?;
 
     let exec2 = executor.clone();
-    executor.spawn_cancellable_task(async move {
+    executor.try_spawn_cancellable_task(async move {
         tracing::info!(%service_name, "xpc demo server listener active");
         if let Err(err) = server.serve_listener(listener, exec2).await {
             tracing::error!(%service_name, %err, "xpc demo server error");
         }
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }

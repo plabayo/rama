@@ -238,6 +238,11 @@ impl UnixListener {
     where
         S: Service<UnixStream> + Clone,
     {
+        // Serving holds the scope, so every connection accepted until the cancel is admitted.
+        let Some(scope) = self.exec.scope().to_scope() else {
+            tracing::debug!("executor scope closed: not serving");
+            return;
+        };
         let mut cancelled_fut = pin!(self.exec.cancelled());
 
         loop {
@@ -264,10 +269,10 @@ impl UnixListener {
 
                             let socket = UnixStream::new(socket);
                             socket.extensions().insert(UnixSocketInfo::new(local_addr, peer_addr));
-                            attach_scope(socket.extensions(), self.exec.scope());
+                            attach_scope(socket.extensions(), &scope);
 
                             // Ended at the hard phase, whatever the service does by then.
-                            self.exec.spawn_abortable_task(async move {
+                            scope.spawn_abortable_task(async move {
                                 _ = service.serve(socket).await;
                             }.instrument(serve_span));
                         }

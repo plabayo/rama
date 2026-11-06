@@ -9,7 +9,9 @@ use parking_lot::Mutex;
 use rama_core::{
     error::{ArcError, ErrorContext as _, ErrorExt as _},
     error_sink::ErrorSink,
+    extensions::Extension,
     futures::FutureExt as _,
+    graceful::{Scope, ScopeClosed},
 };
 use rama_quic_proto::ConnectionId;
 use serde::Serialize;
@@ -273,12 +275,17 @@ impl QlogRecorder {
             done,
             stop: Notify::new(),
         });
+        // The recording task holds the scope until it ends: a closed one starts no recording.
+        let Some(scope) = config.executor.scope().to_scope() else {
+            return Err(io::Error::other(ScopeClosed));
+        };
         output.spawn(Worker {
             receiver,
             shared: shared.clone(),
             info: config.info,
             history: config.history,
             executor: config.executor,
+            scope,
         });
         Ok(Self { sender, shared })
     }
@@ -631,7 +638,7 @@ struct Gate {
 /// Recording controls obtained from [`crate::Connection::qlog_control`].
 /// Clones share this connection's gate and retain its sink, never the QUIC connection.
 /// Implements Rama's extension trait for propagation through request context.
-#[derive(Clone)]
+#[derive(Clone, Extension)]
 pub struct ConnectionQlogControl {
     destination: Destination,
     group: ConnectionId,
@@ -646,8 +653,6 @@ impl std::fmt::Debug for ConnectionQlogControl {
             .finish()
     }
 }
-
-impl rama_core::extensions::Extension for ConnectionQlogControl {}
 
 impl ConnectionQlogControl {
     /// Stable event group identifier, matching the connection's `trace_id()`.
@@ -1108,11 +1113,13 @@ pub(super) struct Worker {
     info: TraceInfo,
     history: Option<HistoryConfig>,
     executor: rama_core::rt::Executor,
+    scope: Scope,
 }
 
 impl<O: QlogOutput> OutputFactory for O {
     fn spawn(self: Box<Self>, mut worker: Worker) {
         let executor = std::mem::take(&mut worker.executor);
+        let scope = std::mem::take(&mut worker.scope);
         let cancelled = executor.cancelled();
         let shared = worker.shared.clone();
         let future = async move {
@@ -1161,7 +1168,7 @@ impl<O: QlogOutput> OutputFactory for O {
             }
             worker.shared.done.send_replace(Some(result));
         };
-        executor.spawn_task(RecordingTask { future, shared });
+        scope.into_spawn_task(RecordingTask { future, shared });
     }
 }
 

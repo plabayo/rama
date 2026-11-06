@@ -11,6 +11,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
+    graceful::ScopeClosed,
     rt::Executor,
 };
 use rama_http::{
@@ -143,6 +144,13 @@ where
         proxy: &ProxyAddress,
         target: ConnectUdpTarget,
     ) -> Result<ConnectUdpSocket, BoxError> {
+        // The tunnel's socket holds the connector's scope: a closed one opens no tunnel.
+        let scope = self
+            .exec
+            .scope()
+            .to_scope()
+            .ok_or(ScopeClosed)
+            .context("connect-udp tunnel")?;
         let request = connect_udp_request(proxy, &target, self.version)?;
         // The token defines datagram semantics (RFC 9297 §2): declare them for this request.
         request.extensions().insert(HttpDatagrams);
@@ -179,7 +187,7 @@ where
             SocketAddress::default_ipv4(0)
         };
         let socket = ConnectUdpSocket::new(
-            &self.exec,
+            &scope,
             HttpDatagramSession::with_config(upgraded, session_config()),
             local,
             peer,

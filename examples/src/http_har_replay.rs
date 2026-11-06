@@ -34,7 +34,7 @@ use rama::{
             required_header::AddRequiredResponseHeadersLayer,
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
-            traffic_writer::{BidirectionalWriter, RequestWriterLayer, ResponseWriterLayer},
+            traffic_writer::BidirectionalWriter,
         },
         server::HttpServer,
     },
@@ -86,17 +86,16 @@ async fn main() {
 
     tokio::spawn(run_server(ADDRESS, log_file.clone()));
 
-    let exec = Executor::from(scope.clone());
     let traffic_writer = BidirectionalWriter::stdout_unbounded(
-        &exec,
+        &scope,
         Some(rama::http::layer::traffic_writer::WriterMode::All),
         Some(rama::http::layer::traffic_writer::WriterMode::All),
     );
 
     let client = (
         TraceLayer::new_for_http(),
-        RequestWriterLayer::new(traffic_writer.clone()),
-        ResponseWriterLayer::new(traffic_writer),
+        traffic_writer.request_layer(),
+        traffic_writer.response_layer(),
         DecompressionLayer::new(),
         RetryLayer::new(
             ManagedPolicy::default().with_backoff(
@@ -110,7 +109,9 @@ async fn main() {
             ),
         ),
     )
-        .into_layer(EasyHttpWebClient::default_with_executor(exec));
+        .into_layer(EasyHttpWebClient::default_with_executor(Executor::from(
+            scope.clone(),
+        )));
 
     let req_start_instant = tokio::time::Instant::now();
     for (idx, entry) in log_file.log.entries.iter().enumerate() {

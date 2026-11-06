@@ -443,8 +443,12 @@ where
         // Accepting the token declares its datagram semantics for this request (RFC 9297 §2).
         response.extensions().insert(HttpDatagrams);
 
+        // The tunnel holds the proxy's scope: a closed one admits no new tunnel.
+        let Some(scope) = self.exec.scope().to_scope() else {
+            return Ok(self.refuse(&request, StatusCode::SERVICE_UNAVAILABLE, None));
+        };
         let upgrade = handle_upgrade(&request);
-        let exec = self.exec.clone();
+        let tunnel_scope = scope.clone();
         let socket_config = self.socket;
         let tunnel_local = proxy_address.unwrap_or(SocketAddress::default_ipv4(0));
         let tunnel_peer = client_address.unwrap_or(SocketAddress::default_ipv4(0));
@@ -460,7 +464,7 @@ where
             request.extensions(),
         );
         // A tunnel ends with the proxy's graceful shutdown instead of holding it up.
-        self.exec.spawn_cancellable_task(async move {
+        scope.spawn_cancellable_task(async move {
             let _lease = lease;
             let upgraded = match upgrade.await {
                 Ok(upgraded) => upgraded,
@@ -471,7 +475,7 @@ where
                 }
             };
             let tunnel = ConnectUdpSocket::with_accounting(
-                &exec,
+                &tunnel_scope,
                 HttpDatagramSession::with_config(upgraded, session_config()),
                 tunnel_local,
                 tunnel_peer,

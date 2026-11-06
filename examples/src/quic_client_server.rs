@@ -142,8 +142,7 @@ async fn main() -> Result<(), BoxError> {
     tracing::info!("server: listening on {addr}");
 
     // Its outcome is joined below, so a server-side failure fails this process.
-    let serving =
-        Executor::from(scope.clone()).into_spawn_task(async move { serve(&server).await });
+    let serving = scope.spawn_task(async move { serve(&server).await });
 
     let client = Endpoint::build(Executor::from(scope.clone()))
         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))

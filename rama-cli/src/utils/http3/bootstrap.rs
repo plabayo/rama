@@ -324,7 +324,8 @@ pub(crate) async fn serve(
         TlsAcceptorLayer::new(tls.with_alpn([ApplicationProtocol::HTTP_11].into_iter().collect())),
     )
         .into_layer(HttpServer::new_http1(exec.clone()).service(Http3Bootstrap::new(alt_svc)));
-    exec.into_spawn_task(listener.serve(service));
+    exec.try_spawn_task(listener.serve(service))
+        .map_err(|refused| refused.discard_task())?;
     Ok(())
 }
 

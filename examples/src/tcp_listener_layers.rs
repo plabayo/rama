@@ -95,7 +95,7 @@ async fn main() {
     )
         .into_layer(EchoService::new());
 
-    Executor::from(scope.clone()).into_spawn_task(listener.serve(svc));
+    scope.spawn_task(listener.serve(svc));
 
     scope.join().await.expect("graceful shutdown");
 }

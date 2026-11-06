@@ -19,7 +19,7 @@ const PEER: SocketAddress = SocketAddress::local_ipv4(443);
 fn pair(config: ConnectUdpSocketConfig) -> (ConnectUdpSocket<Io>, HttpDatagramSession<Io>) {
     let (a, b) = tokio::io::duplex(kib(256));
     let socket = ConnectUdpSocket::new(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
         LOCAL,
         PEER,
@@ -210,7 +210,7 @@ async fn v4_mapped_addresses_are_reported_and_accepted_as_ipv4() {
     let (a, b) = tokio::io::duplex(kib(64));
     let mapped: SocketAddress = "[::ffff:127.0.0.1]:443".parse().unwrap();
     let socket = ConnectUdpSocket::new(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
         LOCAL,
         mapped,
@@ -234,7 +234,7 @@ fn narrow_pair() -> (ConnectUdpSocket<Io>, HttpDatagramSession<Io>) {
     let (a, b) = tokio::io::duplex(16);
     let config = ConnectUdpSocketConfig::default().with_queue(NonZeroUsize::MIN);
     let socket = ConnectUdpSocket::new(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
         LOCAL,
         PEER,
@@ -417,7 +417,7 @@ async fn a_permanently_full_native_carrier_idles_out() {
     let a = ServiceInput::new(a);
     a.extensions().insert(NativeDatagrams::new(FullNative));
     let mut socket = ConnectUdpSocket::new(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(a, session_config()),
         LOCAL,
         PEER,
@@ -476,7 +476,7 @@ async fn a_stalled_close_releases_the_carrier_after_its_grace() {
     let dropped = Arc::new(AtomicBool::new(false));
     // Held for the whole test: only an abort can release the carrier.
     let socket = ConnectUdpSocket::new(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(
             ServiceInput::new(Stuck(dropped.clone())),
             session_config(),
@@ -538,7 +538,7 @@ async fn a_limit_below_the_owners_minimum_fails_typed_and_closes() {
     let a = ServiceInput::new(a);
     a.extensions().insert(NativeDatagrams::new(native.clone()));
     let mut socket = ConnectUdpSocket::new(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(a, session_config()),
         LOCAL,
         PEER,
@@ -584,7 +584,7 @@ async fn without_a_minimum_a_small_limit_only_drops_large_payloads() {
     let a = ServiceInput::new(a);
     a.extensions().insert(NativeDatagrams::new(native));
     let socket = ConnectUdpSocket::new(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(a, session_config()),
         LOCAL,
         PEER,
@@ -667,12 +667,12 @@ async fn a_failed_destination_keeps_the_shorter_idle_deadline() {
 async fn a_failed_destination_stops_draining_when_its_receiver_is_dropped() {
     for drop_before_send_fails in [false, true] {
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
+        let shutdown = Scope::new().with_signal(async move {
             _ = stopped.await;
         });
         let (a, peer) = tokio::io::duplex(kib(256));
         let socket = ConnectUdpSocket::new(
-            &Executor::from(shutdown.clone()),
+            &shutdown,
             HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
             LOCAL,
             PEER,
@@ -770,7 +770,7 @@ async fn discarded_contexts_yield_and_do_not_extend_the_idle_deadline() {
 fn budget_pair(budget: TunnelBudget) -> (ConnectUdpSocket<Io>, HttpDatagramSession<Io>) {
     let (a, b) = tokio::io::duplex(kib(256));
     let socket = ConnectUdpSocket::with_accounting(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
         LOCAL,
         PEER,
@@ -1056,7 +1056,7 @@ async fn the_quota_counts_only_what_the_rates_admitted() {
 fn principal_pair(principal: PrincipalBudget) -> (ConnectUdpSocket<Io>, HttpDatagramSession<Io>) {
     let (a, b) = tokio::io::duplex(kib(256));
     let socket = ConnectUdpSocket::with_accounting(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
         LOCAL,
         PEER,
@@ -1178,7 +1178,7 @@ fn native_socket(native: impl NativeDatagramChannel + 'static) -> ConnectUdpSock
     let a = ServiceInput::new(a);
     a.extensions().insert(NativeDatagrams::new(native));
     ConnectUdpSocket::new(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(a, session_config()),
         LOCAL,
         PEER,

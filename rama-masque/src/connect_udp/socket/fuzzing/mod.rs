@@ -20,10 +20,8 @@ use std::{
 
 use parking_lot::Mutex;
 use rama_core::{
-    ServiceInput,
-    bytes::Bytes,
-    extensions::ExtensionsRef as _,
-    rt::{Executor, future::now_or_never},
+    ServiceInput, bytes::Bytes, extensions::ExtensionsRef as _, graceful::Scope,
+    rt::future::now_or_never,
 };
 use rama_http::{
     datagram::{
@@ -258,7 +256,7 @@ fn setup(reader: &mut Reader<'_>) -> Case {
         config.set_min_payload(1200);
     }
     let socket = ConnectUdpSocket::with_accounting(
-        &Executor::default(),
+        &Scope::new(),
         HttpDatagramSession::with_config(proxy_end, session_config()),
         LOCAL,
         PEER,

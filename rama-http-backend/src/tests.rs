@@ -448,7 +448,7 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(mitm_relay_server_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -457,7 +457,7 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
     });
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
@@ -512,7 +512,7 @@ async fn http11_mitm_relay_default_sanitizes_both_hops() {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(mitm_relay_hop_by_hop_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -521,7 +521,7 @@ async fn http11_mitm_relay_default_sanitizes_both_hops() {
     });
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
@@ -580,7 +580,7 @@ async fn http11_mitm_relay_sanitizes_before_transform_middleware() {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(mitm_relay_middleware_hop_by_hop_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -589,7 +589,7 @@ async fn http11_mitm_relay_sanitizes_before_transform_middleware() {
     });
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
@@ -675,7 +675,7 @@ async fn http11_mitm_relay_default_preserves_response_trailers() {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(mitm_relay_trailer_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -683,7 +683,7 @@ async fn http11_mitm_relay_default_preserves_response_trailers() {
             .unwrap();
     });
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
@@ -731,7 +731,7 @@ async fn h2_mitm_relay_default_preserves_response_trailers() {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(mitm_relay_trailer_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -739,7 +739,7 @@ async fn h2_mitm_relay_default_preserves_response_trailers() {
             .unwrap();
     });
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
@@ -800,7 +800,7 @@ async fn http11_mitm_relay_rejects_unsolicited_switching_protocols() {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(mitm_relay_unsolicited_upgrade_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -808,7 +808,7 @@ async fn http11_mitm_relay_rejects_unsolicited_switching_protocols() {
             .unwrap();
     });
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
@@ -857,7 +857,7 @@ async fn http11_mitm_relay_does_not_turn_upgrade_into_close() {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(mitm_relay_upgrade_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -865,7 +865,7 @@ async fn http11_mitm_relay_does_not_turn_upgrade_into_close() {
             .unwrap();
     });
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
@@ -926,7 +926,7 @@ async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(mitm_relay_server_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -935,7 +935,7 @@ async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
     });
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
@@ -1020,7 +1020,7 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
     let cancel_drop_guard = token.drop_guard();
     let request_count = Arc::new(AtomicUsize::new(0));
 
-    Executor::from(graceful.clone()).into_spawn_task({
+    graceful.spawn_task({
         let request_count = request_count.clone();
         let guard = graceful.clone();
         async move {
@@ -1038,7 +1038,7 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
     });
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
@@ -1114,7 +1114,7 @@ async fn test_http11_mitm_relay_propagates_originated_request_close() {
     let cancel_drop_guard = token.drop_guard();
     let request_count = Arc::new(AtomicUsize::new(0));
 
-    Executor::from(graceful.clone()).into_spawn_task({
+    graceful.spawn_task({
         let request_count = request_count.clone();
         async move {
             let mut server_stream = server_stream;
@@ -1142,7 +1142,7 @@ async fn test_http11_mitm_relay_propagates_originated_request_close() {
     });
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
@@ -1209,7 +1209,7 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(mitm_relay_server_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -1220,7 +1220,7 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
     let (relay_done_tx, relay_done_rx) = tokio::sync::oneshot::channel::<()>();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
@@ -1309,7 +1309,7 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
     // Upstream h2 server configured with the SETTINGS we want the
     // relay to mirror back out to its downstream client.
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         let mut server = HttpServer::auto(Executor::from(guard));
         if upstream_enables_connect {
             server.h2_mut().set_enable_connect_protocol();
@@ -1334,7 +1334,7 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
         .insert(TargetHttpVersion(Version::HTTP_2));
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
@@ -1412,7 +1412,7 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
     let cancel_drop_guard = token.drop_guard();
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpServer::auto(Executor::from(guard))
             .service(service_fn(server_svc_fn))
             .serve(MockSocket::new(server_stream))
@@ -1433,7 +1433,7 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
     });
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
@@ -1531,7 +1531,7 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
 
     // These explicit native receive budgets fit the relay's configured limits.
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         let mut server = HttpServer::auto(Executor::from(guard));
         server.h2_mut().set_max_frame_size(32_768);
         server.h2_mut().set_max_header_list_size(16_384);
@@ -1551,7 +1551,7 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
         .insert(TargetHttpVersion(Version::HTTP_2));
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         HttpMitmRelay::new(Executor::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
@@ -1611,7 +1611,7 @@ async fn test_h2_mitm_relay_late_upstream_settings_falls_back_to_native() {
     let cancel_drop_guard = token.drop_guard();
 
     let _guard = graceful.clone();
-    Executor::from(_guard.clone()).into_spawn_task(async move {
+    _guard.spawn_task(async move {
         let mut buf = [0u8; 1024];
         loop {
             match silent_upstream.read(&mut buf).await {
@@ -1671,7 +1671,7 @@ async fn test_h2_mitm_relay_mirrors_zero_max_concurrent_streams() {
 
     // Upstream advertises max_concurrent_streams=0.
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         let mut server = HttpServer::auto(Executor::from(guard));
         server.h2_mut().set_max_concurrent_streams(0);
         server
@@ -1687,7 +1687,7 @@ async fn test_h2_mitm_relay_mirrors_zero_max_concurrent_streams() {
         .insert(TargetHttpVersion(Version::HTTP_2));
 
     let guard = graceful.clone();
-    Executor::from(guard.clone()).into_spawn_task(async move {
+    graceful.spawn_task(async move {
         _ = HttpMitmRelay::new(Executor::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await;

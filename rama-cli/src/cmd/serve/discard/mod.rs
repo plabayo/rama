@@ -143,7 +143,7 @@ pub async fn run(exec: Executor, cfg: CliCommandDiscard) -> Result<(), BoxError>
                 network.protocol.name = "tcp"
             );
 
-            exec.spawn_task(async move {
+            exec.try_spawn_task(async move {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),
@@ -151,7 +151,8 @@ pub async fn run(exec: Executor, cfg: CliCommandDiscard) -> Result<(), BoxError>
                 );
 
                 tcp_listener.serve(discard_svc).instrument(span).await;
-            });
+            })
+            .map_err(|refused| refused.discard_task())?;
         }
         Mode::Udp => {
             if cfg.rate > 0 {

@@ -9,10 +9,8 @@ use super::{Scope, WeakScope};
 /// The only form in which a scope travels in extensions: weak, so a retained copy of the
 /// extensions never holds a drain open, and private, so it is only set through
 /// [`attach_scope`] and [`enter_scope`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 struct ScopeContext(WeakScope);
-
-impl Extension for ScopeContext {}
 
 /// The scope an input runs in: every scope attached to its extensions, merged; `None` if
 /// none is attached.
@@ -48,13 +46,14 @@ pub fn enter_scope(extensions: &Extensions) -> Result<Scope, ScopeClosed> {
 }
 
 /// Like [`enter_scope`], with the new scope also below `own` (see [`Scope::child_of`]), such
-/// as the scope of the server that serves the input.
+/// as the scope of the executor that serves the input.
 ///
 /// # Errors
 ///
-/// [`ScopeClosed`] once the scope the input runs in is closing, whatever `own` is.
-pub fn enter_scope_with(extensions: &Extensions, own: &Scope) -> Result<Scope, ScopeClosed> {
-    enter(extensions, Some(own))
+/// [`ScopeClosed`] once the scope the input runs in, or `own`, is closed.
+pub fn enter_scope_with(extensions: &Extensions, own: &WeakScope) -> Result<Scope, ScopeClosed> {
+    let own = own.to_scope().ok_or(ScopeClosed)?;
+    enter(extensions, Some(&own))
 }
 
 fn enter(extensions: &Extensions, own: Option<&Scope>) -> Result<Scope, ScopeClosed> {

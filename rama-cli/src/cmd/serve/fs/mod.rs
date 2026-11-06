@@ -139,14 +139,15 @@ pub async fn run(exec: Executor, cfg: CliCommandFs) -> Result<(), BoxError> {
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    exec.spawn_task(async move {
+    exec.try_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
             "ready to serve: bind interface = {}", cfg.bind,
         );
         tcp_listener.serve(Arc::new(tcp_service)).await;
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }

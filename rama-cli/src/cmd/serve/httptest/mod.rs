@@ -196,7 +196,7 @@ pub async fn run(
     let http_service = Arc::new(middlewares.into_layer(router));
 
     serve_http(
-        exec,
+        &exec,
         &http3_endpoints,
         &cfg,
         listeners,
@@ -206,7 +206,7 @@ pub async fn run(
 }
 
 fn serve_http<Response>(
-    exec: Executor,
+    exec: &Executor,
     http3_endpoints: &Http3Endpoints,
     cfg: &CliCommandHttpTest,
     listeners: HttpListeners,
@@ -246,7 +246,7 @@ where
             body_limit.clone(),
         )
             .into_layer(HttpServer::new_http3(exec.clone()).service(http_service.clone()));
-        http3_endpoints.serve(&exec, "HTTP Test", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(exec, "HTTP Test", endpoint, Arc::new(http3_service))?;
     }
 
     let Some((tcp_listener, tcp_version)) = listeners.tcp.zip(cfg.http_version.tcp()) else {
@@ -266,7 +266,7 @@ where
     );
 
     let bind = cfg.bind;
-    exec.clone().into_spawn_task(async move {
+    exec.try_spawn_task_fn(move |exec| async move {
         match tcp_version {
             TcpHttpVersion::Auto => {
                 tracing::info!(
@@ -308,7 +308,8 @@ where
                     .await;
             }
         }
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }

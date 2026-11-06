@@ -148,7 +148,7 @@ pub async fn run(exec: Executor, cfg: CliCommandIcap) -> Result<(), BoxError> {
         network.protocol.name = "icap"
     );
 
-    exec.spawn_task(async move {
+    exec.try_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -156,7 +156,8 @@ pub async fn run(exec: Executor, cfg: CliCommandIcap) -> Result<(), BoxError> {
             "ICAP echo service ready: bind interface = {bind_address}"
         );
         listener.serve(service).instrument(span).await;
-    });
+    })
+    .map_err(|refused| refused.discard_task())?;
 
     Ok(())
 }

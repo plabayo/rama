@@ -154,7 +154,7 @@ async fn main() -> Result<(), BoxError> {
             adapt_response(request, Arc::clone(&service_target))
         }));
         let server = IcapServer::new(service, SERVICE_TAG)?;
-        executor.spawn_task(listener.serve(server));
+        scope.spawn_task(listener.serve(server));
     }
 
     let connector = TlsConnector::auto(rama::dns::client::DnsConnector::new(
@@ -215,7 +215,7 @@ async fn main() -> Result<(), BoxError> {
         .into_layer(direct);
     let listener = TcpListener::bind_address(PROXY_ADDRESS, executor.clone()).await?;
     let server = HttpServer::auto(executor.clone()).service(proxy);
-    executor.into_spawn_task(listener.serve(server));
+    scope.spawn_task(listener.serve(server));
 
     println!("HTTP proxy listening on http://{PROXY_ADDRESS}");
     if embedded {

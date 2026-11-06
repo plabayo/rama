@@ -76,7 +76,7 @@ async fn main() {
     );
     tracing::info!("open http://{bind_address} in your browser");
 
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         let router = Arc::new(
             Router::new()
                 .with_get("/", Html(INDEX_CONTENT))

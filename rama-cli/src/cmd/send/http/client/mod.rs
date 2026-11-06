@@ -745,7 +745,8 @@ mod tests {
             .unwrap();
         let addr = listener.local_addr().unwrap();
         let server = HttpServer::auto(exec.clone()).service(handler);
-        exec.into_spawn_task(async move { listener.serve(Arc::new(server)).await });
+        exec.try_spawn_task(async move { listener.serve(Arc::new(server)).await })
+            .unwrap();
         addr.into()
     }
 

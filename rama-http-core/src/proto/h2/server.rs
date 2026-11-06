@@ -447,7 +447,10 @@ where
                 exec.clone(),
             );
 
-            exec.spawn_task(fut.instrument(serve_span));
+            // Refused, the dropped stream is reset.
+            if let Err(refused) = exec.try_spawn_task(fut.instrument(serve_span)) {
+                debug!(%refused, "h2 stream not served");
+            }
         }
     }
 

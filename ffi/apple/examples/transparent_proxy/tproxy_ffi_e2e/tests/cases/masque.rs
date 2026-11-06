@@ -30,6 +30,7 @@ use rama::{
         connect_udp_request, session_config, validate_connect_udp_response,
     },
     quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
+    graceful::Scope,
     rt::Executor,
     tls::{
         boring::{
@@ -138,7 +139,7 @@ async fn ffi_contract_own_masque_session_on_every_carrier() {
                     };
                     validate_connect_udp_response(version, &response).unwrap();
                     let upgraded = handle_upgrade(&response).await.unwrap();
-                    let socket = ConnectUdpSocket::new(&Executor::new(), HttpDatagramSession::with_config(upgraded, session_config()),
+                    let socket = ConnectUdpSocket::new(&Scope::new(), HttpDatagramSession::with_config(upgraded, session_config()),
                         SocketAddress::local_ipv4(0), origin.into(), Default::default());
                     let inner = Endpoint::build(Executor::new()).with_datagram_socket(socket).unwrap();
                     let tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable)

@@ -30,26 +30,24 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
     let graceful_timeout = (cfg.graceful > 0.).then(|| Duration::from_secs_f64(cfg.graceful));
 
     let (etx, mut erx) = tokio::sync::mpsc::channel::<BoxError>(1);
-    let scope = Scope::new().with_signal(async move {
-        let mut signal = Box::pin(graceful::default_signal());
-        tokio::select! {
-            _ = signal.as_mut() => {
-                tracing::debug!("default signal triggered: init graceful shutdown");
-            }
-            err = erx.recv() => {
-                if let Some(err) = err {
-                    tracing::error!("fatal err received: {err}; abort");
-                } else {
-                    signal.await;
+    let scope = Scope::new()
+        .with_signal(async move {
+            let mut signal = Box::pin(graceful::default_signal());
+            tokio::select! {
+                _ = signal.as_mut() => {
                     tracing::debug!("default signal triggered: init graceful shutdown");
                 }
+                err = erx.recv() => {
+                    if let Some(err) = err {
+                        tracing::error!("fatal err received: {err}; abort");
+                    } else {
+                        signal.await;
+                        tracing::debug!("default signal triggered: init graceful shutdown");
+                    }
+                }
             }
-        }
-    });
-    let scope = match graceful_timeout {
-        Some(grace) => scope.with_grace(grace),
-        None => scope,
-    };
+        })
+        .maybe_with_grace(graceful_timeout);
 
     let exec = Executor::from(scope.clone());
     let http3_endpoints = Http3Endpoints::default();

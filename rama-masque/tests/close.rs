@@ -6,7 +6,10 @@
     reason = "integration fixture setup and protocol assertions"
 )]
 
-use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor, service::service_fn};
+use rama_core::{
+    bytes::Bytes, extensions::ExtensionsRef as _, graceful::Scope, rt::Executor,
+    service::service_fn,
+};
 use rama_http::proto::{ext::HttpDatagrams, ext::Protocol, h3::Code};
 use rama_http::{
     Body, Method, Request, Response, datagram::HttpDatagramSession, io::upgrade::handle_upgrade,
@@ -102,7 +105,7 @@ async fn failed_reply(native: bool, filed_first: bool) {
         let local = SocketAddress::local_ipv4(9);
         let peer = SocketAddress::local_ipv4(10);
         let mut socket = ConnectUdpSocket::new(
-            &Executor::new(),
+            &Scope::new(),
             HttpDatagramSession::with_config(server_io, session_config()),
             local,
             peer,
@@ -282,7 +285,7 @@ async fn stop_sending_preserves_inbound_native_and_capsule_payloads() {
                     });
                 let peer = SocketAddress::local_ipv4(10);
                 let mut socket = ConnectUdpSocket::new(
-                    &Executor::new(),
+                    &Scope::new(),
                     HttpDatagramSession::with_config(
                         handle_upgrade(&response.unwrap()).await.unwrap(),
                         session_config(),

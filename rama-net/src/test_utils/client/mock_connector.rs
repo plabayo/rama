@@ -62,10 +62,11 @@ where
 
         let server = (self.create_server)();
 
-        self.executor
+        let spawned = self
+            .executor
             .clone()
             .unwrap_or_default()
-            .into_spawn_task(async move {
+            .try_spawn_task(async move {
                 #[expect(
                     clippy::panic,
                     reason = "test helper: failures must surface loudly to invalidate the test run"
@@ -74,6 +75,13 @@ where
                     panic!("created mock server failed: {}", err.into())
                 }
             });
+        #[expect(
+            clippy::panic,
+            reason = "test helper: failures must surface loudly to invalidate the test run"
+        )]
+        if let Err(refused) = spawned {
+            panic!("mock server not spawned: {refused}")
+        }
 
         Ok(EstablishedClientConnection {
             input,

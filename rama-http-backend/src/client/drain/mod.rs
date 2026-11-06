@@ -24,7 +24,7 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extension, Extensions},
-    graceful::WeakScope,
+    graceful::{Scope, WeakScope},
     rt::Executor,
     telemetry::tracing,
 };
@@ -187,14 +187,14 @@ pub(super) struct Http1DrainRuntime {
 impl Http1DrainRuntime {
     pub(super) fn new(exec: &Executor) -> Self {
         Self {
-            scope: exec.scope().clone_weak(),
+            scope: exec.scope().clone(),
         }
     }
 
-    /// The executor a drain runs on, holding the drain open while it runs; `None` once the
-    /// scope is closed for good, which admits no new work.
-    fn executor(&self) -> Option<Executor> {
-        self.scope.clone().into_scope().map(Executor::from)
+    /// The scope a drain holds while it runs; `None` once it is closed for good, which admits
+    /// no new work.
+    fn scope(&self) -> Option<Scope> {
+        self.scope.to_scope()
     }
 }
 
@@ -289,7 +289,7 @@ impl<C: Send + 'static> Drop for Http1DrainBody<C> {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
-        let Some(executor) = runtime.executor() else {
+        let Some(scope) = runtime.scope() else {
             tracing::trace!("http1 response body dropped: scope closed, closing connection");
             return;
         };
@@ -304,7 +304,7 @@ impl<C: Send + 'static> Drop for Http1DrainBody<C> {
         let max_bytes = self.drain.config.max_bytes;
         // The task owns the body, its lease and the permit: whatever ends it,
         // a cancellation or shutdown included, releases them as above.
-        executor.spawn_cancellable_task(drain(body, permit, max_bytes, started, deadline));
+        scope.spawn_cancellable_task(drain(body, permit, max_bytes, started, deadline));
     }
 }
 

@@ -1,5 +1,5 @@
 use super::{
-    PerMessageFileWriter, WriterMode, capture_body_channel, ensure_traffic_writer_id,
+    Admission, PerMessageFileWriter, WriterMode, capture_body_channel, ensure_traffic_writer_id,
     write_headers_body_flags,
 };
 use crate::io::write_http_request_streaming;
@@ -7,9 +7,9 @@ use crate::{Body, Request, StreamingBody, body::util::BodyExt as _};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::{Extension, ExtensionsRef};
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Layer, Service};
+use rama_core::{graceful::Scope, rt::Executor};
 use rama_http_types::CaptureBody;
 use std::{fmt::Debug, io, path::PathBuf, sync::Arc};
 use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
@@ -29,8 +29,10 @@ where
 }
 
 macro_rules! drive_request_writer {
-    ($writer:ident, $rx:ident, $write_headers:ident, $write_body:ident) => {{
-        while let Some(req) = $rx.recv().await {
+    ($writer:ident, $rx:ident, $closed:ident, $write_headers:ident, $write_body:ident) => {{
+        let mut $closed = std::pin::pin!($closed);
+        let mut open = true;
+        while let Some(req) = next_message!($rx, $closed, open) {
             write_request_entry(&mut $writer, req, $write_headers, $write_body).await;
         }
         if let Err(err) = $writer.flush().await {
@@ -110,7 +112,7 @@ impl<S> RequestWriterService<S, UnboundedSender<Request>> {
     /// over an unbounded channel
     pub fn writer_unbounded<W>(
         inner: S,
-        executor: &Executor,
+        scope: &Scope,
         mut writer: W,
         mode: Option<WriterMode>,
     ) -> Self
@@ -123,31 +125,34 @@ impl<S> RequestWriterService<S, UnboundedSender<Request>> {
         let span =
             tracing::trace_root_span!("TrafficWriter::request::unbounded", otel.kind = "consumer");
 
-        executor.spawn_task(
+        let admission = Admission::new(scope);
+        let closed = admission.closed();
+
+        scope.spawn_abortable_task(
             async move {
-                drive_request_writer!(writer, rx, write_headers, write_body);
+                drive_request_writer!(writer, rx, closed, write_headers, write_body);
             }
             .instrument(span),
         );
         Self {
             writer: Arc::new(tx),
             inner,
-            executor: executor.clone(),
+            executor: admission.executor(),
         }
     }
 
     /// Create a new [`RequestWriterService`] that prints requests to stdout
     /// over an unbounded channel.
     #[must_use]
-    pub fn stdout_unbounded(inner: S, executor: &Executor, mode: Option<WriterMode>) -> Self {
-        Self::writer_unbounded(inner, executor, stdout(), mode)
+    pub fn stdout_unbounded(inner: S, scope: &Scope, mode: Option<WriterMode>) -> Self {
+        Self::writer_unbounded(inner, scope, stdout(), mode)
     }
 
     /// Create a new [`RequestWriterService`] that prints requests to stderr
     /// over an unbounded channel.
     #[must_use]
-    pub fn stderr_unbounded(inner: S, executor: &Executor, mode: Option<WriterMode>) -> Self {
-        Self::writer_unbounded(inner, executor, stderr(), mode)
+    pub fn stderr_unbounded(inner: S, scope: &Scope, mode: Option<WriterMode>) -> Self {
+        Self::writer_unbounded(inner, scope, stderr(), mode)
     }
 }
 
@@ -174,7 +179,7 @@ impl<S> RequestWriterService<S, Sender<Request>> {
     /// over a bounded channel with a fixed buffer size.
     pub fn writer<W>(
         inner: S,
-        executor: &Executor,
+        scope: &Scope,
         mut writer: W,
         buffer_size: usize,
         mode: Option<WriterMode>,
@@ -188,41 +193,34 @@ impl<S> RequestWriterService<S, Sender<Request>> {
         let span =
             tracing::trace_root_span!("TrafficWriter::request::bounded", otel.kind = "consumer");
 
-        executor.spawn_task(
+        let admission = Admission::new(scope);
+        let closed = admission.closed();
+
+        scope.spawn_abortable_task(
             async move {
-                drive_request_writer!(writer, rx, write_headers, write_body);
+                drive_request_writer!(writer, rx, closed, write_headers, write_body);
             }
             .instrument(span),
         );
         Self {
             writer: Arc::new(tx),
             inner,
-            executor: executor.clone(),
+            executor: admission.executor(),
         }
     }
 
     /// Create a new [`RequestWriterService`] that prints requests to stdout
     /// over a bounded channel with a fixed buffer size.
     #[must_use]
-    pub fn stdout(
-        inner: S,
-        executor: &Executor,
-        buffer_size: usize,
-        mode: Option<WriterMode>,
-    ) -> Self {
-        Self::writer(inner, executor, stdout(), buffer_size, mode)
+    pub fn stdout(inner: S, scope: &Scope, buffer_size: usize, mode: Option<WriterMode>) -> Self {
+        Self::writer(inner, scope, stdout(), buffer_size, mode)
     }
 
     /// Create a new [`RequestWriterService`] that prints requests to stderr
     /// over a bounded channel with a fixed buffer size.
     #[must_use]
-    pub fn stderr(
-        inner: S,
-        executor: &Executor,
-        buffer_size: usize,
-        mode: Option<WriterMode>,
-    ) -> Self {
-        Self::writer(inner, executor, stderr(), buffer_size, mode)
+    pub fn stderr(inner: S, scope: &Scope, buffer_size: usize, mode: Option<WriterMode>) -> Self {
+        Self::writer(inner, scope, stderr(), buffer_size, mode)
     }
 }
 
@@ -249,9 +247,12 @@ where
                 Body::new(CaptureBody::new(body.map_err(Into::into), capture)),
             );
             let writer = Arc::clone(&self.writer);
-            self.executor.spawn_task(async move {
+            let written = self.executor.try_spawn_abortable_task(async move {
                 writer.write_request(captured_request).await;
             });
+            if let Err(refused) = written {
+                tracing::debug!(%refused, "request not written: traffic writer scope closed");
+            }
             self.inner.serve(request).await.into_box_error()
         }
     }
@@ -322,7 +323,7 @@ impl<W> Debug for RequestWriterLayer<W> {
 impl RequestWriterLayer<UnboundedSender<Request>> {
     /// Create a new [`RequestWriterLayer`] that prints requests to an [`AsyncWrite`]r
     /// over an unbounded channel
-    pub fn writer_unbounded<W>(executor: &Executor, mut writer: W, mode: Option<WriterMode>) -> Self
+    pub fn writer_unbounded<W>(scope: &Scope, mut writer: W, mode: Option<WriterMode>) -> Self
     where
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
@@ -332,30 +333,33 @@ impl RequestWriterLayer<UnboundedSender<Request>> {
         let span =
             tracing::trace_root_span!("TrafficWriter::request::unbounded", otel.kind = "consumer");
 
-        executor.spawn_task(
+        let admission = Admission::new(scope);
+        let closed = admission.closed();
+
+        scope.spawn_abortable_task(
             async move {
-                drive_request_writer!(writer, rx, write_headers, write_body);
+                drive_request_writer!(writer, rx, closed, write_headers, write_body);
             }
             .instrument(span),
         );
         Self {
             writer: tx,
-            executor: executor.clone(),
+            executor: admission.executor(),
         }
     }
 
     /// Create a new [`RequestWriterService`] that prints requests to stdout
     /// over an unbounded channel.
     #[must_use]
-    pub fn stdout_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
-        Self::writer_unbounded(executor, stdout(), mode)
+    pub fn stdout_unbounded(scope: &Scope, mode: Option<WriterMode>) -> Self {
+        Self::writer_unbounded(scope, stdout(), mode)
     }
 
     /// Create a new [`RequestWriterService`] that prints requests to stderr
     /// over an unbounded channel.
     #[must_use]
-    pub fn stderr_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
-        Self::writer_unbounded(executor, stderr(), mode)
+    pub fn stderr_unbounded(scope: &Scope, mode: Option<WriterMode>) -> Self {
+        Self::writer_unbounded(scope, stderr(), mode)
     }
 }
 
@@ -380,7 +384,7 @@ impl RequestWriterLayer<Sender<Request>> {
     /// Create a new [`RequestWriterLayer`] that prints requests to an [`AsyncWrite`]r
     /// over a bounded channel with a fixed buffer size.
     pub fn writer<W>(
-        executor: &Executor,
+        scope: &Scope,
         mut writer: W,
         buffer_size: usize,
         mode: Option<WriterMode>,
@@ -394,30 +398,33 @@ impl RequestWriterLayer<Sender<Request>> {
         let span =
             tracing::trace_root_span!("TrafficWriter::request::bounded", otel.kind = "consumer");
 
-        executor.spawn_task(
+        let admission = Admission::new(scope);
+        let closed = admission.closed();
+
+        scope.spawn_abortable_task(
             async move {
-                drive_request_writer!(writer, rx, write_headers, write_body);
+                drive_request_writer!(writer, rx, closed, write_headers, write_body);
             }
             .instrument(span),
         );
         Self {
             writer: tx,
-            executor: executor.clone(),
+            executor: admission.executor(),
         }
     }
 
     /// Create a new [`RequestWriterService`] that prints requests to stdout
     /// over a bounded channel with a fixed buffer size.
     #[must_use]
-    pub fn stdout(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
-        Self::writer(executor, stdout(), buffer_size, mode)
+    pub fn stdout(scope: &Scope, buffer_size: usize, mode: Option<WriterMode>) -> Self {
+        Self::writer(scope, stdout(), buffer_size, mode)
     }
 
     /// Create a new [`RequestWriterService`] that prints requests to stderr
     /// over a bounded channel with a fixed buffer size.
     #[must_use]
-    pub fn stderr(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
-        Self::writer(executor, stderr(), buffer_size, mode)
+    pub fn stderr(scope: &Scope, buffer_size: usize, mode: Option<WriterMode>) -> Self {
+        Self::writer(scope, stderr(), buffer_size, mode)
     }
 }
 
@@ -453,8 +460,8 @@ mod tests {
     };
 
     use rama_core::{
-        Layer as _, Service as _, bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor,
-        service::service_fn,
+        Layer as _, Service as _, bytes::Bytes, extensions::ExtensionsRef as _, graceful::Scope,
+        rt::Executor, service::service_fn,
     };
     use tokio::io::AsyncReadExt as _;
 
@@ -464,10 +471,10 @@ mod tests {
 
     #[tokio::test]
     async fn shared_request_writer_flushes_when_channel_closes() {
-        let executor = Executor::new();
+        let scope = Scope::new();
         let (output, mut captured) = tokio::io::duplex(128);
         let layer = RequestWriterLayer::writer_unbounded(
-            &executor,
+            &scope,
             tokio::io::BufWriter::new(output),
             Some(WriterMode::Headers),
         );
@@ -629,11 +636,10 @@ mod tests {
             );
             Ok::<_, Infallible>(Response::new(Body::empty()))
         });
-        let executor = Executor::new();
+        let scope = Scope::new();
         let (writer, mut output) = tokio::io::duplex(256);
-        let service =
-            RequestWriterLayer::writer_unbounded(&executor, writer, Some(WriterMode::All))
-                .into_layer(inner);
+        let service = RequestWriterLayer::writer_unbounded(&scope, writer, Some(WriterMode::All))
+            .into_layer(inner);
 
         service
             .serve(

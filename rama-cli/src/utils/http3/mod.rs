@@ -289,7 +289,17 @@ pub struct Http3Endpoints(Arc<Mutex<Vec<Endpoint>>>);
 
 impl Http3Endpoints {
     /// Serve the HTTP/3 connections of `endpoint` with `service` on the graceful `exec`.
-    pub fn serve<S>(&self, exec: &Executor, name: &str, endpoint: Endpoint, service: S)
+    ///
+    /// # Errors
+    ///
+    /// When the scope of `exec` is closed.
+    pub fn serve<S>(
+        &self,
+        exec: &Executor,
+        name: &str,
+        endpoint: Endpoint,
+        service: S,
+    ) -> Result<(), BoxError>
     where
         S: Service<Connection> + Clone,
     {
@@ -302,7 +312,9 @@ impl Http3Endpoints {
             Err(error) => tracing::warn!(%error, "{name} HTTP/3 service ready: unknown address"),
         }
         self.0.lock().push(endpoint.clone());
-        exec.spawn_task(endpoint.serve(exec.clone(), service));
+        exec.try_spawn_task(endpoint.serve(exec.clone(), service))
+            .map_err(|refused| refused.discard_task())?;
+        Ok(())
     }
 
     /// Close every endpoint served, waiting at most `within` for their peers to be told.
@@ -619,15 +631,17 @@ mod tests {
         let endpoint = bind_http3(localhost(), &tls()).await.unwrap();
         let addr = endpoint.local_addr().unwrap();
         let served = Http3Endpoints::default();
-        served.serve(
-            &Executor::new(),
-            "test",
-            endpoint,
-            service_fn(async |connection: Connection| {
-                _ = connection.closed().await;
-                Ok::<_, Infallible>(())
-            }),
-        );
+        served
+            .serve(
+                &Executor::new(),
+                "test",
+                endpoint,
+                service_fn(async |connection: Connection| {
+                    _ = connection.closed().await;
+                    Ok::<_, Infallible>(())
+                }),
+            )
+            .unwrap();
 
         let client = Endpoint::build(Executor::new())
             .bind_address(localhost())

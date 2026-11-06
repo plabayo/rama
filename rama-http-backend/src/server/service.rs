@@ -5,7 +5,7 @@ use super::core_conn::HttpCoreConnServer;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::graceful::{Cause, Scope, enter_scope_with};
+use rama_core::graceful::{Cause, Scope, WeakScope, enter_scope_with};
 use rama_core::io::Io;
 use rama_core::rt::Executor;
 use rama_http::service::web::response::IntoResponse;
@@ -197,7 +197,7 @@ where
 /// served on the connection sees (a new root without either, so every connection can be
 /// ended on its own). A connection arriving in a closing scope gets an aborted one, which
 /// drops it at once.
-fn connection_scope<IO: ExtensionsRef>(io: &IO, own: &Scope) -> Scope {
+fn connection_scope<IO: ExtensionsRef>(io: &IO, own: &WeakScope) -> Scope {
     enter_scope_with(io.extensions(), own).unwrap_or_else(|_closed| {
         let scope = Scope::new();
         scope.abort(Cause::Reason("the connection's scope is closed"));
@@ -207,7 +207,7 @@ fn connection_scope<IO: ExtensionsRef>(io: &IO, own: &Scope) -> Scope {
 
 /// A [`Service`] that can be used to serve IO Byte streams (e.g. a TCP Stream) as HTTP.
 pub struct HttpService<B, S> {
-    scope: Scope,
+    scope: WeakScope,
     builder: Arc<B>,
     service: S,
 }

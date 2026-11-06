@@ -64,15 +64,12 @@ impl Http {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Extension)]
 struct RequestPrivate;
-impl Extension for RequestPrivate {}
-#[derive(Debug)]
+#[derive(Debug, Extension)]
 struct ResponsePrivate;
-impl Extension for ResponsePrivate {}
-#[derive(Debug)]
+#[derive(Debug, Extension)]
 struct Transport(&'static str);
-impl Extension for Transport {}
 
 enum Sender {
     H1(conn::http1::SendRequest<Body>),

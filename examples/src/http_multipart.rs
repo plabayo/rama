@@ -80,7 +80,7 @@ async fn main() {
         .with_grace(Duration::from_secs(30));
 
     let exec = Executor::from(scope.clone());
-    exec.clone().into_spawn_task(async move {
+    scope.spawn_task(async move {
         HttpServer::auto(exec)
             .listen(
                 "127.0.0.1:62028",

@@ -321,7 +321,7 @@ where
                         network.protocol.version = version_as_protocol_version(request.version()),
                     );
 
-                    self.exec.spawn_task(
+                    let spawned = self.exec.try_spawn_task(
                         async move {
                             match crate::io::upgrade::handle_upgrade(request).await {
                                 Ok(upgraded) => {
@@ -351,6 +351,10 @@ where
                         }
                         .instrument(span),
                     );
+                    if let Err(refused) = spawned {
+                        self.error_sink
+                            .sink_error(refused.discard_task().context("http upgrade not served"));
+                    }
                     Ok(response)
                 }
                 Err(e) => Ok(e),
@@ -383,10 +387,8 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_test::io::Builder;
 
-    #[derive(Debug)]
+    #[derive(Debug, Extension)]
     struct ResponseLocalMarker;
-
-    impl Extension for ResponseLocalMarker {}
 
     #[derive(Clone)]
     struct SendOnlyOutputResponder;

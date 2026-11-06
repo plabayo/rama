@@ -355,7 +355,7 @@ async fn scope_layer_parent_keeps_the_executor_shutdown() {
     let (client_io, server_io) = tokio::io::duplex(kib(64));
     let (_release_tx, release) = watch::channel(false);
     let root = Scope::new();
-    let layer = ScopeLayer::new().with_parent(root.clone());
+    let layer = ScopeLayer::new().with_parent(root.clone_weak());
     let (server, mut arrived) = serve(
         MockSocket::new(server_io),
         Executor::from(root.clone()),
@@ -382,7 +382,7 @@ async fn earlier_parent_cap_ends_a_layered_connection() {
     let (_release_tx, release) = watch::channel(false);
     let root = Scope::new().with_hard_timeout(Duration::from_secs(3));
     let layer = ScopeLayer::new()
-        .with_parent(root.clone())
+        .with_parent(root.clone_weak())
         .with_hard_max_age(Duration::from_secs(60));
     let start = Instant::now();
     let (server, mut arrived) = serve(
@@ -412,7 +412,7 @@ async fn an_unrelated_input_scope_and_the_layer_parent_both_apply() {
         let input = Scope::new();
         let server_io = MockSocket::new(server_io);
         attach_scope(server_io.extensions(), &input);
-        let layer = ScopeLayer::new().with_parent(root.clone());
+        let layer = ScopeLayer::new().with_parent(root.clone_weak());
         let (server, mut arrived) = serve(
             server_io,
             Executor::from(root.clone()),

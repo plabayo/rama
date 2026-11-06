@@ -35,6 +35,12 @@ impl Endpoint {
     where
         S: Service<Connection> + Clone,
     {
+        // Accepting holds the scope, so every connection accepted until the cancel is admitted.
+        let Some(scope) = exec.scope().to_scope() else {
+            tracing::debug!("executor scope closed: not serving");
+            _ = self.shutdown_now().await;
+            return;
+        };
         let mut cancelled = pin!(exec.cancelled());
         let mut served = FuturesUnordered::new();
 
@@ -67,9 +73,9 @@ impl Endpoint {
                     // is refused, as a new attempt is, instead of holding the shutdown until the
                     // client finishes or the attempt times out.
                     let shutting_down = exec.cancelled();
-                    let scope = exec.scope().clone();
+                    let connection_scope = scope.clone();
                     // Ended at the hard phase, whatever the service does by then.
-                    served.push(exec.spawn_abortable_task(
+                    served.push(scope.spawn_abortable_task(
                         async move {
                             let outcome = incoming.accept_or_retry_until(shutting_down).await;
                             let connection = match outcome {
@@ -83,7 +89,7 @@ impl Endpoint {
                                     return;
                                 }
                             };
-                            attach_scope(connection.extensions(), &scope);
+                            attach_scope(connection.extensions(), &connection_scope);
                             _ = service.serve(connection).await;
                         }
                         .instrument(span),
@@ -91,6 +97,9 @@ impl Endpoint {
                 }
             }
         }
+
+        // Served connections hold the scope from here on.
+        drop(scope);
 
         // Refuse new attempts, so their clients fall back at once, while served connections
         // drain; the hard phase ends the drain and the shutdown below closes them.

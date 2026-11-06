@@ -382,10 +382,8 @@ async fn request_layer_custom_policy_can_skip_rewrite() {
 
 #[tokio::test]
 async fn request_layer_custom_policy_can_use_extensions() {
-    #[derive(Debug)]
+    #[derive(Debug, Extension)]
     struct RewriteEnabled;
-
-    impl Extension for RewriteEnabled {}
 
     let svc = JsonRequestRewriteLayer::new([name_path()], ReplaceWith("Grace"))
         .with_rewrite_policy(|_, extensions| extensions.get_ref::<RewriteEnabled>().is_some())

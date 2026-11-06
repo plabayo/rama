@@ -225,7 +225,7 @@ async fn main() -> Result<(), BoxError> {
         },
     ));
 
-    Executor::from(scope.clone()).into_spawn_task(tcp_listener.serve(tcp_service));
+    scope.spawn_task(tcp_listener.serve(tcp_service));
 
     let duration = scope.join().await.context("graceful shutdown")?;
 
