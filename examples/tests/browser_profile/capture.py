@@ -30,7 +30,7 @@ from tcp_evidence import account_tcp, write_tcp_evidence
 from capture_fields import compare_capture_fields
 from fixture_process import running, wait_ready
 from fixture_tls import fixture_certificate, prepare_nss_trust
-from replay import check_missing_tls_bindings, connection_variants, current_trust_ids, replay_environment, run_replay, verify_tls_replay
+from replay import check_missing_tls_bindings, connection_variants, replay_environment, run_replay, verify_tls_replay
 from tls_wire import PRE_SHARED_KEY_EXTENSION, client_hellos
 
 HERE = Path(__file__).resolve().parent
@@ -609,14 +609,12 @@ def capture_http1(args):
                 True,
                 keylog=reference_keylog(args) if secure else None,
             )
-            trust_ids = None
-            origin = f"http://127.0.0.1:{replay_port}"
-            if secure:
-                trust_ids = current_trust_ids(
-                    client_hellos((root / "headers.pdml").read_bytes(), "Tcp")
-                )
-                origin = f"https://localhost:{replay_port}"
-            target = flows.ReplayTarget("h1", origin, certificate, trust_ids)
+            origin = (
+                f"https://localhost:{replay_port}"
+                if secure
+                else f"http://127.0.0.1:{replay_port}"
+            )
+            target = flows.ReplayTarget("h1", origin, certificate)
             if secure:
                 probe = flows.replay_args(
                     rama,

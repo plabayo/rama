@@ -136,6 +136,11 @@ class TlsWireTests(unittest.TestCase):
             (65037, b"\x01", "EchInner"),
             (21, bytes(9), {"ConnectionLength": 0}),
             (57, b"private", {"ConnectionLength": 7}),
+            (
+                51764,
+                vector(vector(b"\x01\x02", 1) + vector(b"\x03", 1)),
+                {"Literal": list(b"\x00\x05\x02\x01\x02\x01\x03")},
+            ),
             (0xAAAA, b"literal", {"Literal": list(b"literal")}),
         ]
         for identifier, data, expected in cases:
@@ -151,6 +156,9 @@ class TlsWireTests(unittest.TestCase):
             (21, b"\x00\x01"),
             (65037, b"\x02"),
             (65037, b"\x01x"),
+            (51764, b"\x00"),
+            (51764, vector(b"\x00")),
+            (51764, vector(b"\x02\x01", 1) + b"x"),
         ]:
             with self.subTest(identifier=identifier, data=data), self.assertRaises(
                 ValueError

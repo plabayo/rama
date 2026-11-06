@@ -46,7 +46,6 @@ CONNECTION_BOUND = {
     56,  # external_session_id
     57,  # quic_transport_parameters
     59,  # dnssec_chain
-    TRUST_ANCHORS_EXTENSION,  # trust_anchors
     65281,  # renegotiation_info
     0xFFCE,  # historical encrypted_server_name
     0xFFA5,  # historical QUIC transport parameters
@@ -251,6 +250,16 @@ def extension_value(identifier, data):
             }
         else:
             raise ValueError("invalid ECH ClientHello type")
+    elif identifier == TRUST_ANCHORS_EXTENSION:
+        # Retained as advertised, as rama_tls::client::trust_anchors_identifier_list reads it.
+        body = source.take(source.remaining())
+        identifiers = Reader(body)
+        listed = Reader(identifiers.vector(2))
+        identifiers.finish()
+        while listed.remaining():
+            if not listed.vector(1):
+                raise ValueError("empty trust anchor ID")
+        value = {"Literal": list(body)}
     elif identifier == 21:
         if any(source.take(source.remaining())):
             raise ValueError("nonzero TLS padding")

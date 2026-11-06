@@ -166,11 +166,9 @@ or every possible wire property. The exact recorder cutoff remains unverified
 for both control frames and encoder instructions.
 
 HTTP/2 also replays all six operations for every retained connection variant.
-Each CLI process uses the fixture CA through `--cacert` and explicit newly generated
-fixture trust IDs through `--tls-requested-trust-anchors` when the original browser
-advertised them. These IDs replace discarded per-connection identifiers; they do
-not configure certificate verification. Negative probes require missing CA/ID
-bindings to fail. Every replay request must match one complete original method,
+Each CLI process uses the fixture CA through `--cacert`. Trust anchor IDs the
+browser advertised are retained and replayed as captured; they do not configure
+certificate verification. Negative probes require a missing CA binding to fail. Every replay request must match one complete original method,
 path, ordered-header and body tuple. TLS and H2 SETTINGS/WINDOW_UPDATE/PRIORITY
 prefixes must match the same retained connection joint; peer-driven SETTINGS ACKs
 are excluded from this fingerprint projection, as they are from native replay.

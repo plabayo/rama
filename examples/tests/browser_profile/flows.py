@@ -89,7 +89,6 @@ class ReplayTarget:
     protocol: str
     origin: str
     certificate: Path | None = None
-    trust_anchors: str | None = None
     resolve: tuple[str, ...] = ()
 
 
@@ -147,8 +146,6 @@ def replay_args(
     ]
     if target.certificate is not None:
         args += ["--cacert", str(target.certificate)]
-    if target.trust_anchors is not None:
-        args += ["--tls-requested-trust-anchors", target.trust_anchors]
     expected_resolution = f"{destination.hostname}:{destination.port or 443}:127.0.0.1"
     for resolution in target.resolve:
         require(

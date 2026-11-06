@@ -7,7 +7,6 @@ replayed traffic against the original profile rather than trusting saved analysi
 
 from collections import defaultdict
 import json
-import secrets
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
@@ -38,7 +37,6 @@ from flows import (
 )
 from tls_wire import (
     PRE_SHARED_KEY_EXTENSION,
-    TRUST_ANCHORS_EXTENSION,
     client_hellos,
     compare_tls_captures,
 )
@@ -71,36 +69,6 @@ def requests_from_wire(frames, *, operations=None):
         set(requests) == set(names), "complete declared-operation replay input coverage"
     )
     return requests
-
-
-def current_trust_ids(hellos):
-    """Make new fixture IDs matching retained length, never recover discarded IDs.
-
-    The CLI takes logical IDs. TLS adds one byte per ID and a two-byte outer
-    vector length. Multiple advertised lengths need a separate fixture policy.
-    """
-    lengths = {
-        extension["value"]["ConnectionLength"]
-        for hello in hellos
-        for extension in hello.capture["extensions"]
-        if extension["id"] == TRUST_ANCHORS_EXTENSION
-    }
-    if not lengths:
-        return None
-    require(len(lengths) == 1, "fixture needs one current trust-advertisement shape")
-    remaining = lengths.pop() - 2
-    require(
-        0 <= remaining <= 65533 and remaining != 1, "invalid trust-advertisement length"
-    )
-    ids = []
-    while remaining:
-        length = min(255, remaining - 1)
-        if remaining - length - 1 == 1:
-            length -= 1  # Leave room for another nonempty ID, never a lone prefix.
-        require(length > 0, "nonempty current trust ID required")
-        ids.append(secrets.token_bytes(length).hex())
-        remaining -= length + 1
-    return ",".join(ids)
 
 
 def replay_environment(parent):
@@ -327,7 +295,7 @@ def connection_warmups(inspected, protocol):
 
 
 def check_missing_tls_bindings(command, environment, root, *, protocol):
-    """The positive replay must need its CA; missing trust IDs are only reported."""
+    """The positive replay must need its CA."""
     # QUIC carries TLS alerts as CRYPTO_ERROR; unknown_ca is alert 48.
     ca_errors = ("certificate",)
     if protocol == "h3":
@@ -434,14 +402,7 @@ def verify_tls_replay(
     data = (root / "headers.pdml").read_bytes()
     origin = f"https://localhost:{port}"
     targets = {
-        protocol: ReplayTarget(
-            protocol,
-            origin,
-            certificate,
-            current_trust_ids(
-                client_hellos(data, "Quic" if protocol == "h3" else "Tcp")
-            ),
-        )
+        protocol: ReplayTarget(protocol, origin, certificate)
         for protocol in protocols
     }
     runs = [
