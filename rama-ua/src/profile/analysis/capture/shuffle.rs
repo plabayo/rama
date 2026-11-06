@@ -82,20 +82,39 @@ fn without_extension_order(
     }
 }
 
+impl CountedCaptureAnalysis {
+    /// Whether the client shuffles its TLS extension order per connection.
+    pub fn shuffles_tls_extensions(&self) -> bool {
+        self.orders.iter().any(|order| {
+            order.path == CaptureOrderPath::TlsExtensions
+                && matches!(
+                    order.evidence.derived,
+                    Some(DerivedOrderRule::Shuffled { .. })
+                )
+        })
+    }
+
+    /// `value` as this analysis reads it, so a value captured elsewhere compares to its variants.
+    pub fn read_extension_order(
+        &self,
+        value: &CanonicalValue,
+        config: OrderAnalysisConfig,
+    ) -> Result<CanonicalValue, ProfileDataError> {
+        if self.shuffles_tls_extensions() {
+            without_extension_order(value, self.domain, config)
+        } else {
+            Ok(value.clone())
+        }
+    }
+}
+
 /// Merge variants that differ only in a shuffled TLS extension order.
 pub(super) fn merge_shuffled_extension_orders(
     analysis: &mut CountedCaptureAnalysis,
     config: OrderAnalysisConfig,
     preserved: &BTreeSet<ValueId>,
 ) -> Result<(), ProfileDataError> {
-    let shuffled = analysis.orders.iter().any(|order| {
-        order.path == CaptureOrderPath::TlsExtensions
-            && matches!(
-                order.evidence.derived,
-                Some(DerivedOrderRule::Shuffled { .. })
-            )
-    });
-    if !shuffled {
+    if !analysis.shuffles_tls_extensions() {
         return Ok(());
     }
     let domain = analysis.domain;

@@ -115,6 +115,13 @@ TLS versions, cipher and extension order, and extension metadata against each
 request-bearing connection; keys and ciphertext are excluded from the projection.
 Preconnections without requests are reported separately.
 
+Wire observations are read in the form the exported profile retains (`read_form.py`).
+GREASE values become numbered slots per list. Where a scope reports
+`shuffled_tls_extensions`, extension order is compared in its merged form. A network
+hint placeholder (`downlink`, `rtt`, `ect`) matches only when the request's hint values
+are exactly one combination from that scope's `network_hints`. Replay request tuples
+compare hint names and positions; the field check verifies the drawn combination.
+
 Fresh TLS runs retain all listener TCP packets and require `tls-accounting.json`,
 which binds native TLS-follow byte counts and hashes to the complete PDML. Missing
 or opaque records fail; H2 frames must cover all application bytes. Closed,

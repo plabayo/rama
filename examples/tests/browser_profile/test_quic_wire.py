@@ -246,7 +246,7 @@ class QuicWireTests(unittest.TestCase):
             compare_quic_captures(
                 archive,
                 [observed],
-                [replace(hello, capture={"transport": "Quic", "ciphers": [4866]})],
+                [replace(hello, capture={"transport": "Quic", "ciphers": [4866], "extensions": []})],
                 client_settings(settings_document(), 443),
                 [request],
                 sequence_fixture(),

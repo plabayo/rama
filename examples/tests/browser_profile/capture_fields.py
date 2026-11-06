@@ -11,10 +11,11 @@ Compression, bodies and connection fingerprints require separate comparisons.
 from collections import Counter
 
 from flows import FLOW_NAMES, operation_flow, scope_matches
+from read_form import hint_combinations, is_network_hint
 
 
-def matching_fields(capture, headers, *, protocol=None):
-    """Return literal/bound field counts, or None for a different observation."""
+def matching_fields(capture, headers, *, protocol=None, scope=None):
+    """Literal/bound field counts, or None; hint placeholders must match one whole `scope` combination."""
     regular = [(name, value) for name, value in headers if not name.startswith(":")]
     if protocol == "h1":
         # H1 retains one ordered header observation. Its request line has no
@@ -45,6 +46,7 @@ def matching_fields(capture, headers, *, protocol=None):
     # Compare repeated fields in order, keeping request-owned values separate.
     occurrences = Counter()
     literal = bound = 0
+    drawn = []
     for field, (name, value) in zip(fields, regular):
         ordinal_name = name.lower()
         if field["name"] != name or field["occurrence"] != occurrences[ordinal_name]:
@@ -57,6 +59,10 @@ def matching_fields(capture, headers, *, protocol=None):
         if kind in ("Profile", "CaptureSafeProfile"):
             # HTTP field values are octets; tshark displays these fixture values
             # losslessly. Fail on non-Latin-1 text instead of replacing bytes.
+            if not retained and is_network_hint(name):
+                drawn.append((ordinal_name, tuple(value.encode("latin-1"))))
+                literal += 1
+                continue
             if bytes(retained) != value.encode("latin-1"):
                 return None
             literal += 1
@@ -64,6 +70,11 @@ def matching_fields(capture, headers, *, protocol=None):
             bound += 1
         else:
             raise ValueError("unknown captured value source")
+    if drawn:
+        if scope is None:
+            raise ValueError("network hint placeholder needs its scope's combinations")
+        if tuple(drawn) not in hint_combinations(scope):
+            return None
     return literal, bound
 
 
@@ -74,7 +85,7 @@ def request_candidates(inspected, block, flow):
         raise ValueError("missing or ambiguous request user agent")
     user_agent = agents[0]
     return (
-        variant["capture"]
+        (scope, variant["capture"])
         for profile in inspected["profiles"]
         if profile["key"]["user_agent"] == user_agent
         for scope in profile["scopes"]
@@ -100,8 +111,13 @@ def compare_capture_fields(inspected, blocks, *, operations=None):
         match = next(
             (
                 counts
-                for capture in candidates
-                if (counts := matching_fields(capture, block.headers, protocol=block.protocol)) is not None
+                for scope, capture in candidates
+                if (
+                    counts := matching_fields(
+                        capture, block.headers, protocol=block.protocol, scope=scope
+                    )
+                )
+                is not None
             ),
             None,
         )

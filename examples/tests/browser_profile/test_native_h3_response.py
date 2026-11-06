@@ -323,7 +323,7 @@ class NativeH3ResponseTests(unittest.TestCase):
                 *arguments, native_sequences={7: witnesses[7], 8: witnesses[7]}
             )
         arguments[2][0] = replace(
-            hello, capture={"transport": "Quic", "ciphers": [999]}
+            hello, capture={"transport": "Quic", "ciphers": [999], "extensions": []}
         )
         with self.assertRaisesRegex(ValueError, "no matching retained"):
             compare_quic_captures(*arguments, native_sequences=witnesses)

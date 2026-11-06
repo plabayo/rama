@@ -106,7 +106,10 @@ mod tests {
     #[cfg(feature = "embed-profiles")]
     use crate::profile::format::compiled::{decode_compiled_profiles, encode_compiled_profiles};
     use crate::profile::{
-        analysis::profile::{AnalyzedProfile, ProfileAnalysisLimits, analyze_profile_evidence},
+        analysis::{
+            order::OrderAnalysisConfig,
+            profile::{AnalyzedProfile, ProfileAnalysisLimits, analyze_profile_evidence},
+        },
         capture::{
             CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
@@ -299,6 +302,43 @@ mod tests {
     #[test]
     fn shuffled_connections_keep_their_grease_ends_and_draw_the_rest() {
         assert_shuffled_with_grease_ends(&analyzed());
+    }
+
+    #[test]
+    fn another_connection_order_reads_as_the_merged_variant() {
+        let analyzed = analyzed();
+        let scope = analyzed
+            .scopes
+            .iter()
+            .find(|scope| {
+                scope.context.flow.is_none() && scope.observations.domain == CanonicalDomain::Joint
+            })
+            .unwrap();
+        let mut order = FLOATING;
+        order.reverse();
+        let slot = hello(&order, 9);
+        let tls = TlsCapture::from_canonical(&slot.value, TlsCaptureLimits::default())
+            .unwrap()
+            .with_grease_placeholders()
+            .unwrap();
+        let observed = JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Connection,
+            slots: vec![CapturedSlot {
+                kind: slot.kind,
+                value: tls.canonical(TlsCaptureLimits::default()).unwrap(),
+            }]
+            .into(),
+        }
+        .canonical(JointCaptureLimits::default())
+        .unwrap();
+        let merged = scope.observations.variants[0].value.id();
+        assert_ne!(observed.id, merged);
+        let read = scope
+            .observations
+            .read_extension_order(&observed, OrderAnalysisConfig::default())
+            .unwrap();
+        assert_eq!(read.id, merged);
     }
 
     #[cfg(feature = "embed-profiles")]

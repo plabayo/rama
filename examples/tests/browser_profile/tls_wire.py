@@ -9,6 +9,7 @@ from capture_fields import connection_user_agents
 from copy import copy
 from dataclasses import dataclass
 from pdml import MAX_PACKETS, MAX_PDML_BYTES, identity, pdml_packets
+from read_form import tls_read_form
 
 PRE_SHARED_KEY_EXTENSION = 41
 TRUST_ANCHORS_EXTENSION = 51764
@@ -353,19 +354,24 @@ def compare_tls_captures(archive, hellos, requests):
         if identity not in user_agents:
             ignored += 1  # Browser preconnections need not produce a request.
             continue
-        candidates = [
-            slot["capture"]
-            for profile in archive["profiles"]
-            if profile["key"]["user_agent"] == user_agents[identity]
-            for scope in profile["scopes"]
-            for variant in scope["variants"]
-            for slot in variant["capture"].get("slots", [])
-            if slot["kind"] in ("TcpTls", "QuicTls")
-        ]
-        if hello.capture not in candidates:
+        # Each scope reads the hello in its own form: numbered GREASE, merged shuffles.
+        retained = next(
+            (
+                slot["capture"]
+                for profile in archive["profiles"]
+                if profile["key"]["user_agent"] == user_agents[identity]
+                for scope in profile["scopes"]
+                for variant in scope["variants"]
+                for slot in variant["capture"].get("slots", [])
+                if slot["kind"] in ("TcpTls", "QuicTls")
+                and slot["capture"] == tls_read_form(hello.capture, scope)
+            ),
+            None,
+        )
+        if retained is None:
             raise ValueError("no matching TLS capture for request connection")
         agent = user_agents[identity]
-        matched.append((agent, hello.capture))
+        matched.append((agent, retained))
         checked.add(identity)
     if checked != set(user_agents):
         raise ValueError("incomplete request-bearing TLS connection coverage")

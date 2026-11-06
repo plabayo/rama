@@ -166,11 +166,17 @@ struct ScopeView<'a> {
 
 impl Serialize for ScopeView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut output = serializer.serialize_struct("Scope", 5)?;
+        let mut output = serializer.serialize_struct("Scope", 7)?;
         output.serialize_field("id", &self.scope.id)?;
         output.serialize_field("flow", &self.scope.flow)?;
         output.serialize_field("context", &self.scope.context)?;
         output.serialize_field("domain", &self.scope.observations.domain)?;
+        // Variants read in this form, so wire checks can read observations the same way.
+        output.serialize_field(
+            "shuffled_tls_extensions",
+            &self.scope.observations.shuffles_tls_extensions(),
+        )?;
+        output.serialize_field("network_hints", &self.scope.observations.network_hints)?;
         output.serialize_field(
             "variants",
             &Sequence(
