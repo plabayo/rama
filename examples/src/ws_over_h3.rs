@@ -21,7 +21,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _},
     extensions::Extensions,
     futures::{StreamExt as _, stream::FuturesUnordered},
-    graceful::Scope,
+    graceful::{Scope, default_signal},
     http::{
         client::{EasyHttpConnectorBuilder, Http3Connector},
         layer::error_handling::ErrorHandlerLayer,
@@ -94,7 +94,7 @@ async fn main() -> Result<(), BoxError> {
         .with_grace(Duration::from_secs(15))
         .with_signal(async move {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {},
+                () = default_signal() => {},
                 _ = completed => {},
             }
         });
