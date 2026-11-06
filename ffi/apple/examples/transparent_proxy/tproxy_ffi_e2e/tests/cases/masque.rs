@@ -9,6 +9,7 @@ use rama::{
     Layer as _, Service, ServiceInput,
     crypto::pki_types::{CertificateDer, pem::PemObject as _},
     extensions::ExtensionsRef as _,
+    graceful::Scope,
     http::{
         Body, Request, Version,
         body::util::BodyExt as _,
@@ -30,7 +31,6 @@ use rama::{
         connect_udp_request, session_config, validate_connect_udp_response,
     },
     quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
-    graceful::Scope,
     rt::Executor,
     tls::{
         boring::{
