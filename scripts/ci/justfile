@@ -28,6 +28,10 @@ test:
 apple-preview-runner:
     uv run --frozen --project scripts/ci python scripts/ci/apple_preview_runner.py
 
+# Tracked Rust, Swift, C and Python lines; OUT writes the README's shields.io badge JSON.
+loc-badge OUT="":
+    uv run --frozen --project scripts/ci python scripts/ci/loc_badge.py {{OUT}}
+
 # Bound disk use across the disposable Apple preview runner’s checks.
 apple-preview-phase PHASE +COMMAND:
     uv run --frozen --project scripts/ci python scripts/ci/apple_preview_phase.py {{PHASE}} {{COMMAND}}
