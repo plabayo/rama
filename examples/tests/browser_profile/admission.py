@@ -150,15 +150,18 @@ def admit(data, frames, page, origin, *, operations=None, independent_connection
     }
     independent_connections = set(independent_connections)
     known = request_connections | independent_connections
-    captured = captured_connections(data, destination.port)
+    _, excluded, stray = quic_exclusions(data, destination.port)
+    try:
+        captured = captured_connections(data, destination.port)
+    except ValueError as error:
+        if stray is None:
+            raise
+        raise ValueError(f"{error}: {stray}") from error
     both = request_connections & independent_connections
     if both or captured != known:
-        # Name the connections and why QUIC ones were not requestless: a CI failure keeps no pcap.
-        _, excluded = quic_exclusions(data, destination.port)
+        # Name the connections and why the QUIC ones were not requestless.
         reasons = {
-            connection: "unattributable client packet"
-            if excluded is None
-            else sorted(excluded.get(connection, ()))
+            connection: stray or sorted(excluded.get(connection, ()))
             for transport, connection in captured - known
             if transport == "udp"
         }

@@ -2,6 +2,8 @@
 
 import unittest
 import xml.etree.ElementTree as ET
+from admission import admit
+from flows import FLOWS
 from quic_stream_wire import quic_exclusions, requestless_connections
 from wire_fixtures import computed, document, scalar, stream_packet
 
@@ -123,13 +125,33 @@ class RequestlessQuicTests(unittest.TestCase):
             native(stream_packet(0, b"request", connection=2)),
             native(stream_packet(2, b"\x00", connection=3), decrypted=False),
         )
-        decoded, excluded = quic_exclusions(data, 443)
+        decoded, excluded, stray = quic_exclusions(data, 443)
         self.assertEqual(decoded, {1, 2, 3})
         self.assertEqual(set(excluded), {2, 3})
         self.assertTrue(all("request stream" in reason for reason in excluded[2]))
         self.assertEqual(excluded[3], {"undecrypted packet"})
+        self.assertIsNone(stray)
         unattributable = document(control(1), stream_packet(2, b"\x00", connection=1))
-        self.assertIsNone(quic_exclusions(unattributable, 443)[1])
+        self.assertIn("no QUIC element", quic_exclusions(unattributable, 443)[2])
+
+    def test_admission_names_a_stray_client_packet_without_a_connection(self):
+        page = {"protocols": dict.fromkeys(FLOWS, "h3"), "page_results": {}, "user_agent": "test"}
+        for native in (False, True):
+            packet = ET.Element("packet")
+            for name, show in (
+                ("udp.srcport", "12345"),
+                ("udp.dstport", "443"),
+                ("frame.number", "152"),
+                ("data.data", "40:ab"),
+            ):
+                ET.SubElement(packet, "field", name=name, show=show)
+            if native:
+                proto = ET.SubElement(packet, "proto", name="quic")
+                ET.SubElement(proto, "field", name="quic.fixed_bit", show="0")
+            data = document(control(1), ET.tostring(packet).decode())
+            expected = "fixed bit 0" if native else "first byte 0x40"
+            with self.subTest(native=native), self.assertRaisesRegex(ValueError, expected):
+                admit(data, [], page, "https://localhost:443")
 
     def test_other_ports_are_ignored(self):
         self.assertEqual(requestless_connections(document(control(1)), 8443), set())

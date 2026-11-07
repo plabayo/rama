@@ -177,12 +177,22 @@ def requestless_connections(data, server_port):
     element or connection number cannot be attributed, so it excludes all; such a
     server packet carries no request and is skipped.
     """
-    decoded, excluded = quic_exclusions(data, server_port)
-    return set() if excluded is None else decoded - set(excluded)
+    decoded, excluded, stray = quic_exclusions(data, server_port)
+    return set() if stray else decoded - set(excluded)
+
+
+def stray_client_packet(packet, proto=None):
+    """Name an unattributable client packet, so a CI report shows what it was."""
+    number = (values(packet, "frame.number") or ["?"])[0]
+    if proto is None:
+        payload = (values(packet, "data.data") or [""])[0].replace(":", "")
+        return f"frame {number}: no QUIC element, first byte 0x{payload[:2] or '??'}"
+    fixed = (values(proto, "quic.fixed_bit") or ["?"])[0]
+    return f"frame {number}: QUIC without a connection number, fixed bit {fixed}"
 
 
 def quic_exclusions(data, server_port):
-    """Decoded QUIC connections and why each is not requestless; None reasons exclude all."""
+    """Decoded QUIC connections, why each is not requestless, and any stray client packet."""
     decoded, excluded = set(), defaultdict(set)
     for packet in pdml_packets(data):
         ports = {
@@ -196,7 +206,7 @@ def quic_exclusions(data, server_port):
         if not protos:
             if from_server:
                 continue
-            return decoded, None
+            return decoded, dict(excluded), stray_client_packet(packet)
         for proto in protos:
             names = {node.get("name", "") for node in proto.iter("field")}
             if "quic.coalesced_padding_data" in names and names <= DATAGRAM_PADDING:
@@ -204,7 +214,8 @@ def quic_exclusions(data, server_port):
             if not values(proto, "quic.connection.number"):
                 if from_server:
                     continue
-                return decoded, None  # An unattributable client packet could belong to any connection.
+                # An unattributable client packet could belong to any connection.
+                return decoded, dict(excluded), stray_client_packet(packet, proto)
             connection = identity(proto, "quic.connection.number")
             decoded.add(connection)
             frames = [
@@ -219,4 +230,4 @@ def quic_exclusions(data, server_port):
                 problem = close_problem(frame, kind)
                 if problem:
                     excluded[connection].add(problem)
-    return decoded, dict(excluded)
+    return decoded, dict(excluded), None
