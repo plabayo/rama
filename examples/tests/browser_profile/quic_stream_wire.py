@@ -155,12 +155,16 @@ def bidirectional_stream(frame, kind):
     return not varint_field(frame, name)[0] & 2
 
 
-def closed_with_error(frame, kind):
+def close_problem(frame, kind):
+    """Why a CONNECTION_CLOSE is not clean, or None for any other or a clean frame."""
     if kind not in CONNECTION_CLOSE:
-        return False
+        return None
     names = [name for name in CONNECTION_CLOSE[kind] if values(frame, name)]
     # An unreadable error code cannot prove a clean close.
-    return not names or varint_field(frame, names[0])[0] not in CLEAN_CLOSE_CODES[kind]
+    if not names:
+        return f"close 0x{kind:x} without an error code"
+    code = varint_field(frame, names[0])[0]
+    return None if code in CLEAN_CLOSE_CODES[kind] else f"close 0x{kind:x} code 0x{code:x}"
 
 
 def requestless_connections(data, server_port):
@@ -173,7 +177,13 @@ def requestless_connections(data, server_port):
     element or connection number cannot be attributed, so it excludes all; such a
     server packet carries no request and is skipped.
     """
-    decoded, excluded = set(), set()
+    decoded, excluded = quic_exclusions(data, server_port)
+    return set() if excluded is None else decoded - set(excluded)
+
+
+def quic_exclusions(data, server_port):
+    """Decoded QUIC connections and why each is not requestless; None reasons exclude all."""
+    decoded, excluded = set(), defaultdict(set)
     for packet in pdml_packets(data):
         ports = {
             int(port)
@@ -186,7 +196,7 @@ def requestless_connections(data, server_port):
         if not protos:
             if from_server:
                 continue
-            return set()
+            return decoded, None
         for proto in protos:
             names = {node.get("name", "") for node in proto.iter("field")}
             if "quic.coalesced_padding_data" in names and names <= DATAGRAM_PADDING:
@@ -194,16 +204,19 @@ def requestless_connections(data, server_port):
             if not values(proto, "quic.connection.number"):
                 if from_server:
                     continue
-                return set()  # An unattributable client packet could belong to any connection.
+                return decoded, None  # An unattributable client packet could belong to any connection.
             connection = identity(proto, "quic.connection.number")
             decoded.add(connection)
             frames = [
                 node for node in proto.iter("field") if node.get("name") == "quic.frame"
             ]
             if not frames or not values(proto, "quic.packet_number"):
-                excluded.add(connection)
+                excluded[connection].add("undecrypted packet")
             for frame in frames:
                 kind, _ = varint_field(frame, "quic.frame_type")
-                if bidirectional_stream(frame, kind) or closed_with_error(frame, kind):
-                    excluded.add(connection)
-    return decoded - excluded
+                if bidirectional_stream(frame, kind):
+                    excluded[connection].add(f"frame 0x{kind:x} on a request stream")
+                problem = close_problem(frame, kind)
+                if problem:
+                    excluded[connection].add(problem)
+    return decoded, dict(excluded)
