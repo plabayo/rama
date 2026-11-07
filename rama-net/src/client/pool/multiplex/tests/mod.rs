@@ -27,6 +27,7 @@ use std::{
 mod admission;
 mod checkout;
 mod coalescing;
+mod draining;
 mod eviction;
 mod fairness;
 mod lanes;

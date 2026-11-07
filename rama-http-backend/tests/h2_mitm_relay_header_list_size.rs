@@ -5,7 +5,7 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use rama_core::{
-    Service, extensions::ExtensionsRef as _, io::BridgeIo, rt::Executor, service::service_fn,
+    Service, extensions::ExtensionsRef as _, graceful::WeakScope, io::BridgeIo, service::service_fn,
 };
 use rama_http::{
     Body, HeaderValue, Request, Response, StatusCode, Version,
@@ -118,7 +118,7 @@ async fn relay_headers(case: Case) -> Outcome {
                 max_header_list_size: Some(mib_u32(1)),
                 ..Default::default()
             });
-            HttpServer::new_h2(Executor::default())
+            HttpServer::new_h2(WeakScope::never())
                 .serve(
                     origin,
                     service_fn(move |request: Request| async move {
@@ -140,11 +140,11 @@ async fn relay_headers(case: Case) -> Outcome {
                 .await
         });
         let relay = tokio::spawn(async move {
-            HttpMitmRelay::new(Executor::default())
+            HttpMitmRelay::new(WeakScope::never())
                 .serve(BridgeIo(ingress, egress))
                 .await
         });
-        let (mut sender, connection) = ClientBuilder::new(Executor::default())
+        let (mut sender, connection) = ClientBuilder::new(WeakScope::never())
             .with_initial_settings(settings(case.client_cap))
             .with_max_header_list_size(mib_u32(1))
             .with_observe_peer_settings(true)

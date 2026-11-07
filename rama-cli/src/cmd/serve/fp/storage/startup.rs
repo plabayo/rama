@@ -1,10 +1,10 @@
 //! Start one bounded collector for the configured fingerprint store.
 
-use std::{future::pending, time::SystemTime};
+use std::time::SystemTime;
 
 use rama::{
     error::BoxError,
-    rt::Executor,
+    graceful::WeakScope,
     telemetry::tracing,
     tls::boring::core::rand::rand_bytes,
     ua::profile::{
@@ -31,7 +31,7 @@ fn nonce() -> Result<[u8; 12], BoxError> {
     Ok(nonce)
 }
 
-pub(super) async fn start(pool: Pool, exec: &Executor) -> Result<CollectionQueue, BoxError> {
+pub(super) async fn start(pool: Pool, scope: &WeakScope) -> Result<CollectionQueue, BoxError> {
     let limits = store_limits();
     let config = QueueConfig::default();
     let mut candidates = [[0; 32]; 2];
@@ -43,16 +43,12 @@ pub(super) async fn start(pool: Pool, exec: &Executor) -> Result<CollectionQueue
         counted::sampler_seeds(&mut client, candidates).await?
     };
     // Legacy backlog must not delay new collection or prevent serving requests.
-    exec.spawn_cancellable_task(legacy::backfill_partitions(pool.clone(), seeds, limits));
+    scope
+        .try_hold()?
+        .into_spawn_cancellable_task(legacy::backfill_partitions(pool.clone(), seeds, limits));
     let (queue, receiver) = CollectionQueue::new(config, limits)?;
-    let guard = exec.guard().cloned();
-    exec.spawn_task(async move {
-        let shutdown = async move {
-            match guard {
-                Some(guard) => guard.cancelled().await,
-                None => pending().await,
-            }
-        };
+    let shutdown = scope.cancelled();
+    scope.try_hold()?.into_spawn_task(async move {
         if worker::run(
             receiver,
             PostgresSink {

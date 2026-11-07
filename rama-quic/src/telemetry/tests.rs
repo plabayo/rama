@@ -347,13 +347,13 @@ async fn a_connection_records_its_times_and_totals() {
 mod endpoints {
     use std::net::{Ipv4Addr, SocketAddr};
 
-    use rama_core::rt::{Executor, spawn};
+    use rama_core::{graceful::WeakScope, rt::spawn};
 
     use super::*;
     use crate::{Endpoint, test_helpers};
 
     async fn bind(metrics: &QuicMetrics, server: Option<crate::ServerConfig>) -> Endpoint {
-        Endpoint::build(Executor::new())
+        Endpoint::build(WeakScope::never())
             .maybe_with_server_config(server)
             .with_metrics(metrics.clone())
             .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))

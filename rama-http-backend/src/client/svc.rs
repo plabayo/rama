@@ -29,13 +29,18 @@ use std::{
 use tokio::sync::Mutex;
 #[cfg(feature = "quic")]
 use {
-    rama_core::rt::Executor,
+    rama_core::{graceful::WeakScope, graceful::attach_scope},
     rama_http_core::h3::{
-        Error as Http3Error, client as http3, connection::Config as Http3Config,
-        transport::BoxedConnection as BoxedQuicConnection,
+        Error as Http3Error, client as http3,
+        connection::Config as Http3Config,
+        transport::{BoxedConnection as BoxedQuicConnection, Connection as _},
     },
-    rama_http_types::{StatusCode, proto::ext::early_data::EarlyDataRejected},
+    rama_http_types::{
+        StatusCode,
+        proto::{ext::early_data::EarlyDataRejected, h3::Code},
+    },
     rama_net::conn::MaxConcurrency,
+    rama_quic_proto::VarInt,
     rama_tls::client::TlsServerAuthenticatedAliases,
     std::pin::pin,
 };
@@ -395,24 +400,43 @@ impl<Body> HttpClientService<Body> {
     pub(super) fn http3(
         input: BoxedQuicConnection,
         config: Http3Config,
-        executor: Executor,
+        weak_scope: WeakScope,
     ) -> Result<Self, Http3Error> {
+        // The connection runs in the scope, so a pool drains it in its graceful phase.
+        // A closed scope admits no new connection.
+        let Ok(scope) = weak_scope.try_hold() else {
+            return Err(Http3Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "scope closed",
+            ));
+        };
+        attach_scope(input.extensions(), &scope);
         let extensions = input.extensions().clone();
         extensions.insert(MaxConcurrency::new(config.max_requests));
-        let (sender, driver) = http3::handshake(input, config, executor.clone())?;
+        let connection = input.clone();
+        let aborted = weak_scope.aborted();
+        let (sender, driver) = http3::handshake(input, config, weak_scope)?;
         extensions.insert(sender.connection_admission());
         let driver_extensions = extensions.clone();
         let draining = sender.closed_or_draining();
-        executor.into_spawn_task(async move {
+        // Holds the scope while the connection is open, kept so by its live bodies and
+        // tunnels, and closes the connection at the hard phase of that scope.
+        scope.into_spawn_task_to_completion(async move {
             let driver = driver.run();
             let mut driver = pin!(driver);
+            let mut aborted = pin!(aborted);
             tokio::select! {
-                _ = &mut driver => mark_broken(&driver_extensions),
+                _ = &mut driver => (),
                 _ = draining => {
                     mark_broken(&driver_extensions);
-                    _ = driver.await;
+                    tokio::select! {
+                        _ = &mut driver => (),
+                        () = &mut aborted => close_aborted(&connection),
+                    }
                 }
+                () = &mut aborted => close_aborted(&connection),
             }
+            mark_broken(&driver_extensions);
         });
         Ok(Self {
             sender: SendRequest::Http3(sender),
@@ -421,11 +445,17 @@ impl<Body> HttpClientService<Body> {
     }
 }
 
+#[cfg(feature = "quic")]
+fn close_aborted(connection: &BoxedQuicConnection) {
+    let code = VarInt::from_u32(Code::H3_NO_ERROR.value() as u32);
+    connection.close(code, b"HTTP/3 client aborted");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rama_core::{
-        ServiceInput, bytes::Bytes, error::CauseExt as _, futures::stream, rt::Executor,
+        ServiceInput, bytes::Bytes, error::CauseExt as _, futures::stream, graceful::WeakScope,
     };
     use rama_http_core::h2::server as http2_server;
     use rama_http_types::{
@@ -707,7 +737,7 @@ mod tests {
                     }
                 }
             });
-            let (sender, connection) = http2::handshake(Executor::new(), ServiceInput::new(io))
+            let (sender, connection) = http2::handshake(WeakScope::never(), ServiceInput::new(io))
                 .await
                 .unwrap();
             let connection = tokio::spawn(async move { drop(connection.await) });
@@ -799,7 +829,7 @@ mod tests {
             while connection.accept().await.is_some() {}
             reset.abort();
         });
-        let (sender, connection) = http2::handshake(Executor::new(), ServiceInput::new(io))
+        let (sender, connection) = http2::handshake(WeakScope::never(), ServiceInput::new(io))
             .await
             .unwrap();
         let connection = tokio::spawn(async move { drop(connection.await) });
@@ -896,11 +926,11 @@ mod tests {
             SocketAddress::local_ipv4(444),
             NonZeroUsize::MIN,
         );
-        let server_endpoint = Endpoint::build(Executor::new())
+        let server_endpoint = Endpoint::build(WeakScope::never())
             .with_server_config(server_config)
             .with_datagram_socket(server_socket)
             .unwrap();
-        let client_endpoint = Endpoint::build(Executor::new())
+        let client_endpoint = Endpoint::build(WeakScope::never())
             .with_datagram_socket(client_socket)
             .unwrap();
         let (client, server) = tokio::join!(
@@ -944,7 +974,7 @@ mod tests {
                 let service = HttpClientService::<Body>::http3(
                     BoxedQuicConnection::new(client),
                     Http3Config::default(),
-                    Executor::new(),
+                    WeakScope::never(),
                 )
                 .unwrap();
                 let attempts = Arc::new(SendAttempts::default());

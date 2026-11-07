@@ -7,12 +7,11 @@ use rama::{
     Service,
     cli::{ForwardKind, service::ip::IpServiceBuilder},
     error::{BoxError, BoxErrorExt as _, ErrorContext},
-    graceful::ShutdownGuard,
+    graceful::WeakScope,
     net::{
         address::{SocketAddress, ip::geo::IpGeoDb},
         tls::ApplicationProtocol,
     },
-    rt::Executor,
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing,
 };
@@ -90,17 +89,15 @@ pub struct CliCommandIp {
 
 /// run the rama ip service
 pub async fn run(
-    graceful: ShutdownGuard,
+    scope: WeakScope,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandIp,
 ) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
-
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
     let geo_db = crate::utils::geo::load_geo_db_from_env();
 
     if cfg.transport {
-        return run_transport(exec, cfg, geo_db).await;
+        return run_transport(scope, cfg, geo_db).await;
     }
 
     let tcp_version = cfg.http_version.tcp();
@@ -115,14 +112,14 @@ pub async fn run(
                         vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
                     }
                 }),
-                exec.clone(),
+                scope.clone(),
             )
         })
         .transpose()?;
 
     tracing::info!("starting ip service: bind interface = {}", cfg.bind);
     let listeners = HttpListeners::bind(
-        exec.clone(),
+        scope.clone(),
         cfg.bind,
         cfg.http_version,
         maybe_tls_server_config.as_ref(),
@@ -141,21 +138,21 @@ pub async fn run(
         .maybe_with_tls_server_config(maybe_tls_server_config)
         .maybe_with_http_version(tcp_version.and_then(Into::into))
         .maybe_with_alt_svc(listeners.alt_svc()?)
-        .build_with_http3(exec.clone())
+        .build_with_http3(scope.clone())
         .context("build ip HTTP service")?;
 
     if let Some(endpoint) = listeners.http3 {
-        http3_endpoints.serve(&exec, "ip", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(&scope, "ip", endpoint, Arc::new(http3_service))?;
     }
     if let Some(tcp_listener) = listeners.tcp {
-        serve_tcp(&exec, cfg.bind, tcp_listener, tcp_service)?;
+        serve_tcp(&scope, cfg.bind, tcp_listener, tcp_service)?;
     }
 
     Ok(())
 }
 
 async fn run_transport(
-    exec: Executor,
+    scope: WeakScope,
     cfg: CliCommandIp,
     geo_db: Option<Arc<IpGeoDb>>,
 ) -> Result<(), BoxError> {
@@ -166,7 +163,7 @@ async fn run_transport(
     }
     let maybe_tls_server_config = cfg
         .secure
-        .then(|| try_new_server_config(None, exec.clone()))
+        .then(|| try_new_server_config(None, scope.clone()))
         .transpose()?;
 
     let tcp_service = IpServiceBuilder::tcp()
@@ -181,15 +178,15 @@ async fn run_transport(
         .context("build ip TCP service")?;
 
     tracing::info!("starting ip service: bind interface = {}", cfg.bind);
-    let tcp_listener = TcpListener::build(exec.clone())
+    let tcp_listener = TcpListener::build(scope.clone())
         .bind_address(cfg.bind)
         .await
         .context("bind ip service")?;
-    serve_tcp(&exec, cfg.bind, tcp_listener, tcp_service)
+    serve_tcp(&scope, cfg.bind, tcp_listener, tcp_service)
 }
 
 fn serve_tcp(
-    exec: &Executor,
+    scope: &WeakScope,
     bind: SocketAddress,
     tcp_listener: TcpListener,
     tcp_service: impl Service<TcpStream, Output = (), Error = Infallible>,
@@ -198,7 +195,7 @@ fn serve_tcp(
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    exec.clone().into_spawn_task(async move {
+    scope.try_hold()?.into_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),

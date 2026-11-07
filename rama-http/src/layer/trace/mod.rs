@@ -907,7 +907,10 @@ mod tests {
     fn events_have_span_context_when_span_is_disabled() {
         use parking_lot::Mutex;
         use std::sync::Arc;
-        use tracing::subscriber::with_default;
+        use tracing::{
+            Dispatch,
+            subscriber::{NoSubscriber, with_default},
+        };
         use tracing_subscriber::{Layer as _, layer::SubscriberExt, registry::LookupSpan};
 
         /// A filter that disables spans (by rejecting at the span level)
@@ -968,6 +971,8 @@ mod tests {
 
         // Use with_default to guarantee cleanup even on panic, avoiding
         // cross-test subscriber pollution.
+        // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
+        let _registered = Dispatch::new(NoSubscriber::default());
         with_default(subscriber, || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

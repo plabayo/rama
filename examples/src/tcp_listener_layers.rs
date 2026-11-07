@@ -28,6 +28,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
     net::stream::{
         Socket,
@@ -35,7 +36,6 @@ use rama::{
         matcher::SocketMatcher,
         service::EchoService,
     },
-    rt::Executor,
     service::service_fn,
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{
@@ -59,10 +59,12 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address("0.0.0.0:62501", exec)
+    let listener = TcpListener::bind_address("0.0.0.0:62501", weak_scope)
         .await
         .expect("bind TCP Listener");
 
@@ -92,10 +94,7 @@ async fn main() {
     )
         .into_layer(EchoService::new());
 
-    graceful.spawn_task(listener.serve(svc));
+    scope.spawn_task(listener.serve(svc));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

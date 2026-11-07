@@ -2,13 +2,12 @@ use rama::{
     Service,
     error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt},
     extensions::{Extension, ExtensionsRef as _},
-    graceful::{self, Shutdown},
+    graceful::{Cause, Scope},
     http::{
         HeaderValue, StatusCode,
         body::util::BodyExt as _,
         layer::har::recorder::{FileRecorder, Recorder as _},
     },
-    rt::Executor,
     telemetry::tracing,
     utils::collections::NonEmptySmallVec,
 };
@@ -71,15 +70,8 @@ pub(super) async fn run_inner(
         .as_ref()
         .map(|path| FileRecorder::try_new_at(path.clone()))
         .transpose()?;
-    let (finished, completed) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
-        tokio::select! {
-            _ = completed => {},
-            _ = graceful::default_signal() => {},
-        }
-    });
-    let guard = shutdown.guard();
-    let executor = Executor::graceful(shutdown.guard());
+    let scope = Scope::new().with_default_signal();
+    let weak_scope = scope.clone_weak();
     let exchange = async {
         // Every request is built and validated before any transport I/O.
         let mut requests = Vec::with_capacity(following.len() + 1);
@@ -94,7 +86,7 @@ pub(super) async fn run_inner(
         let request = requests.pop().context("at least one request")?;
         let preceding = requests;
         let https_client =
-            client::new(cfg, feed_tui, har_recorder.clone(), executor.clone()).await?;
+            client::new(cfg, feed_tui, har_recorder.clone(), weak_scope.clone()).await?;
         for request in preceding {
             request.extensions().insert(PrecedingSegment);
             if cfg.last_response_only {
@@ -141,7 +133,7 @@ pub(super) async fn run_inner(
     let exchange = async {
         tokio::select! {
             result = exchange => result,
-            _ = guard.cancelled() => Err(BoxError::from_static_str("request cancelled")),
+            _ = weak_scope.cancelled() => Err(BoxError::from_static_str("request cancelled")),
         }
     };
     let result = if let Some(max_time) = cfg.max_time
@@ -155,10 +147,8 @@ pub(super) async fn run_inner(
         exchange.await
     };
 
-    drop(executor);
-    drop(guard);
-    finished.send(()).unwrap_or_default();
-    drain_client(shutdown).await;
+    drop(weak_scope);
+    drain_client(scope).await;
     if let Some(recorder) = &har_recorder {
         recorder.stop_record().await;
     }
@@ -190,11 +180,13 @@ fn fail_on_error_status(cfg: &SendCommand, code: StatusCode) -> Result<(), BoxEr
     Ok(())
 }
 
-async fn drain_client(shutdown: Shutdown) {
+async fn drain_client(scope: Scope) {
     // A successful exchange has already consumed or written its response.
     // Waiting for pooled connections to close is best-effort cleanup; it must
     // not change that exchange's outcome. HAR finalization is handled separately.
-    if let Err(error) = shutdown.shutdown_with_limit(CLIENT_DRAIN_TIMEOUT).await {
+    let scope = scope.with_grace(CLIENT_DRAIN_TIMEOUT);
+    scope.cancel(Cause::Owner);
+    if let Err(error) = scope.join().await {
         tracing::warn!(%error, "timed out draining HTTP client tasks");
     }
 }
@@ -202,32 +194,32 @@ async fn drain_client(shutdown: Shutdown) {
 #[cfg(test)]
 mod tests {
     use super::{CLIENT_DRAIN_TIMEOUT, drain_client};
-    use rama::graceful::Shutdown;
+    use rama::graceful::Scope;
     use tokio::time::Instant;
 
     #[tokio::test(start_paused = true)]
     async fn client_drain_timeout_is_bounded_best_effort_cleanup() {
-        let shutdown = Shutdown::new(async {});
-        let guard = shutdown.guard();
+        let scope = Scope::new();
+        let held = scope.clone();
         let start = Instant::now();
 
-        drain_client(shutdown).await;
+        drain_client(scope).await;
 
         assert_eq!(start.elapsed(), CLIENT_DRAIN_TIMEOUT);
-        guard.cancelled().await;
-        drop(guard);
+        held.aborted().await;
+        drop(held);
     }
 
     #[tokio::test(start_paused = true)]
     async fn client_drain_completes_without_waiting_for_timeout() {
-        let shutdown = Shutdown::new(async {});
-        let guard = shutdown.guard();
+        let scope = Scope::new();
+        let held = scope.clone();
         let start = Instant::now();
 
         tokio::spawn(async move {
-            guard.cancelled().await;
+            held.cancelled().await;
         });
-        drain_client(shutdown).await;
+        drain_client(scope).await;
 
         assert!(start.elapsed() < CLIENT_DRAIN_TIMEOUT);
     }

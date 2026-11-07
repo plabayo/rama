@@ -4,8 +4,8 @@
 use rama::tls::client::TlsClientConfig;
 use rama::{
     Service,
+    graceful::WeakScope,
     http::{Body, Request, client::EasyHttpWebClient},
-    rt::Executor,
 };
 use std::hint::black_box;
 
@@ -144,7 +144,7 @@ fn pooled_connector_future(bencher: divan::Bencher) {
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector::<Body>(Executor::default())
+        .with_default_http_connector::<Body>(WeakScope::never())
         .with_default_connection_pool()
         .build_connector();
 
@@ -171,7 +171,7 @@ fn pooled_tls_connector_future(bencher: divan::Bencher) {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_rustls(TlsClientConfig::new())
-        .with_default_http_connector::<Body>(Executor::default())
+        .with_default_http_connector::<Body>(WeakScope::never())
         .with_default_connection_pool()
         .build_connector();
 
@@ -189,6 +189,7 @@ mod roundtrip {
     use rama::{
         Layer, Service,
         bytes::Bytes,
+        graceful::WeakScope,
         http::{
             Body, Request, Version,
             body::util::BodyExt as _,
@@ -198,7 +199,6 @@ mod roundtrip {
         },
         net::{address::SocketAddress, tls::ApplicationProtocol},
         quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
-        rt::Executor,
         service::service_fn,
         tcp::server::TcpListener,
         tls::{
@@ -226,7 +226,7 @@ mod roundtrip {
             ApplicationProtocol::HTTP_11
         };
         let address = server_runtime.block_on(async {
-            let listener = TcpListener::build(Executor::new())
+            let listener = TcpListener::build(WeakScope::never())
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await
                 .unwrap();
@@ -235,10 +235,11 @@ mod roundtrip {
                 .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
                 .unwrap()
                 .with_alpn([protocol.clone()].into_iter().collect());
-            let http =
-                HttpServer::auto(Executor::new()).service(service_fn(|_request: Request| async {
+            let http = HttpServer::auto(WeakScope::never()).service(service_fn(
+                |_request: Request| async {
                     Ok::<_, Infallible>(Bytes::from_static(b"ok").into_response())
-                }));
+                },
+            ));
             server_runtime.spawn(async move {
                 listener
                     .serve(TlsAcceptorLayer::new(tls).into_layer(http))
@@ -260,7 +261,7 @@ mod roundtrip {
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_rustls(tls)
-            .with_default_http_connector::<Body>(Executor::new())
+            .with_default_http_connector::<Body>(WeakScope::never())
             .with_default_connection_pool();
         let builder = if discovery {
             builder
@@ -308,12 +309,12 @@ mod roundtrip {
                 .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
                 .unwrap()
                 .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let server = HttpServer::new_http3(Executor::new());
+            let server = HttpServer::new_http3(WeakScope::never());
             let mut transport = TransportConfig::default();
             server.http3().configure_transport(&mut transport).unwrap();
             let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
             config.set_transport_config(Arc::new(transport));
-            let endpoint = Endpoint::build(Executor::new())
+            let endpoint = Endpoint::build(WeakScope::never())
                 .with_server_config(config)
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await
@@ -344,7 +345,7 @@ mod roundtrip {
             .with_server_verify(ServerVerifyMode::Disable);
         let connector = client_runtime
             .block_on(
-                Http3Connector::builder(Executor::new())
+                Http3Connector::builder(WeakScope::never())
                     .with_tls_config(tls.clone())
                     .build(),
             )
@@ -355,7 +356,7 @@ mod roundtrip {
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_rustls(tls)
-            .with_default_http_connector::<Body>(Executor::new())
+            .with_default_http_connector::<Body>(WeakScope::never())
             .with_http3_support(connector)
             .with_default_connection_pool()
             .build_client()

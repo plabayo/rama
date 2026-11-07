@@ -9,7 +9,7 @@
 )]
 
 use rama_core::{
-    Service, ServiceInput, error::BoxError, io::BridgeIo, layer::ArcLayer, rt::Executor,
+    Service, ServiceInput, error::BoxError, graceful::WeakScope, io::BridgeIo, layer::ArcLayer,
     service::service_fn,
 };
 use rama_http_backend::proxy::mitm::HttpMitmRelay;
@@ -90,11 +90,11 @@ impl Relay {
                         )
                     }
                 });
-                rama_http_backend::server::HttpServer::auto(Executor::new())
+                rama_http_backend::server::HttpServer::auto(WeakScope::never())
                     .serve(MockSocket::new(ingress), service)
                     .await
             } else {
-                HttpMitmRelay::new(Executor::new())
+                HttpMitmRelay::new(WeakScope::never())
                     .with_http_middleware((layer, ArcLayer::new()))
                     .serve(BridgeIo(
                         MockSocket::new(ingress),

@@ -432,12 +432,12 @@ async fn icap_pool_retirement_is_not_held_open_by_a_pending_connect() {
 async fn forward_client_applies_icap_reqmod_and_respmod() {
     let (icap_address, icap_task, _icap_state) = spawn_proxy_test_icap().await;
     let origin_listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
             .await
             .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_task = tokio::spawn(origin_listener.serve(
-        HttpServer::auto(Executor::default()).service(service_fn(|request: Request| async move {
+        HttpServer::auto(WeakScope::never()).service(service_fn(|request: Request| async move {
             assert_eq!(request.headers()["x-rama-icap-reqmod"], "yes");
             assert_eq!(
                 request.into_body().collect().await.unwrap().to_bytes(),
@@ -459,7 +459,7 @@ async fn forward_client_applies_icap_reqmod_and_respmod() {
     )
     .unwrap();
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::never(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -503,12 +503,12 @@ async fn forward_client_applies_icap_reqmod_and_respmod() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_client_consumes_proxy_auth_without_icap() {
     let origin_listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
             .await
             .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_task = tokio::spawn(origin_listener.serve(
-        HttpServer::auto(Executor::default()).service(service_fn(|request: Request| async move {
+        HttpServer::auto(WeakScope::never()).service(service_fn(|request: Request| async move {
             assert!(
                 !request
                     .headers()
@@ -527,7 +527,7 @@ async fn forward_client_consumes_proxy_auth_without_icap() {
         })),
     ));
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::never(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -591,7 +591,7 @@ async fn default_icap_directions_follow_single_method_capabilities() {
     )
     .unwrap();
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::never(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -650,7 +650,7 @@ async fn stalled_icap_options_is_bounded_for_all_waiters() {
     )
     .unwrap();
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::never(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),

@@ -6,6 +6,7 @@ use rama::{
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
     error_sink::TracingErrorSink,
     extensions::{Extension, ExtensionsRef as _},
+    graceful::WeakScope,
     http::{
         Body, Request, Response, StreamingBody,
         client::{
@@ -39,7 +40,6 @@ use rama::{
         client::QuicEndpointConnector,
         profile::replay::ConnectionProfileCompiler as QuicProfileCompiler, tls::BoringTlsProvider,
     },
-    rt::Executor,
     tls::{
         ProtocolVersion,
         boring::client::{
@@ -90,7 +90,7 @@ pub(super) async fn new(
     cfg: &SendCommand,
     feed_tui: bool,
     har_recorder: Option<FileRecorder>,
-    executor: Executor,
+    scope: WeakScope,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
     let explicit_proxy = cfg.proxy.clone().map(|mut proxy_address| {
         if let Some(credentials) = cfg.proxy_user.clone() {
@@ -118,7 +118,7 @@ pub(super) async fn new(
             system_proxy_layer,
         },
         har_recorder,
-        executor,
+        scope,
     )
     .await
 }
@@ -137,7 +137,7 @@ async fn new_with_proxy_layers<P>(
     feed_tui: bool,
     proxy_layers: ProxyLayers<P>,
     har_recorder: Option<FileRecorder>,
-    executor: Executor,
+    scope: WeakScope,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError>
 where
     P: SystemProxyPacService + Clone,
@@ -156,7 +156,7 @@ where
         None => None,
     };
     let captured = database.is_some();
-    let inner_client = new_inner_client(cfg, executor, captured).await?;
+    let inner_client = new_inner_client(cfg, scope, captured).await?;
     let emulation_layer = database.map(|database| {
         (
             UserAgentClassifierLayer::new(),
@@ -287,7 +287,7 @@ async fn read_ca_bundle(path: &std::path::Path) -> Result<Vec<CertificateDer<'st
 
 async fn new_inner_client(
     cfg: &SendCommand,
-    executor: Executor,
+    scope: WeakScope,
     captured: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate.is_some() {
@@ -371,7 +371,7 @@ async fn new_inner_client(
                 Either::B(connector)
             }
         })
-        .with_default_http_connector(executor.clone());
+        .with_default_http_connector(scope.clone());
 
     let uri = parse_user_uri(&cfg.req.uri)?;
     // Erase the deep transport futures before adding diagnostics and timeouts.
@@ -381,12 +381,12 @@ async fn new_inner_client(
         let provider = Arc::new(BoringTlsProvider);
         let compiler =
             captured.then(|| QuicProfileCompiler::new(tls_config.clone(), provider.clone()));
-        let connector = Http3Connector::builder(executor.clone())
+        let connector = Http3Connector::builder(scope.clone())
             .with_tls_provider(provider)
             .with_tls_config(tls_config.clone())
             // HTTP/3 through a `masque://` proxy runs in a CONNECT-UDP tunnel; other proxies
             // stay refused for HTTP/3.
-            .with_endpoints(masque_endpoints(executor, masque_tls_config)?);
+            .with_endpoints(masque_endpoints(scope, masque_tls_config)?);
         let connector = connector.build_lazy()?;
         let connector = match compiler {
             Some(compiler) => Either::A(
@@ -437,18 +437,18 @@ async fn new_inner_client(
 /// a MASQUE proxy, opened by a client of its own to the proxy that trusts it as
 /// `--proxy-insecure` says.
 fn masque_endpoints(
-    executor: Executor,
+    scope: WeakScope,
     proxy_tls: TlsClientConfig,
 ) -> Result<
     MasqueQuicEndpoints<impl Service<Request, Output = Response, Error = OpaqueError> + Clone>,
     BoxError,
 > {
     let client = DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
-        executor.clone(),
+        scope.clone(),
         proxy_tls.with_alpn_http_auto(),
     )?;
-    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), client, executor.clone());
-    Ok(QuicEndpointConnector::new(tunnels, executor))
+    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), client, scope.clone());
+    Ok(QuicEndpointConnector::new(tunnels, scope))
 }
 
 fn captured_emulation_layer(
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn alt_svc_client_construction_needs_no_udp_socket_or_runtime() {
         let cfg = send_cfg(&["--alt-svc", "https://example.com/"]);
-        let _client = new_inner_client(&cfg, Executor::new(), false)
+        let _client = new_inner_client(&cfg, WeakScope::never(), false)
             .now_or_never()
             .expect("construct the client without binding a QUIC endpoint")
             .unwrap();
@@ -738,14 +738,17 @@ mod tests {
     where
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
     {
-        let exec = Executor::default();
-        let listener = TcpListener::build(exec.clone())
+        let scope = WeakScope::never();
+        let listener = TcpListener::build(scope.clone())
             .bind_address(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = HttpServer::auto(exec.clone()).service(handler);
-        exec.into_spawn_task(async move { listener.serve(Arc::new(server)).await });
+        let server = HttpServer::auto(scope.clone()).service(handler);
+        scope
+            .try_hold()
+            .unwrap()
+            .into_spawn_task(async move { listener.serve(Arc::new(server)).await });
         addr.into()
     }
 
@@ -789,7 +792,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(SystemProxyConfig::default()),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
     }
@@ -858,7 +861,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(SystemProxyConfig::default()),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1118,7 +1121,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1157,7 +1160,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1324,7 +1327,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(factory),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1391,7 +1394,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1492,7 +1495,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1573,7 +1576,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1621,7 +1624,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1669,7 +1672,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(pac),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1706,7 +1709,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(factory),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();
@@ -1789,7 +1792,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
-            Executor::default(),
+            WeakScope::never(),
         )
         .await
         .unwrap();

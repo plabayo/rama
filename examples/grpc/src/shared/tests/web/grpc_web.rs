@@ -3,6 +3,7 @@ use base64::Engine as _;
 use rama::{
     Layer as _, Service,
     bytes::{Buf as _, BufMut as _, Bytes, BytesMut},
+    graceful::WeakScope,
     http::{
         Body, Method, Request, StatusCode,
         body::util::BodyExt as _,
@@ -13,7 +14,6 @@ use rama::{
     },
     net::address::SocketAddress,
     net::uri::Uri,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
 };
@@ -70,7 +70,7 @@ async fn text_request() {
 
 async fn spawn() -> String {
     let addr = SocketAddress::local_ipv4(0);
-    let listener = TcpListener::bind_address(addr, Executor::default())
+    let listener = TcpListener::bind_address(addr, WeakScope::never())
         .await
         .expect("listener");
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -78,7 +78,7 @@ async fn spawn() -> String {
     drop(tokio::spawn(async move {
         let http_svc = GrpcWebLayer::new().into_layer(test_server::TestServer::new(Svc));
         listener
-            .serve(HttpServer::auto(Executor::default()).service(http_svc))
+            .serve(HttpServer::auto(WeakScope::never()).service(http_svc))
             .await;
     }));
 

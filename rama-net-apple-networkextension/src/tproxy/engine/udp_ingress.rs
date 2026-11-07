@@ -11,7 +11,7 @@ use std::{
 };
 
 use atomic_waker::AtomicWaker;
-use rama_core::{bytes::Bytes, graceful::ShutdownGuard};
+use rama_core::{bytes::Bytes, graceful::WeakScope};
 use rama_utils::octets::{kib, mib};
 
 use super::UdpDemandSink;
@@ -543,7 +543,7 @@ impl UdpIngressBudget {
     pub(super) fn start_coordinator(
         self: &Arc<Self>,
         rt: &super::TransparentProxyAsyncRuntime,
-        shutdown: ShutdownGuard,
+        shutdown: WeakScope,
     ) {
         let budget = Arc::downgrade(self);
         let signal = self.coordinator_signal.clone();
@@ -4484,7 +4484,7 @@ mod tests {
         assert!(!telemetry_sample(0));
         assert!(telemetry_sample(1_u64 << 63));
         let capture = super::super::tests::common::Capture::default();
-        tracing::subscriber::with_default(capture.clone(), || {
+        capture.record(|| {
             let budget = UdpIngressBudget::new(2);
             for (reason, state) in [
                 (UdpIngressDropReason::Count, INGRESS_PAUSED_COUNT),

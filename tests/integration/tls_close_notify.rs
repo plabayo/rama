@@ -20,8 +20,8 @@ use rama::{
     bytes::Bytes,
     error::{BoxError, BoxErrorExt as _},
     futures::stream,
+    graceful::WeakScope,
     http::{Body, Request, Response, server::HttpServer},
-    rt::Executor,
     service::service_fn,
     tls::rustls::{
         dep::{
@@ -56,7 +56,7 @@ async fn server_sends_close_notify_when_response_body_errors() {
     });
 
     let server = TlsAcceptorLayer::new(acceptor_data)
-        .into_layer(HttpServer::auto(Executor::default()).service(svc));
+        .into_layer(HttpServer::auto(WeakScope::never()).service(svc));
 
     let (client_io, server_io) = duplex(64 * 1024);
 

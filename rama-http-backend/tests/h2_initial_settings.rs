@@ -10,8 +10,8 @@ use rama_core::{
     Service,
     bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef as _,
+    graceful::WeakScope,
     io::BridgeIo,
-    rt::Executor,
     service::service_fn,
 };
 use rama_http::{
@@ -118,7 +118,7 @@ async fn whole_frame_contexts_emit_exact_order_duplicates_and_absence_in_both_ro
                 ..Default::default()
             });
             let task = tokio::spawn(async move {
-                let (_client, _) = http2_eager_handshake::<_, Body>(io, Executor::default())
+                let (_client, _) = http2_eager_handshake::<_, Body>(io, WeakScope::never())
                     .await
                     .unwrap();
                 pending::<()>().await;
@@ -133,7 +133,7 @@ async fn whole_frame_contexts_emit_exact_order_duplicates_and_absence_in_both_ro
                 ..Default::default()
             });
             let task = tokio::spawn(async move {
-                HttpServer::new_h2(Executor::default())
+                HttpServer::new_h2(WeakScope::never())
                     .serve(
                         io,
                         service_fn(|_: Request| async {
@@ -162,7 +162,7 @@ async fn exact_server_advertisement_drives_real_frame_header_and_stream_limits()
             ..Default::default()
         });
         let task = tokio::spawn(async move {
-            HttpServer::new_h2(Executor::default())
+            HttpServer::new_h2(WeakScope::never())
                 .serve(
                     server,
                     service_fn(|request: Request| async {
@@ -181,7 +181,7 @@ async fn exact_server_advertisement_drives_real_frame_header_and_stream_limits()
             .header("x-long", "h".repeat(50000))
             .body(Body::from(vec![7; 512]))
             .unwrap();
-        let (mut sender, connection) = CoreH2ClientBuilder::new(Executor::default())
+        let (mut sender, connection) = CoreH2ClientBuilder::new(WeakScope::never())
             .with_observe_peer_settings(true)
             .handshake(MockSocket::new(client))
             .await
@@ -221,7 +221,7 @@ async fn server_caps_an_explicit_frame_omits_stay_enforced() {
         let release = Arc::new(tokio::sync::Notify::new());
         let held = release.clone();
         let task = tokio::spawn(async move {
-            HttpServer::new_h2(Executor::default())
+            HttpServer::new_h2(WeakScope::never())
                 .serve(
                     server,
                     service_fn(move |request: Request| {
@@ -237,7 +237,7 @@ async fn server_caps_an_explicit_frame_omits_stay_enforced() {
                 .await
                 .unwrap();
         });
-        let (mut sender, connection) = CoreH2ClientBuilder::new(Executor::default())
+        let (mut sender, connection) = CoreH2ClientBuilder::new(WeakScope::never())
             .handshake(MockSocket::new(client))
             .await
             .unwrap();
@@ -283,7 +283,7 @@ async fn client_header_list_cap_an_explicit_frame_omits_stays_enforced() {
     timeout(Duration::from_secs(5), async {
         let (client, server) = tokio::io::duplex(262144);
         let task = tokio::spawn(async move {
-            HttpServer::new_h2(Executor::default())
+            HttpServer::new_h2(WeakScope::never())
                 .serve(
                     MockSocket::new(server),
                     service_fn(|_: Request| async {
@@ -298,7 +298,7 @@ async fn client_header_list_cap_an_explicit_frame_omits_stays_enforced() {
                 .await
                 .unwrap();
         });
-        let (mut sender, connection) = CoreH2ClientBuilder::new(Executor::default())
+        let (mut sender, connection) = CoreH2ClientBuilder::new(WeakScope::never())
             .with_initial_settings(settings(&[(2, 0)]))
             .handshake(MockSocket::new(client))
             .await
@@ -329,7 +329,7 @@ async fn relay_observes_mandatory_client_settings_without_waiting_for_request_he
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_2));
         let relay = tokio::spawn(async move {
-            HttpMitmRelay::new(Executor::default())
+            HttpMitmRelay::new(WeakScope::never())
                 .serve(BridgeIo(MockSocket::new(ingress), egress))
                 .await
         });
@@ -414,7 +414,7 @@ async fn relayed_client_start(
         egress.extensions().insert(limits);
     }
     let relay = tokio::spawn(async move {
-        HttpMitmRelay::new(Executor::default())
+        HttpMitmRelay::new(WeakScope::never())
             .serve(BridgeIo(MockSocket::new(ingress), egress))
             .await
     });
@@ -492,7 +492,7 @@ async fn prefix_and_upstream_settings_share_one_absolute_deadline() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
     let relay = tokio::spawn(async move {
-        HttpMitmRelay::new(Executor::default())
+        HttpMitmRelay::new(WeakScope::never())
             .with_eager_peer_settings_timeout(Duration::from_secs(5))
             .serve(BridgeIo(MockSocket::new(ingress), egress))
             .await
@@ -569,7 +569,7 @@ async fn explicit_initial_settings_replace_only_the_replay_leading_frame_and_its
         });
         let task = tokio::spawn(async move {
             let (client, server_settings) =
-                http2_eager_handshake::<_, Body>(io, Executor::default())
+                http2_eager_handshake::<_, Body>(io, WeakScope::never())
                     .await
                     .unwrap();
             server_settings.await_settings().await.unwrap();

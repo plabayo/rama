@@ -43,7 +43,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
     futures::{StreamExt as _, stream},
-    graceful::Shutdown,
+    graceful::{Scope, WeakScope},
     http::{
         Body, HeaderMap, Method, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
@@ -84,7 +84,6 @@ use rama::{
         ClientConfig, Endpoint, ServerConfig, TransportConfig,
         tls::{QuicClientConfigProvider, TlsConfigError, TlsOptions},
     },
-    rt::Executor,
     service::service_fn,
     tcp::{
         TcpStream,
@@ -157,7 +156,7 @@ struct Server {
     accepted: Arc<AtomicUsize>,
     observations: Arc<Mutex<Vec<Observation>>>,
     replies: Arc<Mutex<VecDeque<Reply>>>,
-    shutdown: Shutdown,
+    shutdown: Scope,
     cancel: CancellationToken,
     task: JoinHandle<()>,
 }
@@ -165,8 +164,8 @@ struct Server {
 impl Server {
     async fn start(auth: ServerAuthData, version: Version) -> Self {
         let cancel = CancellationToken::new();
-        let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
-        let executor = Executor::graceful(shutdown.guard());
+        let shutdown = Scope::new().with_signal(cancel.clone().cancelled_owned());
+        let scope = shutdown.clone_weak();
         let observations = Arc::new(Mutex::new(Vec::new()));
         let replies = Arc::new(Mutex::new(VecDeque::<Reply>::new()));
         let accepted = Arc::new(AtomicUsize::new(0));
@@ -231,7 +230,7 @@ impl Server {
         let config = TlsServerConfig::new().with_server_auth(auth);
         if version == Version::HTTP_3 {
             let config = config.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let endpoint = Endpoint::build(executor.clone())
+            let endpoint = Endpoint::build(scope.clone())
                 .with_server_config(
                     ServerConfig::try_from_rama_tls(&config, TlsOptions::default()).unwrap(),
                 )
@@ -242,13 +241,13 @@ impl Server {
             let task = spawn({
                 let endpoint = endpoint.clone();
                 let accepted = accepted.clone();
-                let server = HttpServer::new_http3(executor.clone());
+                let server = HttpServer::new_http3(scope.clone());
                 async move {
                     while let Some(incoming) = endpoint.accept().await {
                         accepted.fetch_add(1, Ordering::SeqCst);
                         let server = server.clone();
                         let handler = handler.clone();
-                        executor.spawn_task(async move {
+                        scope.try_hold().unwrap().into_spawn_task(async move {
                             if let Ok(connection) = incoming.await {
                                 _ = server.serve(connection, handler).await;
                             }
@@ -268,7 +267,7 @@ impl Server {
                 task,
             };
         }
-        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), executor.clone())
+        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), scope.clone())
             .await
             .unwrap();
         let address = listener.local_addr().unwrap();
@@ -277,7 +276,7 @@ impl Server {
             Version::HTTP_2 => config.with_alpn_http_2(),
             _ => panic!("test server only supports HTTP/1.1 and HTTP/2"),
         };
-        let mut http = HttpServer::auto(executor);
+        let mut http = HttpServer::auto(scope);
         http.h2_mut().set_alt_svc(true);
         let service = (
             MapInputLayer::new({
@@ -342,9 +341,9 @@ impl Server {
             endpoint.close(0u32, b"done");
             timeout(TEST_TIMEOUT, endpoint.shutdown()).await.unwrap();
         }
-        self.shutdown
-            .shutdown_with_limit(TEST_TIMEOUT)
+        tokio::time::timeout(TEST_TIMEOUT, self.shutdown.join())
             .await
+            .unwrap()
             .unwrap();
         self.task.await.unwrap();
     }
@@ -381,7 +380,7 @@ fn client_with_transport(
     #[cfg(not(feature = "boring"))]
     let builder = builder.with_tls_support_using_rustls(tls);
     builder
-        .with_default_http_connector(Executor::new())
+        .with_default_http_connector(WeakScope::never())
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
         .map_connector(|mut connector| {
@@ -424,11 +423,11 @@ async fn client_with_http3_cache_and_timeout(
     impl Service<Request, Output = Response, Error: Debug>,
     Endpoint,
 ) {
-    let endpoint = Endpoint::build(Executor::new())
+    let endpoint = Endpoint::build(WeakScope::never())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let h3 = Http3Connector::builder(Executor::new())
+    let h3 = Http3Connector::builder(WeakScope::never())
         .with_endpoint(endpoint.clone())
         .with_tls_config(tls.clone());
     // Match the stream provider so native overrides exercise both transports.
@@ -445,7 +444,7 @@ async fn client_with_http3_cache_and_timeout(
     #[cfg(not(feature = "boring"))]
     let builder = builder.with_tls_support_using_rustls(tls);
     let client = builder
-        .with_default_http_connector(Executor::new())
+        .with_default_http_connector(WeakScope::never())
         .with_http3_support(h3)
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
@@ -601,8 +600,8 @@ async fn default_client_supports_h3_prior_knowledge() {
     let (auth, tls) = credentials();
     let server = Server::start(auth, Version::HTTP_3).await;
     let cancel = CancellationToken::new();
-    let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
-    let client = DefaultHttpWebClient::default_with_executor(Executor::graceful(shutdown.guard()));
+    let shutdown = Scope::new().with_signal(cancel.clone().cancelled_owned());
+    let client = DefaultHttpWebClient::default_with_scope(shutdown.clone_weak());
     for _ in 0..2 {
         let request = server.request();
         assert_eq!(request.version(), Version::HTTP_3);
@@ -613,7 +612,10 @@ async fn default_client_supports_h3_prior_knowledge() {
 
     drop(client);
     cancel.cancel();
-    shutdown.shutdown_with_limit(TEST_TIMEOUT).await.unwrap();
+    tokio::time::timeout(TEST_TIMEOUT, shutdown.join())
+        .await
+        .unwrap()
+        .unwrap();
     server.close().await;
 }
 
@@ -1172,9 +1174,9 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
     let alternative = Server::start(auth.clone(), Version::HTTP_2).await;
     let quic_alternative = Server::start(auth, Version::HTTP_3).await;
     let cancel = CancellationToken::new();
-    let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
-    let executor = Executor::graceful(shutdown.guard());
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), executor.clone())
+    let shutdown = Scope::new().with_signal(cancel.clone().cancelled_owned());
+    let scope = shutdown.clone_weak();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), scope.clone())
         .await
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
@@ -1182,7 +1184,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
     let refused = Arc::new(Mutex::new(None::<(u16, StatusCode)>));
     let connect = EagerHttpProxyConnector::new(
         DnsConnector::new(TcpConnector::new()),
-        IoForwardService::new(executor.clone()),
+        IoForwardService::new(scope.clone()),
     );
     let service = (
         MapInputLayer::new({
@@ -1193,7 +1195,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
                 request
             }
         }),
-        UpgradeLayer::new(executor.clone(), MethodMatcher::CONNECT, connect),
+        UpgradeLayer::new(scope.clone(), MethodMatcher::CONNECT, connect),
     )
         .into_layer(service_fn(async |_request: Request| {
             Ok::<_, Infallible>(
@@ -1226,7 +1228,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
             }
         }
     });
-    let task = spawn(listener.serve(HttpServer::auto(executor).service(service)));
+    let task = spawn(listener.serve(HttpServer::auto(scope).service(service)));
 
     // This address identifies a refused route without relying on an unowned
     // port. Every other dial still uses real TCP, including the working proxy.
@@ -1366,7 +1368,10 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
     assert_eq!(origin.request_count(), 10);
     quic_alternative.close().await;
     cancel.cancel();
-    shutdown.shutdown_with_limit(TEST_TIMEOUT).await.unwrap();
+    tokio::time::timeout(TEST_TIMEOUT, shutdown.join())
+        .await
+        .unwrap()
+        .unwrap();
     task.await.unwrap();
     origin.close().await;
     alternative.close().await;
@@ -1504,7 +1509,7 @@ async fn fixed_custom_tls_connector_reuses_connections() {
             .without_tls_proxy_support()
             .with_http_proxy_support()
             .with_custom_tls_connector(TlsConnectorLayer::auto().with_base_config(tls))
-            .with_default_http_connector(Executor::new())
+            .with_default_http_connector(WeakScope::never())
             .with_default_connection_pool()
             .build_client();
 
@@ -1550,10 +1555,10 @@ async fn fixed_custom_tls_connector_reuses_connections() {
 async fn custom_http3_connector_publishes_its_own_pool_policy() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth, Version::HTTP_3).await;
-    let endpoint = Endpoint::bind_client(Executor::new(), SocketAddress::local_ipv4(0))
+    let endpoint = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let h3 = Http3Connector::builder(Executor::new())
+    let h3 = Http3Connector::builder(WeakScope::never())
         .with_endpoint(endpoint.clone())
         .with_tls_config(tls)
         .build()
@@ -1567,7 +1572,7 @@ async fn custom_http3_connector_publishes_its_own_pool_policy() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(Executor::new())
+        .with_default_http_connector(WeakScope::never())
         .with_http3_connector(DnsConnector::new(h3))
         .with_default_connection_pool()
         .build_client();
@@ -1928,14 +1933,14 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
         let server_tls = TlsServerConfig::new()
             .with_server_auth(auth)
             .with_alpn([alpn.clone()].into_iter().collect());
-        let server = Endpoint::build(Executor::new())
+        let server = Endpoint::build(WeakScope::never())
             .with_server_config(
                 ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
             )
             .bind_address(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
-        let client = Endpoint::build(Executor::new())
+        let client = Endpoint::build(WeakScope::never())
             .bind_address(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
@@ -1973,7 +1978,7 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
         };
         let result = timeout(
             TEST_TIMEOUT,
-            http_connect::<_, _, Body>(transport, input, Executor::new()),
+            http_connect::<_, _, Body>(transport, input, WeakScope::never()),
         )
         .await
         .unwrap();
@@ -2145,10 +2150,10 @@ async fn check_http3_connector_resumption(provider: Arc<dyn QuicClientConfigProv
                 configurations: AtomicUsize::new(0),
                 opaque,
             });
-            let endpoint = Endpoint::bind_client(Executor::new(), SocketAddress::local_ipv4(0))
+            let endpoint = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
                 .await
                 .unwrap();
-            let connector = Http3Connector::builder(Executor::new())
+            let connector = Http3Connector::builder(WeakScope::never())
                 .with_endpoint(endpoint.clone())
                 .with_tls_config(tls.clone())
                 .with_tls_provider(provider.clone())
@@ -2186,7 +2191,7 @@ async fn check_http3_connector_resumption(provider: Arc<dyn QuicClientConfigProv
                 let established = http_connect::<_, _, Body>(
                     established.conn,
                     established.input,
-                    Executor::new(),
+                    WeakScope::never(),
                 )
                 .await
                 .unwrap();
@@ -2217,10 +2222,10 @@ async fn check_http3_config_cache_tracks_mutated_defaults(
             cert_chain: auth.cert_chain.clone(),
         });
         let server = Server::start(auth, Version::HTTP_3).await;
-        let endpoint = Endpoint::bind_client(Executor::new(), SocketAddress::local_ipv4(0))
+        let endpoint = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
             .await
             .unwrap();
-        let connector = Http3Connector::builder(Executor::new())
+        let connector = Http3Connector::builder(WeakScope::never())
             .with_endpoint(endpoint.clone())
             .with_tls_config(
                 TlsClientConfig::default_http()
@@ -2307,7 +2312,7 @@ async fn http3_pool_opens_another_connection_after_early_response_while_upload_s
 
 async fn check_http3_busy_peer_credit(early_response: bool) {
     let (auth, tls) = credentials();
-    let executor = Executor::new();
+    let scope = WeakScope::never();
     let config = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
@@ -2316,7 +2321,7 @@ async fn check_http3_busy_peer_credit(early_response: bool) {
     let mut transport = TransportConfig::default();
     transport.set_max_concurrent_bidi_streams(1u32);
     server_config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(executor.clone())
+    let endpoint = Endpoint::build(scope.clone())
         .with_server_config(server_config)
         .bind_address(SocketAddress::local_ipv4(0))
         .await
@@ -2351,7 +2356,7 @@ async fn check_http3_busy_peer_credit(early_response: bool) {
     let task = spawn({
         let endpoint = endpoint.clone();
         let accepted = accepted.clone();
-        let server = HttpServer::new_http3(executor.clone());
+        let server = HttpServer::new_http3(scope.clone());
         async move {
             while let Some(incoming) = endpoint.accept().await {
                 accepted.fetch_add(1, Ordering::SeqCst);

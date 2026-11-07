@@ -7,6 +7,7 @@ use rama::{
     ServiceInput,
     bytes::Bytes,
     futures::stream,
+    graceful::WeakScope,
     http::{
         Body, Method, Request, Response, StatusCode,
         core::{
@@ -16,7 +17,6 @@ use rama::{
         },
     },
     net::uri::Uri,
-    rt::Executor,
     service::service_fn,
 };
 use tokio::{
@@ -284,7 +284,7 @@ async fn http2_response_framing_follows_one_rule() {
         let svc = RamaHttpService::new(service_fn(async |req: Request| {
             Ok::<_, Infallible>(response(case_of(&req)))
         }));
-        _ = http2::Builder::new(Executor::new())
+        _ = http2::Builder::new(WeakScope::never())
             .serve_connection(ServiceInput::new(socket), svc)
             .await;
     });
@@ -350,7 +350,7 @@ async fn http2_strict_connect_rejects_both_framing_fields() {
                         .unwrap(),
                 )
             }));
-            _ = http2::Builder::new(Executor::new())
+            _ = http2::Builder::new(WeakScope::never())
                 .with_strict_connect_framing(true)
                 .serve_connection(ServiceInput::new(socket), svc)
                 .await;

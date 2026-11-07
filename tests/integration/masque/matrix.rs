@@ -184,7 +184,7 @@ async fn run_case(case: Case) {
                 proxy.clone(),
                 target.clone(),
                 version,
-                http_client_on(Executor::new(), case.quic),
+                http_client_on(WeakScope::never(), case.quic),
             )
             .await,
         ),
@@ -198,13 +198,13 @@ async fn run_case(case: Case) {
     };
     for run in 0..runs {
         let label = format!("{case:?} run {run}");
-        let exec = Executor::new();
+        let scope = WeakScope::never();
         let (client, host, route) = match &egress {
             None => (
                 tunneling_client_with(
-                    exec.clone(),
+                    scope.clone(),
                     version,
-                    http_client_on(exec, case.quic),
+                    http_client_on(scope, case.quic),
                     case.quic,
                 ),
                 target.to_string(),
@@ -216,7 +216,7 @@ async fn run_case(case: Case) {
                     Perspective::MitmEgress => format!("localhost:{}", address.port),
                     _ => address.to_string(),
                 };
-                (http_client_on(exec, case.quic), host, None)
+                (http_client_on(scope, case.quic), host, None)
             }
         };
         let result = exercise(&client, &host, route, case.workload).await;

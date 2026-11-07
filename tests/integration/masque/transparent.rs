@@ -8,7 +8,7 @@ use rama::{
 };
 
 async fn transparent(proxy: SocketAddress, intercepted: bool) -> (SocketAddress, Tasks) {
-    let exec = Executor::new();
+    let scope = WeakScope::never();
     let (ca, key) = generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
     let tls = TlsMitmRelay::new_cached_in_memory(ca, key);
     let requests = Arc::new(AtomicUsize::new(0));
@@ -17,22 +17,22 @@ async fn transparent(proxy: SocketAddress, intercepted: bool) -> (SocketAddress,
         counter.fetch_add(1, Ordering::SeqCst);
         request
     });
-    let http = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+    let http = HttpMitmRelay::new(scope.clone()).with_http_middleware((
         HttpUpgradeMitmRelayLayer::new(
-            exec.clone(),
-            ConnectUdpRelayRequestMatcher::default_with_exec(exec.clone()),
+            scope.clone(),
+            ConnectUdpRelayRequestMatcher::default_with_scope(scope.clone()),
         ),
         count.clone(),
         ArcLayer::new(),
     ));
     let tcp = PeekTlsClientHelloService::new(tls.clone().into_layer(http));
-    let h3 = Http3MitmRelay::new(exec.clone())
-        .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(exec.clone()))
+    let h3 = Http3MitmRelay::new(scope.clone())
+        .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(scope.clone()))
         .with_http_middleware((ConnectUdpMitmLayer::new(), count, ArcLayer::new()));
     let transport = Arc::new(masque_quic_transport());
     let quic = QuicMitmRelay::new(
         tls.issuer().clone(),
-        exec.clone(),
+        scope.clone(),
         TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
         VarInt::from_u32(0x101),
     )
@@ -94,7 +94,7 @@ async fn transparent(proxy: SocketAddress, intercepted: bool) -> (SocketAddress,
     });
     let udp_task = tokio::spawn(async move {
         DatagramDemux::new(socket, demux_config())
-            .serve(exec, bridge)
+            .serve(scope, bridge)
             .await
             .unwrap();
     });
@@ -126,7 +126,7 @@ async fn own_masque_sessions_survive_transparent_interception_and_passthrough() 
                 .unwrap();
                 for run in 0..10 {
                     eprintln!("carrier={carrier:?}, intercepted={intercepted}, run={run}");
-                    let client = tunneling_client(Executor::new(), carrier.version());
+                    let client = tunneling_client(WeakScope::never(), carrier.version());
                     assert_eq!(
                         get_through(&client, &format!("localhost:{}", origin.port), &address).await,
                         "HTTP/3.0 origin"

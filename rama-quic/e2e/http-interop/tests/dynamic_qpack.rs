@@ -3,6 +3,7 @@ use interop_common::{backend, identity};
 use rama::{
     crypto::pem::PemEncode as _,
     error::BoxError,
+    graceful::WeakScope,
     http::{
         Body, Request,
         body::util::BodyExt as _,
@@ -10,7 +11,6 @@ use rama::{
     },
     net::tls::ApplicationProtocol,
     quic::{Endpoint, TransportConfig, qlog::QlogConfig},
-    rt::Executor,
     tls::client::TlsClientConfig,
     utils::fs::tempdir,
 };
@@ -77,8 +77,8 @@ async fn dynamic_qpack_blocks_and_resumes_against_aioquic() -> Result<(), BoxErr
             .with_event_schemas(rama::http::core::h3::qlog::EVENT_SCHEMAS)
             .with_writer(Box::new(tokio::fs::File::create(&trace_path).await?))
             .start()?;
-        let executor = Executor::new();
-        let endpoint = Endpoint::build(executor.clone())
+        let scope = WeakScope::never();
+        let endpoint = Endpoint::build(scope.clone())
             .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
             .await?;
         let tls = TlsClientConfig::new()
@@ -91,7 +91,7 @@ async fn dynamic_qpack_blocks_and_resumes_against_aioquic() -> Result<(), BoxErr
             ));
         let connection = endpoint.connect_with(config, address, "localhost")?.await?;
         let (sender, driver) =
-            client::handshake::<Body, _>(connection.clone(), Config::default(), executor)?;
+            client::handshake::<Body, _>(connection.clone(), Config::default(), scope)?;
         let drive = tokio::spawn(driver.run());
         let mut barriers = 0;
         let mut dynamic_requests = 0;

@@ -22,7 +22,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use rama_core::{bytes::Bytes, futures::poll, rt::Executor};
+use rama_core::{bytes::Bytes, futures::poll, graceful::WeakScope};
 use rama_net::gate::{
     DatagramGates, GateDirection, GatedStream, Initiator, StreamGate, StreamGates,
 };
@@ -45,12 +45,12 @@ fn localhost() -> SocketAddr {
 
 /// A client connected to a server, and the server's side of that connection.
 async fn pair(identities: &Identities) -> (Endpoint, Connection, Endpoint, Connection) {
-    let server = Endpoint::build(Executor::new())
+    let server = Endpoint::build(WeakScope::never())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
         .unwrap();
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::never())
         .bind_address(localhost())
         .await
         .unwrap();
@@ -867,12 +867,12 @@ async fn pair_with_server_transport(
 ) -> (Endpoint, Connection, Endpoint, Connection) {
     let mut config = identities.server_config();
     config.set_transport_config(Arc::new(transport));
-    let server = Endpoint::build(Executor::new())
+    let server = Endpoint::build(WeakScope::never())
         .with_server_config(config)
         .bind_address(localhost())
         .await
         .unwrap();
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::never())
         .bind_address(localhost())
         .await
         .unwrap();

@@ -17,12 +17,11 @@ use std::{
 use tokio::time::Instant;
 
 /// Connection observer attached to captured HTTP/3 requests.
-#[derive(Clone)]
+#[derive(Clone, Extension)]
 pub struct H3Observer {
     shared: Weak<Shared>,
     unavailable: Arc<H3ObservationSnapshot>,
 }
-impl Extension for H3Observer {}
 impl fmt::Debug for H3Observer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("H3Observer").finish_non_exhaustive()

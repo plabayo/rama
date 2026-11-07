@@ -13,6 +13,7 @@ use rama::{
     dns::client::DnsConnector,
     error::{BoxError, error_chain, extra::OpaqueError},
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
@@ -59,7 +60,6 @@ use rama::{
             default_tls_provider,
         },
     },
-    rt::Executor,
     service::{BoxService, service_fn},
     tcp::{TcpStream, client::service::TcpConnector, server::TcpListener},
     tls::{
@@ -362,7 +362,7 @@ where
     P: ConnectUdpPolicy,
 {
     masque_proxy_on(
-        Executor::new(),
+        WeakScope::never(),
         template,
         policy,
         h3_datagrams,
@@ -374,13 +374,13 @@ where
     .await
 }
 
-/// A MASQUE proxy whose connections and tunnels run on `exec`.
+/// A MASQUE proxy whose connections and tunnels run on `scope`.
 #[expect(
     clippy::too_many_arguments,
     reason = "one fixture for every proxy variant"
 )]
 async fn masque_proxy_on<P>(
-    exec: Executor,
+    scope: WeakScope,
     template: Option<&ProxyPathTemplate>,
     policy: P,
     h3_datagrams: bool,
@@ -395,7 +395,7 @@ where
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();
     let stats = Arc::new(EgressSockets::default());
-    let connect_udp = ConnectUdpService::try_new(exec.clone(), template)
+    let connect_udp = ConnectUdpService::try_new(scope.clone(), template)
         .unwrap()
         .with_policy(policy)
         .with_connector(CountingUdpConnector(stats.clone()))
@@ -410,11 +410,11 @@ where
         AddInputExtensionLayer::new(DnsResolveIpMode::SingleIpV4),
         // Ordinary CONNECT carries TCP through the same proxy; the rest is CONNECT-UDP.
         UpgradeLayer::new(
-            exec.clone(),
+            scope.clone(),
             HttpProxyConnectMatcher::new(),
             EagerHttpProxyConnector::new(
                 DnsConnector::new(TcpConnector::new()),
-                IoForwardService::new(exec.clone()),
+                IoForwardService::new(scope.clone()),
             ),
         ),
     )
@@ -443,7 +443,7 @@ where
                 .into_iter()
                 .collect(),
         );
-    let mut http = HttpServer::auto(exec.clone());
+    let mut http = HttpServer::auto(scope.clone());
     http.h2_mut().set_enable_connect_protocol();
     let tcp_connections = Arc::new(AtomicUsize::new(0));
     let accepted = tcp_connections.clone();
@@ -456,7 +456,7 @@ where
     )
         .into_layer(http.service(service.clone()));
 
-    let mut h3 = HttpServer::new_http3(exec.clone());
+    let mut h3 = HttpServer::new_http3(scope.clone());
     h3.http3_mut().extended_connect = true;
     if !h3_datagrams {
         h3.http3_mut().datagrams = None;
@@ -472,11 +472,11 @@ where
 
     // The same port number for TCP and UDP, as clients expect of an HTTP/3 proxy.
     let (listener, endpoint) = loop {
-        let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+        let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone())
             .await
             .unwrap();
         let address = SocketAddress::from(listener.local_addr().unwrap());
-        match Endpoint::build(exec.clone())
+        match Endpoint::build(scope.clone())
             .with_server_config(config.clone())
             .bind_address(address)
             .await
@@ -492,7 +492,7 @@ where
     };
     let address = SocketAddress::from(listener.local_addr().unwrap());
     let tcp_task = tokio::spawn(async move { listener.serve(tcp).await });
-    let quic_task = tokio::spawn(endpoint.clone().serve(exec, h3.service(service)));
+    let quic_task = tokio::spawn(endpoint.clone().serve(scope, h3.service(service)));
     let mut tasks = Tasks::new(vec![tcp_task, quic_task], Some(endpoint));
     tasks.requests = requests;
     tasks.tcp_connections = tcp_connections;
@@ -502,18 +502,22 @@ where
 
 type Client = BoxService<Request, Response, OpaqueError>;
 
-fn http_client(exec: Executor) -> Client {
-    http_client_on(exec, QuicTls::Boring)
+fn http_client(scope: WeakScope) -> Client {
+    http_client_on(scope, QuicTls::Boring)
 }
 
 /// A client to MASQUE proxies, its HTTP/3 on `quic`.
-fn http_client_on(exec: Executor, quic: QuicTls) -> Client {
-    http_client_with_transport(exec, masque_quic_transport(), quic)
+fn http_client_on(scope: WeakScope, quic: QuicTls) -> Client {
+    http_client_with_transport(scope, masque_quic_transport(), quic)
 }
 
-fn http_client_with_transport(exec: Executor, transport: TransportConfig, quic: QuicTls) -> Client {
+fn http_client_with_transport(
+    scope: WeakScope,
+    transport: TransportConfig,
+    quic: QuicTls,
+) -> Client {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3Connector::builder(exec.clone())
+    let h3 = Http3Connector::builder(scope.clone())
         .with_tls_config(tls.clone())
         .with_tls_provider(quic.client())
         .with_transport(transport)
@@ -525,7 +529,7 @@ fn http_client_with_transport(exec: Executor, transport: TransportConfig, quic: 
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(exec)
+        .with_default_http_connector(scope)
         .with_http3_support(h3)
         .with_default_connection_pool()
         .without_alt_svc()
@@ -543,13 +547,14 @@ fn proxy_address(scheme_and_template: &str, proxy: SocketAddress) -> ProxyAddres
 /// A CONNECT-UDP tunnel to `target` through `proxy` over `version`, as the connector layer
 /// opens it for a request on a MASQUE proxy route.
 async fn open_tunnel(
-    exec: Executor,
+    scope: WeakScope,
     proxy: &ProxyAddress,
     target: impl Into<HostWithPort>,
     version: Version,
 ) -> Result<ConnectUdpSocket, ConnectionError> {
-    let connector = ConnectUdpConnector::new(UdpConnector::new(), http_client(exec.clone()), exec)
-        .with_version(version);
+    let connector =
+        ConnectUdpConnector::new(UdpConnector::new(), http_client(scope.clone()), scope)
+            .with_version(version);
     let request = ConnectRequest::new(target.into());
     request.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
     let EstablishedClientConnection { conn, .. } = connector.serve(request).await?;
@@ -626,7 +631,7 @@ async fn tunnels_relay_udp_on_every_carrier_and_template() {
                     template => template,
                 };
                 let proxy = proxy_address(client_template, proxy);
-                let mut socket = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+                let mut socket = open_tunnel(WeakScope::never(), &proxy, target, carrier.version())
                     .await
                     .unwrap_or_else(|error| panic!("{label}: {error}"));
                 for payload in [&b"hello"[..], b"", &[7; 1000]] {
@@ -661,9 +666,9 @@ async fn tunnels_share_one_connection_except_on_http1() {
             )
             .await;
             let proxy = proxy_address("masque://", proxy);
-            let exec = Executor::new();
+            let scope = WeakScope::never();
             let connector =
-                ConnectUdpConnector::new(UdpConnector::new(), http_client(exec.clone()), exec)
+                ConnectUdpConnector::new(UdpConnector::new(), http_client(scope.clone()), scope)
                     .with_version(carrier.version());
             let mut sockets = Vec::new();
             for _ in 0..TUNNELS {
@@ -730,7 +735,7 @@ async fn names_resolve_at_the_proxy() {
             let target =
                 HostWithPort::try_from(format!("localhost:{}", target.port).as_str()).unwrap();
             let mut socket = open_tunnel(
-                Executor::new(),
+                WeakScope::never(),
                 &proxy_address("masque://", proxy),
                 target,
                 carrier.version(),
@@ -750,7 +755,7 @@ async fn the_default_policy_refuses_loopback_with_proxy_status() {
     timeout(DEADLINE, async {
         let (target, _echo) = udp_echo().await;
         let (proxy, _proxy) = masque_proxy(None, DestinationScopePolicy::default(), true).await;
-        let client = http_client(Executor::new());
+        let client = http_client(WeakScope::never());
         let proxy = proxy_address("masque://", proxy);
         for carrier in Carrier::ALL {
             let request = connect_udp_request(
@@ -800,14 +805,14 @@ async fn the_policy_sees_the_authenticated_user_on_every_carrier() {
             .await;
             let john =
                 ProxyAddress::try_from(format!("masque://john:secret@{proxy}").as_str()).unwrap();
-            let mut socket = open_tunnel(Executor::new(), &john, target, carrier.version())
+            let mut socket = open_tunnel(WeakScope::never(), &john, target, carrier.version())
                 .await
                 .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
             echo(&mut socket, b"john").await;
             assert_carrier(&socket, carrier);
 
             let anonymous = proxy_address("masque://", proxy);
-            let error = open_tunnel(Executor::new(), &anonymous, target, carrier.version())
+            let error = open_tunnel(WeakScope::never(), &anonymous, target, carrier.version())
                 .await
                 .expect_err("anonymous users are refused");
             let error = format!("{error:?}");
@@ -837,14 +842,14 @@ async fn a_tunnel_holds_its_place_until_it_ends_on_every_carrier() {
             )
             .await;
             let proxy = proxy_address("masque://", proxy);
-            let mut first = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+            let mut first = open_tunnel(WeakScope::never(), &proxy, target, carrier.version())
                 .await
                 .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
             assert_carrier(&first, carrier);
             echo(&mut first, b"first").await;
             assert_eq!(limits.live_tunnels(), 1, "{carrier:?}");
 
-            let error = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+            let error = open_tunnel(WeakScope::never(), &proxy, target, carrier.version())
                 .await
                 .expect_err("the proxy is full");
             let error = format!("{error:?}");
@@ -854,7 +859,7 @@ async fn a_tunnel_holds_its_place_until_it_ends_on_every_carrier() {
             while limits.live_tunnels() > 0 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            let mut again = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+            let mut again = open_tunnel(WeakScope::never(), &proxy, target, carrier.version())
                 .await
                 .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
             echo(&mut again, b"again").await;
@@ -890,7 +895,7 @@ async fn a_silent_target_receives_only_the_first_reply_allowance_on_every_carrie
             )
             .await;
             let proxy = proxy_address("masque://", proxy);
-            let socket = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+            let socket = open_tunnel(WeakScope::never(), &proxy, target, carrier.version())
                 .await
                 .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
             assert_carrier(&socket, carrier);
@@ -948,10 +953,10 @@ async fn a_principals_tunnels_share_its_budget_across_connections_on_every_carri
             let proxy = proxy_address("masque://", proxy);
             let before = received.load(Ordering::SeqCst);
             // Both from 127.0.0.1, so one principal; each opens its own connection.
-            let first = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+            let first = open_tunnel(WeakScope::never(), &proxy, target, carrier.version())
                 .await
                 .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
-            let second = open_tunnel(Executor::new(), &proxy, target, carrier.version())
+            let second = open_tunnel(WeakScope::never(), &proxy, target, carrier.version())
                 .await
                 .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
             assert_carrier(&first, carrier);
@@ -989,7 +994,7 @@ async fn unknown_paths_get_not_found() {
         .await;
         for carrier in Carrier::ALL {
             let error = open_tunnel(
-                Executor::new(),
+                WeakScope::never(),
                 &proxy_address("masque://", proxy),
                 target,
                 carrier.version(),
@@ -1021,7 +1026,7 @@ async fn an_unreachable_target_closes_the_tunnel() {
             )
             .await;
             let mut socket = open_tunnel(
-                Executor::new(),
+                WeakScope::never(),
                 &proxy_address("masque://", proxy),
                 target,
                 carrier.version(),
@@ -1076,9 +1081,9 @@ async fn h3_origin_at(
     address: SocketAddress,
     quic: QuicTls,
 ) -> Result<(SocketAddress, Tasks), BoxError> {
-    let exec = Executor::new();
+    let scope = WeakScope::never();
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
-    let h3 = HttpServer::new_http3(exec.clone());
+    let h3 = HttpServer::new_http3(scope.clone());
     let mut transport = TransportConfig::default();
     h3.http3().configure_transport(&mut transport).unwrap();
     let tls = TlsServerConfig::new()
@@ -1086,7 +1091,7 @@ async fn h3_origin_at(
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
     let mut config = quic.server_config(&tls);
     config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(exec.clone())
+    let endpoint = Endpoint::build(scope.clone())
         .with_server_config(config)
         .bind_address(address)
         .await?;
@@ -1097,7 +1102,7 @@ async fn h3_origin_at(
         counted.fetch_add(1, Ordering::SeqCst);
         handle_origin(request)
     }));
-    let task = tokio::spawn(endpoint.clone().serve(exec, service));
+    let task = tokio::spawn(endpoint.clone().serve(scope, service));
     let mut tasks = Tasks::new(vec![task], Some(endpoint));
     tasks.requests = requests;
     Ok((address, tasks))
@@ -1113,23 +1118,23 @@ async fn handle_origin(request: Request) -> Result<Response, Infallible> {
 }
 
 /// An HTTP/3 client whose QUIC connections tunnel through MASQUE proxies over `outer`.
-fn tunneling_client(exec: Executor, outer: Version) -> Client {
-    tunneling_client_with(exec.clone(), outer, http_client(exec), QuicTls::Boring)
+fn tunneling_client(scope: WeakScope, outer: Version) -> Client {
+    tunneling_client_with(scope.clone(), outer, http_client(scope), QuicTls::Boring)
 }
 
 fn tunneling_client_with(
-    exec: Executor,
+    scope: WeakScope,
     outer: Version,
     outer_client: Client,
     quic: QuicTls,
 ) -> Client {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), outer_client, exec.clone())
+    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), outer_client, scope.clone())
         .with_version(outer);
-    let h3 = Http3Connector::builder(exec.clone())
+    let h3 = Http3Connector::builder(scope.clone())
         .with_tls_config(tls.clone())
         .with_tls_provider(quic.client())
-        .with_endpoints(QuicEndpointConnector::new(tunnels, exec.clone()))
+        .with_endpoints(QuicEndpointConnector::new(tunnels, scope.clone()))
         .build_lazy()
         .unwrap();
     EasyHttpWebClient::connector_builder()
@@ -1138,7 +1143,7 @@ fn tunneling_client_with(
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(exec)
+        .with_default_http_connector(scope)
         .with_http3_support(h3)
         .with_default_connection_pool()
         .without_alt_svc()
@@ -1184,7 +1189,7 @@ async fn http3_runs_through_a_masque_proxy_on_every_carrier() {
             )
             .await;
             let proxy = proxy_address("masque://", proxy);
-            let client = tunneling_client(Executor::new(), carrier.version());
+            let client = tunneling_client(WeakScope::never(), carrier.version());
             for host in [origin.to_string(), format!("localhost:{}", origin.port)] {
                 assert_eq!(
                     get_through(&client, &host, &proxy).await,
@@ -1210,13 +1215,13 @@ async fn a_native_tunnel_too_small_for_quic_fails_typed() {
             masque_proxy(None, DestinationScopePolicy::allow_private(), true).await;
         let proxy = proxy_address("masque://", proxy);
         // An outer path held at QUIC's 1200 bytes leaves less per native datagram.
-        let exec = Executor::new();
+        let scope = WeakScope::never();
         let mut outer = TransportConfig::default();
         outer.unset_mtu_discovery_config();
         let client = tunneling_client_with(
-            exec.clone(),
+            scope.clone(),
             Version::HTTP_3,
-            http_client_with_transport(exec, outer, QuicTls::Boring),
+            http_client_with_transport(scope, outer, QuicTls::Boring),
             QuicTls::Boring,
         );
         let request = Request::builder()
@@ -1244,10 +1249,10 @@ async fn the_masque_builder_step_tunnels_masque_routes_only() {
         let (proxy, proxy_tasks) =
             masque_proxy(None, DestinationScopePolicy::allow_private(), true).await;
         let stats = proxy_tasks.proxy.clone().unwrap();
-        let exec = Executor::new();
+        let scope = WeakScope::never();
         let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
         let client =
-            DefaultHttpWebClient::try_default_masque_using_boringssl(exec, tls.clone(), tls)
+            DefaultHttpWebClient::try_default_masque_using_boringssl(scope, tls.clone(), tls)
                 .unwrap()
                 .boxed();
 
@@ -1323,15 +1328,15 @@ async fn quic_relay(
     outer: Version,
     quic: QuicTls,
 ) -> (SocketAddress, Tasks) {
-    let exec = Executor::new();
+    let scope = WeakScope::never();
     let socket = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let address = socket.local_addr().unwrap();
     let connector = ConnectUdpConnector::new(
         UdpConnector::new(),
-        http_client_on(exec.clone(), quic),
-        exec.clone(),
+        http_client_on(scope.clone(), quic),
+        scope.clone(),
     )
     .with_version(outer);
     let forward =
@@ -1341,7 +1346,7 @@ async fn quic_relay(
     let service = AddInputExtensionLayer::new(ProxyRoute::Proxy(proxy)).into_layer(bridge);
     let demux = DatagramDemux::new(socket, demux_config());
     let task = tokio::spawn(async move {
-        _ = demux.serve(exec, service).await;
+        _ = demux.serve(scope, service).await;
     });
     (address, Tasks::new(vec![task], None))
 }
@@ -1365,7 +1370,7 @@ async fn an_untouched_quic_relay_egresses_through_masque_on_every_carrier() {
             )
             .await;
             // The client speaks QUIC to the relay as if it were the origin.
-            let client = http_client(Executor::new());
+            let client = http_client(WeakScope::never());
             let request = Request::builder()
                 .version(Version::HTTP_3)
                 .uri(format!("https://{relay}/"))
@@ -1404,7 +1409,7 @@ async fn quic_mitm(
     upstream: impl Into<HostWithPort>,
     outer: Version,
 ) -> (SocketAddress, Tasks) {
-    quic_mitm_with(proxy, upstream, outer, http_client(Executor::new())).await
+    quic_mitm_with(proxy, upstream, outer, http_client(WeakScope::never())).await
 }
 
 async fn quic_mitm_with(
@@ -1414,12 +1419,12 @@ async fn quic_mitm_with(
     outer_client: Client,
 ) -> (SocketAddress, Tasks) {
     const FAILURE: u32 = 0x0101;
-    let exec = Executor::new();
+    let scope = WeakScope::never();
     let (ca_crt, ca_key) =
         generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
     let issuer = CachedBoringMitmCertIssuer::new(InMemoryBoringMitmCertIssuer::new(ca_crt, ca_key));
     let egress_tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3MitmRelay::new(exec.clone()).with_http_middleware((
+    let h3 = Http3MitmRelay::new(scope.clone()).with_http_middleware((
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-rama-mitm"),
@@ -1427,11 +1432,12 @@ async fn quic_mitm_with(
         ),
         ArcLayer::new(),
     ));
-    let terminate = QuicMitmRelay::new(issuer, exec.clone(), egress_tls, VarInt::from_u32(FAILURE))
-        .into_layer(
-            AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
-                .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
-        );
+    let terminate =
+        QuicMitmRelay::new(issuer, scope.clone(), egress_tls, VarInt::from_u32(FAILURE))
+            .into_layer(
+                AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
+                    .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
+            );
     let forward =
         DatagramForwardService::new(NonZeroUsize::new(kib(64)).unwrap(), EcnPolicy::Discard)
             .with_packet_errors(PacketErrorPolicy::DropPacketLocal);
@@ -1451,7 +1457,7 @@ async fn quic_mitm_with(
             forward.serve(input).await.map_err(BoxError::from)
         }),
     );
-    let connector = ConnectUdpConnector::new(UdpConnector::new(), outer_client, exec.clone())
+    let connector = ConnectUdpConnector::new(UdpConnector::new(), outer_client, scope.clone())
         .with_version(outer);
     let association = AddInputExtensionLayer::new(ProxyRoute::Proxy(proxy))
         .into_layer(DatagramToProxyBridge::new(inspect, upstream).with_connector(connector));
@@ -1461,7 +1467,7 @@ async fn quic_mitm_with(
     let address = socket.local_addr().unwrap();
     let demux = DatagramDemux::new(socket, demux_config());
     let task = tokio::spawn(async move {
-        _ = demux.serve(exec, association).await;
+        _ = demux.serve(scope, association).await;
     });
     (address, Tasks::new(vec![task], None))
 }
@@ -1485,7 +1491,7 @@ async fn a_quic_mitm_egresses_through_masque_on_every_carrier() {
                 (format!("localhost:{}", mitm.port), true),
                 (mitm.to_string(), false),
             ] {
-                let client = http_client(Executor::new());
+                let client = http_client(WeakScope::never());
                 let request = Request::builder()
                     .version(Version::HTTP_3)
                     .uri(format!("https://{host}/"))
@@ -1521,18 +1527,18 @@ async fn a_quic_mitm_egresses_through_masque_on_every_carrier() {
 
 /// A TLS origin speaking HTTP/1.1 and HTTP/2, answering every request with its version.
 async fn tls_origin() -> (SocketAddress, Tasks) {
-    let exec = Executor::new();
+    let scope = WeakScope::never();
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let tls = TlsServerConfig::new().with_server_auth(auth).with_alpn(
         [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
             .into_iter()
             .collect(),
     );
-    let http = HttpServer::auto(exec.clone()).service(service_fn(|request: Request| async move {
+    let http = HttpServer::auto(scope.clone()).service(service_fn(|request: Request| async move {
         let body = format!("{:?} origin", request.version());
         Ok::<_, Infallible>(Response::new(Body::from(body)))
     }));
-    let listener = TcpListener::bind_address("127.0.0.1:0", exec)
+    let listener = TcpListener::bind_address("127.0.0.1:0", scope)
         .await
         .unwrap();
     let address = SocketAddress::from(listener.local_addr().unwrap());
@@ -1565,7 +1571,7 @@ async fn tcp_requests_on_a_masque_route_tunnel_with_connect() {
             .with_tls_proxy_support_using_boringssl_config(tls.clone())
             .with_proxy_support()
             .with_tls_support_using_boringssl(tls)
-            .with_default_http_connector(Executor::new())
+            .with_default_http_connector(WeakScope::never())
             .with_default_connection_pool()
             .without_alt_svc()
             .build_client();
@@ -1619,10 +1625,10 @@ async fn a_mitm_egress_tunnel_too_small_for_quic_refuses_before_any_handshake() 
             proxy_address("masque://", proxy),
             origin,
             Version::HTTP_3,
-            http_client_with_transport(Executor::new(), outer, QuicTls::Boring),
+            http_client_with_transport(WeakScope::never(), outer, QuicTls::Boring),
         )
         .await;
-        let client = http_client(Executor::new());
+        let client = http_client(WeakScope::never());
         let request = Request::builder()
             .version(Version::HTTP_3)
             .uri(format!("https://localhost:{}/", mitm.port))
@@ -1652,7 +1658,7 @@ async fn a_mitm_egress_tunnel_too_small_for_quic_refuses_before_any_handshake() 
 async fn a_custom_relay_gets_the_tunnel_with_its_target() {
     timeout(DEADLINE, async {
         let (target, _echo) = udp_echo().await;
-        let exec = Executor::new();
+        let scope = WeakScope::never();
         let seen = Arc::new(parking_lot::Mutex::new(None));
         let recorded = seen.clone();
         let relay = service_fn(move |bridge: BridgeIo<ConnectUdpSocket, UdpPacketSocket>| {
@@ -1666,7 +1672,7 @@ async fn a_custom_relay_gets_the_tunnel_with_its_target() {
                 ConnectUdpRelay::new().serve(bridge).await
             }
         });
-        let service = ConnectUdpService::try_new(exec.clone(), None)
+        let service = ConnectUdpService::try_new(scope.clone(), None)
             .unwrap()
             .with_policy(DestinationScopePolicy::allow_private())
             .with_relay(relay);
@@ -1674,11 +1680,11 @@ async fn a_custom_relay_gets_the_tunnel_with_its_target() {
         let tls = TlsServerConfig::new()
             .with_server_auth(auth)
             .with_alpn([ApplicationProtocol::HTTP_11].into_iter().collect());
-        let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+        let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone())
             .await
             .unwrap();
         let address = SocketAddress::from(listener.local_addr().unwrap());
-        let server = HttpServer::auto(exec.clone()).service(Arc::new(service));
+        let server = HttpServer::auto(scope.clone()).service(Arc::new(service));
         let task = tokio::spawn(async move {
             listener
                 .serve(TlsAcceptorLayer::new(tls).into_layer(server))
@@ -1687,7 +1693,7 @@ async fn a_custom_relay_gets_the_tunnel_with_its_target() {
         let _tasks = Tasks::new(vec![task], None);
 
         let mut socket = open_tunnel(
-            exec,
+            scope,
             &proxy_address("masque://", address),
             target,
             Version::HTTP_11,

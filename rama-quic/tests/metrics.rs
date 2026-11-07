@@ -23,7 +23,8 @@ use std::{
 
 use parking_lot::Mutex;
 use rama_core::{
-    rt::{Executor, spawn},
+    graceful::WeakScope,
+    rt::spawn,
     telemetry::opentelemetry::{
         KeyValue, MeterOptions,
         metrics::MeterProvider as _,
@@ -146,7 +147,7 @@ impl Collector {
 }
 
 async fn endpoint(identities: Option<&Identities>, metrics: &QuicMetrics) -> Endpoint {
-    Endpoint::build(Executor::new())
+    Endpoint::build(WeakScope::never())
         .maybe_with_server_config(identities.map(Identities::server_config))
         .with_metrics(metrics.clone())
         .bind_address(localhost())

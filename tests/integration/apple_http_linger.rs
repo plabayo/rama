@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 
 use rama::{
     Service,
+    graceful::WeakScope,
     http::{
         Body, Request, Response, StatusCode,
         core::{server::conn::http1::Builder, service::RamaHttpService},
@@ -29,7 +30,6 @@ use rama::{
         },
         conn::LingeringClose,
     },
-    rt::Executor,
     service::service_fn,
 };
 
@@ -45,7 +45,7 @@ impl TransparentProxyHandler for RejectUpload {
 
     async fn match_tcp_flow(
         &self,
-        _: Executor,
+        _: WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> FlowAction<impl Service<BridgeIo<TcpFlow, NwTcpStream>, Output = (), Error = Infallible>>
     {

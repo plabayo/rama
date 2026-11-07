@@ -1,4 +1,5 @@
 use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
+use rama::graceful::WeakScope;
 use rama::net::client::ConnectRequest;
 use rama::{
     extensions::Extensions,
@@ -264,8 +265,6 @@ async fn test_udp_echo() {
 #[ignore = "spawns rama processes"]
 #[tokio::test]
 async fn test_https_echo() {
-    use rama::rt::Executor;
-
     utils::init_tracing();
 
     let server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
@@ -312,7 +311,7 @@ async fn test_https_echo() {
                 .with_alpn_http_1()
                 .with_server_verify(ServerVerifyMode::Disable),
         )
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
 
@@ -361,8 +360,8 @@ async fn test_https_echo() {
 async fn test_http3_echo() {
     use rama::{
         futures::StreamExt as _,
+        graceful::WeakScope,
         http::{client::Http3Connector, ws::Message},
-        rt::Executor,
     };
 
     utils::init_tracing();
@@ -397,7 +396,7 @@ async fn test_http3_echo() {
 
     // WebSockets over HTTP/3 (RFC 9220)
     let tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let connector = Http3Connector::builder(Executor::default())
+    let connector = Http3Connector::builder(WeakScope::never())
         .with_tls_config(tls.clone())
         .build()
         .await
@@ -408,7 +407,7 @@ async fn test_http3_echo() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .with_http3_support(connector)
         .without_connection_pool()
         .build_client();
@@ -552,6 +551,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
         Layer as _,
         crypto::pki_types::{CertificateDer, PrivateKeyDer},
         error::{BoxError, ErrorContext as _},
+        graceful::WeakScope,
         http::{
             headers::StrictTransportSecurity,
             layer::{
@@ -568,7 +568,6 @@ async fn test_https_with_remote_tls_cert_issuer() {
         },
         net::address::Domain,
         proxy::haproxy::server::HaProxyLayer,
-        rt::Executor,
         tcp::server::TcpListener,
         tls::{
             boring::{
@@ -695,11 +694,11 @@ async fn test_https_with_remote_tls_cert_issuer() {
         HaProxyLayer::new().with_peek(true),
         TlsAcceptorLayer::new(tls_acceptor_data),
     )
-        .into_layer(HttpServer::auto(Executor::default()).service(http_svc));
+        .into_layer(HttpServer::auto(WeakScope::never()).service(http_svc));
 
     tracing::info!("spawning tcp listener for remote tls issuer");
 
-    let tpc_listener = TcpListener::bind_address("[::1]:0", Executor::default())
+    let tpc_listener = TcpListener::bind_address("[::1]:0", WeakScope::never())
         .await
         .unwrap();
 

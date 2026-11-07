@@ -23,7 +23,8 @@ use std::{assert_matches, num::NonZeroUsize, sync::Arc, time::Duration};
 use rama_core::{
     bytes::Bytes,
     extensions::{Extension, ExtensionsRef as _},
-    rt::{Executor, spawn},
+    graceful::WeakScope,
+    rt::spawn,
 };
 use rama_http_types::{
     Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Version,
@@ -126,8 +127,8 @@ impl Pair {
             .set_transport_config(Arc::new(server_transport.unwrap_or_else(default_transport)));
         client_config
             .set_transport_config(Arc::new(client_transport.unwrap_or_else(default_transport)));
-        let server = Endpoint::build(Executor::new()).with_server_config(server_config);
-        let client = Endpoint::build(Executor::new());
+        let server = Endpoint::build(WeakScope::never()).with_server_config(server_config);
+        let client = Endpoint::build(WeakScope::never());
         let (server_endpoint, client_endpoint, datagram_faults) =
             if let Some(capacity) = memory_capacity {
                 let (server_socket, client_socket) = MemoryDatagramSocket::pair(
@@ -187,9 +188,12 @@ impl Pair {
 async fn dropping_last_client_sender_stops_its_driver() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let driver = spawn(driver.run());
         let clone = client.clone();
         drop(client);
@@ -208,9 +212,12 @@ async fn dropping_last_client_sender_stops_its_driver() {
 async fn response_body_keeps_driver_alive_after_client_sender_drop() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -252,9 +259,12 @@ async fn response_body_keeps_driver_alive_after_client_sender_drop() {
 async fn streaming_round_trip_reuses_connection_and_dynamic_qpack() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -370,9 +380,12 @@ async fn request_headers_record_the_fields_as_sent() {
 
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -446,9 +459,12 @@ async fn header_order_survives_transport_and_message_forwarding() {
 
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -514,9 +530,12 @@ async fn header_order_survives_transport_and_message_forwarding() {
 async fn idle_qpack_stream_stop_closes_connection() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (_sender, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (_sender, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let driver = spawn(driver.run());
         let mut kept = Vec::new();
         loop {
@@ -573,9 +592,12 @@ async fn initial_request_error_closes_while_control_write_is_blocked() {
 async fn upload_error_does_not_wait_for_response_headers() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let driver = spawn(driver.run());
         let body = Body::from_stream(rama_core::futures::stream::iter([Err::<Bytes, _>(
             std::io::Error::other("body failed"),
@@ -604,9 +626,12 @@ async fn goaway_wakes_request_waiting_for_stream_credit() {
         let mut transport = TransportConfig::default();
         transport.set_max_concurrent_bidi_streams(0u32);
         let pair = Pair::new(None, Some(transport)).await;
-        let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let driver = spawn(driver.run());
         let request = spawn(async move {
             client
@@ -644,9 +669,12 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
             connection.extensions().insert(ConnectionMetadata(marker));
         }
         let server_extensions = pair.server.extensions().clone();
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -807,7 +835,7 @@ async fn tiny_windows_fall_back_without_qpack_deadlock() {
                         critical_streams,
                         ..Config::default()
                     },
-                    Executor::new(),
+                    WeakScope::never(),
                 )
                 .unwrap();
                 let (mut server, server_driver) = server::handshake(
@@ -885,7 +913,7 @@ async fn opt_in_push_delivers_common_body_and_enforces_quota() {
             ..Config::default()
         };
         let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
                 .unwrap();
         let mut pushes = client.take_pushes().unwrap();
         assert!(client.take_pushes().is_none());
@@ -967,9 +995,12 @@ async fn connect_upstream_failure_resets_with_connect_error() {
     use tokio::io::AsyncReadExt as _;
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -1034,9 +1065,12 @@ async fn tunnel_writes_are_sent_without_an_explicit_flush() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -1130,7 +1164,7 @@ async fn early_response_survives_peer_stopping_request_upload() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                Executor::new(),
+                WeakScope::never(),
             )
             .unwrap();
             let (_server, server_driver) =

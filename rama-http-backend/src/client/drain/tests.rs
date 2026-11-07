@@ -10,8 +10,12 @@ use std::{
 
 use parking_lot::Mutex;
 use rama_core::{
-    Layer as _, Service, ServiceInput, error::BoxError, extensions::ExtensionsRef as _,
-    futures::stream, graceful::Shutdown, service::service_fn,
+    Layer as _, Service, ServiceInput,
+    error::BoxError,
+    extensions::ExtensionsRef as _,
+    futures::stream,
+    graceful::{Cause, Scope},
+    service::service_fn,
 };
 use rama_http::layer::follow_redirect::FollowRedirect;
 use rama_http_types::{
@@ -138,13 +142,13 @@ struct Harness<C> {
 
 fn harness(
     config: HttpPooledConnectorConfig,
-    exec: Executor,
+    scope: WeakScope,
     script: impl Fn(&str, usize) -> Vec<Step> + Send + Sync + 'static,
 ) -> Harness<
     impl ConnectorService<Request, Connection: Service<Request, Output = Response, Error = BoxError>>,
 > {
     let (mock, accepted) = scripted_origin(script);
-    let connector = config.build_connector(HttpConnectorLayer::<Body>::new(exec).into_layer(mock));
+    let connector = config.build_connector(HttpConnectorLayer::<Body>::new(scope).into_layer(mock));
     let drain = connector.drain.clone();
     Harness {
         client: HttpConnectRequestAdapter::new(connector),
@@ -250,7 +254,7 @@ async fn next_conn_after_dropping(
 ) -> usize {
     let harness = harness(
         one_connection(drain),
-        Executor::default(),
+        WeakScope::never(),
         move |path, conn| {
             if path == "/next" {
                 sized(conn, b"next")
@@ -287,7 +291,7 @@ async fn disabled_draining_closes_the_connection_of_an_unread_body() {
 #[tokio::test]
 async fn partially_read_body_is_drained_and_reused() {
     let rest = Arc::new(Notify::new());
-    let harness = harness(one_connection(Some(reusing())), Executor::default(), {
+    let harness = harness(one_connection(Some(reusing())), WeakScope::never(), {
         let rest = rest.clone();
         move |path, conn| {
             if path == "/next" {
@@ -342,7 +346,7 @@ async fn unread_chunked_body_with_trailers_is_drained_and_reused() {
 async fn body_dropped_after_its_final_content_length_frame_is_not_drained() {
     let harness = harness(
         one_connection(Some(Default::default())),
-        Executor::default(),
+        WeakScope::never(),
         |_, conn| sized(conn, b"complete"),
     );
     let mut body = send(&harness.client, get("/")).await.into_body();
@@ -362,7 +366,7 @@ async fn body_dropped_after_its_final_content_length_frame_is_not_drained() {
 async fn body_dropped_after_its_trailers_is_not_drained() {
     let harness = harness(
         one_connection(Some(Default::default())),
-        Executor::default(),
+        WeakScope::never(),
         |_, conn| chunked(conn, &[b"hello"], "x-checksum: 1\r\n"),
     );
     let mut body = send(&harness.client, get("/")).await.into_body();
@@ -393,7 +397,7 @@ async fn empty_body_dropped_unpolled_is_not_drained() {
 async fn same_origin_redirect_reuses_the_connection_of_its_unread_body() {
     let harness = harness(
         one_connection(Some(reusing())),
-        Executor::default(),
+        WeakScope::never(),
         |path, conn| {
             if path == "/start" {
                 let body = "moved to /final";
@@ -604,7 +608,7 @@ fn stalling(rest: &Arc<Notify>) -> impl Fn(&str, usize) -> Vec<Step> + Send + Sy
 async fn exhausted_drain_limit_closes_the_connection_right_away() {
     let rest = Arc::new(Notify::new());
     let config = reusing().with_max_concurrent(NonZeroUsize::MIN);
-    let harness = harness(uncapped(Some(config)), Executor::default(), stalling(&rest));
+    let harness = harness(uncapped(Some(config)), WeakScope::never(), stalling(&rest));
     let drain = harness.drain.clone().unwrap();
 
     let draining = send(&harness.client, get("/stall")).await;
@@ -632,7 +636,7 @@ async fn drain_permits_return_after_success_and_failure() {
         .with_max_bytes(100);
     let harness = harness(
         one_connection(Some(config)),
-        Executor::default(),
+        WeakScope::never(),
         |path, conn| {
             if path == "/large" {
                 sized(conn, &[0; 1000])
@@ -687,7 +691,7 @@ async fn draining_connection_is_not_handed_out() {
     let rest = Arc::new(Notify::new());
     let harness = harness(
         uncapped(Some(reusing())),
-        Executor::default(),
+        WeakScope::never(),
         stalling(&rest),
     );
     let drain = harness.drain.clone().unwrap();
@@ -719,7 +723,7 @@ async fn drain_completion_does_not_revive_a_retired_connection() {
     let rest = Arc::new(Notify::new());
     let harness = harness(
         one_connection(Some(Default::default())),
-        Executor::default(),
+        WeakScope::never(),
         stalling(&rest),
     );
     let drain = harness.drain.clone().unwrap();
@@ -742,13 +746,13 @@ async fn drain_completion_does_not_revive_a_retired_connection() {
 #[tokio::test]
 async fn executor_shutdown_cancels_drains_and_retires_their_connection() {
     let (trigger, signal) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = signal.await;
     });
     let rest = Arc::new(Notify::new());
     let harness = harness(
         one_connection(Some(Default::default())),
-        Executor::graceful(shutdown.guard()),
+        shutdown.clone_weak(),
         stalling(&rest),
     );
     let drain = harness.drain.clone().unwrap();
@@ -773,7 +777,7 @@ impl Drop for Record {
 fn recorded(
     body: Body,
     events: &Arc<Mutex<Vec<&'static str>>>,
-    exec: &Executor,
+    scope: &WeakScope,
     config: &Http1BodyDrainConfig,
 ) -> Http1DrainBody<Record> {
     let invalidated = events.clone();
@@ -781,7 +785,7 @@ fn recorded(
         invalidated.lock().push("invalidate");
     }));
     let conn = Extensions::new();
-    conn.insert(Http1DrainRuntime::new(exec));
+    conn.insert(Http1DrainRuntime::new(scope));
     Http1DrainBody::new(
         GuardedBody::new(body, Record(events.clone(), "release")),
         Arc::new(Http1BodyDrain::new(config)),
@@ -799,7 +803,7 @@ async fn deadline_elapsed_before_first_poll_closes_without_draining() {
     drop(recorded(
         Body::from("unread"),
         &events,
-        &Executor::new(),
+        &WeakScope::never(),
         &Http1BodyDrainConfig::default(),
     ));
     // Advance before the spawned drain gets its first poll. Even a body
@@ -862,26 +866,93 @@ async fn recorded_until(events: &Arc<Mutex<Vec<&'static str>>>, len: usize) {
 #[tokio::test]
 async fn shutdown_invalidates_before_releasing_and_is_not_delayed() {
     let (trigger, signal) = oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = signal.await;
     });
-    let exec = Executor::graceful(shutdown.guard());
+    let scope = shutdown.clone_weak();
     let events = Arc::default();
     drop(recorded(
         pending_body(),
         &events,
-        &exec,
+        &scope,
         &Default::default(),
     ));
-    drop(exec);
+    drop(scope);
     assert_eq!(drains_started(), 1);
     tokio::task::yield_now().await;
     assert!(events.lock().is_empty(), "draining holds the lease");
     trigger.send(()).unwrap();
-    timeout(LIMIT, shutdown.shutdown())
+    timeout(LIMIT, shutdown.join())
         .await
-        .expect("a cancelled drain does not hold up shutdown");
+        .expect("a cancelled drain does not hold up shutdown")
+        .expect("not aborted");
     assert_eq!(*events.lock(), ["invalidate", "release"]);
+}
+
+#[tokio::test]
+async fn body_dropped_before_its_scope_closes_is_drained() {
+    let root = Scope::new();
+    let scope = root.clone_weak();
+    let events = Arc::default();
+    drop(recorded(
+        Body::from("unread"),
+        &events,
+        &scope,
+        &Default::default(),
+    ));
+    assert_eq!(drains_started(), 1);
+    drop(scope);
+    timeout(LIMIT, root.join())
+        .await
+        .expect("the drain ends")
+        .expect("not aborted");
+    assert_eq!(*events.lock(), ["release"]);
+}
+
+#[tokio::test]
+async fn body_dropped_after_its_scope_closed_starts_no_drain() {
+    let root = Scope::new();
+    let scope = root.clone_weak();
+    let events = Arc::default();
+    let body = recorded(Body::from("unread"), &events, &scope, &Default::default());
+    drop(scope);
+    root.cancel(Cause::Owner);
+    timeout(LIMIT, root.join())
+        .await
+        .expect("nothing holds the scope")
+        .expect("not aborted");
+    drop(body);
+    assert_eq!(drains_started(), 0);
+    assert_eq!(*events.lock(), ["invalidate", "release"]);
+}
+
+#[tokio::test]
+async fn body_dropped_after_a_cancel_with_no_holder_left_starts_no_drain() {
+    let root = Scope::new();
+    let weak = root.clone_weak();
+    let scope = WeakScope::from(root.child());
+    let events = Arc::default();
+    let body = recorded(Body::from("unread"), &events, &scope, &Default::default());
+    drop(scope);
+    root.cancel(Cause::Owner);
+    drop(root);
+    // Cancelled with no holder left: the scope admits no new work.
+    drop(body);
+    assert_eq!(drains_started(), 0);
+    assert_eq!(*events.lock(), ["invalidate", "release"]);
+    timeout(LIMIT, weak.drained()).await.expect("drained");
+}
+
+#[tokio::test]
+async fn body_of_an_unscoped_executor_is_drained() {
+    let events = Arc::default();
+    drop(recorded(
+        Body::from("unread"),
+        &events,
+        &WeakScope::never(),
+        &Default::default(),
+    ));
+    assert_eq!(drains_started(), 1);
 }
 
 #[test]
@@ -895,7 +966,7 @@ fn runtime_shutdown_invalidates_before_releasing() {
         drop(recorded(
             pending_body(),
             &events,
-            &Executor::new(),
+            &WeakScope::never(),
             &Default::default(),
         ));
     });
@@ -912,7 +983,7 @@ fn dropped_outside_a_runtime_closes_the_connection() {
     drop(recorded(
         Body::from("unread"),
         &events,
-        &Executor::new(),
+        &WeakScope::never(),
         &Default::default(),
     ));
     assert_eq!(drains_started(), 0);
@@ -940,7 +1011,7 @@ async fn always_ready_bodies_yield_and_end_at_the_deadline() {
         let body = Body::from_stream(stream::repeat_with(move || {
             Ok::<_, Infallible>(frame.clone())
         }));
-        drop(recorded(body, &events, &Executor::new(), &config));
+        drop(recorded(body, &events, &WeakScope::never(), &config));
         recorded_until(&events, 2).await;
         ticker.abort();
         assert_eq!(*events.lock(), ["invalidate", "release"]);
@@ -1012,7 +1083,7 @@ async fn close_delimited_responses_are_marked_and_not_drained() {
     for headers in ["", "transfer-encoding: gzip\r\n"] {
         let harness = harness(
             one_connection(Some(Default::default())),
-            Executor::default(),
+            WeakScope::never(),
             move |path, conn| {
                 if path == "/next" {
                     sized(conn, b"next")
@@ -1091,7 +1162,7 @@ async fn http2_abandoned_body_keeps_its_connection_without_draining() {
         let accepted = accepted.clone();
         move || {
             let conn = accepted.fetch_add(1, Ordering::SeqCst);
-            HttpServer::auto(Executor::default()).service(service_fn(
+            HttpServer::auto(WeakScope::never()).service(service_fn(
                 move |_request: Request| async move {
                     let mut response = Response::new(Body::from(vec![0u8; 256 * 1024]));
                     response
@@ -1127,9 +1198,10 @@ async fn only_http1_connections_carry_the_drain_runtime() {
         let (io, _peer) = tokio::io::duplex(4096);
         let input = ConnectRequest::new("origin.example:80".parse().unwrap());
         input.extensions().insert(TargetHttpVersion(version));
-        let established = http_connect::<_, _, Body>(ServiceInput::new(io), input, Executor::new())
-            .await
-            .unwrap();
+        let established =
+            http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::never())
+                .await
+                .unwrap();
         assert_eq!(
             established
                 .conn

@@ -10,13 +10,13 @@ use crate::tests::compression::{
 
 use rama::{
     Layer as _,
+    graceful::WeakScope,
     http::{
         grpc::{Streaming, codec::CompressionEncoding},
         layer::map_response_body::MapResponseBodyLayer,
         server::HttpServer,
     },
     net::uri::Uri,
-    rt::Executor,
     stream::StreamExt as _,
 };
 
@@ -40,7 +40,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::new_h2(Executor::default()).service(grpc_svc)
+        HttpServer::new_h2(WeakScope::never()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -95,7 +95,7 @@ async fn client_disabled_server_enabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::auto(Executor::default()).service(grpc_svc)
+        HttpServer::auto(WeakScope::never()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -137,7 +137,7 @@ async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::auto(Executor::default()).service(grpc_svc)
+        HttpServer::auto(WeakScope::never()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(

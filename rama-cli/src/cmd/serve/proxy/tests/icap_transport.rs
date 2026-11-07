@@ -24,7 +24,7 @@ async fn peer_max_connections_clamps_concurrent_icap_transactions() {
     )
     .unwrap();
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::never(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -67,7 +67,7 @@ async fn peer_max_connections_clamps_concurrent_icap_transactions() {
 async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
     let (icap_address, icap_task, _icap_state) = spawn_proxy_test_icap().await;
     let origin_listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
             .await
             .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
@@ -76,7 +76,7 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
         .unwrap()
         .with_alpn_http_auto();
     let origin_http =
-        HttpServer::auto(Executor::default()).service(service_fn(|request: Request| async move {
+        HttpServer::auto(WeakScope::never()).service(service_fn(|request: Request| async move {
             assert_eq!(request.headers()["x-rama-icap-reqmod"], "yes");
             assert!(
                 !request
@@ -105,10 +105,10 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
         icap_uri.as_str(),
     ]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     assert!(inspector_address.is_some(), "inspector listener bound");
 
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
@@ -118,7 +118,7 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
     for scheme in ["http", "socks5h"] {

@@ -8,12 +8,16 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
-use rama_core::stream::wrappers::ReceiverStream;
+use rama_core::{
+    graceful::{Cause, Scope},
+    stream::wrappers::ReceiverStream,
+};
 use rama_ttrpc::__codegen_prelude::{
     ClientStreamingMethod, DuplexStreamingMethod, MethodHandler, RequestHandler as _,
     ServerStreamingMethod, Service, UnaryMethod,
 };
 use rama_ttrpc::{Client, ClientExt as _, Result, ServerConnection};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct EchoRequest {
@@ -466,4 +470,121 @@ async fn slow_server_stream_consumer_backpressures_producer() {
         "producer generated {} more messages while the consumer was idle (queue is unbounded)",
         c2 - c1
     );
+}
+
+/// A service whose handler never answers, so only the connection's scope can end it.
+struct StuckService;
+
+impl Service for StuckService {
+    fn methods(&self) -> Vec<(&'static str, Arc<dyn MethodHandler + Send + Sync>)> {
+        vec![(
+            "/echo.Greeter/Stuck",
+            Arc::new(UnaryMethod::new(|_req: EchoRequest| async move {
+                std::future::pending::<()>().await;
+                Ok(EchoReply { msg: String::new() })
+            })),
+        )]
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_parent_scope_drains_and_an_abort_drops_stuck_handlers() {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let parent = Scope::new();
+    let server_task = tokio::spawn({
+        let scope = parent.child();
+        async move {
+            let mut server = ServerConnection::new(server_io).with_scope(scope);
+            server.register(StuckService);
+            server.start().await
+        }
+    });
+    let client = Client::new(client_io);
+    let call = tokio::spawn(async move {
+        client
+            .handle_unary_request::<_, EchoReply>(
+                "echo.Greeter",
+                "Stuck",
+                EchoRequest { msg: String::new() },
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Graceful: the stuck handler is in flight, so the connection keeps draining.
+    parent.cancel(Cause::Owner);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!server_task.is_finished());
+
+    parent.abort(Cause::Owner);
+    let start = tokio::time::timeout(Duration::from_secs(2), server_task)
+        .await
+        .expect("an aborted connection stops at once")
+        .expect("server task panicked");
+    assert!(start.is_ok(), "{start:?}");
+    call.abort();
+}
+
+/// A request with an even (invalid) stream id and no payload: its rejection is the reply.
+const INVALID_STREAM_ID_REQUEST: [u8; 10] = [0, 0, 0, 0, 0, 0, 0, 2, 1, 0];
+
+/// A rejection blocked on a peer that stopped reading: the server writes one byte of it and
+/// waits. Returns the server task, the scope it runs in and the peer, which is kept open.
+async fn rejection_blocked_on_a_silent_peer() -> std::io::Result<(
+    tokio::task::JoinHandle<std::io::Result<()>>,
+    Scope,
+    tokio::io::DuplexStream,
+)> {
+    let (mut peer, server_io) = tokio::io::duplex(1);
+    let scope = Scope::new();
+    let server_task = tokio::spawn({
+        let scope = scope.clone();
+        async move {
+            ServerConnection::new(server_io)
+                .with_scope(scope)
+                .start()
+                .await
+        }
+    });
+    peer.write_all(&INVALID_STREAM_ID_REQUEST).await?;
+    let mut first = [0_u8; 1];
+    peer.read_exact(&mut first).await?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !server_task.is_finished(),
+        "the rejection waits on the peer"
+    );
+    Ok((server_task, scope, peer))
+}
+
+#[tokio::test]
+async fn an_abort_ends_a_rejection_blocked_on_a_silent_peer() {
+    let (server_task, scope, _peer) = rejection_blocked_on_a_silent_peer()
+        .await
+        .expect("the rejection starts");
+    scope.abort(Cause::Owner);
+    tokio::time::timeout(Duration::from_secs(2), server_task)
+        .await
+        .expect("the hard phase does not wait on the peer")
+        .expect("server task panicked")
+        .expect("an aborted connection ends without error");
+}
+
+#[tokio::test]
+async fn a_cancel_waits_on_a_blocked_rejection_and_an_abort_ends_it() {
+    let (server_task, scope, _peer) = rejection_blocked_on_a_silent_peer()
+        .await
+        .expect("the rejection starts");
+    scope.cancel(Cause::Owner);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !server_task.is_finished(),
+        "the graceful phase keeps the backpressure"
+    );
+    scope.abort(Cause::Owner);
+    tokio::time::timeout(Duration::from_secs(2), server_task)
+        .await
+        .expect("the hard phase does not wait on the peer")
+        .expect("server task panicked")
+        .expect("an aborted connection ends without error");
 }

@@ -9,7 +9,7 @@ use std::time::Duration;
 use pin_project_lite::pin_project;
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::rt::Executor;
+use rama_core::graceful::WeakScope;
 use rama_http::{Request, Response};
 use rama_http_types::conn::H2ServerContextParams;
 use std::borrow::Cow;
@@ -41,7 +41,7 @@ pin_project! {
 /// are subject to change at any time.
 #[derive(Clone, Debug)]
 pub struct Builder {
-    exec: Executor,
+    scope: WeakScope,
     h2_builder: proto::h2::server::Config,
 }
 
@@ -100,9 +100,10 @@ where
 impl Builder {
     /// Create a new connection builder.
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            exec,
+            scope,
             h2_builder: proto::h2::server::Config::default(),
         }
     }
@@ -404,7 +405,7 @@ impl Builder {
         } else {
             Cow::Borrowed(&self.h2_builder)
         };
-        let proto = proto::h2::Server::new(io, service, &h2_builder, self.exec.clone(), timer);
+        let proto = proto::h2::Server::new(io, service, &h2_builder, self.scope.clone(), timer);
         Connection { conn: proto }
     }
 }

@@ -7,6 +7,7 @@ use crate::{
 use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     futures::{Stream, StreamExt as _, stream},
+    graceful::WeakScope,
     http::{
         Body, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
@@ -14,7 +15,6 @@ use rama::{
         proto::h3::Code,
     },
     quic::Connection,
-    rt::Executor,
     stream::io::ReaderStream,
     telemetry::tracing,
 };
@@ -74,9 +74,9 @@ pub(crate) async fn download_batch(
     connection: Connection,
     requests: Vec<DownloadRequest>,
     directory: PathBuf,
-    executor: Executor,
+    scope: WeakScope,
 ) -> Result<(), BoxError> {
-    let (sender, driver) = client::handshake::<Body, _>(connection.clone(), config(), executor)?;
+    let (sender, driver) = client::handshake::<Body, _>(connection.clone(), config(), scope)?;
     let mut tasks: JoinSet<Result<(), BoxError>> = JoinSet::new();
     let batch = async {
         for request in requests {

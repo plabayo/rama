@@ -44,9 +44,9 @@
 
 use clap::Parser;
 use rama::{
+    graceful::WeakScope,
     http::{client::EasyHttpWebClient, service::client::HttpClientExt as _},
     net::uri::Uri,
-    rt::Executor,
     tls::client::{ServerVerifyMode, TlsClientConfig, TlsServerCertPin, TlsServerCertPins},
 };
 
@@ -86,7 +86,7 @@ async fn main() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_rustls(tls_config)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
 

@@ -17,7 +17,8 @@ use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef as _,
     futures::FutureExt as _,
-    rt::{Executor, spawn},
+    graceful::WeakScope,
+    rt::spawn,
 };
 use rama_http::io::upgrade::handle_upgrade;
 use rama_http_types::{
@@ -316,7 +317,7 @@ async fn progress_earns_time_but_cannot_exceed_the_ceiling() {
 async fn extended_connect_tunnel_stays_usable_past_idle_and_releases_its_budget() {
     let pair = Pair::in_memory(None, None).await;
     let (mut client, client_driver) =
-        client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
+        client::handshake::<Body, _>(pair.client.clone(), Config::default(), WeakScope::never())
             .unwrap();
     let (mut server, server_driver) = server::handshake(
         pair.server.clone(),

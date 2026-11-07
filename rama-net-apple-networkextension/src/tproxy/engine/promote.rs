@@ -42,7 +42,7 @@ use tokio::sync::{Notify, mpsc, oneshot};
 /// raw flow bridge (`BridgeIo<TcpFlow, NwTcpStream>`). Inside any
 /// MITM or framing-decoded context, use the plain non-promoting
 /// forwarder.
-#[derive(Clone)]
+#[derive(Clone, Extension)]
 pub struct PromoteHandle {
     inner: Arc<PromoteInner>,
 }
@@ -345,8 +345,6 @@ impl std::fmt::Debug for PromoteHandle {
         f.debug_struct("PromoteHandle").finish_non_exhaustive()
     }
 }
-
-impl Extension for PromoteHandle {}
 
 // ── Engine-side registry ─────────────────────────────────────────────────────
 

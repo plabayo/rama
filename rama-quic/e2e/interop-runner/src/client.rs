@@ -9,13 +9,12 @@ use clap::Parser;
 use rama::{
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef as _,
-    graceful::Shutdown,
+    graceful::Scope,
     net::{tls::ApplicationProtocol, uri::Uri},
     quic::{
         Connection, Endpoint, EndpointConfig, NegotiatedTlsParameters,
         proto::version::{ClientVersionPolicy, Version},
     },
-    rt::Executor,
     telemetry::tracing,
     tls::{
         KeyLogIntent,
@@ -112,11 +111,11 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .await
         .context("create downloads directory")?;
     let (finished, is_finished) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         let _ = is_finished.await;
     });
-    let executor = Executor::graceful(shutdown.guard());
-    let mut builder = Endpoint::build(executor.clone());
+    let scope = shutdown.clone_weak();
+    let mut builder = Endpoint::build(scope.clone());
     if testcase == TestCase::MultiConnect {
         // Keep the per-attempt deadline within the complete batch budget.
         let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
@@ -141,7 +140,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
             &tls,
             crate::tls_options().with_early_data(testcase == TestCase::ZeroRtt),
         )?
-        .with_transport_config(transport(executor.clone(), "client", testcase).await?);
+        .with_transport_config(transport(scope.clone(), "client", testcase).await?);
     if testcase == TestCase::V2 {
         // A v1 first flight that prefers v2, for the server to move (RFC 9368 §2.3).
         config.set_versions(
@@ -229,7 +228,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                     connection.clone(),
                     requests,
                     args.downloads.clone(),
-                    executor.clone(),
+                    scope.clone(),
                 )
                 .await?;
             } else {
@@ -251,8 +250,8 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         result = batch => result.context("download batch timed out").and_then(|result| result),
         _ = interrupted => Err(BoxError::from("download batch interrupted by shutdown signal")),
     };
-    // Release our own shutdown guard before joining the remaining producers.
-    drop(executor);
+    // Release our own hold on the scope before joining the remaining producers.
+    drop(scope);
     endpoint.close(
         if testcase == TestCase::Http3 {
             0x100_u32
@@ -264,7 +263,9 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let outcome = shutdown_endpoint(&endpoint, outcome).await;
     drop(endpoint);
     let _ = finished.send(());
-    shutdown.shutdown().await;
+    // The scope is cancelled once something waits on it; then wait for every holder.
+    shutdown.cancelled().await;
+    let _ = shutdown.join().await;
     outcome
 }
 

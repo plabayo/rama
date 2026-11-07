@@ -6,6 +6,7 @@ use rama::{
     error::BoxError,
     extensions::{Egress, Extensions, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
+    graceful::WeakScope,
     http::{
         Body, HeaderMap, Method, Request, Response, Version,
         body::{Frame, util::BodyExt as _},
@@ -17,7 +18,6 @@ use rama::{
     layer::MapInputLayer,
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
-    rt::Executor,
     service::service_fn,
     tls::{
         client::{NegotiatedTlsParameters, TlsClientConfig},
@@ -118,7 +118,7 @@ async fn test_http3_client_server() {
     }
     // Keep an accepted echo response open across Ctrl-C. GOAWAY must reach the
     // client while QUIC remains alive to deliver and acknowledge its last bytes.
-    let endpoint = Endpoint::build(Executor::new())
+    let endpoint = Endpoint::build(WeakScope::never())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
@@ -133,7 +133,8 @@ async fn test_http3_client_server() {
         .await
         .unwrap();
     let (mut client, driver) =
-        h3_client::handshake::<Body, _>(connection, H3Config::default(), Executor::new()).unwrap();
+        h3_client::handshake::<Body, _>(connection, H3Config::default(), WeakScope::never())
+            .unwrap();
     let driver = spawn(driver.run());
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     let body = Body::from_frame_stream(stream::unfold(receiver, |mut receiver| async {
@@ -204,12 +205,12 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
             let server_tls = TlsServerConfig::new()
                 .with_server_auth(auth)
                 .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let server = HttpServer::new_http3(Executor::new());
+            let server = HttpServer::new_http3(WeakScope::never());
             let mut transport = TransportConfig::default();
             server.http3().configure_transport(&mut transport)?;
             let mut config = ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default())?;
             config.set_transport_config(Arc::new(transport));
-            let endpoint = Endpoint::build(Executor::new())
+            let endpoint = Endpoint::build(WeakScope::never())
                 .with_server_config(config)
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await?;
@@ -238,7 +239,7 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
                     }
                 }
             });
-            let client_endpoint = Endpoint::build(Executor::new())
+            let client_endpoint = Endpoint::build(WeakScope::never())
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await?;
             let client_builder = EasyHttpConnectorBuilder::new()
@@ -253,9 +254,9 @@ async fn public_builders_reuse_h3_with_common_bodies_and_trailers() -> Result<()
             #[cfg(not(any(feature = "rustls", feature = "boring")))]
             let client_builder = client_builder.without_tls_support();
             let client = client_builder
-                .with_default_http_connector(Executor::new())
+                .with_default_http_connector(WeakScope::never())
                 .with_http3_support(
-                    Http3Connector::builder(Executor::new())
+                    Http3Connector::builder(WeakScope::never())
                         .with_endpoint(client_endpoint.clone())
                         .with_tls_config(tls.clone())
                         .build()
@@ -360,7 +361,7 @@ async fn http_client_preserves_explicit_tls_provider() -> Result<(), BoxError> {
     });
     let listener = TcpListener::bind(SocketAddress::local_ipv4(0).into_std()).await?;
     let address = listener.local_addr()?;
-    let connector = Http3Connector::builder(Executor::new())
+    let connector = Http3Connector::builder(WeakScope::never())
         .with_tls_provider(rama::quic::tls::default_tls_provider().unwrap())
         .with_tls_config(tls.clone())
         .build()
@@ -377,7 +378,7 @@ async fn http_client_preserves_explicit_tls_provider() -> Result<(), BoxError> {
     #[cfg(not(any(feature = "rustls", feature = "boring")))]
     let client_builder = client_builder.without_tls_support();
     let client = client_builder
-        .with_default_http_connector(Executor::new())
+        .with_default_http_connector(WeakScope::never())
         .with_http3_support(connector)
         .with_default_connection_pool()
         .build_client();

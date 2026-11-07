@@ -17,6 +17,7 @@ use crate::{
     combinators::{Either, Either3, Either7},
     error::{BoxError, BoxErrorExt, ErrorExt as _},
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         BodyLimitLayer, Request, Response, StatusCode, Version,
         headers::{
@@ -42,7 +43,6 @@ use crate::{
         stream::layer::{ThrottleLayer, ThrottleMode},
     },
     proxy::haproxy::server::HaProxyLayer,
-    rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
     utils::{octets::mib, rate::Rate},
@@ -224,9 +224,10 @@ impl IpServiceBuilder<mode::Http> {
     /// build a tcp service ready to echo the client IP back
     pub fn build(
         self,
-        executor: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
-        self.build_services(executor).map(|(tcp, _)| tcp)
+        let scope = scope.into();
+        self.build_services(scope).map(|(tcp, _)| tcp)
     }
 
     /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
@@ -239,7 +240,7 @@ impl IpServiceBuilder<mode::Http> {
     #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
     pub fn build_with_http3(
         self,
-        executor: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<
         (
             impl Service<TcpStream, Output = (), Error = Infallible>,
@@ -247,12 +248,13 @@ impl IpServiceBuilder<mode::Http> {
         ),
         BoxError,
     > {
-        self.build_services(executor)
+        let scope = scope.into();
+        self.build_services(scope)
     }
 
     fn build_services(
         self,
-        executor: Executor,
+        scope: WeakScope,
     ) -> Result<
         (
             impl Service<TcpStream, Output = (), Error = Infallible>,
@@ -381,12 +383,12 @@ impl IpServiceBuilder<mode::Http> {
         // can hand a copy to each connection's task.
         let http_service = Arc::new(http_service);
         let http_transport_service = match self.http_version {
-            None => Either3::A(HttpServer::auto(executor.clone()).service(http_service.clone())),
+            None => Either3::A(HttpServer::auto(scope.clone()).service(http_service.clone())),
             Some(Version::HTTP_2) => {
-                Either3::B(HttpServer::new_h2(executor.clone()).service(http_service.clone()))
+                Either3::B(HttpServer::new_h2(scope.clone()).service(http_service.clone()))
             }
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
-                Either3::C(HttpServer::new_http1(executor.clone()).service(http_service.clone()))
+                Either3::C(HttpServer::new_http1(scope.clone()).service(http_service.clone()))
             }
             Some(version) => {
                 return Err(BoxError::from_static_str("unsupported http version")
@@ -401,14 +403,14 @@ impl IpServiceBuilder<mode::Http> {
             throttle,
             BodyLimitLayer::request_only(mib(1)),
         )
-            .into_layer(HttpServer::new_http3(executor).service(http_service));
+            .into_layer(HttpServer::new_http3(scope).service(http_service));
         #[cfg(not(feature = "quic"))]
         let http3_service = (
             connection_limit,
             connection_timeout,
             throttle,
             http_service,
-            executor,
+            scope,
         );
 
         Ok((

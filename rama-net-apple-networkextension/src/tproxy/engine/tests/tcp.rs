@@ -8,8 +8,8 @@ use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use parking_lot::Mutex;
 use rama_core::{
     extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
     io::{AbortIo, BridgeIo},
-    rt::Executor,
     service::{Service, service_fn},
 };
 use rama_net::{address::HostWithPort, proxy::IoForwardService};
@@ -1483,7 +1483,7 @@ fn tcp_relay_reflects_an_upstream_reset_and_keeps_an_orderly_end() {
     ] {
         let service = service_fn(
             move |BridgeIo(ingress, _egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
-                _ = IoForwardService::new(Executor::new())
+                _ = IoForwardService::new(WeakScope::never())
                     .serve(BridgeIo(ingress, EndingUpstream::new(end)))
                     .await;
                 Ok::<_, Infallible>(())
@@ -1576,7 +1576,7 @@ fn shutdown_before_bridge_handoff_publishes_cancellation() {
         panic!("expected intercept")
     };
     *signals.lock() = Some(session.signals.clone());
-    let guard = session.pending.as_ref().unwrap().flow_guard.clone();
+    let guard = session.pending.as_ref().unwrap().flow_scope.clone();
     let stop = session.flow_stop_tx.take().unwrap();
     engine.rt.as_ref().unwrap().block_on_borrowed(async {
         stop.send(()).unwrap();
@@ -1590,4 +1590,52 @@ fn shutdown_before_bridge_handoff_publishes_cancellation() {
     let actual = codes.lock().clone();
     stop_paused_engine(engine);
     assert_eq!(actual, [libc::ECANCELED, libc::ECANCELED]);
+}
+
+/// A session kept without activation observes its flow scope only: the engine stop drains
+/// promptly once the flow task ended, and a late activation does nothing.
+#[test]
+fn a_retained_pending_session_does_not_hold_the_engine_stop() {
+    const FLOW_ID: u64 = 0xE1E1_0906;
+    install_close_capture();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine_with_stop_drain_max_wait(handler, Duration::from_secs(1));
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(mut session) =
+        engine.new_tcp_session(meta, |_| TcpDeliverStatus::Accepted, || {}, || {})
+    else {
+        panic!("expected intercept session");
+    };
+
+    let start = Instant::now();
+    engine.stop(0);
+    let elapsed = start.elapsed();
+    assert_eq!(flow_close_count(FLOW_ID), 1);
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "the retained session held the drain for {elapsed:?}"
+    );
+    assert_eq!(flow_close_reason(FLOW_ID).as_deref(), Some("shutdown"));
+
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    drop(session);
+    assert_eq!(flow_close_count(FLOW_ID), 1, "no second close");
 }

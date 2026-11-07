@@ -4,13 +4,13 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::{self, ExtensionsRef},
+    graceful::WeakScope,
     io::{BridgeIo, Io},
     net::{
         address::{Domain, Host},
         client::ConnectorTarget,
         proxy::IoForwardService,
     },
-    rt::Executor,
     telemetry::tracing,
     tls::{
         boring::{
@@ -43,9 +43,9 @@ pub struct TlsMitmRelayPolicyLayer<F = IoForwardService> {
 
 impl TlsMitmRelayPolicyLayer {
     /// Build a [`TlsMitmRelayPolicyLayer`] whose default fallback relay
-    /// observes graceful shutdown via the given [`Executor`].
+    /// observes graceful shutdown via the given [`WeakScope`].
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
+    pub fn new(scope: WeakScope) -> Self {
         let cache = moka::sync::CacheBuilder::new(4096)
             .time_to_live(Duration::from_mins(5))
             .build();
@@ -53,7 +53,7 @@ impl TlsMitmRelayPolicyLayer {
         Self {
             cache,
             excluded_domains,
-            fallback: IoForwardService::new(exec),
+            fallback: IoForwardService::new(scope),
         }
     }
 

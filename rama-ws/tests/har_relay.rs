@@ -6,7 +6,7 @@
 use parking_lot::Mutex;
 use rama_core::{
     Layer, Service, ServiceInput, bytes::Bytes, error::BoxError, extensions::ExtensionsRef,
-    io::BridgeIo, rt::Executor, service::service_fn,
+    graceful::WeakScope, io::BridgeIo, service::service_fn,
 };
 use rama_http::{
     Body, Method, Request, Response, StatusCode, Version,
@@ -257,7 +257,7 @@ async fn assert_upgrade_relay_file_recording(version: Version) {
         WebSocketRelayService::new(service_fn(transform_relay_message)),
     ));
     let service = HttpUpgradeMitmRelayLayer::new(
-        Executor::default(),
+        WeakScope::never(),
         HttpWebSocketRelayServiceRequestMatcher::new(relay),
     )
     .into_layer(upstream);
@@ -362,7 +362,7 @@ async fn relay_har_passes_through_non_websocket_http() {
             WebSocketRelayService::new(service_fn(transform_relay_message)),
         ));
         let service = HttpUpgradeMitmRelayLayer::new(
-            Executor::default(),
+            WeakScope::never(),
             HttpWebSocketRelayServiceRequestMatcher::new(relay),
         )
         .into_layer(upstream);
@@ -422,7 +422,7 @@ async fn relay_har_records_rejected_websocket_handshakes() {
             WebSocketRelayService::new(service_fn(transform_relay_message)),
         ));
         let service = HttpUpgradeMitmRelayLayer::new(
-            Executor::default(),
+            WeakScope::never(),
             HttpWebSocketRelayServiceRequestMatcher::new(relay),
         )
         .into_layer(upstream);
@@ -483,7 +483,7 @@ async fn relay_har_records_request_only_for_inner_service_errors() {
                 WebSocketRelayService::new(service_fn(transform_relay_message)),
             ));
             let service = HttpUpgradeMitmRelayLayer::new(
-                Executor::default(),
+                WeakScope::never(),
                 HttpWebSocketRelayServiceRequestMatcher::new(relay),
             )
             .into_layer(upstream);
@@ -548,7 +548,7 @@ async fn relay_har_observes_successful_response_without_egress_upgrade() {
             WebSocketRelayService::new(service_fn(transform_relay_message)),
         ));
         let service = HttpUpgradeMitmRelayLayer::new(
-            Executor::default(),
+            WeakScope::never(),
             HttpWebSocketRelayServiceRequestMatcher::new(relay),
         )
         .with_error_sink(error_sink)

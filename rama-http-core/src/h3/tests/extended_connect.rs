@@ -12,7 +12,8 @@ use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef as _,
     futures::{FutureExt as _, stream},
-    rt::{Executor, spawn},
+    graceful::WeakScope,
+    rt::spawn,
 };
 use rama_http::{
     datagram::{
@@ -76,7 +77,7 @@ async fn custom_token_round_trip_exposes_tunnel_after_success() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             client_connect_advertisement(0),
-            Executor::new(),
+            WeakScope::never(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -140,9 +141,12 @@ async fn custom_token_round_trip_exposes_tunnel_after_success() {
 async fn an_upgraded_tunnel_keeps_the_connection_in_use_until_it_ends() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
         spawn(client_driver.run());
@@ -197,9 +201,12 @@ async fn an_upgraded_tunnel_keeps_the_connection_in_use_until_it_ends() {
 async fn connect_sends_no_body_and_refuses_one_announcing_content() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
         spawn(client_driver.run());
@@ -253,7 +260,7 @@ async fn refused_without_server_setting_and_opens_no_stream() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             client_connect_advertisement(1),
-            Executor::new(),
+            WeakScope::never(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -302,9 +309,12 @@ async fn refused_without_server_setting_and_opens_no_stream() {
 async fn protocol_on_other_methods_fails_locally_without_a_stream() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let request = Request::builder()
             .uri("https://localhost/chat")
             .body(Body::empty())
@@ -332,7 +342,7 @@ async fn client_waits_for_late_settings_before_opening_a_stream() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             client_connect_advertisement(1),
-            Executor::new(),
+            WeakScope::never(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -371,9 +381,12 @@ async fn client_waits_for_late_settings_before_opening_a_stream() {
 async fn a_connection_lost_before_settings_fails_the_waiting_request() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         spawn(client_driver.run());
         let mut request = spawn(async move {
             client
@@ -402,9 +415,12 @@ async fn a_connection_lost_before_settings_fails_the_waiting_request() {
 async fn unsuccessful_response_keeps_its_body_and_offers_no_tunnel() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
         spawn(client_driver.run());
@@ -573,9 +589,12 @@ async fn server_treats_unadvertised_protocol_as_malformed() {
 async fn capsule_validation_sees_content_length_on_successful_connect() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         // The server engine only supplies SETTINGS; its request streams are answered raw.
         let (_server, server_driver) =
             server::handshake(pair.server.clone(), extended_connect_server()).unwrap();
@@ -652,9 +671,12 @@ async fn capsule_validation_sees_content_length_on_successful_connect() {
 async fn ordinary_connect_tunnels_ignore_content_length_on_every_2xx() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (_server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         spawn(client_driver.run());

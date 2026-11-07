@@ -2,10 +2,7 @@
 
 use super::*;
 use rama_core::{
-    Service as _,
-    bytes::Bytes,
-    extensions::ExtensionsRef as _,
-    rt::{Executor, spawn},
+    Service as _, bytes::Bytes, extensions::ExtensionsRef as _, graceful::WeakScope, rt::spawn,
 };
 use rama_http_core::h3::{
     client,
@@ -44,7 +41,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
             .with_server_auth(identity.clone());
         let server = Endpoint::bind_server(
-            Executor::new(),
+            WeakScope::never(),
             ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
             SocketAddress::local_ipv4(0),
         )
@@ -60,7 +57,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
             decoder: Startup::OnDemand,
             ..Preferences::default()
         };
-        let connector = Http3Connector::builder(Executor::new())
+        let connector = Http3Connector::builder(WeakScope::never())
             .with_tls_config(tls)
             .with_config(Config {
                 critical_streams: fixed,
@@ -134,7 +131,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
             let (_sender, driver) = client::handshake::<Body, _>(
                 transport.connection,
                 Arc::unwrap_or_clone(transport.config),
-                Executor::new(),
+                WeakScope::never(),
             )
             .unwrap();
             let driver = spawn(driver.run());

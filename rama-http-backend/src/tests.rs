@@ -20,11 +20,10 @@ use rama_core::{
         future::{join, join_all},
         stream,
     },
-    graceful::Shutdown,
+    graceful::{Scope, WeakScope},
     io::BridgeIo,
     layer::ArcLayer,
     layer::ConsumeErrLayer,
-    rt::Executor,
     service::service_fn,
 };
 use rama_http::{
@@ -66,7 +65,7 @@ async fn byte_stream_transport_rejects_http3_before_dialing() {
         let dials = dials.clone();
         move || {
             dials.fetch_add(1, Ordering::SeqCst);
-            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+            HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
         }
     }));
 
@@ -128,7 +127,7 @@ async fn negotiated_stream_version_must_match_the_required_version() {
         let input = ConnectRequest::new(HostWithPort::example_domain_https());
         input.extensions.insert(TargetHttpVersion(required));
 
-        let error = http_connect::<_, _, Body>(io, input, Executor::default())
+        let error = http_connect::<_, _, Body>(io, input, WeakScope::never())
             .await
             .err()
             .expect("negotiated protocol must satisfy the required version");
@@ -140,7 +139,7 @@ async fn negotiated_stream_version_must_match_the_required_version() {
 async fn http_connector_accepts_protocol_independent_input() {
     let connector =
         HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
-            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+            HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
         }));
 
     let input = ConnectRequest::new(HostWithPort::example_domain_https());
@@ -164,7 +163,7 @@ async fn http_connector_accepts_protocol_independent_input() {
 async fn http_request_adapter_composes_with_http_connector() {
     let connector = HttpConnectRequestAdapter::new(
         HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
-            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+            HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
         })),
     );
 
@@ -185,7 +184,7 @@ async fn http_request_adapter_composes_with_http_connector() {
 #[tokio::test]
 async fn test_http11_pipelining() {
     let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
     }));
 
     let conn = connector
@@ -225,7 +224,7 @@ async fn test_http2_multiplex() {
         move || {
             let inflight = inflight.clone();
             let max_inflight = max_inflight.clone();
-            HttpServer::auto(Executor::default()).service(service_fn(move |_req: Request| {
+            HttpServer::auto(WeakScope::never()).service(service_fn(move |_req: Request| {
                 let inflight = inflight.clone();
                 let max_inflight = max_inflight.clone();
                 async move {
@@ -261,7 +260,7 @@ async fn test_http2_multiplex() {
 #[tokio::test]
 async fn test_http11_handles_4_concurrent_requests() {
     let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
     }));
 
     let conn = connector
@@ -285,7 +284,7 @@ async fn test_http11_handles_4_concurrent_requests() {
 #[tokio::test]
 async fn test_http2_handles_200_concurrent_requests() {
     let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
     }));
 
     let conn = connector
@@ -444,19 +443,21 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_server_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
             .unwrap();
     });
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -481,7 +482,7 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::graceful(graceful.guard()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -497,9 +498,7 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();
-    let fut = graceful.shutdown();
-
-    fut.await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -508,19 +507,21 @@ async fn http11_mitm_relay_default_sanitizes_both_hops() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_hop_by_hop_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
             .unwrap();
     });
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -565,7 +566,7 @@ async fn http11_mitm_relay_default_sanitizes_both_hops() {
 
     drop(client_stream);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -574,19 +575,21 @@ async fn http11_mitm_relay_sanitizes_before_transform_middleware() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_middleware_hop_by_hop_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
             .unwrap();
     });
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -658,7 +661,7 @@ async fn http11_mitm_relay_sanitizes_before_transform_middleware() {
 
     drop(client_stream);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -667,18 +670,20 @@ async fn http11_mitm_relay_default_preserves_response_trailers() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_trailer_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
             .unwrap();
     });
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -712,7 +717,7 @@ async fn http11_mitm_relay_default_preserves_response_trailers() {
 
     drop(client_stream);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -721,18 +726,20 @@ async fn h2_mitm_relay_default_preserves_response_trailers() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_trailer_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
             .unwrap();
     });
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -748,7 +755,7 @@ async fn h2_mitm_relay_default_preserves_response_trailers() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::graceful(graceful.guard()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -779,7 +786,7 @@ async fn h2_mitm_relay_default_preserves_response_trailers() {
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -788,18 +795,20 @@ async fn http11_mitm_relay_rejects_unsolicited_switching_protocols() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_unsolicited_upgrade_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
             .unwrap();
     });
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -834,7 +843,7 @@ async fn http11_mitm_relay_rejects_unsolicited_switching_protocols() {
 
     drop(client_stream);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -843,18 +852,20 @@ async fn http11_mitm_relay_does_not_turn_upgrade_into_close() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_upgrade_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
             .unwrap();
     });
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -902,7 +913,7 @@ async fn http11_mitm_relay_does_not_turn_upgrade_into_close() {
 
     drop(client_stream);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
@@ -910,19 +921,21 @@ async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_server_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
             .unwrap();
     });
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -947,7 +960,7 @@ async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::graceful(graceful.guard()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -973,7 +986,7 @@ async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -1002,14 +1015,15 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
     let request_count = Arc::new(AtomicUsize::new(0));
 
-    graceful.spawn_task_fn({
+    graceful.spawn_task({
         let request_count = request_count.clone();
-        async move |guard| {
-            HttpServer::auto(Executor::graceful(guard))
+        let guard = graceful.clone();
+        async move {
+            HttpServer::auto(WeakScope::from(guard))
                 .service(service_fn(move |req| {
                     let request_count = request_count.clone();
                     async move {
@@ -1022,8 +1036,9 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
         }
     });
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -1048,7 +1063,7 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::graceful(graceful.guard()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1085,7 +1100,7 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -1094,13 +1109,13 @@ async fn test_http11_mitm_relay_propagates_originated_request_close() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
     let request_count = Arc::new(AtomicUsize::new(0));
 
-    graceful.spawn_task_fn({
+    graceful.spawn_task({
         let request_count = request_count.clone();
-        async move |_guard| {
+        async move {
             let mut server_stream = server_stream;
             let mut request = Vec::new();
             let mut buf = [0; 1024];
@@ -1125,8 +1140,9 @@ async fn test_http11_mitm_relay_propagates_originated_request_close() {
         }
     });
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -1147,7 +1163,7 @@ async fn test_http11_mitm_relay_propagates_originated_request_close() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::graceful(graceful.guard()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1179,7 +1195,7 @@ async fn test_http11_mitm_relay_propagates_originated_request_close() {
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -1188,11 +1204,12 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_server_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -1201,8 +1218,9 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
 
     let (relay_done_tx, relay_done_rx) = tokio::sync::oneshot::channel::<()>();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -1228,7 +1246,7 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::graceful(graceful.guard()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1249,7 +1267,7 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
         .expect("relay completion signal");
 
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 /// Verifies the relay's eager phase-2 path mirrors the upstream's
@@ -1284,13 +1302,14 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
     // Upstream h2 server configured with the SETTINGS we want the
     // relay to mirror back out to its downstream client.
-    graceful.spawn_task_fn(async move |guard| {
-        let mut server = HttpServer::auto(Executor::graceful(guard));
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        let mut server = HttpServer::auto(WeakScope::from(guard));
         if upstream_enables_connect {
             server.h2_mut().set_enable_connect_protocol();
         }
@@ -1313,8 +1332,9 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
             .unwrap();
@@ -1327,7 +1347,7 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::graceful(graceful.guard()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1369,7 +1389,7 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 /// Smoke test: when the egress IO carries `H2ClientContextParams` *in
@@ -1387,11 +1407,12 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpServer::auto(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(server_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -1410,8 +1431,9 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
         ..Default::default()
     });
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
             .unwrap();
@@ -1421,7 +1443,7 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::graceful(graceful.guard()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1435,7 +1457,7 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }
 
 #[tokio::test]
@@ -1479,7 +1501,7 @@ async fn h2_client_exact_replay_reaches_the_wire() {
     });
 
     let established =
-        http_connect::<_, _, Body>(MockSocket::new(client_stream), request, Executor::default())
+        http_connect::<_, _, Body>(MockSocket::new(client_stream), request, WeakScope::never())
             .await
             .unwrap();
     let payload = timeout(Duration::from_secs(1), peer)
@@ -1503,12 +1525,13 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
     // These explicit native receive budgets fit the relay's configured limits.
-    graceful.spawn_task_fn(async move |guard| {
-        let mut server = HttpServer::auto(Executor::graceful(guard));
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        let mut server = HttpServer::auto(WeakScope::from(guard));
         server.h2_mut().set_max_frame_size(32_768);
         server.h2_mut().set_max_header_list_size(16_384);
         server.h2_mut().set_header_table_size(8_192);
@@ -1526,14 +1549,15 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
 
-    graceful.spawn_task_fn(async move |guard| {
-        HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
             .unwrap();
     });
 
-    let (mut sender, connection) = H2ClientBuilder::new(Executor::graceful(graceful.guard()))
+    let (mut sender, connection) = H2ClientBuilder::new(graceful.clone_weak())
         .with_observe_peer_settings(true)
         .handshake::<_, Body>(MockSocket::new(client_stream))
         .await
@@ -1571,7 +1595,7 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
 
     drop(sender);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
     driver.abort();
 }
 
@@ -1582,10 +1606,11 @@ async fn test_h2_mitm_relay_late_upstream_settings_falls_back_to_native() {
     let (mut client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
     let (relay_egress_stream, mut silent_upstream) = tokio::io::duplex(kib(16));
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
-    graceful.spawn_task_fn(async move |_guard| {
+    let _guard = graceful.clone();
+    _guard.spawn_task(async move {
         let mut buf = [0u8; 1024];
         loop {
             match silent_upstream.read(&mut buf).await {
@@ -1598,9 +1623,9 @@ async fn test_h2_mitm_relay_late_upstream_settings_falls_back_to_native() {
     egress
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
-    let executor = Executor::graceful(graceful.guard());
+    let scope = graceful.clone_weak();
     let relay = tokio::spawn(async move {
-        HttpMitmRelay::new(executor)
+        HttpMitmRelay::new(scope)
             .with_eager_peer_settings_timeout(Duration::from_millis(50))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
@@ -1640,12 +1665,13 @@ async fn test_h2_mitm_relay_mirrors_zero_max_concurrent_streams() {
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
-    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
     let cancel_drop_guard = token.drop_guard();
 
     // Upstream advertises max_concurrent_streams=0.
-    graceful.spawn_task_fn(async move |guard| {
-        let mut server = HttpServer::auto(Executor::graceful(guard));
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        let mut server = HttpServer::auto(WeakScope::from(guard));
         server.h2_mut().set_max_concurrent_streams(0);
         server
             .service(service_fn(server_svc_fn))
@@ -1659,21 +1685,21 @@ async fn test_h2_mitm_relay_mirrors_zero_max_concurrent_streams() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
 
-    graceful.spawn_task_fn(async move |guard| {
-        _ = HttpMitmRelay::new(Executor::graceful(guard))
+    let guard = graceful.clone();
+    graceful.spawn_task(async move {
+        _ = HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await;
     });
 
     // Low-level h2: we don't send a request because the relay's ingress
     // (correctly enforcing max_streams=0) would RST_STREAM it.
-    let (send_req, conn) =
-        rama_http_core::client::conn::http2::Builder::new(Executor::graceful(graceful.guard()))
-            .handshake::<_, rama_http::body::util::Empty<rama_core::bytes::Bytes>>(MockSocket::new(
-                client_stream,
-            ))
-            .await
-            .expect("downstream h2 handshake against relay must succeed");
+    let (send_req, conn) = rama_http_core::client::conn::http2::Builder::new(graceful.clone_weak())
+        .handshake::<_, rama_http::body::util::Empty<rama_core::bytes::Bytes>>(MockSocket::new(
+            client_stream,
+        ))
+        .await
+        .expect("downstream h2 handshake against relay must succeed");
 
     let handle = conn.peer_settings_handle();
     tokio::spawn(async move {
@@ -1693,5 +1719,5 @@ async fn test_h2_mitm_relay_mirrors_zero_max_concurrent_streams() {
 
     drop(send_req);
     cancel_drop_guard.disarm().cancel();
-    graceful.shutdown().await;
+    graceful.join().await.expect("graceful shutdown");
 }

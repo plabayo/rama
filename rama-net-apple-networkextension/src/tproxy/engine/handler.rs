@@ -1,6 +1,6 @@
 use std::{convert::Infallible, future::Future};
 
-use rama_core::{Service, bytes::Bytes, error::BoxError, io::BridgeIo, rt::Executor};
+use rama_core::{Service, bytes::Bytes, error::BoxError, graceful::WeakScope, io::BridgeIo};
 
 use crate::{
     NwTcpStream, TcpFlow, UdpFlow,
@@ -66,7 +66,7 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     /// distinguishable acknowledgement, return a non-empty payload.
     fn handle_app_message(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         message: Bytes,
     ) -> impl Future<Output = Option<Bytes>> + Send + '_ {
         tracing::debug!(
@@ -111,7 +111,7 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     /// [`crate::tproxy::DecisionDeadlineAction`] (default: block).
     fn match_tcp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         _meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<
@@ -155,7 +155,7 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     /// [`Self::match_tcp_flow`] applies — see that method for details.
     fn match_udp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         _meta: TransparentProxyFlowMeta,
     ) -> impl Future<Output = FlowAction<impl Service<UdpFlow, Output = (), Error = Infallible>>>
     + Send
@@ -168,14 +168,14 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     /// don't assume a quiesced data path. Opportunity to flush
     /// metrics, snapshot pending work, etc. Default: trace log.
     ///
-    /// The returned future runs detached on the engine's graceful
-    /// [`Executor`] and holds an engine shutdown guard until it
+    /// The returned future runs detached on the engine's
+    /// [`WeakScope`] and holds the engine scope until it
     /// completes. Bound any network I/O you do here with a timeout:
     /// an un-timed fetch over a link that dies across the suspend
-    /// would otherwise hold the guard and delay `engine` teardown
+    /// would otherwise hold the scope and delay `engine` teardown
     /// (capped, but not for free). Same applies to
     /// [`Self::on_system_wake`].
-    fn on_system_sleep(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+    fn on_system_sleep(&self, _scope: WeakScope) -> impl Future<Output = ()> + Send + '_ {
         tracing::debug!(
             target: "rama_apple_ne::tproxy::lifecycle",
             "system sleep (default handler)"
@@ -188,9 +188,9 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     /// per-flow failure path; new flows arrive via `match_tcp_flow`
     /// / `match_udp_flow` as normal. Default: trace log.
     ///
-    /// See [`Self::on_system_sleep`] for the guard-holding /
+    /// See [`Self::on_system_sleep`] for the scope-holding /
     /// un-timed-I/O contract — it applies here too.
-    fn on_system_wake(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+    fn on_system_wake(&self, _scope: WeakScope) -> impl Future<Output = ()> + Send + '_ {
         tracing::debug!(
             target: "rama_apple_ne::tproxy::lifecycle",
             "system wake (default handler)"

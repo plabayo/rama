@@ -2,12 +2,12 @@ use std::time::Duration;
 
 use rama::{
     Layer, Service,
+    graceful::WeakScope,
     http::{
         Body, BodyExtractExt, Request, Version, client::EasyHttpWebClient,
         layer::trace::TraceLayer, server::HttpServer, service::web::WebService,
     },
     net::address::SocketAddress,
-    rt::Executor,
     telemetry::tracing::subscriber::{
         self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
     },
@@ -39,7 +39,7 @@ async fn start_server(
     let (conn, _) = conn_result?;
     let conn = TcpStream::new(conn);
 
-    let server = HttpServer::new_http1(Executor::default());
+    let server = HttpServer::new_http1(WeakScope::never());
     server
         .serve(
             conn,
@@ -59,7 +59,7 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::never())
             .without_connection_pool()
             .build_client(),
     );

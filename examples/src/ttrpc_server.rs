@@ -42,8 +42,8 @@
 )]
 
 use rama::{
+    graceful::WeakScope,
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -87,7 +87,7 @@ async fn main() {
     let server = TtrpcServer::new().register(greeter::Greeter(GreeterService));
 
     tracing::info!("ttRPC greeter server listening on {ADDR}");
-    TcpListener::bind_address(ADDR, Executor::default())
+    TcpListener::bind_address(ADDR, WeakScope::never())
         .await
         .expect("bind TCP listener")
         .serve(server)

@@ -11,8 +11,8 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
     io::BridgeIo,
-    rt::Executor,
     telemetry::tracing,
 };
 use rama_crypto::{
@@ -164,7 +164,7 @@ impl QuicMirrorCeiling {
 #[derive(Debug, Clone)]
 pub struct QuicMitmRelay<Issuer> {
     issuer: Issuer,
-    exec: Executor,
+    scope: WeakScope,
     egress_tls: TlsClientConfig,
     ingress_transport: Arc<TransportConfig>,
     egress_transport: Arc<TransportConfig>,
@@ -182,17 +182,18 @@ impl<Issuer> QuicMitmRelay<Issuer> {
     /// Datagrams are disabled on both hops until both transports enable them.
     pub fn new(
         issuer: Issuer,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         egress_tls: TlsClientConfig,
         failure_code: VarInt,
     ) -> Self {
+        let scope = scope.into();
         // Datagrams stay off until both hops are configured for them: advertising them on one
         // hop only would promise what the relay cannot carry.
         let transport =
             Arc::new(TransportConfig::default().maybe_with_datagram_receive_buffer_size(None));
         Self {
             issuer,
-            exec,
+            scope,
             egress_tls,
             ingress_transport: transport.clone(),
             egress_transport: transport,
@@ -421,7 +422,7 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
             origin: origin.clone(),
         }));
         server.set_transport_config(self.ingress_transport.clone());
-        let ingress_endpoint = Endpoint::build(self.exec.clone())
+        let ingress_endpoint = Endpoint::build(self.scope.clone())
             .with_server_config(server)
             .with_datagram_socket(ingress)?;
         let ingress_connection = loop {
@@ -717,7 +718,7 @@ where
             .map_err(|error| origin_refusal("origin-address", error))?;
         // QUIC bit greasing and the payload limit are endpoint-wide; a mirroring egress
         // advertises them as its client did.
-        let endpoint = Endpoint::build(self.relay.exec.clone())
+        let endpoint = Endpoint::build(self.relay.scope.clone())
             .maybe_with_config(endpoint_config)
             .with_datagram_socket(egress)
             .map_err(|error| origin_refusal("origin-endpoint", error))?;

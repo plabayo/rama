@@ -19,6 +19,7 @@
 
 use rama::{
     extensions::Extensions,
+    graceful::WeakScope,
     net::{address::SocketAddress, user::credentials::basic},
     proxy::socks5::{
         Socks5Acceptor, Socks5Client,
@@ -27,7 +28,6 @@ use rama::{
             udp::{RelayDirection, UdpInspectAction},
         },
     },
-    rt::Executor,
     tcp::{client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -139,7 +139,7 @@ async fn main() {
 }
 
 async fn spawn_socks5_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let tcp_service = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .expect("bind socks5 UDP Associate proxy on open port");
 
@@ -148,7 +148,7 @@ async fn spawn_socks5_server() -> SocketAddress {
         .expect("get bind address of socks5 proxy server")
         .into();
 
-    let socks5_acceptor = Socks5Acceptor::new(Executor::default())
+    let socks5_acceptor = Socks5Acceptor::new(WeakScope::never())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_udp_associator(
             DefaultUdpRelay::default()

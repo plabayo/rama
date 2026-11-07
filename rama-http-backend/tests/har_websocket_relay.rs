@@ -6,8 +6,8 @@
 use rama_core::{
     Layer, ServiceInput,
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     layer::{ArcLayer, ConsumeErrLayer},
-    rt::Executor,
     service::service_fn,
 };
 use rama_http::{
@@ -53,19 +53,19 @@ async fn assert_protocol_relay_file_recording(version: Version) {
     );
     let (client_io, proxy_ingress_io) = tokio::io::duplex(16 * 1024);
     let (proxy_egress_io, server_io) = tokio::io::duplex(16 * 1024);
-    let executor = Executor::default();
+    let scope = WeakScope::never();
 
     let upstream =
         ConsumeErrLayer::trace_as_debug().into_layer(WebSocketAcceptor::new().into_echo_service());
     let upstream_task = tokio::spawn({
-        let executor = executor.clone();
+        let scope = scope.clone();
         async move {
             if version == Version::HTTP_2 {
-                let mut server = HttpServer::new_h2(executor);
+                let mut server = HttpServer::new_h2(scope);
                 server.h2_mut().set_enable_connect_protocol();
                 server.serve(ServiceInput::new(server_io), upstream).await
             } else {
-                HttpServer::new_http1(executor)
+                HttpServer::new_http1(scope)
                     .serve(ServiceInput::new(server_io), upstream)
                     .await
             }
@@ -75,7 +75,7 @@ async fn assert_protocol_relay_file_recording(version: Version) {
     let upstream_client = http_connect::<_, _, Body>(
         ServiceInput::new(proxy_egress_io),
         protocol_request(version),
-        executor.clone(),
+        scope.clone(),
     )
     .await
     .expect("connect proxy to upstream protocol engine")
@@ -85,22 +85,22 @@ async fn assert_protocol_relay_file_recording(version: Version) {
         WebSocketRelayService::new(service_fn(transform_relay_message)),
     ));
     let proxy = HttpUpgradeMitmRelayLayer::new(
-        executor.clone(),
+        scope.clone(),
         HttpWebSocketRelayServiceRequestMatcher::new(relay),
     )
     .into_layer(upstream_client);
     let proxy = ArcLayer::new().into_layer(ConsumeErrLayer::trace_as_debug().into_layer(proxy));
     let proxy_task = tokio::spawn({
-        let executor = executor.clone();
+        let scope = scope.clone();
         async move {
             if version == Version::HTTP_2 {
-                let mut server = HttpServer::new_h2(executor);
+                let mut server = HttpServer::new_h2(scope);
                 server.h2_mut().set_enable_connect_protocol();
                 server
                     .serve(ServiceInput::new(proxy_ingress_io), proxy)
                     .await
             } else {
-                HttpServer::new_http1(executor)
+                HttpServer::new_http1(scope)
                     .serve(ServiceInput::new(proxy_ingress_io), proxy)
                     .await
             }
@@ -110,7 +110,7 @@ async fn assert_protocol_relay_file_recording(version: Version) {
     let downstream_client = http_connect::<_, _, Body>(
         ServiceInput::new(client_io),
         protocol_request(version),
-        executor,
+        scope,
     )
     .await
     .expect("connect downstream protocol engine to proxy")

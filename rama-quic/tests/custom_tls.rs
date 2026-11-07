@@ -164,7 +164,7 @@ async fn external_provider_runs_without_a_builtin_backend() {
     let provider = Arc::new(Provider(started.clone()));
     let server = ServerConfig::new(provider.clone(), Arc::new(TokenKey));
     let endpoint = Endpoint::bind_server(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::never(),
         server,
         "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
     )

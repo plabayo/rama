@@ -4,7 +4,7 @@
 )]
 
 use divan::counter::ItemsCount;
-use rama::graceful::{Shutdown, ShutdownGuard};
+use rama::graceful::Scope;
 use std::assert_matches;
 use std::future::Future;
 use std::pin::Pin;
@@ -26,13 +26,18 @@ fn main() {
     divan::main();
 }
 
+#[divan::bench(args = THREAD_COUNTS, sample_count = 50)]
+fn contended_coordination_control(bencher: divan::Bencher, thread_count: usize) {
+    run_contended(bencher, thread_count, || || || {});
+}
+
 #[divan::bench(args = WAITER_COUNTS, sample_count = 100)]
 fn first_waiter_registration(bencher: divan::Bencher, waiter_count: usize) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("runtime build");
     let _runtime_guard = runtime.enter();
-    let shutdown = Shutdown::new(std::future::pending::<()>());
+    let shutdown = Scope::new().with_signal(std::future::pending::<()>());
 
     bencher
         .counter(ItemsCount::new(waiter_count))
@@ -43,11 +48,6 @@ fn first_waiter_registration(bencher: divan::Bencher, waiter_count: usize) {
                 assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
             }
         });
-}
-
-#[divan::bench(args = THREAD_COUNTS, sample_count = 50)]
-fn contended_coordination_control(bencher: divan::Bencher, thread_count: usize) {
-    run_contended(bencher, thread_count, || || || {});
 }
 
 #[divan::bench(args = WAITER_COUNTS, sample_count = 100)]
@@ -61,19 +61,17 @@ fn cancellation_and_completion(bencher: divan::Bencher, waiter_count: usize) {
         .counter(ItemsCount::new(waiter_count))
         .with_inputs(|| {
             let (trigger, signal) = oneshot::channel();
-            let shutdown = Shutdown::new(async move {
+            let shutdown = Scope::new().with_signal(async move {
                 _ = signal.await;
             });
-            runtime.block_on(tokio::task::yield_now());
-
             let mut futures = make_waiter_futures(&shutdown, waiter_count);
             let mut cx = Context::from_waker(Waker::noop());
             for future in &mut futures {
                 assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
             }
-            (trigger, futures)
+            (trigger, futures, shutdown)
         })
-        .bench_local_values(|(trigger, futures)| {
+        .bench_local_values(|(trigger, futures, _shutdown)| {
             trigger.send(()).expect("shutdown signal receiver alive");
             runtime.block_on(async move {
                 for future in futures {
@@ -89,7 +87,7 @@ fn steady_state_registered_waiters(bencher: divan::Bencher, waiter_count: usize)
         .build()
         .expect("runtime build");
     let _runtime_guard = runtime.enter();
-    let shutdown = Shutdown::new(std::future::pending::<()>());
+    let shutdown = Scope::new().with_signal(std::future::pending::<()>());
     let mut futures = make_waiter_futures(&shutdown, waiter_count);
     let mut cx = Context::from_waker(Waker::noop());
     for future in &mut futures {
@@ -111,15 +109,14 @@ fn contended_steady_state_registered_waiters(bencher: divan::Bencher, thread_cou
         .build()
         .expect("runtime build");
     let _runtime_guard = runtime.enter();
-    let shutdown = Shutdown::new(std::future::pending::<()>());
-    let guard = shutdown.guard();
+    let scope = Scope::new().with_signal(std::future::pending::<()>());
 
     run_contended(bencher, thread_count, move || {
-        let guards: Vec<_> = (0..WAITERS_PER_THREAD).map(|_| guard.clone()).collect();
+        let scopes: Vec<_> = (0..WAITERS_PER_THREAD).map(|_| scope.clone()).collect();
         move || {
-            let mut futures: Vec<Pin<Box<dyn Future<Output = ()>>>> = guards
+            let mut futures: Vec<Pin<Box<dyn Future<Output = ()>>>> = scopes
                 .into_iter()
-                .map(|guard| Box::pin(async move { guard.cancelled().await }) as _)
+                .map(|scope| Box::pin(async move { scope.cancelled().await }) as _)
                 .collect();
             let mut cx = Context::from_waker(Waker::noop());
             move || {
@@ -131,16 +128,143 @@ fn contended_steady_state_registered_waiters(bencher: divan::Bencher, thread_cou
     });
 }
 
-type WaiterFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+#[divan::bench(sample_count = 100)]
+fn clone_and_drop(bencher: divan::Bencher) {
+    let scope = Scope::new().with_signal(std::future::pending::<()>());
+    bencher.bench_local(|| drop(divan::black_box(scope.clone())));
+}
 
-fn make_waiter_futures(shutdown: &Shutdown, waiter_count: usize) -> Vec<WaiterFuture> {
+/// What a spawn takes: a hold from a weak scope while the scope is held.
+#[divan::bench(sample_count = 100)]
+fn held_upgrade_and_drop(bencher: divan::Bencher) {
+    let scope = Scope::new().with_signal(std::future::pending::<()>());
+    let weak = scope.clone_weak();
+    bencher.bench_local(|| drop(divan::black_box(&weak).try_hold()));
+}
+
+#[divan::bench(sample_count = 100)]
+fn child_clone_and_drop(bencher: divan::Bencher) {
+    let connection = Scope::new()
+        .with_signal(std::future::pending::<()>())
+        .child();
+    bencher.bench_local(|| drop(divan::black_box(connection.clone())));
+}
+
+#[divan::bench(sample_count = 100)]
+fn is_cancelled(bencher: divan::Bencher) {
+    let connection = Scope::new()
+        .with_signal(std::future::pending::<()>())
+        .child();
+    bencher.bench_local(|| divan::black_box(&connection).is_cancelled());
+}
+
+#[divan::bench(sample_count = 100)]
+fn child_create_and_drop(bencher: divan::Bencher) {
+    let scope = Scope::new().with_signal(std::future::pending::<()>());
+    bencher.bench_local(|| drop(divan::black_box(scope.child())));
+}
+
+const DEPTHS: &[usize] = &[0, 16, 64];
+
+fn scope_at_depth(depth: usize) -> (Vec<Scope>, Scope) {
+    let mut chain = vec![Scope::new().with_signal(std::future::pending::<()>())];
+    for _ in 0..depth {
+        let child = chain.last().expect("root").child();
+        chain.push(child);
+    }
+    let leaf = chain.pop().expect("leaf");
+    (chain, leaf)
+}
+
+#[divan::bench(args = DEPTHS, sample_count = 100)]
+fn clone_and_drop_at_depth(bencher: divan::Bencher, depth: usize) {
+    let (_chain, leaf) = scope_at_depth(depth);
+    bencher.bench_local(|| drop(divan::black_box(leaf.clone())));
+}
+
+#[divan::bench(args = DEPTHS, sample_count = 100)]
+fn held_upgrade_and_drop_at_depth(bencher: divan::Bencher, depth: usize) {
+    let (_chain, leaf) = scope_at_depth(depth);
+    let weak = leaf.clone_weak();
+    bencher.bench_local(|| drop(divan::black_box(&weak).try_hold()));
+}
+
+/// The first hold taken on an idle scope: nothing holds it, so the hold revives it.
+#[divan::bench(args = DEPTHS, sample_count = 100)]
+fn unheld_upgrade_and_drop_at_depth(bencher: divan::Bencher, depth: usize) {
+    let (_chain, leaf) = scope_at_depth(depth);
+    let weak = leaf.into_weak_scope();
+    bencher.bench_local(|| drop(divan::black_box(&weak).try_hold()));
+}
+
+#[divan::bench(args = DEPTHS, sample_count = 100)]
+fn is_cancelled_at_depth(bencher: divan::Bencher, depth: usize) {
+    let (_chain, leaf) = scope_at_depth(depth);
+    bencher.bench_local(|| divan::black_box(&leaf).is_cancelled());
+}
+
+#[divan::bench(args = DEPTHS, sample_count = 100)]
+fn first_waiter_registration_at_depth(bencher: divan::Bencher, depth: usize) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime build");
+    let _runtime_guard = runtime.enter();
+    let (_chain, leaf) = scope_at_depth(depth);
+
+    bencher
+        .counter(ItemsCount::new(64_usize))
+        .with_inputs(|| make_waiter_futures(&leaf, 64))
+        .bench_local_values(|mut futures| {
+            let mut cx = Context::from_waker(Waker::noop());
+            for future in &mut futures {
+                assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+            }
+        });
+}
+
+/// A server scope handing every connection a child that the connection clones a few times.
+#[divan::bench(args = THREAD_COUNTS, sample_count = 50)]
+fn contended_connection_lifecycle(bencher: divan::Bencher, thread_count: usize) {
+    let server = Scope::new()
+        .with_signal(std::future::pending::<()>())
+        .child();
+    run_contended(bencher, thread_count, move || {
+        let server = server.clone();
+        move || {
+            move || {
+                for _ in 0..WAITERS_PER_THREAD {
+                    let connection = server.child();
+                    let request = connection.clone();
+                    drop(divan::black_box(request));
+                    drop(connection);
+                }
+            }
+        }
+    });
+}
+
+#[divan::bench(sample_count = 100)]
+fn run_until_cancelled_ready(bencher: divan::Bencher) {
+    let scope = Scope::new()
+        .with_signal(std::future::pending::<()>())
+        .child();
+    let mut cx = Context::from_waker(Waker::noop());
+    bencher.bench_local(|| {
+        let mut future = std::pin::pin!(scope.run_until_cancelled(std::future::ready(1)));
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Ready(Some(1)));
+    });
+}
+
+fn make_waiter_futures(shutdown: &Scope, waiter_count: usize) -> Vec<WaiterFuture> {
     (0..waiter_count)
         .map(|_| {
-            let guard: ShutdownGuard = shutdown.guard();
-            Box::pin(async move { guard.cancelled().await }) as WaiterFuture
+            let scope: Scope = shutdown.clone();
+            Box::pin(async move { scope.cancelled().await }) as WaiterFuture
         })
         .collect()
 }
+
+type WaiterFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 fn run_contended<WorkerFactory, Worker, Poll>(
     bencher: divan::Bencher,

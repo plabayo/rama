@@ -45,6 +45,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         Response,
         layer::{
@@ -64,7 +65,6 @@ use rama::{
     },
     layer::ArcLayer,
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -185,10 +185,12 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(64805), exec.clone())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(64805), weak_scope.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -200,7 +202,7 @@ async fn main() {
     );
     tracing::info!("open http://{bind_address} in your browser");
 
-    graceful.spawn_task(async move {
+    scope.spawn_task(async move {
         let app = (
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
@@ -209,11 +211,10 @@ async fn main() {
             ErrorHandlerLayer::default(),
         )
             .into_layer(Router::new().with_get("/", dashboard));
-        listener.serve(HttpServer::auto(exec).service(app)).await;
+        listener
+            .serve(HttpServer::auto(weak_scope).service(app))
+            .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

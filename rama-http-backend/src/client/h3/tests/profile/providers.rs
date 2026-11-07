@@ -58,7 +58,7 @@ async fn ordinary_provider_support_cannot_grant_captured_tls_support() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let mut fixture = fixture().await;
         let calls = Arc::new(AtomicUsize::new(0));
-        fixture.connector = Http3Connector::builder(Executor::new())
+        fixture.connector = Http3Connector::builder(WeakScope::never())
             .with_tls_config(fixture.connector.tls_config().clone())
             .with_tls_provider(Arc::new(OrdinaryOnly {
                 inner: fixture.connector.tls_provider().clone(),
@@ -145,7 +145,7 @@ async fn ordinary_requests_skip_native_capture_preparation() {
         let mut fixture = fixture().await;
         let ordinary_calls = Arc::new(AtomicUsize::new(0));
         let captured_calls = Arc::new(AtomicUsize::new(0));
-        fixture.connector = Http3Connector::builder(Executor::new())
+        fixture.connector = Http3Connector::builder(WeakScope::never())
             .with_tls_config(fixture.connector.tls_config().clone())
             .with_tls_provider(Arc::new(CaptureAware {
                 ordinary: OrdinaryOnly {
@@ -176,7 +176,7 @@ async fn current_profile_and_caller_scope_isolate_tickets_without_keying_each_dr
     tokio::time::timeout(Duration::from_secs(15), async {
         let mut fixture = fixture().await;
         let scopes = Arc::new(Mutex::new(Vec::new()));
-        fixture.connector = Http3Connector::builder(Executor::new())
+        fixture.connector = Http3Connector::builder(WeakScope::never())
             .with_tls_config(fixture.connector.tls_config().clone())
             .with_tls_provider(Arc::new(CaptureAware {
                 ordinary: OrdinaryOnly {
@@ -246,7 +246,7 @@ async fn tls_and_parameters_do_not_claim_an_unprepared_initial_layout() {
 async fn repeated_preparation_does_not_nest_the_producer_session_scope() {
     let mut fixture = fixture().await;
     let scopes = Arc::new(Mutex::new(Vec::new()));
-    fixture.connector = Http3Connector::builder(Executor::new())
+    fixture.connector = Http3Connector::builder(WeakScope::never())
         .with_tls_config(fixture.connector.tls_config().clone())
         .with_tls_provider(Arc::new(CaptureAware {
             ordinary: OrdinaryOnly {

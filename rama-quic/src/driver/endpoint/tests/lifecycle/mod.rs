@@ -61,7 +61,7 @@ pub(super) fn configs_with_options(
     )
 }
 
-fn endpoint(config: Option<ServerConfig>, executor: Executor, budget: Duration) -> Endpoint {
+fn endpoint(config: Option<ServerConfig>, scope: WeakScope, budget: Duration) -> Endpoint {
     let socket =
         Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap();
     Endpoint::new_with_advertised(
@@ -69,7 +69,7 @@ fn endpoint(config: Option<ServerConfig>, executor: Executor, budget: Duration) 
         config,
         socket,
         Vec::new(),
-        executor,
+        scope,
         budget,
     )
     .unwrap()
@@ -85,7 +85,7 @@ fn deadline_endpoint(config: Option<ServerConfig>, timeout: Duration) -> Endpoin
         config,
         socket,
         Vec::new(),
-        Executor::new(),
+        WeakScope::never(),
         Duration::from_millis(10),
     )
     .unwrap()
@@ -119,7 +119,7 @@ pub(super) fn endpoint_with(
         server,
         socket,
         Vec::new(),
-        Executor::new(),
+        WeakScope::never(),
         Duration::from_secs(1),
     )
     .unwrap()
@@ -916,7 +916,7 @@ async fn invalid_handshake_deadlines_fail_before_spawning() {
             None,
             socket,
             Vec::new(),
-            Executor::new(),
+            WeakScope::never(),
             Duration::from_secs(1),
         )
         .unwrap_err();
@@ -926,7 +926,11 @@ async fn invalid_handshake_deadlines_fail_before_spawning() {
 
 #[tokio::test]
 async fn idle_shutdown_releases_socket_with_retained_handles() {
-    let endpoint = endpoint(Some(configs().1), Executor::new(), Duration::from_secs(1));
+    let endpoint = endpoint(
+        Some(configs().1),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let clone = endpoint.clone();
     let addr = endpoint.local_addr().unwrap();
     let (outcome, accepted) = tokio::time::timeout(Duration::from_secs(2), async {
@@ -948,30 +952,29 @@ async fn idle_shutdown_releases_socket_with_retained_handles() {
 }
 
 #[tokio::test]
-async fn graceful_executor_joins_without_guard_cycles() {
-    let shutdown = rama_core::graceful::Shutdown::no_signal();
+async fn scoped_executor_joins_without_cycles() {
+    let scope = rama_core::graceful::Scope::new();
     let endpoint = endpoint(
         Some(configs().1),
-        Executor::graceful(shutdown.guard()),
+        scope.clone_weak(),
         Duration::from_secs(1),
     );
     let addr = endpoint.local_addr().unwrap();
     let clone = endpoint.clone();
-    tokio::time::timeout(Duration::from_secs(2), shutdown.shutdown())
+    scope.cancel(rama_core::graceful::Cause::Owner);
+    tokio::time::timeout(Duration::from_secs(2), scope.join())
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(endpoint.shutdown().await, ShutdownOutcome::Drained);
     assert!(clone.accept().await.is_none());
     let _rebound = std::net::UdpSocket::bind(addr).unwrap();
 }
 
-/// A shutdown that starts when its sender fires.
-fn triggered_shutdown() -> (
-    tokio::sync::oneshot::Sender<()>,
-    rama_core::graceful::Shutdown,
-) {
+/// A scope cancelled when its sender fires.
+fn triggered_shutdown() -> (tokio::sync::oneshot::Sender<()>, rama_core::graceful::Scope) {
     let (trigger, triggered) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama_core::graceful::Shutdown::new(async move {
+    let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
         _ = triggered.await;
     });
     (trigger, shutdown)
@@ -982,7 +985,7 @@ fn triggered_shutdown() -> (
 async fn graceful_client_pair(
     client_config: &ClientConfig,
     server: &Endpoint,
-    shutdown: &rama_core::graceful::Shutdown,
+    shutdown: &rama_core::graceful::Scope,
     budget: Duration,
 ) -> (
     Endpoint,
@@ -990,7 +993,7 @@ async fn graceful_client_pair(
     crate::driver::connection::Connection,
     Vec<crate::driver::connection::Connection>,
 ) {
-    let client = endpoint(None, Executor::graceful(shutdown.guard()), budget);
+    let client = endpoint(None, shutdown.clone_weak(), budget);
     let mut connections = Vec::new();
     let mut server_sides = Vec::new();
     for _ in 0..2 {
@@ -1016,13 +1019,17 @@ async fn graceful_client_pair(
 async fn graceful_shutdown_closes_a_leased_connection_after_its_lease() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let (client_config, server_config) = configs();
-        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
         let (trigger, shutdown) = triggered_shutdown();
         let (client, plain, leased, _server_sides) =
             graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(4)).await;
         let lease = leased.close_lease();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         tokio::time::timeout(Duration::from_millis(500), plain.closed())
             .await
             .expect("the unleased connection closes at once");
@@ -1035,7 +1042,7 @@ async fn graceful_shutdown_closes_a_leased_connection_after_its_lease() {
                 .expect("the leased connection closes once let go"),
             ConnectionError::LocallyClosed
         );
-        stopping.await.unwrap();
+        stopping.await.unwrap().unwrap();
         assert_eq!(client.open_connections(), 0);
     })
     .await
@@ -1048,21 +1055,25 @@ async fn graceful_shutdown_closes_a_leased_connection_after_its_lease() {
 async fn a_held_lease_delays_only_a_graceful_close_and_within_its_budget() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let (client_config, server_config) = configs();
-        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
         let (trigger, shutdown) = triggered_shutdown();
         let (_client, _plain, leased, _server_sides) =
             graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(1)).await;
         let _lease = leased.close_lease();
         let started = tokio::time::Instant::now();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         leased.closed().await;
         let waited = started.elapsed();
         assert!(
             waited >= Duration::from_millis(400) && waited < Duration::from_secs(1),
             "{waited:?}"
         );
-        stopping.await.unwrap();
+        stopping.await.unwrap().unwrap();
 
         let (_trigger, explicit) = triggered_shutdown();
         let (client, _plain, leased, _explicit_server_sides) =
@@ -1080,14 +1091,18 @@ async fn a_held_lease_delays_only_a_graceful_close_and_within_its_budget() {
 async fn each_leased_connection_closes_when_its_own_lease_goes() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let (client_config, server_config) = configs();
-        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
         let (trigger, shutdown) = triggered_shutdown();
         let (_client, first, second, _server_sides) =
             graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(4)).await;
         let first_lease = first.close_lease();
         let second_lease = second.close_lease();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(first.close_reason().is_none() && second.close_reason().is_none());
         drop(first_lease);
@@ -1099,7 +1114,7 @@ async fn each_leased_connection_closes_when_its_own_lease_goes() {
         tokio::time::timeout(Duration::from_millis(500), second.closed())
             .await
             .expect("closed once its own lease went");
-        stopping.await.unwrap();
+        stopping.await.unwrap().unwrap();
     })
     .await
     .unwrap();
@@ -1111,13 +1126,17 @@ async fn each_leased_connection_closes_when_its_own_lease_goes() {
 async fn an_explicit_shutdown_ends_the_lease_wait() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let (client_config, server_config) = configs();
-        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
         let (trigger, shutdown) = triggered_shutdown();
         let (client, _plain, leased, _server_sides) =
             graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(8)).await;
         let _lease = leased.close_lease();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(leased.close_reason().is_none(), "closed under its lease");
         let started = tokio::time::Instant::now();
@@ -1128,7 +1147,7 @@ async fn an_explicit_shutdown_ends_the_lease_wait() {
             "{:?}",
             started.elapsed()
         );
-        stopping.await.unwrap();
+        stopping.await.unwrap().unwrap();
     })
     .await
     .unwrap();
@@ -1140,13 +1159,17 @@ async fn an_explicit_shutdown_ends_the_lease_wait() {
 async fn an_explicit_close_during_the_lease_wait_closes_leased_connections() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let (client_config, server_config) = configs();
-        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
         let (trigger, shutdown) = triggered_shutdown();
         let (client, _plain, leased, server_sides) =
             graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(8)).await;
         let _lease = leased.close_lease();
         _ = trigger.send(());
-        let stopping = tokio::spawn(shutdown.shutdown());
+        let stopping = tokio::spawn(shutdown.join());
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(leased.close_reason().is_none(), "closed under its lease");
         client.close(7u32, b"explicit");
@@ -1168,10 +1191,167 @@ async fn an_explicit_close_during_the_lease_wait_closes_leased_connections() {
         tokio::time::timeout(Duration::from_secs(1), stopping)
             .await
             .expect("no lease wait after an explicit close")
+            .unwrap()
             .unwrap();
     })
     .await
     .unwrap();
+}
+
+/// An abort of the endpoint's scope closes a leased connection at once, without the lease
+/// wait a graceful shutdown would give it.
+#[tokio::test]
+async fn a_scope_abort_does_not_wait_for_a_close_lease() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
+        let shutdown = rama_core::graceful::Scope::new();
+        let (client, _plain, leased, _server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(4)).await;
+        let _lease = leased.close_lease();
+        let started = tokio::time::Instant::now();
+        shutdown.abort(rama_core::graceful::Cause::Owner);
+        tokio::time::timeout(Duration::from_millis(500), leased.closed())
+            .await
+            .expect("the abort closes the leased connection at once");
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            client.inner.shared.lifecycle.completed(),
+        )
+        .await
+        .expect("the abort ends the endpoint's shutdown at once");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
+    })
+    .await
+    .unwrap();
+}
+
+/// An abort during a graceful shutdown's lease wait closes the leased connection at once.
+#[tokio::test]
+async fn a_scope_abort_ends_a_running_lease_wait() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
+        let shutdown = rama_core::graceful::Scope::new();
+        let (client, plain, leased, _server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, Duration::from_secs(8)).await;
+        let _lease = leased.close_lease();
+        shutdown.cancel(rama_core::graceful::Cause::Owner);
+        tokio::time::timeout(Duration::from_millis(500), plain.closed())
+            .await
+            .expect("the unleased connection closes at once");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(leased.close_reason().is_none(), "closed under its lease");
+        let started = tokio::time::Instant::now();
+        shutdown.abort(rama_core::graceful::Cause::Owner);
+        tokio::time::timeout(Duration::from_millis(500), leased.closed())
+            .await
+            .expect("the abort ends the lease wait");
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            client.inner.shared.lifecycle.completed(),
+        )
+        .await
+        .expect("the abort ends the endpoint's shutdown at once");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
+    })
+    .await
+    .unwrap();
+}
+
+/// A supervised task that never ends holds a graceful shutdown for its whole budget, and an
+/// abort, before or during that drain, forces it at once.
+#[tokio::test]
+async fn a_scope_abort_forces_the_driver_drain() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let budget = Duration::from_secs(1);
+        let graceful = rama_core::graceful::Scope::new();
+        let drained = endpoint(None, graceful.clone_weak(), budget);
+        drained.spawn_connection_task(std::future::pending());
+        let started = tokio::time::Instant::now();
+        graceful.cancel(rama_core::graceful::Cause::Owner);
+        assert_eq!(
+            drained.inner.shared.lifecycle.completed().await,
+            ShutdownOutcome::Forced
+        );
+        assert!(started.elapsed() >= budget, "{:?}", started.elapsed());
+
+        for cancel_first in [false, true] {
+            let scope = rama_core::graceful::Scope::new();
+            let aborted = endpoint(None, scope.clone_weak(), Duration::from_secs(8));
+            aborted.spawn_connection_task(std::future::pending());
+            if cancel_first {
+                scope.cancel(rama_core::graceful::Cause::Owner);
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                assert!(
+                    rama_core::futures::FutureExt::now_or_never(
+                        aborted.inner.shared.lifecycle.completed()
+                    )
+                    .is_none(),
+                    "drained before the abort"
+                );
+            }
+            let started = tokio::time::Instant::now();
+            scope.abort(rama_core::graceful::Cause::Owner);
+            assert_eq!(
+                tokio::time::timeout(
+                    Duration::from_millis(500),
+                    aborted.inner.shared.lifecycle.completed(),
+                )
+                .await
+                .expect("the abort forces the drain at once"),
+                ShutdownOutcome::Forced
+            );
+            assert!(
+                started.elapsed() < Duration::from_millis(500),
+                "{:?}",
+                started.elapsed()
+            );
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// The endpoint's budget is for a graceful stop: serving that reaches its own hard phase stops
+/// the endpoint at once, even though the endpoint runs in another scope.
+#[tokio::test]
+async fn a_serving_scope_abort_does_not_wait_out_the_endpoint_budget() {
+    let serving = rama_core::graceful::Scope::new();
+    let served = endpoint(None, WeakScope::never(), Duration::from_secs(8));
+    served.spawn_connection_task(std::future::pending());
+    serving.abort(rama_core::graceful::Cause::Owner);
+    let service = rama_core::service::service_fn(|_connection: crate::Connection| async {
+        Ok::<_, std::convert::Infallible>(())
+    });
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        served.clone().serve(WeakScope::from(serving), service),
+    )
+    .await
+    .expect("the hard phase of the serving scope stops the endpoint at once");
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(
+        served.inner.shared.lifecycle.completed().await,
+        ShutdownOutcome::Forced
+    );
 }
 
 /// An attempt nobody answers still puts a close on the wire when the endpoint shuts down, and
@@ -1184,7 +1364,7 @@ async fn forced_shutdown_joins_an_unpolled_connection_attempt() {
     transport.maybe_set_max_idle_timeout(None);
     client_config.set_transport_config(Arc::new(transport));
     let blackhole = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let endpoint = endpoint(None, Executor::new(), Duration::from_millis(1));
+    let endpoint = endpoint(None, WeakScope::never(), Duration::from_millis(1));
     let addr = endpoint.local_addr().unwrap();
     let connecting = endpoint
         .connect_with(client_config, blackhole.local_addr().unwrap(), "localhost")
@@ -1203,8 +1383,12 @@ async fn forced_shutdown_joins_an_unpolled_connection_attempt() {
 async fn connected_shutdown_releases_sockets_with_retained_streams() {
     tokio::time::timeout(Duration::from_secs(3), async {
         let (client_config, server_config) = configs();
-        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-        let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
+        let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
         let server_addr = server.local_addr().unwrap();
         let client_addr = client.local_addr().unwrap();
         let connecting = client
@@ -1237,8 +1421,12 @@ async fn connected_shutdown_releases_sockets_with_retained_streams() {
 #[tokio::test]
 async fn queued_incoming_attempt_is_charged_until_the_application_takes_it() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -1275,8 +1463,12 @@ async fn queued_incoming_attempt_is_charged_until_the_application_takes_it() {
 #[tokio::test]
 async fn closed_endpoint_refuses_new_connects_and_accepts() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(
             client_config.clone(),
@@ -1601,10 +1793,10 @@ async fn each_admission_guard_alone_refuses_new_connections() {
     for flag in ["driver_lost", "shutdown"] {
         let server = endpoint(
             Some(server_config.clone()),
-            Executor::new(),
+            WeakScope::never(),
             Duration::from_secs(1),
         );
-        let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+        let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
         let connecting = client
             .connect_with(
                 client_config.clone(),
@@ -1662,7 +1854,11 @@ fn queued_attempts(endpoint: &Endpoint) -> usize {
 #[tokio::test]
 async fn repeated_rebind_switches_connections_after_their_pending_send_and_retires_old_sockets() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket_a, gate_a) = gated_socket();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
@@ -1794,7 +1990,7 @@ async fn attempts_received_before_rebinding_are_answered_on_their_own_socket() {
     let mut clients = FxHashMap::default();
     let mut connecting = FxHashMap::default();
     for role in ROLES {
-        let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+        let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
         connecting.insert(
             role,
             client
@@ -1973,8 +2169,8 @@ async fn dropped_and_ignored_attempts_release_their_socket() {
         loopback_socket(),
     );
     let addr_a = server.local_addr().unwrap();
-    let dropper = endpoint(None, Executor::new(), Duration::from_secs(1));
-    let ignored = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let dropper = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+    let ignored = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let c_drop = dropper
         .connect_with(client_config.clone(), addr_a, "localhost")
         .unwrap();
@@ -2042,7 +2238,11 @@ async fn dropped_and_ignored_attempts_release_their_socket() {
 #[tokio::test]
 async fn rebinding_past_the_retained_bound_is_refused_without_change() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let server_addr = server.local_addr().unwrap();
     let acceptor = server.clone();
     let accepting = tokio::spawn(async move {
@@ -2155,9 +2355,13 @@ async fn rebinding_past_the_retained_bound_is_refused_without_change() {
 #[tokio::test]
 async fn first_of_two_queued_attempts_from_one_endpoint_completes_while_the_other_waits() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let addr = server.local_addr().unwrap();
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let first = client
         .connect_with(client_config.clone(), addr, "localhost")
         .unwrap();
@@ -2319,7 +2523,11 @@ async fn validated_handshake_retains_admission_until_the_extended_deadline() {
 #[tokio::test]
 async fn refused_and_oversized_sends_recover_on_real_sockets() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let faults = Arc::new(Mutex::new(VecDeque::from([
         Fault::TooLarge,
         Fault::Refused,
@@ -2362,7 +2570,7 @@ async fn refused_stateless_response_leaves_the_endpoint_serving_others() {
     wait_until(|| server.stats().failed_responses == 1).await;
     assert!(faults.lock().is_empty());
 
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, address, "localhost")
         .unwrap();
@@ -2600,7 +2808,11 @@ async fn bulk_transmit_yields_at_the_quota_and_lets_another_connection_progress(
     );
     client_config.set_transport_config(transport.clone());
     server_config.set_transport_config(transport);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     // The client socket counts datagrams and advertises a single send segment, so one send
     // is one datagram and the transmit bound is exactly `MAX_TRANSMIT_DATAGRAMS`.
     let sent = Arc::new(AtomicUsize::new(0));
@@ -2712,8 +2924,12 @@ async fn a_non_reading_peer_bounds_resources_and_recovers_while_other_connection
         );
         client_config.set_transport_config(transport.clone());
         server_config.set_transport_config(transport);
-        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-        let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
+        let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
         let (bulk, peer) = tokio::join!(
             client
                 .connect_with(
@@ -2864,7 +3080,7 @@ async fn queued_admission_deadline_does_not_busy_poll_and_expires_on_time() {
         (result, log.woke_during_poll.load(Ordering::Relaxed))
     };
 
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -2930,7 +3146,11 @@ async fn queued_admission_deadline_does_not_busy_poll_and_expires_on_time() {
 async fn rejected_mtu_probes_settle_below_a_fixed_path_threshold() {
     const THRESHOLD: usize = 1300;
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let threshold = Arc::new(AtomicUsize::new(THRESHOLD));
     let client = faulty_endpoint_with_threshold(
         None,
@@ -3009,7 +3229,11 @@ async fn path_size_decrease_after_a_larger_mtu_was_learned() {
     let transport = Arc::new(transport);
     client_config.set_transport_config(transport.clone());
     server_config.set_transport_config(transport);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let threshold = Arc::new(AtomicUsize::new(usize::MAX));
     let client = faulty_endpoint_with_threshold(
         None,
@@ -3106,7 +3330,11 @@ async fn a_path_validation_probe_is_a_dedicated_packet_padded_to_the_smallest_al
     let transport = Arc::new(transport);
     client_config.set_transport_config(transport.clone());
     server_config.set_transport_config(transport);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log) = recording_socket();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
@@ -3180,7 +3408,11 @@ async fn no_datagram_exceeds_the_confirmed_mtu_while_loss_recovery_runs() {
     let transport = Arc::new(transport);
     client_config.set_transport_config(transport.clone());
     server_config.set_transport_config(transport);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log) = recording_socket();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
@@ -3269,7 +3501,11 @@ async fn mtu_discovery_probes_search_above_the_confirmed_mtu_within_the_configur
     let transport = Arc::new(transport);
     client_config.set_transport_config(transport.clone());
     server_config.set_transport_config(transport);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log) = recording_socket();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
@@ -3403,7 +3639,11 @@ async fn the_write_buffer_is_reused_after_the_confirmed_mtu_collapses() {
     let transport = Arc::new(transport);
     client_config.set_transport_config(transport.clone());
     server_config.set_transport_config(transport);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log, segments) = segmenting_socket(1);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
@@ -3534,7 +3774,7 @@ async fn the_write_buffer_is_reused_after_the_confirmed_mtu_collapses() {
 fn inline_dropped_connection_driver_fails_the_attempt_and_retires_it() {
     detached_scenario("inline-drop connect scenario", || async {
         let (client_config, _) = configs();
-        let endpoint = endpoint(None, Executor::new(), Duration::from_secs(1));
+        let endpoint = endpoint(None, WeakScope::never(), Duration::from_secs(1));
         // Held without an implicit drop: if the guarded call wedges the endpoint mutex, an
         // unwinding drop of this handle would block on it. It is dropped explicitly on success.
         let endpoint = std::mem::ManuallyDrop::new(endpoint);
@@ -3577,9 +3817,13 @@ fn inline_dropped_connection_driver_fails_the_attempt_and_retires_it() {
 fn inline_dropped_accepted_driver_fails_the_attempt_and_retires_it() {
     detached_scenario("inline-drop accept scenario", || async {
         let (client_config, server_config) = configs();
-        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::never(),
+            Duration::from_secs(1),
+        );
         let server = std::mem::ManuallyDrop::new(server);
-        let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+        let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
         let connecting = client
             .connect_with(client_config, server.local_addr().unwrap(), "localhost")
             .unwrap();
@@ -3625,7 +3869,7 @@ async fn receive_queue_limits_accept_the_exact_boundary() {
         None,
         socket,
         Vec::new(),
-        Executor::new(),
+        WeakScope::never(),
         Duration::from_secs(1),
     )
     .unwrap();
@@ -3642,7 +3886,7 @@ async fn receive_queue_limits_accept_the_exact_boundary() {
         None,
         socket,
         Vec::new(),
-        Executor::new(),
+        WeakScope::never(),
         Duration::from_secs(1),
     )
     .unwrap_err();
@@ -3658,7 +3902,7 @@ async fn receive_queue_limits_accept_the_exact_boundary() {
             None,
             socket,
             Vec::new(),
-            Executor::new(),
+            WeakScope::never(),
             Duration::from_secs(1),
         )
     };
@@ -3685,7 +3929,7 @@ async fn receive_queue_limits_accept_the_exact_boundary() {
 fn forced_shutdown_waits_for_a_registered_driver_that_is_still_being_submitted() {
     detached_scenario("gated submission scenario", || async {
         let (client_config, _) = configs();
-        let endpoint = endpoint(None, Executor::new(), Duration::from_millis(100));
+        let endpoint = endpoint(None, WeakScope::never(), Duration::from_millis(100));
         let address = endpoint.local_addr().unwrap();
         // Pause the next submitter after it registered the connection and reserved its slot.
         // The guard reopens the gate on any exit, so the submitter never outlives the test.
@@ -3821,9 +4065,13 @@ async fn a_retry_sent_from_a_replaced_socket_is_answered_there_until_its_route_e
     let (client_config, mut server_config) = configs();
     let lifetime = Duration::from_millis(1500);
     server_config.set_retry_token_lifetime(lifetime);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let addr_a = server.local_addr().unwrap();
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, addr_a, "localhost")
         .unwrap();
@@ -3875,11 +4123,11 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
     // Expiry: the client is gone before the Retry leaves, so nothing ever comes back to A.
     let server = endpoint(
         Some(server_config.clone()),
-        Executor::new(),
+        WeakScope::never(),
         Duration::from_secs(1),
     );
     let addr_a = server.local_addr().unwrap();
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config.clone(), addr_a, "localhost")
         .unwrap();
@@ -3920,9 +4168,13 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
     server.shutdown().await;
 
     // Shutdown during a hold: no retained handle keeps A bound.
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let addr_a = server.local_addr().unwrap();
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, addr_a, "localhost")
         .unwrap();
@@ -3955,7 +4207,11 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
 #[tokio::test]
 async fn send_handles_are_destroyed_outside_every_lock_on_each_release_path() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let probe = Arc::new(SenderProbe::default());
     let (socket_a, gate_a, _, _) = breakable_socket(Some(probe.clone()));
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
@@ -4044,7 +4300,11 @@ async fn send_handles_are_destroyed_outside_every_lock_on_each_release_path() {
 #[tokio::test]
 async fn a_failed_retiring_receiver_moves_its_connection_to_the_pending_socket() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket_a, gate_a, fault_a, sent_a) = breakable_socket(None);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
@@ -4153,7 +4413,7 @@ async fn a_server_connection_keeps_its_socket_on_rebind_and_ends_with_it_when_it
         socket_a,
     );
     let addr_a = server.local_addr().unwrap();
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, addr_a, "localhost")
         .unwrap();
@@ -4212,7 +4472,11 @@ async fn a_server_connection_keeps_its_socket_on_rebind_and_ends_with_it_when_it
 #[tokio::test]
 async fn a_client_defers_its_migration_until_the_handshake_is_confirmed() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket_a, gate_a) = gated_socket();
     gate_a.close();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
@@ -4260,7 +4524,11 @@ async fn a_client_defers_its_migration_until_the_handshake_is_confirmed() {
 async fn a_client_whose_peer_disables_migration_keeps_its_socket_and_ends_with_it() {
     let (client_config, mut server_config) = configs();
     server_config.set_migration(false);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket_a, _gate, fault_a, _) = breakable_socket(None);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
@@ -4312,7 +4580,11 @@ async fn a_client_whose_peer_disables_migration_keeps_its_socket_and_ends_with_i
 async fn an_unconfirmed_client_whose_socket_fails_is_terminated() {
     let (client_config, server_config) = configs();
     // The server never accepts, so the client's handshake is never confirmed.
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket_a, _gate, fault_a, _) = breakable_socket(None);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let connecting = client
@@ -4340,9 +4612,13 @@ async fn an_unconfirmed_client_whose_socket_fails_is_terminated() {
 async fn a_retry_lifetime_beyond_the_clock_is_refused_and_the_attempt_is_kept() {
     let (client_config, mut server_config) = configs();
     server_config.set_retry_token_lifetime(Duration::MAX);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let addr_a = server.local_addr().unwrap();
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, addr_a, "localhost")
         .unwrap();
@@ -4381,8 +4657,8 @@ async fn attempts_queued_on_a_socket_that_fails_are_released_and_a_held_one_is_r
         socket_a,
     );
     let addr_a = server.local_addr().unwrap();
-    let held_client = endpoint(None, Executor::new(), Duration::from_secs(1));
-    let queued_client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let held_client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+    let queued_client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let held_connecting = held_client
         .connect_with(client_config.clone(), addr_a, "localhost")
         .unwrap();
@@ -4453,7 +4729,7 @@ async fn an_attempt_admitted_before_a_receive_fault_in_the_same_pass_is_released
     // One pass must see both the Initial and the fault: the measured allowance could end it
     // in between, which is the separate queued-attempt case tested below.
     fatal.inner.state.lock().recv_state.forced_recv_allowance = Some(usize::MAX);
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(
             client_config.clone(),
@@ -4987,7 +5263,11 @@ pub(super) fn open_segment_hold(log: &Mutex<SegmentLog>) {
 #[tokio::test]
 async fn a_partial_segmented_send_completes_on_its_socket_across_repeated_rebinds() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket_a, log, segments) = segmenting_socket(2);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let addr_a = client.local_addr().unwrap();
@@ -5116,7 +5396,11 @@ async fn a_partial_segmented_send_completes_on_its_socket_across_repeated_rebind
 #[tokio::test]
 async fn a_datagram_waits_for_its_route_and_is_neither_dropped_nor_replayed() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log) = recording_socket();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
@@ -5258,7 +5542,7 @@ async fn a_refused_route_closes_the_connection_with_its_cause() {
     let (client_config, server_config) = configs();
     let server = endpoint(
         Some(server_config),
-        Executor::new(),
+        WeakScope::never(),
         Duration::from_secs(60),
     );
     let (socket, _log) = recording_socket();
@@ -5362,7 +5646,11 @@ async fn a_refused_route_closes_the_connection_with_its_cause() {
 #[tokio::test]
 async fn shutdown_completes_while_a_descriptor_is_partly_accepted() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log, segments) = segmenting_socket(1);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
@@ -5508,7 +5796,11 @@ async fn an_accepted_prefix_is_reported_before_its_descriptor_completes() {
             .try_with_initial_congestion_window(u64::from(u32::MAX) + 1)
             .unwrap(),
     ));
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log, segments) = segmenting_socket(1);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
@@ -5611,7 +5903,11 @@ async fn an_accepted_prefix_is_reported_when_the_descriptor_then_fails() {
             .try_with_initial_congestion_window(u64::from(u32::MAX) + 1)
             .unwrap(),
     ));
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log, segments) = segmenting_socket(1);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
@@ -5799,7 +6095,11 @@ fn the_segment_credit_charges_accepted_datagrams_only() {
 #[tokio::test]
 async fn a_pass_that_spends_its_allowance_on_bytes_that_left_asks_for_another_turn() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log, _segments) = segmenting_socket(usize::MAX);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
@@ -5869,7 +6169,11 @@ async fn a_pass_that_spends_its_allowance_on_bytes_that_left_asks_for_another_tu
 #[tokio::test]
 async fn a_pass_that_spends_its_allowance_waiting_does_not_poll_in_a_loop() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log, _segments) = segmenting_socket(usize::MAX);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
@@ -5936,8 +6240,12 @@ async fn a_pass_that_spends_its_allowance_waiting_does_not_poll_in_a_loop() {
 #[tokio::test]
 async fn a_client_updates_keys_only_once_its_handshake_is_confirmed() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -6003,7 +6311,11 @@ async fn a_client_updates_keys_only_once_its_handshake_is_confirmed() {
 #[tokio::test]
 async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log, segments) = segmenting_socket(1);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let server_addr = server.local_addr().unwrap();
@@ -6189,7 +6501,11 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
 #[tokio::test]
 async fn a_retirement_mid_descriptor_gives_up_only_the_unsent_suffix() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log, segments) = segmenting_socket(2);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
@@ -6475,7 +6791,11 @@ fn the_segmentation_fixture_refuses_to_hide_a_half_sent_batch() {
 async fn a_migration_switches_to_an_unused_destination_cid_and_a_same_address_replacement_keeps_it()
 {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket_a, log_a) = recording_socket();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let connecting = client
@@ -6549,7 +6869,11 @@ async fn a_migration_switches_to_an_unused_destination_cid_and_a_same_address_re
 #[tokio::test]
 async fn a_migration_waits_for_an_unused_destination_cid_and_proceeds_when_one_arrives() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket_a, log_a) = recording_socket();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let connecting = client
@@ -6691,7 +7015,7 @@ async fn preferring_pair(
         Some(server_config),
         server_socket,
         Vec::new(),
-        Executor::new(),
+        WeakScope::never(),
         Duration::from_secs(1),
     )
     .unwrap();
@@ -6745,7 +7069,11 @@ async fn preferring_pair(
 #[tokio::test]
 async fn switching_to_an_identifier_is_not_using_it_until_a_datagram_leaves() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (client_socket, gate, _, sent) = breakable_socket(None);
     let client = endpoint_with(
         EndpointConfig::try_with_rand_key().unwrap(),
@@ -6843,7 +7171,7 @@ async fn a_restarted_endpoint_uses_its_configured_reset_key() {
     let (socket, old_log) = recording_socket();
     let server = endpoint_with(config.clone(), Some(server_config), socket);
     let addr = server.local_addr().unwrap();
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, addr, "localhost")
         .unwrap();
@@ -7051,7 +7379,11 @@ async fn a_client_probes_a_preferred_address_at_most_three_times() {
         SocketAddr::V6(addr) => panic!("expected an IPv4 loopback address, got {addr}"),
     };
     server_config.set_preferred_address_v4(preferred);
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket, log) = recording_socket();
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
     let connecting = client
@@ -7130,7 +7462,11 @@ async fn a_client_probes_a_preferred_address_at_most_three_times() {
 #[tokio::test]
 async fn a_client_completes_before_it_confirms_and_migrates_only_once_confirmed() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
     let (socket_a, _gate_a, _, _) = breakable_socket(None);
     let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket_a);
     let connecting = client
@@ -7195,8 +7531,12 @@ async fn a_client_completes_before_it_confirms_and_migrates_only_once_confirmed(
 #[tokio::test]
 async fn handshake_confirmed_fails_when_the_connection_ends_unconfirmed() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -7292,8 +7632,12 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     server_config.crypto = crate::proto::ServerCrypto::Fixed(Arc::new(FailingServer(
         server_config.crypto.into_fixed(),
     )));
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::never(),
+        Duration::from_secs(1),
+    );
+    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
@@ -7342,23 +7686,26 @@ async fn retained_sockets_are_bounded_across_address_families_while_another_conn
 {
     let (client_config, server_config) = configs();
     let server_v4 = Endpoint::bind_server(
-        Executor::new(),
+        WeakScope::never(),
         server_config.clone(),
         SocketAddress::local_ipv4(0),
     )
     .await
     .unwrap();
     let server_v6 = Endpoint::bind_server(
-        Executor::new(),
+        WeakScope::never(),
         server_config.clone(),
         SocketAddress::local_ipv6(0),
     )
     .await
     .unwrap();
-    let control_server =
-        Endpoint::bind_server(Executor::new(), server_config, SocketAddress::local_ipv6(0))
-            .await
-            .unwrap();
+    let control_server = Endpoint::bind_server(
+        WeakScope::never(),
+        server_config,
+        SocketAddress::local_ipv6(0),
+    )
+    .await
+    .unwrap();
     let mut pending = Vec::new();
     let mut held_logs = Vec::new();
     let mut client = None;

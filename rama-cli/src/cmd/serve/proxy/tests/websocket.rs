@@ -24,10 +24,10 @@ async fn websocket_handshakes_support_each_icap_direction() {
             respmod_arg.as_str(),
         ]);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown = rama::graceful::Shutdown::new(async move {
+        let shutdown = Scope::new().with_signal(async move {
             _ = shutdown_rx.await;
         });
-        let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+        let (proxy_address, _inspector_address) = start_proxy(&shutdown, cli.proxy).await;
 
         let reqmod_before = icap_state.reqmod_calls.load(Ordering::SeqCst);
         let respmod_before = icap_state.respmod_calls.load(Ordering::SeqCst);
@@ -104,10 +104,10 @@ async fn socks5_mitm_websocket_handshake_supports_icap() {
         icap_uri.as_str(),
     ]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     assert!(inspector_address.is_some(), "inspector listener bound");
 
     let client = proxy_websocket_client();
@@ -228,10 +228,10 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), "--mitm"]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     assert_eq!(
         inspector_address,
         Some(proxy_address),
@@ -245,7 +245,7 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
         .with_tls_proxy_support_using_boringssl_config(insecure.clone())
         .with_proxy_support()
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
     let extensions = Extensions::new();
@@ -376,10 +376,10 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     let mitm_arg = format!("--mitm={ui_address}");
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy_address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     let ui_address = inspector_address.expect("inspector listener bound");
 
     let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
@@ -389,7 +389,7 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
         .with_tls_proxy_support_using_boringssl_config(insecure.clone())
         .with_proxy_support()
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
     let extensions = Extensions::new();

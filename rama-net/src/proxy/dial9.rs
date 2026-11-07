@@ -18,7 +18,7 @@ pub struct IoForwardBridgeOpened {
     pub operation_id: u64,
     /// Idle timeout in milliseconds, or 0 if disabled.
     pub idle_timeout_ms: u64,
-    /// Whether the bridge was constructed with a graceful `Executor`.
+    /// Whether the bridge was constructed with a graceful `WeakScope`.
     pub graceful: bool,
 }
 

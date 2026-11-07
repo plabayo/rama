@@ -40,6 +40,7 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef as _,
     futures::async_stream::stream_fn,
+    graceful::WeakScope,
     http::{
         Body, Method, Request, Response, StatusCode,
         body::util::BodyExt as _,
@@ -77,7 +78,6 @@ use rama::{
     },
     inspect::InspectionState,
     net::{Protocol, socket::SocketOptions},
-    rt::Executor,
     service::BoxService,
     stream::io::ReaderStream,
     tls::{

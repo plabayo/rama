@@ -18,6 +18,7 @@
 use rama::{
     Layer,
     futures::async_stream::stream_fn,
+    graceful::Scope,
     http::{
         layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         server::HttpServer,
@@ -28,7 +29,6 @@ use rama::{
         sse::datastar::{Namespace, PatchElements},
     },
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -58,12 +58,15 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62059), exec.clone())
-        .await
-        .expect("tcp port to be bound");
+    let listener =
+        TcpListener::bind_address(SocketAddress::default_ipv4(62059), weak_scope.clone())
+            .await
+            .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
 
     tracing::info!(
@@ -73,7 +76,7 @@ async fn main() {
     );
     tracing::info!("open http://{bind_address} in your browser");
 
-    graceful.spawn_task(async move {
+    scope.spawn_task(async move {
         let router = Arc::new(
             Router::new()
                 .with_get("/", Html(INDEX_CONTENT))
@@ -82,13 +85,12 @@ async fn main() {
                 .with_get("/assets/datastar.js.map", DatastarSourceMap::default()),
         );
         let app = (TraceLayer::new_for_http(), ErrorHandlerLayer::new()).into_layer(router);
-        listener.serve(HttpServer::auto(exec).service(app)).await;
+        listener
+            .serve(HttpServer::auto(weak_scope).service(app))
+            .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 async fn next_shape() -> impl IntoResponse {

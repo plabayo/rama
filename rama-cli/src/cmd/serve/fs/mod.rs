@@ -3,10 +3,9 @@
 use rama::{
     cli::{ForwardKind, service::fs::FsServiceBuilder},
     error::{BoxError, ErrorContext},
-    graceful::ShutdownGuard,
+    graceful::WeakScope,
     http::service::fs::{DirectoryServeMode, ServeDirSymlinkPolicy},
     net::{address::SocketAddress, tls::ApplicationProtocol},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
 };
@@ -102,8 +101,7 @@ pub struct CliCommandFs {
 }
 
 /// run the rama serve service
-pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
+pub async fn run(scope: WeakScope, cfg: CliCommandFs) -> Result<(), BoxError> {
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {
@@ -112,7 +110,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
                     ApplicationProtocol::HTTP_2,
                     ApplicationProtocol::HTTP_11,
                 ]),
-                exec.clone(),
+                scope.clone(),
             )
         })
         .transpose()?;
@@ -128,11 +126,11 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
         .with_directory_serve_mode(cfg.dir_serve)
         .with_html_as_default_extension(cfg.html_as_default_extension)
         .with_symlink_policy(cfg.symlink_policy)
-        .build(exec.clone())
+        .build(scope.clone())
         .context("build serve service")?;
 
     tracing::info!("starting serve service on: bind interface = {}", cfg.bind);
-    let tcp_listener = TcpListener::build(exec.clone())
+    let tcp_listener = TcpListener::build(scope.clone())
         .bind_address(cfg.bind)
         .await
         .context("bind serve service")?;
@@ -141,7 +139,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    exec.spawn_task(async move {
+    scope.try_hold()?.into_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),

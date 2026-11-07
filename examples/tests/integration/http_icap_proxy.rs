@@ -7,6 +7,7 @@ use rama::{
     bytes::Bytes,
     extensions::ExtensionsRef as _,
     futures::stream,
+    graceful::WeakScope,
     http::{
         Body, HeaderMap, HeaderValue, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
@@ -18,7 +19,6 @@ use rama::{
         address::{ProxyAddress, SocketAddress},
         client::ProxyRoute,
     },
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     tls::{
@@ -129,17 +129,16 @@ async fn proxy_get(
 
 async fn spawn_origins() -> (u16, u16, Bytes) {
     let http_listener =
-        TcpListener::bind_address(SocketAddress::default_ipv4(0), Executor::default())
+        TcpListener::bind_address(SocketAddress::default_ipv4(0), WeakScope::never())
             .await
             .unwrap();
     let http_port = http_listener.local_addr().unwrap().port();
     let payload = Bytes::from("rama".repeat(1025));
-    let http_server =
-        HttpServer::auto(Executor::default()).service(origin_service(payload.clone()));
+    let http_server = HttpServer::auto(WeakScope::never()).service(origin_service(payload.clone()));
     tokio::spawn(http_listener.serve(http_server));
 
     let https_listener =
-        TcpListener::bind_address(SocketAddress::default_ipv4(0), Executor::default())
+        TcpListener::bind_address(SocketAddress::default_ipv4(0), WeakScope::never())
             .await
             .unwrap();
     let https_port = https_listener.local_addr().unwrap().port();
@@ -148,7 +147,7 @@ async fn spawn_origins() -> (u16, u16, Bytes) {
         .unwrap()
         .with_alpn_http_auto();
     let https_server = TlsAcceptorLayer::new(tls)
-        .into_layer(HttpServer::auto(Executor::default()).service(origin_service(payload.clone())));
+        .into_layer(HttpServer::auto(WeakScope::never()).service(origin_service(payload.clone())));
     tokio::spawn(https_listener.serve(https_server));
 
     (http_port, https_port, payload)

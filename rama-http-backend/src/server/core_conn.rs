@@ -71,8 +71,7 @@ mod private {
 
     use rama_core::Service;
     use rama_core::extensions::ExtensionsRef;
-    use rama_core::futures::FutureExt;
-    use rama_core::graceful::ShutdownGuard;
+    use rama_core::graceful::Scope;
     use rama_core::io::Io;
     use rama_core::telemetry::tracing;
     use rama_http::service::web::response::IntoResponse;
@@ -84,43 +83,24 @@ mod private {
     use tokio::select;
 
     pub trait Sealed {
-        fn http_core_serve_connection<IO, S, Response, G>(
+        fn http_core_serve_connection<IO, S, Response>(
             &self,
             io: IO,
             service: S,
-            guard: Option<ShutdownGuard>,
-            graceful: G,
+            scope: Scope,
         ) -> impl Future<Output = HttpServeResult> + Send + '_
         where
             IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
-            Response: IntoResponse + Send + 'static,
-            G: Future<Output = ()> + Send + 'static;
+            Response: IntoResponse + Send + 'static;
     }
 
-    /// Resolves on executor shutdown or on the connection's own signal.
-    async fn shutdown_signal<G>(guard: Option<&ShutdownGuard>, graceful: G)
-    where
-        G: Future<Output = ()>,
-    {
-        let guard = async {
-            match guard {
-                Some(guard) => guard.cancelled().await,
-                None => std::future::pending().await,
-            }
-        };
-        select! {
-            () = guard => (),
-            () = graceful => (),
-        }
-    }
-
-    macro_rules! serve_until_graceful_shutdown {
-        ($conn:ident, $guard:ident, $graceful:ident, $map:ident) => {{
-            let mut shutdown = pin!(shutdown_signal($guard.as_ref(), $graceful).fuse());
+    /// Serves until the graceful phase, drains, and drops the connection at the hard phase.
+    macro_rules! serve_scoped {
+        ($conn:ident, $scope:ident, $map:ident) => {{
             select! {
-                () = shutdown.as_mut() => {
-                    tracing::trace!("signal received: initiate graceful shutdown");
+                () = $scope.cancelled() => {
+                    tracing::trace!("graceful phase: draining the connection");
                     $conn.as_mut().graceful_shutdown();
                 }
                 result = $conn.as_mut() => {
@@ -128,75 +108,76 @@ mod private {
                     return $map(result);
                 }
             }
-            let result = $conn.as_mut().await;
-            tracing::trace!("connection finished after graceful shutdown");
-            $map(result)
+            select! {
+                result = $conn.as_mut() => {
+                    tracing::trace!("connection finished after draining");
+                    $map(result)
+                }
+                () = $scope.aborted() => {
+                    tracing::debug!(cause = ?$scope.abort_cause(), "hard phase: dropping the connection");
+                    Ok(())
+                }
+            }
         }};
     }
 
     impl Sealed for super::Http1Builder {
         #[inline]
-        async fn http_core_serve_connection<IO, S, Response, G>(
+        async fn http_core_serve_connection<IO, S, Response>(
             &self,
             io: IO,
             service: S,
-            guard: Option<ShutdownGuard>,
-            graceful: G,
+            scope: Scope,
         ) -> HttpServeResult
         where
             IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
-            G: Future<Output = ()> + Send + 'static,
         {
             let service = RamaHttpService::new(service);
             let stream = Box::pin(io);
             let mut conn = pin!(self.serve_connection(stream, service).with_upgrades());
-            serve_until_graceful_shutdown!(conn, guard, graceful, map_http_core_result)
+            serve_scoped!(conn, scope, map_http_core_result)
         }
     }
 
     impl Sealed for super::Http2Builder {
         #[inline]
-        async fn http_core_serve_connection<IO, S, Response, G>(
+        async fn http_core_serve_connection<IO, S, Response>(
             &self,
             io: IO,
             service: S,
-            guard: Option<ShutdownGuard>,
-            graceful: G,
+            scope: Scope,
         ) -> HttpServeResult
         where
             IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
-            G: Future<Output = ()> + Send + 'static,
         {
             let service = RamaHttpService::new(service);
             let stream = Box::pin(io);
             let mut conn = pin!(self.serve_connection(stream, service));
-            serve_until_graceful_shutdown!(conn, guard, graceful, map_http_core_result)
+            serve_scoped!(conn, scope, map_http_core_result)
         }
     }
 
     impl Sealed for super::AutoBuilder {
         #[inline]
-        async fn http_core_serve_connection<IO, S, Response, G>(
+        async fn http_core_serve_connection<IO, S, Response>(
             &self,
             io: IO,
             service: S,
-            guard: Option<ShutdownGuard>,
-            graceful: G,
+            scope: Scope,
         ) -> HttpServeResult
         where
             IO: Io + ExtensionsRef,
             S: Service<Request, Output = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
-            G: Future<Output = ()> + Send + 'static,
         {
             let service = RamaHttpService::new(service);
             let stream = Box::pin(io);
             let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
-            serve_until_graceful_shutdown!(conn, guard, graceful, map_boxed_http_core_result)
+            serve_scoped!(conn, scope, map_boxed_http_core_result)
         }
     }
 }

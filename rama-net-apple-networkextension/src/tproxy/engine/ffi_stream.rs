@@ -6,7 +6,7 @@
 //! `signal_*_drain` wakes the registered waker, with a backstop deadline.
 //!
 //! Idle-timeout and cancellation are owned by the forwarder, so this stream
-//! does not watch the flow guard.
+//! does not watch the flow scope.
 
 use std::{
     future::Future,

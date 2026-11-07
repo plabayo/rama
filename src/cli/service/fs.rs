@@ -5,6 +5,7 @@ use crate::{
     cli::ForwardKind,
     combinators::{Either, Either3},
     error::{BoxError, BoxErrorExt, ErrorExt},
+    graceful::WeakScope,
     http::BodyLimitLayer,
     http::{
         Request, Response, Version,
@@ -27,7 +28,6 @@ use crate::{
     },
     net::stream::layer::{ThrottleLayer, ThrottleMode},
     proxy::haproxy::server::HaProxyLayer,
-    rt::Executor,
     service::StaticOutput,
     tcp::TcpStream,
     telemetry::tracing,
@@ -282,8 +282,9 @@ where
     /// build a tcp service ready to serve files
     pub fn build(
         self,
-        executor: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
+        let scope = scope.into();
         let tcp_forwarded_layer = match &self.forward {
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             _ => None,
@@ -313,15 +314,15 @@ where
         );
 
         let http_transport_service = match self.http_version {
-            Some(Version::HTTP_2) => Either3::A(HttpServer::new_h2(executor).service(http_service)),
+            Some(Version::HTTP_2) => Either3::A(HttpServer::new_h2(scope).service(http_service)),
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
-                Either3::B(HttpServer::new_http1(executor).service(http_service))
+                Either3::B(HttpServer::new_http1(scope).service(http_service))
             }
             Some(version) => {
                 return Err(BoxError::from_static_str("unsupported http version")
                     .context_debug_field("version", version));
             }
-            None => Either3::C(HttpServer::auto(executor).service(http_service)),
+            None => Either3::C(HttpServer::auto(scope).service(http_service)),
         };
 
         Ok(tcp_service_builder.into_layer(http_transport_service))

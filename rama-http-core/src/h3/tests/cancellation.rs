@@ -13,7 +13,8 @@ use crate::h3::{
 use rama_core::{
     bytes::{Bytes, BytesMut},
     futures::{FutureExt as _, stream},
-    rt::{Executor, spawn},
+    graceful::WeakScope,
+    rt::spawn,
 };
 use rama_http_types::{
     Body, Method, Request, Response, StatusCode,
@@ -142,9 +143,12 @@ async fn dropping_unread_request_body_cancels_peer_qpack_sections() {
 async fn consuming_early_response_keeps_request_upload_alive() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -200,9 +204,12 @@ async fn local_reset_while_waiting_for_fin_ack_resolves_as_failure() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let faults = pair.datagram_faults.clone().unwrap();
-        let (_client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (_client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -266,9 +273,12 @@ async fn local_reset_while_waiting_for_fin_ack_resolves_as_failure() {
 async fn dropping_complete_unpolled_bodyless_response_keeps_upload_alive() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -331,7 +341,7 @@ async fn transport_no_error_preserves_finished_response_but_rejects_missing_fin(
             let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                Executor::new(),
+                WeakScope::never(),
             )
             .unwrap();
             let driver = spawn(driver.run());
@@ -398,7 +408,7 @@ async fn bodyless_responses_retain_admission_until_fin_is_acknowledged() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                Executor::new(),
+                WeakScope::never(),
             )
             .unwrap();
             let (mut server, server_driver) =

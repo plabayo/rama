@@ -10,7 +10,7 @@ use rama::{
     combinators::Either,
     crypto::pki_types::CertificateDer,
     error::BoxError,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         core::h3::connection::Config as H3Config,
         layer::upgrade::mitm::HttpUpgradeMitmRelayLayer,
@@ -29,7 +29,6 @@ use rama::{
         proxy::{PeekQuicClientHelloService, QuicMitmRelay},
         tls::BoringTlsProvider,
     },
-    rt::Executor,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{self, subscriber},
     tls::{
@@ -88,22 +87,24 @@ async fn relay_fixture() -> Result<(), BoxError> {
     let certificate = X509::from_pem(&fs::read(config.ca)?)?;
     let key = PKey::private_key_from_pem(&fs::read(config.key)?)?;
 
-    let shutdown = Shutdown::default();
-    let executor = Executor::graceful(shutdown.guard());
+    let shutdown = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(5));
+    let scope = shutdown.clone_weak();
     let address = match config.protocol {
         Protocol::H1 | Protocol::H2 => {
-            let listener = TcpListener::bind_address("127.0.0.1:0", executor.clone()).await?;
+            let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone()).await?;
             let address = listener.local_addr()?;
             // Upgrade/Extended CONNECT metadata selects the existing byte relay. No
             // WebSocket messages are decoded or rewritten by this transparent fixture.
             // The independent Go peer asks for 1 GiB of initial connection credit.
-            let http = HttpMitmRelay::new(executor.clone())
+            let http = HttpMitmRelay::new(scope.clone())
                 .with_max_mirrored_h2_connection_credit(mib_u32(1536))
                 .with_http_middleware((
                     ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                     HttpUpgradeMitmRelayLayer::new(
-                        executor.clone(),
-                        HttpWebSocketRelayServiceRequestMatcher::default_with_exec(executor),
+                        scope.clone(),
+                        HttpWebSocketRelayServiceRequestMatcher::default_with_scope(scope.clone()),
                     ),
                     ArcLayer::new(),
                 ));
@@ -119,7 +120,7 @@ async fn relay_fixture() -> Result<(), BoxError> {
                 Either::B(ConsumeErrLayer::default().into_layer(tls))
             };
             let service = IoToProxyBridgeIoLayer::new(config.origin).into_layer(application);
-            shutdown.spawn_task_fn(move |_guard| async move {
+            shutdown.spawn_task(async move {
                 listener.serve(service).await;
             });
 
@@ -157,12 +158,12 @@ async fn relay_fixture() -> Result<(), BoxError> {
             };
             h3_ingress.decoder.max_field_section_size = mib(1);
             h3_ingress.max_frame_size = mib(1);
-            let relay = Http3MitmRelay::new(executor.clone())
+            let relay = Http3MitmRelay::new(scope.clone())
                 .with_ingress_config(h3_ingress)
                 .with_egress_config(h3_egress);
             let terminate = QuicMitmRelay::new(
                 issuer,
-                executor.clone(),
+                scope.clone(),
                 egress_tls,
                 VarInt::try_from(Code::H3_INTERNAL_ERROR.value())?,
             )
@@ -188,9 +189,10 @@ async fn relay_fixture() -> Result<(), BoxError> {
                     queued_bytes: NonZeroUsize::new(262144).expect("nonzero queue budget"),
                 },
             );
-            shutdown.spawn_task_fn(move |_guard| async move {
+            let demux_scope = scope.clone();
+            shutdown.spawn_task(async move {
                 demux
-                    .serve(executor, association)
+                    .serve(demux_scope, association)
                     .await
                     .expect("native fixture datagram demux");
             });
@@ -206,6 +208,9 @@ async fn relay_fixture() -> Result<(), BoxError> {
         )?,
     )?;
     fs::rename(pending, config.ready)?;
-    shutdown.shutdown_with_limit(Duration::from_secs(5)).await?;
+    drop(scope);
+    // Serve until the signal, then wait for the drain within its grace.
+    shutdown.cancelled().await;
+    shutdown.join().await?;
     Ok(())
 }

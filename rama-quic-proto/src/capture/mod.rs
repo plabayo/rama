@@ -179,7 +179,7 @@ impl CaptureCompleteness {
 /// Debug output contains shape metadata only. Serialization omits connection IDs
 /// and raw ClientHello bytes, and replaces connection-specific parameter values
 /// with their lengths. Explicit field access remains available to capture consumers.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Extension)]
 pub struct QuicObservation {
     #[serde(skip)]
     pub connection_id: Vec<u8>,
@@ -243,8 +243,6 @@ fn serialize_observation_parameters<S: Serializer>(
     }
     values.end()
 }
-
-impl Extension for QuicObservation {}
 
 fn within(value: usize, limit: usize, name: &'static str) -> Result<(), CaptureError> {
     if value > limit {

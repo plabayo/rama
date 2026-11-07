@@ -21,7 +21,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _},
     extensions::Extensions,
     futures::{StreamExt as _, stream::FuturesUnordered},
-    graceful::Shutdown,
+    graceful::{Scope, WeakScope, default_signal},
     http::{
         client::{EasyHttpConnectorBuilder, Http3Connector},
         layer::error_handling::ErrorHandlerLayer,
@@ -35,7 +35,6 @@ use rama::{
     layer::{ArcLayer, ConsumeErrLayer},
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
-    rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter, subscriber::EnvFilter},
     tls::{
         client::TlsClientConfig,
@@ -90,21 +89,21 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
     let (finished, completed) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = completed => {},
-        }
-    });
-    let exec = Executor::graceful(shutdown.guard());
+    let scope = Scope::new()
+        .with_grace(Duration::from_secs(15))
+        .with_signal(async move {
+            tokio::select! {
+                () = default_signal() => {},
+                _ = completed => {},
+            }
+        });
+    let weak_scope = scope.clone_weak();
     match args.mode {
-        Mode::Server { listen, cert, key } => {
-            serve(&shutdown, exec.clone(), listen, cert, key).await?
-        }
+        Mode::Server { listen, cert, key } => serve(weak_scope.clone(), listen, cert, key).await?,
         Mode::Client { ca, url, messages } => {
             let anchors = CertificateDer::pem_file_iter(ca)?.collect::<Result<Vec<_>, _>>()?;
             let tls = TlsClientConfig::new().try_with_server_trust_anchors(anchors)?;
-            let connector = Http3Connector::builder(exec.clone())
+            let connector = Http3Connector::builder(weak_scope.clone())
                 .with_tls_config(tls.clone())
                 .build()
                 .await?;
@@ -120,7 +119,7 @@ async fn main() -> Result<(), BoxError> {
             #[cfg(not(any(feature = "rustls", feature = "boring")))]
             let client_builder = client_builder.without_tls_support();
             let client = client_builder
-                .with_default_http_connector(exec.clone())
+                .with_default_http_connector(weak_scope.clone())
                 .with_http3_support(connector)
                 .with_default_connection_pool()
                 .build_client();
@@ -149,17 +148,14 @@ async fn main() -> Result<(), BoxError> {
         }
     }
     _ = finished.send(());
-    drop(exec);
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(15))
-        .await?;
+    drop(weak_scope);
+    scope.join().await?;
     tracing::info!("WebSocket over HTTP/3 shutdown joined");
     Ok(())
 }
 
 async fn serve(
-    shutdown: &Shutdown,
-    exec: Executor,
+    weak_scope: WeakScope,
     listen: SocketAddress,
     cert: PathBuf,
     key: PathBuf,
@@ -172,14 +168,14 @@ async fn serve(
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let mut server = HttpServer::new_http3(exec.clone());
+    let mut server = HttpServer::new_http3(weak_scope.clone());
     // RFC 9220: advertise Extended CONNECT so clients may send `:protocol websocket`.
     server.http3_mut().extended_connect = true;
     let mut transport = TransportConfig::default();
     server.http3().configure_transport(&mut transport)?;
     let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?;
     config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(Executor::new())
+    let endpoint = Endpoint::build(WeakScope::never())
         .with_server_config(config)
         .bind_address(listen)
         .await?;
@@ -187,7 +183,6 @@ async fn serve(
         "WebSocket over HTTP/3 listening on {}",
         endpoint.local_addr()?
     );
-    let guard = shutdown.guard();
     let service = server.service(
         (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
             Router::new().with_connect(
@@ -197,10 +192,12 @@ async fn serve(
             ),
         ),
     );
+    // Serving holds the scope, so every connection accepted until the cancel is admitted.
+    let scope = weak_scope.try_hold()?;
     let mut connections = FuturesUnordered::new();
     loop {
         let incoming = tokio::select! {
-            _ = guard.cancelled() => break,
+            () = weak_scope.cancelled() => break,
             finished = connections.next(), if !connections.is_empty() => {
                 if let Some(Err(error)) = finished {
                     tracing::debug!(%error, "HTTP/3 connection task ended");
@@ -213,7 +210,7 @@ async fn serve(
             },
         };
         let service = service.clone();
-        connections.push(exec.spawn_task(async move {
+        connections.push(scope.spawn_task(async move {
             let result: Result<(), BoxError> = async {
                 let connection = incoming.await?;
                 tracing::info!("accepted HTTP/3 connection");
@@ -227,7 +224,6 @@ async fn serve(
         }));
     }
     drop(service);
-    drop(guard);
     let drained = tokio::time::timeout(Duration::from_secs(15), async {
         while let Some(result) = connections.next().await {
             result?;

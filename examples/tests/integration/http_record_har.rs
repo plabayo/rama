@@ -1,10 +1,10 @@
 use super::utils;
 use rama::{
+    graceful::WeakScope,
     http::layer::har::{self},
     http::service::web::response::Json,
     http::{BodyExtractExt, Request, StatusCode, server::HttpServer},
     net::{address::ProxyAddress, client::ProxyRoute},
-    rt::Executor,
     service::service_fn,
 };
 
@@ -16,7 +16,7 @@ async fn test_http_record_har() {
     utils::init_tracing();
 
     tokio::spawn(async {
-        HttpServer::auto(Executor::default())
+        HttpServer::auto(WeakScope::never())
             .listen(
                 "127.0.0.1:63007",
                 service_fn(async |req: Request| {

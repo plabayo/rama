@@ -27,6 +27,8 @@ pub(crate) struct Lifecycle(Arc<Shared>);
 struct Shared {
     tasks: Mutex<Tasks>,
     requested: AtomicBool,
+    /// Set with `requested` by a stop that grants no budget.
+    forced: AtomicBool,
     request: Notify,
     failed: AtomicBool,
     outcome: Mutex<Option<ShutdownOutcome>>,
@@ -49,6 +51,7 @@ impl std::fmt::Debug for Shared {
         f.debug_struct("Shared")
             .field("tasks", &self.tasks)
             .field("requested", &self.requested)
+            .field("forced", &self.forced)
             .field("failed", &self.failed)
             .field("outcome", &self.outcome)
             .finish_non_exhaustive()
@@ -179,6 +182,22 @@ impl Lifecycle {
     pub(crate) fn request(&self) {
         self.0.requested.store(true, Ordering::Release);
         self.0.request.notify_waiters();
+    }
+
+    /// Request a stop that grants no budget: the drivers left get one poll, then are aborted.
+    pub(crate) fn force(&self) {
+        self.0.forced.store(true, Ordering::Release);
+        self.request();
+    }
+
+    pub(crate) async fn forced(&self) {
+        loop {
+            let notified = self.0.request.notified();
+            if self.0.forced.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     pub(crate) async fn requested(&self) {

@@ -17,7 +17,8 @@ use parking_lot::Mutex;
 use pin_project_lite::pin_project;
 use rama_core::{
     bytes::{Bytes, BytesMut},
-    rt::Executor,
+    futures::FutureExt as _,
+    graceful::WeakScope,
     telemetry::tracing::{Instrument, Span},
 };
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
@@ -81,13 +82,14 @@ impl Endpoint {
         self.inner.shared.lifecycle.spawn(Box::pin(future));
     }
 
-    /// Configure an endpoint whose drivers run through `exec` on the current Tokio runtime.
+    /// Configure an endpoint whose drivers run through `scope` on the current Tokio runtime.
     ///
-    /// An executor carrying a graceful guard ties the endpoint to the application's
-    /// shutdown. All convenience constructors accept the same executor explicitly.
+    /// A scope with a shutdown signal ties the endpoint to the application's
+    /// shutdown. All convenience constructors accept the same scope explicitly.
     #[must_use]
-    pub fn build(exec: Executor) -> EndpointBuilder {
-        EndpointBuilder::new(exec)
+    pub fn build(scope: impl Into<WeakScope>) -> EndpointBuilder {
+        let scope = scope.into();
+        EndpointBuilder::new(scope)
     }
 
     /// Create a client endpoint on a bound standard UDP socket.
@@ -95,31 +97,33 @@ impl Endpoint {
     /// This does not configure packet metadata. Use [`Self::new_client_with_packet_socket`]
     /// for a prepared socket, or [`Self::build`] for custom endpoint settings.
     pub fn new_client_with_std_socket(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         socket: std::net::UdpSocket,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec).with_std_socket(socket)
+        let scope = scope.into();
+        EndpointBuilder::new(scope).with_std_socket(socket)
     }
 
     /// Create a client endpoint on a prepared packet socket, preserving its configuration.
     ///
     /// Use [`Self::build`] for custom endpoint settings.
     pub fn new_client_with_packet_socket(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         socket: UdpPacketSocket,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec).with_packet_socket(socket)
+        let scope = scope.into();
+        EndpointBuilder::new(scope).with_packet_socket(socket)
     }
 
     /// Bind a client endpoint, requesting best-effort dual-stack operation for the IPv6 wildcard.
     ///
     /// Use [`Self::build`] to customise the endpoint or UDP socket configuration.
     pub async fn bind_client(
-        exec: Executor,
+        scope: WeakScope,
         address: impl Into<SocketAddress>,
     ) -> Result<Self, DatagramError> {
         let address = address.into();
-        EndpointBuilder::new(exec)
+        EndpointBuilder::new(scope)
             .bind_client_address(address)
             .await
     }
@@ -130,11 +134,12 @@ impl Endpoint {
     /// Use [`Self::new_server_with_packet_socket`] for a prepared socket, or
     /// [`Self::build`] for custom endpoint settings.
     pub fn new_server_with_std_socket(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         config: ServerConfig,
         socket: std::net::UdpSocket,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec)
+        let scope = scope.into();
+        EndpointBuilder::new(scope)
             .with_server_config(config)
             .with_std_socket(socket)
     }
@@ -143,11 +148,12 @@ impl Endpoint {
     ///
     /// This does not bind preferred-address sockets. Use [`Self::build`] for custom settings.
     pub fn new_server_with_packet_socket(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         config: ServerConfig,
         socket: UdpPacketSocket,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec)
+        let scope = scope.into();
+        EndpointBuilder::new(scope)
             .with_server_config(config)
             .with_packet_socket(socket)
     }
@@ -156,11 +162,11 @@ impl Endpoint {
     ///
     /// Use [`Self::build`] to customise the endpoint or UDP socket configuration.
     pub async fn bind_server(
-        exec: Executor,
+        scope: WeakScope,
         config: ServerConfig,
         address: impl Into<SocketAddress>,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec)
+        EndpointBuilder::new(scope)
             .with_server_config(config)
             .bind_address(address)
             .await
@@ -257,12 +263,14 @@ impl Endpoint {
         server_config: Option<ServerConfig>,
         socket: Socket,
         advertised: Vec<Socket>,
-        executor: Executor,
+        weak_scope: WeakScope,
         shutdown_budget: Duration,
     ) -> io::Result<Self> {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(io::Error::other("no async runtime found"));
         }
+        // The supervisor holds the scope while the endpoint runs: a closed one starts none.
+        let held = weak_scope.try_hold().map_err(io::Error::other)?;
         if config.handshake_timeout.is_zero()
             || now()
                 .checked_add(config.handshake_timeout)
@@ -357,19 +365,21 @@ impl Endpoint {
         ));
         let lifecycle = rc.shared.lifecycle.clone();
         let inner = rc.0.clone();
-        let cancellation = executor.guard().map(|guard| guard.clone_weak());
-        executor.into_spawn_task(async move {
-            let cancel = async {
-                match cancellation {
-                    Some(guard) => guard.cancelled().await,
-                    None => std::future::pending().await,
+        let scope = weak_scope;
+        held.into_spawn_task_to_completion(async move {
+            // The hard phase of the scope, or a stop that grants no budget.
+            let (stop_scope, stop_lifecycle) = (&scope, &lifecycle);
+            let hard = || async move {
+                tokio::select! {
+                    () = stop_scope.aborted() => (),
+                    () = stop_lifecycle.forced() => (),
                 }
             };
             // `Some(graceful)` once the endpoint stops: graceful when shutdown cancelled it.
             let stop = tokio::select! {
                 _ = lifecycle.join() => None,
                 _ = lifecycle.requested() => Some(false),
-                _ = cancel => Some(true),
+                () = scope.cancelled() => Some(true),
             };
             let mut forced = false;
             if let Some(graceful) = stop {
@@ -385,7 +395,8 @@ impl Endpoint {
                 }
                 if graceful {
                     // Each leased connection closes once let go, within half the budget (the
-                    // rest is for the closes), or at once when shutdown is requested meanwhile.
+                    // rest is for the closes), or at once when shutdown is requested or the
+                    // scope is aborted meanwhile.
                     let leases = async {
                         loop {
                             let released = inner.shared.close_leases_released.notified();
@@ -409,6 +420,7 @@ impl Endpoint {
                         tokio::select! {
                             () = leases => (),
                             () = lifecycle.requested() => (),
+                            () = hard() => (),
                         }
                     })
                     .await;
@@ -420,10 +432,15 @@ impl Endpoint {
                     );
                 }
                 let remaining = shutdown_budget.saturating_sub(started.elapsed());
-                if tokio::time::timeout(remaining, lifecycle.join())
-                    .await
-                    .is_err()
-                {
+                let joined = tokio::select! {
+                    joined = tokio::time::timeout(remaining, lifecycle.join()) => joined.is_ok(),
+                    () = hard() => {
+                        // Woken drivers get one poll to put their close on the wire.
+                        tokio::task::yield_now().await;
+                        lifecycle.join().now_or_never().is_some()
+                    }
+                };
+                if !joined {
                     forced = true;
                     lifecycle.abort();
                     lifecycle.join().await;
@@ -747,6 +764,12 @@ impl Endpoint {
     /// call [`close()`](Self::close) and then [`wait_idle()`](Self::wait_idle) before this.
     pub async fn shutdown(&self) -> ShutdownOutcome {
         self.inner.shared.lifecycle.request();
+        self.inner.shared.lifecycle.completed().await
+    }
+
+    /// As [`Self::shutdown`], granting no budget: drivers that do not join at once are aborted.
+    pub(crate) async fn shutdown_now(&self) -> ShutdownOutcome {
+        self.inner.shared.lifecycle.force();
         self.inner.shared.lifecycle.completed().await
     }
 

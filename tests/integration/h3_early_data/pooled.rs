@@ -197,10 +197,10 @@ async fn pooled_recovery(provider: Provider, scenario: Scenario) {
         }
     });
 
-    let h3 = Http3Connector::builder(Executor::new())
+    let h3 = Http3Connector::builder(WeakScope::never())
         .with_endpoints(SharedQuicEndpoint::supplied(
             fixture.client.clone(),
-            Executor::new(),
+            WeakScope::never(),
         ))
         .with_tls_provider(client_provider(provider))
         .with_tls_config(fixture.client_tls.clone())
@@ -219,7 +219,7 @@ async fn pooled_recovery(provider: Provider, scenario: Scenario) {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector::<RetryBody>(Executor::new())
+            .with_default_http_connector::<RetryBody>(WeakScope::never())
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_connections_per_id: Some(NonZeroUsize::MIN),
                 ..HttpPooledConnectorConfig::default()
@@ -470,18 +470,18 @@ async fn real_ingress_request(provider: Provider, version: HttpVersion) -> Reque
     if version == HttpVersion::HTTP_3 {
         let fixture = Fixture::new(provider, Version::V1).await;
         let (client, server) = fixture.full_pair().await;
-        let service = HttpServer::new_http3(Executor::new()).service(capture);
+        let service = HttpServer::new_http3(WeakScope::never()).service(capture);
         let _serving = Task::spawn(async move { service.serve(server).await });
         send(client, Config::default(), request(Method::GET, ""))
             .join()
             .await
             .unwrap();
     } else {
-        let listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+        let listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::never())
             .await
             .unwrap();
         let address = listener.local_addr().unwrap();
-        let service = HttpServer::auto(Executor::new()).service(capture);
+        let service = HttpServer::auto(WeakScope::never()).service(capture);
         let _serving = Task::spawn(listener.serve(service));
         let client = EasyHttpConnectorBuilder::new()
             .with_default_transport_connector()
@@ -489,7 +489,7 @@ async fn real_ingress_request(provider: Provider, version: HttpVersion) -> Reque
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::new())
+            .with_default_http_connector(WeakScope::never())
             .with_default_connection_pool()
             .build_client();
         let request = Request::builder()

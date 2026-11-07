@@ -27,6 +27,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
+    graceful::{Scope, WeakScope},
     http::{
         HeaderName, HeaderValue,
         layer::{
@@ -42,7 +43,6 @@ use rama::{
     layer::{ArcLayer, ConsumeErrLayer, MapOutputLayer, TimeoutLayer},
     net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
     proxy::socks5::{Socks5Acceptor, server::Connector},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -68,14 +68,16 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
-    let mitm_svc = new_mitm_svc(&exec).context("build MITM relay service")?;
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
+    let mitm_svc = new_mitm_svc(&weak_scope).context("build MITM relay service")?;
 
-    let tcp_service = TcpListener::bind_address("127.0.0.1:62022", exec.clone())
+    let tcp_service = TcpListener::bind_address("127.0.0.1:62022", weak_scope.clone())
         .await
         .context("bind proxy to 127.0.0.1:62022")?;
-    let socks5_acceptor = Socks5Acceptor::new(exec.clone())
+    let socks5_acceptor = Socks5Acceptor::new(weak_scope.clone())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(Connector::new(
             TimeoutLayer::new(Duration::from_secs(30)).into_layer(
@@ -85,18 +87,15 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         ));
-    graceful.spawn_task(tcp_service.serve(socks5_acceptor));
+    scope.spawn_task(tcp_service.serve(socks5_acceptor));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .context("graceful shutdown")?;
+    scope.join().await.context("graceful shutdown")?;
 
     Ok(())
 }
 
 fn new_mitm_svc<Ingress, Egress>(
-    exec: &Executor,
+    scope: &WeakScope,
 ) -> Result<
     impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone,
     BoxError,
@@ -105,7 +104,7 @@ where
     Ingress: Io + Unpin + ExtensionsRef,
     Egress: Io + Unpin + ExtensionsRef,
 {
-    let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+    let http_mitm_relay = HttpMitmRelay::new(scope.clone()).with_http_middleware((
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         // Decode before HTTP body middleware and restore the upstream encoding
@@ -129,7 +128,7 @@ where
     ));
     let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
         .with_known_non_http_protocol_methods()
-        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
+        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())));
 
     let tls_mitm_relay =
         TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {

@@ -10,7 +10,7 @@ use rama::{
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
     combinators::Either,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt as _},
-    graceful::ShutdownGuard,
+    graceful::WeakScope,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
@@ -24,7 +24,6 @@ use rama::{
         tls::ApplicationProtocol,
     },
     proxy::haproxy::server::HaProxyLayer,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
     tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
@@ -148,7 +147,7 @@ impl fmt::Display for Mode {
 
 /// run the rama echo service
 pub async fn run(
-    graceful: ShutdownGuard,
+    scope: WeakScope,
     etx: Sender<BoxError>,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandEcho,
@@ -166,22 +165,21 @@ pub async fn run(
                         }
                     }
                 }),
-                Executor::graceful(graceful.clone()),
+                scope.clone(),
             )
         })
         .transpose()?;
 
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
-            bind_echo_tcp_service(graceful, cfg.clone(), maybe_tls_server_config).await?
+            bind_echo_tcp_service(scope, cfg.clone(), maybe_tls_server_config).await?
         }
         Mode::Udp => {
-            bind_echo_udp_service(graceful, cfg.clone(), maybe_tls_server_config, etx.clone())
-                .await?
+            bind_echo_udp_service(scope, cfg.clone(), maybe_tls_server_config, etx.clone()).await?
         }
         Mode::Http | Mode::Https => {
             bind_echo_http_service(
-                graceful,
+                scope,
                 &http3_endpoints,
                 cfg.clone(),
                 maybe_tls_server_config,
@@ -194,12 +192,11 @@ pub async fn run(
 }
 
 async fn bind_echo_http_service(
-    graceful: ShutdownGuard,
+    scope: WeakScope,
     http3_endpoints: &Http3Endpoints,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
 ) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
     let geo_db = crate::utils::geo::load_geo_db_from_env();
     // Finish expensive initialization before exposing the listening sockets.
@@ -210,7 +207,7 @@ async fn bind_echo_http_service(
         cfg.bind
     );
     let listeners = HttpListeners::bind_observed(
-        exec.clone(),
+        scope.clone(),
         cfg.bind,
         cfg.http_version,
         maybe_tls_config.as_ref(),
@@ -233,11 +230,11 @@ async fn bind_echo_http_service(
         .maybe_with_alt_svc(listeners.alt_svc()?)
         .with_user_agent_database(ua_db)
         .maybe_with_geo_db(geo_db)
-        .build_with_http3(exec.clone())
+        .build_with_http3(scope.clone())
         .context("build http(s) echo service")?;
 
     if let Some(endpoint) = listeners.http3 {
-        http3_endpoints.serve(&exec, "echo", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(&scope, "echo", endpoint, Arc::new(http3_service))?;
     }
 
     let Some(tcp_listener) = listeners.tcp else {
@@ -250,7 +247,7 @@ async fn bind_echo_http_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "http");
 
-    exec.spawn_task(async move {
+    scope.try_hold()?.into_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -267,11 +264,10 @@ async fn bind_echo_http_service(
 }
 
 async fn bind_echo_tcp_service(
-    graceful: ShutdownGuard,
+    scope: WeakScope,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
 ) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
     if cfg.ws {
         return Err(BoxError::from_static_str(
             "websocket support is only possible in http(s) mode",
@@ -325,7 +321,7 @@ async fn bind_echo_tcp_service(
     let echo_svc = middleware.into_layer(EchoService::new());
 
     tracing::info!("starting TCP echo service: bind interface = {:?}", cfg.bind);
-    let tcp_listener = TcpListener::build(exec.clone())
+    let tcp_listener = TcpListener::build(scope.clone())
         .bind_address(cfg.bind)
         .await
         .context("bind TCP echo service socket")?;
@@ -337,7 +333,7 @@ async fn bind_echo_tcp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "tcp");
 
-    exec.spawn_task(async move {
+    scope.try_hold()?.into_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -351,7 +347,7 @@ async fn bind_echo_tcp_service(
 }
 
 async fn bind_echo_udp_service(
-    graceful: ShutdownGuard,
+    weak_scope: WeakScope,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
     etx: tokio::sync::mpsc::Sender<BoxError>,
@@ -399,7 +395,9 @@ async fn bind_echo_udp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "udp");
 
-    graceful.into_spawn_task_fn(move |guard| {
+    let task_scope = weak_scope.clone();
+    // The receive loop ends at cancel; replies in flight still drain.
+    weak_scope.try_hold()?.into_spawn_cancellable_task({
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -417,7 +415,6 @@ async fn bind_echo_udp_service(
         });
 
         async move {
-            let weak_guard = guard.downgrade();
             let mut buf = [0; 1024];
 
             loop {
@@ -454,7 +451,11 @@ async fn bind_echo_udp_service(
 
                 let socket = shared_udp_socket.clone();
                 let data = buf[..len].to_vec();
-                weak_guard.clone().upgrade().into_spawn_task(async move {
+                // This loop's task holds the scope, so a reply is never refused.
+                let Ok(scope) = task_scope.try_hold() else {
+                    return;
+                };
+                scope.into_spawn_task(async move {
                     _ = permit;
                     match socket.send_to(&data, addr).await {
                         Ok(len) => {

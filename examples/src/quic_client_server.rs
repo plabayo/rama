@@ -31,9 +31,6 @@
 //! INFO quic_client_server: client: the server says it read the upload
 //! INFO quic_client_server: client: done, closing
 //! INFO quic_client_server: server: the connection ended
-//! INFO tokio_graceful::shutdown: ::shutdown: waiting for signal to trigger (read: to be cancelled)
-//! INFO tokio_graceful::shutdown: ::shutdown: waiting for all guards to drop
-//! INFO tokio_graceful::shutdown: ::shutdown: ready after 0.000034958s
 //! INFO quic_client_server: shutdown: joined in 34.958µs
 //! ```
 //!
@@ -51,13 +48,12 @@ use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     error_sink::TracingErrorSink,
     extensions::ExtensionsRef as _,
-    graceful::Shutdown,
+    graceful::Scope,
     net::tls::ApplicationProtocol,
     quic::{
         ClientConfig, Connection, Endpoint, NegotiatedTlsParameters, ServerConfig, TransportConfig,
         qlog::QlogConfig, tls::TlsOptions,
     },
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -113,11 +109,11 @@ async fn main() -> Result<(), BoxError> {
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default())?;
     let anchor = auth.cert_chain.last().unwrap().clone();
 
-    // One shutdown for the whole application, fired by this example itself once its work is
-    // done. Both endpoints are built on guards of it, so stopping the application stops them;
-    // neither endpoint holds the shutdown open. A real application would wait on a signal.
+    // One scope for the whole application, cancelled by this example itself once its work is
+    // done. Both endpoints are built in it, so stopping the application stops them;
+    // neither endpoint holds the scope open. A real application would wait on a signal.
     let (finished, is_finished) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let scope = Scope::new().with_signal(async move {
         // A sender dropped without sending says the same thing: the application is done.
         drop(is_finished.await);
     });
@@ -129,7 +125,7 @@ async fn main() -> Result<(), BoxError> {
             .with_context_field("path", || path.display().to_string())?;
         let recorder = QlogConfig::default()
             .with_writer(file)
-            .with_executor(Executor::graceful(shutdown.guard()))
+            .with_scope(scope.clone_weak())
             .with_error_sink(TracingErrorSink::warn())
             .start()?;
         Some(recorder)
@@ -137,7 +133,7 @@ async fn main() -> Result<(), BoxError> {
         None
     };
 
-    let server = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let server = Endpoint::build(scope.clone_weak())
         .with_server_config(server_config(&auth)?)
         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
         .await?;
@@ -145,9 +141,9 @@ async fn main() -> Result<(), BoxError> {
     tracing::info!("server: listening on {addr}");
 
     // Its outcome is joined below, so a server-side failure fails this process.
-    let serving = shutdown.spawn_task(async move { serve(&server).await });
+    let serving = scope.spawn_task_to_completion(async move { serve(&server).await });
 
-    let client = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let client = Endpoint::build(scope.clone_weak())
         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
         .await?;
     let config = client_config(anchor)?.with_transport_config(Arc::new(
@@ -187,7 +183,7 @@ async fn main() -> Result<(), BoxError> {
         .send(())
         .ok()
         .context("nothing is listening for the end")?;
-    let took = shutdown.shutdown().await;
+    let took = scope.join().await?;
     drop((client, addr));
     tracing::info!("shutdown: joined in {took:?}");
     Ok(())

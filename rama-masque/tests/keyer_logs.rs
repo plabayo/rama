@@ -5,7 +5,7 @@ use rama_masque::limits::TunnelLimits;
 use std::{num::NonZeroU16, sync::Arc};
 
 use parking_lot::Mutex;
-use rama_core::{Service as _, error::BoxError, rt::Executor, telemetry::tracing};
+use rama_core::{Service as _, error::BoxError, graceful::WeakScope, telemetry::tracing};
 use rama_http::{Request, StatusCode, Version};
 use rama_masque::connect_udp::{ConnectUdpService, ConnectUdpTarget, connect_udp_request};
 use rama_net::address::{Host, ProxyAddress};
@@ -41,7 +41,7 @@ async fn a_keyers_error_never_reaches_the_logs() {
     let limits = TunnelLimits::new()
         .with_max_tunnels_per_principal(std::num::NonZeroUsize::new(1).unwrap())
         .with_keyer(|_: &Request| Err::<Option<u64>, BoxError>(CREDENTIAL.into()));
-    let service = ConnectUdpService::try_new(Executor::default(), None)
+    let service = ConnectUdpService::try_new(WeakScope::never(), None)
         .unwrap()
         .with_limits(limits);
     let proxy = ProxyAddress::try_from("masque://proxy.example:443").unwrap();

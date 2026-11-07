@@ -5,6 +5,7 @@ use rama::{
     bytes::Bytes,
     crypto::pki_types::{CertificateDer, pem::PemObject as _},
     extensions::Extensions,
+    graceful::Scope,
     http::{
         Body, HeaderValue, Method,
         body::util::BodyExt as _,
@@ -78,11 +79,11 @@ fn loopback_bind_address() -> std::net::SocketAddr {
 }
 
 async fn start_proxy(
-    guard: ShutdownGuard,
+    scope: &Scope,
     cfg: CliCommandProxy,
 ) -> (std::net::SocketAddr, Option<std::net::SocketAddr>) {
     let (addresses, inspector) =
-        run_with_dashboard_token(guard, Http3Endpoints::default(), cfg, None)
+        run_with_dashboard_token(scope.clone_weak(), Http3Endpoints::default(), cfg, None)
             .await
             .unwrap();
     assert_eq!(addresses.len(), 1, "test expects one proxy listener");
@@ -92,17 +93,15 @@ async fn start_proxy(
 async fn spawn_plain_origin(
     response_body: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
-    let task = tokio::spawn(
-        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
-            move |_request: Request| async move {
-                Ok::<_, Infallible>(Response::new(Body::from(response_body)))
-            },
-        ))),
-    );
+    let task = tokio::spawn(listener.serve(HttpServer::auto(WeakScope::never()).service(
+        service_fn(move |_request: Request| async move {
+            Ok::<_, Infallible>(Response::new(Body::from(response_body)))
+        }),
+    )));
     (address, task)
 }
 
@@ -232,7 +231,7 @@ async fn proxy_test_icap_service(
 async fn spawn_proxy_test_icap_with_state(
     state: Arc<ProxyTestIcapState>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
@@ -256,7 +255,7 @@ async fn spawn_proxy_test_icap() -> (
 }
 
 async fn spawn_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
@@ -274,7 +273,7 @@ async fn spawn_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHan
     });
     let task = tokio::spawn(
         listener.serve(
-            HttpServer::new_http1(Executor::default())
+            HttpServer::new_http1(WeakScope::never())
                 .service(ConsumeErrLayer::trace_as_debug().into_layer(websocket)),
         ),
     );
@@ -282,7 +281,7 @@ async fn spawn_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHan
 }
 
 async fn spawn_tls_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
@@ -302,7 +301,7 @@ async fn spawn_tls_websocket_origin() -> (std::net::SocketAddr, tokio::task::Joi
             websocket.serve(request).await
         }
     });
-    let websocket = HttpServer::new_http1(Executor::default())
+    let websocket = HttpServer::new_http1(WeakScope::never())
         .service(ConsumeErrLayer::trace_as_debug().into_layer(websocket));
     let task = tokio::spawn(listener.serve(TlsAcceptorService::new(tls, websocket, false)));
     (address, task)
@@ -317,7 +316,7 @@ fn proxy_websocket_client()
         .with_tls_proxy_support_using_boringssl_config(insecure.clone())
         .with_proxy_support()
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client()
 }
@@ -333,7 +332,7 @@ async fn get_via_proxy(
         .with_tls_proxy_support_using_boringssl_config(insecure.clone())
         .with_proxy_support()
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
     let request = Request::builder()
@@ -353,25 +352,23 @@ async fn get_via_proxy(
 /// An origin answering whether a proxy credential reached it.
 async fn spawn_credential_reporting_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>)
 {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
-    let task = tokio::spawn(
-        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
-            |request: Request| async move {
-                let seen = if request
-                    .headers()
-                    .contains_key(rama::http::header::PROXY_AUTHORIZATION)
-                {
-                    "credential leaked"
-                } else {
-                    "no credential"
-                };
-                Ok::<_, Infallible>(Response::new(Body::from(seen)))
-            },
-        ))),
-    );
+    let task = tokio::spawn(listener.serve(HttpServer::auto(WeakScope::never()).service(
+        service_fn(|request: Request| async move {
+            let seen = if request
+                .headers()
+                .contains_key(rama::http::header::PROXY_AUTHORIZATION)
+            {
+                "credential leaked"
+            } else {
+                "no credential"
+            };
+            Ok::<_, Infallible>(Response::new(Body::from(seen)))
+        }),
+    )));
     (address, task)
 }
 
@@ -388,7 +385,7 @@ async fn fetch(
         .with_tls_proxy_support_using_boringssl_config(insecure.clone())
         .with_proxy_support()
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client()
         .with_tunnel_plaintext_http(tunnel);
@@ -456,13 +453,11 @@ async fn next_sse_event(body: &mut Body) -> String {
     String::from_utf8(bytes).expect("inspector event is UTF-8")
 }
 
-async fn shutdown_proxy(
-    shutdown_tx: tokio::sync::oneshot::Sender<()>,
-    shutdown: rama::graceful::Shutdown,
-) {
+async fn shutdown_proxy(shutdown_tx: tokio::sync::oneshot::Sender<()>, shutdown: Scope) {
     _ = shutdown_tx.send(());
     shutdown
-        .shutdown_with_limit(Duration::from_secs(5))
+        .with_grace(Duration::from_secs(5))
+        .join()
         .await
         .unwrap();
 }

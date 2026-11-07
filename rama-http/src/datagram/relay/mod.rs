@@ -4,8 +4,8 @@ use rama_core::{
     Service,
     extensions::ExtensionsRef,
     futures::try_join_with_drain,
+    graceful::WeakScope,
     io::{AbortIo, BridgeIo, Io},
-    rt::Executor,
 };
 use rama_http_types::proto::capsule::CapsuleType;
 use rama_utils::guard::DropGuard;
@@ -58,7 +58,7 @@ pub struct HttpDatagramRelay {
     config: SessionConfig,
     idle_timeout: Option<Duration>,
     close_timeout: Option<Duration>,
-    exec: Executor,
+    scope: WeakScope,
 }
 
 impl Default for HttpDatagramRelay {
@@ -77,7 +77,7 @@ impl HttpDatagramRelay {
             config,
             idle_timeout: Some(Duration::from_mins(2)),
             close_timeout: Some(Duration::from_secs(5)),
-            exec: Executor::new(),
+            scope: WeakScope::never(),
         }
     }
 
@@ -100,9 +100,10 @@ impl HttpDatagramRelay {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Abort both streams when this executor's graceful shutdown begins.
-        pub fn executor(mut self, exec: Executor) -> Self {
-            self.exec = exec;
+        /// Stop both streams at this scope's hard phase; they keep relaying through its graceful
+        /// phase.
+        pub fn scope(mut self, scope: impl Into<WeakScope>) -> Self {
+            self.scope = scope.into();
             self
         }
     }
@@ -135,7 +136,7 @@ where
         let config = self.config.clone();
         let idle_timeout = self.idle_timeout;
         let close_timeout = self.close_timeout;
-        let exec = self.exec.clone();
+        let scope = self.scope.clone();
         async move {
             let (left_send, left_receive) =
                 HttpDatagramSession::with_config(left, config.clone()).split();
@@ -161,12 +162,8 @@ where
             let (ingress_to_egress, egress_to_ingress) = tokio::select! {
                 result = exchange => result?,
                 () = idle(observed, idle_timeout) => return Err(SessionError::Io(io::Error::new(io::ErrorKind::TimedOut, "datagram relay idle timeout"))),
-                () = async {
-                    match exec.guard() {
-                        Some(guard) => guard.cancelled().await,
-                        None => std::future::pending().await,
-                    }
-                } => return Err(SessionError::Io(io::Error::new(io::ErrorKind::Interrupted, "datagram relay shutdown"))),
+                // Datagrams cannot drain: the relay runs through the graceful phase.
+                () = scope.aborted() => return Err(SessionError::Io(io::Error::new(io::ErrorKind::Interrupted, "datagram relay shutdown"))),
             };
             guard.disarm();
             Ok(DatagramRelayOutcome {

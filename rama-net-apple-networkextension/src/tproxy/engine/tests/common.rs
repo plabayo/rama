@@ -6,7 +6,7 @@ use crate::tproxy::{TransparentProxyConfig, TransparentProxyFlowMeta};
 use rama_core::{
     bytes::Bytes,
     error::BoxError,
-    rt::Executor,
+    graceful::WeakScope,
     service::{BoxService, Service},
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -83,7 +83,7 @@ impl TransparentProxyHandler for TestHandler {
 
     fn handle_app_message(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         message: Bytes,
     ) -> impl Future<Output = Option<Bytes>> + Send + '_ {
         let reply = (self.app_message_handler)(message.to_vec()).map(Bytes::from);
@@ -92,7 +92,7 @@ impl TransparentProxyHandler for TestHandler {
 
     fn match_tcp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<
@@ -109,7 +109,7 @@ impl TransparentProxyHandler for TestHandler {
 
     fn match_udp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<impl Service<crate::UdpFlow, Output = (), Error = Infallible>>,
@@ -125,14 +125,14 @@ impl TransparentProxyHandler for TestHandler {
         self.tcp_egress_options.as_ref().and_then(|f| f(meta))
     }
 
-    fn on_system_sleep(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+    fn on_system_sleep(&self, _scope: WeakScope) -> impl Future<Output = ()> + Send + '_ {
         if let Some(cb) = self.on_sleep.as_ref() {
             cb();
         }
         std::future::ready(())
     }
 
-    fn on_system_wake(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+    fn on_system_wake(&self, _scope: WeakScope) -> impl Future<Output = ()> + Send + '_ {
         if let Some(cb) = self.on_wake.as_ref() {
             cb();
         }
@@ -193,13 +193,13 @@ pub(super) fn stop_paused_engine(engine: TransparentProxyEngine<TestHandler>) {
     // A current-thread fixture has no background workers to poll the ordinary
     // blocking stop. Drive its graceful drain before dropping the runtime.
     engine.udp_ingress_budget.close_flow_releases();
-    let pair = engine.shutdown.lock().take().expect("live test engine");
+    let root = engine.shutdown.lock().take().expect("live test engine");
     engine.rt.as_ref().unwrap().block_on_borrowed(async {
-        _ = pair.trigger.send(());
-        pair.shutdown
-            .shutdown_with_limit(Duration::from_secs(1))
+        root.cancel(Cause::Owner);
+        tokio::time::timeout(Duration::from_secs(1), root.join())
             .await
-            .expect("paused engine must drain");
+            .expect("paused engine must drain")
+            .expect("paused engine is not aborted");
     });
     drop(engine);
 }
@@ -393,6 +393,15 @@ type Fields = std::collections::BTreeMap<String, String>;
 pub(in crate::tproxy::engine) struct Capture(
     pub(in crate::tproxy::engine) Arc<parking_lot::Mutex<Vec<Fields>>>,
 );
+
+impl Capture {
+    /// Runs `f` with this capture as the thread's default subscriber.
+    pub(in crate::tproxy::engine) fn record<R>(&self, f: impl FnOnce() -> R) -> R {
+        // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
+        let _registered = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        tracing::subscriber::with_default(self.clone(), f)
+    }
+}
 
 #[derive(Default)]
 struct Visitor(Fields);

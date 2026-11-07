@@ -13,6 +13,7 @@ use std::{
 use rama::{
     Service,
     bytes::Bytes,
+    graceful::WeakScope,
     net::{
         address::{
             HostWithPort,
@@ -29,7 +30,6 @@ use rama::{
             },
         },
     },
-    rt::Executor,
     telemetry::tracing,
 };
 use serde::{Deserialize, Serialize};
@@ -451,7 +451,7 @@ impl DemoTransparentProxyHandler {
                 xpc_service_name,
                 demo_config.container_signing_identifier,
                 shared_state,
-                ctx.executor.clone(),
+                ctx.scope.clone(),
             )
             .unwrap_or_else(|err| {
                 tracing::error!(%err, "failed to spawn xpc server");
@@ -518,7 +518,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         })
     }
 
-    async fn handle_app_message(&self, _exec: Executor, message: Bytes) -> Option<Bytes> {
+    async fn handle_app_message(&self, _scope: WeakScope, message: Bytes) -> Option<Bytes> {
         let message_len = message.len();
         let request = match serde_json::from_slice::<AppMessageRequest>(&message) {
             Ok(request) => request,
@@ -580,7 +580,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
 
     fn match_tcp_flow(
         &self,
-        _exec: rama::rt::Executor,
+        _scope: rama::graceful::WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<
@@ -629,7 +629,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
 
     fn match_udp_flow(
         &self,
-        _exec: rama::rt::Executor,
+        _scope: rama::graceful::WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<impl rama::Service<apple_ne::UdpFlow, Output = (), Error = Infallible>>,

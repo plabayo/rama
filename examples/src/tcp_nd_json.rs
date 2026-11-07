@@ -39,8 +39,8 @@
 use rama::{
     error::{BoxError, ErrorContext as _},
     futures::SinkExt,
+    graceful::Scope,
     net::address::SocketAddress,
-    rt::Executor,
     service::service_fn,
     stream::{codec::FramedWrite, json::JsonEncoder},
     tcp::{TcpStream, server::TcpListener},
@@ -89,12 +89,15 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62042), exec.clone())
-        .await
-        .expect("tcp port to be bound");
+    let listener =
+        TcpListener::bind_address(SocketAddress::default_ipv4(62042), weak_scope.clone())
+            .await
+            .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
 
     tracing::info!(
@@ -106,12 +109,9 @@ async fn main() {
         "establish a (client) tcp connection to {bind_address} to see the service in action"
     );
 
-    graceful.spawn_task(listener.serve(service_fn(serve_stream)));
+    scope.spawn_task(listener.serve(service_fn(serve_stream)));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -9,11 +9,11 @@ use std::sync::{
 use parking_lot::Mutex;
 use rama::ServiceInput;
 use rama::futures::FutureExt;
+use rama::graceful::WeakScope;
 use rama::http::StatusCode;
 use rama::http::body::util::{BodyExt, Full};
 use rama::http::core::server;
 use rama::http::core::service::RamaHttpService;
-use rama::rt::Executor;
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing;
 use tokio::net::{TcpListener, TcpStream};
@@ -403,7 +403,7 @@ async fn async_test(cfg: __TestConfig) {
 
             tokio::task::spawn(async move {
                 if http2_only {
-                    server::conn::http2::Builder::new(Executor::new())
+                    server::conn::http2::Builder::new(WeakScope::never())
                         .serve_connection(stream, service)
                         .await
                         .expect("server error");
@@ -447,7 +447,7 @@ async fn async_test(cfg: __TestConfig) {
 
             let res = if http2_only {
                 let (mut sender, conn) =
-                    rama::http::core::client::conn::http2::Builder::new(Executor::new())
+                    rama::http::core::client::conn::http2::Builder::new(WeakScope::never())
                         .handshake(stream)
                         .await
                         .unwrap();
@@ -546,12 +546,12 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                         let result = if http2_only {
                             let (mut sender, conn) =
-                                    rama::http::core::client::conn::http2::Builder::new(
-                                        Executor::new(),
-                                    )
-                                    .handshake(stream)
-                                    .await
-                                    .unwrap();
+                                rama::http::core::client::conn::http2::Builder::new(
+                                    WeakScope::never(),
+                                )
+                                .handshake(stream)
+                                .await
+                                .unwrap();
 
                             tokio::task::spawn(async move {
                                 if let Err(err) = conn.await {
@@ -599,7 +599,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                 }));
 
                 if http2_only {
-                    server::conn::http2::Builder::new(Executor::new())
+                    server::conn::http2::Builder::new(WeakScope::never())
                         .serve_connection(stream, service)
                         .await
                         .unwrap();

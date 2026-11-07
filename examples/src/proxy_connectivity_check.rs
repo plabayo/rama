@@ -43,6 +43,7 @@
 use rama::{
     Layer, Service,
     extensions::ExtensionsRef,
+    graceful::Scope,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -66,7 +67,6 @@ use rama::{
         Socks5Acceptor,
         server::{LazyConnector, Socks5PeekRouter},
     },
-    rt::Executor,
     service::StaticOutput,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -144,12 +144,15 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
-    let tcp_service = TcpListener::bind_address(SocketAddress::default_ipv4(62030), exec.clone())
-        .await
-        .expect("bind tcp interface for connectivity example");
+    let tcp_service =
+        TcpListener::bind_address(SocketAddress::default_ipv4(62030), weak_scope.clone())
+            .await
+            .expect("bind tcp interface for connectivity example");
 
     let proxy_service = (
         RemoveResponseHeaderLayer::hop_by_hop(),
@@ -161,7 +164,7 @@ async fn main() {
     )
         .into_layer(service_fn(http_plain_proxy));
 
-    let http_service = HttpServer::auto(exec.clone()).service(
+    let http_service = HttpServer::auto(weak_scope.clone()).service(
         (
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
@@ -173,29 +176,30 @@ async fn main() {
                             rama::tcp::client::service::TcpConnector::new(),
                         ),
                     ),
-                    IoForwardService::new(exec.clone()),
+                    IoForwardService::new(weak_scope.clone()),
                 );
-                UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect)
+                UpgradeLayer::new(weak_scope.clone(), MethodMatcher::CONNECT, connect)
             },
         )
             .into_layer(proxy_service.clone()),
     );
 
-    let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
-        .with_fallback(
-            (
-                MapOutputLayer::new(drop),
-                IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
-                    TimeoutLayer::new(Duration::from_secs(30)).into_layer(
-                        rama::dns::client::DnsConnector::new(
-                            rama::tcp::client::service::TcpConnector::new(),
+    let socks5_svc =
+        HttpPeekRouter::new(HttpServer::auto(weak_scope.clone()).service(proxy_service))
+            .with_fallback(
+                (
+                    MapOutputLayer::new(drop),
+                    IoToProxyBridgeIoLayer::extension_connector_target().with_connector(
+                        TimeoutLayer::new(Duration::from_secs(30)).into_layer(
+                            rama::dns::client::DnsConnector::new(
+                                rama::tcp::client::service::TcpConnector::new(),
+                            ),
                         ),
                     ),
-                ),
-            )
-                .into_layer(IoForwardService::new(exec.clone())),
-        );
-    let socks5_acceptor = Socks5Acceptor::new(exec.clone())
+                )
+                    .into_layer(IoForwardService::new(weak_scope.clone())),
+            );
+    let socks5_acceptor = Socks5Acceptor::new(weak_scope.clone())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         // The matching request is answered locally, so accepting the SOCKS5
         // handshake must not depend on an unused egress connection.
@@ -203,12 +207,9 @@ async fn main() {
 
     let auto_socks5_acceptor = Socks5PeekRouter::new(socks5_acceptor).with_fallback(http_service);
 
-    graceful.spawn_task(tcp_service.serve(auto_socks5_acceptor));
+    scope.spawn_task(tcp_service.serve(auto_socks5_acceptor));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {

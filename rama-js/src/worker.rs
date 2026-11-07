@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rama_core::graceful::ShutdownGuard;
+use rama_core::graceful::Scope;
 use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
 
@@ -141,7 +141,7 @@ impl fmt::Debug for JsWorker {
 pub struct JsWorkerBuilder {
     queue_capacity: usize,
     timeout: Option<Duration>,
-    graceful: Option<ShutdownGuard>,
+    scope: Option<Scope>,
     thread_guard: Option<Arc<dyn Send + Sync + 'static>>,
 }
 
@@ -150,7 +150,7 @@ impl Default for JsWorkerBuilder {
         Self {
             queue_capacity: JsWorker::DEFAULT_QUEUE_CAPACITY,
             timeout: None,
-            graceful: None,
+            scope: None,
             thread_guard: None,
         }
     }
@@ -161,7 +161,7 @@ impl fmt::Debug for JsWorkerBuilder {
         f.debug_struct("JsWorkerBuilder")
             .field("queue_capacity", &self.queue_capacity)
             .field("timeout", &self.timeout)
-            .field("graceful", &self.graceful)
+            .field("scope", &self.scope)
             .field("thread_guard", &self.thread_guard.is_some())
             .finish()
     }
@@ -199,15 +199,14 @@ impl JsWorkerBuilder {
     }
 
     generate_set_and_with! {
-        /// Tie the worker to a graceful shutdown guard
-        /// (see [`rama_core::graceful`]).
+        /// Run the worker in a [`Scope`] (see [`rama_core::graceful`]).
         ///
-        /// Once shutdown triggers, the worker finishes the jobs already
-        /// accepted into its queue and exits; the shutdown in turn waits
-        /// for that, as the worker thread holds the guard until it exits.
-        /// Spawning a graceful worker requires an ambient tokio runtime.
-        pub fn graceful(mut self, guard: Option<ShutdownGuard>) -> Self {
-            self.graceful = guard;
+        /// Once the scope is cancelled, the worker finishes the jobs already
+        /// accepted into its queue and exits; the scope's drain in turn waits
+        /// for that, as the worker thread holds the scope until it exits.
+        /// Spawning a scoped worker requires an ambient tokio runtime.
+        pub fn scope(mut self, scope: Option<Scope>) -> Self {
+            self.scope = scope;
             self
         }
     }
@@ -236,16 +235,16 @@ impl JsWorkerBuilder {
         let (ready, built) = flume::bounded(1);
         let (death_tx, death) = tokio::sync::watch::channel(());
 
-        let ctrl = match &self.graceful {
-            Some(guard) => {
+        let ctrl = match &self.scope {
+            Some(scope) => {
                 let handle = tokio::runtime::Handle::try_current().map_err(|_e| {
                     JsError::new(
                         JsErrorKind::Setup,
-                        "a graceful js worker requires an ambient tokio runtime",
+                        "a scoped js worker requires an ambient tokio runtime",
                     )
                 })?;
                 let (ctrl_tx, ctrl_rx) = flume::bounded::<()>(1);
-                let weak = guard.clone_weak();
+                let weak = scope.clone_weak();
                 let mut death = death.clone();
                 handle.spawn(async move {
                     tokio::select! {
@@ -259,17 +258,17 @@ impl JsWorkerBuilder {
             }
             None => None,
         };
-        let guard = self.graceful;
+        let scope = self.scope;
         let thread_guard = self.thread_guard;
         std::thread::Builder::new()
             .name("rama-js-worker".to_owned())
             .stack_size(WORKER_STACK_SIZE)
             .spawn(move || {
                 // both dropped when the thread exits, even by panic unwind:
-                // the death watch resolves waiting callers, the shutdown
-                // guard lets a pending graceful shutdown complete
+                // the death watch resolves waiting callers, the scope
+                // lets a pending drain complete
                 let _death_tx = death_tx;
-                let _guard = guard;
+                let _scope = scope;
                 let _thread_guard = thread_guard;
 
                 let mut runtime = match runtime.build() {

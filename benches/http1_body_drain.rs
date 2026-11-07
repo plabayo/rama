@@ -37,6 +37,7 @@ use rama::{
     bytes::Bytes,
     error::extra::OpaqueError,
     futures::{StreamExt as _, stream},
+    graceful::WeakScope,
     http::{
         Body, Request, Response, Version,
         body::{StreamingBody as _, util::BodyExt as _},
@@ -46,7 +47,6 @@ use rama::{
     },
     layer::MapInputLayer,
     net::{address::SocketAddress, client::pool::SaturationPolicy, tls::ApplicationProtocol},
-    rt::Executor,
     service::service_fn,
     tcp::{client::service::TcpConnector, server::TcpListener},
     tls::{
@@ -272,13 +272,13 @@ fn spawn_origin(transport: Transport, stats: Arc<Stats>) -> (SocketAddress, Serv
             .with_alpn_http_1()
     });
     let addr = runtime.block_on(async {
-        let exec = Executor::new();
-        let listener = TcpListener::build(exec.clone())
+        let scope = WeakScope::never();
+        let listener = TcpListener::build(scope.clone())
             .bind_address(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
         let addr = listener.local_addr().unwrap().into();
-        let http = HttpServer::new_http1(exec.clone()).service(service_fn(origin));
+        let http = HttpServer::new_http1(scope.clone()).service(service_fn(origin));
         let count_tcp = MapInputLayer::new({
             let stats = stats.clone();
             move |stream| {
@@ -286,7 +286,7 @@ fn spawn_origin(transport: Transport, stats: Arc<Stats>) -> (SocketAddress, Serv
                 stream
             }
         });
-        exec.spawn_task(async move {
+        scope.try_hold().unwrap().into_spawn_task(async move {
             match tls {
                 None => listener.serve(count_tcp.into_layer(http)).await,
                 Some(config) => {
@@ -325,7 +325,7 @@ fn client(
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_rustls(tls)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .with_connection_pool(pool_config(pool, drain))
         .build_client()
 }

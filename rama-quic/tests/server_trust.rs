@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use rama_core::{rt::Executor, service::service_fn};
+use rama_core::{graceful::WeakScope, service::service_fn};
 use rama_crypto::cert::CertificateAuthorityData;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 use rama_quic::{
@@ -69,7 +69,7 @@ async fn connects(
     let server_tls = TlsServerConfig::new()
         .with_alpn([ApplicationProtocol::from(ALPN)].into_iter().collect())
         .with_server_auth(origin.leaf.clone());
-    let server = Endpoint::build(Executor::new())
+    let server = Endpoint::build(WeakScope::never())
         .with_server_config(
             ServerConfig::try_from_rama_tls_with_provider(
                 &server_tls,
@@ -82,14 +82,14 @@ async fn connects(
         .await
         .expect("the server binds");
     let served = tokio::spawn(server.clone().serve(
-        Executor::new(),
+        WeakScope::never(),
         service_fn(async |connection: Connection| {
             _ = connection.closed().await;
             Ok::<_, Infallible>(())
         }),
     ));
 
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::never())
         .bind_address(localhost())
         .await
         .expect("the client binds");

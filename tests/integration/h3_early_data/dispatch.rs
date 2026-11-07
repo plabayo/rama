@@ -47,7 +47,7 @@ async fn receipt(provider: Provider, dispatch: Dispatch) {
     let (mut receiver, server_driver) = server::handshake(server.clone(), config).unwrap();
     let _server_driver = Task::spawn(server_driver.run());
     let (sender, client_driver) =
-        client::handshake::<Body, _>(client.clone(), early_config(), Executor::new()).unwrap();
+        client::handshake::<Body, _>(client.clone(), early_config(), WeakScope::never()).unwrap();
     let _client_driver = Task::spawn(client_driver.run());
     let mut early_sender = sender.clone();
     let sending =

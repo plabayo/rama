@@ -24,8 +24,7 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extension, Extensions},
-    graceful::WeakShutdownGuard,
-    rt::Executor,
+    graceful::{Scope, WeakScope},
     telemetry::tracing,
 };
 use rama_http_types::{
@@ -61,7 +60,7 @@ use tokio::time::Instant;
 ///   drains, as does one whose final frame crosses it;
 /// - [`timeout`](Self::timeout) elapsed since the body was dropped,
 ///   including the time waiting to be scheduled;
-/// - the body fails (truncated or malformed framing), or the executor shuts down.
+/// - the body fails (truncated or malformed framing), or the scope shuts down.
 ///
 /// Draining only starts if fewer than [`max_concurrent`](Self::max_concurrent)
 /// drains run for the same connector (shared by its clones); otherwise the
@@ -174,29 +173,27 @@ impl Drop for DrainPermit {
     }
 }
 
-/// Marks an HTTP/1 client connection, with the executor its abandoned
-/// response bodies are drained on.
+/// Marks an HTTP/1 client connection, with the scope its abandoned
+/// response bodies are drained in.
 ///
-/// Holds the shutdown guard weakly: an idle pooled connection must not delay
-/// a graceful shutdown.
+/// Holds the scope weakly: an idle pooled connection must not delay a graceful shutdown.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
 pub(super) struct Http1DrainRuntime {
-    guard: Option<WeakShutdownGuard>,
+    scope: WeakScope,
 }
 
 impl Http1DrainRuntime {
-    pub(super) fn new(exec: &Executor) -> Self {
+    pub(super) fn new(weak_scope: &WeakScope) -> Self {
         Self {
-            guard: exec.guard().map(|guard| guard.clone_weak()),
+            scope: weak_scope.clone(),
         }
     }
 
-    fn executor(&self) -> Executor {
-        match &self.guard {
-            Some(guard) => Executor::graceful(guard.clone().upgrade()),
-            None => Executor::new(),
-        }
+    /// The scope a drain holds while it runs; `None` once it is closed for good, which admits
+    /// no new work.
+    fn scope(&self) -> Option<Scope> {
+        self.scope.try_hold().ok()
     }
 }
 
@@ -291,6 +288,10 @@ impl<C: Send + 'static> Drop for Http1DrainBody<C> {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
+        let Some(scope) = runtime.scope() else {
+            tracing::trace!("http1 response body dropped: scope closed, closing connection");
+            return;
+        };
         let Some(permit) = self.drain.try_acquire() else {
             tracing::trace!("http1 response body dropped: drain limit reached, closing connection");
             return;
@@ -302,9 +303,7 @@ impl<C: Send + 'static> Drop for Http1DrainBody<C> {
         let max_bytes = self.drain.config.max_bytes;
         // The task owns the body, its lease and the permit: whatever ends it,
         // a cancellation or shutdown included, releases them as above.
-        runtime
-            .executor()
-            .spawn_cancellable_task(drain(body, permit, max_bytes, started, deadline));
+        scope.spawn_cancellable_task(drain(body, permit, max_bytes, started, deadline));
     }
 }
 

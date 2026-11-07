@@ -3367,8 +3367,6 @@ dependencies = [
  "generator",
  "pin-utils",
  "scoped-tls",
- "serde",
- "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
@@ -4852,6 +4850,7 @@ dependencies = [
  "dial9",
  "dial9-trace-format",
  "futures",
+ "loom",
  "metrique-writer-core",
  "opentelemetry",
  "opentelemetry-semantic-conventions",
@@ -4866,8 +4865,8 @@ dependencies = [
  "rustversion",
  "serde",
  "serde_json",
+ "slab",
  "tokio",
- "tokio-graceful",
  "tokio-stream",
  "tokio-test",
  "tokio-util",
@@ -7078,19 +7077,6 @@ dependencies = [
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tokio-graceful"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45740b38b48641855471cd402922e89156bdfbd97b69b45eeff170369cc18c7d"
-dependencies = [
- "loom",
- "pin-project-lite",
- "slab",
- "tokio",
- "tracing",
 ]
 
 [[package]]

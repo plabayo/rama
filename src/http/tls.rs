@@ -1,13 +1,13 @@
 //! tls features provided from the http layer.
 
 use crate::error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt as _};
+use crate::graceful::WeakScope;
 use crate::http::{
     BodyExtractExt as _, Request, Response, StatusCode, client::EasyHttpWebClient,
     service::client::HttpClientExt as _,
 };
 use crate::net::address::{AsDomainRef, Domain, DomainTrie};
 use crate::net::uri::Uri;
-use crate::rt::Executor;
 use crate::telemetry::tracing;
 use crate::tls::server::{
     CertificateIdentity, CertificateIssuanceContext, DynamicCertIssuer, ServerAuthData,
@@ -53,13 +53,15 @@ pub struct CertIssuerHttpClient {
 
 impl CertIssuerHttpClient {
     /// Create a new [`CertIssuerHttpClient`] using the default [`EasyHttpWebClient`].
-    pub fn new(exec: Executor, endpoint: Uri) -> Self {
-        Self::new_with_client(endpoint, EasyHttpWebClient::default_with_executor(exec))
+    pub fn new(scope: impl Into<WeakScope>, endpoint: Uri) -> Self {
+        let scope = scope.into();
+        Self::new_with_client(endpoint, EasyHttpWebClient::default_with_scope(scope))
     }
 
     #[cfg(feature = "boring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
-    pub fn try_from_env(exec: Executor) -> Result<Self, BoxError> {
+    pub fn try_from_env(scope: impl Into<WeakScope>) -> Result<Self, BoxError> {
+        let scope = scope.into();
         use crate::{
             Layer as _,
             http::{headers::Authorization, layer::set_header::SetRequestHeaderLayer},
@@ -98,7 +100,7 @@ impl CertIssuerHttpClient {
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_boringssl(tls_config)
-            .with_default_http_connector(exec)
+            .with_default_http_connector(scope)
             .without_connection_pool()
             .build_client();
 
@@ -298,7 +300,7 @@ mod tests {
     #[test]
     fn test_issuer_kind_normalize_identity() {
         let issuer =
-            CertIssuerHttpClient::new(Executor::default(), Uri::from_static("http://example.com"))
+            CertIssuerHttpClient::new(WeakScope::never(), Uri::from_static("http://example.com"))
                 .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
         for (input, expected) in [
             ("example.com", None),

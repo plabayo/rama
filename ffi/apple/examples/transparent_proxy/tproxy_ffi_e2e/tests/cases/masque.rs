@@ -9,6 +9,7 @@ use rama::{
     Layer as _, Service, ServiceInput,
     crypto::pki_types::{CertificateDer, pem::PemObject as _},
     extensions::ExtensionsRef as _,
+    graceful::{Scope, WeakScope},
     http::{
         Body, Request, Version,
         body::util::BodyExt as _,
@@ -30,7 +31,6 @@ use rama::{
         connect_udp_request, session_config, validate_connect_udp_response,
     },
     quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
-    rt::Executor,
     tls::{
         boring::{
             client::{TlsConnectorData, tls_connect},
@@ -45,10 +45,10 @@ use std::{net::SocketAddr, num::NonZeroU16, sync::Arc, time::Duration};
 use tokio::time::timeout;
 
 async fn proxy(native: bool) -> (SocketAddr, AbortOnDrop, Endpoint) {
-    let exec = Executor::new();
+    let scope = WeakScope::never();
     let service = Arc::new(
         ErrorHandlerLayer::new().into_layer(
-            ConnectUdpService::try_new(exec.clone(), None)
+            ConnectUdpService::try_new(scope.clone(), None)
                 .unwrap()
                 .with_policy(DestinationScopePolicy::allow_private()),
         ),
@@ -64,7 +64,7 @@ async fn proxy(native: bool) -> (SocketAddr, AbortOnDrop, Endpoint) {
             .into_iter()
             .collect(),
         );
-    let mut h3 = HttpServer::new_http3(exec.clone());
+    let mut h3 = HttpServer::new_http3(scope.clone());
     h3.http3_mut().extended_connect = true;
     if !native {
         h3.http3_mut().datagrams = None;
@@ -73,22 +73,22 @@ async fn proxy(native: bool) -> (SocketAddr, AbortOnDrop, Endpoint) {
     h3.http3().configure_transport(&mut transport).unwrap();
     let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
     config.set_transport_config(Arc::new(transport));
-    let listener = rama::tcp::server::TcpListener::bind_address("127.0.0.1:0", exec.clone())
+    let listener = rama::tcp::server::TcpListener::bind_address("127.0.0.1:0", scope.clone())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
-    let endpoint = Endpoint::build(exec.clone())
+    let endpoint = Endpoint::build(scope.clone())
         .with_server_config(config)
         .bind_address(address)
         .await
         .unwrap();
-    let mut http = HttpServer::auto(exec.clone());
+    let mut http = HttpServer::auto(scope.clone());
     http.h2_mut().set_enable_connect_protocol();
     let tcp = TlsAcceptorLayer::new(tls).into_layer(http.service(service.clone()));
     let tcp = tokio::spawn(async move {
         listener.serve(tcp).await;
     });
-    let udp = tokio::spawn(endpoint.clone().serve(exec, h3.service(service)));
+    let udp = tokio::spawn(endpoint.clone().serve(scope, h3.service(service)));
     (address, AbortOnDrop(vec![tcp, udp]), endpoint)
 }
 
@@ -119,13 +119,13 @@ async fn ffi_contract_own_masque_session_on_every_carrier() {
                     let mut outer_endpoint = None;
                     let mut outer_driver = None;
                     let response = if version == Version::HTTP_3 {
-                        let endpoint = Endpoint::build(Executor::new()).with_datagram_socket(
+                        let endpoint = Endpoint::build(WeakScope::never()).with_datagram_socket(
                             UdpFfiSession::new(engine.clone(), proxy).into_datagram_socket(proxy)).unwrap();
                         let tls = tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
                         let mut config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
                         config.set_transport_config(Arc::new(masque_quic_transport()));
                         let connection = endpoint.connect_with(config, proxy, "localhost").unwrap().await.unwrap();
-                        let (mut client, driver) = client::handshake::<Body, _>(connection, Config::default(), Executor::new()).unwrap();
+                        let (mut client, driver) = client::handshake::<Body, _>(connection, Config::default(), WeakScope::never()).unwrap();
                         outer_driver = Some(tokio::spawn(driver.run()));
                         outer_endpoint = Some(endpoint);
                         client.send_request(request).await.unwrap().map(Body::new)
@@ -133,19 +133,19 @@ async fn ffi_contract_own_masque_session_on_every_carrier() {
                         let stream = tokio::net::TcpStream::connect(ingress.local_addr()).await.unwrap();
                         let tls = tls.with_alpn([if version == Version::HTTP_2 { ApplicationProtocol::HTTP_2 } else { ApplicationProtocol::HTTP_11 }].into_iter().collect());
                         let stream = tls_connect(ServiceInput::new(stream), Some(TlsConnectorData::try_from(&tls).unwrap())).await.unwrap();
-                        let established = http_connect::<_, _, Body>(stream, request, Executor::new()).await.unwrap();
+                        let established = http_connect::<_, _, Body>(stream, request, WeakScope::never()).await.unwrap();
                         established.conn.serve(established.input).await.unwrap()
                     };
                     validate_connect_udp_response(version, &response).unwrap();
                     let upgraded = handle_upgrade(&response).await.unwrap();
-                    let socket = ConnectUdpSocket::new(&Executor::new(), HttpDatagramSession::with_config(upgraded, session_config()),
+                    let socket = ConnectUdpSocket::new(&Scope::new(), HttpDatagramSession::with_config(upgraded, session_config()),
                         SocketAddress::local_ipv4(0), origin.into(), Default::default());
-                    let inner = Endpoint::build(Executor::new()).with_datagram_socket(socket).unwrap();
+                    let inner = Endpoint::build(WeakScope::never()).with_datagram_socket(socket).unwrap();
                     let tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable)
                         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
                     let config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
                     let connection = inner.connect_with(config, origin, "localhost").unwrap().await.unwrap_or_else(|error| panic!("{version:?} native={native} intercepted={intercepted}: inner QUIC handshake: {error}"));
-                    let (mut client, driver) = client::handshake::<Body, _>(connection, Config::default(), Executor::new()).unwrap();
+                    let (mut client, driver) = client::handshake::<Body, _>(connection, Config::default(), WeakScope::never()).unwrap();
                     let driver = tokio::spawn(driver.run());
                     let response = client.send_request(Request::get("https://localhost/").body(Body::empty()).unwrap()).await.unwrap();
                     assert_eq!(response.into_body().collect().await.unwrap().to_bytes(), "origin", "{version:?} native={native} intercepted={intercepted}");

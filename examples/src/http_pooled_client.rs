@@ -23,6 +23,7 @@
 use rama::{
     Layer,
     error::{BoxError, BoxErrorExt},
+    graceful::WeakScope,
     http::{
         BodyExtractExt,
         client::{EasyHttpWebClient, HttpPooledConnectorConfig},
@@ -33,7 +34,6 @@ use rama::{
         LimitLayer,
         limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -68,7 +68,7 @@ async fn main() {
         .without_tls_proxy_support()
         .with_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         // The pool works out of the box with `HttpPooledConnectorConfig::default()`.
         // We override a single field here only to show the config is tunable.
         // `max_streams_per_connection` caps how many requests one connection
@@ -121,7 +121,7 @@ async fn run_server(addr: &str, ready: Sender<()>) {
     let http_service =
         HttpServer::default().service(WebService::default().with_get("/", "Hello, World!"));
 
-    let serve = TcpListener::build(Executor::default())
+    let serve = TcpListener::build(WeakScope::never())
         .bind_address(addr)
         .await
         .expect("bind TCP Listener")

@@ -3,8 +3,8 @@ use std::fmt;
 use rama::{
     error::{BoxError, ErrorContext},
     extensions::Extensions,
+    graceful::WeakScope,
     net::uri::Uri,
-    rt::Executor,
     telemetry::tracing,
     ua::profile::model::{js::JsProfileWebApis, ua::UserAgentSourceInfo},
 };
@@ -60,7 +60,7 @@ impl Storage {
         Self { queue: None }
     }
 
-    pub(super) async fn try_new(pg_url: String, exec: &Executor) -> Result<Self, BoxError> {
+    pub(super) async fn try_new(pg_url: String, scope: &WeakScope) -> Result<Self, BoxError> {
         let url = debug_pg_url(&pg_url);
         tracing::debug!(
             url.full = ?url,
@@ -71,7 +71,7 @@ impl Storage {
             let mut client = pool.get().await.context("get fp migration client")?;
             migrations::apply(&mut client).await?;
         }
-        let queue = Some(startup::start(pool.clone(), exec).await?);
+        let queue = Some(startup::start(pool.clone(), scope).await?);
         Ok(Self { queue })
     }
 }

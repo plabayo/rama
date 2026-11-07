@@ -7,6 +7,7 @@ use crate::{
 };
 use rama::{
     Layer, Service,
+    graceful::WeakScope,
     http::{
         Request, Version,
         body::util::BodyExt as _,
@@ -16,7 +17,6 @@ use rama::{
     },
     net::{Protocol, address::SocketAddress},
     quic::{Endpoint, tls::BoringTlsProvider},
-    rt::Executor,
     service::service_fn,
     tls::{
         client::{ServerVerifyMode, TlsClientConfig},
@@ -132,7 +132,7 @@ async fn real_h3_inspector_export_preserves_connection_and_request_evidence() {
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .unwrap();
     let listeners = HttpListeners::bind_observed(
-        Executor::default(),
+        WeakScope::never(),
         SocketAddress::local_ipv4(0),
         "h3".parse::<HttpVersions>().unwrap(),
         Some(&tls),
@@ -147,7 +147,7 @@ async fn real_h3_inspector_export_preserves_connection_and_request_evidence() {
     assert!(listeners.tcp.is_none());
     let endpoint = listeners.http3.unwrap();
     let address = endpoint.local_addr().unwrap();
-    let mut http = HttpServer::new_http3(Executor::default());
+    let mut http = HttpServer::new_http3(WeakScope::never());
     http.http3_mut().observation = Some(Box::new(OBSERVATION_LIMITS));
     let service = http.service(Arc::new(service));
     let server = tokio::spawn({
@@ -158,11 +158,11 @@ async fn real_h3_inspector_export_preserves_connection_and_request_evidence() {
             service.serve(connection).await
         }
     });
-    let client_endpoint = Endpoint::bind_client(Executor::default(), SocketAddress::local_ipv4(0))
+    let client_endpoint = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3Connector::builder(Executor::default())
+    let h3 = Http3Connector::builder(WeakScope::never())
         .with_endpoint(client_endpoint.clone())
         .with_tls_config(tls.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
@@ -175,7 +175,7 @@ async fn real_h3_inspector_export_preserves_connection_and_request_evidence() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .with_http3_support(h3)
         .with_default_connection_pool()
         .build_client();

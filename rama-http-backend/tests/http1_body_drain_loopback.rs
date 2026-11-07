@@ -22,8 +22,8 @@ use rama_core::{
     bytes::Bytes,
     error::{BoxError, BoxErrorExt as _},
     futures::{StreamExt as _, stream},
+    graceful::WeakScope,
     layer::MapInputLayer,
-    rt::Executor,
     service::service_fn,
 };
 use rama_http_backend::{
@@ -54,8 +54,8 @@ struct Origin {
 }
 
 async fn origin() -> Origin {
-    let exec = Executor::new();
-    let listener = TcpListener::build(exec.clone())
+    let scope = WeakScope::never();
+    let listener = TcpListener::build(scope.clone())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
@@ -69,11 +69,14 @@ async fn origin() -> Origin {
             stream
         }
     });
-    let http = HttpServer::new_http1(exec.clone()).service(service_fn({
+    let http = HttpServer::new_http1(scope.clone()).service(service_fn({
         let fail_body = fail_body.clone();
         move |request| respond(request, fail_body.clone())
     }));
-    exec.spawn_task(listener.serve(count.into_layer(http)));
+    scope
+        .try_hold()
+        .unwrap()
+        .into_spawn_task(listener.serve(count.into_layer(http)));
     Origin {
         addr,
         accepted,
@@ -137,7 +140,7 @@ fn client(
         }
         .build_connector(HttpConnector::<_, Body>::new(
             TcpConnector::new(),
-            Executor::new(),
+            WeakScope::never(),
         )),
     )
 }

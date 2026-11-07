@@ -3,8 +3,8 @@ use std::convert::Infallible;
 use crate::{Request, Response};
 use rama_core::{
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     matcher::service::{ServiceMatch, ServiceMatcher},
-    rt::Executor,
     telemetry::tracing,
 };
 use rama_http_types::proxy::is_req_http_proxy_connect;
@@ -34,14 +34,15 @@ impl Default for HttpProxyConnectRelayServiceRequestMatcher {
 
 impl HttpProxyConnectRelayServiceRequestMatcher {
     /// Create a [`HttpProxyConnectRelayServiceRequestMatcher`] whose default
-    /// fallback relay observes graceful shutdown via the given [`Executor`].
+    /// fallback relay observes graceful shutdown via the given [`WeakScope`].
     ///
-    /// Prefer this over [`Self::default`] when you have an executor available
+    /// Prefer this over [`Self::default`] when you have a scope available
     /// — it lets the proxy connect bridges unwind cleanly on shutdown.
     #[must_use]
-    pub fn default_with_exec(exec: Executor) -> Self {
+    pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            relay_svc: IoForwardService::new(exec),
+            relay_svc: IoForwardService::new(scope),
         }
     }
 }

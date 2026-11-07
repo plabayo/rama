@@ -60,10 +60,9 @@ use rama::{
         jose::EcdsaKey,
     },
     error::BoxError,
-    graceful,
+    graceful::Scope,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -116,7 +115,9 @@ async fn main() {
         .with_keylog(KeyLogIntent::Environment)
         .with_store_server_cert_chain(true);
 
-    let graceful = crate::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
@@ -124,7 +125,7 @@ async fn main() {
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(Executor::graceful(graceful.guard()))
+        .with_default_http_connector(scope.clone_weak())
         .without_connection_pool()
         .build_client()
         .boxed();
@@ -185,11 +186,12 @@ async fn main() {
         .with_cert_issuer(ServerCertIssuerData::new(issuer).with_cache_kind(CacheKind::Disabled))
         .with_alpn(smallvec![rama::net::tls::ApplicationProtocol::ACME_TLS]);
 
-    let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
+    let weak_scope = scope.clone_weak();
+    let challenge_server_handle = scope.spawn_task(async move {
         let tcp_service =
             TlsAcceptorLayer::new(tls_server_config).layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind_address("127.0.0.1:5001", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:5001", weak_scope)
             .await
             .expect("bind TCP Listener: tls")
             .serve(tcp_service)
@@ -229,9 +231,9 @@ async fn main() {
 
     // create https server using the configured certificate
 
-    graceful.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(service_fn(async || {
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
+        let http_service = HttpServer::auto(weak_scope.clone()).service(service_fn(async || {
             Ok::<_, Infallible>("hello".into_response())
         }));
 
@@ -243,15 +245,15 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind_address(ADDR, Executor::graceful(guard))
+        TcpListener::bind_address(ADDR, weak_scope)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
+    scope
+        .join_once_cancelled()
         .await
         .expect("graceful shutdown");
 }

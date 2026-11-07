@@ -1,6 +1,6 @@
 //! Endpoint construction needs secure HMAC keys even without a TLS backend.
 
-use rama_core::rt::Executor;
+use rama_core::graceful::WeakScope;
 use rama_crypto::hmac::HmacSha2;
 use rama_quic::{Endpoint, EndpointConfig};
 use rama_udp::UdpSocketConfig;
@@ -12,7 +12,7 @@ fn localhost() -> SocketAddr {
 
 #[tokio::test]
 async fn client_binding_generates_a_key_without_a_tls_provider() {
-    let endpoint = Endpoint::bind_client(Executor::new(), localhost())
+    let endpoint = Endpoint::bind_client(WeakScope::never(), localhost())
         .await
         .unwrap();
     assert_ne!(endpoint.local_addr().unwrap().port(), 0);
@@ -23,14 +23,14 @@ async fn client_binding_generates_a_key_without_a_tls_provider() {
 async fn prepared_client_sockets_preserve_their_bound_addresses() {
     let socket = UdpSocket::bind(localhost()).unwrap();
     let address = socket.local_addr().unwrap();
-    let endpoint = Endpoint::new_client_with_std_socket(Executor::new(), socket).unwrap();
+    let endpoint = Endpoint::new_client_with_std_socket(WeakScope::never(), socket).unwrap();
     assert_eq!(endpoint.local_addr().unwrap(), address);
     endpoint.shutdown().await;
 
     let socket = UdpSocket::bind(localhost()).unwrap();
     let address = socket.local_addr().unwrap();
     let prepared = UdpSocketConfig::default().wrap_std(socket).unwrap();
-    let endpoint = Endpoint::new_client_with_packet_socket(Executor::new(), prepared).unwrap();
+    let endpoint = Endpoint::new_client_with_packet_socket(WeakScope::never(), prepared).unwrap();
     assert_eq!(endpoint.local_addr().unwrap(), address);
     endpoint.shutdown().await;
 }
@@ -41,7 +41,7 @@ async fn builder_accepts_explicit_sha256_and_sha512_reset_keys() {
         HmacSha2::new_256(&[0x4b; 32]),
         HmacSha2::new_512(&[0x4b; 64]),
     ] {
-        let endpoint = Endpoint::build(Executor::new())
+        let endpoint = Endpoint::build(WeakScope::never())
             .with_config(EndpointConfig::new(key))
             .bind_address(localhost())
             .await

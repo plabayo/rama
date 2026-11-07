@@ -9,8 +9,8 @@ use crate::tproxy::{
 };
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::graceful::WeakScope;
 use rama_core::io::BridgeIo;
-use rama_core::rt::Executor;
 use rama_core::service::{Service, service_fn};
 use std::convert::Infallible;
 use std::sync::{
@@ -149,7 +149,7 @@ impl TransparentProxyHandler for DecisionProbe {
 
     async fn match_tcp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         _meta: TransparentProxyFlowMeta,
     ) -> FlowAction<
         impl Service<BridgeIo<crate::TcpFlow, crate::NwTcpStream>, Output = (), Error = Infallible>,
@@ -161,7 +161,7 @@ impl TransparentProxyHandler for DecisionProbe {
 
     async fn match_udp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         _meta: TransparentProxyFlowMeta,
     ) -> FlowAction<impl Service<crate::UdpFlow, Output = (), Error = Infallible>> {
         self.udp_calls.fetch_add(1, Ordering::Relaxed);
@@ -374,7 +374,7 @@ impl TransparentProxyHandler for SlowMatchHandler {
 
     fn match_tcp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<
@@ -402,7 +402,7 @@ impl TransparentProxyHandler for SlowMatchHandler {
 
     fn match_udp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<impl Service<crate::UdpFlow, Output = (), Error = Infallible>>,

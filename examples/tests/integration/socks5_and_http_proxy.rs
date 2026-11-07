@@ -4,6 +4,7 @@ use super::utils;
 
 use rama::{
     Layer,
+    graceful::WeakScope,
     http::{
         BodyExtractExt, layer::error_handling::ErrorHandlerLayer, server::HttpServer,
         service::web::Router,
@@ -15,7 +16,6 @@ use rama::{
         client::ProxyRoute,
         user::{Basic, ProxyCredential},
     },
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
     utils::str::non_empty_str,
@@ -95,7 +95,7 @@ async fn test_http_client_over_socks5_proxy_connect(
 }
 
 async fn spawn_http_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let tcp_service = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .expect("bind HTTP server on open port");
 
@@ -105,7 +105,7 @@ async fn spawn_http_server() -> SocketAddress {
         .into();
 
     let app = Router::new().with_get("/ping", "pong");
-    let server = HttpServer::auto(Executor::default())
+    let server = HttpServer::auto(WeakScope::never())
         .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     tokio::spawn(tcp_service.serve(server));

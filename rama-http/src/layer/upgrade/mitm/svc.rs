@@ -11,9 +11,9 @@ use rama_core::{
     error::{BoxError, ErrorExt as _},
     error_sink::{ErrorSink, TracingErrorSink},
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     io::BridgeIo,
     matcher::service::{ServiceMatch, ServiceMatcher},
-    rt::Executor,
     telemetry::tracing::{self, Instrument as _},
 };
 
@@ -31,7 +31,7 @@ use rama_core::{
 ///
 /// See [`HttpUpgradeMitmRelayExtensions`] for an example of selecting metadata.
 pub struct HttpUpgradeMitmRelay<M, S> {
-    exec: Executor,
+    scope: WeakScope,
     nested_matcher_svc: M,
     inner_svc: S,
     error_sink: Arc<dyn ErrorSink>,
@@ -41,9 +41,10 @@ impl<M, S> HttpUpgradeMitmRelay<M, S> {
     #[inline(always)]
     #[must_use]
     /// Create a new [`HttpUpgradeMitmRelay`].
-    pub fn new(exec: Executor, nested_matcher_svc: M, inner_svc: S) -> Self {
+    pub fn new(scope: impl Into<WeakScope>, nested_matcher_svc: M, inner_svc: S) -> Self {
+        let scope = scope.into();
         Self {
-            exec,
+            scope,
             nested_matcher_svc,
             inner_svc,
             error_sink: Arc::new(TracingErrorSink::default()),
@@ -64,7 +65,7 @@ impl<M, S> HttpUpgradeMitmRelay<M, S> {
 impl<M: fmt::Debug, S: fmt::Debug> fmt::Debug for HttpUpgradeMitmRelay<M, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpUpgradeMitmRelay")
-            .field("exec", &self.exec)
+            .field("scope", &self.scope)
             .field("nested_matcher_svc", &self.nested_matcher_svc)
             .field("inner_svc", &self.inner_svc)
             .finish()
@@ -161,33 +162,41 @@ where
                 let error_sink = self.error_sink.clone();
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
-                self.exec.spawn_task(async move {
-                    tracing::debug!(
-                        "HttpUpgradeMitmRelay: spawned task active"
-                    );
-
-                    let (ingress_stream, egress_stream) = match tokio::try_join!(on_upgrade_ingress, on_upgrade_egress) {
-                        Ok(streams) => streams,
-                        Err(err) => {
-                            // routed to the sink instead of swallowed: the relay
-                            // task is detached, so this is its only error outlet.
-                            error_sink.sink_error(
-                                err.context("mitm relay: upgrade failed on one or both sides"),
+                match self.scope.try_hold() {
+                    Ok(scope) => {
+                        scope.into_spawn_task(async move {
+                            tracing::debug!(
+                                "HttpUpgradeMitmRelay: spawned task active"
                             );
-                            return;
-                        }
-                    };
 
-                    ingress_stream.extensions().extend(&ingress_extensions.0);
-                    egress_stream.extensions().extend(&egress_extensions.0);
+                            let (ingress_stream, egress_stream) = match tokio::try_join!(on_upgrade_ingress, on_upgrade_egress) {
+                                Ok(streams) => streams,
+                                Err(err) => {
+                                    // routed to the sink instead of swallowed: the relay
+                                    // task is detached, so this is its only error outlet.
+                                    error_sink.sink_error(
+                                        err.context("mitm relay: upgrade failed on one or both sides"),
+                                    );
+                                    return;
+                                }
+                            };
 
-                    tracing::trace!(
-                        "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"
-                    );
-                    if let Err(err) = relay_svc.serve(BridgeIo(ingress_stream, egress_stream)).await {
-                        error_sink.sink_error(err.context("mitm relay handler failed"));
+                            ingress_stream.extensions().extend(&ingress_extensions.0);
+                            egress_stream.extensions().extend(&egress_extensions.0);
+
+                            tracing::trace!(
+                                "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"
+                            );
+                            if let Err(err) = relay_svc.serve(BridgeIo(ingress_stream, egress_stream)).await {
+                                error_sink.sink_error(err.context("mitm relay handler failed"));
+                            }
+                        }.instrument(relay_upgrade_span));
                     }
-                }.instrument(relay_upgrade_span));
+                    Err(refused) => {
+                        self.error_sink
+                            .sink_error(refused.context("mitm relay not spawned"));
+                    }
+                }
 
                 Ok(res.map(Body::new))
             } else {
@@ -280,7 +289,7 @@ mod tests {
                 async { Ok::<_, Infallible>(()) }
             });
             let matcher = MatcherServicePair::new(true, MatcherServicePair::new(true, relay));
-            let res = HttpUpgradeMitmRelay::new(Executor::new(), matcher, upstream)
+            let res = HttpUpgradeMitmRelay::new(WeakScope::never(), matcher, upstream)
                 .serve(req)
                 .await
                 .unwrap();
@@ -340,7 +349,7 @@ mod tests {
             });
             let matcher = MatcherServicePair::new(true, MatcherServicePair::new(true, relay));
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            let service = HttpUpgradeMitmRelay::new(Executor::new(), matcher, upstream)
+            let service = HttpUpgradeMitmRelay::new(WeakScope::never(), matcher, upstream)
                 .with_error_sink(move |error: BoxError| {
                     tx.send(error.to_string()).unwrap();
                 });

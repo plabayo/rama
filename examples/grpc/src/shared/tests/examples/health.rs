@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use rama::{
+    graceful::WeakScope,
     http::{
         grpc::{
             Code, Request,
@@ -19,7 +20,6 @@ use rama::{
         server::HttpServer,
     },
     net::uri::Uri,
-    rt::Executor,
     stream::StreamExt,
     telemetry::tracing,
 };
@@ -46,7 +46,7 @@ async fn health_server_via_router() {
         .with_service(GreeterServer::new(greeter))
         .with_service(health_service);
 
-    let server = HttpServer::auto(Executor::default()).service(grpc_svc);
+    let server = HttpServer::auto(WeakScope::never()).service(grpc_svc);
 
     // hello world capabilities
 

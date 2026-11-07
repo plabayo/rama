@@ -5,7 +5,7 @@
 
 #![expect(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
 
-use rama_core::{ServiceInput, bytes::Bytes, rt::Executor};
+use rama_core::{ServiceInput, bytes::Bytes, graceful::WeakScope};
 use rama_http::{Body, Request};
 use rama_http_core::{
     body::Incoming,
@@ -40,7 +40,7 @@ async fn connect_with(
             .unwrap();
         assert!(origin_tx.send(origin).is_ok(), "test awaits the origin");
     });
-    let (client, conn) = http2::handshake(Executor::new(), ServiceInput::new(client_io))
+    let (client, conn) = http2::handshake(WeakScope::never(), ServiceInput::new(client_io))
         .await
         .unwrap();
     let conn = tokio::spawn(conn);
@@ -207,7 +207,7 @@ async fn locally_detected_connection_error_is_never_refused() {
     const SETTINGS: u8 = 0x4;
 
     let (client_io, mut origin) = tokio::io::duplex(64 * 1024);
-    let (client, conn) = http2::handshake(Executor::new(), ServiceInput::new(client_io))
+    let (client, conn) = http2::handshake(WeakScope::never(), ServiceInput::new(client_io))
         .await
         .unwrap();
     tokio::spawn(conn);

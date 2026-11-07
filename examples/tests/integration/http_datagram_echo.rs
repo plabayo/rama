@@ -5,6 +5,7 @@ use rama::{
     bytes::Bytes,
     crypto::pem::PemEncode as _,
     extensions::ExtensionsRef as _,
+    graceful::WeakScope,
     http::{
         Body, Request, Version,
         client::{EasyHttpConnectorBuilder, Http3Connector},
@@ -15,7 +16,6 @@ use rama::{
         io::upgrade::handle_upgrade,
         proto::ext::{HttpDatagrams, Protocol},
     },
-    rt::Executor,
     tls::{client::TlsClientConfig, server::ServerAuthData},
     utils::fs::tempdir,
 };
@@ -101,9 +101,9 @@ async fn test_http_datagram_echo() {
     #[cfg(all(not(feature = "rustls"), feature = "boring"))]
     let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
     let client = client_builder
-        .with_default_http_connector(Executor::new())
+        .with_default_http_connector(WeakScope::never())
         .with_http3_support(
-            Http3Connector::builder(Executor::new())
+            Http3Connector::builder(WeakScope::never())
                 .with_tls_config(tls)
                 .build()
                 .await

@@ -52,11 +52,11 @@ fn hardened_runtime_without_executable_memory_entitlements() {
                 .unwrap();
             #[cfg(not(feature = "js-disk-cache"))]
             blueprint.warm_up().unwrap();
-            let executor = tokio::runtime::Builder::new_current_thread()
+            let scope = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
-            executor.block_on(async {
+            scope.block_on(async {
                 let resolver = rama_pac::PacResolver::builder()
                     .with_backend(rama_js::JsBackend::Interpreter)
                     .build_static(representative::SCRIPT)

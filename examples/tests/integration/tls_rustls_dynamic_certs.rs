@@ -4,6 +4,7 @@ use rama::{
     crypto::pki_types::{CertificateDer, pem::PemObject},
     error::BoxError,
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         Response, StreamingBody,
         client::EasyHttpWebClient,
@@ -14,7 +15,6 @@ use rama::{
     },
     layer::MapResultLayer,
     net::address::Domain,
-    rt::Executor,
     tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
 };
 
@@ -84,7 +84,7 @@ where
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
 
