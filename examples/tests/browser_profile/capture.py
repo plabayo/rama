@@ -151,13 +151,15 @@ def capture_tls(args):
             from safari import fixture_environment
             discovery = list(server_command)
             discovery[discovery.index("--http-version") + 1] = "h3"
-            discovery += ["--h3-bootstrap-bind", f"127.0.0.1:{port}"]
+            # Safari may still reach discovery over QUIC: give it no ticket to resume later.
+            discovery += [
+                "--h3-bootstrap-bind", f"127.0.0.1:{port}", "--h3-no-session-resumption",
+            ]
             # No discovery requests or key material enter the measured database/capture.
             with running(discovery, root / "discovery.log",
                          fixture_environment(os.environ, key, server_certificate)) as warmup:
                 wait_ready(warmup, root / "discovery.log", lambda text: "service ready" in text)
-                # The retry marker suppresses the timed reload. Learn Alt-Svc on
-                # TCP without opening an unmeasured QUIC session or obtaining tickets.
+                # The retry marker suppresses the timed reload while Safari learns Alt-Svc.
                 browser.get(f"https://localhost:{port}/?h3-bootstrap=1")
                 require(browser.title == "ラマ | HTTP/3", "missing Safari discovery response")
                 browser.delete_all_cookies()
