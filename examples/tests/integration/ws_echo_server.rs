@@ -20,7 +20,7 @@ async fn test_ws_echo_server() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner.get("http://127.0.0.1:62032").send().await.unwrap();
+    let index_response = runner.get("http://127.0.0.1:12032").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -35,7 +35,7 @@ async fn test_ws_echo_server() {
     // test the actual ws content
 
     let mut ws = runner
-        .websocket("ws://127.0.0.1:62032/echo")
+        .websocket("ws://127.0.0.1:12032/echo")
         .handshake(Extensions::default())
         .await
         .unwrap();
@@ -55,7 +55,7 @@ async fn test_ws_echo_server() {
     let blocking_client = BlockingHttpClient::try_new(runner.client.clone()).unwrap();
     std::thread::spawn(move || {
         let mut ws = blocking_client
-            .websocket("ws://127.0.0.1:62032/echo")
+            .websocket("ws://127.0.0.1:12032/echo")
             .try_handshake()
             .unwrap();
         ws.send_message("hello blocking world".into()).unwrap();

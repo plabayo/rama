@@ -10,10 +10,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62041`. You open the url in your browser to easily interact:
+//! The server will start and listen on `:12041`. You open the url in your browser to easily interact:
 //!
 //! ```sh
-//! open http://127.0.0.1:62041/orders
+//! open http://127.0.0.1:12041/orders
 //! ```
 //!
 //! Your browser will show the text in raw format.
@@ -93,7 +93,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62041), exec.clone())
+    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(12041), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");

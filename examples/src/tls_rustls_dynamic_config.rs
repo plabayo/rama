@@ -11,7 +11,7 @@
 //!
 //! Example certificate:
 //! ```sh
-//! curl -vik --resolve example:64804:127.0.0.1 https://example:64804
+//! curl -vik --resolve example:14804:127.0.0.1 https://example:14804
 //! ```
 //! Output
 //! ```
@@ -25,7 +25,7 @@
 //!
 //! Second example certificate:
 //! ```sh
-//! curl -vik --resolve second.example:64804:127.0.0.1 https://second.example:64804
+//! curl -vik --resolve second.example:14804:127.0.0.1 https://second.example:14804
 //! ```
 //! Output
 //! ```
@@ -39,12 +39,12 @@
 //!
 //! Connection should fail if no matches are found:
 //! ```sh
-//! curl -vik https://127.0.0.1:64804
+//! curl -vik https://127.0.0.1:14804
 //! ```
 //! Output
 //! ```
 //! * Closing connection
-//! curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to 127.0.0.1:64804
+//! curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to 127.0.0.1:14804
 //! ```
 
 // rama provides everything out of the box to build a TLS termination proxy with a dynamic rustls config
@@ -101,7 +101,7 @@ async fn main() {
     let tls_config = TlsServerConfig::new().with_dynamic_config(dynamic_config_provider);
 
     let bind_address = std::env::var("RAMA_TLS_RUSTLS_DYNAMIC_CONFIG_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:64804".to_owned());
+        .unwrap_or_else(|_| "127.0.0.1:14804".to_owned());
 
     // create http server
     shutdown.spawn_task_fn(async move |guard| {

@@ -11,7 +11,7 @@ async fn test_http_service_fs() {
     let runner = utils::ExampleRunner::interactive(utils::example!("http_service_fs"));
 
     let file_content = runner
-        .get("http://127.0.0.1:62009/test-files/index.html")
+        .get("http://127.0.0.1:12009/test-files/index.html")
         .send()
         .await
         .unwrap()

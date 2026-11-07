@@ -34,13 +34,13 @@
 //! Select `quic,boring`, `quic,rustls,ring`, or `quic,rustls,aws-lc` for the TLS backend.
 //!
 //! cargo run -p rama-examples --bin quic_terminating_relay --features=quic,rustls,ring -- \
-//!     --upstream 127.0.0.1:62000 --upstream-ca origin-cert.pem \
+//!     --upstream 127.0.0.1:12000 --upstream-ca origin-cert.pem \
 //!     --cert relay-cert.pem --key relay-key.pem
 //! ```
 //!
 //! Required: `--upstream`, `--upstream-ca`, `--cert` and `--key`. The rest have defaults:
 //!
-//! - `--listen <addr>`: where clients connect. Default `127.0.0.1:62060`.
+//! - `--listen <addr>`: where clients connect. Default `127.0.0.1:12060`.
 //! - `--upstream <addr>`: the origin. Required.
 //! - `--upstream-ca <pem>`: the certificate the origin presents. Required.
 //! - `--max-connections <n>`: client connections carried at once. Default 64.
@@ -56,7 +56,7 @@
 //! # Expected output
 //!
 //! ```
-//! INFO quic_terminating_relay: relay: listening on 127.0.0.1:62060, upstream 127.0.0.1:62000
+//! INFO quic_terminating_relay: relay: listening on 127.0.0.1:12060, upstream 127.0.0.1:12000
 //! INFO quic_terminating_relay: relay: a client connection, opening one upstream of its own
 //! INFO quic_terminating_relay: relay: stream relayed, 11 up and 15 down
 //! ```
@@ -160,7 +160,7 @@ struct Settings {
 impl Settings {
     /// Read the arguments. An unknown or incomplete one is an error, not a default.
     fn from_args() -> Result<Self, BoxError> {
-        let mut listen = "127.0.0.1:62060".parse::<SocketAddr>()?;
+        let mut listen = "127.0.0.1:12060".parse::<SocketAddr>()?;
         let (mut upstream, mut upstream_ca) = (None, None);
         let mut upstream_name = DEFAULT_UPSTREAM_NAME.to_owned();
         let (mut cert, mut key) = (None, None);

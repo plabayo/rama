@@ -30,7 +30,7 @@ async fn test_http_sse_datastar_hello() {
     // basic html page and script sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner.get("http://127.0.0.1:62051").send().await.unwrap();
+    let index_response = runner.get("http://127.0.0.1:12051").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -43,7 +43,7 @@ async fn test_http_sse_datastar_hello() {
     assert!(index_content.contains(r##"<h1>🦙💬 "hello 🚀 datastar"</h1>"##));
 
     let script_rsponse = runner
-        .get("http://127.0.0.1:62051/assets/datastar.js")
+        .get("http://127.0.0.1:12051/assets/datastar.js")
         .send()
         .await
         .unwrap();
@@ -59,7 +59,7 @@ async fn test_http_sse_datastar_hello() {
     assert!(script_content.contains(r##"// Datastar v1.0.4"##));
 
     let source_map_response = runner
-        .get("http://127.0.0.1:62051/assets/datastar.js.map")
+        .get("http://127.0.0.1:12051/assets/datastar.js.map")
         .send()
         .await
         .unwrap();
@@ -79,7 +79,7 @@ async fn test_http_sse_datastar_hello() {
     // hotreload is dev-only: the example (built with this test's
     // profile) only routes it with debug assertions on
     let hotreload_response = runner
-        .get("http://127.0.0.1:62051/hotreload")
+        .get("http://127.0.0.1:12051/hotreload")
         .send()
         .await
         .unwrap();
@@ -150,7 +150,7 @@ async fn test_http_sse_datastar_hello() {
     let mut signal_counter = 0;
 
     let mut stream = runner
-        .get("http://127.0.0.1:62051/hello-world")
+        .get("http://127.0.0.1:12051/hello-world")
         .send()
         .await
         .unwrap()
@@ -159,7 +159,7 @@ async fn test_http_sse_datastar_hello() {
 
     // start animation so we get it streamed in next response
     let response = runner
-        .post("http://127.0.0.1:62051/start")
+        .post("http://127.0.0.1:12051/start")
         .json(&json!({
             "delay": 1,
         }))

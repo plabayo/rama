@@ -35,7 +35,7 @@ use rama::{
 mod echo;
 use echo::{EchoRequest, echo_client::EchoClient};
 
-const ORIGIN: &str = "http://127.0.0.1:62071";
+const ORIGIN: &str = "http://127.0.0.1:12071";
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {

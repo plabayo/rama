@@ -11,7 +11,7 @@ use rama::{
     tls::boring::server::TlsAcceptorLayer,
 };
 
-const ADDRESS: &str = "127.0.0.1:62074";
+const ADDRESS: &str = "127.0.0.1:12074";
 const MESSAGE: &str = "Hello from the blocking WSS client test.";
 
 #[tokio::test]

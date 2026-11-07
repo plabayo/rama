@@ -13,7 +13,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62035`.
+//! The server will start and listen on `:12035`.
 //! Open it in the browser to see it in action or use `rama` cli client to test it.
 //!
 //! Note that firefox does not support h2 bootstrapping of WebSockets,
@@ -82,9 +82,9 @@ async fn main() {
             .with_session_resumption(true)
             .into_layer(server);
 
-        info!("open web echo chat @ https://127.0.0.1:62035");
-        info!("or connect directly to wss://127.0.0.1:62035/echo (via 'rama')");
-        TcpListener::bind_address("127.0.0.1:62035", Executor::graceful(guard))
+        info!("open web echo chat @ https://127.0.0.1:12035");
+        info!("or connect directly to wss://127.0.0.1:12035/echo (via 'rama')");
+        TcpListener::bind_address("127.0.0.1:12035", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
             .serve(tls_server)

@@ -1,4 +1,4 @@
-//! An example to showcase how to build directly a HTTP server that listens on `127.0.0.1:62007`
+//! An example to showcase how to build directly a HTTP server that listens on `127.0.0.1:12007`
 //! and returns a JSON response with the method and path of the request.
 //!
 //! # Run the example
@@ -9,10 +9,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62007`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12007`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62007
+//! curl -v http://127.0.0.1:12007
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the method and path of the request.
@@ -36,8 +36,8 @@ async fn main() {
     HttpServer::default()
         .listen(
             // The below string type will also work
-            // "127.0.0.1:62007",
-            SocketAddress::local_ipv4(62007),
+            // "127.0.0.1:12007",
+            SocketAddress::local_ipv4(12007),
             service_fn(async |req: Request| {
                 Ok(Json(json!({
                     "method": req.method().as_str(),

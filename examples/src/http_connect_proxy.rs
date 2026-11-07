@@ -11,20 +11,20 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62001`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12001`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62001 --proxy-user 'john:secret' http://www.example.com/
-//! curl -v -x http://127.0.0.1:62001 --proxy-user 'john-red-blue:secret' http://www.example.com/
-//! curl -v -x http://127.0.0.1:62001 --proxy-user 'john-priority-high-red-blue:secret' http://www.example.com/
-//! curl -v -x http://127.0.0.1:62001 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x http://127.0.0.1:12001 --proxy-user 'john:secret' http://www.example.com/
+//! curl -v -x http://127.0.0.1:12001 --proxy-user 'john-red-blue:secret' http://www.example.com/
+//! curl -v -x http://127.0.0.1:12001 --proxy-user 'john-priority-high-red-blue:secret' http://www.example.com/
+//! curl -v -x http://127.0.0.1:12001 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 //! The pseudo API can be used as follows:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62001 --proxy-user 'john:secret' http://echo.example.internal/foo/bar
-//! curl -v -x http://127.0.0.1:62001 --proxy-user 'john-red-blue-priority-low:secret' http://echo.example.internal/foo/bar
-//! curl -v -x http://127.0.0.1:62001 --proxy-user 'john:secret' -XPOST http://echo.example.internal/lucky/7
+//! curl -v -x http://127.0.0.1:12001 --proxy-user 'john:secret' http://echo.example.internal/foo/bar
+//! curl -v -x http://127.0.0.1:12001 --proxy-user 'john-red-blue-priority-low:secret' http://echo.example.internal/foo/bar
+//! curl -v -x http://127.0.0.1:12001 --proxy-user 'john:secret' -XPOST http://echo.example.internal/lucky/7
 //! ```
 //!
 //! You should see in all the above examples the responses from the server.
@@ -32,7 +32,7 @@
 //! If you want to see the HTTP traffic in action you can of course also use telnet instead:
 //!
 //! ```sh
-//! telnet 127.0.0.1 62001
+//! telnet 127.0.0.1 12001
 //! ```
 //!
 //! and then type:
@@ -53,7 +53,7 @@
 //! You should see the same response as when running:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62001 --proxy-user 'john:secret' http://www.example.com/
+//! curl -v -x http://127.0.0.1:12001 --proxy-user 'john:secret' http://www.example.com/
 //! ```
 
 #![expect(
@@ -119,7 +119,7 @@ async fn main() {
 
     graceful.spawn_task_fn(async move |guard| {
                 let exec = Executor::graceful(guard);
-        let tcp_service = TcpListener::build(exec.clone()).bind_address("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
+        let tcp_service = TcpListener::build(exec.clone()).bind_address("127.0.0.1:12001").await.expect("bind tcp proxy to 127.0.0.1:12001");
 
         let http_service = HttpServer::auto(exec.clone())
             .service((

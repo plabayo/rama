@@ -6,7 +6,7 @@ async fn test_http_and_grpc_job_service() {
     utils::init_tracing();
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("http_grpc_job_server"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62073)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12073)).await;
 
     // The client demo is the test driver: it calls HTTP health, gRPC health, submits and
     // streams a job over gRPC, then reads the completed job back over HTTP.

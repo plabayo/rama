@@ -54,7 +54,7 @@ async fn test_http_mitm_relay_proxy() {
     tokio::spawn(async {
         HttpServer::auto(Executor::default())
             .listen(
-                "127.0.0.1:63015",
+                "127.0.0.1:13015",
                 (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(Router::new().with_get(
                     "/{*any}",
                     async |req: Request| {
@@ -72,7 +72,7 @@ async fn test_http_mitm_relay_proxy() {
     tokio::spawn(async {
         HttpServer::new_http1(Executor::default())
             .listen(
-                "127.0.0.1:63016",
+                "127.0.0.1:13016",
                 (
                     ArcLayer::new(),
                     ConsumeErrLayer::default(),
@@ -173,7 +173,7 @@ async fn test_http_mitm_relay_proxy() {
         );
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63017", Executor::default())
+        TcpListener::bind_address("127.0.0.1:13017", Executor::default())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)
@@ -194,7 +194,7 @@ async fn test_http_mitm_relay_proxy() {
     );
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63018", Executor::default())
+        TcpListener::bind_address("127.0.0.1:13018", Executor::default())
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener: secure web service (for h1 traffic): {e}")
@@ -206,14 +206,14 @@ async fn test_http_mitm_relay_proxy() {
     let mut runner =
         utils::ExampleRunner::interactive(utils::example!("http_mitm_relay_proxy_boring"));
     runner
-        .wait_for_tcp_within(([127, 0, 0, 1], 62049), Duration::from_secs(60))
+        .wait_for_tcp_within(([127, 0, 0, 1], 12049), Duration::from_secs(60))
         .await;
 
-    let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62049").unwrap();
+    let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:12049").unwrap();
 
     // test http request proxy flow
     let result = runner
-        .get("http://127.0.0.1:63015/foo/bar")
+        .get("http://127.0.0.1:13015/foo/bar")
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
@@ -241,7 +241,7 @@ async fn test_http_mitm_relay_proxy() {
             ),
         )
         .into_layer(EasyHttpWebClient::default())
-        .get("http://127.0.0.1:63016/response-stream")
+        .get("http://127.0.0.1:13016/response-stream")
         .version(http_version)
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
@@ -260,7 +260,7 @@ async fn test_http_mitm_relay_proxy() {
 
     // test https request proxy flow (without ALPN)
     let result = runner
-        .get("https://127.0.0.1:63017/foo/bar")
+        .get("https://127.0.0.1:13017/foo/bar")
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
@@ -275,7 +275,7 @@ async fn test_http_mitm_relay_proxy() {
     // response alone, then a browser-like list of separate cookie fields as well.
     for cookie_fields in [0, 30] {
         let mut request = runner
-            .get("https://127.0.0.1:63017/large-headers")
+            .get("https://127.0.0.1:13017/large-headers")
             .version(Version::HTTP_2)
             .extension(TlsAlpn(smallvec![ApplicationProtocol::HTTP_2]))
             .extension(ProxyRoute::Proxy(proxy_address.clone()))
@@ -307,7 +307,7 @@ async fn test_http_mitm_relay_proxy() {
         Some(ApplicationProtocol::HTTP_2),
     ] {
         let builder = runner
-            .get("https://127.0.0.1:63018/ping")
+            .get("https://127.0.0.1:13018/ping")
             .extension(ProxyRoute::Proxy(proxy_address.clone()));
 
         let builder = if let Some(app_protocol) = desired_app_protocol {

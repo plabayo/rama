@@ -13,10 +13,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62013`. You can use your browser to interact with the service:
+//! The server will start and listen on `:12013`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://127.0.0.1:62013
+//! open http://127.0.0.1:12013
 //! ```
 //!
 //! You should see a the homepage in your browser.
@@ -74,7 +74,7 @@ async fn main() {
         )
         .init();
 
-    let addr = "0.0.0.0:62013";
+    let addr = "0.0.0.0:12013";
     tracing::info!("running service at: {addr}");
 
     let state = Arc::new(AppState::default());

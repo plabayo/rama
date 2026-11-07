@@ -71,7 +71,7 @@ use jobs::{
     job_service_server::{JobService, JobServiceServer},
 };
 
-const ADDR: SocketAddress = SocketAddress::local_ipv4(62073);
+const ADDR: SocketAddress = SocketAddress::local_ipv4(12073);
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {

@@ -20,7 +20,7 @@ async fn test_ws_echo_server_with_compression() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner.get("http://127.0.0.1:62038").send().await.unwrap();
+    let index_response = runner.get("http://127.0.0.1:12038").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -35,7 +35,7 @@ async fn test_ws_echo_server_with_compression() {
     // test the actual ws content w/ compression
 
     let mut ws = runner
-        .websocket("ws://127.0.0.1:62038/echo")
+        .websocket("ws://127.0.0.1:12038/echo")
         .with_config(
             WebSocketConfig::default().with_per_message_deflate(PerMessageDeflateConfig::default()),
         )
@@ -58,7 +58,7 @@ async fn test_ws_echo_server_with_compression() {
     // test the actual ws content w/o compression
 
     let mut ws = runner
-        .websocket("ws://127.0.0.1:62038/echo")
+        .websocket("ws://127.0.0.1:12038/echo")
         .handshake(Extensions::default())
         .await
         .unwrap();

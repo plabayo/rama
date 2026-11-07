@@ -21,7 +21,7 @@ async fn test_https_connect_proxy() {
     tokio::spawn(async {
         HttpServer::auto(Executor::default())
             .listen(
-                "127.0.0.1:63002",
+                "127.0.0.1:13002",
                 (
                     #[cfg(feature = "compression")]
                     CompressionLayer::new(),
@@ -40,13 +40,13 @@ async fn test_https_connect_proxy() {
     });
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("https_connect_proxy"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62016)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12016)).await;
 
     // test regular proxy flow
     let result = runner
-        .get("http://127.0.0.1:63002/foo/bar")
+        .get("http://127.0.0.1:13002/foo/bar")
         .extension(ProxyRoute::Proxy(
-            ProxyAddress::try_from("https://john:secret@127.0.0.1:62016").unwrap(),
+            ProxyAddress::try_from("https://john:secret@127.0.0.1:12016").unwrap(),
         ))
         .typed_header(Accept::json())
         .send()

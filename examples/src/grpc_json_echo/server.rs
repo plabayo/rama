@@ -13,7 +13,7 @@
 //! cargo run -p rama-examples --bin grpc_json_echo_server --features=grpc,http-full
 //! ```
 //!
-//! The server listens on `127.0.0.1:62071`. Call it with the client example:
+//! The server listens on `127.0.0.1:12071`. Call it with the client example:
 //!
 //! ```sh
 //! cargo run -p rama-examples --bin grpc_json_echo_client --features=grpc,http-full
@@ -28,7 +28,7 @@
 //! ```sh
 //! printf '\x00\x00\x00\x00\x13{"message":"hello"}' | curl -s --http2-prior-knowledge \
 //!     -H 'content-type: application/grpc' --data-binary @- --output - \
-//!     http://127.0.0.1:62071/rama.examples.echo.v1.Echo/UnaryEcho | xxd
+//!     http://127.0.0.1:12071/rama.examples.echo.v1.Echo/UnaryEcho | xxd
 //! ```
 
 use rama::{
@@ -49,7 +49,7 @@ use rama::{
 mod echo;
 use echo::{EchoRequest, EchoResponse, echo_server};
 
-const ADDR: SocketAddress = SocketAddress::local_ipv4(62071);
+const ADDR: SocketAddress = SocketAddress::local_ipv4(12071);
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {

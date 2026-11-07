@@ -57,8 +57,8 @@ cleanup() {
 trap 'rc=$?; cleanup; exit $rc' EXIT
 trap 'log "received signal, shutting down"; exit 130' INT TERM HUP
 
-RAMA_FASTCGI_PHP_LISTEN="${RAMA_FASTCGI_PHP_LISTEN:-127.0.0.1:62443}"
-RAMA_FASTCGI_PHP_BACKEND="${RAMA_FASTCGI_PHP_BACKEND:-127.0.0.1:62444}"
+RAMA_FASTCGI_PHP_LISTEN="${RAMA_FASTCGI_PHP_LISTEN:-127.0.0.1:12443}"
+RAMA_FASTCGI_PHP_BACKEND="${RAMA_FASTCGI_PHP_BACKEND:-127.0.0.1:12444}"
 SCRIPT_PATH="$HERE/app.php"
 
 # ── 1) Boot php-fpm on TCP ───────────────────────────────────────────────

@@ -11,11 +11,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62016`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12016`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl --proxy-insecure -v -x https://127.0.0.1:62016 --proxy-user 'john:secret' http://www.example.com
-//! curl --proxy-insecure -k -v https://127.0.0.1:62016 --proxy-user 'john:secret' https://www.example.com
+//! curl --proxy-insecure -v -x https://127.0.0.1:12016 --proxy-user 'john:secret' http://www.example.com
+//! curl --proxy-insecure -k -v https://127.0.0.1:12016 --proxy-user 'john:secret' https://www.example.com
 //! ```
 //!
 //! You should see in both cases the responses from the example domains.
@@ -93,9 +93,9 @@ async fn main() {
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard);
         let tcp_service = TcpListener::build(exec.clone())
-            .bind_address("127.0.0.1:62016")
+            .bind_address("127.0.0.1:12016")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62016");
+            .expect("bind tcp proxy to 127.0.0.1:12016");
 
         let http_service = HttpServer::auto(exec.clone()).service(
             (

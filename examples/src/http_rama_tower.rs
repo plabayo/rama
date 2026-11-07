@@ -6,11 +6,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62020`. You can use your browser to interact with the service:
+//! The server will start and listen on `:12020`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://127.0.0.1:62020
-//! curl -v http://127.0.0.1:62020
+//! open http://127.0.0.1:12020
+//! curl -v http://127.0.0.1:12020
 //! ```
 //!
 //! You should see the homepage in your browser with the title "Rama + Tower".
@@ -59,7 +59,7 @@ use std::{
 };
 use tokio::time::Sleep;
 
-const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62020);
+const ADDRESS: SocketAddress = SocketAddress::local_ipv4(12020);
 
 #[tokio::main]
 async fn main() {

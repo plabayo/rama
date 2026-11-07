@@ -21,7 +21,7 @@ async fn test_ws_tls_server() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner.get("https://127.0.0.1:62034").send().await.unwrap();
+    let index_response = runner.get("https://127.0.0.1:12034").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -39,7 +39,7 @@ async fn test_ws_tls_server() {
     extensions.insert(TlsAlpn::http_1());
 
     let mut ws = runner
-        .websocket("wss://127.0.0.1:62034/echo")
+        .websocket("wss://127.0.0.1:12034/echo")
         .handshake(extensions)
         .await
         .unwrap();
@@ -62,7 +62,7 @@ async fn test_ws_tls_server() {
         extensions.insert(TlsAlpn::http_1());
 
         let mut ws = blocking_client
-            .websocket("wss://127.0.0.1:62034/echo")
+            .websocket("wss://127.0.0.1:12034/echo")
             .try_handshake_with_extensions(extensions)
             .unwrap();
         ws.send_message("hello blocking TLS world".into()).unwrap();

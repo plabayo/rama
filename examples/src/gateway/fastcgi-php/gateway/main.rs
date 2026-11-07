@@ -19,7 +19,7 @@
 //!
 //! Configuration is supplied via two environment variables:
 //!
-//! - `RAMA_FASTCGI_PHP_LISTEN` — the HTTPS listen address (default `127.0.0.1:62443`).
+//! - `RAMA_FASTCGI_PHP_LISTEN` — the HTTPS listen address (default `127.0.0.1:12443`).
 //! - `RAMA_FASTCGI_PHP_BACKEND` — TCP `host:port` of php-fpm (default `127.0.0.1:9000`).
 //! - `RAMA_FASTCGI_PHP_SCRIPT_FILENAME` — absolute path of `app.php` (required;
 //!   php-fpm refuses without it).
@@ -73,7 +73,7 @@ async fn main() {
     let listen: SocketAddress = std::env::var("RAMA_FASTCGI_PHP_LISTEN")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| SocketAddress::local_ipv4(62443));
+        .unwrap_or_else(|| SocketAddress::local_ipv4(12443));
 
     let backend: HostWithPort = std::env::var("RAMA_FASTCGI_PHP_BACKEND")
         .ok()

@@ -6,8 +6,8 @@ use rama::http::{BodyExtractExt, StatusCode, client::EasyHttpWebClient};
 use rama::net::address::HostWithPort;
 use std::time::Duration;
 
-const ADDRESS_HTTP: HostWithPort = HostWithPort::local_ipv4(62043);
-const ADDRESS_HTTPS: HostWithPort = HostWithPort::local_ipv4(62044);
+const ADDRESS_HTTP: HostWithPort = HostWithPort::local_ipv4(12043);
+const ADDRESS_HTTPS: HostWithPort = HostWithPort::local_ipv4(12044);
 
 #[tokio::test]
 #[ignore = "spawns example processes"]

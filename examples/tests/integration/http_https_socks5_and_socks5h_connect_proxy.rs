@@ -34,7 +34,7 @@ async fn test_http_https_socks5_and_socks5h_connect_proxy() {
         "http_https_socks5_and_socks5h_connect_proxy"
     ));
 
-    runner.wait_for_tcp(([127, 0, 0, 1], 62029)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12029)).await;
 
     let http_socket_addr = spawn_http_server().await;
     let https_socket_addr = spawn_https_server().await;
@@ -49,7 +49,7 @@ async fn test_http_https_socks5_and_socks5h_connect_proxy() {
         let result = runner
             .get(uri)
             .extension(ProxyRoute::Proxy(
-                ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62029").unwrap(),
+                ProxyAddress::try_from("http://tom:clancy@127.0.0.1:12029").unwrap(),
             ))
             .send()
             .await
@@ -66,7 +66,7 @@ async fn test_http_https_socks5_and_socks5h_connect_proxy() {
         let result = runner
             .get(uri)
             .extension(ProxyRoute::Proxy(
-                ProxyAddress::try_from("https://tom:clancy@127.0.0.1:62029").unwrap(),
+                ProxyAddress::try_from("https://tom:clancy@127.0.0.1:12029").unwrap(),
             ))
             .send()
             .await
@@ -85,7 +85,7 @@ async fn test_http_client_over_socks5_proxy_connect(
     http_socket_addr: SocketAddress,
     https_socket_addr: SocketAddress,
 ) {
-    let proxy_socket_addr = SocketAddress::local_ipv4(62029);
+    let proxy_socket_addr = SocketAddress::local_ipv4(12029);
 
     tracing::info!(
         "local servers up and running (http = {}; https = {}; proxy = {})",
@@ -154,7 +154,7 @@ async fn test_http_client_over_socks5_proxy_connect(
 
 async fn spawn_http_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(63179), Executor::default())
+        TcpListener::bind_address(SocketAddress::local_ipv4(13179), Executor::default())
             .await
             .expect("bind HTTP server on open port");
 
@@ -174,7 +174,7 @@ async fn spawn_http_server() -> SocketAddress {
 
 async fn spawn_https_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(63181), Executor::default())
+        TcpListener::bind_address(SocketAddress::local_ipv4(13181), Executor::default())
             .await
             .expect("bind HTTP server on open port");
 

@@ -169,7 +169,7 @@ of it using `FastCgiHttpClient`.
 
 ```sh
 cargo run -p rama-examples --bin fastcgi_reverse_proxy --features=http-full,fastcgi
-curl -v http://127.0.0.1:62053/hello?foo=bar
+curl -v http://127.0.0.1:12053/hello?foo=bar
 ```
 
 **Against a real PHP-FPM backend:**

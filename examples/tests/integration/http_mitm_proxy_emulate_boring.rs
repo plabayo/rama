@@ -48,7 +48,7 @@ async fn test_http_mitm_proxy_emulate() {
             },
         )));
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63048", Executor::default())
+        TcpListener::bind_address("127.0.0.1:13048", Executor::default())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: emulation origin: {e}"))
             .serve(origin)
@@ -59,14 +59,14 @@ async fn test_http_mitm_proxy_emulate() {
         utils::ExampleRunner::interactive(utils::example!("http_mitm_proxy_emulate_boring"));
     // Loading the embedded profile database is CPU-heavy in unoptimized CI builds.
     runner
-        .wait_for_tcp_within(([127, 0, 0, 1], 62066), Duration::from_mins(1))
+        .wait_for_tcp_within(([127, 0, 0, 1], 12066), Duration::from_mins(1))
         .await;
 
     let observe = async |username: &str| -> Value {
         let proxy =
-            ProxyAddress::try_from(format!("http://{username}:secret@127.0.0.1:62066")).unwrap();
+            ProxyAddress::try_from(format!("http://{username}:secret@127.0.0.1:12066")).unwrap();
         runner
-            .get("https://127.0.0.1:63048/")
+            .get("https://127.0.0.1:13048/")
             .header(USER_AGENT, "rama-example-test")
             .extension(ProxyRoute::Proxy(proxy))
             .send()

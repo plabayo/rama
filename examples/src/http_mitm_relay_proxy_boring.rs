@@ -17,11 +17,11 @@
 //!
 //! ## Expected output
 //!
-//! The server will start and listen on `:62049`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12049`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62049 --proxy-user 'john:secret' http://www.example.com/
-//! curl -k -v -x http://127.0.0.1:62049 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x http://127.0.0.1:12049 --proxy-user 'john:secret' http://www.example.com/
+//! curl -k -v -x http://127.0.0.1:12049 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 
 #![expect(
@@ -86,9 +86,9 @@ async fn main() -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
-            .bind_address("127.0.0.1:62049")
+            .bind_address("127.0.0.1:12049")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62049");
+            .expect("bind tcp proxy to 127.0.0.1:12049");
 
         let connect = EagerHttpProxyConnector::new(
             TimeoutLayer::new(Duration::from_secs(30)).into_layer(

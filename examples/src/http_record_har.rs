@@ -10,12 +10,12 @@
 //! cargo run -p rama-examples --bin http_record_har --features=http-full,boring
 //! ```
 //!
-//! The server listens on `127.0.0.1:62040`:
+//! The server listens on `127.0.0.1:12040`:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62040 --proxy-user 'john:secret' http://www.example.com/
-//! curl -k -v -x http://127.0.0.1:62040 --proxy-user 'john:secret' https://www.example.com/
-//! curl -v -x http://127.0.0.1:62040 --proxy-user 'john:secret' -XPOST http://har.toggle.internal/switch
+//! curl -v -x http://127.0.0.1:12040 --proxy-user 'john:secret' http://www.example.com/
+//! curl -k -v -x http://127.0.0.1:12040 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x http://127.0.0.1:12040 --proxy-user 'john:secret' -XPOST http://har.toggle.internal/switch
 //! ```
 //!
 //! Recorded responses expose their HAR path in `x-rama-har-file-path` for
@@ -93,9 +93,9 @@ async fn main() -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
-            .bind_address("127.0.0.1:62040")
+            .bind_address("127.0.0.1:12040")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62040");
+            .expect("bind tcp proxy to 127.0.0.1:12040");
 
         let toggle_har_layer = har_layer.clone();
         let toggle_service = Arc::new(WebService::default().with_post(

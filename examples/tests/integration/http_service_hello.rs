@@ -10,7 +10,7 @@ async fn test_http_service_fs() {
     let runner = utils::ExampleRunner::interactive(utils::example!("http_service_hello"));
 
     let res_str = runner
-        .get("http://127.0.0.1:62010")
+        .get("http://127.0.0.1:12010")
         .send()
         .await
         .unwrap()

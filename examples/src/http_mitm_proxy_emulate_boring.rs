@@ -26,12 +26,12 @@
 //!
 //! # Expected output
 //!
-//! The server listens on `127.0.0.1:62066`. Compare the fingerprints echo.ramaproxy.org
+//! The server listens on `127.0.0.1:12066`. Compare the fingerprints echo.ramaproxy.org
 //! reports for different labels:
 //!
 //! ```sh
-//! curl -k -x http://127.0.0.1:62066 --proxy-user 'john-ua_firefox:secret' https://echo.ramaproxy.org/
-//! curl -k -x http://127.0.0.1:62066 --proxy-user 'john-ua_chrome-ua_macos:secret' https://echo.ramaproxy.org/
+//! curl -k -x http://127.0.0.1:12066 --proxy-user 'john-ua_firefox:secret' https://echo.ramaproxy.org/
+//! curl -k -x http://127.0.0.1:12066 --proxy-user 'john-ua_chrome-ua_macos:secret' https://echo.ramaproxy.org/
 //! ```
 
 #![expect(
@@ -120,9 +120,9 @@ async fn main() -> Result<(), BoxError> {
 
     graceful.spawn_task(async move {
         let tcp_service = TcpListener::build(exec.clone())
-            .bind_address("127.0.0.1:62066")
+            .bind_address("127.0.0.1:12066")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62066");
+            .expect("bind tcp proxy to 127.0.0.1:12066");
 
         let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
