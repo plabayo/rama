@@ -1,6 +1,6 @@
 use super::*;
 use crate::budget::{DatagramRate, PrincipalBudget};
-use rama_core::ServiceInput;
+use rama_core::{ServiceInput, futures::poll, graceful::Cause};
 use rama_http::{
     datagram::{DatagramTransport, NativeDatagramChannel, NativeRecvError, NativeSendReady},
     proto::capsule::CapsuleType,
@@ -746,7 +746,7 @@ async fn discarded_contexts_yield_before_reaching_a_later_udp_payload() {
     // stand in for the socket's bound on immediately available skipped contexts.
     tokio::task::yield_now().await;
     let mut receiving = pin!(recv(&mut socket));
-    assert!(rama_core::futures::poll!(receiving.as_mut()).is_pending());
+    assert!(poll!(receiving.as_mut()).is_pending());
     assert_eq!(receiving.await.unwrap().0, b"after");
 }
 
@@ -760,7 +760,7 @@ async fn discarded_contexts_yield_and_do_not_extend_the_idle_deadline() {
     }
     let mut buffer = [0; 64];
     let mut receiving = pin!(socket.recv(&mut buffer));
-    assert!(rama_core::futures::poll!(receiving.as_mut()).is_pending());
+    assert!(poll!(receiving.as_mut()).is_pending());
     let started = Instant::now();
     assert!(matches!(receiving.await, Err(DatagramError::Closed)));
     assert_eq!(started.elapsed(), Duration::from_mins(2));
@@ -1174,11 +1174,18 @@ impl NativeDatagramChannel for RefusingNative {
 }
 
 fn native_socket(native: impl NativeDatagramChannel + 'static) -> ConnectUdpSocket<Io> {
+    native_socket_in(&Scope::new(), native)
+}
+
+fn native_socket_in(
+    scope: &Scope,
+    native: impl NativeDatagramChannel + 'static,
+) -> ConnectUdpSocket<Io> {
     let (a, _b) = tokio::io::duplex(kib(64));
     let a = ServiceInput::new(a);
     a.extensions().insert(NativeDatagrams::new(native));
     ConnectUdpSocket::new(
-        &Scope::new(),
+        scope,
         HttpDatagramSession::with_config(a, session_config()),
         LOCAL,
         PEER,
@@ -1248,4 +1255,246 @@ async fn returned_dropped_bytes_add_up_over_every_reason() {
     assert_eq!((stats.returned, stats.returned_bytes), (1, 5), "{stats:?}");
     assert_eq!(stats.returned_dropped_rate_limited, 1);
     assert_eq!(stats.returned_dropped_bytes, 6);
+}
+
+#[tokio::test]
+async fn the_hard_phase_wakes_a_sender_blocked_on_a_full_queue() {
+    let scope = Scope::new();
+    let (a, b) = tokio::io::duplex(16);
+    let socket = ConnectUdpSocket::new(
+        &scope,
+        HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default().with_queue(std::num::NonZeroUsize::MIN),
+    );
+    let _peer = HttpDatagramSession::with_config(ServiceInput::new(b), session_config());
+    let mut sender = socket.create_sender();
+    fill(&mut sender).await;
+    let blocked = tokio::spawn(async move { sender.send(SendDatagram::new(PEER, b"never")).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!blocked.is_finished());
+
+    scope.abort(Cause::Owner);
+    drop(scope);
+    let result = tokio::time::timeout(Duration::from_secs(1), blocked)
+        .await
+        .expect("the hard phase wakes an already blocked sender")
+        .unwrap();
+    assert!(matches!(result, Err(DatagramError::Closed)));
+}
+
+#[tokio::test]
+async fn the_hard_phase_ends_a_retained_receive_half() {
+    let scope = Scope::new();
+    let (a, b) = tokio::io::duplex(16);
+    let mut socket = ConnectUdpSocket::new(
+        &scope,
+        HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+    );
+    let _peer = HttpDatagramSession::with_config(ServiceInput::new(b), session_config());
+    let received = tokio::spawn(async move { recv(&mut socket).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    scope.abort(Cause::Owner);
+    drop(scope);
+    let result = tokio::time::timeout(Duration::from_secs(1), received)
+        .await
+        .expect("the hard phase ends an independently retained receive half")
+        .unwrap();
+    assert!(matches!(result, Err(DatagramError::Closed)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn payloads_waiting_or_queued_at_the_hard_phase_are_unsent() {
+    let scope = Scope::new();
+    let socket = native_socket_in(&scope, FullNative);
+    let mut sender = socket.create_sender();
+    // The first waits in the pump's send, the others in the queue behind it.
+    for payload in [&b"never written"[..], b"queued", b"queued too"] {
+        sender.send(SendDatagram::new(PEER, payload)).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    scope.abort(Cause::Owner);
+    drop(scope);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Closed));
+    let stats = socket.stats();
+    assert_eq!(stats.returned, 0, "{stats:?}");
+    assert_eq!(stats.returned_dropped_unsent, 3);
+    assert_eq!(stats.returned_dropped_bytes, 13 + 6 + 10);
+}
+
+#[tokio::test]
+async fn a_hard_phase_before_the_pump_first_runs_closes_the_tunnel() {
+    let scope = Scope::new();
+    let (a, b) = tokio::io::duplex(16);
+    let mut socket = ConnectUdpSocket::new(
+        &scope,
+        HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+    );
+    let _peer = HttpDatagramSession::with_config(ServiceInput::new(b), session_config());
+    // The current-thread runtime has not polled the pump yet.
+    scope.abort(Cause::Owner);
+    drop(scope);
+
+    let result = tokio::time::timeout(Duration::from_secs(1), recv(&mut socket))
+        .await
+        .expect("a hard phase before the pump's first poll still ends the tunnel");
+    assert!(matches!(result, Err(DatagramError::Closed)));
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Closed));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_hard_phase_ends_a_failed_destination_still_draining() {
+    let scope = Scope::new();
+    let (a, peer) = tokio::io::duplex(kib(256));
+    let socket = ConnectUdpSocket::new(
+        &scope,
+        HttpDatagramSession::with_config(ServiceInput::new(a), session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+    );
+    let mut sender = socket.create_sender();
+    drop(peer);
+    sender
+        .send(SendDatagram::new(PEER, b"reply"))
+        .await
+        .unwrap();
+    sender.tx.closed().await;
+    assert_eq!(
+        socket.close_reason(),
+        None,
+        "a live receiver may still drain"
+    );
+
+    scope.abort(Cause::Owner);
+    drop(scope);
+    // Well within the drain's grace: the hard phase does not wait it out.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Closed));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_hard_phase_drops_a_carrier_still_in_its_close_grace() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let scope = Scope::new();
+    let socket = ConnectUdpSocket::new(
+        &scope,
+        HttpDatagramSession::with_config(
+            ServiceInput::new(Stuck(dropped.clone())),
+            session_config(),
+        ),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+    );
+    socket
+        .create_sender()
+        .send(SendDatagram::new(PEER, b"never written"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(121)).await;
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Idle));
+    assert!(!dropped.load(Ordering::Acquire), "the close gets its grace");
+
+    scope.abort(Cause::Owner);
+    drop(scope);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        dropped.load(Ordering::Acquire),
+        "the hard phase does not wait out the close grace"
+    );
+}
+
+/// A native carrier whose send direction is closed while its receive direction stays open.
+struct SendClosedNative;
+
+impl NativeDatagramChannel for SendClosedNative {
+    fn max_payload_size(&self) -> Option<usize> {
+        Some(1200)
+    }
+
+    fn send(&self, _payload: Bytes, _policy: NativeSendPolicy) -> Result<(), NativeSendError> {
+        Err(NativeSendError::Closed)
+    }
+
+    fn send_ready(&self) -> NativeSendReady {
+        NativeSendReady::now()
+    }
+
+    fn poll_recv(&self, _cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
+        Poll::Pending
+    }
+
+    fn dropped(&self) -> u64 {
+        0
+    }
+}
+
+/// A socket whose destination closed on the first send, its receive direction left draining.
+async fn draining_socket(scope: &Scope) -> (ConnectUdpSocket<Io>, HttpDatagramSession<Io>) {
+    let (a, b) = tokio::io::duplex(kib(64));
+    let a = ServiceInput::new(a);
+    a.extensions()
+        .insert(NativeDatagrams::new(SendClosedNative));
+    let socket = ConnectUdpSocket::new(
+        scope,
+        HttpDatagramSession::with_config(a, session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+    );
+    let peer = HttpDatagramSession::with_config(ServiceInput::new(b), session_config());
+    let mut sender = socket.create_sender();
+    sender
+        .send(SendDatagram::new(PEER, b"destination closed"))
+        .await
+        .unwrap();
+    sender.tx.closed().await;
+    assert_eq!(
+        socket.close_reason(),
+        None,
+        "the receive direction is draining"
+    );
+    (socket, peer)
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_hard_phase_wakes_a_receive_pending_in_the_drain() {
+    let scope = Scope::new();
+    let (mut socket, _peer) = draining_socket(&scope).await;
+    let receiving = tokio::spawn(async move { recv(&mut socket).await });
+    tokio::task::yield_now().await;
+    assert!(!receiving.is_finished());
+
+    scope.abort(Cause::Owner);
+    let result = tokio::time::timeout(Duration::from_millis(100), receiving)
+        .await
+        .expect("the hard phase ends the drain, not its grace")
+        .unwrap();
+    assert!(matches!(result, Err(DatagramError::Closed)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn input_after_the_hard_phase_is_not_delivered_from_the_drain() {
+    let scope = Scope::new();
+    let (mut socket, mut peer) = draining_socket(&scope).await;
+    scope.abort(Cause::Owner);
+    tokio::task::yield_now().await;
+    // The tunnel may already be gone: a refused send is as good as an undelivered one.
+    _ = peer.send_datagram(context0(b"after the hard phase")).await;
+    let result = recv(&mut socket).await;
+    assert!(
+        matches!(result, Err(DatagramError::Closed)),
+        "input after the hard phase: {result:?}"
+    );
 }

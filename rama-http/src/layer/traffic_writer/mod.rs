@@ -35,7 +35,6 @@ use crate::{
 use rama_core::{
     extensions::{Extension, Extensions},
     graceful::{Scope, WeakScope},
-    rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
 use std::{
@@ -82,9 +81,9 @@ impl Admission {
         }
     }
 
-    /// The executor captures are spawned on; it refuses them once cancelled and drained.
-    fn executor(&self) -> Executor {
-        Executor::from(self.captures.clone())
+    /// The scope captures are spawned in; it refuses them once cancelled and drained.
+    fn scope(&self) -> WeakScope {
+        self.captures.clone()
     }
 
     /// Completes once the scope is cancelled and every capture admitted until then is in.
@@ -250,20 +249,20 @@ macro_rules! drive_bidirectional_writer {
 #[derive(Clone)]
 pub struct BidirectionalWriter<S> {
     sender: S,
-    executor: Executor,
+    scope: WeakScope,
 }
 
 impl<S: Clone> BidirectionalWriter<S> {
     /// A [`RequestWriterLayer`] writing requests to this writer.
     #[must_use]
     pub fn request_layer(&self) -> RequestWriterLayer<Self> {
-        RequestWriterLayer::new_with_executor(self.clone(), self.executor.clone())
+        RequestWriterLayer::new_with_scope(self.clone(), self.scope.clone())
     }
 
     /// A [`ResponseWriterLayer`] writing responses to this writer.
     #[must_use]
     pub fn response_layer(&self) -> ResponseWriterLayer<Self> {
-        ResponseWriterLayer::new_with_executor(self.clone(), self.executor.clone())
+        ResponseWriterLayer::new_with_scope(self.clone(), self.scope.clone())
     }
 }
 
@@ -293,7 +292,7 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
         let admission = Admission::new(scope);
         let closed = admission.closed();
 
-        scope.spawn_abortable_task(async move {
+        scope.spawn_task(async move {
             drive_bidirectional_writer!(
                 writer,
                 rx,
@@ -307,7 +306,7 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
 
         Self {
             sender: tx,
-            executor: admission.executor(),
+            scope: admission.scope(),
         }
     }
 
@@ -358,7 +357,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         let admission = Admission::new(scope);
         let closed = admission.closed();
 
-        scope.spawn_abortable_task(
+        scope.spawn_task(
             async move {
                 drive_bidirectional_writer!(
                     writer,
@@ -375,7 +374,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
 
         Self {
             sender: tx,
-            executor: admission.executor(),
+            scope: admission.scope(),
         }
     }
 
@@ -406,7 +405,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         let admission = Admission::new(scope);
         let closed = admission.closed();
 
-        scope.spawn_abortable_task(
+        scope.spawn_task(
             async move {
                 let mut last_request = None;
                 let mut last_response = None;
@@ -489,7 +488,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
 
         Self {
             sender: tx,
-            executor: admission.executor(),
+            scope: admission.scope(),
         }
     }
 

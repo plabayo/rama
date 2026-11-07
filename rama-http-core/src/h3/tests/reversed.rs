@@ -1,8 +1,4 @@
-use rama_core::{
-    bytes::Bytes,
-    extensions::ExtensionsRef as _,
-    rt::{Executor, spawn},
-};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _, graceful::WeakScope, rt::spawn};
 use rama_http::{
     datagram::{DatagramTransport, HttpDatagramSession, SessionEvent},
     headers::{HeaderMapExt as _, Priority},
@@ -34,9 +30,12 @@ async fn start(
     client: Config,
     server: Config,
 ) -> (client::SendRequest<Body, Quic>, server::Connection<Quic>) {
-    let (client, driver) =
-        client::handshake::<Body, _>(Reversed::new(pair.server.clone()), client, Executor::new())
-            .unwrap();
+    let (client, driver) = client::handshake::<Body, _>(
+        Reversed::new(pair.server.clone()),
+        client,
+        WeakScope::never(),
+    )
+    .unwrap();
     spawn(driver.run());
     let (server, driver) = server::handshake(Reversed::new(pair.client.clone()), server).unwrap();
     spawn(driver.run());
@@ -62,9 +61,12 @@ async fn the_quic_client_serves_requests_sent_by_the_quic_server() {
 
         let (mut server, server_driver) =
             server::handshake(served_by_quic_client, Config::default()).unwrap();
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(sent_by_quic_server, Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            sent_by_quic_server,
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let server_driver = spawn(server_driver.run());
         let client_driver = spawn(client_driver.run());
         let serve = spawn(async move {
@@ -118,7 +120,7 @@ async fn reversed_nests_with_boxed_connection_either_way() {
         let (mut server, driver) = server::handshake(served, Config::default()).unwrap();
         spawn(driver.run());
         let (mut client, driver) =
-            client::handshake::<Body, _>(sending, Config::default(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(sending, Config::default(), WeakScope::never()).unwrap();
         spawn(driver.run());
         let serve = spawn(async move {
             let (_, response) = server.accept().await.unwrap().resolve().await.unwrap();

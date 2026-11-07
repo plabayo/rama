@@ -5,8 +5,8 @@
 use super::HttpProxyError;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::graceful::WeakScope;
 use rama_core::io::Io;
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
 use rama_http::HeaderMap;
 use rama_http::io::upgrade;
@@ -125,7 +125,7 @@ impl InnerHttpProxyConnector {
         req: Request,
         stream: S,
     ) -> Result<Response<Incoming>, HttpProxyError> {
-        let (mut tx, conn) = http2::Builder::new(Executor::new())
+        let (mut tx, conn) = http2::Builder::new(WeakScope::never())
             .handshake(stream)
             .await
             .map_err(|err| HttpProxyError::Transport(err.into()))?;

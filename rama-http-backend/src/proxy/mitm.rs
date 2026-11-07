@@ -11,7 +11,6 @@ use rama_core::{
         consume_err::{StaticOutput, Trace},
     },
     matcher::Matcher,
-    rt::Executor,
     service::service_fn,
     telemetry::tracing,
 };
@@ -188,7 +187,7 @@ pub struct HttpMitmRelay<M = DefaultMiddleware, P = bool> {
     http_server: HttpServer<AutoConnBuilder>,
     middleware: M,
     authority: Option<BoundAuthority<P>>,
-    exec: Executor,
+    scope: WeakScope,
     eager_peer_settings_timeout: Duration,
     max_mirrored_h2_connection_credit: u32,
     forbidden_trailers: ForbiddenTrailers,
@@ -199,12 +198,13 @@ impl HttpMitmRelay {
     #[inline(always)]
     #[must_use]
     /// Create a new [`HttpMitmRelay`], ready to serve.
-    pub fn new(exec: Executor) -> Self {
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         // Baseline CONNECT-on for the *lazy* path (plain h2, no ALPN).
         // The eager path in `serve()` overrides this per-conn via
         // `H2ServerContextParams`, which is what closes #932 for TLS h2.
         // See `rama_http_core::server::conn::http2::apply_h2_server_context_params`.
-        let mut http_server = HttpServer::auto(exec.clone());
+        let mut http_server = HttpServer::auto(scope.clone());
         // Request EOF must not discard a response still being produced by the origin.
         http_server.http1_mut().set_half_close(true);
         http_server.h2_mut().set_enable_connect_protocol();
@@ -218,7 +218,7 @@ impl HttpMitmRelay {
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
                 ArcLayer::new(),
             ),
-            exec,
+            scope,
             authority: None,
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
             max_mirrored_h2_connection_credit: DEFAULT_MAX_MIRRORED_H2_CONNECTION_CREDIT,
@@ -240,7 +240,7 @@ impl<M, P> HttpMitmRelay<M, P> {
             http_server: self.http_server,
             middleware: self.middleware,
             authority: Some(authority),
-            exec: self.exec,
+            scope: self.scope,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
             max_mirrored_h2_connection_credit: self.max_mirrored_h2_connection_credit,
             forbidden_trailers: self.forbidden_trailers,
@@ -259,7 +259,7 @@ impl<M, P> HttpMitmRelay<M, P> {
             http_server: self.http_server,
             middleware,
             authority: self.authority,
-            exec: self.exec,
+            scope: self.scope,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
             max_mirrored_h2_connection_credit: self.max_mirrored_h2_connection_credit,
             forbidden_trailers: self.forbidden_trailers,
@@ -359,7 +359,7 @@ where
         &self,
         BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
-        let request_exec = self.exec.clone();
+        let request_scope = self.scope.clone();
         let (egress_health, egress_health_rx) = watch::channel(None);
         let egress_health = Arc::new(egress_health);
 
@@ -449,10 +449,10 @@ where
             end.into_weak_scope()
         });
         let relay_state = if egress_is_h2 {
-            let exec = request_exec.clone();
+            let scope = request_scope.clone();
             let (conn, peer_handle) = tokio::time::timeout_at(
                 deadline,
-                http2_eager_handshake::<_, Body>(egress_stream, exec),
+                http2_eager_handshake::<_, Body>(egress_stream, scope),
             )
             .await
             .map_err(|_elapsed| {
@@ -519,8 +519,7 @@ where
         let authority = self.authority.clone();
         // The ingress drains once the h2 egress stops taking requests (GOAWAY included), and is
         // cut `grace` after the egress transport ended; the server makes its connection a child.
-        let Ok(relay_scope) = enter_scope_with(ingress_stream.extensions(), self.exec.scope())
-        else {
+        let Ok(relay_scope) = enter_scope_with(ingress_stream.extensions(), &self.scope) else {
             return Err(BoxError::from_static_str("the ingress scope is closed"));
         };
         let relay_scope = relay_scope.with_signal(egress_h2_gone(egress_health_rx));
@@ -539,7 +538,7 @@ where
                     let relay_state = relay_state.clone();
                     let authority = authority.clone();
                     let close_ingress = close_ingress.clone();
-                    let exec = request_exec.clone();
+                    let scope = request_scope.clone();
                     let egress_health = egress_health.clone();
                     async move {
                         let req = match authority.validate(req).await {
@@ -550,7 +549,7 @@ where
                         let resp = handle_relay_request(
                             &relay_state,
                             req,
-                            exec,
+                            scope,
                             close_ingress,
                             &egress_health,
                         )
@@ -681,7 +680,7 @@ where
 async fn handle_relay_request<Egress, Middleware>(
     relay_state: &Arc<Mutex<RelayState<Egress, Middleware>>>,
     req: Request,
-    exec: Executor,
+    scope: WeakScope,
     close_ingress: WeakScope,
     egress_health: &EgressHealth,
 ) -> Response
@@ -720,7 +719,7 @@ where
             let resp = serve_http1_request(
                 &mut *state,
                 req,
-                exec,
+                scope,
                 &method,
                 &uri,
                 version,
@@ -749,7 +748,7 @@ where
                 relay_connect_http2_if_needed(
                     &mut *state,
                     req,
-                    exec,
+                    scope,
                     close_ingress.clone(),
                     egress_health,
                 )
@@ -778,7 +777,7 @@ where
 async fn serve_http1_request<Egress, Middleware>(
     state: &mut RelayState<Egress, Middleware>,
     req: Request,
-    exec: Executor,
+    scope: WeakScope,
     method: &Method,
     uri: &Uri,
     version: Version,
@@ -791,7 +790,7 @@ where
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
         > + Clone,
 {
-    let req = match relay_connect_http1_if_needed(state, req, exec, close_ingress.clone()).await {
+    let req = match relay_connect_http1_if_needed(state, req, scope, close_ingress.clone()).await {
         Ok(req) => req,
         Err(resp) => return Ok(resp),
     };
@@ -847,7 +846,7 @@ where
 async fn relay_connect_http1_if_needed<Egress, Middleware>(
     state: &mut RelayState<Egress, Middleware>,
     req: Request,
-    exec: Executor,
+    scope: WeakScope,
     close_ingress: WeakScope,
 ) -> Result<Request, Response>
 where
@@ -876,7 +875,7 @@ where
             ),
         ),
         RelayState::Uninitialized { .. } => {
-            let req = connect_relay(state, req, exec, close_ingress.clone()).await?;
+            let req = connect_relay(state, req, scope, close_ingress.clone()).await?;
             if let RelayState::Http1 { .. } = state {
                 Ok(req)
             } else {
@@ -896,7 +895,7 @@ where
 async fn relay_connect_http2_if_needed<Egress, Middleware>(
     state: &mut RelayState<Egress, Middleware>,
     req: Request,
-    exec: Executor,
+    scope: WeakScope,
     close_ingress: WeakScope,
     egress_health: &EgressHealth,
 ) -> Result<(Middleware::Service, Arc<ConnectionHealthWatcher>, Request), Response>
@@ -927,7 +926,7 @@ where
         ),
         RelayState::Uninitialized { .. } => {
             let version = req.version();
-            let req = connect_relay(state, req, exec, close_ingress.clone()).await?;
+            let req = connect_relay(state, req, scope, close_ingress.clone()).await?;
             if let RelayState::Http2 { client, health } = state {
                 egress_health.send_replace(Some(health.clone()));
                 Ok((client.clone(), health.clone(), req))
@@ -948,7 +947,7 @@ where
 async fn connect_relay<Egress, Middleware>(
     state: &mut RelayState<Egress, Middleware>,
     req: Request,
-    exec: Executor,
+    scope: WeakScope,
     close_ingress: WeakScope,
 ) -> Result<Request, Response>
 where
@@ -994,7 +993,7 @@ where
         }
         req.extensions().insert(params);
     }
-    match http_connect(egress_stream, req, exec).await {
+    match http_connect(egress_stream, req, scope).await {
         Ok(EstablishedClientConnection { input, conn }) => {
             let version = input.version();
             match RelayMode::try_from(version) {

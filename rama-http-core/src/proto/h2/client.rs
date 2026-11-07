@@ -20,7 +20,6 @@ use rama_core::{
     extensions::ExtensionsRef,
     futures::{Stream, future::FusedFuture, stream::FusedStream},
     graceful::{Cause, WeakScope},
-    rt::Executor,
     telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn},
 };
 use rama_http::{
@@ -207,13 +206,13 @@ pub(crate) async fn handshake<T, B>(
     io: T,
     req_rx: ClientRx<B>,
     config: &Config,
-    exec: Executor,
+    scope: WeakScope,
 ) -> crate::Result<ClientTask<B, T>>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
-    handshake_with_builder(new_builder(config), io, req_rx, config, exec).await
+    handshake_with_builder(new_builder(config), io, req_rx, config, scope).await
 }
 
 pub(crate) async fn handshake_with_builder<T, B>(
@@ -221,7 +220,7 @@ pub(crate) async fn handshake_with_builder<T, B>(
     io: T,
     req_rx: ClientRx<B>,
     config: &Config,
-    exec: Executor,
+    weak_scope: WeakScope,
 ) -> crate::Result<ClientTask<B, T>>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
@@ -276,20 +275,24 @@ where
         network.protocol.version = version_as_protocol_version(Version::HTTP_2),
     );
 
-    if let Err(refused) = exec.try_spawn_task(
+    let scope = match weak_scope.try_hold() {
+        Ok(scope) => scope,
+        Err(refused) => {
+            return Err(crate::Error::new_closed().with(refused));
+        }
+    };
+    scope.into_spawn_task(
         H2ClientFuture::Task {
             task: ConnTask::new(conn, conn_drop_rx, cancel_tx, transport_end),
         }
         .instrument(task_span),
-    ) {
-        return Err(crate::Error::new_closed().with(refused.discard_task()));
-    }
+    );
 
     Ok(ClientTask {
         ping,
         conn_drop_ref,
         conn_eof,
-        executor: exec,
+        scope: weak_scope,
         h2_tx,
         req_rx,
         fut_ctx: None,
@@ -578,7 +581,7 @@ where
     ping: ping::Recorder,
     conn_drop_ref: ConnDropRef,
     conn_eof: ConnEof,
-    executor: Executor,
+    scope: WeakScope,
     h2_tx: SendRequest<SendBuf<B::Data>>,
     req_rx: ClientRx<B>,
     fut_ctx: Option<FutCtx<B>>,
@@ -745,10 +748,13 @@ where
                         // Clear send task
                         let fut: H2ClientFuture<_, T> = H2ClientFuture::Pipe { pipe };
                         // Refused, the dropped pipe resets the stream.
-                        if let Err(refused) =
-                            self.executor.try_spawn_task(fut.instrument(pipe_span))
-                        {
-                            debug!(%refused, "h2 request body not piped");
+                        match self.scope.try_hold() {
+                            Ok(scope) => {
+                                scope.into_spawn_task(fut.instrument(pipe_span));
+                            }
+                            Err(refused) => {
+                                debug!(%refused, "h2 request body not piped");
+                            }
                         }
                     }
                 }
@@ -773,7 +779,7 @@ where
                     ping: Some(ping),
                     send_stream: Some(send_stream),
                     extended: f.extended,
-                    exec: self.executor.clone(),
+                    scope: self.scope.clone(),
                     cancel_tx: Some(cancel_tx),
                     h2_tx: self.h2_tx.clone(),
                 },
@@ -781,8 +787,13 @@ where
             },
         };
         // Refused, the dropped callback fails the request.
-        if let Err(refused) = self.executor.try_spawn_task(fut.instrument(send_span)) {
-            debug!(%refused, "h2 request not sent");
+        match self.scope.try_hold() {
+            Ok(scope) => {
+                scope.into_spawn_task(fut.instrument(send_span));
+            }
+            Err(refused) => {
+                debug!(%refused, "h2 request not sent");
+            }
         }
     }
 }
@@ -805,7 +816,7 @@ pin_project! {
         #[pin]
         send_stream: Option<Option<SendStream<SendBuf<<B as StreamingBody>::Data>>>>,
         extended: bool,
-        exec: Executor,
+        scope: WeakScope,
         cancel_tx: Option<oneshot::Sender<()>>,
         // Handle to the underlying h2 connection, kept solely so we can
         // snapshot the peer's initial SETTINGS frame at response-receipt

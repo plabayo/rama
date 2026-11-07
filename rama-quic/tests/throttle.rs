@@ -20,7 +20,7 @@ use std::{
 use rama_core::{
     Layer, Service,
     bytes::Bytes,
-    rt::Executor,
+    graceful::WeakScope,
     service::{BoxService, service_fn},
 };
 use rama_net::stream::layer::{ThrottleConfig, ThrottleLayer, ThrottleMode, Throttleable as _};
@@ -54,7 +54,7 @@ fn localhost() -> SocketAddr {
 }
 
 async fn server(identities: &Identities) -> Endpoint {
-    Endpoint::build(Executor::new())
+    Endpoint::build(WeakScope::never())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
@@ -62,7 +62,7 @@ async fn server(identities: &Identities) -> Endpoint {
 }
 
 async fn client() -> Endpoint {
-    Endpoint::build(Executor::new())
+    Endpoint::build(WeakScope::never())
         .bind_address(localhost())
         .await
         .expect("the client binds")
@@ -72,7 +72,7 @@ fn serve<S>(server: &Endpoint, service: S) -> JoinHandle<()>
 where
     S: Service<Connection> + Clone,
 {
-    tokio::spawn(server.clone().serve(Executor::new(), service))
+    tokio::spawn(server.clone().serve(WeakScope::never(), service))
 }
 
 /// How a stream is written: each way meets the throttle on its own path.

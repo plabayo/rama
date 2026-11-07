@@ -201,7 +201,7 @@ async fn an_immediate_close_reaches_this_peer_in_its_own_datagram() {
     let client = deadline
         .wait(
             "the rama client binds",
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
         )
         .await
         .expect("it binds");

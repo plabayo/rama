@@ -25,7 +25,6 @@ use rama_core::{
     extensions::ExtensionsRef as _,
     futures::FutureExt as _,
     graceful::{Cause, Scope, WeakScope, scope_context},
-    rt::Executor,
     service::service_fn,
 };
 use rama_net::{address::SocketAddress, stream::SocketInfo};
@@ -44,7 +43,7 @@ fn localhost() -> SocketAddr {
 }
 
 async fn server(identities: &Identities) -> Endpoint {
-    Endpoint::build(Executor::new())
+    Endpoint::build(WeakScope::never())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
@@ -52,7 +51,7 @@ async fn server(identities: &Identities) -> Endpoint {
 }
 
 async fn client() -> Endpoint {
-    Endpoint::build(Executor::new())
+    Endpoint::build(WeakScope::never())
         .bind_address(localhost())
         .await
         .expect("the client binds")
@@ -89,7 +88,7 @@ async fn served_connections_carry_their_socket_info() {
             echo(connection, release.clone())
         }
     });
-    let served = tokio::spawn(server.clone().serve(Executor::new(), service));
+    let served = tokio::spawn(server.clone().serve(WeakScope::never(), service));
 
     let client = client().await;
     for payload in [b"first".as_slice(), b"second"] {
@@ -132,7 +131,7 @@ async fn served_connections_carry_the_executor_scope() {
         }
     });
     let root = Scope::new();
-    let served = tokio::spawn(server.clone().serve(Executor::from(root.clone()), service));
+    let served = tokio::spawn(server.clone().serve(root.clone_weak(), service));
 
     let client = client().await;
     let connection = connect(&client, &identities, addr).await;
@@ -144,7 +143,7 @@ async fn served_connections_carry_the_executor_scope() {
         .recv()
         .await
         .unwrap()
-        .expect("the connection carries the executor scope");
+        .expect("the connection carries the scope");
     assert!(!scope.is_cancelled());
     root.cancel(Cause::Owner);
     assert!(scope.is_cancelled());
@@ -175,7 +174,7 @@ async fn connections_after_a_rebind_carry_the_new_socket_address() {
             echo(connection, release.clone())
         }
     });
-    let served = tokio::spawn(server.clone().serve(Executor::new(), service));
+    let served = tokio::spawn(server.clone().serve(WeakScope::never(), service));
     let client = client().await;
 
     // Serving is under way on the first socket before the endpoint moves.
@@ -219,7 +218,7 @@ async fn a_failed_handshake_does_not_stop_serving() {
         let release = release.clone();
         move |connection: Connection| echo(connection, release.clone())
     });
-    let served = tokio::spawn(server.clone().serve(Executor::new(), service));
+    let served = tokio::spawn(server.clone().serve(WeakScope::never(), service));
 
     let client = client().await;
     let strangers = Identities::new();
@@ -249,7 +248,7 @@ async fn cancellation_refuses_new_attempts_and_drains_served_connections() {
     let shutdown = Scope::new().with_signal(async move {
         _ = signalled.await;
     });
-    let exec = Executor::from(shutdown.clone());
+    let scope = shutdown.clone_weak();
     let release = Arc::new(Notify::new());
     let (accepted, mut accepted_rx) = mpsc::unbounded_channel();
     let service = service_fn({
@@ -259,7 +258,7 @@ async fn cancellation_refuses_new_attempts_and_drains_served_connections() {
             echo(connection, release.clone())
         }
     });
-    let served = tokio::spawn(server.clone().serve(exec, service));
+    let served = tokio::spawn(server.clone().serve(scope, service));
 
     let client = client().await;
     let held = connect(&client, &identities, addr).await;
@@ -329,10 +328,10 @@ async fn a_pending_handshake_is_refused_by_a_graceful_shutdown() {
     let shutdown = Scope::new().with_signal(async move {
         _ = signalled.await;
     });
-    let exec = Executor::from(shutdown.clone());
+    let scope = shutdown.clone_weak();
     let release = Arc::new(Notify::new());
     let service = service_fn(move |connection: Connection| echo(connection, release.clone()));
-    let served = tokio::spawn(server.clone().serve(exec, service));
+    let served = tokio::spawn(server.clone().serve(scope, service));
 
     // Between client and server: the client's datagrams reach the server, but its answers are
     // withheld until `forward` is set, so the server's handshake stays in progress.
@@ -426,11 +425,7 @@ async fn an_abort_ends_the_drain_of_served_connections() {
             Ok::<_, Infallible>(())
         }
     });
-    let served = tokio::spawn(
-        server
-            .clone()
-            .serve(Executor::from(shutdown.clone()), service),
-    );
+    let served = tokio::spawn(server.clone().serve(shutdown.clone_weak(), service));
 
     let client = client().await;
     let held = connect(&client, &identities, addr).await;

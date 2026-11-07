@@ -11,7 +11,7 @@ use rama_core::{
     error_sink::ErrorSink,
     extensions::Extension,
     futures::FutureExt as _,
-    graceful::{Scope, ScopeClosed},
+    graceful::Scope,
 };
 use rama_quic_proto::ConnectionId;
 use serde::Serialize;
@@ -276,15 +276,13 @@ impl QlogRecorder {
             stop: Notify::new(),
         });
         // The recording task holds the scope until it ends: a closed one starts no recording.
-        let Some(scope) = config.executor.scope().to_scope() else {
-            return Err(io::Error::other(ScopeClosed));
-        };
+        let scope = config.scope.try_hold().map_err(io::Error::other)?;
         output.spawn(Worker {
             receiver,
             shared: shared.clone(),
             info: config.info,
             history: config.history,
-            executor: config.executor,
+            weak_scope: config.scope,
             scope,
         });
         Ok(Self { sender, shared })
@@ -1112,15 +1110,15 @@ pub(super) struct Worker {
     shared: Arc<Shared>,
     info: TraceInfo,
     history: Option<HistoryConfig>,
-    executor: rama_core::rt::Executor,
+    weak_scope: rama_core::graceful::WeakScope,
     scope: Scope,
 }
 
 impl<O: QlogOutput> OutputFactory for O {
     fn spawn(self: Box<Self>, mut worker: Worker) {
-        let executor = std::mem::take(&mut worker.executor);
+        let weak_scope = std::mem::take(&mut worker.weak_scope);
         let scope = std::mem::take(&mut worker.scope);
-        let cancelled = executor.cancelled();
+        let cancelled = weak_scope.cancelled();
         let shared = worker.shared.clone();
         let future = async move {
             let mut output = self;
@@ -1168,7 +1166,7 @@ impl<O: QlogOutput> OutputFactory for O {
             }
             worker.shared.done.send_replace(Some(result));
         };
-        scope.into_spawn_task(RecordingTask { future, shared });
+        scope.into_spawn_task_to_completion(RecordingTask { future, shared });
     }
 }
 

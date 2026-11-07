@@ -310,7 +310,7 @@ async fn serve_listener_returns_err_when_listener_terminated() {
     let server = crate::XpcServer::new(crate::XpcMessageRouter::new());
     let result = timeout(
         Duration::from_secs(2),
-        server.serve_listener(listener, rama_core::rt::Executor::new()),
+        server.serve_listener(listener, rama_core::graceful::WeakScope::never()),
     )
     .await
     .expect("terminated listener must end the serve loop");
@@ -494,7 +494,7 @@ async fn send_request_times_out_when_peer_never_replies() {
 async fn server_survives_unknown_selector_and_handler_error() {
     use crate::router::{ERROR_CODE_HANDLER_FAILED, ERROR_CODE_UNKNOWN_SELECTOR};
     use crate::{XpcMessageRouter, XpcServer};
-    use rama_core::{error::BoxError, rt::Executor, service::service_fn};
+    use rama_core::{error::BoxError, graceful::WeakScope, service::service_fn};
     use std::convert::Infallible;
 
     let (server_conn, endpoint) = XpcEndpoint::anonymous_channel(None).expect("anonymous_channel");
@@ -512,9 +512,9 @@ async fn server_survives_unknown_selector_and_handler_error() {
         );
 
     let server = XpcServer::new(router);
-    let executor = Executor::new();
+    let scope = WeakScope::never();
     tokio::spawn(async move {
-        _ = server.serve_connection(server_conn, executor).await;
+        _ = server.serve_connection(server_conn, scope).await;
     });
     tokio::task::yield_now().await;
 

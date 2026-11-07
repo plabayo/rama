@@ -131,7 +131,6 @@ use rama::{
         },
         tls::BoringTlsProvider,
     },
-    rt::Executor,
     service::service_fn,
     telemetry::tracing::{self, level_filters::LevelFilter, subscriber::EnvFilter},
     tls::{
@@ -183,7 +182,7 @@ async fn main() -> Result<(), BoxError> {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
     let (ca_crt, ca_key) = generate_certificate_authority_x509(&SelfSignedCaConfig {
         subject: CertificateSubject {
@@ -208,7 +207,7 @@ async fn main() -> Result<(), BoxError> {
     let egress_tls = TlsClientConfig::new().try_with_server_trust_anchors(upstream_anchors)?;
 
     // HTTP/3 request by request, marking each response; anything else stream by stream.
-    let h3 = Http3MitmRelay::new(exec.clone()).with_http_middleware((
+    let h3 = Http3MitmRelay::new(weak_scope.clone()).with_http_middleware((
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-rama-mitm"),
@@ -216,11 +215,16 @@ async fn main() -> Result<(), BoxError> {
         ),
         ArcLayer::new(),
     ));
-    let terminate = QuicMitmRelay::new(issuer, exec.clone(), egress_tls, VarInt::from_u32(FAILURE))
-        .into_layer(
-            AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
-                .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
-        );
+    let terminate = QuicMitmRelay::new(
+        issuer,
+        weak_scope.clone(),
+        egress_tls,
+        VarInt::from_u32(FAILURE),
+    )
+    .into_layer(
+        AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
+            .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
+    );
     let forward = DatagramForwardService::new(
         NonZeroUsize::new(65_536).expect("nonzero"),
         EcnPolicy::Discard,
@@ -274,7 +278,7 @@ async fn main() -> Result<(), BoxError> {
         },
     );
     scope.spawn_task(async move {
-        if let Err(error) = demux.serve(exec, association).await {
+        if let Err(error) = demux.serve(weak_scope, association).await {
             tracing::error!(%error, "QUIC MITM proxy listener failed");
         }
     });

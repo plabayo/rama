@@ -15,14 +15,15 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::ExtensionsRef as _,
-    graceful::{Cause, Scope},
+    futures::stream,
+    graceful::{Cause, Scope, WeakScope},
     io::BridgeIo,
     matcher::service::MatcherServicePair,
-    rt::Executor,
     service::service_fn,
 };
 use rama_http::{
     Body, Request, Response,
+    body::util::BodyExt as _,
     io::upgrade::{Upgraded, pending},
     layer::{
         traffic_writer::{
@@ -39,13 +40,13 @@ use tokio::{
 
 const WAIT: Duration = Duration::from_millis(500);
 
-/// An executor whose scope is closed: every spawn on it is refused.
-async fn closed_executor() -> Executor {
+/// A weak scope whose scope is closed: every hold taken on it is refused.
+async fn closed_scope() -> WeakScope {
     let root = Scope::new();
-    let exec = Executor::from(root.clone());
+    let scope = root.clone_weak();
     root.cancel(Cause::Owner);
     root.join().await.unwrap();
-    exec
+    scope
 }
 
 /// An upgrade that is already done, and the peer of its IO.
@@ -75,7 +76,7 @@ async fn a_refused_upgrade_reports_without_keeping_its_io() {
     });
     let inner = service_fn(async |_: Request| Ok::<_, Infallible>(Response::new(Body::empty())));
     let (errors, mut reported) = mpsc::unbounded_channel::<BoxError>();
-    let service = UpgradeLayer::new(closed_executor().await, true, responder)
+    let service = UpgradeLayer::new(closed_scope().await, true, responder)
         .with_upgrade_error_sink(move |error| errors.send(error).unwrap())
         .into_layer(inner);
     drop(service.serve(request).await.unwrap());
@@ -100,7 +101,7 @@ async fn a_refused_upgrade_error_does_not_keep_its_sink() {
     });
     let inner = service_fn(async |_: Request| Ok::<_, Infallible>(Response::new(Body::empty())));
     let sink = errors.clone();
-    let service = UpgradeLayer::new(closed_executor().await, true, responder)
+    let service = UpgradeLayer::new(closed_scope().await, true, responder)
         .with_upgrade_error_sink(move |error| sink.lock().push(error))
         .into_layer(inner);
     drop(service.serve(request).await.unwrap());
@@ -127,7 +128,7 @@ async fn a_refused_relay_reports_without_keeping_either_leg() {
     let relay = service_fn(async |_: BridgeIo<Upgraded, Upgraded>| Ok::<_, Infallible>(()));
     let matcher = MatcherServicePair::new(true, MatcherServicePair::new(true, relay));
     let (errors, mut reported) = mpsc::unbounded_channel::<BoxError>();
-    let service = HttpUpgradeMitmRelay::new(closed_executor().await, matcher, upstream)
+    let service = HttpUpgradeMitmRelay::new(closed_scope().await, matcher, upstream)
         .with_error_sink(move |error| errors.send(error).unwrap());
     drop(service.serve(request).await.unwrap());
     drop(service);
@@ -304,7 +305,7 @@ async fn a_capture_served_once_the_writer_drained_is_refused() {
     let weak = root.clone_weak();
     let written = written_once_ended(root, captured).await;
     assert!(written.is_empty(), "{written}");
-    assert!(weak.to_scope().is_none(), "the writer's scope is closed");
+    assert!(weak.try_hold().is_err(), "the writer's scope is closed");
     // Served as usual, but its capture is refused and nothing holds a drain open.
     service.serve(get("/after")).await.unwrap();
     timeout(WAIT, weak.drained())
@@ -344,4 +345,54 @@ async fn a_writer_blocked_on_its_output_is_dropped_at_the_hard_phase() {
         .await
         .expect("the hard phase drops the blocked writer");
     drop(service);
+}
+
+#[tokio::test]
+async fn a_writer_whose_scope_closed_serves_a_streaming_request_uncaptured() {
+    let root = Scope::new();
+    let (output, captured) = duplex(4096);
+    let service = RequestWriterLayer::writer_unbounded(&root, output, Some(WriterMode::All))
+        .into_layer(service_fn(async |request: Request| {
+            let body = request.into_body().collect().await.unwrap().to_bytes();
+            Ok::<_, Infallible>(Response::new(Body::from(body)))
+        }));
+    assert!(written_once_ended(root, captured).await.is_empty());
+
+    // Far more than the capture channel's one frame: a kept capture would stall this body.
+    let chunks = (0..64).map(|_| Ok::<_, BoxError>(Bytes::from_static(&[7; 1024])));
+    let request = Request::builder()
+        .uri("http://example.com/after")
+        .body(Body::from_stream(stream::iter(chunks)))
+        .unwrap();
+    let response = timeout(WAIT, service.serve(request))
+        .await
+        .expect("the request is served without its capture")
+        .unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.len(), 64 * 1024);
+}
+
+#[tokio::test]
+async fn a_writer_whose_scope_closed_serves_a_streaming_response_uncaptured() {
+    let root = Scope::new();
+    let (output, captured) = duplex(4096);
+    let service = ResponseWriterLayer::writer_unbounded(&root, output, Some(WriterMode::All))
+        .into_layer(service_fn(async |_: Request| {
+            let chunks = (0..64).map(|_| Ok::<_, BoxError>(Bytes::from_static(&[7; 1024])));
+            Ok::<_, Infallible>(Response::new(Body::from_stream(stream::iter(chunks))))
+        }));
+    assert!(written_once_ended(root, captured).await.is_empty());
+
+    let request = Request::builder()
+        .uri("http://example.com/after")
+        .body(Body::empty())
+        .unwrap();
+    let response = service.serve(request).await.unwrap();
+    // Far more than the capture channel's one frame: a kept capture would stall this body.
+    let body = timeout(WAIT, response.into_body().collect())
+        .await
+        .expect("the response is served without its capture")
+        .unwrap()
+        .to_bytes();
+    assert_eq!(body.len(), 64 * 1024);
 }

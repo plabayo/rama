@@ -2,8 +2,8 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext as _},
     extensions,
+    graceful::WeakScope,
     io::{BridgeIo, Io},
-    rt::Executor,
 };
 use rama_net::proxy::IoForwardService;
 
@@ -25,12 +25,13 @@ impl<I> Socks5MitmRelayService<I> {
     ///
     /// The fallback service used for
     /// [`Socks5MitmHandshakeOutcome::UnsupportedFlow`] outcomes is an
-    /// [`IoForwardService`] graceful with respect to the given [`Executor`];
+    /// [`IoForwardService`] graceful with respect to the given [`WeakScope`];
     /// override it via [`Self::with_fallback`].
-    pub fn new(exec: Executor, dpi_svc: I) -> Self {
+    pub fn new(scope: impl Into<WeakScope>, dpi_svc: I) -> Self {
+        let scope = scope.into();
         Self {
             dpi_svc,
-            fallback_svc: IoForwardService::new(exec),
+            fallback_svc: IoForwardService::new(scope),
         }
     }
 

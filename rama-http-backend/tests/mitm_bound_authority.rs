@@ -5,11 +5,10 @@
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     io::BridgeIo,
     layer::{ArcLayer, MapInputLayer},
     matcher::match_fn,
-    rt::Executor,
     service::service_fn,
 };
 use rama_http::{
@@ -53,7 +52,7 @@ async fn check_relay(version: Version, eager: bool) {
         let upstream_seen = seen.clone();
         let guard = graceful.clone();
         graceful.spawn_task(async move {
-            HttpServer::auto(Executor::from(guard))
+            HttpServer::auto(WeakScope::from(guard))
                 .serve(
                     MockSocket::new(upstream),
                     service_fn(move |_: Request| {
@@ -75,7 +74,7 @@ async fn check_relay(version: Version, eager: bool) {
                     .extensions()
                     .insert(TargetHttpVersion(Version::HTTP_2));
             }
-            HttpMitmRelay::new(Executor::from(guard))
+            HttpMitmRelay::new(WeakScope::from(guard))
                 .with_bound_authority(BoundAuthority::https(
                     "origin.example:443".parse().unwrap(),
                     match_fn(move |_: &Request| policy_allowed.load(Ordering::SeqCst)),
@@ -114,7 +113,7 @@ async fn check_relay(version: Version, eager: bool) {
         let conn = http_connect(
             MockSocket::new(client),
             request(version, "origin.example", "none"),
-            Executor::from(graceful.clone()),
+            graceful.clone_weak(),
         )
         .await
         .unwrap()

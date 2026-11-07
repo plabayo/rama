@@ -4,11 +4,8 @@
 #![expect(clippy::expect_used, reason = "test assertions identify failed stages")]
 
 use rama_core::{
-    Layer, Service, ServiceInput,
-    extensions::ExtensionsRef as _,
-    futures::stream,
-    rt::{Executor, spawn},
-    service::service_fn,
+    Layer, Service, ServiceInput, extensions::ExtensionsRef as _, futures::stream,
+    graceful::WeakScope, rt::spawn, service::service_fn,
 };
 use rama_http::{
     Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Version,
@@ -85,11 +82,11 @@ impl QuicPair {
             SocketAddress::local_ipv4(444),
             NonZeroUsize::MIN,
         );
-        let server_endpoint = Endpoint::build(Executor::new())
+        let server_endpoint = Endpoint::build(WeakScope::never())
             .with_server_config(server_config)
             .with_datagram_socket(server_socket)
             .expect("server endpoint");
-        let client_endpoint = Endpoint::build(Executor::new())
+        let client_endpoint = Endpoint::build(WeakScope::never())
             .with_datagram_socket(client_socket)
             .expect("client endpoint");
         let accept = spawn({
@@ -160,10 +157,10 @@ impl Hop {
     where
         S: Service<rama_http::Request, Output = Response, Error = Infallible> + Clone,
     {
-        let executor = Executor::default();
+        let scope = WeakScope::never();
         if version == Version::HTTP_3 {
             let quic = QuicPair::new().await;
-            let server = HttpServer::new_http3(executor.clone());
+            let server = HttpServer::new_http3(scope.clone());
             let service = server.service(service);
             let connection = quic.server.clone();
             spawn(async move {
@@ -173,7 +170,7 @@ impl Hop {
                 connection: BoxedConnection::new(quic.client.clone()),
                 config: Arc::new(Config::default()),
             };
-            let client = http_connect(transport, handshake_request(version), executor)
+            let client = http_connect(transport, handshake_request(version), scope)
                 .await
                 .expect("HTTP/3 client")
                 .conn;
@@ -184,13 +181,13 @@ impl Hop {
         }
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         spawn({
-            let executor = executor.clone();
+            let scope = scope.clone();
             async move {
                 if version == Version::HTTP_2 {
-                    let server = HttpServer::new_h2(executor);
+                    let server = HttpServer::new_h2(scope);
                     _ = server.serve(ServiceInput::new(server_io), service).await;
                 } else {
-                    _ = HttpServer::new_http1(executor)
+                    _ = HttpServer::new_http1(scope)
                         .serve(ServiceInput::new(server_io), service)
                         .await;
                 }
@@ -200,7 +197,7 @@ impl Hop {
         if let Some(params) = params {
             request.extensions().insert(params);
         }
-        let client = http_connect(ServiceInput::new(client_io), request, executor)
+        let client = http_connect(ServiceInput::new(client_io), request, scope)
             .await
             .expect("stream client")
             .conn;

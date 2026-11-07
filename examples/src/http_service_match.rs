@@ -37,7 +37,6 @@ use rama::{
         service::web::match_service,
         service::web::response::{Html, Json, Redirect},
     },
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -64,11 +63,11 @@ async fn main() {
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         let addr = "127.0.0.1:62011";
         tracing::info!("running service at: {addr}");
-        HttpServer::auto(exec)
+        HttpServer::auto(weak_scope)
             .listen(
                 addr,
                 TraceLayer::new_for_http()

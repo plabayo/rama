@@ -13,7 +13,6 @@ use rama_core::{
     extensions::ExtensionsRef as _,
     graceful::{Cause, Scope, WeakScope, scope_context},
     layer::{ScopeLayer, scope::ScopeAborted},
-    rt::Executor,
     service::service_fn,
 };
 use rama_http::{Body, Request, Response, StatusCode, body::util::BodyExt as _};
@@ -57,9 +56,9 @@ enum Scenario {
 /// What starts the shutdown.
 #[derive(Debug, Clone, Copy)]
 enum Trigger {
-    /// The executor's shutdown guard.
+    /// A signalled scope the server observes, apart from the root.
     Guard,
-    /// The executor's scope.
+    /// The signalled root scope.
     Scope,
 }
 
@@ -102,11 +101,11 @@ fn endpoints() -> Endpoints {
         NonZeroUsize::MIN,
     );
     let client_faults = client_socket.fault_control();
-    let server_endpoint = Endpoint::build(Executor::new())
+    let server_endpoint = Endpoint::build(WeakScope::never())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .expect("server endpoint");
-    let client_endpoint = Endpoint::build(Executor::new())
+    let client_endpoint = Endpoint::build(WeakScope::never())
         .with_datagram_socket(client_socket)
         .expect("client endpoint");
     let address = server_endpoint.local_addr().expect("server address");
@@ -145,15 +144,15 @@ async fn shutdown(
         Trigger::Guard => (Some(Scope::new().with_signal(signalled)), Scope::never()),
         Trigger::Scope => (None, Scope::new().with_signal(signalled)),
     };
-    let executor = match &shutdown {
-        Some(shutdown) => Executor::from(shutdown.clone()),
-        None => Executor::from(root.clone()),
+    let scope = match &shutdown {
+        Some(shutdown) => shutdown.clone_weak(),
+        None => root.clone_weak(),
     };
     let aborting = matches!(scenario, Scenario::AbortedWhileRunning);
     let arrived = Arc::new(Notify::new());
     let respond = Arc::new(Notify::new());
     let bodyless = matches!(scenario, Scenario::PeerGoneBodyless);
-    let mut server = HttpServer::new_http3(executor);
+    let mut server = HttpServer::new_http3(scope);
     server.http3_mut().goaway_drain_timeout = goaway_drain_timeout;
     let served = tokio::spawn({
         let endpoint = server_endpoint.clone();
@@ -194,7 +193,7 @@ async fn shutdown(
         .await
         .expect("connect QUIC");
     let (mut requests, driver) =
-        client::handshake::<Body, _>(connection.clone(), Config::default(), Executor::new())
+        client::handshake::<Body, _>(connection.clone(), Config::default(), WeakScope::never())
             .expect("HTTP/3 client");
     tokio::spawn(driver.run());
     let request = Request::builder()
@@ -388,7 +387,7 @@ async fn default_connections_get_isolated_cancellable_scopes() {
     } = endpoints();
     let (scopes_tx, mut scopes) = mpsc::unbounded_channel();
     let respond = Arc::new(Notify::new());
-    let server = HttpServer::new_http3(Executor::new());
+    let server = HttpServer::new_http3(WeakScope::never());
     let serving = tokio::spawn({
         let respond = respond.clone();
         async move {
@@ -429,7 +428,7 @@ async fn default_connections_get_isolated_cancellable_scopes() {
             .await
             .expect("connect QUIC");
         let (mut requests, driver) =
-            client::handshake::<Body, _>(connection.clone(), Config::default(), Executor::new())
+            client::handshake::<Body, _>(connection.clone(), Config::default(), WeakScope::never())
                 .expect("HTTP/3 client");
         tokio::spawn(driver.run());
         let request = Request::builder()
@@ -521,14 +520,14 @@ async fn capped(max_age: Duration, grace: Duration, answer_after: Option<Duratio
         ..
     } = endpoints();
     let root = Scope::new();
-    let exec = Executor::from(root.clone());
+    let scope = root.clone_weak();
     let arrived = Arc::new(Notify::new());
     let respond = Arc::new(Notify::new());
     let service = ScopeLayer::new()
-        .with_parent(exec.scope().clone())
+        .with_parent(scope.clone())
         .with_max_age(max_age)
         .with_grace(grace)
-        .into_layer(HttpServer::new_http3(exec).service(service_fn({
+        .into_layer(HttpServer::new_http3(scope).service(service_fn({
             let arrived = arrived.clone();
             let respond = respond.clone();
             move |_: Request| {
@@ -555,7 +554,7 @@ async fn capped(max_age: Duration, grace: Duration, answer_after: Option<Duratio
         .await
         .expect("connect QUIC");
     let (mut requests, driver) =
-        client::handshake::<Body, _>(connection.clone(), Config::default(), Executor::new())
+        client::handshake::<Body, _>(connection.clone(), Config::default(), WeakScope::never())
             .expect("HTTP/3 client");
     tokio::spawn(driver.run());
     let draining = requests.closed_or_draining();

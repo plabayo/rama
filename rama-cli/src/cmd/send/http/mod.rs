@@ -8,7 +8,6 @@ use rama::{
         body::util::BodyExt as _,
         layer::har::recorder::{FileRecorder, Recorder as _},
     },
-    rt::Executor,
     telemetry::tracing,
     utils::collections::NonEmptySmallVec,
 };
@@ -72,7 +71,7 @@ pub(super) async fn run_inner(
         .map(|path| FileRecorder::try_new_at(path.clone()))
         .transpose()?;
     let scope = Scope::new().with_default_signal();
-    let executor = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     let exchange = async {
         // Every request is built and validated before any transport I/O.
         let mut requests = Vec::with_capacity(following.len() + 1);
@@ -87,7 +86,7 @@ pub(super) async fn run_inner(
         let request = requests.pop().context("at least one request")?;
         let preceding = requests;
         let https_client =
-            client::new(cfg, feed_tui, har_recorder.clone(), executor.clone()).await?;
+            client::new(cfg, feed_tui, har_recorder.clone(), weak_scope.clone()).await?;
         for request in preceding {
             request.extensions().insert(PrecedingSegment);
             if cfg.last_response_only {
@@ -134,7 +133,7 @@ pub(super) async fn run_inner(
     let exchange = async {
         tokio::select! {
             result = exchange => result,
-            _ = executor.cancelled() => Err(BoxError::from_static_str("request cancelled")),
+            _ = weak_scope.cancelled() => Err(BoxError::from_static_str("request cancelled")),
         }
     };
     let result = if let Some(max_time) = cfg.max_time
@@ -148,7 +147,7 @@ pub(super) async fn run_inner(
         exchange.await
     };
 
-    drop(executor);
+    drop(weak_scope);
     drain_client(scope).await;
     if let Some(recorder) = &har_recorder {
         recorder.stop_record().await;

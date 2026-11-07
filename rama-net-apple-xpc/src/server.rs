@@ -1,6 +1,11 @@
 use std::{future::Future, sync::Arc};
 
-use rama_core::{Service, error::BoxError, graceful::Scope, rt::Executor, telemetry::tracing};
+use rama_core::{
+    Service,
+    error::BoxError,
+    graceful::{Scope, WeakScope},
+    telemetry::tracing,
+};
 
 use crate::{
     ReceivedXpcMessage, XpcConnection, XpcConnectionError, XpcError, XpcEvent, XpcListener,
@@ -66,22 +71,22 @@ where
     pub async fn serve_listener(
         self,
         mut listener: XpcListener,
-        executor: Executor,
+        weak_scope: WeakScope,
     ) -> Result<(), BoxError> {
         tracing::info!("xpc server listener loop started");
         // Serving holds the scope, so every peer accepted until the cancel is admitted.
-        let Some(scope) = executor.scope().to_scope() else {
-            tracing::debug!("executor scope closed: not serving");
+        let Ok(scope) = weak_scope.try_hold() else {
+            tracing::debug!("scope closed: not serving");
             return Ok(());
         };
 
-        while let Some(peer) = recv_until(executor.cancelled(), listener.accept()).await {
+        while let Some(peer) = recv_until(weak_scope.cancelled(), listener.accept()).await {
             tracing::info!(
                 pid = peer.pid(),
                 asid = peer.asid(),
                 "xpc server accepted peer connection"
             );
-            self.spawn_peer_task(peer, &scope, &executor);
+            self.spawn_peer_task(peer, &scope, &weak_scope);
         }
 
         if let Some(error) = listener.termination_reason() {
@@ -106,15 +111,15 @@ where
     pub async fn serve_connection(
         self,
         mut connection: XpcConnection,
-        executor: Executor,
+        weak_scope: WeakScope,
     ) -> Result<(), BoxError> {
         // Serving holds the scope, so every peer accepted until the cancel is admitted.
-        let Some(scope) = executor.scope().to_scope() else {
-            tracing::debug!("executor scope closed: not serving");
+        let Ok(scope) = weak_scope.try_hold() else {
+            tracing::debug!("scope closed: not serving");
             return Ok(());
         };
         loop {
-            match recv_until(executor.cancelled(), connection.recv()).await {
+            match recv_until(weak_scope.cancelled(), connection.recv()).await {
                 None => break,
                 Some(XpcEvent::Connection(peer)) => {
                     tracing::info!(
@@ -122,7 +127,7 @@ where
                         asid = peer.asid(),
                         "xpc server accepted peer connection from event stream"
                     );
-                    self.spawn_peer_task(peer, &scope, &executor);
+                    self.spawn_peer_task(peer, &scope, &weak_scope);
                 }
                 Some(XpcEvent::Message(message)) => {
                     handle_message(self.service.as_ref(), message, None).await;
@@ -137,9 +142,9 @@ where
         Ok(())
     }
 
-    fn spawn_peer_task(&self, peer: XpcConnection, scope: &Scope, executor: &Executor) {
+    fn spawn_peer_task(&self, peer: XpcConnection, scope: &Scope, weak_scope: &WeakScope) {
         let service = self.service.clone();
-        let stop = executor.clone();
+        let stop = weak_scope.clone();
         let pid = peer.pid();
         let asid = peer.asid();
 
@@ -156,7 +161,7 @@ where
 async fn serve_peer<S>(
     service: Arc<S>,
     mut peer: XpcConnection,
-    executor: &Executor,
+    scope: &WeakScope,
     pid: i32,
     asid: i32,
 ) -> Result<(), BoxError>
@@ -165,7 +170,7 @@ where
 {
     tracing::info!(pid, asid, "xpc server peer task started");
     loop {
-        match recv_until(executor.cancelled(), peer.recv()).await {
+        match recv_until(scope.cancelled(), peer.recv()).await {
             None => {
                 tracing::info!(pid, asid, "xpc server peer task stopped");
                 return Ok(());

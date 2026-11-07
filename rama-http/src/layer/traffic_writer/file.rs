@@ -308,7 +308,7 @@ mod tests {
         layer::traffic_writer::{RequestWriterLayer, ResponseWriterLayer},
     };
     use ahash::{HashSet, HashSetExt as _};
-    use rama_core::{Layer as _, Service as _, rt::Executor, service::service_fn};
+    use rama_core::{Layer as _, Service as _, graceful::WeakScope, service::service_fn};
     use std::{convert::Infallible, time::Duration};
     use uuid::Uuid;
 
@@ -433,9 +433,9 @@ mod tests {
     #[tokio::test]
     async fn file_layers_share_exchange_id_with_request_layer_outermost() {
         let temp = rama_utils::fs::tempdir().unwrap();
-        let executor = Executor::new();
+        let scope = WeakScope::never();
         let request = RequestWriterLayer::file_per_request(
-            &executor,
+            &scope,
             temp.path(),
             "traffic",
             Some(WriterMode::All),
@@ -443,7 +443,7 @@ mod tests {
         .await
         .unwrap();
         let response = ResponseWriterLayer::file_per_response(
-            &executor,
+            &scope,
             temp.path(),
             "traffic",
             Some(WriterMode::All),
@@ -475,9 +475,9 @@ mod tests {
     #[tokio::test]
     async fn file_layers_share_exchange_id_with_response_layer_outermost() {
         let temp = rama_utils::fs::tempdir().unwrap();
-        let executor = Executor::new();
+        let scope = WeakScope::never();
         let request = RequestWriterLayer::file_per_request(
-            &executor,
+            &scope,
             temp.path(),
             "traffic",
             Some(WriterMode::All),
@@ -485,7 +485,7 @@ mod tests {
         .await
         .unwrap();
         let response = ResponseWriterLayer::file_per_response(
-            &executor,
+            &scope,
             temp.path(),
             "traffic",
             Some(WriterMode::All),

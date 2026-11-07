@@ -30,7 +30,7 @@ use rama_core::{
     futures::FutureExt,
     graceful::{Cause, Scope, WeakScope},
     io::BridgeIo,
-    rt::{Executor, OwnedRuntimeHandle},
+    rt::OwnedRuntimeHandle,
     service::Service,
 };
 use rama_net::{
@@ -386,9 +386,9 @@ where
             tracing::trace!("notify_system_sleep ignored: engine already stopped");
             return;
         };
-        let exec = Executor::from(scope);
+        let weak_scope = WeakScope::from(scope);
         let handler = self.handler.clone();
-        _ = rt.spawn(async move { handler.on_system_sleep(exec).await });
+        _ = rt.spawn(async move { handler.on_system_sleep(weak_scope).await });
     }
 
     /// Symmetric counterpart of [`Self::notify_system_sleep`].
@@ -397,9 +397,9 @@ where
             tracing::trace!("notify_system_wake ignored: engine already stopped");
             return;
         };
-        let exec = Executor::from(scope);
+        let weak_scope = WeakScope::from(scope);
         let handler = self.handler.clone();
-        _ = rt.spawn(async move { handler.on_system_wake(exec).await });
+        _ = rt.spawn(async move { handler.on_system_wake(weak_scope).await });
     }
 
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
@@ -411,7 +411,7 @@ where
             return None;
         };
 
-        let exec = Executor::from(scope);
+        let weak_scope = WeakScope::from(scope);
         let handler = self.handler.clone();
         // Worst-case time we let a user-supplied app-message handler
         // run. Apple's `NETransparentProxyProvider` dispatches
@@ -425,7 +425,8 @@ where
         let message_len = message.len();
         match try_block_on_async_task(rt, async move {
             if let Ok(reply) =
-                tokio::time::timeout(deadline, handler.handle_app_message(exec, message)).await
+                tokio::time::timeout(deadline, handler.handle_app_message(weak_scope, message))
+                    .await
             {
                 reply
             } else {
@@ -498,14 +499,14 @@ where
         let decision_deadline_action = self.decision_deadline_action;
         let flow_id = meta.flow_id;
         let protocol = meta.protocol;
-        let exec = Executor::from(scope.clone());
+        let weak_scope = scope.clone_weak();
         let handler = self.handler.clone();
         let provider_pid = self.provider_pid;
         let provider_generation = self.provider_generation;
 
         let future = new_tcp_session_flow_action(
             scope,
-            exec,
+            weak_scope,
             meta,
             provider_pid,
             provider_generation,
@@ -592,14 +593,14 @@ where
         let decision_deadline_action = self.decision_deadline_action;
         let flow_id = meta.flow_id;
         let protocol = meta.protocol;
-        let exec = Executor::from(scope.clone());
+        let weak_scope = scope.clone_weak();
         let handler = self.handler.clone();
         let provider_pid = self.provider_pid;
         let provider_generation = self.provider_generation;
 
         let future = new_udp_session_flow_action(
             scope,
-            exec,
+            weak_scope,
             meta,
             provider_pid,
             provider_generation,
@@ -1168,7 +1169,7 @@ impl TransparentProxyTcpSession {
             );
             return;
         };
-        let ingress_stream = TcpFlow::new(ingress_inner, Some(Executor::from(flow_scope)));
+        let ingress_stream = TcpFlow::new(ingress_inner, Some(WeakScope::from(flow_scope)));
         ingress_stream.extensions().insert_arc(meta_arc);
         if let Some(remote) = remote_endpoint {
             ingress_stream.extensions().insert(ConnectorTarget(remote));
@@ -1368,7 +1369,7 @@ impl Drop for TransparentProxyTcpSession {
 )]
 async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     parent: Scope,
-    exec: Executor,
+    weak_scope: WeakScope,
     meta: TransparentProxyFlowMeta,
     _provider_pid: u32,
     _provider_generation: u64,
@@ -1396,7 +1397,7 @@ where
     #[cfg(feature = "dial9")]
     let flow_source_pid = meta.source_app_pid;
     let decision =
-        tokio::time::timeout(decision_deadline, handler.match_tcp_flow(exec, meta)).await;
+        tokio::time::timeout(decision_deadline, handler.match_tcp_flow(weak_scope, meta)).await;
     drop(decision_permit);
     let Ok(flow_action) = decision else {
         emit_decision_deadline_event(
@@ -1478,11 +1479,8 @@ where
     // Service task waits for BridgeIo, then serves it under a flow-level
     // idle backstop + cancellation watch.
     //
-    // Spawn through the rama `Executor` of the flow scope instead of
-    // `tokio::spawn` directly, so that with the `dial9`
-    // feature on the inner `tokio::spawn` is replaced by
-    // `dial9::spawn` — giving per-future wake-event
-    // tracking on this long-lived per-flow service task.
+    // Spawned on the held flow scope, which goes through `rama_core::rt::spawn`: with the
+    // `dial9` feature on, this long-lived per-flow task gets wake-event tracking.
     let diagnostic_meta = Arc::new(meta.clone());
     let meta_for_close = diagnostic_meta.clone();
     let counters_for_close = byte_counters.clone();
@@ -1531,7 +1529,8 @@ where
     // Boxed: the future embeds the whole per-flow service stack, and this
     // spawn runs on Swift dispatch threads with 512 KiB stacks — moving it
     // by value through the spawn chain overflows them in debug builds.
-    let service_task = flow_scope.spawn_task(Box::pin(async move {
+    // It ends on its own and runs the close epilogue, so the hard phase does not drop it.
+    let service_task = flow_scope.spawn_task_to_completion(Box::pin(async move {
         let _task_guard = TcpFlowTaskGuard::new();
         let mut bridge_rx = bridge_rx;
         let bridge = tokio::select! {
@@ -2030,7 +2029,7 @@ impl Drop for TransparentProxyUdpSession {
 )]
 async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     parent: Scope,
-    exec: Executor,
+    scope: WeakScope,
     meta: TransparentProxyFlowMeta,
     _provider_pid: u32,
     _provider_generation: u64,
@@ -2063,7 +2062,7 @@ where
     #[cfg(feature = "dial9")]
     let flow_source_pid = meta.source_app_pid;
     let decision =
-        tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await;
+        tokio::time::timeout(decision_deadline, handler.match_udp_flow(scope, meta)).await;
     drop(decision_permit);
     let Ok(flow_action) = decision else {
         emit_decision_deadline_event(
@@ -2190,7 +2189,7 @@ where
             received_control.on_channel_capacity_released()
         })),
         Some(Arc::new(move || closed_control.close())),
-        Some(Executor::from(flow_scope.clone())),
+        Some(flow_scope.clone_weak()),
     );
     flow.extensions().insert_arc(meta_arc.clone());
     if let Some(remote) = meta_arc.remote_endpoint.clone() {
@@ -2199,15 +2198,14 @@ where
 
     // Service task waits for activation; calls closed_sink when done.
     //
-    // Spawn through the rama `Executor` so dial9 wake-event tracking
-    // is applied when the feature is on (see TCP path for context).
+    // Spawned on the held flow scope, as on the TCP path, for dial9 wake-event tracking.
     let meta_for_close = meta_arc;
     let flow_scope_for_task = flow_scope.clone();
     let idle_notify_for_task = idle_notify.clone();
     #[cfg(feature = "dial9")]
     let byte_counters_for_close = byte_counters.clone();
     // Boxed for the same small-FFI-stack reason as the TCP service task.
-    let service_task = flow_scope.into_spawn_task(Box::pin(async move {
+    let service_task = flow_scope.into_spawn_task_to_completion(Box::pin(async move {
         let lifetime_fut = async {
             if let Some(deadline) = udp_lifetime_deadline {
                 tokio::time::sleep_until(deadline).await;

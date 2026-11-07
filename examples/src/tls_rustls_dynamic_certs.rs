@@ -67,7 +67,6 @@ use rama::{
     http::service::web::response::IntoResponse,
     http::{Request, Response, server::HttpServer},
     layer::ConsumeErrLayer,
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -122,9 +121,9 @@ async fn main() {
         });
 
     // create http server
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
+        let http_service = HttpServer::auto(weak_scope.clone()).service(service_fn(http_service));
 
         let tcp_service = (
             ConsumeErrLayer::default(),
@@ -132,7 +131,7 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind_address(bind_address, exec)
+        TcpListener::bind_address(bind_address, weak_scope)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

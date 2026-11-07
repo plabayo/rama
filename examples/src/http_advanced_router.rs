@@ -72,7 +72,6 @@ use rama::{
     },
     layer::{ArcLayer, IntoErrLayer, layer_fn},
     net::stream::SocketInfo,
-    rt::Executor,
     telemetry::tracing::{
         self, error,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
@@ -133,7 +132,7 @@ async fn main() -> Result<(), BoxError> {
         .into_layer(router);
 
     tracing::info!("running server at: {ADDRESS}");
-    HttpServer::auto(Executor::from(scope.clone()))
+    HttpServer::auto(scope.clone_weak())
         .listen(ADDRESS, svc)
         .await
         .context("http listen")?;

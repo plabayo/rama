@@ -54,7 +54,6 @@ use rama::{
     },
     layer::AddInputExtensionLayer,
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::{
         opentelemetry::{
@@ -144,10 +143,10 @@ async fn main() {
         .with_grace(Duration::from_secs(30));
 
     // http web service
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         // http service
-        let http_service = HttpServer::auto(exec.clone()).service(
+        let http_service = HttpServer::auto(weak_scope.clone()).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
                 WebService::default().with_get("/", async |ext: Extensions| {
                     ext.get_ref::<Metrics>().unwrap().counter.add(1, &[]);
@@ -157,7 +156,7 @@ async fn main() {
         );
 
         // service setup & go
-        TcpListener::build(exec)
+        TcpListener::build(weak_scope)
             .bind_address("127.0.0.1:62113")
             .await
             .unwrap()

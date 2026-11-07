@@ -1,5 +1,5 @@
 //! Every served connection runs in a child of the most recent scope in its extensions (or of
-//! the executor's): it drains on the graceful phase without cutting the in-flight response,
+//! the server's): it drains on the graceful phase without cutting the in-flight response,
 //! and is dropped at the hard phase.
 
 #![expect(clippy::expect_used, clippy::unwrap_used, reason = "test fixtures")]
@@ -12,7 +12,6 @@ use rama_core::{
     extensions::ExtensionsRef,
     graceful::{Cause, Scope, WeakScope, attach_scope, scope_context},
     layer::{ScopeLayer, scope::ScopeAborted},
-    rt::Executor,
     service::service_fn,
 };
 use rama_http_backend::server::HttpServer;
@@ -34,17 +33,17 @@ const WAIT: Duration = Duration::from_secs(5);
 
 type Server = tokio::task::JoinHandle<Result<(), rama_core::error::BoxError>>;
 
-/// Serve `server_io` on `exec`; the returned receiver holds the scope the request sees once
+/// Serve `server_io` on `scope`; the returned receiver holds the scope the request sees once
 /// it is being handled, which is held until `release`.
 fn serve(
     server_io: MockSocket,
-    exec: Executor,
+    weak_scope: WeakScope,
     layer: Option<ScopeLayer>,
     release: watch::Receiver<bool>,
 ) -> (Server, watch::Receiver<Option<Scope>>) {
     let (arrived_tx, arrived) = watch::channel(None);
     let arrived_tx = std::sync::Arc::new(arrived_tx);
-    let service = HttpServer::auto(exec).service(service_fn(move |req: Request| {
+    let service = HttpServer::auto(weak_scope).service(service_fn(move |req: Request| {
         let mut release = release.clone();
         let scope = scope_context(req.extensions()).and_then(WeakScope::into_scope);
         arrived_tx.send_replace(Some(
@@ -134,7 +133,7 @@ async fn h2_connection_scope_cancel_sends_goaway_and_finishes_in_flight_stream()
     let server_io = MockSocket::new(server_io);
     let scope = Scope::new();
     attach_scope(server_io.extensions(), &scope);
-    let (server, mut arrived) = serve(server_io, Executor::new(), None, release);
+    let (server, mut arrived) = serve(server_io, WeakScope::never(), None, release);
 
     let client = h2_request(client_io).await;
     arrived.wait_for(Option::is_some).await.unwrap();
@@ -157,12 +156,7 @@ async fn executor_scope_cancel_drains_the_connection() {
     let (client_io, server_io) = tokio::io::duplex(kib(64));
     let (release_tx, release) = watch::channel(false);
     let root = Scope::new();
-    let (server, mut arrived) = serve(
-        MockSocket::new(server_io),
-        Executor::from(root.clone()),
-        None,
-        release,
-    );
+    let (server, mut arrived) = serve(MockSocket::new(server_io), root.clone_weak(), None, release);
 
     let client = h2_request(client_io).await;
     arrived.wait_for(Option::is_some).await.unwrap();
@@ -184,7 +178,7 @@ async fn h1_connection_scope_cancel_closes_after_in_flight_response() {
     let server_io = MockSocket::new(server_io);
     let scope = Scope::new();
     attach_scope(server_io.extensions(), &scope);
-    let (server, mut arrived) = serve(server_io, Executor::new(), None, release);
+    let (server, mut arrived) = serve(server_io, WeakScope::never(), None, release);
 
     let (mut sender, conn) = client_conn::http1::handshake(MockSocket::new(client_io))
         .await
@@ -221,7 +215,7 @@ async fn abort_drops_a_connection_with_a_stuck_request() {
     let server_io = MockSocket::new(server_io);
     let scope = Scope::new();
     attach_scope(server_io.extensions(), &scope);
-    let (server, mut arrived) = serve(server_io, Executor::new(), None, release);
+    let (server, mut arrived) = serve(server_io, WeakScope::never(), None, release);
 
     let client = h2_request(client_io).await;
     arrived.wait_for(Option::is_some).await.unwrap();
@@ -250,7 +244,7 @@ async fn scope_layer_drains_at_max_age_and_aborts_after_grace() {
     let start = Instant::now();
     let (server, mut arrived) = serve(
         MockSocket::new(server_io),
-        Executor::new(),
+        WeakScope::never(),
         Some(layer),
         release,
     );
@@ -280,13 +274,13 @@ async fn default_connections_get_isolated_cancellable_scopes() {
     let (release_tx, release) = watch::channel(false);
     let (first_server, mut first_arrived) = serve(
         MockSocket::new(first_server_io),
-        Executor::new(),
+        WeakScope::never(),
         None,
         release.clone(),
     );
     let (second_server, mut second_arrived) = serve(
         MockSocket::new(second_server_io),
-        Executor::new(),
+        WeakScope::never(),
         None,
         release,
     );
@@ -328,7 +322,12 @@ async fn default_connections_get_isolated_cancellable_scopes() {
 async fn default_h1_connection_closes_on_its_request_scope() {
     let (client_io, server_io) = tokio::io::duplex(kib(64));
     let (release_tx, release) = watch::channel(false);
-    let (server, mut arrived) = serve(MockSocket::new(server_io), Executor::new(), None, release);
+    let (server, mut arrived) = serve(
+        MockSocket::new(server_io),
+        WeakScope::never(),
+        None,
+        release,
+    );
 
     let (mut sender, conn) = client_conn::http1::handshake(MockSocket::new(client_io))
         .await
@@ -358,7 +357,7 @@ async fn scope_layer_parent_keeps_the_executor_shutdown() {
     let layer = ScopeLayer::new().with_parent(root.clone_weak());
     let (server, mut arrived) = serve(
         MockSocket::new(server_io),
-        Executor::from(root.clone()),
+        root.clone_weak(),
         Some(layer),
         release,
     );
@@ -370,7 +369,7 @@ async fn scope_layer_parent_keeps_the_executor_shutdown() {
     root.abort(Cause::Owner);
     let err = timeout(WAIT, server)
         .await
-        .expect("the executor's abort reaches the layered connection")
+        .expect("the scope's abort reaches the layered connection")
         .unwrap()
         .expect_err("aborted");
     assert!(err.downcast_ref::<ScopeAborted>().is_some());
@@ -387,7 +386,7 @@ async fn earlier_parent_cap_ends_a_layered_connection() {
     let start = Instant::now();
     let (server, mut arrived) = serve(
         MockSocket::new(server_io),
-        Executor::from(root.clone()),
+        root.clone_weak(),
         Some(layer),
         release,
     );
@@ -402,7 +401,7 @@ async fn earlier_parent_cap_ends_a_layered_connection() {
     assert_eq!(start.elapsed().as_secs(), 3);
 }
 
-/// An input scope unrelated to the server's executor: the connection follows both.
+/// An input scope unrelated to the server's scope: the connection follows both.
 #[tokio::test]
 async fn an_unrelated_input_scope_and_the_layer_parent_both_apply() {
     for end_input in [true, false] {
@@ -413,12 +412,7 @@ async fn an_unrelated_input_scope_and_the_layer_parent_both_apply() {
         let server_io = MockSocket::new(server_io);
         attach_scope(server_io.extensions(), &input);
         let layer = ScopeLayer::new().with_parent(root.clone_weak());
-        let (server, mut arrived) = serve(
-            server_io,
-            Executor::from(root.clone()),
-            Some(layer),
-            release,
-        );
+        let (server, mut arrived) = serve(server_io, root.clone_weak(), Some(layer), release);
 
         let client = h2_request(client_io).await;
         arrived.wait_for(Option::is_some).await.unwrap();
@@ -441,15 +435,15 @@ async fn an_unrelated_input_scope_and_the_layer_parent_both_apply() {
 #[tokio::test]
 async fn tcp_listener_hands_its_executor_scope_to_a_layer() {
     let root = Scope::new();
-    let exec = Executor::from(root.clone());
-    let listener = TcpListener::build(exec.clone())
+    let scope = root.clone_weak();
+    let listener = TcpListener::build(scope.clone())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
     let (_release_tx, release) = watch::channel(false);
     let (arrived_tx, mut arrived) = watch::channel(false);
-    let http = HttpServer::auto(exec.clone()).service(service_fn(move |_: Request| {
+    let http = HttpServer::auto(scope.clone()).service(service_fn(move |_: Request| {
         let mut release = release.clone();
         arrived_tx.send_replace(true);
         async move {
@@ -472,14 +466,14 @@ async fn tcp_listener_hands_its_executor_scope_to_a_layer() {
     timeout(WAIT, serving).await.unwrap().unwrap();
 }
 
-/// A handler keeping the request's extensions keeps only weak scope metadata: the executor's
+/// A handler keeping the request's extensions keeps only weak scope metadata: the root's
 /// join completes once the connection is done.
 #[tokio::test]
 async fn retained_request_extensions_do_not_hold_the_join() {
     let (client_io, server_io) = tokio::io::duplex(kib(64));
     let root = Scope::new();
     let retained = std::sync::Arc::new(parking_lot::Mutex::new(None));
-    let service = HttpServer::auto(Executor::from(root.clone())).service(service_fn({
+    let service = HttpServer::auto(root.clone_weak()).service(service_fn({
         let retained = retained.clone();
         move |req: Request| {
             *retained.lock() = Some(req.extensions().clone());

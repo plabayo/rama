@@ -5,7 +5,10 @@
 
 use parking_lot::Mutex;
 use rama_core::{
-    ServiceInput, bytes::Bytes, extensions::ExtensionsRef as _, graceful::Scope, rt::Executor,
+    ServiceInput,
+    bytes::Bytes,
+    extensions::ExtensionsRef as _,
+    graceful::{Scope, WeakScope},
     service::service_fn,
 };
 use rama_http::{
@@ -145,11 +148,11 @@ where
     let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
     let response = if version == Version::HTTP_2 {
         tokio::spawn(
-            server::conn::http2::Builder::new(Executor::new())
+            server::conn::http2::Builder::new(WeakScope::never())
                 .with_enable_connect_protocol()
                 .serve_connection(server_io, service),
         );
-        let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
+        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
             .handshake(client_io)
             .await
             .unwrap();
@@ -272,11 +275,11 @@ async fn truncated_capsules_reset_http2_streams_with_protocol_error() {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
         tokio::spawn(
-            server::conn::http2::Builder::new(Executor::new())
+            server::conn::http2::Builder::new(WeakScope::never())
                 .with_enable_connect_protocol()
                 .serve_connection(server_io, capsule_service()),
         );
-        let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
+        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
             .handshake(client_io)
             .await
             .unwrap();
@@ -319,11 +322,11 @@ async fn malformed_http2_streams_reset_after_local_end_stream() {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
         tokio::spawn(
-            server::conn::http2::Builder::new(Executor::new())
+            server::conn::http2::Builder::new(WeakScope::never())
                 .with_enable_connect_protocol()
                 .serve_connection(server_io, closing_service()),
         );
-        let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
+        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
             .handshake(client_io)
             .await
             .unwrap();
@@ -467,11 +470,11 @@ async fn refused_capsule_requests_leave_the_connection_reusable() {
         // HTTP/2: the refused stream ends; the next Extended CONNECT uses the same connection.
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         tokio::spawn(
-            server::conn::http2::Builder::new(Executor::new())
+            server::conn::http2::Builder::new(WeakScope::never())
                 .with_enable_connect_protocol()
                 .serve_connection(ServiceInput::new(server_io), refuse_once_service()),
         );
-        let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
+        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
             .handshake(ServiceInput::new(client_io))
             .await
             .unwrap();
@@ -647,7 +650,7 @@ async fn http2_graceful_shutdown_drains_live_capsule_sessions() {
         let (drain_tx, drain_rx) = oneshot::channel();
         let (started_tx, started_rx) = oneshot::channel();
         let driver = tokio::spawn(async move {
-            let connection = server::conn::http2::Builder::new(Executor::new())
+            let connection = server::conn::http2::Builder::new(WeakScope::never())
                 .with_enable_connect_protocol()
                 .serve_connection(ServiceInput::new(server_io), service);
             let mut connection = pin!(connection);
@@ -668,7 +671,7 @@ async fn http2_graceful_shutdown_drains_live_capsule_sessions() {
             started_tx.send(()).unwrap();
             connection.await.unwrap();
         });
-        let (mut sender, client_driver) = conn::http2::Builder::new(Executor::new())
+        let (mut sender, client_driver) = conn::http2::Builder::new(WeakScope::never())
             .handshake(ServiceInput::new(client_io))
             .await
             .unwrap();
@@ -744,7 +747,7 @@ async fn http1_upgraded_sessions_outlive_their_http_driver() {
     .unwrap();
 }
 
-/// A graceful executor keeps tracking H1 and H2 capsule session tasks until they end.
+/// A graceful scope keeps tracking H1 and H2 capsule session tasks until they end.
 #[tokio::test]
 async fn graceful_executors_wait_for_capsule_session_tasks() {
     for version in [Version::HTTP_11, Version::HTTP_2] {
@@ -752,22 +755,20 @@ async fn graceful_executors_wait_for_capsule_session_tasks() {
             let (stop, stopped) = oneshot::channel::<()>();
             let shutdown = Scope::new().with_signal(stopped);
             let observer = shutdown.clone_weak();
-            let executor = Executor::from(shutdown.clone());
+            let scope = shutdown.clone_weak();
             let (done, completed) = oneshot::channel();
             let done = Arc::new(Mutex::new(Some(done)));
             let service = RamaHttpService::new(service_fn(move |request: Request| {
-                let executor = executor.clone();
+                let scope = scope.clone();
                 let done = done.clone();
                 async move {
                     let protocol =
                         validate_capsule_request(&request, ViolationPolicy::Ignore).unwrap();
                     let upgrade = handle_upgrade(&request);
-                    executor
-                        .try_spawn_task(async move {
-                            echo(upgrade.await.unwrap()).await;
-                            done.lock().take().unwrap().send(()).unwrap();
-                        })
-                        .unwrap();
+                    scope.try_hold().unwrap().into_spawn_task(async move {
+                        echo(upgrade.await.unwrap()).await;
+                        done.lock().take().unwrap().send(()).unwrap();
+                    });
                     Ok::<_, Infallible>(
                         capsule_response::<Body>(request.version(), &protocol).unwrap(),
                     )

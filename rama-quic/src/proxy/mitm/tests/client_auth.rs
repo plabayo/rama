@@ -210,7 +210,7 @@ async fn run(version: QuicVersion, port: u16, case: Case) -> Outcome {
             Ok(())
         })));
     }
-    let origin = Endpoint::build(Executor::new())
+    let origin = Endpoint::build(WeakScope::never())
         .with_server_config(
             ServerConfig::try_from_rama_tls_with_provider(
                 &origin_tls,
@@ -248,7 +248,7 @@ async fn run(version: QuicVersion, port: u16, case: Case) -> Outcome {
     }
     let mut mitm = QuicMitmRelay::new(
         issuer(&mitm_identity),
-        Executor::new(),
+        WeakScope::never(),
         egress_tls,
         VarInt::from_u32(0x0101),
     )
@@ -283,7 +283,7 @@ async fn run(version: QuicVersion, port: u16, case: Case) -> Outcome {
     )
     .unwrap();
     config.set_version(version).unwrap();
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::never())
         .with_datagram_socket(client_socket)
         .unwrap();
     let _connecting = client

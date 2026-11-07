@@ -22,7 +22,7 @@
 use rama::{
     Layer, Service,
     extensions::ExtensionsRef,
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         Request, Response,
         body::util::BodyExt,
@@ -40,7 +40,6 @@ use rama::{
     },
     layer::{Abortable, abort::AbortController},
     net::{Protocol, address::Authority, address::SocketAddress},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -109,7 +108,7 @@ async fn main() {
             ),
         ),
     )
-        .into_layer(EasyHttpWebClient::default_with_executor(Executor::from(
+        .into_layer(EasyHttpWebClient::default_with_scope(WeakScope::from(
             scope.clone(),
         )));
 
@@ -172,8 +171,8 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
         "running server",
     );
 
-    let exec = Executor::default();
-    let http_svc = HttpServer::auto(exec.clone()).service(
+    let scope = WeakScope::never();
+    let http_svc = HttpServer::auto(scope.clone()).service(
         (
             AddRequiredResponseHeadersLayer::new(),
             CompressionLayer::new()
@@ -218,7 +217,7 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
             })),
     );
 
-    TcpListener::bind_address(ADDRESS, exec)
+    TcpListener::bind_address(ADDRESS, scope)
         .await
         .unwrap()
         .serve(Abortable::new(http_svc))

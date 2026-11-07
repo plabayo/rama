@@ -4,7 +4,7 @@ use super::lifecycle::{SegmentLog, endpoint_with, exchange, handshake, recording
 use crate::driver::udp::Socket;
 use crate::{Connection, Endpoint, EndpointConfig, proxy::QuicRelay};
 use parking_lot::Mutex;
-use rama_core::{Service as _, io::BridgeIo, rt::Executor};
+use rama_core::{Service as _, graceful::WeakScope, io::BridgeIo};
 use rama_quic_proto::{
     Version,
     packet::{FixedLengthConnectionIdParser, PartialDecode, SPIN_BIT},
@@ -78,7 +78,7 @@ async fn hop(version: Version, allow: [bool; 2], enabled: [bool; 2], preferred: 
             Some(server_config),
             server_socket,
             advertised,
-            Executor::new(),
+            WeakScope::never(),
             Duration::from_secs(1),
         )
         .unwrap();

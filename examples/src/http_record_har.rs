@@ -30,7 +30,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         BodyLimitLayer, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -56,7 +56,6 @@ use rama::{
     io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutputLayer, TimeoutLayer},
     net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -86,15 +85,15 @@ async fn main() -> Result<(), BoxError> {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
-    let (har_toggle, har_toggle_ctl) = har::toggle::mpsc_toggle(8, exec.cancelled());
+    let (har_toggle, har_toggle_ctl) = har::toggle::mpsc_toggle(8, weak_scope.cancelled());
     let har_layer = HARExportLayer::new(FileRecorder::default(), har_toggle);
     let mitm_svc =
-        new_mitm_svc(&exec, har_layer.clone()).context("build HAR MITM relay service")?;
+        new_mitm_svc(&weak_scope, har_layer.clone()).context("build HAR MITM relay service")?;
 
     scope.spawn_task(async move {
-        let tcp_service = TcpListener::build(exec.clone())
+        let tcp_service = TcpListener::build(weak_scope.clone())
             .bind_address("127.0.0.1:62040")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62040");
@@ -125,13 +124,13 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         );
-        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
+        let http_service = HttpServer::auto(weak_scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
                 ProxyAuthLayer::new(basic!("john", "secret")),
                 HijackLayer::new(DomainMatcher::exact("har.toggle.internal"), toggle_service),
-                UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect),
+                UpgradeLayer::new(weak_scope.clone(), MethodMatcher::CONNECT, connect),
                 RemoveRequestHeaderLayer::hop_by_hop(),
                 MapOutputLayer::new(add_har_file_header),
                 MapResponseBodyLayer::new_boxed_streaming_body(),
@@ -146,7 +145,7 @@ async fn main() -> Result<(), BoxError> {
                 ArcLayer::new(),
             )
                 .into_layer(
-                    EasyHttpWebClient::default_with_executor(exec)
+                    EasyHttpWebClient::default_with_scope(weak_scope)
                         .with_isolate_forward_proxy_auth_error(true),
                 ),
         ));
@@ -162,7 +161,7 @@ async fn main() -> Result<(), BoxError> {
 }
 
 fn new_mitm_svc<Ingress, Egress>(
-    exec: &Executor,
+    scope: &WeakScope,
     har_layer: HARExportLayer<FileRecorder, Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<
     impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone,
@@ -172,7 +171,7 @@ where
     Ingress: Io + Unpin + ExtensionsRef,
     Egress: Io + Unpin + ExtensionsRef,
 {
-    let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+    let http_mitm_relay = HttpMitmRelay::new(scope.clone()).with_http_middleware((
         MapOutputLayer::new(add_har_file_header),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         // Record decoded representation bytes, then restore the upstream
@@ -188,7 +187,7 @@ where
     ));
     let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
         .with_known_non_http_protocol_methods()
-        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
+        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())));
 
     let tls_mitm_relay =
         TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {

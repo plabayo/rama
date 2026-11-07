@@ -515,23 +515,21 @@ async fn replay_honors_plaintext_proxy_tunnel_without_leaking_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replay_isolates_forward_proxy_auth_challenge() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
-    let proxy_task = tokio::spawn(
-        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
-            |_: Request| async move {
-                Ok::<_, Infallible>(
-                    Response::builder()
-                        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                        .header("proxy-authenticate", "Basic realm=upstream-secret")
-                        .body(Body::from("upstream-secret-body"))
-                        .unwrap(),
-                )
-            },
-        ))),
-    );
+    let proxy_task = tokio::spawn(listener.serve(HttpServer::auto(WeakScope::never()).service(
+        service_fn(|_: Request| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                    .header("proxy-authenticate", "Basic realm=upstream-secret")
+                    .body(Body::from("upstream-secret-body"))
+                    .unwrap(),
+            )
+        }),
+    )));
     let upstream = UpstreamProxyConfig::new(
         Some(format!("http://{proxy_address}").parse().unwrap()),
         false,
@@ -548,12 +546,12 @@ async fn replay_isolates_forward_proxy_auth_challenge() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replay_sends_captured_body_without_hop_by_hop_or_proxy_credentials() {
-    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .unwrap();
     let origin_address = origin.local_addr().unwrap();
     let (observed_tx, mut observed_rx) = tokio::sync::mpsc::channel(1);
-    let origin_task = tokio::spawn(origin.serve(HttpServer::auto(Executor::default()).service(
+    let origin_task = tokio::spawn(origin.serve(HttpServer::auto(WeakScope::never()).service(
         service_fn(move |request: Request| {
             let observed_tx = observed_tx.clone();
             async move {
@@ -627,12 +625,12 @@ async fn replay_sends_captured_body_without_hop_by_hop_or_proxy_credentials() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replay_reuses_connections_only_within_the_same_capture_source() {
-    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .unwrap();
     let address = origin.local_addr().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(3);
-    let origin_task = tokio::spawn(origin.serve(HttpServer::auto(Executor::default()).service(
+    let origin_task = tokio::spawn(origin.serve(HttpServer::auto(WeakScope::never()).service(
         service_fn(move |request: Request| {
             let tx = tx.clone();
             async move {

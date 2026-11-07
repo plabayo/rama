@@ -7,6 +7,7 @@ use rama::{
     Layer,
     bytes::Bytes,
     futures::{StreamExt as _, stream},
+    graceful::WeakScope,
     http::{
         Body, Method, Request, StatusCode, Version,
         body::util::BodyExt as _,
@@ -22,7 +23,6 @@ use rama::{
     },
     layer::{ArcLayer, ConsumeErrLayer, MapInputLayer},
     net::address::SocketAddress,
-    rt::Executor,
     tcp::{TcpStream, server::TcpListener},
     tls::server::{ServerAuthData, TlsServerConfig},
 };
@@ -49,7 +49,7 @@ struct OneStreamServer {
 impl OneStreamServer {
     async fn start(auth: ServerAuthData) -> Self {
         let accepted = Arc::new(AtomicUsize::new(0));
-        let mut http = HttpServer::new_h2(Executor::new());
+        let mut http = HttpServer::new_h2(WeakScope::never());
         http.h2_mut().set_enable_connect_protocol();
         http.h2_mut().set_max_concurrent_streams(1);
         let service = (
@@ -86,7 +86,7 @@ impl OneStreamServer {
                     ),
                 ),
             );
-        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::new())
+        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
             .await
             .unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -128,7 +128,7 @@ macro_rules! client {
         #[cfg(not(feature = "boring"))]
         let builder = builder.with_tls_support_using_rustls(tls);
         builder
-            .with_default_http_connector(Executor::new())
+            .with_default_http_connector(WeakScope::never())
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_connections_total: NonZeroUsize::new(2),
                 ..Default::default()

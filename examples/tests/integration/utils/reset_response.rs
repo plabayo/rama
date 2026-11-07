@@ -99,9 +99,9 @@ pub(crate) async fn through_connect(proxy: &str) {
 pub(crate) async fn through_mitm(proxy: &str) {
     use rama::{
         Layer,
+        graceful::WeakScope,
         http::{BodyExtractExt, Request, Version, client::EasyHttpWebClient},
         net::{address::ProxyAddress, client::ProxyRoute},
-        rt::Executor,
         tcp::{client::service::TcpConnector, posted_recv::PostedRecvLayer},
         tls::{
             boring::server::TlsAcceptorLayer,
@@ -118,7 +118,7 @@ pub(crate) async fn through_mitm(proxy: &str) {
         .with_tls_support_using_boringssl(
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
     let proxy = ProxyAddress::try_from(proxy).unwrap();

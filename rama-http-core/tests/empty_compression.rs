@@ -13,7 +13,7 @@ mod body_fixture;
 use body_fixture::{EndStreamFraming, Frames};
 use parking_lot::Mutex;
 use rama_core::telemetry::tracing::Instrument as _;
-use rama_core::{Service, ServiceInput, bytes::Bytes, rt::Executor, service::service_fn};
+use rama_core::{Service, ServiceInput, bytes::Bytes, graceful::WeakScope, service::service_fn};
 use rama_http::{
     Body, Request, Response,
     body::{Frame, util::BodyExt},
@@ -331,7 +331,7 @@ async fn origin_h2(
             }
         }
     });
-    let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
+    let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
         .handshake(ServiceInput::new(client_io))
         .await
         .unwrap();
@@ -373,7 +373,7 @@ where
                 .serve_connection(io, RamaHttpService::new(service))
                 .await
                 .unwrap(),
-            Protocol::H2 => server::conn::http2::Builder::new(Executor::new())
+            Protocol::H2 => server::conn::http2::Builder::new(WeakScope::never())
                 .serve_connection(io, RamaHttpService::new(service))
                 .await
                 .unwrap(),
@@ -390,7 +390,7 @@ where
             sender.send_request(request).await.unwrap().map(Body::new)
         }
         Protocol::H2 => {
-            let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
+            let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
                 .handshake(ServiceInput::new(client_io))
                 .await
                 .unwrap();

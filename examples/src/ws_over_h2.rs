@@ -35,7 +35,6 @@ use rama::{
     },
     layer::ArcLayer,
     layer::ConsumeErrLayer,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self, info,
@@ -68,9 +67,9 @@ async fn main() {
         .expect("self-signed")
         .with_alpn_http_2();
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        let mut h2 = HttpServer::new_h2(exec.clone());
+        let mut h2 = HttpServer::new_h2(weak_scope.clone());
         h2.h2_mut().set_enable_connect_protocol(); // required for WS sockets
         let server = h2.service(
             (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
@@ -88,7 +87,7 @@ async fn main() {
 
         info!("open web echo chat @ https://127.0.0.1:62035");
         info!("or connect directly to wss://127.0.0.1:62035/echo (via 'rama')");
-        TcpListener::bind_address("127.0.0.1:62035", exec)
+        TcpListener::bind_address("127.0.0.1:62035", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(tls_server)

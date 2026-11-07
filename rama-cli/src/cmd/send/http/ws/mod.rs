@@ -9,7 +9,6 @@ use rama::{
     http::layer::har::recorder::WebSocketCapture,
     http::ws::{WebSocketIo, layer::har::HARWebSocket, protocol::Role},
     http::{Request, Response},
-    rt::Executor,
     utils::{collections::NonEmptySmallVec, str::NonEmptyStr},
 };
 use tokio::sync::oneshot;
@@ -60,12 +59,12 @@ async fn run_app<S: WebSocketIo>(app: tui::App<S>) -> Result<(), BoxError> {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(1));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     let signalled = scope.clone_weak();
 
     scope.spawn_task(async move {
         let mut app = app;
-        let result = app.run(&exec).await;
+        let result = app.run(&weak_scope).await;
         _ = tx.send(result);
     });
 

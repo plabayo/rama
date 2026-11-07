@@ -15,8 +15,9 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef as _},
     futures::SinkExt as _,
+    graceful::WeakScope,
     layer::{ArcLayer, ConsumeErrLayer},
-    rt::{Executor, spawn},
+    rt::spawn,
     service::service_fn,
 };
 use rama_http::{
@@ -168,11 +169,11 @@ impl QuicPair {
             SocketAddress::local_ipv4(444),
             NonZeroUsize::MIN,
         );
-        let server_endpoint = Endpoint::build(Executor::new())
+        let server_endpoint = Endpoint::build(WeakScope::never())
             .with_server_config(server_config)
             .with_datagram_socket(server_socket)
             .expect("server endpoint");
-        let client_endpoint = Endpoint::build(Executor::new())
+        let client_endpoint = Endpoint::build(WeakScope::never())
             .with_datagram_socket(client_socket)
             .expect("client endpoint");
         let accept = spawn({
@@ -238,10 +239,10 @@ impl Hop {
     where
         S: Service<rama_http::Request, Output = Response, Error = Infallible> + Clone,
     {
-        let executor = Executor::default();
+        let scope = WeakScope::never();
         if version == Version::HTTP_3 {
             let quic = QuicPair::new().await;
-            let mut server = HttpServer::new_http3(executor.clone());
+            let mut server = HttpServer::new_http3(scope.clone());
             server.http3_mut().extended_connect = true;
             let service = server.service(service);
             let connection = quic.server.clone();
@@ -252,7 +253,7 @@ impl Hop {
                 connection: BoxedConnection::new(quic.client.clone()),
                 config: Arc::new(Config::default()),
             };
-            let client = http_connect(transport, handshake_request(version), executor)
+            let client = http_connect(transport, handshake_request(version), scope)
                 .await
                 .expect("HTTP/3 client")
                 .conn;
@@ -263,14 +264,14 @@ impl Hop {
         }
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         spawn({
-            let executor = executor.clone();
+            let scope = scope.clone();
             async move {
                 if version == Version::HTTP_2 {
-                    let mut server = HttpServer::new_h2(executor);
+                    let mut server = HttpServer::new_h2(scope);
                     server.h2_mut().set_enable_connect_protocol();
                     _ = server.serve(ServiceInput::new(server_io), service).await;
                 } else {
-                    _ = HttpServer::new_http1(executor)
+                    _ = HttpServer::new_http1(scope)
                         .serve(ServiceInput::new(server_io), service)
                         .await;
                 }
@@ -279,7 +280,7 @@ impl Hop {
         let client = http_connect(
             ServiceInput::new(client_io),
             handshake_request(version),
-            executor,
+            scope,
         )
         .await
         .expect("stream client")
@@ -449,7 +450,7 @@ async fn assert_relay(ingress: Version, egress: Version, closer: Closer) {
     let relay = WebSocketRelayIoLayer::new()
         .into_layer(WebSocketRelayService::new(service_fn(tag_relay_message)));
     let proxy = HttpUpgradeMitmRelayLayer::new(
-        Executor::default(),
+        WeakScope::never(),
         HttpWebSocketRelayServiceRequestMatcher::new(relay),
     )
     .into_layer(ResponseVersionAdapter::new(forward));
@@ -830,7 +831,7 @@ async fn har_records_relayed_websockets_on_every_version() {
                 .into_layer(WebSocketRelayService::new(service_fn(tag_relay_message))),
         );
         let proxy = HttpUpgradeMitmRelayLayer::new(
-            Executor::default(),
+            WeakScope::never(),
             HttpWebSocketRelayServiceRequestMatcher::new(relay),
         )
         .into_layer(

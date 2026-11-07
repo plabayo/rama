@@ -20,9 +20,9 @@ use std::{
 use rama_core::{
     Service, ServiceInput,
     error::BoxError,
+    graceful::WeakScope,
     io::BridgeIo,
     layer::{ArcLayer, MapOutputLayer},
-    rt::Executor,
 };
 use rama_http::{
     HeaderValue, Response,
@@ -135,7 +135,7 @@ impl Relay {
                     failed: false,
                 }),
             );
-            let mut relay = HttpMitmRelay::new(Executor::new());
+            let mut relay = HttpMitmRelay::new(WeakScope::never());
             if let Some(forbidden_trailers) = forbidden_trailers {
                 relay.set_forbidden_trailers(forbidden_trailers);
             }
@@ -780,7 +780,7 @@ async fn explicit_close_delimited_encoding_closes_for_known_and_empty_bodies() {
         let body_bytes = rama_core::bytes::Bytes::copy_from_slice(payload.as_bytes());
         let (client, server) = tokio::io::duplex(4096);
         let done = tokio::spawn(async move {
-            HttpServer::auto(Executor::new())
+            HttpServer::auto(WeakScope::never())
                 .serve(
                     MockSocket::new(server),
                     service_fn(move |_: Request| {

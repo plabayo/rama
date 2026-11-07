@@ -11,10 +11,10 @@
 //! scopes at once gets [`Scope::child_of`] them all.
 //!
 //! Holding a [`Scope`] keeps its drain open, while a [`WeakScope`] only observes. Only running
-//! work holds: an [`Executor`](crate::rt::Executor) observes its scope and every task it spawns
-//! holds it, so an executor kept around never delays a shutdown. A cancelled scope without
-//! holders is closed: the executor then refuses new tasks, while [`Scope::spawn_task`], whose
-//! caller holds the scope, never is.
+//! work holds: a component is handed a [`WeakScope`] to run in and takes a hold for each piece
+//! of work it starts ([`WeakScope::try_hold`], then [`Scope::spawn_task`]), so a component kept
+//! around never delays a shutdown. A cancelled scope without holders is closed and refuses new
+//! holds; spawning on a held [`Scope`] is never refused.
 //! [`Scope::join`] gives up its own hold and returns once every holder of the scope and its
 //! subtree is gone, or with [`JoinAborted`] when the hard phase came first;
 //! [`Scope::join_once_cancelled`] first waits for the cancel, as the shutdown of a root does.
@@ -30,6 +30,7 @@ mod join;
 mod node;
 mod scope;
 mod signal;
+mod spawn;
 mod sync;
 
 pub use cause::Cause;

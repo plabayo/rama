@@ -1,7 +1,7 @@
 use std::{io, time::Duration};
 
+use rama_core::graceful::WeakScope;
 use rama_core::io::BridgeIo;
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, error::BoxError, io::Io, layer::timeout::DefaultTimeout};
 use rama_net::address::HostWithPort;
@@ -158,7 +158,7 @@ impl<A, S> Binder<A, S> {
 #[derive(Debug, Clone, Default)]
 /// Default factory [`Service`] used by [`DefaultBinder`].
 pub struct DefaultAcceptorFactory {
-    exec: Executor,
+    scope: WeakScope,
 }
 
 impl Service<SocketAddress> for DefaultAcceptorFactory {
@@ -166,7 +166,7 @@ impl Service<SocketAddress> for DefaultAcceptorFactory {
     type Error = BoxError;
 
     async fn serve(&self, addr: SocketAddress) -> Result<Self::Output, Self::Error> {
-        let acceptor = TcpListener::bind_address(addr, self.exec.clone()).await?;
+        let acceptor = TcpListener::bind_address(addr, self.scope.clone()).await?;
         Ok(acceptor)
     }
 }
@@ -204,19 +204,20 @@ impl Acceptor for TcpListener {
 
 impl DefaultBinder {
     /// Create a [`DefaultBinder`] whose forward bridge observes graceful
-    /// shutdown via the given [`Executor`].
+    /// shutdown via the given [`WeakScope`].
     #[must_use]
-    pub fn default_with_exec(exec: Executor) -> Self {
+    pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self::new(
             DefaultTimeout::new(DefaultAcceptorFactory::default(), Duration::from_secs(30)),
-            IoForwardService::new(exec),
+            IoForwardService::new(scope),
         )
     }
 }
 
 impl Default for DefaultBinder {
     fn default() -> Self {
-        Self::default_with_exec(Executor::default())
+        Self::default_with_scope(WeakScope::never())
     }
 }
 

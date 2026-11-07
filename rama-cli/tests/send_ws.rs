@@ -24,7 +24,6 @@ use rama::{
         user::credentials::basic,
     },
     quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     tls::{
@@ -201,18 +200,18 @@ impl WsServer {
     {
         let (stop, stopped) = oneshot::channel::<()>();
         let shutdown = Scope::new().with_signal(stopped);
-        let executor = Executor::from(shutdown.clone());
+        let scope = shutdown.clone_weak();
         let echo = || ws.clone();
         let tls = TlsServerConfig::new().with_server_auth(auth);
         if version == Version::HTTP_3 {
             let tls = tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let mut server = HttpServer::new_http3(executor.clone());
+            let mut server = HttpServer::new_http3(scope.clone());
             server.http3_mut().extended_connect = extended_connect;
             let mut transport = TransportConfig::default();
             server.http3().configure_transport(&mut transport)?;
             let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?;
             config.set_transport_config(Arc::new(transport));
-            let endpoint = Endpoint::build(executor.clone())
+            let endpoint = Endpoint::build(scope.clone())
                 .with_server_config(config)
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await?;
@@ -223,17 +222,15 @@ impl WsServer {
             );
             shutdown.spawn_task({
                 let endpoint = endpoint.clone();
-                let executor = executor.clone();
+                let scope = scope.clone();
                 async move {
                     while let Some(incoming) = endpoint.accept().await {
                         let service = service.clone();
-                        executor
-                            .try_spawn_task(async move {
-                                if let Ok(connection) = incoming.await {
-                                    _ = rama::Service::serve(&service, connection).await;
-                                }
-                            })
-                            .unwrap();
+                        scope.try_hold().unwrap().into_spawn_task(async move {
+                            if let Ok(connection) = incoming.await {
+                                _ = rama::Service::serve(&service, connection).await;
+                            }
+                        });
                     }
                 }
             });
@@ -250,9 +247,9 @@ impl WsServer {
             tls.with_alpn_http_1()
         };
         let listener =
-            TcpListener::bind_address(SocketAddress::local_ipv4(0), executor.clone()).await?;
+            TcpListener::bind_address(SocketAddress::local_ipv4(0), scope.clone()).await?;
         let address = listener.local_addr()?;
-        let mut server = HttpServer::auto(executor.clone());
+        let mut server = HttpServer::auto(scope.clone());
         server.h2_mut().set_enable_connect_protocol();
         let service = TlsAcceptorLayer::new(tls).into_layer(
             server.service(

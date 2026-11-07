@@ -8,7 +8,8 @@ use rama_core::{
     error::BoxError,
     extensions::{Extensions, ExtensionsRef as _},
     futures::{SinkExt, poll},
-    rt::{Executor, spawn},
+    graceful::WeakScope,
+    rt::spawn,
     service::service_fn,
 };
 use rama_http::{
@@ -94,11 +95,11 @@ impl Pair {
             SocketAddress::local_ipv4(444),
             NonZeroUsize::MIN,
         );
-        let server_endpoint = Endpoint::build(Executor::new())
+        let server_endpoint = Endpoint::build(WeakScope::never())
             .with_server_config(server_config)
             .with_datagram_socket(server_socket)
             .unwrap();
-        let client_endpoint = Endpoint::build(Executor::new())
+        let client_endpoint = Endpoint::build(WeakScope::never())
             .with_datagram_socket(client_socket)
             .unwrap();
         let accept = spawn({
@@ -155,7 +156,7 @@ where
     S: Service<Request<Incoming>, Output = Response, Error: Into<BoxError>> + Clone,
 {
     let (sender, client_driver) =
-        client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
+        client::handshake::<Body, _>(pair.client.clone(), Config::default(), WeakScope::never())
             .unwrap();
     let config = Config {
         extended_connect,

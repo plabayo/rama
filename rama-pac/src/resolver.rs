@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex as SyncMutex;
 use rama_core::error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError};
-use rama_core::graceful::{Scope, ScopeClosed, WeakScope};
+use rama_core::graceful::{Scope, WeakScope};
 use rama_core::telemetry::tracing;
 use rama_core::{Service, service::BoxService};
 use rama_js::{JsErrorKind, JsRuntime, JsRuntimeBuilder, JsWorker};
@@ -599,8 +599,8 @@ impl LoadedScript {
         // The worker holds the scope while it runs: a closed scope starts no worker.
         let scope =
             match &config.scope {
-                Some(scope) => Some(scope.to_scope().ok_or_else(|| {
-                    LoadError::Environment(ScopeClosed.context("spawn pac worker"))
+                Some(scope) => Some(scope.try_hold().map_err(|closed| {
+                    LoadError::Environment(closed.context("spawn pac worker"))
                 })?),
                 None => None,
             };

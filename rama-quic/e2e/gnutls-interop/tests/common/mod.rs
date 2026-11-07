@@ -1,7 +1,7 @@
 use rama::{extensions::ExtensionsRef as _, quic::NegotiatedTlsParameters};
 use rama::{
+    graceful::WeakScope,
     quic::{Connection, Endpoint},
-    rt::Executor,
     utils::fs::{TempDir, tempdir},
 };
 use rama_quic_gnutls_interop::{Client, Server};
@@ -139,7 +139,7 @@ impl Identity {
 }
 
 pub async fn client_endpoint() -> Endpoint {
-    Endpoint::bind_client(Executor::new(), localhost())
+    Endpoint::bind_client(WeakScope::never(), localhost())
         .await
         .unwrap()
 }

@@ -1267,7 +1267,7 @@ async fn graceful_executor_stops_admission_while_output_waits_and_drains_before_
         });
         let recorder = QlogConfig::default()
             .with_output(DefaultFinish(output))
-            .with_executor(rama_core::rt::Executor::from(shutdown.clone()))
+            .with_scope(rama_core::graceful::WeakScope::from(shutdown.clone()))
             .start()
             .unwrap();
         if phase == Phase::Event {
@@ -1520,7 +1520,7 @@ async fn graceful_shutdown_reports_final_flush_and_finish_failures_without_recor
             cancelled.await.unwrap_or_default();
         });
         let config = QlogConfig::default()
-            .with_executor(rama_core::rt::Executor::from(shutdown.clone()))
+            .with_scope(rama_core::graceful::WeakScope::from(shutdown.clone()))
             .with_error_sink(reports.clone());
         let config = if phase == Some(Phase::Flush) {
             config.with_output(DefaultFinish(output))

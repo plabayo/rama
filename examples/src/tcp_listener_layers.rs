@@ -36,7 +36,6 @@ use rama::{
         matcher::SocketMatcher,
         service::EchoService,
     },
-    rt::Executor,
     service::service_fn,
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{
@@ -63,9 +62,9 @@ async fn main() {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address("0.0.0.0:62501", exec)
+    let listener = TcpListener::bind_address("0.0.0.0:62501", weak_scope)
         .await
         .expect("bind TCP Listener");
 

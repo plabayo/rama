@@ -4,7 +4,6 @@ use clap::{Args, Subcommand};
 use rama::{
     error::BoxError,
     graceful::{self, Scope},
-    rt::Executor,
     telemetry::tracing::{self, subscriber::filter::LevelFilter},
 };
 
@@ -49,18 +48,24 @@ pub async fn run(cfg: ServeCommand) -> Result<(), BoxError> {
         })
         .maybe_with_grace(graceful_timeout);
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     let http3_endpoints = Http3Endpoints::default();
     match cfg.commands {
-        ServeSubcommand::Discard(cfg) => discard::run(exec, cfg).await?,
-        ServeSubcommand::Echo(cfg) => echo::run(exec, etx, http3_endpoints.clone(), cfg).await?,
-        ServeSubcommand::Fp(cfg) => fp::run(exec, http3_endpoints.clone(), cfg).await?,
-        ServeSubcommand::HttpTest(cfg) => httptest::run(exec, http3_endpoints.clone(), cfg).await?,
-        ServeSubcommand::Icap(cfg) => icap::run(exec, cfg).await?,
-        ServeSubcommand::Fs(cfg) => fs::run(exec, cfg).await?,
-        ServeSubcommand::Ip(cfg) => ip::run(exec, http3_endpoints.clone(), cfg).await?,
-        ServeSubcommand::Proxy(cfg) => proxy::run(exec, http3_endpoints.clone(), *cfg).await?,
-        ServeSubcommand::Stunnel(cfg) => stunnel::run(exec, cfg).await?,
+        ServeSubcommand::Discard(cfg) => discard::run(weak_scope, cfg).await?,
+        ServeSubcommand::Echo(cfg) => {
+            echo::run(weak_scope, etx, http3_endpoints.clone(), cfg).await?
+        }
+        ServeSubcommand::Fp(cfg) => fp::run(weak_scope, http3_endpoints.clone(), cfg).await?,
+        ServeSubcommand::HttpTest(cfg) => {
+            httptest::run(weak_scope, http3_endpoints.clone(), cfg).await?
+        }
+        ServeSubcommand::Icap(cfg) => icap::run(weak_scope, cfg).await?,
+        ServeSubcommand::Fs(cfg) => fs::run(weak_scope, cfg).await?,
+        ServeSubcommand::Ip(cfg) => ip::run(weak_scope, http3_endpoints.clone(), cfg).await?,
+        ServeSubcommand::Proxy(cfg) => {
+            proxy::run(weak_scope, http3_endpoints.clone(), *cfg).await?
+        }
+        ServeSubcommand::Stunnel(cfg) => stunnel::run(weak_scope, cfg).await?,
     }
 
     // Serve until cancelled, also when no task holds the scope, such as a detached UDP server.

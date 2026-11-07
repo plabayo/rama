@@ -1,4 +1,4 @@
-//! Client work spawned on an executor holds that executor's scope while it lives, and lets
+//! Client work spawned in a scope holds that scope while it lives, and lets
 //! its join complete once released; the client itself and retained metadata never hold it.
 
 #![expect(
@@ -24,7 +24,6 @@ use rama_core::{
     extensions::ExtensionsRef as _,
     futures::{StreamExt as _, stream},
     graceful::{Cause, Scope, WeakScope},
-    rt::Executor,
     service::service_fn,
 };
 use rama_http::io::upgrade::{Upgraded, handle_upgrade};
@@ -73,8 +72,8 @@ async fn origin() -> SocketAddress {
 }
 
 async fn serve_origin() -> Origin {
-    let exec = Executor::new();
-    let listener = TcpListener::build(exec.clone())
+    let scope = WeakScope::never();
+    let listener = TcpListener::build(scope.clone())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
@@ -82,17 +81,19 @@ async fn serve_origin() -> Origin {
     let gate = Arc::new(Notify::new());
     let opens = gate.clone();
     let http = Arc::new(
-        HttpServer::auto(exec.clone())
+        HttpServer::auto(scope.clone())
             .service(service_fn(move |request| respond(request, opens.clone()))),
     );
     let accepted = Arc::new(AtomicUsize::new(0));
     let accepts = accepted.clone();
-    exec.try_spawn_task(listener.serve(service_fn(move |stream: TcpStream| {
-        accepts.fetch_add(1, Ordering::SeqCst);
-        let http = http.clone();
-        async move { http.serve(stream).await }
-    })))
-    .unwrap();
+    scope
+        .try_hold()
+        .unwrap()
+        .into_spawn_task(listener.serve(service_fn(move |stream: TcpStream| {
+            accepts.fetch_add(1, Ordering::SeqCst);
+            let http = http.clone();
+            async move { http.serve(stream).await }
+        })));
     Origin {
         addr,
         accepted,
@@ -121,8 +122,8 @@ async fn respond(request: Request, gate: Arc<Notify>) -> Result<Response, Infall
     Ok(Response::new(body))
 }
 
-fn connector(exec: Executor) -> HttpConnectRequestAdapter<HttpConnector<TcpConnector, Body>> {
-    HttpConnectRequestAdapter::new(HttpConnector::new(TcpConnector::new(), exec))
+fn connector(scope: WeakScope) -> HttpConnectRequestAdapter<HttpConnector<TcpConnector, Body>> {
+    HttpConnectRequestAdapter::new(HttpConnector::new(TcpConnector::new(), scope))
 }
 
 fn request(addr: SocketAddress, path: &str, version: Version) -> Request {
@@ -168,7 +169,7 @@ async fn read_to_end(response: Response) -> Bytes {
 async fn established_connection_holds_the_join_until_dropped(version: Version) {
     let addr = origin().await;
     let root = Scope::new();
-    let client = connector(Executor::from(root.clone()));
+    let client = connector(root.clone_weak());
     let EstablishedClientConnection { conn, input } =
         timeout(LIMIT, client.serve(request(addr, "/", version)))
             .await
@@ -201,7 +202,7 @@ async fn established_http2_connection_holds_the_join_until_dropped() {
 async fn a_client_kept_around_does_not_hold_the_join() {
     let addr = origin().await;
     let root = Scope::new();
-    let client = connector(Executor::from(root.clone()));
+    let client = connector(root.clone_weak());
     let EstablishedClientConnection { conn, input } =
         timeout(LIMIT, client.serve(request(addr, "/", Version::HTTP_11)))
             .await
@@ -225,7 +226,7 @@ async fn a_client_kept_around_does_not_hold_the_join() {
 async fn retained_client_extensions_do_not_hold_the_join() {
     let addr = origin().await;
     let root = Scope::new();
-    let client = connector(Executor::from(root.clone()));
+    let client = connector(root.clone_weak());
     let EstablishedClientConnection { conn, input } =
         timeout(LIMIT, client.serve(request(addr, "/", Version::HTTP_11)))
             .await
@@ -248,7 +249,7 @@ async fn retained_client_extensions_do_not_hold_the_join() {
 async fn live_http1_response_body_holds_the_join_until_dropped() {
     let addr = origin().await;
     let root = Scope::new();
-    let client = connector(Executor::from(root.clone()));
+    let client = connector(root.clone_weak());
     let EstablishedClientConnection { conn, input } = timeout(
         LIMIT,
         client.serve(request(addr, "/slow", Version::HTTP_11)),
@@ -278,9 +279,9 @@ async fn live_http1_response_body_holds_the_join_until_dropped() {
 }
 
 /// A CONNECT tunnel to the echoing origin, after one echoed ping, with every other handle on
-/// the executor of `root` released.
+/// `root` released.
 async fn tunnel(addr: SocketAddress, root: &Scope) -> Upgraded {
-    let client = connector(Executor::from(root.clone()));
+    let client = connector(root.clone_weak());
     let connect = Request::builder()
         .method(Method::CONNECT)
         .uri(Uri::from_authority_form(addr.into()))
@@ -340,11 +341,11 @@ type PooledClient =
     HttpConnectRequestAdapter<HttpPooledConnector<HttpConnector<TcpConnector, Body>>>;
 
 /// A pooled connector with a handle on its pool, so the connector can be let go of alone.
-fn pooled(exec: Executor) -> (PooledClient, Pool) {
+fn pooled(scope: WeakScope) -> (PooledClient, Pool) {
     let pool = HttpPooledConnectorConfig::default().build_pool();
     let client = HttpConnectRequestAdapter::new(BindBodyToConnLayer::new().into_layer(
         PooledConnector::new(
-            HttpConnector::new(TcpConnector::new(), exec),
+            HttpConnector::new(TcpConnector::new(), scope),
             pool.clone(),
             HttpConnIdentifier::new(),
         ),
@@ -352,10 +353,10 @@ fn pooled(exec: Executor) -> (PooledClient, Pool) {
     (client, pool)
 }
 
-/// A pool with one idle connection, made on the executor of `root`, with every other handle
-/// on that executor released.
+/// A pool with one idle connection, made in the scope of `root`, with every other handle
+/// on that scope released.
 async fn idle_pooled(addr: SocketAddress, root: &Scope) -> Pool {
-    let (client, pool) = pooled(Executor::from(root.clone()));
+    let (client, pool) = pooled(root.clone_weak());
     let EstablishedClientConnection { conn, input } =
         timeout(LIMIT, client.serve(request(addr, "/", Version::HTTP_11)))
             .await
@@ -394,7 +395,7 @@ async fn next_data(body: &mut Body) -> Bytes {
 async fn active_pooled_connection_drains_with_the_pool_alive(version: Version) {
     let origin = serve_origin().await;
     let root = Scope::new();
-    let (client, pool) = pooled(Executor::from(root.clone()));
+    let (client, pool) = pooled(root.clone_weak());
     let EstablishedClientConnection { conn, input } =
         timeout(LIMIT, client.serve(request(origin.addr, "/gated", version)))
             .await

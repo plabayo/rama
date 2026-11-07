@@ -64,7 +64,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::{Extension, ExtensionsRef},
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         Body, BodyLimitLayer, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
@@ -83,7 +83,6 @@ use rama::{
     },
     layer::{AddInputExtensionLayer, ConsumeErrLayer},
     net::user::credentials::basic,
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -103,7 +102,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 #[derive(Debug, Clone, Extension)]
 struct State {
     mitm_tls_service_data: TlsServerConfig,
-    exec: Executor,
+    scope: WeakScope,
 }
 
 #[tokio::main]
@@ -123,20 +122,20 @@ async fn main() -> Result<(), BoxError> {
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     let state = State {
         mitm_tls_service_data,
-        exec: exec.clone(),
+        scope: weak_scope.clone(),
     };
 
     scope.spawn_task(async move {
-        let tcp_service = TcpListener::build(exec.clone())
+        let tcp_service = TcpListener::build(weak_scope.clone())
             .bind_address("127.0.0.1:62019")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62019");
 
         let http_mitm_service = new_http_mitm_proxy();
-        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
+        let http_service = HttpServer::auto(weak_scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -147,7 +146,7 @@ async fn main() -> Result<(), BoxError> {
                 // a pre-established egress socket yet. The handler terminates
                 // ingress TLS; EasyHttpWebClient connects after decryption.
                 UpgradeLayer::new_with_services(
-                    exec,
+                    weak_scope,
                     MethodMatcher::CONNECT,
                     LazyHttpProxyConnectReplyService::new(),
                     service_fn(http_connect_proxy),
@@ -178,8 +177,8 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), BoxError> {
 
     let state = upgraded.extensions().get_ref::<State>().unwrap();
 
-    let executor = state.exec.clone();
-    let http_transport_service = HttpServer::auto(executor).service(http_service);
+    let scope = state.scope.clone();
+    let http_transport_service = HttpServer::auto(scope).service(http_service);
 
     let https_service = TlsAcceptorLayer::new(state.mitm_tls_service_data.clone())
         .with_store_client_hello(true)
@@ -221,7 +220,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     let tls_config = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
 
     let state = req.extensions().get_ref::<State>().unwrap();
-    let executor = state.exec.clone();
+    let scope = state.scope.clone();
 
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
@@ -229,7 +228,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_tls_proxy_support_using_rustls()
         .with_proxy_support()
         .with_tls_support_using_rustls_and_default_http_version(tls_config, Version::HTTP_11)
-        .with_default_http_connector(executor)
+        .with_default_http_connector(scope)
         .without_connection_pool()
         .build_client()
         .with_isolate_forward_proxy_auth_error(true);

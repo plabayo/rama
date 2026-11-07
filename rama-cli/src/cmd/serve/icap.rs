@@ -7,6 +7,7 @@ use rama::{
     Layer as _,
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    graceful::WeakScope,
     http::{Body, Request as HttpRequest, Response as HttpResponse, body::util::BodyExt as _},
     icap::{
         codec::{Header, ResponseLine},
@@ -22,7 +23,6 @@ use rama::{
         address::SocketAddress,
         stream::layer::{ThrottleLayer, ThrottleMode},
     },
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument as _},
@@ -94,14 +94,14 @@ struct EchoOptions {
 }
 
 /// Run the ICAP echo service.
-pub async fn run(exec: Executor, cfg: CliCommandIcap) -> Result<(), BoxError> {
+pub async fn run(scope: WeakScope, cfg: CliCommandIcap) -> Result<(), BoxError> {
     let tls = (cfg.secure || cfg.cert.is_some())
         .then(|| {
             try_new_server_config_with_auth_files(
                 cfg.cert.as_deref(),
                 cfg.key.as_deref(),
                 None,
-                exec.clone(),
+                scope.clone(),
             )
         })
         .transpose()?;
@@ -134,7 +134,7 @@ pub async fn run(exec: Executor, cfg: CliCommandIcap) -> Result<(), BoxError> {
     )
         .into_layer(server);
 
-    let listener = TcpListener::build(exec.clone())
+    let listener = TcpListener::build(scope.clone())
         .bind_address(cfg.bind)
         .await
         .context("bind ICAP echo service")?;
@@ -148,7 +148,7 @@ pub async fn run(exec: Executor, cfg: CliCommandIcap) -> Result<(), BoxError> {
         network.protocol.name = "icap"
     );
 
-    exec.try_spawn_task(async move {
+    scope.try_hold()?.into_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -156,8 +156,7 @@ pub async fn run(exec: Executor, cfg: CliCommandIcap) -> Result<(), BoxError> {
             "ICAP echo service ready: bind interface = {bind_address}"
         );
         listener.serve(service).instrument(span).await;
-    })
-    .map_err(|refused| refused.discard_task())?;
+    });
 
     Ok(())
 }

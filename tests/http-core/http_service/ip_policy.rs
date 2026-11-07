@@ -12,6 +12,7 @@ use rama::{
         StreamExt as _,
         stream::{self, BoxStream},
     },
+    graceful::WeakScope,
     http::{
         StatusCode, Version, client::Http3Connector, conn::TargetHttpVersion,
         layer::alt_svc::AltSvcCache,
@@ -26,7 +27,6 @@ use rama::{
         mode::ConnectIpMode,
     },
     quic::Endpoint,
-    rt::Executor,
 };
 use std::{
     io::ErrorKind,
@@ -61,11 +61,11 @@ async fn h3_rejects_disallowed_literal_and_custom_candidates_before_sending() {
     ] {
         let peer = UdpSocket::bind(SocketAddr::from(family)).await.unwrap();
         let address = peer.local_addr().unwrap();
-        let endpoint = Endpoint::build(Executor::new())
+        let endpoint = Endpoint::build(WeakScope::never())
             .bind_address(family)
             .await
             .unwrap();
-        let builder = Http3Connector::builder(Executor::new())
+        let builder = Http3Connector::builder(WeakScope::never())
             .with_endpoint(endpoint.clone())
             .with_tls_config(tls.clone());
         #[cfg(feature = "boring")]

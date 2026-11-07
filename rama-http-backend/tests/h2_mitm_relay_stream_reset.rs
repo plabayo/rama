@@ -30,8 +30,11 @@
 //! touches no existing source.
 
 use rama_core::{
-    Service, futures::future::join_all, graceful::Scope, io::BridgeIo, layer::ArcLayer,
-    rt::Executor,
+    Service,
+    futures::future::join_all,
+    graceful::{Scope, WeakScope},
+    io::BridgeIo,
+    layer::ArcLayer,
 };
 use rama_http::{
     HeaderName, HeaderValue,
@@ -119,7 +122,7 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
     // without consuming errors, mirroring the production relay middleware.
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 SetRequestHeaderLayer::overriding(
                     HeaderName::from_static("x-observed-req"),
@@ -143,7 +146,7 @@ async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         make_h2_request("0"),
-        Executor::from(graceful.clone()),
+        graceful.clone_weak(),
     )
     .await
     .expect("client h2 connect to relay")

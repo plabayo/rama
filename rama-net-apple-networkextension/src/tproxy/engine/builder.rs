@@ -5,7 +5,6 @@ use std::time::Duration;
 use rama_core::{
     error::{BoxError, ErrorContext},
     graceful::Scope,
-    rt::Executor,
 };
 
 use super::{
@@ -435,7 +434,7 @@ where
 
         let root = Scope::new();
         let ctx = TransparentProxyServiceContext {
-            executor: Executor::from(root.clone()),
+            scope: root.clone_weak(),
             opaque_config,
             provider_pid,
             provider_generation,

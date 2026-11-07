@@ -54,7 +54,6 @@ use rama::{
             response::{Html, IntoResponse},
         },
     },
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -79,9 +78,9 @@ async fn main() {
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        HttpServer::auto(exec)
+        HttpServer::auto(weak_scope)
             .listen(
                 "127.0.0.1:62028",
                 TraceLayer::new_for_http().layer(

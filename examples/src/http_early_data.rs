@@ -25,7 +25,7 @@ use rama::{
     Layer as _, Service as _,
     error::{BoxError, BoxErrorExt as _, extra::OpaqueError},
     extensions::{Egress, Extensions, ExtensionsRef as _},
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         Body, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
@@ -49,7 +49,6 @@ use rama::{
         uri::{Uri, UriMatchReplaceOrigin},
     },
     quic::{Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     tls::{
@@ -89,7 +88,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
         .with_signal(async {
             _ = stopped.await;
         });
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     let processed = Arc::new(AtomicUsize::new(0));
     let origin_count = processed.clone();
     let origin = ValidateRequestHeaderLayer::custom_fn(require_confirmed).into_layer(service_fn(
@@ -104,9 +103,9 @@ async fn run(args: Args) -> Result<(), BoxError> {
             }
         },
     ));
-    let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone()).await?;
+    let listener = TcpListener::bind_address("127.0.0.1:0", weak_scope.clone()).await?;
     let origin_address = listener.local_addr()?;
-    let origin_server = HttpServer::new_http1(exec.clone()).service(origin);
+    let origin_server = HttpServer::new_http1(weak_scope.clone()).service(origin);
     let _origin = scope.spawn_task(listener.serve(origin_server));
 
     // A generic application retry rule may retry other 4xx responses. The 425
@@ -127,7 +126,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
                 .without_tls_proxy_support()
                 .without_proxy_support()
                 .without_tls_support()
-                .with_default_http_connector::<RetryBody>(exec.clone())
+                .with_default_http_connector::<RetryBody>(weak_scope.clone())
                 .with_default_connection_pool()
                 .build_client_with_early_data(
                     async |request: Request<RetryBody>, result: Result<Response, OpaqueError>| {
@@ -170,7 +169,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
     let server_tls = TlsServerConfig::new()
         .with_server_auth(identity)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let mut server = HttpServer::new_http3(exec.clone());
+    let mut server = HttpServer::new_http3(weak_scope.clone());
     server.http3_mut().early_dispatch = true;
     let options = TlsOptions::default()
         .with_early_data(true)
@@ -179,7 +178,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
     server.http3().configure_transport(&mut transport)?;
     let mut config = ServerConfig::try_from_rama_tls(&server_tls, options)?;
     config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(Executor::new())
+    let endpoint = Endpoint::build(WeakScope::never())
         .with_server_config(config)
         .bind_address(SocketAddress::local_ipv4(0))
         .await?;
@@ -205,7 +204,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
         Ok::<_, BoxError>(())
     });
 
-    let connector = Http3Connector::builder(exec.clone())
+    let connector = Http3Connector::builder(weak_scope.clone())
         .with_tls_config(client_tls)
         .with_config(rama::http::core::h3::connection::Config {
             early_requests: true,
@@ -218,7 +217,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector::<RetryBody>(exec.clone())
+        .with_default_http_connector::<RetryBody>(weak_scope.clone())
         .with_default_connection_pool()
         .build_client_with_early_data(
             async |request, result: Result<Response, OpaqueError>| (request, result, false),
@@ -274,7 +273,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
     endpoint.close(0u32, b"complete");
     serving.await??;
     endpoint.shutdown().await;
-    drop(exec);
+    drop(weak_scope);
     scope.join().await?;
     Ok(())
 }

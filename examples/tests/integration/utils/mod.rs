@@ -130,7 +130,7 @@ use rama::{
         feature = "boring"
     )
 ))]
-use rama::rt::Executor;
+use rama::graceful::WeakScope;
 
 #[cfg(all(feature = "http-full", feature = "rustls", not(feature = "boring")))]
 use rama::tls::client::TlsClientConfig;
@@ -555,7 +555,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls_config)
-                    .with_default_http_connector(Executor::default())
+                    .with_default_http_connector(WeakScope::never())
                     .without_connection_pool()
                     .build_client()
             };
@@ -580,7 +580,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls_config)
-                    .with_default_http_connector(Executor::default())
+                    .with_default_http_connector(WeakScope::never())
                     .without_connection_pool()
                     .build_client()
             };

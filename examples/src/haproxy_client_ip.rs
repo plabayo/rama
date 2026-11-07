@@ -42,7 +42,6 @@ use rama::{
     layer::ArcLayer,
     net::ClientIp,
     proxy::haproxy::server::HaProxyLayer,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -68,9 +67,9 @@ async fn main() {
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        let tcp_http_service = HttpServer::auto(exec.clone()).service(
+        let tcp_http_service = HttpServer::auto(weak_scope.clone()).service(
             (
                 ArcLayer::new(),
                 AddRequiredResponseHeadersLayer::new(),
@@ -88,7 +87,7 @@ async fn main() {
                 )),
         );
 
-        TcpListener::bind_address("127.0.0.1:62025", exec)
+        TcpListener::bind_address("127.0.0.1:62025", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(

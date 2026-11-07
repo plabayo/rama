@@ -46,7 +46,6 @@ use rama::{
     },
     layer::TraceErrLayer,
     net::{address::SocketAddress, proxy::IoForwardService},
-    rt::Executor,
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -113,10 +112,10 @@ async fn main() {
     };
 
     // create mtls web server
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         let tcp_service = TlsAcceptorLayer::new(tls_server_data).into_layer(
-            HttpServer::auto(exec.clone()).service(
+            HttpServer::auto(weak_scope.clone()).service(
                 TraceLayer::new_for_http().into_layer(
                     WebService::default()
                         .with_get("/", Redirect::temporary("/hello"))
@@ -130,7 +129,7 @@ async fn main() {
             server.port = %SERVER_AUTHORITY.port,
             "start mtls (https) web service",
         );
-        TcpListener::bind_address(SERVER_AUTHORITY.to_string(), exec)
+        TcpListener::bind_address(SERVER_AUTHORITY.to_string(), weak_scope)
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener ({SERVER_AUTHORITY}): mtls (https): web service: {e}")
@@ -140,7 +139,7 @@ async fn main() {
     });
 
     // create mtls tunnel proxy
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         tracing::info!(
             server.address = %TUNNEL_AUTHORITY.ip_addr,
@@ -156,10 +155,10 @@ async fn main() {
                     .into_layer(TcpConnector::new()),
             ),
         )
-            .into_layer(IoForwardService::new(exec.clone()));
+            .into_layer(IoForwardService::new(weak_scope.clone()));
 
         // L4 Proxy Service
-        TcpListener::bind_address(TUNNEL_AUTHORITY, exec)
+        TcpListener::bind_address(TUNNEL_AUTHORITY, weak_scope)
             .await
             .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
             .serve(forwarder)

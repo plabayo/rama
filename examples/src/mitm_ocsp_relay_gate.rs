@@ -43,6 +43,7 @@ use rama::{
     crypto::cert::boring::generate_certificate_authority_x509,
     crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     error::{BoxError, ErrorContext},
+    graceful::WeakScope,
     http::{
         Body, Request, Response, StatusCode,
         header::{CONNECTION, CONTENT_TYPE},
@@ -59,7 +60,6 @@ use rama::{
     },
     layer::{ConsumeErrLayer, MapOutput, TimeoutLayer},
     net::proxy::{IoForwardOutcome, IoForwardService},
-    rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
@@ -181,7 +181,7 @@ async fn main() -> Result<(), BoxError> {
         }
     }
 
-    let exec = Executor::default();
+    let scope = WeakScope::never();
 
     // MITM relay with a fresh in-memory CA; export the CA cert for the client.
     let (ca_crt, ca_key) = generate_certificate_authority_x509(&SelfSignedCaConfig {
@@ -199,7 +199,7 @@ async fn main() -> Result<(), BoxError> {
     let mut issuer = InMemoryBoringMitmCertIssuer::new(ca_crt.clone(), ca_key.clone());
     let mut revoc_addr = None;
     if leaf_revocation != LeafRevocation::Staple {
-        let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+        let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone())
             .await
             .context("bind revocation responder")?;
         let addr = listener.local_addr().context("revocation addr")?;
@@ -235,12 +235,12 @@ async fn main() -> Result<(), BoxError> {
         // HTTP/1.1 and (on the constrained CI runner) can stall on `auto`'s h2
         // detection or a kept-alive socket. http1 + `Connection: close` per
         // response keeps that in-handshake fetch deterministic and self-closing.
-        tokio::spawn(listener.serve(HttpServer::new_http1(exec.clone()).service(web)));
+        tokio::spawn(listener.serve(HttpServer::new_http1(scope.clone()).service(web)));
         issuer = issuer.with_revocation(responder);
     }
     let relay = TlsMitmRelay::new(issuer);
 
-    let proxy = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+    let proxy = TcpListener::bind_address("127.0.0.1:0", scope.clone())
         .await
         .context("bind proxy")?;
     let proxy_addr = proxy.local_addr().context("proxy addr")?;
@@ -251,7 +251,7 @@ async fn main() -> Result<(), BoxError> {
         // mirrored). No local upstream.
         announce_ready(proxy_addr, &ca_out, revoc_addr)?;
         let mitm_svc =
-            Arc::new(ConsumeErrLayer::trace_as_debug().into_layer(mitm_app(relay, exec.clone())));
+            Arc::new(ConsumeErrLayer::trace_as_debug().into_layer(mitm_app(relay, scope.clone())));
         let connect = EagerHttpProxyConnector::new(
             TimeoutLayer::new(Duration::from_secs(30)).into_layer(
                 rama::dns::client::DnsConnector::new(
@@ -260,11 +260,11 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         );
-        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
+        let http_service = HttpServer::auto(scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
-                UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect),
+                UpgradeLayer::new(scope.clone(), MethodMatcher::CONNECT, connect),
             )
                 .into_layer(service_fn(reject_non_connect)),
         ));
@@ -274,13 +274,13 @@ async fn main() -> Result<(), BoxError> {
 
     // Local hermetic mode: a built-in upstream (rama HTTPS server) advertising
     // `revocation`; the relay dials it for every client connection.
-    let upstream = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+    let upstream = TcpListener::bind_address("127.0.0.1:0", scope.clone())
         .await
         .context("bind upstream")?;
     let up_addr = upstream.local_addr().context("upstream addr")?;
     let up_acceptor = upstream_acceptor_data(revocation)?;
     let up_service =
-        TlsAcceptorLayer::new(up_acceptor).into_layer(HttpServer::auto(exec.clone()).service(
+        TlsAcceptorLayer::new(up_acceptor).into_layer(HttpServer::auto(scope.clone()).service(
             service_fn(async |_: Request| Ok::<_, Infallible>(Response::new(Body::from("ok\n")))),
         ));
     tokio::spawn(upstream.serve(up_service));
@@ -291,7 +291,7 @@ async fn main() -> Result<(), BoxError> {
             ConsumeErrLayer::trace_as_debug(),
             IoToProxyBridgeIoLayer::new(up_addr),
         )
-            .into_layer(mitm_app(relay, exec.clone())),
+            .into_layer(mitm_app(relay, scope.clone())),
     );
     proxy.serve(local_svc).await;
     Ok(())
@@ -302,14 +302,14 @@ async fn main() -> Result<(), BoxError> {
 /// already-dialed egress. Non-TLS input falls back to a plain byte forward.
 fn mitm_app(
     relay: TlsMitmRelay<InMemoryBoringMitmCertIssuer>,
-    exec: Executor,
+    scope: WeakScope,
 ) -> PeekTlsClientHelloService<
     rama::tls::boring::proxy::TlsMitmRelayService<InMemoryBoringMitmCertIssuer, IoForwardService>,
     MapOutput<IoForwardService, fn(IoForwardOutcome)>,
 > {
     // The peek router needs its two branches to share an output type: the TLS-MITM
     // relay yields `()`, so discard the plain-forward fallback's outcome to match.
-    let forward = IoForwardService::new(exec);
+    let forward = IoForwardService::new(scope);
     PeekTlsClientHelloService::new(relay.into_layer(forward.clone()))
         .with_fallback(MapOutput::new(forward, |_| ()))
 }

@@ -700,7 +700,7 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
 #[tokio::test]
 async fn outer_http_capture_metadata_reaches_default_websocket_relay() {
     use crate::handshake::matcher::HttpWebSocketRelayServiceRequestMatcher;
-    use rama_core::{extensions::ExtensionsRef as _, io::BridgeIo, rt::Executor};
+    use rama_core::{extensions::ExtensionsRef as _, graceful::WeakScope, io::BridgeIo};
     use rama_http::{
         inspect::control::HttpUpgradeContext,
         io::upgrade::{self, Upgraded},
@@ -788,7 +788,7 @@ async fn outer_http_capture_metadata_reaches_default_websocket_relay() {
         // Match the CLI ordering: capture response metadata is added only
         // after the inner relay has already returned its upgrade response.
         let service = CaptureHttpLayer::new(Some(store.clone())).layer(HttpUpgradeMitmRelay::new(
-            Executor::default(),
+            WeakScope::never(),
             HttpWebSocketRelayServiceRequestMatcher::new(relay),
             upstream,
         ));

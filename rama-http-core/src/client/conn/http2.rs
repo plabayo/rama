@@ -10,7 +10,6 @@ use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::futures::future::Either;
 use rama_core::graceful::WeakScope;
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::proto::h2::frame::EarlyFrame;
 use rama_http_types::proto::h2::frame::{SettingOrder, Settings, SettingsConfig};
@@ -32,7 +31,8 @@ pub struct TransportEndSignal(WeakScope);
 impl TransportEndSignal {
     /// Cancel `scope` once the transport ends.
     #[must_use]
-    pub fn new(scope: WeakScope) -> Self {
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self(scope)
     }
 
@@ -88,7 +88,7 @@ where
 /// are subject to change at any time.
 #[derive(Clone, Debug)]
 pub struct Builder {
-    pub(super) exec: Executor,
+    pub(super) scope: WeakScope,
     h2_builder: proto::h2::client::Config,
     headers_pseudo_order: Option<PseudoHeaderOrder>,
     early_frames: Option<Vec<EarlyFrame>>,
@@ -96,21 +96,21 @@ pub struct Builder {
 
 /// Returns a handshake future over some IO.
 ///
-/// This is a shortcut for `Builder::new(exec).handshake(io)`.
+/// This is a shortcut for `Builder::new(scope).handshake(io)`.
 /// See [`client::conn`](crate::client::conn) for more.
 ///
 /// # Errors
 ///
 /// Returns an error if the HTTP/2 connection handshake fails.
 pub async fn handshake<T, B>(
-    exec: Executor,
+    scope: WeakScope,
     io: T,
 ) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
-    Builder::new(exec).handshake(io).await
+    Builder::new(scope).handshake(io).await
 }
 
 // ===== impl SendRequest
@@ -425,9 +425,10 @@ impl Builder {
     /// Creates a new connection builder.
     #[inline]
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            exec,
+            scope,
             h2_builder: proto::h2::client::Config::default(),
             headers_pseudo_order: None,
             early_frames: None,
@@ -827,7 +828,7 @@ impl Builder {
                 io,
                 rx,
                 &opts.h2_builder,
-                opts.exec,
+                opts.scope,
             )
             .await?;
 
@@ -859,7 +860,7 @@ mod tests {
         bytes::Bytes,
         extensions::{Extensions, ExtensionsRef},
         futures::{StreamExt as _, stream},
-        rt::Executor,
+        graceful::WeakScope,
         service::service_fn,
     };
     use rama_http_types::{
@@ -902,7 +903,7 @@ mod tests {
             _ = poll_fn(|cx| origin.poll_closed(cx)).await;
         });
 
-        let opts = Builder::new(Executor::default());
+        let opts = Builder::new(WeakScope::never());
         let builder = proto::h2::client::new_builder(&opts.h2_builder)
             .try_with_initial_stream_id(u32::MAX >> 1)
             .unwrap();
@@ -912,7 +913,7 @@ mod tests {
             ServiceInput::new(client_io),
             rx,
             &opts.h2_builder,
-            opts.exec,
+            opts.scope,
         )
         .await
         .unwrap();
@@ -945,7 +946,7 @@ mod tests {
             let (_sender, conn) = crate::client::conn::http2::handshake::<
                 _,
                 Empty<rama_core::bytes::Bytes>,
-            >(Executor::default(), io)
+            >(WeakScope::never(), io)
             .await
             .unwrap();
 
@@ -961,7 +962,7 @@ mod tests {
     async fn ordinary_request_futures_stay_small() {
         let (client_io, _server_io) = tokio::io::duplex(1024);
         let (mut sender, _connection) = crate::client::conn::http2::handshake::<_, Body>(
-            Executor::default(),
+            WeakScope::never(),
             ServiceInput::new(client_io),
         )
         .await
@@ -984,13 +985,13 @@ mod tests {
     {
         let (client_io, server_io) = tokio::io::duplex(1 << 20);
         let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
-            Executor::default(),
+            WeakScope::never(),
             ServiceInput::new(client_io),
         )
         .await
         .unwrap();
         let task = tokio::spawn(connection);
-        let mut builder = server::conn::http2::Builder::new(Executor::default());
+        let mut builder = server::conn::http2::Builder::new(WeakScope::never());
         builder.set_max_concurrent_streams(1);
         builder.set_initial_stream_window_size(stream_window);
         tokio::spawn(
@@ -1276,13 +1277,13 @@ mod tests {
             })
         };
         let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
-            Executor::default(),
+            WeakScope::never(),
             ServiceInput::new(client_io),
         )
         .await
         .unwrap();
         tokio::spawn(connection);
-        let mut builder = server::conn::http2::Builder::new(Executor::default());
+        let mut builder = server::conn::http2::Builder::new(WeakScope::never());
         builder.set_enable_connect_protocol();
         tokio::spawn(
             builder.serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service)),
@@ -1320,7 +1321,7 @@ mod tests {
                 })
             };
             let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
-                Executor::default(),
+                WeakScope::never(),
                 ServiceInput::new(client_io),
             )
             .await
@@ -1335,7 +1336,7 @@ mod tests {
             // Issued before the server has written its SETTINGS.
             let response = tokio::spawn(async move { sender.send_request(request).await });
             tokio::task::yield_now().await;
-            let mut builder = server::conn::http2::Builder::new(Executor::default());
+            let mut builder = server::conn::http2::Builder::new(WeakScope::never());
             if enabled {
                 builder.set_enable_connect_protocol();
             }

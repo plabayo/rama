@@ -54,7 +54,6 @@ use rama::{
         ClientConfig, Connection, Endpoint, NegotiatedTlsParameters, ServerConfig, TransportConfig,
         qlog::QlogConfig, tls::TlsOptions,
     },
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -111,7 +110,7 @@ async fn main() -> Result<(), BoxError> {
     let anchor = auth.cert_chain.last().unwrap().clone();
 
     // One scope for the whole application, cancelled by this example itself once its work is
-    // done. Both endpoints are built on executors of it, so stopping the application stops them;
+    // done. Both endpoints are built in it, so stopping the application stops them;
     // neither endpoint holds the scope open. A real application would wait on a signal.
     let (finished, is_finished) = tokio::sync::oneshot::channel::<()>();
     let scope = Scope::new().with_signal(async move {
@@ -126,7 +125,7 @@ async fn main() -> Result<(), BoxError> {
             .with_context_field("path", || path.display().to_string())?;
         let recorder = QlogConfig::default()
             .with_writer(file)
-            .with_executor(Executor::from(scope.clone()))
+            .with_scope(scope.clone_weak())
             .with_error_sink(TracingErrorSink::warn())
             .start()?;
         Some(recorder)
@@ -134,7 +133,7 @@ async fn main() -> Result<(), BoxError> {
         None
     };
 
-    let server = Endpoint::build(Executor::from(scope.clone()))
+    let server = Endpoint::build(scope.clone_weak())
         .with_server_config(server_config(&auth)?)
         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
         .await?;
@@ -142,9 +141,9 @@ async fn main() -> Result<(), BoxError> {
     tracing::info!("server: listening on {addr}");
 
     // Its outcome is joined below, so a server-side failure fails this process.
-    let serving = scope.spawn_task(async move { serve(&server).await });
+    let serving = scope.spawn_task_to_completion(async move { serve(&server).await });
 
-    let client = Endpoint::build(Executor::from(scope.clone()))
+    let client = Endpoint::build(scope.clone_weak())
         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
         .await?;
     let config = client_config(anchor)?.with_transport_config(Arc::new(

@@ -49,7 +49,6 @@ use rama::{
         SocketInfo,
         layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
     },
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -78,7 +77,7 @@ async fn main() {
 
     let sensitive_headers: Arc<[_]> = vec![header::AUTHORIZATION, header::COOKIE].into();
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         let http_service = (
             ArcLayer::new(),
@@ -133,9 +132,9 @@ async fn main() {
                 .into_endpoint_service(),
             );
 
-        let tcp_http_service = HttpServer::auto(exec.clone()).service(http_service);
+        let tcp_http_service = HttpServer::auto(weak_scope.clone()).service(http_service);
 
-        TcpListener::bind_address("127.0.0.1:62010", exec)
+        TcpListener::bind_address("127.0.0.1:62010", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(

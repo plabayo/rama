@@ -47,7 +47,6 @@ use rama::{
         },
     },
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -72,11 +71,12 @@ async fn main() {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62050), exec.clone())
-        .await
-        .expect("tcp port to be bound");
+    let listener =
+        TcpListener::bind_address(SocketAddress::default_ipv4(62050), weak_scope.clone())
+            .await
+            .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
 
     tracing::info!(
@@ -100,7 +100,9 @@ async fn main() {
         );
 
         let app = (TraceLayer::new_for_http(), ErrorHandlerLayer::new()).into_layer(router);
-        listener.serve(HttpServer::auto(exec).service(app)).await;
+        listener
+            .serve(HttpServer::auto(weak_scope).service(app))
+            .await;
     });
 
     scope.join().await.expect("graceful shutdown");

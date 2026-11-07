@@ -7,7 +7,6 @@ use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::{Cause, Scope, WeakScope, enter_scope_with};
 use rama_core::io::Io;
-use rama_core::rt::Executor;
 use rama_http::service::web::response::IntoResponse;
 #[cfg(feature = "quic")]
 use rama_http_core::h3::transport;
@@ -32,23 +31,24 @@ use ::{rama_unix::server::UnixListener, std::path::Path};
 #[derive(Debug, Clone)]
 pub struct HttpServer<B> {
     builder: B,
-    exec: Executor,
+    scope: WeakScope,
 }
 
 impl Default for HttpServer<AutoConnBuilder> {
     #[inline(always)]
     fn default() -> Self {
-        Self::auto(Executor::default())
+        Self::auto(WeakScope::never())
     }
 }
 
 impl HttpServer<Http1ConnBuilder> {
     /// Create a new http/1.1 `Builder` with default settings.
     #[must_use]
-    pub fn new_http1(exec: Executor) -> Self {
+    pub fn new_http1(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             builder: Http1ConnBuilder::new(),
-            exec,
+            scope,
         }
     }
 }
@@ -68,10 +68,11 @@ impl HttpServer<Http1ConnBuilder> {
 impl HttpServer<H2ConnBuilder> {
     /// Create a new h2 `Builder` with default settings.
     #[must_use]
-    pub fn new_h2(exec: Executor) -> Self {
+    pub fn new_h2(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            builder: H2ConnBuilder::new(exec.clone()),
-            exec,
+            builder: H2ConnBuilder::new(scope.clone()),
+            scope,
         }
     }
 }
@@ -91,10 +92,11 @@ impl HttpServer<H2ConnBuilder> {
 impl HttpServer<AutoConnBuilder> {
     /// Create a new dual http/1.1 + h2 `Builder` with default settings.
     #[must_use]
-    pub fn auto(exec: Executor) -> Self {
+    pub fn auto(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            builder: AutoConnBuilder::new(exec.clone()),
-            exec,
+            builder: AutoConnBuilder::new(scope.clone()),
+            scope,
         }
     }
 }
@@ -133,7 +135,7 @@ where
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
     pub fn service<S: Clone>(self, service: S) -> HttpService<B, S> {
         HttpService {
-            scope: self.exec.scope().clone(),
+            scope: self.scope.clone(),
             builder: Arc::new(self.builder),
             service,
         }
@@ -146,7 +148,7 @@ where
         Response: IntoResponse + Send + 'static,
         IO: Io + ExtensionsRef,
     {
-        let scope = connection_scope(&stream, self.exec.scope());
+        let scope = connection_scope(&stream, &self.scope);
         self.builder
             .http_core_serve_connection(stream, service, scope)
             .await
@@ -161,9 +163,9 @@ where
         Response: IntoResponse + Send + 'static,
         A: TryInto<SocketAddress, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind_address(address, self.exec.clone()).await?;
+        let tcp = TcpListener::bind_address(address, self.scope.clone()).await?;
         let service = HttpService {
-            scope: self.exec.scope().clone(),
+            scope: self.scope.clone(),
             builder: Arc::new(self.builder),
             service,
         };
@@ -182,9 +184,9 @@ where
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
-        let socket = UnixListener::bind_path(path, self.exec.clone()).await?;
+        let socket = UnixListener::bind_path(path, self.scope.clone()).await?;
         let service = HttpService {
-            scope: self.exec.scope().clone(),
+            scope: self.scope.clone(),
             builder: Arc::new(self.builder),
             service: Arc::new(service),
         };
@@ -262,10 +264,11 @@ where
 impl HttpServer<rama_http_core::h3::connection::Config> {
     /// Create an HTTP/3 server for QUIC connections negotiated with the `h3` ALPN.
     #[must_use]
-    pub fn new_http3(exec: Executor) -> Self {
+    pub fn new_http3(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             builder: rama_http_core::h3::connection::Config::default(),
-            exec,
+            scope,
         }
     }
 
@@ -285,7 +288,7 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
         service: S,
     ) -> HttpService<rama_http_core::h3::connection::Config, S> {
         HttpService {
-            scope: self.exec.scope().clone(),
+            scope: self.scope.clone(),
             builder: Arc::new(self.builder),
             service,
         }
@@ -298,7 +301,7 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
     {
-        let scope = connection_scope(&connection, self.exec.scope());
+        let scope = connection_scope(&connection, &self.scope);
         crate::server::h3::serve(connection, self.builder.clone(), scope, service).await
     }
 }

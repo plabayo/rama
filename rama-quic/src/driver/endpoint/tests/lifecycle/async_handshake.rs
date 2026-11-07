@@ -20,7 +20,11 @@ async fn pending_certificate_policy_is_released_when_the_udp_driver_fails() {
     tokio::time::timeout(Duration::from_secs(20), async {
         for version in [Version::V1, Version::V2] {
             let (client_config, server_config, started, dropped) = pending_policy(version);
-            let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+            let server = endpoint(
+                Some(server_config),
+                WeakScope::never(),
+                Duration::from_secs(1),
+            );
             let (socket, _gate, fault, _) = breakable_socket(None);
             let client = endpoint_with(EndpointConfig::try_with_rand_key().unwrap(), None, socket);
             let mut connecting = Box::pin(
@@ -158,8 +162,12 @@ async fn closing_drops_a_pending_certificate_policy_before_draining_ends() {
     tokio::time::timeout(Duration::from_secs(20), async {
         for version in [Version::V1, Version::V2] {
             let (client_config, server_config, started, dropped) = pending_policy(version);
-            let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-            let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+            let server = endpoint(
+                Some(server_config),
+                WeakScope::never(),
+                Duration::from_secs(1),
+            );
+            let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
             let connecting = client
                 .connect_with(client_config, server.local_addr().unwrap(), "localhost")
                 .unwrap();
@@ -220,8 +228,12 @@ async fn certificate_work_finishing_between_packets_resumes_the_handshake() {
                 client_delay,
                 client_done.clone(),
             );
-            let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-            let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+            let server = endpoint(
+                Some(server_config),
+                WeakScope::never(),
+                Duration::from_secs(1),
+            );
+            let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
             let accepting_endpoint = server.clone();
             let accepting = async move {
                 let mut connecting = accepting_endpoint.accept().await.unwrap().accept().unwrap();

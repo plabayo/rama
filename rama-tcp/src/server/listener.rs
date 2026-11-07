@@ -2,8 +2,8 @@ use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::graceful::WeakScope;
 use rama_core::graceful::attach_scope;
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
 use rama_net::stream::Socket;
@@ -21,14 +21,15 @@ use crate::TcpStream;
 /// Builder for `TcpListener`.
 pub struct TcpListenerBuilder {
     ttl: Option<u32>,
-    exec: Executor,
+    scope: WeakScope,
 }
 
 impl TcpListenerBuilder {
     /// Create a new `TcpListenerBuilder` without a state.
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
-        Self { ttl: None, exec }
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
+        Self { ttl: None, scope }
     }
 }
 
@@ -69,7 +70,7 @@ impl TcpListenerBuilder {
 
         Ok(TcpListener {
             inner,
-            exec: self.exec,
+            scope: self.scope,
         })
     }
 
@@ -83,7 +84,7 @@ impl TcpListenerBuilder {
         self,
         socket: rama_net::socket::core::Socket,
     ) -> Result<TcpListener, BoxError> {
-        bind_socket_internal(socket, self.exec)
+        bind_socket_internal(socket, self.scope)
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -110,7 +111,7 @@ impl TcpListenerBuilder {
         socket
             .listen(backlog.unwrap_or(4096))
             .context("mark the socket as ready to accept incoming connection requests")?;
-        bind_socket_internal(socket, self.exec)
+        bind_socket_internal(socket, self.scope)
     }
 }
 
@@ -119,15 +120,16 @@ impl TcpListenerBuilder {
 /// using one of the `serve` methods such as [`TcpListener::serve`].
 pub struct TcpListener {
     inner: TokioTcpListener,
-    exec: Executor,
+    scope: WeakScope,
 }
 
 impl TcpListener {
     /// Create a new `TcpListenerBuilder` without a state,
     /// which can be used to configure a `TcpListener`.
     #[must_use]
-    pub fn build(exec: Executor) -> TcpListenerBuilder {
-        TcpListenerBuilder::new(exec)
+    pub fn build(scope: impl Into<WeakScope>) -> TcpListenerBuilder {
+        let scope = scope.into();
+        TcpListenerBuilder::new(scope)
     }
 
     /// Creates a new TcpListener, which will be bound to the specified (socket) address.
@@ -139,9 +141,9 @@ impl TcpListener {
     /// method.
     pub async fn bind_address<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
         addr: A,
-        exec: Executor,
+        scope: WeakScope,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(exec).bind_address(addr).await
+        TcpListenerBuilder::new(scope).bind_address(addr).await
     }
 
     #[cfg(any(target_os = "windows", target_family = "unix"))]
@@ -151,9 +153,9 @@ impl TcpListener {
     /// The returned listener is ready for accepting connections.
     pub async fn bind_socket(
         socket: rama_net::socket::core::Socket,
-        exec: Executor,
+        scope: WeakScope,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(exec).bind_socket(socket).await
+        TcpListenerBuilder::new(scope).bind_socket(socket).await
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -166,11 +168,11 @@ impl TcpListener {
     /// The returned listener is ready for accepting connections.
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         name: N,
-        exec: Executor,
+        scope: WeakScope,
         domain: Domain,
         backlog: Option<i32>,
     ) -> Result<Self, BoxError> {
-        TcpListenerBuilder::new(exec)
+        TcpListenerBuilder::new(scope)
             .bind_device(name, domain, backlog)
             .await
     }
@@ -178,7 +180,7 @@ impl TcpListener {
 
 fn bind_socket_internal(
     socket: rama_net::socket::core::Socket,
-    exec: Executor,
+    scope: WeakScope,
 ) -> Result<TcpListener, BoxError> {
     let listener = std::net::TcpListener::from(socket);
     listener
@@ -186,7 +188,7 @@ fn bind_socket_internal(
         .context("set socket as non-blocking")?;
     Ok(TcpListener {
         inner: TokioTcpListener::from_std(listener)?,
-        exec,
+        scope,
     })
 }
 
@@ -236,10 +238,14 @@ impl TcpListener {
         self.inner
     }
 
-    pub fn from_tokio_tcp_listener(listener: TokioTcpListener, exec: Executor) -> Self {
+    pub fn from_tokio_tcp_listener(
+        listener: TokioTcpListener,
+        scope: impl Into<WeakScope>,
+    ) -> Self {
+        let scope = scope.into();
         Self {
             inner: listener,
-            exec,
+            scope,
         }
     }
 
@@ -247,20 +253,22 @@ impl TcpListener {
     #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
     pub fn try_from_socket(
         socket: rama_net::socket::core::Socket,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<Self, std::io::Error> {
+        let scope = scope.into();
         let listener = std::net::TcpListener::from(socket);
-        Self::try_from_std_tcp_listener(listener, exec)
+        Self::try_from_std_tcp_listener(listener, scope)
     }
 
     pub fn try_from_std_tcp_listener(
         listener: std::net::TcpListener,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<Self, std::io::Error> {
+        let scope = scope.into();
         listener.set_nonblocking(true)?;
         Ok(Self {
             inner: TokioTcpListener::from_std(listener)?,
-            exec,
+            scope,
         })
     }
 }
@@ -278,17 +286,17 @@ impl TcpListener {
     ///
     /// This listener will spawn a task in which the inner service will
     /// handle the incomming connection. Cconnections will be served
-    /// gracefully if the [`TcpListener`] is configured with a graceful [`Executor`].
+    /// gracefully if the [`TcpListener`] is configured with a graceful [`WeakScope`].
     pub async fn serve<S>(self, service: S)
     where
         S: Service<TcpStream> + Clone,
     {
         // Serving holds the scope, so every connection accepted until the cancel is admitted.
-        let Some(scope) = self.exec.scope().to_scope() else {
-            tracing::debug!("executor scope closed: not serving");
+        let Ok(scope) = self.scope.try_hold() else {
+            tracing::debug!("scope closed: not serving");
             return;
         };
-        let mut cancelled_fut = pin!(self.exec.cancelled());
+        let mut cancelled_fut = pin!(self.scope.cancelled());
 
         loop {
             tokio::select! {
@@ -320,7 +328,7 @@ impl TcpListener {
                             attach_scope(socket.extensions(), &scope);
 
                             // Ended at the hard phase, whatever the service does by then.
-                            scope.spawn_abortable_task(async move {
+                            scope.spawn_task(async move {
                                 _ = service.serve(socket).await;
                             }.instrument(span));
                         }
@@ -412,7 +420,7 @@ mod tests {
     async fn a_served_connection_ends_at_the_hard_phase() {
         let scope = Scope::new();
         let weak = scope.clone_weak();
-        let listener = TcpListener::bind_address("127.0.0.1:0", Executor::from(scope.clone()))
+        let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone_weak())
             .await
             .unwrap();
         let addr = listener.local_addr().unwrap();

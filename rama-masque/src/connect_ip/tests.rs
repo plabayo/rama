@@ -7,7 +7,7 @@ use rama_core::{
     error::BoxError,
     extensions::ExtensionsRef as _,
     futures::{StreamExt as _, stream},
-    rt::Executor,
+    graceful::WeakScope,
     service::service_fn,
 };
 use rama_http::{
@@ -598,7 +598,7 @@ async fn authentication_and_secure_transport_are_checked_before_acceptance() {
             }
         }),
         service_fn(async |_s: ConnectIpSession| Ok::<_, Infallible>(())),
-        Executor::new(),
+        WeakScope::never(),
     );
     let req = template
         .request(&ConnectIpScope::default(), Version::HTTP_11)
@@ -899,7 +899,7 @@ async fn hostname_resolution_is_bounded_filtered_and_pinned() {
         template.clone(),
         service_fn(async |_: ConnectIpRequest| Ok::<_, Infallible>(config())),
         service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
-        Executor::new(),
+        WeakScope::never(),
     )
     .with_resolver(resolver)
     .with_limits(limits.clone())
@@ -1847,7 +1847,7 @@ async fn generic_request_bodies_and_custom_principals_reach_admission() {
             async { Ok::<_, Infallible>(config()) }
         }),
         service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
-        Executor::new(),
+        WeakScope::never(),
     )
     .with_limits(limits.clone());
     let mut request = template
@@ -2124,7 +2124,7 @@ async fn refusal_reasons_distinguish_admission_dns_and_destination_policy() {
         template.clone(),
         service_fn(async |_: ConnectIpRequest| Ok::<_, Infallible>(config())),
         service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
-        Executor::new(),
+        WeakScope::never(),
     );
 
     let insecure = template
@@ -2249,7 +2249,7 @@ async fn refusal_reasons_distinguish_admission_dns_and_destination_policy() {
             std::future::pending::<Result<ConnectIpSessionConfig, Infallible>>().await
         }),
         service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
-        Executor::new(),
+        WeakScope::never(),
     )
     .with_open_timeout(Duration::from_secs(1));
     assert_refusal(
@@ -2263,7 +2263,7 @@ async fn refusal_reasons_distinguish_admission_dns_and_destination_policy() {
             Err::<ConnectIpSessionConfig, BoxError>("auth secret".into())
         }),
         service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
-        Executor::new(),
+        WeakScope::never(),
     );
     let denied_request = ConnectIpTemplate::try_new("https://proxy.example/{target}/{ipproto}/")
         .unwrap()
@@ -2287,7 +2287,7 @@ async fn extension_protocol_scopes_require_an_explicit_ipv4_target() {
             },
         ),
         service_fn(async |_: ConnectIpSession| Ok::<_, Infallible>(())),
-        Executor::new(),
+        WeakScope::never(),
     );
     for protocol in [IpProtocol::ESP, IpProtocol::DESTINATION_OPTIONS] {
         for target in [

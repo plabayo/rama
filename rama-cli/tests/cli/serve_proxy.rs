@@ -1,9 +1,9 @@
 use rama::{
     Service,
+    graceful::WeakScope,
     http::{Body, Request, Response, Version, server::HttpServer},
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{Connection, ConnectionError, Endpoint, ServerConfig, tls::TlsOptions},
-    rt::Executor,
     service::service_fn,
     tls::server::{ServerAuthData, TlsServerConfig},
     ua::profile::selection::database::UserAgentDatabase,
@@ -327,17 +327,17 @@ async fn test_rama_send_closes_its_tunneled_connection_at_the_origin() {
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let origin = Endpoint::build(Executor::new())
+    let origin = Endpoint::build(WeakScope::never())
         .with_server_config(ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let origin_port = origin.local_addr().unwrap().port();
-    let h3 = HttpServer::new_http3(Executor::new()).service(service_fn(async |_: Request| {
+    let h3 = HttpServer::new_http3(WeakScope::never()).service(service_fn(async |_: Request| {
         Ok::<_, Infallible>(Response::new(Body::from("h3 origin")))
     }));
     tokio::spawn(origin.clone().serve(
-        Executor::new(),
+        WeakScope::never(),
         service_fn(move |connection: Connection| {
             let closed_tx = closed_tx.clone();
             let h3 = h3.clone();

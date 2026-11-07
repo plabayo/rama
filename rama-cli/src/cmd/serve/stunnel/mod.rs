@@ -28,11 +28,11 @@
 use rama::{
     Layer,
     error::{BoxError, ErrorContext as _},
+    graceful::WeakScope,
     net::{
         address::{HostWithPort, SocketAddress},
         proxy::IoForwardService,
     },
-    rt::Executor,
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
     tls::boring::{
@@ -120,22 +120,22 @@ pub struct EntryNodeArgs {
     pub insecure: bool,
 }
 
-pub async fn run(exec: Executor, cfg: StunnelCommand) -> Result<(), BoxError> {
+pub async fn run(scope: WeakScope, cfg: StunnelCommand) -> Result<(), BoxError> {
     match cfg.commands {
-        StunnelSubcommand::Exit(cfg) => run_exit_node(exec, cfg).await,
-        StunnelSubcommand::Entry(cfg) => run_entry_node(exec, cfg).await,
+        StunnelSubcommand::Exit(cfg) => run_exit_node(scope, cfg).await,
+        StunnelSubcommand::Entry(cfg) => run_entry_node(scope, cfg).await,
     }
 }
 
-async fn run_exit_node(exec: Executor, cfg: ExitNodeArgs) -> Result<(), BoxError> {
+async fn run_exit_node(scope: WeakScope, cfg: ExitNodeArgs) -> Result<(), BoxError> {
     let server_config = try_new_server_config_with_auth_files(
         cfg.cert.as_deref(),
         cfg.key.as_deref(),
         None,
-        exec.clone(),
+        scope.clone(),
     )?;
 
-    let tcp_listener = TcpListener::bind_address(cfg.bind, exec.clone())
+    let tcp_listener = TcpListener::bind_address(cfg.bind, scope.clone())
         .await
         .context("bind stunnel exit node")?;
 
@@ -144,30 +144,32 @@ async fn run_exit_node(exec: Executor, cfg: ExitNodeArgs) -> Result<(), BoxError
         .context("get local addr of tcp listener")?;
     let forward_addr = cfg.forward;
 
-    exec.try_spawn_task_fn(move |exec| async move {
-        tracing::info!("Stunnel exit node is running...");
-        tracing::info!(
-            "Listening on {} and forwarding to {}",
-            bind_address,
-            forward_addr
-        );
+    scope.try_hold()?.into_spawn_task({
+        let scope = scope.clone();
+        async move {
+            tracing::info!("Stunnel exit node is running...");
+            tracing::info!(
+                "Listening on {} and forwarding to {}",
+                bind_address,
+                forward_addr
+            );
 
-        let tcp_service = TlsAcceptorLayer::new(server_config).into_layer(
-            IoToProxyBridgeIoLayer::new(forward_addr)
-                .with_connector(rama::dns::client::DnsConnector::new(TcpConnector::new()))
-                .into_layer(IoForwardService::new(exec)),
-        );
-        tcp_listener.serve(tcp_service).await;
-    })
-    .map_err(|refused| refused.discard_task())?;
+            let tcp_service = TlsAcceptorLayer::new(server_config).into_layer(
+                IoToProxyBridgeIoLayer::new(forward_addr)
+                    .with_connector(rama::dns::client::DnsConnector::new(TcpConnector::new()))
+                    .into_layer(IoForwardService::new(scope)),
+            );
+            tcp_listener.serve(tcp_service).await;
+        }
+    });
 
     Ok(())
 }
 
-async fn run_entry_node(exec: Executor, cfg: EntryNodeArgs) -> Result<(), BoxError> {
+async fn run_entry_node(scope: WeakScope, cfg: EntryNodeArgs) -> Result<(), BoxError> {
     let tls_connector_data = build_tls_connector(&cfg)?;
 
-    let tcp_listener = TcpListener::bind_address(cfg.bind, exec.clone())
+    let tcp_listener = TcpListener::bind_address(cfg.bind, scope.clone())
         .await
         .context("bind stunnel entry node")?;
 
@@ -176,25 +178,27 @@ async fn run_entry_node(exec: Executor, cfg: EntryNodeArgs) -> Result<(), BoxErr
         .context("get local addr of tcp listener")?;
     let connect_authority = cfg.connect;
 
-    exec.try_spawn_task_fn(move |exec| async move {
-        tracing::info!("Stunnel entry node is running...");
-        tracing::info!(
-            "Listening on {} and connecting to {}",
-            bind_address,
-            connect_authority
-        );
+    scope.try_hold()?.into_spawn_task({
+        let scope = scope.clone();
+        async move {
+            tracing::info!("Stunnel entry node is running...");
+            tracing::info!(
+                "Listening on {} and connecting to {}",
+                bind_address,
+                connect_authority
+            );
 
-        let tcp_service = IoToProxyBridgeIoLayer::new(connect_authority)
-            .with_connector(
-                TlsConnectorLayer::secure()
-                    .with_base_config(tls_connector_data)
-                    .into_layer(rama::dns::client::DnsConnector::new(TcpConnector::new())),
-            )
-            .into_layer(IoForwardService::new(exec));
+            let tcp_service = IoToProxyBridgeIoLayer::new(connect_authority)
+                .with_connector(
+                    TlsConnectorLayer::secure()
+                        .with_base_config(tls_connector_data)
+                        .into_layer(rama::dns::client::DnsConnector::new(TcpConnector::new())),
+                )
+                .into_layer(IoForwardService::new(scope));
 
-        tcp_listener.serve(tcp_service).await;
-    })
-    .map_err(|refused| refused.discard_task())?;
+            tcp_listener.serve(tcp_service).await;
+        }
+    });
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::graceful::WeakScope;
 use rama_core::graceful::attach_scope;
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use std::io;
 use std::os::fd::AsFd;
@@ -25,24 +25,26 @@ use crate::UnixStream;
 #[derive(Clone, Debug)]
 /// Builder for `UnixListener`.
 pub struct UnixListenerBuilder {
-    exec: Executor,
+    scope: WeakScope,
 }
 
 impl UnixListenerBuilder {
     /// Create a new `UnixListenerBuilder`.
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
-        Self { exec }
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
+        Self { scope }
     }
 
-    pub fn default_with_executor(exec: Executor) -> Self {
-        Self::new(exec)
+    pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
+        Self::new(scope)
     }
 }
 
 impl Default for UnixListenerBuilder {
     fn default() -> Self {
-        Self::default_with_executor(Executor::default())
+        Self::default_with_scope(WeakScope::never())
     }
 }
 
@@ -68,7 +70,7 @@ impl UnixListenerBuilder {
 
         Ok(UnixListener {
             inner,
-            exec: self.exec,
+            scope: self.scope,
             _cleanup: cleanup,
         })
     }
@@ -85,7 +87,7 @@ impl UnixListenerBuilder {
         let inner = TokioUnixListener::from_std(std_listener)?;
         Ok(UnixListener {
             inner,
-            exec: self.exec,
+            scope: self.scope,
             _cleanup: None,
         })
     }
@@ -118,7 +120,7 @@ impl UnixListenerBuilder {
 /// of that cleanup.
 pub struct UnixListener {
     inner: TokioUnixListener,
-    exec: Executor,
+    scope: WeakScope,
     _cleanup: Option<UnixSocketCleanup>,
 }
 
@@ -127,16 +129,17 @@ impl UnixListener {
     /// Create a new [`UnixListenerBuilder`] without a state,
     /// which can be used to configure a [`UnixListener`].
     #[must_use]
-    pub fn build(exec: Executor) -> UnixListenerBuilder {
-        UnixListenerBuilder::new(exec)
+    pub fn build(scope: impl Into<WeakScope>) -> UnixListenerBuilder {
+        let scope = scope.into();
+        UnixListenerBuilder::new(scope)
     }
 
     #[inline]
     /// Creates a new [`UnixListener`], which will be bound to the specified path.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_path(path: impl AsRef<Path>, exec: Executor) -> Result<Self, io::Error> {
-        UnixListenerBuilder::new(exec).bind_path(path).await
+    pub async fn bind_path(path: impl AsRef<Path>, scope: WeakScope) -> Result<Self, io::Error> {
+        UnixListenerBuilder::new(scope).bind_path(path).await
     }
 
     #[inline]
@@ -145,9 +148,10 @@ impl UnixListener {
     /// The returned listener is ready for accepting connections.
     pub fn bind_socket(
         socket: rama_net::socket::core::Socket,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<Self, io::Error> {
-        UnixListenerBuilder::new(exec).bind_socket(socket)
+        let scope = scope.into();
+        UnixListenerBuilder::new(scope).bind_socket(socket)
     }
 
     #[inline]
@@ -161,9 +165,9 @@ impl UnixListener {
     /// The returned listener is ready for accepting connections.
     pub async fn bind_socket_opts(
         opts: SocketOptions,
-        exec: Executor,
+        scope: WeakScope,
     ) -> Result<Self, rama_core::error::BoxError> {
-        UnixListenerBuilder::new(exec).bind_socket_opts(opts).await
+        UnixListenerBuilder::new(scope).bind_socket_opts(opts).await
     }
 }
 
@@ -176,31 +180,37 @@ impl UnixListener {
         self.inner.local_addr()
     }
 
-    pub fn from_tokio_unix_listener(listener: TokioUnixListener, exec: Executor) -> Self {
+    pub fn from_tokio_unix_listener(
+        listener: TokioUnixListener,
+        scope: impl Into<WeakScope>,
+    ) -> Self {
+        let scope = scope.into();
         Self {
             inner: listener,
-            exec,
+            scope,
             _cleanup: None,
         }
     }
 
     pub fn try_from_socket(
         socket: rama_net::socket::core::Socket,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<Self, io::Error> {
-        Self::bind_socket(socket, exec)
+        let scope = scope.into();
+        Self::bind_socket(socket, scope)
     }
 
     pub fn try_from_std_unix_listener(
         listener: StdUnixListener,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<Self, io::Error> {
+        let scope = scope.into();
         listener.set_nonblocking(true)?;
         let inner = TokioUnixListener::from_std(listener)?;
 
         Ok(Self {
             inner,
-            exec,
+            scope,
             _cleanup: None,
         })
     }
@@ -233,17 +243,17 @@ impl UnixListener {
     ///
     /// This listener will spawn a task in which the inner service will
     /// handle the incomming connection. Connections will be served
-    /// gracefully if the [`UnixListener`] is configured with a graceful [`Executor`].
+    /// gracefully if the [`UnixListener`] is configured with a graceful [`WeakScope`].
     pub async fn serve<S>(self, service: S)
     where
         S: Service<UnixStream> + Clone,
     {
         // Serving holds the scope, so every connection accepted until the cancel is admitted.
-        let Some(scope) = self.exec.scope().to_scope() else {
-            tracing::debug!("executor scope closed: not serving");
+        let Ok(scope) = self.scope.try_hold() else {
+            tracing::debug!("scope closed: not serving");
             return;
         };
-        let mut cancelled_fut = pin!(self.exec.cancelled());
+        let mut cancelled_fut = pin!(self.scope.cancelled());
 
         loop {
             tokio::select! {
@@ -272,7 +282,7 @@ impl UnixListener {
                             attach_scope(socket.extensions(), &scope);
 
                             // Ended at the hard phase, whatever the service does by then.
-                            scope.spawn_abortable_task(async move {
+                            scope.spawn_task(async move {
                                 _ = service.serve(socket).await;
                             }.instrument(serve_span));
                         }
@@ -329,7 +339,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("served.sock");
         _ = std::fs::remove_file(&path);
-        let listener = UnixListener::bind_path(&path, Executor::from(scope.clone()))
+        let listener = UnixListener::bind_path(&path, scope.clone_weak())
             .await
             .unwrap();
         let (accepted, mut accepted_rx) = mpsc::unbounded_channel();

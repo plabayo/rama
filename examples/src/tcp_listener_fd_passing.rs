@@ -42,11 +42,10 @@ mod unix_example {
 
     use rama::{
         error::BoxError,
-        graceful::{Cause, Scope},
+        graceful::{Cause, Scope, WeakScope},
         http::Request,
         http::server::HttpServer,
         http::service::web::response::Json,
-        rt::Executor,
         service::service_fn,
         tcp::server::TcpListener,
         telemetry::tracing::{
@@ -94,7 +93,7 @@ mod unix_example {
         tracing::info!("Creating TCP listener...");
 
         // Create listener
-        let listener = TcpListener::bind_address("127.0.0.1:62046", Executor::default()).await?;
+        let listener = TcpListener::bind_address("127.0.0.1:62046", WeakScope::never()).await?;
         let addr = listener.local_addr()?;
         tracing::info!("✓ Listening on {addr}");
 
@@ -163,7 +162,7 @@ mod unix_example {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let scope = Scope::new().with_default_signal();
-        let exec = Executor::from(scope.clone());
+        let weak_scope = scope.clone_weak();
 
         tracing::info!("\n=== Child Process ===");
         tracing::info!("Connecting to parent...");
@@ -183,20 +182,21 @@ mod unix_example {
         tracing::info!("✓ Reconstructed listener on {addr}");
 
         // Convert to rama listener
-        let listener = TcpListener::try_from_std_tcp_listener(std_listener, exec.clone())?;
+        let listener = TcpListener::try_from_std_tcp_listener(std_listener, weak_scope.clone())?;
         tracing::info!("✓ Converted to rama::tcp::TcpListener");
 
         // Start serving
         tracing::info!("\n=== Child now serving ===");
         tracing::info!("Will serve for 10 seconds, then exit\n");
 
-        let http_service = HttpServer::auto(exec).service(service_fn(|_req: Request| async move {
-            Ok::<_, Infallible>(Json(json!({
-                "message": "Hello from child process!",
-                "pid": std::process::id(),
-                "zero_downtime": true
-            })))
-        }));
+        let http_service =
+            HttpServer::auto(weak_scope).service(service_fn(|_req: Request| async move {
+                Ok::<_, Infallible>(Json(json!({
+                    "message": "Hello from child process!",
+                    "pid": std::process::id(),
+                    "zero_downtime": true
+                })))
+            }));
 
         // Shutdown after 10 seconds
         tokio::spawn(async move {

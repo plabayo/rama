@@ -11,6 +11,7 @@
 use rama::{
     bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef as _,
+    graceful::WeakScope,
     http::{
         Body, Method, Request, Response, StatusCode,
         core::h3::{client, connection::Config, server},
@@ -26,7 +27,6 @@ use rama::{
     },
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{Connection as QuicConnection, Endpoint, TransportConfig, tls::TlsOptions},
-    rt::Executor,
     tls::{
         client::TlsClientConfig,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -144,7 +144,7 @@ impl Connection {
                     .unwrap();
             client_config.set_transport_config(transport);
             let bind = SocketAddress::local_ipv4(0);
-            let server_endpoint = Endpoint::build(Executor::new())
+            let server_endpoint = Endpoint::build(WeakScope::never())
                 .with_server_config(server_config)
                 .bind_address(bind)
                 .await
@@ -159,7 +159,7 @@ impl Connection {
                     server
                 }
             });
-            let client_endpoint = Endpoint::build(Executor::new())
+            let client_endpoint = Endpoint::build(WeakScope::never())
                 .bind_address(bind)
                 .await
                 .unwrap();
@@ -173,7 +173,7 @@ impl Connection {
                 .await
                 .unwrap();
             let (client, driver) =
-                client::handshake::<Body, _>(connection, config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(connection, config, WeakScope::never()).unwrap();
             tokio::spawn(driver.run());
             let server = accept.await.unwrap();
             (client, server, client_endpoint, server_endpoint)

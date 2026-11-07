@@ -10,6 +10,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         HeaderMap, HeaderValue, Request, Response, StatusCode,
         header::{COOKIE, REFRESH, SET_COOKIE},
@@ -23,7 +24,6 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     net::{address::SocketAddress, tls::ApplicationProtocol, uri::Uri},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
     tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
@@ -301,12 +301,12 @@ fn page(
 
 /// Serve the bootstrap door on `addr` with `tls`, over HTTP/1.1 so the connection can close.
 pub(crate) async fn serve(
-    exec: Executor,
+    scope: WeakScope,
     addr: SocketAddress,
     tls: TlsServerConfig,
     alt_svc: AltSvc,
 ) -> Result<(), BoxError> {
-    let listener = TcpListener::build(exec.clone())
+    let listener = TcpListener::build(scope.clone())
         .bind_address(addr)
         .await
         .context("bind HTTP/3 bootstrap TCP listener")?;
@@ -323,9 +323,8 @@ pub(crate) async fn serve(
         // Only HTTP/1.1 can close the connection the reload must not reuse.
         TlsAcceptorLayer::new(tls.with_alpn([ApplicationProtocol::HTTP_11].into_iter().collect())),
     )
-        .into_layer(HttpServer::new_http1(exec.clone()).service(Http3Bootstrap::new(alt_svc)));
-    exec.try_spawn_task(listener.serve(service))
-        .map_err(|refused| refused.discard_task())?;
+        .into_layer(HttpServer::new_http1(scope.clone()).service(Http3Bootstrap::new(alt_svc)));
+    scope.try_hold()?.into_spawn_task(listener.serve(service));
     Ok(())
 }
 

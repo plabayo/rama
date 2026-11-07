@@ -20,8 +20,8 @@ use rama_core::{
     Service,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
     io::Io,
-    rt::Executor,
     telemetry::tracing,
 };
 use rama_net::{
@@ -74,7 +74,7 @@ pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = (), A = ()> {
     // This can be useful in case you also wish to support guest users.
     auth_opt: bool,
 
-    exec: Executor,
+    scope: WeakScope,
 }
 
 #[derive(Debug, Clone)]
@@ -89,14 +89,15 @@ impl Socks5Acceptor<(), (), (), ()> {
     /// Use [`Socks5Acceptor::default`] instead if you wish to create a default
     /// [`Socks5Acceptor`] which can be used as a simple and honest byte-byte proxy.
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             connector: (),
             binder: (),
             udp_associator: (),
             auth: AuthKind::NoAuth(()),
             auth_opt: false,
-            exec,
+            scope,
         }
     }
 }
@@ -109,7 +110,7 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
             udp_associator: self.udp_associator,
             auth: AuthKind::WithAuth(authorizer),
             auth_opt: self.auth_opt,
-            exec: self.exec,
+            scope: self.scope,
         }
     }
 
@@ -139,7 +140,7 @@ impl<B, U, A> Socks5Acceptor<(), B, U, A> {
             udp_associator: self.udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
-            exec: self.exec,
+            scope: self.scope,
         }
     }
 
@@ -167,7 +168,7 @@ impl<C, U, A> Socks5Acceptor<C, (), U, A> {
             udp_associator: self.udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
-            exec: self.exec,
+            scope: self.scope,
         }
     }
 
@@ -195,7 +196,7 @@ impl<C, B, A> Socks5Acceptor<C, B, (), A> {
             udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
-            exec: self.exec,
+            scope: self.scope,
         }
     }
 
@@ -212,15 +213,16 @@ impl<C, B, A> Socks5Acceptor<C, B, (), A> {
 
 impl Socks5Acceptor {
     #[inline]
-    pub fn default_with_executor(exec: Executor) -> Self {
-        Socks5Acceptor::new(exec).with_default_connector()
+    pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
+        Socks5Acceptor::new(scope).with_default_connector()
     }
 }
 
 impl Default for Socks5Acceptor {
     #[inline]
     fn default() -> Self {
-        Self::default_with_executor(Executor::default())
+        Self::default_with_scope(WeakScope::never())
     }
 }
 
@@ -560,7 +562,7 @@ where
     where
         Address: TryInto<SocketAddress, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind_address(address, self.exec.clone()).await?;
+        let tcp = TcpListener::bind_address(address, self.scope.clone()).await?;
         tcp.serve(Arc::new(self)).await;
         Ok(())
     }

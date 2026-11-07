@@ -22,9 +22,9 @@
 )]
 
 use rama::{
+    graceful::WeakScope,
     io::Io,
     net::{address::SocketAddress, stream::Socket},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -56,7 +56,7 @@ async fn main() {
         .init();
 
     tracing::info!("listening on: {ADDR}");
-    TcpListener::bind_address(ADDR, Executor::default())
+    TcpListener::bind_address(ADDR, WeakScope::never())
         .await
         .expect("bind TCP Listener")
         .serve(service_fn(handle))

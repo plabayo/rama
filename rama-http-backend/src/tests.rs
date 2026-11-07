@@ -20,11 +20,10 @@ use rama_core::{
         future::{join, join_all},
         stream,
     },
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     io::BridgeIo,
     layer::ArcLayer,
     layer::ConsumeErrLayer,
-    rt::Executor,
     service::service_fn,
 };
 use rama_http::{
@@ -66,7 +65,7 @@ async fn byte_stream_transport_rejects_http3_before_dialing() {
         let dials = dials.clone();
         move || {
             dials.fetch_add(1, Ordering::SeqCst);
-            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+            HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
         }
     }));
 
@@ -128,7 +127,7 @@ async fn negotiated_stream_version_must_match_the_required_version() {
         let input = ConnectRequest::new(HostWithPort::example_domain_https());
         input.extensions.insert(TargetHttpVersion(required));
 
-        let error = http_connect::<_, _, Body>(io, input, Executor::default())
+        let error = http_connect::<_, _, Body>(io, input, WeakScope::never())
             .await
             .err()
             .expect("negotiated protocol must satisfy the required version");
@@ -140,7 +139,7 @@ async fn negotiated_stream_version_must_match_the_required_version() {
 async fn http_connector_accepts_protocol_independent_input() {
     let connector =
         HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
-            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+            HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
         }));
 
     let input = ConnectRequest::new(HostWithPort::example_domain_https());
@@ -164,7 +163,7 @@ async fn http_connector_accepts_protocol_independent_input() {
 async fn http_request_adapter_composes_with_http_connector() {
     let connector = HttpConnectRequestAdapter::new(
         HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
-            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+            HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
         })),
     );
 
@@ -185,7 +184,7 @@ async fn http_request_adapter_composes_with_http_connector() {
 #[tokio::test]
 async fn test_http11_pipelining() {
     let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
     }));
 
     let conn = connector
@@ -225,7 +224,7 @@ async fn test_http2_multiplex() {
         move || {
             let inflight = inflight.clone();
             let max_inflight = max_inflight.clone();
-            HttpServer::auto(Executor::default()).service(service_fn(move |_req: Request| {
+            HttpServer::auto(WeakScope::never()).service(service_fn(move |_req: Request| {
                 let inflight = inflight.clone();
                 let max_inflight = max_inflight.clone();
                 async move {
@@ -261,7 +260,7 @@ async fn test_http2_multiplex() {
 #[tokio::test]
 async fn test_http11_handles_4_concurrent_requests() {
     let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
     }));
 
     let conn = connector
@@ -285,7 +284,7 @@ async fn test_http11_handles_4_concurrent_requests() {
 #[tokio::test]
 async fn test_http2_handles_200_concurrent_requests() {
     let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
     }));
 
     let conn = connector
@@ -449,7 +448,7 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_server_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -458,7 +457,7 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -483,7 +482,7 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::from(graceful.clone()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -513,7 +512,7 @@ async fn http11_mitm_relay_default_sanitizes_both_hops() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_hop_by_hop_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -522,7 +521,7 @@ async fn http11_mitm_relay_default_sanitizes_both_hops() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -581,7 +580,7 @@ async fn http11_mitm_relay_sanitizes_before_transform_middleware() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_middleware_hop_by_hop_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -590,7 +589,7 @@ async fn http11_mitm_relay_sanitizes_before_transform_middleware() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -676,7 +675,7 @@ async fn http11_mitm_relay_default_preserves_response_trailers() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_trailer_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -684,7 +683,7 @@ async fn http11_mitm_relay_default_preserves_response_trailers() {
     });
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -732,7 +731,7 @@ async fn h2_mitm_relay_default_preserves_response_trailers() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_trailer_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -740,7 +739,7 @@ async fn h2_mitm_relay_default_preserves_response_trailers() {
     });
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -756,7 +755,7 @@ async fn h2_mitm_relay_default_preserves_response_trailers() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::from(graceful.clone()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -801,7 +800,7 @@ async fn http11_mitm_relay_rejects_unsolicited_switching_protocols() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_unsolicited_upgrade_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -809,7 +808,7 @@ async fn http11_mitm_relay_rejects_unsolicited_switching_protocols() {
     });
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -858,7 +857,7 @@ async fn http11_mitm_relay_does_not_turn_upgrade_into_close() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_upgrade_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -866,7 +865,7 @@ async fn http11_mitm_relay_does_not_turn_upgrade_into_close() {
     });
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(
                 MockSocket::new(relay_ingress_stream),
                 MockSocket::new(relay_egress_stream),
@@ -927,7 +926,7 @@ async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_server_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -936,7 +935,7 @@ async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -961,7 +960,7 @@ async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::from(graceful.clone()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1024,7 +1023,7 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
         let request_count = request_count.clone();
         let guard = graceful.clone();
         async move {
-            HttpServer::auto(Executor::from(guard))
+            HttpServer::auto(WeakScope::from(guard))
                 .service(service_fn(move |req| {
                     let request_count = request_count.clone();
                     async move {
@@ -1039,7 +1038,7 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -1064,7 +1063,7 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::from(graceful.clone()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1143,7 +1142,7 @@ async fn test_http11_mitm_relay_propagates_originated_request_close() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -1164,7 +1163,7 @@ async fn test_http11_mitm_relay_propagates_originated_request_close() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::from(graceful.clone()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1210,7 +1209,7 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(mitm_relay_server_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -1221,7 +1220,7 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .with_http_middleware((
                 ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                 SetRequestHeaderLayer::overriding(
@@ -1247,7 +1246,7 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::from(graceful.clone()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1310,7 +1309,7 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
     // relay to mirror back out to its downstream client.
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        let mut server = HttpServer::auto(Executor::from(guard));
+        let mut server = HttpServer::auto(WeakScope::from(guard));
         if upstream_enables_connect {
             server.h2_mut().set_enable_connect_protocol();
         }
@@ -1335,7 +1334,7 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
             .unwrap();
@@ -1348,7 +1347,7 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::from(graceful.clone()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1413,7 +1412,7 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpServer::auto(Executor::from(guard))
+        HttpServer::auto(WeakScope::from(guard))
             .service(service_fn(server_svc_fn))
             .serve(MockSocket::new(server_stream))
             .await
@@ -1434,7 +1433,7 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
             .unwrap();
@@ -1444,7 +1443,7 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
     let conn = http_connect(
         MockSocket::new(client_stream),
         request,
-        Executor::from(graceful.clone()),
+        graceful.clone_weak(),
     )
     .await
     .unwrap()
@@ -1502,7 +1501,7 @@ async fn h2_client_exact_replay_reaches_the_wire() {
     });
 
     let established =
-        http_connect::<_, _, Body>(MockSocket::new(client_stream), request, Executor::default())
+        http_connect::<_, _, Body>(MockSocket::new(client_stream), request, WeakScope::never())
             .await
             .unwrap();
     let payload = timeout(Duration::from_secs(1), peer)
@@ -1532,7 +1531,7 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
     // These explicit native receive budgets fit the relay's configured limits.
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        let mut server = HttpServer::auto(Executor::from(guard));
+        let mut server = HttpServer::auto(WeakScope::from(guard));
         server.h2_mut().set_max_frame_size(32_768);
         server.h2_mut().set_max_header_list_size(16_384);
         server.h2_mut().set_header_table_size(8_192);
@@ -1552,13 +1551,13 @@ async fn test_h2_mitm_relay_preserves_complete_initial_settings() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        HttpMitmRelay::new(Executor::from(guard))
+        HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
             .unwrap();
     });
 
-    let (mut sender, connection) = H2ClientBuilder::new(Executor::from(graceful.clone()))
+    let (mut sender, connection) = H2ClientBuilder::new(graceful.clone_weak())
         .with_observe_peer_settings(true)
         .handshake::<_, Body>(MockSocket::new(client_stream))
         .await
@@ -1624,9 +1623,9 @@ async fn test_h2_mitm_relay_late_upstream_settings_falls_back_to_native() {
     egress
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
-    let executor = Executor::from(graceful.clone());
+    let scope = graceful.clone_weak();
     let relay = tokio::spawn(async move {
-        HttpMitmRelay::new(executor)
+        HttpMitmRelay::new(scope)
             .with_eager_peer_settings_timeout(Duration::from_millis(50))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await
@@ -1672,7 +1671,7 @@ async fn test_h2_mitm_relay_mirrors_zero_max_concurrent_streams() {
     // Upstream advertises max_concurrent_streams=0.
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        let mut server = HttpServer::auto(Executor::from(guard));
+        let mut server = HttpServer::auto(WeakScope::from(guard));
         server.h2_mut().set_max_concurrent_streams(0);
         server
             .service(service_fn(server_svc_fn))
@@ -1688,20 +1687,19 @@ async fn test_h2_mitm_relay_mirrors_zero_max_concurrent_streams() {
 
     let guard = graceful.clone();
     graceful.spawn_task(async move {
-        _ = HttpMitmRelay::new(Executor::from(guard))
+        _ = HttpMitmRelay::new(WeakScope::from(guard))
             .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
             .await;
     });
 
     // Low-level h2: we don't send a request because the relay's ingress
     // (correctly enforcing max_streams=0) would RST_STREAM it.
-    let (send_req, conn) =
-        rama_http_core::client::conn::http2::Builder::new(Executor::from(graceful.clone()))
-            .handshake::<_, rama_http::body::util::Empty<rama_core::bytes::Bytes>>(MockSocket::new(
-                client_stream,
-            ))
-            .await
-            .expect("downstream h2 handshake against relay must succeed");
+    let (send_req, conn) = rama_http_core::client::conn::http2::Builder::new(graceful.clone_weak())
+        .handshake::<_, rama_http::body::util::Empty<rama_core::bytes::Bytes>>(MockSocket::new(
+            client_stream,
+        ))
+        .await
+        .expect("downstream h2 handshake against relay must succeed");
 
     let handle = conn.peer_settings_handle();
     tokio::spawn(async move {

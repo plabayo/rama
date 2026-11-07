@@ -40,7 +40,6 @@ use rama::{
     },
     layer::ArcLayer,
     net::address::SocketAddress,
-    rt::Executor,
     stream::json::JsonWriteStream,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -94,11 +93,12 @@ async fn main() {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62041), exec.clone())
-        .await
-        .expect("tcp port to be bound");
+    let listener =
+        TcpListener::bind_address(SocketAddress::default_ipv4(62041), weak_scope.clone())
+            .await
+            .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
 
     tracing::info!(
@@ -117,7 +117,9 @@ async fn main() {
             ErrorHandlerLayer::new(),
         )
             .into_layer(Router::new().with_get("/orders", api_json_events_endpoint));
-        listener.serve(HttpServer::auto(exec).service(app)).await;
+        listener
+            .serve(HttpServer::auto(weak_scope).service(app))
+            .await;
     });
 
     scope.join().await.expect("graceful shutdown");

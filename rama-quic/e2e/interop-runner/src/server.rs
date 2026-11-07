@@ -15,7 +15,6 @@ use rama::{
         Connection, Endpoint, EndpointConfig, RecvStream, SendStream,
         proto::version::{ServerVersionPolicy, Version, VersionPreference},
     },
-    rt::Executor,
     telemetry::tracing,
     tls::{
         KeyLogIntent,
@@ -79,7 +78,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let shutdown = Scope::new().with_signal(async move {
         let _ = is_finished.await;
     });
-    let executor = Executor::from(shutdown.clone());
+    let scope = shutdown.clone_weak();
     let tls = TlsServerConfig::new()
         .with_alpn(smallvec![ApplicationProtocol::from(testcase.alpn())])
         .with_keylog(KeyLogIntent::Environment)
@@ -91,7 +90,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                 .with_early_data(testcase == TestCase::ZeroRtt)
                 .with_early_data_context(b"rama-interop-runner-v1"),
         )?
-        .with_transport_config(transport(executor.clone(), "server", testcase).await?);
+        .with_transport_config(transport(scope.clone(), "server", testcase).await?);
     if testcase == TestCase::ConnectionMigration {
         if args.preferred_address_v4.is_none() && args.preferred_address_v6.is_none() {
             return Err("connectionmigration requires a preferred address".into());
@@ -117,7 +116,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     if args.listen.is_ipv6() {
         socket_options.only_v6 = Some(false);
     }
-    let mut builder = Endpoint::build(executor).with_server_config(config);
+    let mut builder = Endpoint::build(scope).with_server_config(config);
     if testcase == TestCase::MultiConnect {
         let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
         endpoint_config

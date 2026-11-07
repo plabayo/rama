@@ -57,7 +57,6 @@ mod unix_impl {
         },
         layer::{ArcLayer, Layer},
         net::{address::SocketAddress, client::EstablishedClientConnection},
-        rt::Executor,
         tcp::server::TcpListener,
         telemetry::tracing::{
             self,
@@ -102,7 +101,7 @@ mod unix_impl {
         let scope = Scope::new()
             .with_default_signal()
             .with_grace(Duration::from_secs(30));
-        let exec = Executor::from(scope.clone());
+        let weak_scope = scope.clone_weak();
 
         // ── FastCGI fallback service: anything we don't yet serve in Rust ────
         // `FastCgiUnixConnector::php_fpm` opens a Unix-socket connection to
@@ -122,7 +121,7 @@ mod unix_impl {
             })
             .with_not_found(php_fallback_service(fastcgi_fallback));
 
-        let http_server = HttpServer::auto(exec.clone()).service(
+        let http_server = HttpServer::auto(weak_scope.clone()).service(
             (
                 ArcLayer::new(),
                 TraceLayer::new_for_http(),
@@ -131,7 +130,7 @@ mod unix_impl {
                 .into_layer(router),
         );
 
-        let tcp = TcpListener::bind_address(listen, exec.clone())
+        let tcp = TcpListener::bind_address(listen, weak_scope.clone())
             .await
             .expect("bind http listener");
         tracing::info!("rama-fastcgi-php migration listening on http://{listen}");

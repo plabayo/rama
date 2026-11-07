@@ -7,6 +7,7 @@ use rama::{
     bytes::Bytes,
     extensions::Extensions,
     futures::{StreamExt as _, async_stream::stream_fn},
+    graceful::WeakScope,
     http::{
         Body, BodyExtractExt, Request, StatusCode, Version,
         client::EasyHttpWebClient,
@@ -29,7 +30,6 @@ use rama::{
         client::ProxyRoute,
         tls::{ApplicationProtocol, TlsAlpn},
     },
-    rt::Executor,
     tcp::server::TcpListener,
     tls::rustls::server::TlsAcceptorLayer,
     tls::{
@@ -52,7 +52,7 @@ async fn test_http_mitm_relay_proxy() {
     utils::init_tracing();
 
     tokio::spawn(async {
-        HttpServer::auto(Executor::default())
+        HttpServer::auto(WeakScope::never())
             .listen(
                 "127.0.0.1:63015",
                 (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(Router::new().with_get(
@@ -70,7 +70,7 @@ async fn test_http_mitm_relay_proxy() {
     });
 
     tokio::spawn(async {
-        HttpServer::new_http1(Executor::default())
+        HttpServer::new_http1(WeakScope::never())
             .listen(
                 "127.0.0.1:63016",
                 (
@@ -131,9 +131,9 @@ async fn test_http_mitm_relay_proxy() {
         .with_alpn_http_auto()
         .with_keylog(KeyLogIntent::Environment);
 
-    let executor = Executor::default();
+    let scope = WeakScope::never();
 
-    let http_tp = HttpServer::auto(executor);
+    let http_tp = HttpServer::auto(scope);
     // The origin admits large header lists without advertising a cap, as the
     // servers behind the original browser regression do.
     let omitted_header_cap = Arc::new(Settings::from_ordered_entries(Box::new([])).unwrap());
@@ -173,7 +173,7 @@ async fn test_http_mitm_relay_proxy() {
         );
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63017", Executor::default())
+        TcpListener::bind_address("127.0.0.1:63017", WeakScope::never())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)
@@ -185,7 +185,7 @@ async fn test_http_mitm_relay_proxy() {
         .expect("self-signed identity")
         .with_keylog(KeyLogIntent::Environment);
 
-    let http_1_over_tls_server = HttpServer::new_http1(Executor::default());
+    let http_1_over_tls_server = HttpServer::new_http1(WeakScope::never());
     let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn).into_layer(
         http_1_over_tls_server.service(
             (ArcLayer::new(), ErrorHandlerLayer::new())
@@ -194,7 +194,7 @@ async fn test_http_mitm_relay_proxy() {
     );
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63018", Executor::default())
+        TcpListener::bind_address("127.0.0.1:63018", WeakScope::never())
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener: secure web service (for h1 traffic): {e}")

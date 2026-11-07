@@ -46,7 +46,6 @@ use rama_core::{
     graceful::{Cause, Scope, attach_scope},
     io::BridgeIo,
     layer::{ArcLayer, ConsumeErrLayer},
-    rt::Executor,
 };
 use rama_http::layer::follow_redirect::FollowRedirectLayer;
 use rama_http_backend::proxy::mitm::{DefaultErrorResponse, HttpMitmRelay};
@@ -231,9 +230,9 @@ async fn harness_in_scope(
             .insert(TargetHttpVersion(Version::HTTP_2));
     }
 
-    let relay_exec = Executor::from(graceful.clone());
+    let relay_scope = graceful.clone_weak();
     let relay_work = async move {
-        let mut relay = HttpMitmRelay::new(relay_exec).maybe_with_grace(grace);
+        let mut relay = HttpMitmRelay::new(relay_scope).maybe_with_grace(grace);
         // The origin controls closure in these propagation fixtures.
         relay.h2_mut().maybe_set_idle_timeout(None);
         let ingress = MockSocket::new(relay_ingress_stream);

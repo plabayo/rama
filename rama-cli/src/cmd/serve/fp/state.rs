@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc};
 use rama::net::address::ip::geo::IpGeoDb;
 use rama::{
     error::{BoxError, BoxErrorExt, ErrorContext},
-    rt::Executor,
+    graceful::WeakScope,
 };
 
 use super::{data::DataSource, redacted_storage_auth, storage::Storage};
@@ -38,7 +38,7 @@ impl State {
     pub(super) async fn new(
         pg_url: Option<String>,
         storage_auth: Option<&str>,
-        exec: &Executor,
+        scope: &WeakScope,
     ) -> Result<Self, BoxError> {
         if storage_auth.is_some_and(str::is_empty) {
             return Err(BoxError::from_static_str(
@@ -47,7 +47,7 @@ impl State {
         }
         let storage = match pg_url {
             Some(pg_url) => Some(
-                Storage::try_new(pg_url, exec)
+                Storage::try_new(pg_url, scope)
                     .await
                     .context("create storage")?,
             ),
@@ -94,7 +94,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_storage_secret_is_rejected_before_starting_storage() {
-        State::new(None, Some(""), &Executor::default())
+        State::new(None, Some(""), &WeakScope::never())
             .await
             .unwrap_err();
     }

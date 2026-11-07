@@ -5,6 +5,7 @@ use std::sync::{
 
 use rama::{
     Layer,
+    graceful::WeakScope,
     http::{
         self, StreamingBody,
         grpc::{Request, Streaming, codec::CompressionEncoding},
@@ -13,7 +14,6 @@ use rama::{
     },
     layer::MapInputLayer,
     net::uri::Uri,
-    rt::Executor,
     stream::{self, StreamExt as _},
 };
 
@@ -74,7 +74,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         )
             .into_layer(svc);
 
-        HttpServer::new_h2(Executor::default()).service(grpc_svc)
+        HttpServer::new_h2(WeakScope::never()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(

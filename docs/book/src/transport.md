@@ -86,9 +86,9 @@ This transport-first model is also part of why Rama's [gRPC support](./http/grpc
 - QUIC has one endpoint type for both roles, since a single endpoint may act as client and
   server for different connections:
   - <https://ramaproxy.org/docs/rama/quic/struct.Endpoint.html>
-  - built on an application's own executor with
+  - built in an application's own scope with
     <https://ramaproxy.org/docs/rama/quic/struct.EndpointBuilder.html>, so the endpoint
-    shuts down with the scope of that executor, see [Graceful scopes](./intro/graceful.md)
+    shuts down with that scope, see [Graceful scopes](./intro/graceful.md)
 
 QUIC needs the `quic` feature and a TLS provider. Built-in providers use either `boring`,
 or `rustls` together with `ring` or `aws-lc`. Inject `BoringTlsProvider` or

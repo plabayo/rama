@@ -18,8 +18,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     futures::FutureExt as _,
-    graceful::{ScopeClosed, WeakScope},
-    rt::Executor,
+    graceful::WeakScope,
     telemetry::tracing::{Instrument, Span},
 };
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
@@ -83,13 +82,14 @@ impl Endpoint {
         self.inner.shared.lifecycle.spawn(Box::pin(future));
     }
 
-    /// Configure an endpoint whose drivers run through `exec` on the current Tokio runtime.
+    /// Configure an endpoint whose drivers run through `scope` on the current Tokio runtime.
     ///
-    /// An executor carrying a graceful guard ties the endpoint to the application's
-    /// shutdown. All convenience constructors accept the same executor explicitly.
+    /// A scope with a shutdown signal ties the endpoint to the application's
+    /// shutdown. All convenience constructors accept the same scope explicitly.
     #[must_use]
-    pub fn build(exec: Executor) -> EndpointBuilder {
-        EndpointBuilder::new(exec)
+    pub fn build(scope: impl Into<WeakScope>) -> EndpointBuilder {
+        let scope = scope.into();
+        EndpointBuilder::new(scope)
     }
 
     /// Create a client endpoint on a bound standard UDP socket.
@@ -97,31 +97,33 @@ impl Endpoint {
     /// This does not configure packet metadata. Use [`Self::new_client_with_packet_socket`]
     /// for a prepared socket, or [`Self::build`] for custom endpoint settings.
     pub fn new_client_with_std_socket(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         socket: std::net::UdpSocket,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec).with_std_socket(socket)
+        let scope = scope.into();
+        EndpointBuilder::new(scope).with_std_socket(socket)
     }
 
     /// Create a client endpoint on a prepared packet socket, preserving its configuration.
     ///
     /// Use [`Self::build`] for custom endpoint settings.
     pub fn new_client_with_packet_socket(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         socket: UdpPacketSocket,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec).with_packet_socket(socket)
+        let scope = scope.into();
+        EndpointBuilder::new(scope).with_packet_socket(socket)
     }
 
     /// Bind a client endpoint, requesting best-effort dual-stack operation for the IPv6 wildcard.
     ///
     /// Use [`Self::build`] to customise the endpoint or UDP socket configuration.
     pub async fn bind_client(
-        exec: Executor,
+        scope: WeakScope,
         address: impl Into<SocketAddress>,
     ) -> Result<Self, DatagramError> {
         let address = address.into();
-        EndpointBuilder::new(exec)
+        EndpointBuilder::new(scope)
             .bind_client_address(address)
             .await
     }
@@ -132,11 +134,12 @@ impl Endpoint {
     /// Use [`Self::new_server_with_packet_socket`] for a prepared socket, or
     /// [`Self::build`] for custom endpoint settings.
     pub fn new_server_with_std_socket(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         config: ServerConfig,
         socket: std::net::UdpSocket,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec)
+        let scope = scope.into();
+        EndpointBuilder::new(scope)
             .with_server_config(config)
             .with_std_socket(socket)
     }
@@ -145,11 +148,12 @@ impl Endpoint {
     ///
     /// This does not bind preferred-address sockets. Use [`Self::build`] for custom settings.
     pub fn new_server_with_packet_socket(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         config: ServerConfig,
         socket: UdpPacketSocket,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec)
+        let scope = scope.into();
+        EndpointBuilder::new(scope)
             .with_server_config(config)
             .with_packet_socket(socket)
     }
@@ -158,11 +162,11 @@ impl Endpoint {
     ///
     /// Use [`Self::build`] to customise the endpoint or UDP socket configuration.
     pub async fn bind_server(
-        exec: Executor,
+        scope: WeakScope,
         config: ServerConfig,
         address: impl Into<SocketAddress>,
     ) -> Result<Self, DatagramError> {
-        EndpointBuilder::new(exec)
+        EndpointBuilder::new(scope)
             .with_server_config(config)
             .bind_address(address)
             .await
@@ -259,16 +263,14 @@ impl Endpoint {
         server_config: Option<ServerConfig>,
         socket: Socket,
         advertised: Vec<Socket>,
-        executor: Executor,
+        weak_scope: WeakScope,
         shutdown_budget: Duration,
     ) -> io::Result<Self> {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(io::Error::other("no async runtime found"));
         }
         // The supervisor holds the scope while the endpoint runs: a closed one starts none.
-        let Some(held) = executor.scope().to_scope() else {
-            return Err(io::Error::other(ScopeClosed));
-        };
+        let held = weak_scope.try_hold().map_err(io::Error::other)?;
         if config.handshake_timeout.is_zero()
             || now()
                 .checked_add(config.handshake_timeout)
@@ -363,8 +365,8 @@ impl Endpoint {
         ));
         let lifecycle = rc.shared.lifecycle.clone();
         let inner = rc.0.clone();
-        let scope = WeakScope::from(executor);
-        held.into_spawn_task(async move {
+        let scope = weak_scope;
+        held.into_spawn_task_to_completion(async move {
             // The hard phase of the scope, or a stop that grants no budget.
             let (stop_scope, stop_lifecycle) = (&scope, &lifecycle);
             let hard = || async move {

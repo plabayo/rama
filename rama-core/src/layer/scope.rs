@@ -39,7 +39,7 @@ impl ScopeLayer {
     }
 
     generate_set_and_with! {
-        /// Also run every input in `parent`, such as the scope of the executor that serves
+        /// Also run every input in `parent`, such as the scope of the server that serves
         /// it, besides the scope the input already runs in. The layer does not hold it: an
         /// input arriving once it is closed is refused.
         pub fn parent(mut self, parent: Option<WeakScope>) -> Self {

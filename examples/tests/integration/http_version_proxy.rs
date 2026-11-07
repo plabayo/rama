@@ -5,6 +5,7 @@ use rama::{
     crypto::pem::PemEncode as _,
     error::{BoxError, error_chain, extra::OpaqueError},
     extensions::{Egress, Extensions, ExtensionsRef as _},
+    graceful::WeakScope,
     http::{
         Body, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
@@ -37,7 +38,6 @@ use rama::{
         user::{Basic, Bearer},
     },
     quic::tls::BoringTlsProvider,
-    rt::Executor,
     service::{BoxService, service_fn},
     tcp::server::TcpListener,
     tls::{
@@ -65,7 +65,7 @@ fn client(outer: Version) -> (BoxService<Request, Response, OpaqueError>, Certif
     let tls = TlsClientConfig::default_http()
         .with_server_verify(ServerVerifyMode::Disable)
         .with_store_server_cert_chain(true);
-    let h3 = Http3Connector::builder(Executor::new())
+    let h3 = Http3Connector::builder(WeakScope::never())
         .with_tls_config(tls.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .build_lazy()
@@ -82,7 +82,7 @@ fn client(outer: Version) -> (BoxService<Request, Response, OpaqueError>, Certif
                 .with_tls_proxy_support(false),
         )
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(Executor::new())
+        .with_default_http_connector(WeakScope::never())
         .with_http3_support(h3)
         .with_default_connection_pool()
         .build_client()
@@ -220,7 +220,7 @@ async fn test_http_version_proxy() {
         .await
         .unwrap();
 
-    let listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+    let listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::never())
         .await
         .unwrap();
     let origin = listener.local_addr().unwrap().to_string();
@@ -228,7 +228,7 @@ async fn test_http_version_proxy() {
     let origin_requests = Arc::new(AtomicUsize::new(0));
     let received = origin_requests.clone();
     let service =
-        HttpServer::new_http1(Executor::new()).service(service_fn(move |req: Request| {
+        HttpServer::new_http1(WeakScope::never()).service(service_fn(move |req: Request| {
             received.fetch_add(1, Ordering::Relaxed);
             let origin_host = origin_host.clone();
             async move {
@@ -286,7 +286,7 @@ async fn test_http_version_proxy() {
     });
 
     // A separate TLS origin tests MITM independently of ingress.
-    let tls_listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+    let tls_listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::never())
         .await
         .unwrap();
     let tls_target = HostWithPort::new(
@@ -295,7 +295,7 @@ async fn test_http_version_proxy() {
     );
     let tls_requests = Arc::new(AtomicUsize::new(0));
     let received = tls_requests.clone();
-    let mut tls_http = HttpServer::auto(Executor::new());
+    let mut tls_http = HttpServer::auto(WeakScope::never());
     tls_http.h2_mut().set_enable_connect_protocol();
     let tls_service = TlsAcceptorLayer::new(
         TlsServerConfig::new()
@@ -659,7 +659,7 @@ async fn test_http_version_proxy() {
     .await
     .expect("isolated MITM credential deadline");
 
-    let stalled_listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+    let stalled_listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::never())
         .await
         .unwrap();
     let stalled_target = stalled_listener.local_addr().unwrap();

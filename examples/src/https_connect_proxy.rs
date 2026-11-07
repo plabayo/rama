@@ -45,7 +45,6 @@ use rama::{
     },
     layer::{ConsumeErrLayer, TimeoutLayer},
     net::{proxy::IoForwardService, user::credentials::basic},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -92,14 +91,14 @@ async fn main() {
         .with_keylog(KeyLogIntent::Environment);
 
     // create tls proxy
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        let tcp_service = TcpListener::build(exec.clone())
+        let tcp_service = TcpListener::build(weak_scope.clone())
             .bind_address("127.0.0.1:62016")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62016");
 
-        let http_service = HttpServer::auto(exec.clone()).service(
+        let http_service = HttpServer::auto(weak_scope.clone()).service(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -113,9 +112,9 @@ async fn main() {
                                 rama::tcp::client::service::TcpConnector::new(),
                             ),
                         ),
-                        IoForwardService::new(exec.clone()),
+                        IoForwardService::new(weak_scope.clone()),
                     );
-                    UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect)
+                    UpgradeLayer::new(weak_scope.clone(), MethodMatcher::CONNECT, connect)
                 },
             )
                 .into_layer(service_fn(http_plain_proxy)),

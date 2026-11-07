@@ -4,11 +4,11 @@ use rama::{
     crypto::pem::PemEncode as _,
     extensions::Extensions,
     futures::StreamExt as _,
+    graceful::WeakScope,
     http::{
         client::{EasyHttpConnectorBuilder, Http3Connector},
         ws::{Message, handshake::client::HttpClientWebSocketExt as _},
     },
-    rt::Executor,
     tls::{client::TlsClientConfig, server::ServerAuthData},
     utils::fs::tempdir,
 };
@@ -102,9 +102,9 @@ async fn test_ws_over_h3() {
     #[cfg(all(not(feature = "rustls"), feature = "boring"))]
     let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
     let client = client_builder
-        .with_default_http_connector(Executor::new())
+        .with_default_http_connector(WeakScope::never())
         .with_http3_support(
-            Http3Connector::builder(Executor::new())
+            Http3Connector::builder(WeakScope::never())
                 .with_tls_config(tls)
                 .build()
                 .await

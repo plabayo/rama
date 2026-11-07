@@ -1,8 +1,8 @@
 //! An example to show how to create a minimal server that accepts form data for a request.
-//! using the [`HttpServer`] and [`Executor`] from Rama.
+//! using the [`HttpServer`] and [`WeakScope`] from Rama.
 //!
 //! [`HttpServer`]: rama::http::server::HttpServer
-//! [`Executor`]: rama::rt::Executor
+//! [`WeakScope`]: rama::graceful::WeakScope
 //!
 //! This example will create a server that listens on `127.0.0.1:62002`.
 //!
@@ -55,7 +55,7 @@ use rama::telemetry::tracing::{
     level_filters::LevelFilter,
     subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
 };
-use rama::{graceful::Scope, http::server::HttpServer, rt::Executor};
+use rama::{graceful::Scope, http::server::HttpServer};
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -82,9 +82,9 @@ async fn main() {
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        HttpServer::auto(exec)
+        HttpServer::auto(weak_scope)
             .listen(
                 "127.0.0.1:62002",
                 TraceLayer::new_for_http().layer(

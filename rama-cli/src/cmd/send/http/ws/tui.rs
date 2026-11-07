@@ -1,10 +1,10 @@
 use rama::{
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
     futures::{FutureExt, StreamExt},
+    graceful::WeakScope,
     http::ws::{
         Message, Utf8Bytes, WebSocketIo, handshake::client::ClientWebSocket, protocol::Role,
     },
-    rt::Executor,
     telemetry::tracing,
 };
 
@@ -115,11 +115,11 @@ impl<S: WebSocketIo> App<S> {
             .context("send close WS message")
     }
 
-    pub(super) async fn run(&mut self, exec: &Executor) -> Result<(), BoxError> {
+    pub(super) async fn run(&mut self, scope: &WeakScope) -> Result<(), BoxError> {
         loop {
             self.render()?;
 
-            if exec
+            if scope
                 .cancelled()
                 .now_or_never()
                 .map(|_| true)

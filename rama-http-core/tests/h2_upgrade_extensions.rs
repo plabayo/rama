@@ -6,7 +6,7 @@
 use rama_core::{
     ServiceInput,
     extensions::{Egress, Extension, Extensions, ExtensionsRef},
-    rt::Executor,
+    graceful::WeakScope,
     service::service_fn,
 };
 use rama_http::{
@@ -141,12 +141,12 @@ async fn session(inherit_request: bool, accept_upgrade: bool, status: StatusCode
     let client_extensions = client_io.extensions().clone();
     let server_extensions = server_io.extensions().clone();
     let server_task = tokio::spawn(async move {
-        _ = server::conn::http2::Builder::new(Executor::new())
+        _ = server::conn::http2::Builder::new(WeakScope::never())
             .with_max_concurrent_streams(17)
             .serve_connection(server_io, RamaHttpService::new(service))
             .await;
     });
-    let (sender, connection) = conn::http2::Builder::new(Executor::new())
+    let (sender, connection) = conn::http2::Builder::new(WeakScope::never())
         .handshake(client_io)
         .await
         .unwrap();

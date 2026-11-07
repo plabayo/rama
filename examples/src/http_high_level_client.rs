@@ -19,6 +19,7 @@
 
 use rama::{
     Layer, Service,
+    graceful::WeakScope,
     http::{
         Body, BodyExtractExt, HeaderMap, Request, StatusCode,
         client::EasyHttpWebClient,
@@ -38,7 +39,6 @@ use rama::{
     },
     net::address::SocketAddress,
     net::user::credentials::basic,
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -183,8 +183,8 @@ async fn run_server(addr: SocketAddress) {
         network.local.port = %addr.port,
         "running server",
     );
-    let exec = Executor::default();
-    HttpServer::auto(exec)
+    let scope = WeakScope::never();
+    HttpServer::auto(scope)
         .listen(
             addr,
             (

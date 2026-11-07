@@ -3,11 +3,7 @@ use std::{
     time::Duration,
 };
 
-use rama_core::{
-    bytes::Bytes,
-    extensions::ExtensionsRef,
-    rt::{Executor, spawn},
-};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef, graceful::WeakScope, rt::spawn};
 use rama_http_types::{Body, Request, Response, body::util::BodyExt};
 use rama_net::{stream::SocketInfo, tls::ApplicationProtocol};
 use rama_quic::NegotiatedTlsParameters;
@@ -50,7 +46,7 @@ async fn round_trip<C: transport::Connection>(wrap: impl Fn(rama_quic::Connectio
         let (mut client, client_driver) = client::handshake::<Body, _>(
             wrap(pair.client.clone()),
             Config::default(),
-            Executor::new(),
+            WeakScope::never(),
         )
         .unwrap();
         let (mut server, server_driver) =

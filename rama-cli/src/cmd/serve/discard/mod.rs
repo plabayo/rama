@@ -8,6 +8,7 @@ use rama::{
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext},
     futures::TryStreamExt,
+    graceful::WeakScope,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
@@ -17,7 +18,6 @@ use rama::{
         stream::layer::{ThrottleLayer, ThrottleMode},
         stream::service::DiscardService,
     },
-    rt::Executor,
     stream::{codec::BytesCodec, io::StreamReader},
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
@@ -96,12 +96,12 @@ impl fmt::Display for Mode {
 }
 
 /// run the rama echo service
-pub async fn run(exec: Executor, cfg: CliCommandDiscard) -> Result<(), BoxError> {
+pub async fn run(scope: WeakScope, cfg: CliCommandDiscard) -> Result<(), BoxError> {
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
             let maybe_tls_cfg = if cfg.mode == Mode::Tls {
                 tracing::info!("create tls server config...");
-                Some(try_new_server_config(None, exec.clone())?)
+                Some(try_new_server_config(None, scope.clone())?)
             } else {
                 None
             };
@@ -128,7 +128,7 @@ pub async fn run(exec: Executor, cfg: CliCommandDiscard) -> Result<(), BoxError>
                 "starting TCP discard service: bind interface = {:?}",
                 cfg.bind
             );
-            let tcp_listener = TcpListener::build(exec.clone())
+            let tcp_listener = TcpListener::build(scope.clone())
                 .bind_address(cfg.bind)
                 .await
                 .context("bind TCP discard service socket")?;
@@ -143,7 +143,7 @@ pub async fn run(exec: Executor, cfg: CliCommandDiscard) -> Result<(), BoxError>
                 network.protocol.name = "tcp"
             );
 
-            exec.try_spawn_task(async move {
+            scope.try_hold()?.into_spawn_task(async move {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),
@@ -151,8 +151,7 @@ pub async fn run(exec: Executor, cfg: CliCommandDiscard) -> Result<(), BoxError>
                 );
 
                 tcp_listener.serve(discard_svc).instrument(span).await;
-            })
-            .map_err(|refused| refused.discard_task())?;
+            });
         }
         Mode::Udp => {
             if cfg.rate > 0 {

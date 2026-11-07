@@ -40,13 +40,13 @@ async fn exchange_both_ways(client: &Endpoint, server: &Endpoint, client_config:
 async fn default_bindings_carry_data() {
     let (client_config, server_config) = configs();
     let server = Endpoint::bind_server(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::never(),
         server_config,
         localhost_v4(),
     )
     .await
     .expect("the server binds");
-    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
         .await
         .expect("the client binds");
     assert!(server.local_addr().unwrap().port() != 0);
@@ -64,7 +64,7 @@ async fn a_caller_prepared_socket_carries_data() {
         .wrap_std(std::net::UdpSocket::bind(localhost_v4()).unwrap())
         .expect("the socket is wrapped");
     let server = Endpoint::new_server_with_packet_socket(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::never(),
         server_config,
         prepared,
     )
@@ -77,8 +77,9 @@ async fn a_caller_prepared_socket_carries_data() {
     let prepared = config
         .wrap_tokio(rama_udp::UdpSocket::from_std(bound).unwrap())
         .expect("a registered socket is wrapped");
-    let client = Endpoint::new_client_with_packet_socket(rama_core::rt::Executor::new(), prepared)
-        .expect("the client takes the prepared socket");
+    let client =
+        Endpoint::new_client_with_packet_socket(rama_core::graceful::WeakScope::never(), prepared)
+            .expect("the client takes the prepared socket");
 
     exchange_both_ways(&client, &server, client_config).await;
     tokio::join!(client.shutdown(), server.shutdown());
@@ -90,7 +91,7 @@ async fn ipv6_only_requests_strict_or_best_effort_skip_ipv4() {
     let mut options = SocketOptions::default_udp();
     options.only_v6 = Some(true);
     let strict = UdpSocketConfig::default().with_socket_options(options);
-    let endpoint = Endpoint::build(rama_core::rt::Executor::new())
+    let endpoint = Endpoint::build(rama_core::graceful::WeakScope::never())
         .bind_address_with_socket_config(localhost_v4(), strict)
         .await
         .expect("a strict IPv6-level option does not apply to an IPv4 bind");
@@ -102,7 +103,7 @@ async fn ipv6_only_requests_strict_or_best_effort_skip_ipv4() {
     let mut options = SocketOptions::default_udp();
     options.only_v6_best_effort = Some(true);
     let best_effort = UdpSocketConfig::default().with_socket_options(options);
-    let endpoint = Endpoint::build(rama_core::rt::Executor::new())
+    let endpoint = Endpoint::build(rama_core::graceful::WeakScope::never())
         .bind_address_with_socket_config(localhost_v4(), best_effort)
         .await
         .expect("a best-effort option does not fail an IPv4 bind");
@@ -147,7 +148,7 @@ async fn a_required_feature_is_refused_only_when_the_socket_lacks_it() {
     let probed = probe.wrap_std(std::net::UdpSocket::bind(localhost_v4()).unwrap());
 
     let config = UdpSocketConfig::default().with_required_feature(feature);
-    let bound = Endpoint::build(rama_core::rt::Executor::new())
+    let bound = Endpoint::build(rama_core::graceful::WeakScope::never())
         .bind_address_with_socket_config(localhost_v4(), config)
         .await;
     match probed {
@@ -177,10 +178,14 @@ async fn a_required_feature_is_refused_only_when_the_socket_lacks_it() {
 async fn ipv6_bindings_carry_data() {
     let (client_config, server_config) = configs();
     let localhost_v6 = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0);
-    let server = Endpoint::bind_server(rama_core::rt::Executor::new(), server_config, localhost_v6)
-        .await
-        .expect("the server binds");
-    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v6)
+    let server = Endpoint::bind_server(
+        rama_core::graceful::WeakScope::never(),
+        server_config,
+        localhost_v6,
+    )
+    .await
+    .expect("the server binds");
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v6)
         .await
         .expect("the client binds");
     assert!(client.local_addr().unwrap().is_ipv6());
@@ -196,7 +201,7 @@ async fn ipv6_bindings_carry_data() {
 async fn an_occupied_address_fails_once_and_changes_nothing() {
     let (client_config, server_config) = configs();
     let server = Endpoint::bind_server(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::never(),
         server_config,
         localhost_v4(),
     )
@@ -204,7 +209,7 @@ async fn an_occupied_address_fails_once_and_changes_nothing() {
     .expect("the server binds");
     let occupied = server.local_addr().unwrap();
 
-    let error = Endpoint::build(rama_core::rt::Executor::new())
+    let error = Endpoint::build(rama_core::graceful::WeakScope::never())
         .bind_address_with_socket_config(occupied, UdpSocketConfig::default())
         .await
         .expect_err("the address is taken");
@@ -214,7 +219,7 @@ async fn an_occupied_address_fails_once_and_changes_nothing() {
         "the platform's own error, not a retry's: {error:?}",
     );
 
-    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
         .await
         .expect("the client binds");
     // A connection is open across the failed rebind, so what survives it is observable.
@@ -259,13 +264,13 @@ async fn an_occupied_address_fails_once_and_changes_nothing() {
 async fn a_rebind_through_the_shared_construction_keeps_the_connection() {
     let (client_config, server_config) = configs();
     let server = Endpoint::bind_server(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::never(),
         server_config,
         localhost_v4(),
     )
     .await
     .expect("the server binds");
-    let client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
         .await
         .expect("the client binds");
     let first = client.local_addr().unwrap();
@@ -299,7 +304,7 @@ async fn a_rebind_through_the_shared_construction_keeps_the_connection() {
 #[test]
 fn registering_a_socket_outside_a_runtime_is_refused() {
     let socket = std::net::UdpSocket::bind(localhost_v4()).unwrap();
-    let error = Endpoint::build(rama_core::rt::Executor::new())
+    let error = Endpoint::build(rama_core::graceful::WeakScope::never())
         .with_std_socket(socket)
         .expect_err("there is no runtime to register the socket with");
     assert_matches!(error, DatagramError::Io(ref error) if error.kind() == io::ErrorKind::Other);
@@ -315,7 +320,7 @@ fn registering_a_socket_outside_a_runtime_is_refused() {
     );
 
     let mut binding = std::pin::pin!(
-        Endpoint::build(rama_core::rt::Executor::new())
+        Endpoint::build(rama_core::graceful::WeakScope::never())
             .bind_address_with_socket_config(localhost_v4(), UdpSocketConfig::default())
     );
     let mut cx = Context::from_waker(Waker::noop());
@@ -334,7 +339,7 @@ async fn a_dual_stack_wildcard_server_answers_an_ipv4_client() {
     let (client_config, server_config) = configs();
     let mut options = SocketOptions::default_udp();
     options.only_v6 = Some(false);
-    let server = Endpoint::build(rama_core::rt::Executor::new())
+    let server = Endpoint::build(rama_core::graceful::WeakScope::never())
         .with_server_config(server_config)
         .with_shutdown_budget(Duration::from_millis(100))
         .bind_address_with_socket_config(
@@ -345,7 +350,7 @@ async fn a_dual_stack_wildcard_server_answers_an_ipv4_client() {
         .expect("the explicit dual-stack listener binds");
     let bound = server.local_addr().unwrap();
     assert!(bound.is_ipv6() && bound.ip().is_unspecified());
-    let client = Endpoint::build(rama_core::rt::Executor::new())
+    let client = Endpoint::build(rama_core::graceful::WeakScope::never())
         .with_shutdown_budget(Duration::from_millis(100))
         .bind_address(localhost_v4())
         .await
@@ -423,14 +428,14 @@ async fn a_dual_stack_client_carries_both_families_with_occupied_ipv4_ports() {
         .collect();
     let (client_config, server_config) = configs();
     let server_v4 = Endpoint::bind_server(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::never(),
         server_config.clone(),
         SocketAddress::local_ipv4(0),
     )
     .await
     .unwrap();
     let server_v6 = Endpoint::bind_server(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::never(),
         server_config,
         SocketAddress::local_ipv6(0),
     )
@@ -438,7 +443,7 @@ async fn a_dual_stack_client_carries_both_families_with_occupied_ipv4_ports() {
     .unwrap();
     for _ in 0..4 {
         let client = Endpoint::bind_client(
-            rama_core::rt::Executor::new(),
+            rama_core::graceful::WeakScope::never(),
             SocketAddress::default_ipv6(0),
         )
         .await
@@ -487,7 +492,7 @@ async fn a_socket_too_small_for_quic_is_refused_before_any_handshake() {
     );
     socket.set_max_payload(1199);
     let Err(DatagramError::Io(error)) =
-        Endpoint::build(rama_core::rt::Executor::new()).with_datagram_socket(socket)
+        Endpoint::build(rama_core::graceful::WeakScope::never()).with_datagram_socket(socket)
     else {
         panic!("a 1199-byte socket must be refused");
     };
@@ -515,11 +520,11 @@ async fn a_shrinking_socket_recovers_above_quic_minimum_and_fails_typed_below() 
     transport.maybe_set_mtu_discovery_config(None);
     transport.set_initial_mtu(1300);
     client_config.set_transport_config(Arc::new(transport));
-    let server = Endpoint::build(rama_core::rt::Executor::new())
+    let server = Endpoint::build(rama_core::graceful::WeakScope::never())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .unwrap();
-    let client = Endpoint::build(rama_core::rt::Executor::new())
+    let client = Endpoint::build(rama_core::graceful::WeakScope::never())
         .with_datagram_socket(client_socket)
         .unwrap();
     let connecting = client
@@ -568,11 +573,11 @@ async fn a_tunnel_shrink_recovers_even_with_a_higher_configured_minimum() {
     transport.set_min_mtu(1300);
     transport.set_initial_mtu(1300);
     client_config.set_transport_config(Arc::new(transport));
-    let server = Endpoint::build(rama_core::rt::Executor::new())
+    let server = Endpoint::build(rama_core::graceful::WeakScope::never())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .unwrap();
-    let client = Endpoint::build(rama_core::rt::Executor::new())
+    let client = Endpoint::build(rama_core::graceful::WeakScope::never())
         .with_datagram_socket(client_socket)
         .unwrap();
     let connecting = client

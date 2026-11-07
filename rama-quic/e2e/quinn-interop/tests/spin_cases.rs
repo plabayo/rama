@@ -9,8 +9,8 @@ use common::{
 };
 use parking_lot::Mutex;
 use rama::{
+    graceful::WeakScope,
     quic::{Endpoint, TransportConfig},
-    rt::Executor,
 };
 use std::sync::Arc;
 
@@ -75,7 +75,7 @@ async fn spin_permission_and_opt_out_interoperate_with_quinn_in_both_roles() {
                                 quinn::Endpoint::server(server_config, localhost()).unwrap();
                             let (address, trace, proxy_task) =
                                 proxy(server.local_addr().unwrap()).await;
-                            let client = Endpoint::bind_client(Executor::new(), localhost())
+                            let client = Endpoint::bind_client(WeakScope::never(), localhost())
                                 .await
                                 .unwrap();
                             let config = rama_client_config(anchor.clone())
@@ -96,7 +96,7 @@ async fn spin_permission_and_opt_out_interoperate_with_quinn_in_both_roles() {
                             let config =
                                 rama_server_config(&identity).with_transport_config(rama_transport);
                             let server =
-                                Endpoint::bind_server(Executor::new(), config, localhost())
+                                Endpoint::bind_server(WeakScope::never(), config, localhost())
                                     .await
                                     .unwrap();
                             let (address, trace, proxy_task) =

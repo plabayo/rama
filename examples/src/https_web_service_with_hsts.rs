@@ -40,7 +40,6 @@ use rama::{
             web::{Router, response::Html},
         },
     },
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -87,14 +86,14 @@ async fn main() {
         .with_keylog(KeyLogIntent::Environment);
 
     // create http service
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        let tcp_service = TcpListener::build(exec.clone())
+        let tcp_service = TcpListener::build(weak_scope.clone())
             .bind_address("127.0.0.1:62043")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62043");
 
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(weak_scope).service(
             (
                 TraceLayer::new_for_http(),
                 AddRequiredResponseHeadersLayer::default(),
@@ -106,14 +105,14 @@ async fn main() {
     });
 
     // create https service
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        let tcp_service = TcpListener::build(exec.clone())
+        let tcp_service = TcpListener::build(weak_scope.clone())
             .bind_address("127.0.0.1:62044")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62044");
 
-        let http_service = HttpServer::auto(exec).service(Arc::new(
+        let http_service = HttpServer::auto(weak_scope).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 AddRequiredResponseHeadersLayer::default(),

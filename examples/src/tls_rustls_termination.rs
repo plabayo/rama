@@ -58,7 +58,6 @@ use rama::{
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
-    rt::Executor,
     service::service_fn,
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
@@ -99,7 +98,7 @@ async fn main() {
         .with_grace(Duration::from_secs(30));
 
     // create tls proxy
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         let tcp_service = (
             TlsAcceptorLayer::new(acceptor_data),
@@ -108,9 +107,9 @@ async fn main() {
                 HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
             ),
         )
-            .into_layer(IoForwardService::new(exec.clone()));
+            .into_layer(IoForwardService::new(weak_scope.clone()));
 
-        TcpListener::bind_address("127.0.0.1:63800", exec)
+        TcpListener::bind_address("127.0.0.1:63800", weak_scope)
             .await
             .expect("bind TCP Listener: tls")
             .serve(tcp_service)
@@ -118,12 +117,12 @@ async fn main() {
     });
 
     // create http server
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
             .into_layer(service_fn(internal_tcp_service_fn));
 
-        TcpListener::bind_address("127.0.0.1:62800", exec)
+        TcpListener::bind_address("127.0.0.1:62800", weak_scope)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

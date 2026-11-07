@@ -3,7 +3,7 @@ use std::{convert::Infallible, fmt, num::NonZeroUsize, sync::Arc, time::Duration
 
 use rama_core::{
     Service, error::BoxError, extensions::ExtensionsRef as _, futures::StreamExt as _,
-    io::BridgeIo, rt::Executor, telemetry::tracing,
+    graceful::WeakScope, io::BridgeIo, telemetry::tracing,
 };
 use rama_dns::client::{
     GlobalDnsResolver,
@@ -79,7 +79,7 @@ pub struct ConnectUdpService<
     resolver: Arc<R>,
     connector: Arc<C>,
     relay: Arc<F>,
-    exec: Executor,
+    scope: WeakScope,
     proxy_name: Option<Arc<str>>,
     dns_timeout: Duration,
     socket: ConnectUdpSocketConfig,
@@ -97,7 +97,7 @@ impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
             resolver: self.resolver.clone(),
             connector: self.connector.clone(),
             relay: self.relay.clone(),
-            exec: self.exec.clone(),
+            scope: self.scope.clone(),
             proxy_name: self.proxy_name.clone(),
             dns_timeout: self.dns_timeout,
             socket: self.socket,
@@ -126,16 +126,17 @@ impl ConnectUdpService {
     /// A proxy for `template`, or for the RFC 9298 default template when `None`, with the
     /// safe [`DestinationScopePolicy`], the global DNS resolver and plain UDP sockets.
     pub fn try_new(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         template: Option<&ProxyPathTemplate>,
     ) -> Result<Self, UriTemplateError> {
+        let scope = scope.into();
         Ok(Self {
             matcher: ConnectUdpRequestMatcher::try_new(template)?,
             policy: Arc::new(DestinationScopePolicy::new()),
             resolver: Arc::new(GlobalDnsResolver::new()),
             connector: Arc::new(UdpConnector::new()),
             relay: Arc::new(ConnectUdpRelay),
-            exec,
+            scope,
             proxy_name: None,
             dns_timeout: Duration::from_secs(5),
             socket: ConnectUdpSocketConfig::default(),
@@ -156,7 +157,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             resolver: self.resolver,
             connector: self.connector,
             relay: self.relay,
-            exec: self.exec,
+            scope: self.scope,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
@@ -175,7 +176,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             resolver: Arc::new(resolver),
             connector: self.connector,
             relay: self.relay,
-            exec: self.exec,
+            scope: self.scope,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
@@ -197,7 +198,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             resolver: self.resolver,
             connector: Arc::new(connector),
             relay: self.relay,
-            exec: self.exec,
+            scope: self.scope,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
@@ -217,7 +218,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             resolver: self.resolver,
             connector: self.connector,
             relay: Arc::new(relay),
-            exec: self.exec,
+            scope: self.scope,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
             socket: self.socket,
@@ -444,7 +445,7 @@ where
         response.extensions().insert(HttpDatagrams);
 
         // The tunnel holds the proxy's scope: a closed one admits no new tunnel.
-        let Some(scope) = self.exec.scope().to_scope() else {
+        let Ok(scope) = self.scope.try_hold() else {
             return Ok(self.refuse(&request, StatusCode::SERVICE_UNAVAILABLE, None));
         };
         let upgrade = handle_upgrade(&request);

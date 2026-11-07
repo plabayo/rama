@@ -8,8 +8,8 @@ use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use parking_lot::Mutex;
 use rama_core::{
     extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
     io::{AbortIo, BridgeIo},
-    rt::Executor,
     service::{Service, service_fn},
 };
 use rama_net::{address::HostWithPort, proxy::IoForwardService};
@@ -1483,7 +1483,7 @@ fn tcp_relay_reflects_an_upstream_reset_and_keeps_an_orderly_end() {
     ] {
         let service = service_fn(
             move |BridgeIo(ingress, _egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
-                _ = IoForwardService::new(Executor::new())
+                _ = IoForwardService::new(WeakScope::never())
                     .serve(BridgeIo(ingress, EndingUpstream::new(end)))
                     .await;
                 Ok::<_, Infallible>(())

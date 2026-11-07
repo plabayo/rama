@@ -1,4 +1,4 @@
-use rama_core::{error::extra::OpaqueError, layer::MapInput, rt::Executor};
+use rama_core::{error::extra::OpaqueError, graceful::WeakScope, layer::MapInput};
 
 use super::{
     HttpConnectRequestAdapter, HttpConnector, HttpPooledConnector, HttpPooledConnectorConfig,
@@ -606,9 +606,10 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
     /// Add http support to this connector
     pub fn with_default_http_connector<Body>(
         self,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
     ) -> EasyHttpConnectorBuilder<HttpConnector<T, Body>, HttpStage<PROXY>, D> {
-        let connector = HttpConnector::new(self.connector, exec);
+        let scope = scope.into();
+        let connector = HttpConnector::new(self.connector, scope);
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
@@ -688,10 +689,10 @@ impl<T, Body, D, const PROXY: bool>
     ///
     /// `proxy_client` needs proxy support, for the proxy's credentials, and room in its own
     /// HTTP/3 connections for tunneled QUIC packets, as
-    /// [`DefaultHttpWebClient::default_masque_proxy_client_with_executor`] has.
+    /// [`DefaultHttpWebClient::default_masque_proxy_client_with_scope`] has.
     ///
     /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
-    /// [`DefaultHttpWebClient::default_masque_proxy_client_with_executor`]: super::DefaultHttpWebClient::default_masque_proxy_client_with_executor
+    /// [`DefaultHttpWebClient::default_masque_proxy_client_with_scope`]: super::DefaultHttpWebClient::default_masque_proxy_client_with_scope
     pub fn with_http3_masque_support<S>(
         self,
         connector: super::Http3ConnectorBuilder,
@@ -708,10 +709,10 @@ impl<T, Body, D, const PROXY: bool>
         S: Clone,
         D: Layer<super::Http3Connector<MasqueQuicEndpoints<S>>>,
     {
-        let executor = connector.executor().clone();
-        let tunnels = ConnectUdpConnector::new(UdpConnector::new(), proxy_client, executor.clone());
+        let scope = connector.scope().clone();
+        let tunnels = ConnectUdpConnector::new(UdpConnector::new(), proxy_client, scope.clone());
         let connector = connector
-            .with_endpoints(QuicEndpointConnector::new(tunnels, executor))
+            .with_endpoints(QuicEndpointConnector::new(tunnels, scope))
             .build_lazy()?;
         Ok(self.with_http3_support(connector))
     }
@@ -1276,7 +1277,7 @@ mod tests {
         };
         let plain = builder()
             .without_tls_support()
-            .with_default_http_connector::<Body>(Executor::default())
+            .with_default_http_connector::<Body>(WeakScope::never())
             .with_default_connection_pool()
             .build_connector();
         assert_future_budget(&plain, "plain pooled");
@@ -1284,13 +1285,13 @@ mod tests {
         {
             let pooled = builder()
                 .with_tls_support_using_rustls(TlsClientConfig::new())
-                .with_default_http_connector::<Body>(Executor::default())
+                .with_default_http_connector::<Body>(WeakScope::never())
                 .with_default_connection_pool()
                 .build_connector();
             assert_future_budget(&pooled, "rustls pooled");
             let unpooled = builder()
                 .with_tls_support_using_rustls(TlsClientConfig::new())
-                .with_default_http_connector::<Body>(Executor::default())
+                .with_default_http_connector::<Body>(WeakScope::never())
                 .without_connection_pool()
                 .build_connector();
             assert_future_budget(&unpooled, "rustls unpooled");
@@ -1483,8 +1484,8 @@ mod tests {
     async fn built_in_quic_uses_the_configured_dns_resolver() {
         let calls = Arc::new(AtomicUsize::new(0));
         let applied = Arc::new(AtomicUsize::new(0));
-        let executor = Executor::default();
-        let h3 = Http3Connector::builder(executor.clone())
+        let scope = WeakScope::never();
+        let h3 = Http3Connector::builder(scope.clone())
             .build()
             .await
             .unwrap();
@@ -1500,7 +1501,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector::<Body>(executor)
+            .with_default_http_connector::<Body>(scope)
             .with_http3_support(h3)
             .build_connector();
         let input = ConnectRequest::new("private.invalid:443".parse().unwrap())
@@ -1525,14 +1526,14 @@ mod tests {
     ))]
     #[tokio::test]
     async fn ipv4_quic_endpoint_skips_ipv6_candidates_without_terminal_failure() {
-        let executor = Executor::default();
-        let endpoint = Endpoint::bind_client(executor.clone(), SocketAddress::local_ipv4(0))
+        let scope = WeakScope::never();
+        let endpoint = Endpoint::bind_client(scope.clone(), SocketAddress::local_ipv4(0))
             .await
             .unwrap();
         let blackhole = tokio::net::UdpSocket::bind(SocketAddr::from(SocketAddress::local_ipv4(0)))
             .await
             .unwrap();
-        let connector = Http3Connector::builder(executor)
+        let connector = Http3Connector::builder(scope)
             .with_endpoint(endpoint.clone())
             .build()
             .await

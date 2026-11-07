@@ -115,12 +115,12 @@ async fn forwarding_in_either_direction_extends_the_shared_idle_deadline() {
 #[tokio::test]
 async fn the_hard_phase_ends_a_live_tunnel_and_the_graceful_one_does_not() {
     let scope = rama_core::graceful::Scope::new();
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     let (left, _client) = socket(&Native::default());
     let (right, _origin) = socket(&Native::default());
     let relay = spawn(async move {
         HttpDatagramRelay::default()
-            .with_executor(exec)
+            .with_scope(weak_scope)
             .serve(BridgeIo(left, right))
             .await
     });

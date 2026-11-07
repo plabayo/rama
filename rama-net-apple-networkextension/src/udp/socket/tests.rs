@@ -1,7 +1,7 @@
 use std::{num::NonZeroUsize, sync::atomic::AtomicUsize, time::Duration};
 
 use parking_lot::Mutex;
-use rama_core::{error::BoxError, rt::Executor, service::service_fn};
+use rama_core::{error::BoxError, graceful::WeakScope, service::service_fn};
 use rama_udp::{
     DatagramDemux, DatagramSenderExt as _, DatagramSocketExt as _, DemuxConfig, DemuxedSocket,
 };
@@ -60,7 +60,7 @@ fn demux(socket: UdpFlowSocket) -> Associations {
         },
     );
     tokio::spawn(demux.serve(
-        Executor::new(),
+        WeakScope::never(),
         service_fn(move |association| {
             let associations = associations.clone();
             async move {

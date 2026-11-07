@@ -1,4 +1,4 @@
-//! An HTTP/3 client connection on an executor holds that executor's scope while it lives, is
+//! An HTTP/3 client connection in a scope holds that scope while it lives, is
 //! drained by its pool once that scope is cancelled and is cut at its hard phase.
 #![cfg(feature = "quic")]
 #![expect(
@@ -25,7 +25,6 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
     graceful::{Cause, Scope, WeakScope},
-    rt::Executor,
     service::{BoxService, service_fn},
 };
 use rama_http::io::upgrade::{Upgraded, handle_upgrade};
@@ -142,18 +141,18 @@ fn serve_origin() -> Origin {
         SocketAddress::local_ipv4(444),
         NonZeroUsize::MIN,
     );
-    let server_endpoint = Endpoint::build(Executor::new())
+    let server_endpoint = Endpoint::build(WeakScope::never())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .expect("server endpoint");
-    let client_endpoint = Endpoint::build(Executor::new())
+    let client_endpoint = Endpoint::build(WeakScope::never())
         .with_datagram_socket(client_socket)
         .expect("client endpoint");
     let address = server_endpoint.local_addr().expect("server address");
 
     let gate = Arc::new(Notify::new());
     let server = Scope::new();
-    let mut http = HttpServer::new_http3(Executor::from(server.clone()));
+    let mut http = HttpServer::new_http3(server.clone_weak());
     http.http3_mut().extended_connect = true;
     let opens = gate.clone();
     let http = Arc::new(http.service(service_fn(move |request| respond(request, opens.clone()))));
@@ -230,9 +229,9 @@ async fn respond(request: Request, gate: Arc<Notify>) -> Result<Response, Infall
 
 fn connector(
     origin: &Origin,
-    exec: Executor,
+    scope: WeakScope,
 ) -> HttpConnectRequestAdapter<HttpConnector<Dialer, Body>> {
-    HttpConnectRequestAdapter::new(HttpConnector::new(origin.dialer.clone(), exec))
+    HttpConnectRequestAdapter::new(HttpConnector::new(origin.dialer.clone(), scope))
 }
 
 fn request(path: &str) -> Request {
@@ -299,7 +298,7 @@ type Pool = MultiplexPool<HttpClientService<Body>, HttpConnId>;
 type PooledClient = HttpConnectRequestAdapter<HttpPooledConnector<HttpConnector<Dialer, Body>>>;
 
 /// A pooled connector with a handle on its pool, so the connector can be let go of alone.
-fn pooled(origin: &Origin, exec: Executor) -> (PooledClient, Pool) {
+fn pooled(origin: &Origin, scope: WeakScope) -> (PooledClient, Pool) {
     let pool = HttpPooledConnectorConfig {
         idle_timeout: None,
         ..Default::default()
@@ -307,7 +306,7 @@ fn pooled(origin: &Origin, exec: Executor) -> (PooledClient, Pool) {
     .build_pool();
     let client = HttpConnectRequestAdapter::new(BindBodyToConnLayer::new().into_layer(
         PooledConnector::new(
-            HttpConnector::new(origin.dialer.clone(), exec),
+            HttpConnector::new(origin.dialer.clone(), scope),
             pool.clone(),
             HttpConnIdentifier::new(),
         ),
@@ -315,10 +314,10 @@ fn pooled(origin: &Origin, exec: Executor) -> (PooledClient, Pool) {
     (client, pool)
 }
 
-/// A pool with one idle connection, made on the executor of `root`, with every other handle
-/// on that executor released.
+/// A pool with one idle connection, made in the scope of `root`, with every other handle
+/// on that scope released.
 async fn idle_pooled(origin: &Origin, root: &Scope) -> Pool {
-    let (client, pool) = pooled(origin, Executor::from(root.clone()));
+    let (client, pool) = pooled(origin, root.clone_weak());
     let EstablishedClientConnection { conn, input } = timeout(LIMIT, client.serve(request("/")))
         .await
         .unwrap()
@@ -331,9 +330,9 @@ async fn idle_pooled(origin: &Origin, root: &Scope) -> Pool {
 }
 
 /// A response whose body has sent its first chunk and does not end on its own, on a
-/// connection made on the executor of `root`, with every other handle on it released.
+/// connection made in the scope of `root`, with every other handle on it released.
 async fn live_body(origin: &Origin, root: &Scope) -> Body {
-    let client = connector(origin, Executor::from(root.clone()));
+    let client = connector(origin, root.clone_weak());
     let EstablishedClientConnection { conn, input } =
         timeout(LIMIT, client.serve(request("/slow")))
             .await
@@ -349,9 +348,9 @@ async fn live_body(origin: &Origin, root: &Scope) -> Body {
 }
 
 /// A pooled CONNECT tunnel, extended or not, to the echoing origin after one echoed ping,
-/// with every other handle on the executor of `root` released but the pool.
+/// with every other handle on `root` released but the pool.
 async fn tunnel(origin: &Origin, root: &Scope, extended: bool) -> (Upgraded, Pool) {
-    let (client, pool) = pooled(origin, Executor::from(root.clone()));
+    let (client, pool) = pooled(origin, root.clone_weak());
     let connect = if extended {
         let connect = Request::builder()
             .method(Method::CONNECT)
@@ -398,7 +397,7 @@ async fn tunnel(origin: &Origin, root: &Scope, extended: bool) -> (Upgraded, Poo
 async fn established_http3_connection_holds_the_join_until_dropped() {
     let origin = serve_origin();
     let root = Scope::new();
-    let client = connector(&origin, Executor::from(root.clone()));
+    let client = connector(&origin, root.clone_weak());
     let EstablishedClientConnection { conn, input } = timeout(LIMIT, client.serve(request("/")))
         .await
         .unwrap()
@@ -446,7 +445,7 @@ async fn idle_pooled_http3_connection_is_cut_at_the_hard_phase() {
 async fn active_pooled_http3_connection_drains_with_the_pool_alive() {
     let origin = serve_origin();
     let root = Scope::new();
-    let (client, pool) = pooled(&origin, Executor::from(root.clone()));
+    let (client, pool) = pooled(&origin, root.clone_weak());
     let EstablishedClientConnection { conn, input } =
         timeout(LIMIT, client.serve(request("/gated")))
             .await
@@ -524,7 +523,7 @@ async fn live_http3_response_body_is_cut_at_the_hard_phase() {
 async fn live_http3_response_body_on_a_draining_connection_is_cut_at_the_hard_phase() {
     let origin = serve_origin();
     let root = Scope::new();
-    let client = connector(&origin, Executor::from(root.clone()));
+    let client = connector(&origin, root.clone_weak());
     let EstablishedClientConnection { conn, input } =
         timeout(LIMIT, client.serve(request("/slow")))
             .await

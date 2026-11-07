@@ -33,12 +33,12 @@
 
 use rama::{
     error::BoxError,
+    graceful::WeakScope,
     http::{
         grpc::{Request, Response, Status},
         server::HttpServer,
     },
     net::address::SocketAddress,
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -63,7 +63,7 @@ async fn main() -> Result<(), BoxError> {
         .init();
 
     tracing::info!("json grpc echo server listening on {ADDR}");
-    HttpServer::auto(Executor::default())
+    HttpServer::auto(WeakScope::never())
         .listen(ADDR, echo_server::EchoServer::new(EchoService))
         .await?;
 

@@ -13,7 +13,7 @@
 //! HTTP/1.1 and HTTP/2, QUIC over UDP for HTTP/3. Port 0 gives each transport a port of its
 //! own; the client reaches the proxy over HTTP/3, so it takes the UDP one. Its certificate is self-signed, hence the
 //! client's `--insecure`, which skips certificate verification for local testing. Without it
-//! the client is `DefaultHttpWebClient::default_masque_with_executor`, verifying both.
+//! the client is `DefaultHttpWebClient::default_masque_with_scope`, verifying both.
 
 use clap::{Parser, Subcommand};
 use rama::{
@@ -21,7 +21,7 @@ use rama::{
     dns::client::DnsConnector,
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef as _,
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         Body, Request, Version,
         body::util::BodyExt as _,
@@ -39,7 +39,6 @@ use rama::{
     },
     proxy::masque::connect_udp::{ConnectUdpService, DestinationScopePolicy},
     quic::{Endpoint, ServerConfig, tls::TlsOptions},
-    rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter, subscriber::EnvFilter},
     tls::{
@@ -112,7 +111,7 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(5));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
     // CONNECT-UDP for UDP targets, resolved and checked by the proxy, and ordinary CONNECT
     // for TCP targets; any authentication layer goes in front of both.
@@ -121,14 +120,14 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
     } else {
         DestinationScopePolicy::default()
     };
-    let connect_udp = ConnectUdpService::try_new(exec.clone(), None)?.with_policy(policy);
+    let connect_udp = ConnectUdpService::try_new(weak_scope.clone(), None)?.with_policy(policy);
     let service = Arc::new(
         UpgradeLayer::new(
-            exec.clone(),
+            weak_scope.clone(),
             HttpProxyConnectMatcher::new(),
             EagerHttpProxyConnector::new(
                 DnsConnector::new(TcpConnector::new()),
-                IoForwardService::new(exec.clone()),
+                IoForwardService::new(weak_scope.clone()),
             ),
         )
         .into_layer(connect_udp),
@@ -138,15 +137,15 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
     let tcp_tls = TlsServerConfig::new()
         .with_server_auth(auth.clone())
         .with_alpn_http_auto();
-    let mut http = HttpServer::auto(exec.clone());
+    let mut http = HttpServer::auto(weak_scope.clone());
     // HTTP/2 carries CONNECT-UDP as an Extended CONNECT.
     http.h2_mut().set_enable_connect_protocol();
-    let listener = TcpListener::bind_address(listen, exec.clone())
+    let listener = TcpListener::bind_address(listen, weak_scope.clone())
         .await
         .context("bind TCP")?;
     let tcp_address = listener.local_addr()?;
 
-    let mut h3 = HttpServer::new_http3(exec.clone());
+    let mut h3 = HttpServer::new_http3(weak_scope.clone());
     h3.http3_mut().extended_connect = true;
     // Room for a tunneled QUIC packet in every datagram, and quiet tunnels kept open.
     let mut transport = masque_quic_transport();
@@ -156,7 +155,7 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
     let mut config = ServerConfig::try_from_rama_tls(&quic_tls, TlsOptions::default())?;
     config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(exec.clone())
+    let endpoint = Endpoint::build(weak_scope.clone())
         .with_server_config(config)
         .bind_address(listen)
         .await
@@ -166,9 +165,9 @@ async fn proxy(listen: SocketAddress, allow_private: bool) -> Result<(), BoxErro
     scope.spawn_task(
         listener.serve(TlsAcceptorLayer::new(tcp_tls).into_layer(http.service(service.clone()))),
     );
-    scope.spawn_task(endpoint.serve(exec.clone(), h3.service(service)));
-    // The join waits on the spawned tasks, not on this executor.
-    drop(exec);
+    scope.spawn_task_to_completion(endpoint.serve(weak_scope.clone(), h3.service(service)));
+    // The join waits on the spawned tasks, not on this weak scope.
+    drop(weak_scope);
     tracing::info!("CONNECT-UDP proxy listening on TCP {tcp_address} and UDP {udp_address}");
 
     scope.join().await.map(drop).map_err(Into::into)
@@ -181,7 +180,7 @@ async fn client(proxy: ProxyAddress, insecure: bool, url: &str) -> Result<(), Bo
         .with_signal(async move {
             _ = done.await;
         });
-    let result = exchange(Executor::from(scope.clone()), proxy, insecure, url).await;
+    let result = exchange(scope.clone_weak(), proxy, insecure, url).await;
     finished.send(()).unwrap_or_default();
     // Draining closes the QUIC connections, so no peer waits out an idle timeout.
     scope.join().await?;
@@ -189,16 +188,16 @@ async fn client(proxy: ProxyAddress, insecure: bool, url: &str) -> Result<(), Bo
 }
 
 async fn exchange(
-    exec: Executor,
+    scope: WeakScope,
     proxy: ProxyAddress,
     insecure: bool,
     url: &str,
 ) -> Result<(), BoxError> {
     let client = if insecure {
         let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-        DefaultHttpWebClient::try_default_masque_using_boringssl(exec, tls.clone(), tls)?
+        DefaultHttpWebClient::try_default_masque_using_boringssl(scope, tls.clone(), tls)?
     } else {
-        DefaultHttpWebClient::default_masque_with_executor(exec)
+        DefaultHttpWebClient::default_masque_with_scope(scope)
     };
 
     let request = Request::builder()

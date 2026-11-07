@@ -3,9 +3,9 @@
 use rama::{
     cli::{ForwardKind, service::fs::FsServiceBuilder},
     error::{BoxError, ErrorContext},
+    graceful::WeakScope,
     http::service::fs::{DirectoryServeMode, ServeDirSymlinkPolicy},
     net::{address::SocketAddress, tls::ApplicationProtocol},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
 };
@@ -101,7 +101,7 @@ pub struct CliCommandFs {
 }
 
 /// run the rama serve service
-pub async fn run(exec: Executor, cfg: CliCommandFs) -> Result<(), BoxError> {
+pub async fn run(scope: WeakScope, cfg: CliCommandFs) -> Result<(), BoxError> {
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {
@@ -110,7 +110,7 @@ pub async fn run(exec: Executor, cfg: CliCommandFs) -> Result<(), BoxError> {
                     ApplicationProtocol::HTTP_2,
                     ApplicationProtocol::HTTP_11,
                 ]),
-                exec.clone(),
+                scope.clone(),
             )
         })
         .transpose()?;
@@ -126,11 +126,11 @@ pub async fn run(exec: Executor, cfg: CliCommandFs) -> Result<(), BoxError> {
         .with_directory_serve_mode(cfg.dir_serve)
         .with_html_as_default_extension(cfg.html_as_default_extension)
         .with_symlink_policy(cfg.symlink_policy)
-        .build(exec.clone())
+        .build(scope.clone())
         .context("build serve service")?;
 
     tracing::info!("starting serve service on: bind interface = {}", cfg.bind);
-    let tcp_listener = TcpListener::build(exec.clone())
+    let tcp_listener = TcpListener::build(scope.clone())
         .bind_address(cfg.bind)
         .await
         .context("bind serve service")?;
@@ -139,15 +139,14 @@ pub async fn run(exec: Executor, cfg: CliCommandFs) -> Result<(), BoxError> {
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    exec.try_spawn_task(async move {
+    scope.try_hold()?.into_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
             "ready to serve: bind interface = {}", cfg.bind,
         );
         tcp_listener.serve(Arc::new(tcp_service)).await;
-    })
-    .map_err(|refused| refused.discard_task())?;
+    });
 
     Ok(())
 }

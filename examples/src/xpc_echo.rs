@@ -55,7 +55,6 @@ async fn main() {
     use rama::{
         graceful::Scope,
         net::apple::xpc::{XpcEndpoint, XpcMessage, XpcServer},
-        rt::Executor,
         service::service_fn,
         telemetry::tracing::{
             self, error, info,
@@ -94,10 +93,10 @@ async fn main() {
     // Server task: serve the anonymous listener through the higher-level XpcServer
     // adapter, which accepts the peer connection and dispatches message handling to
     // the Rama service above.
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     let server_task = scope.spawn_task(async move {
         info!(target: "xpc_echo::server", "ready, waiting for peer connection");
-        if let Err(err) = server.serve_connection(server_conn, exec).await {
+        if let Err(err) = server.serve_connection(server_conn, weak_scope).await {
             error!(target: "xpc_echo::server", %err, "server error");
         }
         info!(target: "xpc_echo::server", "server stopped");

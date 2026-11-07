@@ -1,9 +1,9 @@
 use rama::{
     Service,
     error::{BoxError, extra::OpaqueError},
+    graceful::WeakScope,
     http::{self, Body, client::EasyHttpWebClient},
     net::test_utils::client::{MockConnectorService, MockSocket},
-    rt::Executor,
     service::BoxService,
 };
 
@@ -27,7 +27,7 @@ where
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector::<Body>(Executor::default())
+        .with_default_http_connector::<Body>(WeakScope::never())
         .with_default_connection_pool()
         .build_client()
         .boxed()

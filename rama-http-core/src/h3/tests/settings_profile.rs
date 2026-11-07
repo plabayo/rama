@@ -5,10 +5,7 @@ use crate::h3::{
     observation::{H3Observer, SettingsObservation},
     server,
 };
-use rama_core::{
-    extensions::ExtensionsRef as _,
-    rt::{Executor, spawn},
-};
+use rama_core::{extensions::ExtensionsRef as _, graceful::WeakScope, rt::spawn};
 use rama_http_types::{
     Body, Request, Response,
     proto::h3::{SettingId, Settings},
@@ -58,7 +55,8 @@ async fn settings_profile_reaches_peer_in_literal_order() {
             .unwrap();
             spawn(driver.run());
             let (mut client, driver) =
-                client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::never())
+                    .unwrap();
             spawn(driver.run());
 
             let serve = spawn(async move {
@@ -124,7 +122,7 @@ async fn settings_profile_omitting_an_available_capability_does_not_advertise_it
     // QUIC DATAGRAM is available and enabled locally, but the profile omits it.
     config.settings_profile = Some(Arc::new(settings));
     let (sender, driver) =
-        client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
+        client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::never()).unwrap();
     drop((sender, driver));
     pair.close().await;
 }

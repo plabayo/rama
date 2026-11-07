@@ -6,11 +6,11 @@ use rama::{
         pem::PemEncode as _,
         pki_types::{CertificateDer, pem::PemObject as _},
     },
+    graceful::WeakScope,
     http::core::h3::connection::Config as H3Config,
     http::{Body, Request, StatusCode, body::util::BodyExt as _, core::h3::client as h3_client},
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{ClientConfig, Endpoint, tls::TlsOptions},
-    rt::Executor,
     tls::{client::TlsClientConfig, server::ServerAuthData},
     utils::fs::tempdir,
 };
@@ -27,7 +27,7 @@ fn listening(line: &str, needle: &str) -> SocketAddr {
 /// and the body.
 async fn get(proxy: SocketAddr, ca: &Path) -> (StatusCode, Option<String>, String) {
     let ca = CertificateDer::from_pem_file(ca).unwrap();
-    let endpoint = Endpoint::build(Executor::new())
+    let endpoint = Endpoint::build(WeakScope::never())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
@@ -44,7 +44,8 @@ async fn get(proxy: SocketAddr, ca: &Path) -> (StatusCode, Option<String>, Strin
     .unwrap()
     .unwrap();
     let (mut client, driver) =
-        h3_client::handshake::<Body, _>(connection, H3Config::default(), Executor::new()).unwrap();
+        h3_client::handshake::<Body, _>(connection, H3Config::default(), WeakScope::never())
+            .unwrap();
     let driver = spawn(driver.run());
     let request = Request::get(format!("https://localhost:{}/", proxy.port()))
         .body(Body::empty())

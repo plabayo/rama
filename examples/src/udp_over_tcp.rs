@@ -62,8 +62,8 @@ use std::net::SocketAddr;
 use rama::{
     Service,
     error::BoxError,
+    graceful::WeakScope,
     net::address::SocketAddress,
-    rt::Executor,
     stream::{
         BytesFreeze, StreamBridge, StreamForwardService,
         codec::{BytesCodec, Framed, LengthDelimitedCodec},
@@ -97,7 +97,7 @@ async fn main() -> Result<(), BoxError> {
     let tcp = match mode {
         "listen" => {
             let listener =
-                TcpListener::bind_address(SocketAddress::from(tcp_addr), Executor::default())
+                TcpListener::bind_address(SocketAddress::from(tcp_addr), WeakScope::never())
                     .await?;
             tracing::info!("tcp listening on {}", listener.local_addr()?);
             let (tcp, peer) = listener.accept().await?;

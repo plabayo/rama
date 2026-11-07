@@ -81,7 +81,6 @@ use rama::{
     },
     layer::{ConsumeErrLayer, HijackLayer, TimeoutLayer},
     net::{proxy::IoForwardService, stream::SocketInfo, user::credentials::basic},
-    rt::Executor,
     service::service_fn,
     tcp::{client::service::TcpConnector, posted_recv::PostedRecvLayer, server::TcpListener},
     telemetry::tracing::{
@@ -120,11 +119,11 @@ async fn main() {
         number: u32,
     }
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        let tcp_service = TcpListener::build(exec.clone()).bind_address("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
+        let tcp_service = TcpListener::build(weak_scope.clone()).bind_address("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
 
-        let http_service = HttpServer::auto(exec.clone())
+        let http_service = HttpServer::auto(weak_scope.clone())
             .service((
                     TraceLayer::new_for_http(),
                     ConsumeErrLayer::default(),
@@ -164,10 +163,10 @@ async fn main() {
                                     PostedRecvLayer::new().into_layer(TcpConnector::new()),
                                 ),
                             ),
-                            IoForwardService::new(exec.clone()),
+                            IoForwardService::new(weak_scope.clone()),
                         );
                         UpgradeLayer::new(
-                            exec.clone(),
+                            weak_scope.clone(),
                             MethodMatcher::CONNECT,
                             connect,
                         )

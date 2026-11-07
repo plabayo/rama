@@ -48,7 +48,6 @@ use rama::{
         address::{HostWithPort, SocketAddress},
         client::EstablishedClientConnection,
     },
-    rt::Executor,
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -93,7 +92,7 @@ async fn main() {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
     // ── TLS terminator (rustls + self-signed, HTTP/1.1 + HTTP/2) ─────────
     let tls_data = TlsServerConfig::new()
@@ -113,10 +112,10 @@ async fn main() {
         client: fastcgi_client,
     };
 
-    let http_server =
-        HttpServer::auto(exec.clone()).service(TraceLayer::new_for_http().into_layer(app_service));
+    let http_server = HttpServer::auto(weak_scope.clone())
+        .service(TraceLayer::new_for_http().into_layer(app_service));
 
-    let tcp = TcpListener::bind_address(listen, exec.clone())
+    let tcp = TcpListener::bind_address(listen, weak_scope.clone())
         .await
         .expect("bind https listener");
     tracing::info!(

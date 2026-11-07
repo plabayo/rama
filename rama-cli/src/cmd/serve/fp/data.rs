@@ -531,6 +531,7 @@ mod observation_tests {
         bytes::BytesMut,
         cli::service::echo::EchoServiceBuilder,
         extensions::{ExtensionsRef as _, Ingress},
+        graceful::WeakScope,
         http::{
             Body, BodyExtractExt as _, Request, Version,
             core::h3::{
@@ -543,7 +544,7 @@ mod observation_tests {
         },
         net::address::SocketAddress,
         quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
-        rt::{Executor, spawn},
+        rt::spawn,
         tls::{
             client::TlsClientConfig,
             server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -586,11 +587,11 @@ mod observation_tests {
                 SocketAddress::local_ipv4(444),
                 NonZeroUsize::MIN,
             );
-            let server_endpoint = Endpoint::build(Executor::new())
+            let server_endpoint = Endpoint::build(WeakScope::never())
                 .with_server_config(server_config)
                 .with_datagram_socket(server_socket)
                 .unwrap();
-            let client_endpoint = Endpoint::build(Executor::new())
+            let client_endpoint = Endpoint::build(WeakScope::never())
                 .with_datagram_socket(client_socket)
                 .unwrap();
             let accepting = spawn({
@@ -693,7 +694,7 @@ mod observation_tests {
                 .unwrap();
             echo_request.extensions().insert(Ingress(ext.clone()));
             let response = EchoServiceBuilder::new()
-                .build_http(Executor::new())
+                .build_http(WeakScope::never())
                 .serve(echo_request)
                 .await
                 .unwrap()

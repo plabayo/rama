@@ -38,6 +38,7 @@ use rama::{
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext, error_chain},
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         BodyLimitLayer, Method, Request, Response, StatusCode,
         client::{EasyHttpWebClient, masque_quic_transport},
@@ -124,7 +125,6 @@ use rama::{
         proxy::{PeekQuicClientHelloService, QuicMitmRelay, QuicRelay},
         tls::BoringTlsProvider,
     },
-    rt::Executor,
     service::{BoxService, service_fn},
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
@@ -872,12 +872,12 @@ impl<Body> rama::matcher::Matcher<Request<Body>> for MitmPortalMatcher {
 }
 
 macro_rules! build_mitm_service {
-    ($exec:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_policy:expr, $icap:expr) => {{
+    ($scope:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_policy:expr, $icap:expr) => {{
         let capture = $capture;
         let capture_control = capture.control();
         let inspection = $inspection;
         let har = $har;
-        let exec = $exec;
+        let scope = $scope;
         let portal = $portal;
         let peek_timeout = $peek_timeout;
         let mitm_policy = $mitm_policy;
@@ -901,22 +901,22 @@ macro_rules! build_mitm_service {
         let websocket_relay = InspectionGate {
             inspection: inspection.clone(),
             inspect: websocket_relay,
-            passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+            passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),
         };
         let websocket_layer = HttpUpgradeMitmRelayLayer::new(
-            exec.clone(),
+            scope.clone(),
             (
                 rama::proxy::masque::connect_udp::mitm::ConnectUdpRelayRequestMatcher::new(
                     (
                         rama::layer::MapErrLayer::into_box_error(),
                         MapOutputLayer::new(drop),
                     )
-                        .into_layer(rama::proxy::masque::connect_udp::mitm::relay(exec.clone())),
+                        .into_layer(rama::proxy::masque::connect_udp::mitm::relay(scope.clone())),
                 ),
                 HttpWebSocketRelayServiceRequestMatcher::new(websocket_relay),
             ),
         );
-        let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+        let http_mitm_relay = HttpMitmRelay::new(scope.clone()).with_http_middleware((
             ConsumeErrLayer::trace_as(error_level).with_response(DefaultErrorResponse::new()),
             MapResponseBodyLayer::new_boxed_streaming_body(),
             StreamCompressionLayer::new()
@@ -940,17 +940,17 @@ macro_rules! build_mitm_service {
         let http_mitm_relay = InspectionGate {
             inspection: inspection.clone(),
             inspect: http_mitm_relay,
-            passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+            passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),
         };
         let maybe_http = HttpPeekRouter::new(http_mitm_relay)
             .with_known_non_http_protocol_methods()
             .maybe_with_peek_timeout(peek_timeout)
             .with_fallback(ObservePassthroughService {
-                inner: MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+                inner: MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),
                 control: capture_control.clone(),
             });
         let passthrough = ConsumeErrLayer::trace_as_debug()
-            .into_layer(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
+            .into_layer(MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())));
         let non_tls = MitmTargetPolicyService {
             inspect: maybe_http.clone(),
             passthrough: passthrough.clone(),
@@ -988,11 +988,11 @@ const QUIC_RELAY_FAILURE: u32 = 0x0101;
 /// The relay of MASQUE CONNECT-UDP tunnels under `--mitm`: tunneled QUIC is peeked, then
 /// terminated with HTTP/3 inspected as over TCP, or forwarded untouched, by the scope rules.
 macro_rules! build_quic_mitm_relay {
-    ($exec:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $mitm_policy:expr, $icap:expr) => {{
+    ($scope:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $mitm_policy:expr, $icap:expr) => {{
         let capture = $capture;
         let inspection = $inspection;
         let har = $har;
-        let exec = $exec;
+        let scope = $scope;
         let mitm_policy = $mitm_policy;
         let icap = $icap;
         let error_level = if icap.is_some() {
@@ -1000,8 +1000,8 @@ macro_rules! build_quic_mitm_relay {
         } else {
             tracing::Level::DEBUG
         };
-        let h3 = Http3MitmRelay::new(exec.clone())
-            .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(exec.clone()))
+        let h3 = Http3MitmRelay::new(scope.clone())
+            .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(scope.clone()))
             .with_http_middleware((
                 rama::proxy::masque::connect_udp::mitm::ConnectUdpMitmLayer::new(),
                 ConsumeErrLayer::trace_as(error_level).with_response(DefaultErrorResponse::new()),
@@ -1030,7 +1030,7 @@ macro_rules! build_quic_mitm_relay {
         let transport = Arc::new(masque_quic_transport());
         let terminate = QuicMitmRelay::new(
             issuer,
-            exec,
+            scope,
             egress_tls,
             VarInt::from_u32(QUIC_RELAY_FAILURE),
         )
@@ -1520,17 +1520,17 @@ fn build_icap_adaptation(
 
 /// Run the Rama proxy service.
 pub async fn run(
-    exec: Executor,
+    scope: WeakScope,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandProxy,
 ) -> Result<(), BoxError> {
-    run_with_dashboard_token(exec, http3_endpoints, cfg, None)
+    run_with_dashboard_token(scope, http3_endpoints, cfg, None)
         .await
         .map(|_| ())
 }
 
 async fn run_with_dashboard_token(
-    exec: Executor,
+    scope: WeakScope,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandProxy,
     dashboard_token_override: Option<Arc<str>>,
@@ -1687,7 +1687,7 @@ async fn run_with_dashboard_token(
             })
             .transpose()?;
         let (listener, local_address, masque_endpoint) =
-            bind_proxy_listener(&exec, address, masque_tls, cfg.masque_initial_mtu).await?;
+            bind_proxy_listener(&scope, address, masque_tls, cfg.masque_initial_mtu).await?;
         bound.push((listener, local_address, protocols, masque_endpoint));
     }
     upstream.set_listener_addresses(bound.iter().map(|(_, address, _, _)| *address));
@@ -1711,7 +1711,7 @@ async fn run_with_dashboard_token(
         .iter()
         .any(|(_, address, _, _)| bind_addresses_overlap(*address, ui_address.into()))
     {
-        let listener = TcpListener::build(exec.clone())
+        let listener = TcpListener::build(scope.clone())
             .bind_address(ui_address)
             .await
             .context("bind MITM inspector web UI")?;
@@ -1726,17 +1726,16 @@ async fn run_with_dashboard_token(
         inspector_address = Some(local_address);
         print_inspector_ready(local_address, &auth_token, cfg.inspect_json);
         let dashboard = standalone_dashboard_service(dashboard, local_address.into());
-        let ui_exec = exec.clone();
+        let ui_scope = scope.clone();
         let ui_tcp_options = tcp_options.clone();
-        exec.try_spawn_task(async move {
+        scope.try_hold()?.into_spawn_task(async move {
             listener
                 .serve(
                     TcpStreamOptionsLayer::new(ui_tcp_options)
-                        .into_layer(HttpServer::auto(ui_exec).service(dashboard)),
+                        .into_layer(HttpServer::auto(ui_scope).service(dashboard)),
                 )
                 .await;
-        })
-        .map_err(|refused| refused.discard_task())?;
+        });
     }
 
     for (listener, local_address, protocols, masque_endpoint) in bound {
@@ -1754,7 +1753,7 @@ async fn run_with_dashboard_token(
                 .contains(&masque::MasqueTunnel::ConnectUdp))
         .then(|| {
             masque::connect_udp_service(
-                exec.clone(),
+                scope.clone(),
                 cfg.masque_template.as_ref(),
                 cfg.masque_allow_private,
                 &upstream,
@@ -1766,7 +1765,7 @@ async fn run_with_dashboard_token(
             let service = match (&capture, &ca, &portal) {
                 (Some(capture), Some((certificate, private_key)), Some(portal)) => {
                     Either::A(service.with_relay(build_quic_mitm_relay!(
-                        exec.clone(),
+                        scope.clone(),
                         capture.clone(),
                         inspection.clone(),
                         har.clone(),
@@ -1785,7 +1784,7 @@ async fn run_with_dashboard_token(
             .is_some_and(|address| bind_addresses_overlap(address.into(), local_address));
         let plain_http_route = http_enabled || dashboard_here;
         let proxy_client = new_proxy_client(ProxyClientConfig {
-            exec: exec.clone(),
+            scope: scope.clone(),
             capture: capture.clone(),
             inspection: inspection.clone(),
             har: har.clone(),
@@ -1813,7 +1812,7 @@ async fn run_with_dashboard_token(
         let http_bridge = match (&capture, &ca, &portal) {
             (Some(capture), Some((certificate, private_key)), Some(portal)) => {
                 Either::A(build_mitm_service!(
-                    exec.clone(),
+                    scope.clone(),
                     capture.clone(),
                     inspection.clone(),
                     har.clone(),
@@ -1826,7 +1825,7 @@ async fn run_with_dashboard_token(
                 ))
             }
             _ => Either::B(ConsumeErrLayer::trace_as_debug().into_layer(
-                MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+                MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),
             )),
         };
         let make_egress_connector = || {
@@ -1848,7 +1847,7 @@ async fn run_with_dashboard_token(
             let connector = make_egress_connector();
             let generic = if cfg.lazy_connect {
                 Either::A(UpgradeLayer::new_with_services(
-                    exec.clone(),
+                    scope.clone(),
                     HttpProxyConnectMatcher::new(),
                     LazyHttpProxyConnectReplyService::new(),
                     IoToProxyBridgeIoLayer::extension_connector_target()
@@ -1857,7 +1856,7 @@ async fn run_with_dashboard_token(
                 ))
             } else {
                 Either::B(UpgradeLayer::new(
-                    exec.clone(),
+                    scope.clone(),
                     HttpProxyConnectMatcher::new(),
                     EagerHttpProxyConnector::new(connector, http_bridge.clone()),
                 ))
@@ -1868,12 +1867,12 @@ async fn run_with_dashboard_token(
                     .zip(portal.clone())
                     .map(|(tls_config, portal)| {
                         UpgradeLayer::new_with_services(
-                            exec.clone(),
+                            scope.clone(),
                             MitmPortalMatcher::connect(inspection.clone(), mitm_policy.clone()),
                             LazyHttpProxyConnectReplyService::new(),
                             TlsAcceptorService::new(
                                 tls_config,
-                                HttpServer::auto(exec.clone()).service(portal),
+                                HttpServer::auto(scope.clone()).service(portal),
                                 true,
                             ),
                         )
@@ -1892,7 +1891,7 @@ async fn run_with_dashboard_token(
             http_enabled,
             capture.clone(),
         );
-        let mut plain_server = HttpServer::auto(exec.clone());
+        let mut plain_server = HttpServer::auto(scope.clone());
         plain_server
             .h2_mut()
             .set_observe_early_frames(capture.is_some());
@@ -1920,7 +1919,7 @@ async fn run_with_dashboard_token(
             tls_enabled,
             capture.clone(),
         ));
-        let mut tls_server = HttpServer::auto(exec.clone());
+        let mut tls_server = HttpServer::auto(scope.clone());
         tls_server
             .h2_mut()
             .set_observe_early_frames(capture.is_some());
@@ -1929,10 +1928,10 @@ async fn run_with_dashboard_token(
         }
         let tls_http = tls_server.service(tls_http_service.clone());
         if let Some(endpoint) = masque_endpoint {
-            let mut h3 = HttpServer::new_http3(exec.clone());
+            let mut h3 = HttpServer::new_http3(scope.clone());
             h3.http3_mut().extended_connect = true;
             http3_endpoints.serve(
-                &exec,
+                &scope,
                 "MASQUE proxy",
                 endpoint,
                 ConsumeErrLayer::trace_as_debug().into_layer(h3.service(tls_http_service)),
@@ -1947,7 +1946,7 @@ async fn run_with_dashboard_token(
         let socks_bridge = match (&capture, &ca, &portal) {
             (Some(capture), Some((certificate, private_key)), Some(portal)) => {
                 Either::A(build_mitm_service!(
-                    exec.clone(),
+                    scope.clone(),
                     capture.clone(),
                     inspection.clone(),
                     har.clone(),
@@ -1960,11 +1959,11 @@ async fn run_with_dashboard_token(
                 ))
             }
             _ => Either::B(ConsumeErrLayer::trace_as_debug().into_layer(
-                MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+                MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),
             )),
         };
         let socks_connector = make_egress_connector();
-        let socks5 = Socks5Acceptor::new(exec.clone())
+        let socks5 = Socks5Acceptor::new(scope.clone())
             .with_connector(Socks5Connector::new(socks_connector, socks_bridge));
         let socks5 = match &cfg.proxy_auth {
             Some(credential) => {
@@ -2014,7 +2013,7 @@ async fn run_with_dashboard_token(
             print_inspector_ready(local_address, auth_token, cfg.inspect_json);
         }
 
-        exec.try_spawn_task(async move {
+        scope.try_hold()?.into_spawn_task(async move {
             match (plain_http_route, tls_enabled, socks5_enabled) {
                 (true, false, false) => listener.serve(tcp_layers.into_layer(http)).await,
                 (false, true, false) => listener.serve(tcp_layers.into_layer(https)).await,
@@ -2050,8 +2049,7 @@ async fn run_with_dashboard_token(
                     tracing::error!("proxy listener started without a configured protocol");
                 }
             }
-        })
-        .map_err(|refused| refused.discard_task())?;
+        });
     }
 
     Ok((bound_addresses, inspector_address))
@@ -2060,13 +2058,13 @@ async fn run_with_dashboard_token(
 /// Bind a proxy listener and, for MASQUE, its HTTP/3 endpoint on the same port: a
 /// `masque://` address names one port for every carrier.
 async fn bind_proxy_listener(
-    exec: &Executor,
+    scope: &WeakScope,
     address: SocketAddress,
     masque_tls: Option<&TlsServerConfig>,
     masque_initial_mtu: u16,
 ) -> Result<(TcpListener, std::net::SocketAddr, Option<Endpoint>), BoxError> {
     let bind = async |address: SocketAddress| {
-        let listener = TcpListener::build(exec.clone())
+        let listener = TcpListener::build(scope.clone())
             .bind_address(address)
             .await
             .with_context(|| format!("bind proxy listener {address}"))?;
@@ -2393,7 +2391,7 @@ fn authority_targets_socket(authority: AuthorityRef<'_>, address: std::net::Sock
 }
 
 struct ProxyClientConfig {
-    exec: Executor,
+    scope: WeakScope,
     capture: Option<CaptureStore>,
     inspection: InspectionState,
     har: HarController,
@@ -2409,7 +2407,7 @@ fn new_proxy_client(
     config: ProxyClientConfig,
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
     let ProxyClientConfig {
-        exec,
+        scope,
         capture,
         inspection,
         har,
@@ -2435,7 +2433,7 @@ fn new_proxy_client(
     }
     .with_proxy_support()
     .with_tls_support_using_boringssl(tls_config)
-    .with_default_http_connector(exec.clone())
+    .with_default_http_connector(scope.clone())
     .with_custom_connector(connect_timeout.map_or_else(TimeoutLayer::never, TimeoutLayer::new))
     .with_default_connection_pool()
     .build_client()
@@ -2480,7 +2478,7 @@ fn new_proxy_client(
     let websocket_relay = InspectionGate {
         inspection: inspection.clone(),
         inspect: websocket_relay,
-        passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+        passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),
     };
     let websocket = (
         RemoveRequestHeaderLayer::hop_by_hop(),
@@ -2492,7 +2490,7 @@ fn new_proxy_client(
         .into_layer(base);
     let websocket = require_request_service(
         HttpUpgradeMitmRelayLayer::new(
-            exec,
+            scope,
             HttpWebSocketRelayServiceRequestMatcher::new(websocket_relay),
         )
         .into_layer(websocket),

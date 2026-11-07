@@ -14,6 +14,7 @@ use rama::{
         },
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     },
+    graceful::WeakScope,
     http::{
         Body, Request, Response,
         core::h3::{client, connection::Config},
@@ -24,7 +25,6 @@ use rama::{
         tls::ApplicationProtocol,
     },
     quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
-    rt::Executor,
     service::service_fn,
     tls::{
         boring::{
@@ -101,7 +101,7 @@ fn identity(kind: Identity) -> (ServerAuthData, String) {
 }
 
 async fn origins(auth: ServerAuthData) -> (SocketAddr, SocketAddr, AbortOnDrop, Endpoint) {
-    let exec = Executor::new();
+    let scope = WeakScope::never();
     let tls = TlsServerConfig::new().with_server_auth(auth).with_alpn(
         [
             ApplicationProtocol::HTTP_3,
@@ -114,16 +114,16 @@ async fn origins(auth: ServerAuthData) -> (SocketAddr, SocketAddr, AbortOnDrop, 
     let app = service_fn(async |_: Request| {
         Ok::<_, Infallible>(Response::new(Body::from("verified origin")))
     });
-    let listener = rama::tcp::server::TcpListener::bind_address("127.0.0.1:0", exec.clone())
+    let listener = rama::tcp::server::TcpListener::bind_address("127.0.0.1:0", scope.clone())
         .await
         .unwrap();
     let tcp = listener.local_addr().unwrap();
     let server = TlsAcceptorLayer::new(tls.clone())
-        .into_layer(HttpServer::auto(exec.clone()).service(app.clone()));
+        .into_layer(HttpServer::auto(scope.clone()).service(app.clone()));
     let tcp_task = tokio::spawn(async move {
         listener.serve(server).await;
     });
-    let endpoint = Endpoint::build(exec.clone())
+    let endpoint = Endpoint::build(scope.clone())
         .with_server_config(ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
@@ -131,7 +131,7 @@ async fn origins(auth: ServerAuthData) -> (SocketAddr, SocketAddr, AbortOnDrop, 
     let udp = endpoint.local_addr().unwrap();
     let ep = endpoint.clone();
     let h3_task = tokio::spawn(async move {
-        ep.serve(exec.clone(), HttpServer::new_http3(exec).service(app))
+        ep.serve(scope.clone(), HttpServer::new_http3(scope).service(app))
             .await;
     });
     (tcp, udp, AbortOnDrop(vec![tcp_task, h3_task]), endpoint)
@@ -175,7 +175,7 @@ async fn tcp_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
 
 async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
     let socket = UdpFfiSession::new(engine, origin).into_datagram_socket(origin);
-    let endpoint = Endpoint::build(Executor::new())
+    let endpoint = Endpoint::build(WeakScope::never())
         .with_datagram_socket(socket)
         .unwrap();
     let tls = TlsClientConfig::new()
@@ -191,7 +191,8 @@ async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
             return false;
         };
         let (mut client, driver) =
-            client::handshake::<Body, _>(connection, Config::default(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(connection, Config::default(), WeakScope::never())
+                .unwrap();
         let driver = tokio::spawn(driver.run());
         let result = client
             .send_request(

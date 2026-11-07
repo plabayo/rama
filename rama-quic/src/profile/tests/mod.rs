@@ -14,7 +14,7 @@ use std::assert_matches;
 #[cfg(feature = "boring")]
 use rama_quic_proto::profile::ParameterOrderEntry;
 
-use rama_core::{bytes::BytesMut, rt::Executor};
+use rama_core::{bytes::BytesMut, graceful::WeakScope};
 use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::{
     ConnectionId, Side,
@@ -169,7 +169,7 @@ fn rama_first_flight_with(
             client_config.apply_quic_profile(&narrowed).unwrap();
         }
 
-        let client = Endpoint::build(Executor::new())
+        let client = Endpoint::build(WeakScope::never())
             .with_config(endpoint_config)
             .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
             .await

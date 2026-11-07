@@ -31,7 +31,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         BodyLimitLayer, HeaderName, HeaderValue,
         client::{EasyHttpWebClient, Http3Connector},
@@ -60,7 +60,6 @@ use rama::{
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutputLayer, TimeoutLayer},
     net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
     quic::tls::BoringTlsProvider,
-    rt::Executor,
     service::service_fn,
     tcp::{client::service::TcpConnector, posted_recv::PostedRecvLayer, server::TcpListener},
     telemetry::tracing::{
@@ -92,11 +91,11 @@ async fn main() -> Result<(), BoxError> {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
-    let mitm_svc = new_mitm_svc(&exec).context("build MITM relay service")?;
+    let weak_scope = scope.clone_weak();
+    let mitm_svc = new_mitm_svc(&weak_scope).context("build MITM relay service")?;
 
     scope.spawn_task(async move {
-        let tcp_service = TcpListener::build(exec.clone())
+        let tcp_service = TcpListener::build(weak_scope.clone())
             .bind_address("127.0.0.1:62017")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62017");
@@ -112,9 +111,9 @@ async fn main() -> Result<(), BoxError> {
         );
         // Ordinary HTTP forwarding has its own connector and needs the same TCP protection.
         // Keep the default client's TLS, proxy, HTTP/3, and pooling behavior.
-        let client_exec = exec.clone();
+        let client_scope = weak_scope.clone();
         let tls_config = TlsClientConfig::default_http();
-        let h3 = Http3Connector::builder(client_exec.clone())
+        let h3 = Http3Connector::builder(client_scope.clone())
             .with_tls_config(tls_config.clone())
             .with_tls_provider(Arc::new(BoringTlsProvider))
             .build_lazy()
@@ -125,7 +124,7 @@ async fn main() -> Result<(), BoxError> {
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
             .with_tls_support_using_boringssl(tls_config)
-            .with_default_http_connector(client_exec)
+            .with_default_http_connector(client_scope)
             .with_http3_support(h3)
             .with_default_connection_pool()
             .build_client()
@@ -134,17 +133,17 @@ async fn main() -> Result<(), BoxError> {
             RemoveRequestHeaderLayer::hop_by_hop(),
             HijackLayer::new(
                 WebSocketMatcher::new(),
-                websocket_mitm_layer(exec.clone()).into_layer(web_client.clone()),
+                websocket_mitm_layer(weak_scope.clone()).into_layer(web_client.clone()),
             ),
             RemoveResponseHeaderLayer::hop_by_hop(),
         )
             .into_layer(web_client);
-        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
+        let http_service = HttpServer::auto(weak_scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
                 ProxyAuthLayer::new(basic!("john", "secret")),
-                UpgradeLayer::new(exec, MethodMatcher::CONNECT, connect),
+                UpgradeLayer::new(weak_scope, MethodMatcher::CONNECT, connect),
                 (
                     ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
                     MapResponseBodyLayer::new_boxed_streaming_body(),
@@ -179,7 +178,7 @@ async fn main() -> Result<(), BoxError> {
 }
 
 fn new_mitm_svc<Ingress, Egress>(
-    exec: &Executor,
+    scope: &WeakScope,
 ) -> Result<
     impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone,
     BoxError,
@@ -188,7 +187,7 @@ where
     Ingress: Io + Unpin + ExtensionsRef,
     Egress: Io + Unpin + ExtensionsRef,
 {
-    let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+    let http_mitm_relay = HttpMitmRelay::new(scope.clone()).with_http_middleware((
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         // Decode before HTTP body middleware and restore the upstream encoding
@@ -205,7 +204,7 @@ where
             HeaderName::from_static("x-proxy"),
             HeaderValue::from_static(rama::utils::info::NAME),
         ),
-        websocket_mitm_layer(exec.clone()),
+        websocket_mitm_layer(scope.clone()),
         DecompressionLayer::new()
             .with_insert_accept_encoding_header(false)
             .with_tolerate_decode_errors(true),
@@ -213,7 +212,7 @@ where
     ));
     let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
         .with_known_non_http_protocol_methods()
-        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
+        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())));
 
     let tls_mitm_relay =
         TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {
@@ -235,7 +234,7 @@ where
 }
 
 fn websocket_mitm_layer(
-    exec: Executor,
+    scope: WeakScope,
 ) -> HttpUpgradeMitmRelayLayer<
     HttpWebSocketRelayServiceRequestMatcher<
         WebSocketRelayService<
@@ -244,7 +243,7 @@ fn websocket_mitm_layer(
     >,
 > {
     HttpUpgradeMitmRelayLayer::new(
-        exec,
+        scope,
         HttpWebSocketRelayServiceRequestMatcher::new(WebSocketRelayService::new(service_fn(
             inspect_websocket_message,
         ))),

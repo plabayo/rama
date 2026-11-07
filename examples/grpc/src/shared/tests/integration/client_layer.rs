@@ -13,7 +13,6 @@ use rama::{
         server::HttpServer,
     },
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
 };
@@ -39,15 +38,17 @@ async fn connect_supports_standard_rama_http_layers() {
     let svc = test_server::TestServer::new(Svc);
 
     let scope = Scope::new().with_signal(async { drop(rx.await) });
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec.clone())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), weak_scope.clone())
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
     let jh = scope.spawn_task(async move {
-        listener.serve(HttpServer::new_h2(exec).service(svc)).await;
+        listener
+            .serve(HttpServer::new_h2(weak_scope).service(svc))
+            .await;
     });
 
     let client = TestClient::new(

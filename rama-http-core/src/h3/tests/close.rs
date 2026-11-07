@@ -13,7 +13,8 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _, CauseExt as _},
     extensions::Extensions,
     futures::stream,
-    rt::{Executor, spawn},
+    graceful::WeakScope,
+    rt::spawn,
 };
 use rama_http::io::upgrade::handle_upgrade;
 use rama_http_types::{
@@ -270,7 +271,7 @@ async fn memory_response_close_waits_for_buffered_goaway_before_classifying_reje
             let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                Executor::new(),
+                WeakScope::never(),
             )
             .unwrap();
             let mut driver = pin!(driver.run());
@@ -344,9 +345,12 @@ async fn memory_response_close_waits_for_buffered_goaway_before_classifying_reje
 async fn memory_response_failure_provenance_separates_peer_reset_from_application_body() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let driver = spawn(driver.run());
         let remote_failure = spawn({
             let mut client = client.clone();
@@ -435,9 +439,12 @@ async fn memory_response_failure_provenance_separates_peer_reset_from_applicatio
 async fn memory_received_body_length_and_trailer_errors_are_remote() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let driver = spawn(driver.run());
         for (declared, bad_trailer) in [("0", false), ("2", false), ("1", true)] {
             let response = spawn({
@@ -510,9 +517,12 @@ async fn memory_received_body_length_and_trailer_errors_are_remote() {
 async fn memory_trailers_after_a_short_body_are_malformed() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let driver = spawn(driver.run());
         let response = spawn({
             let mut client = client.clone();
@@ -585,7 +595,7 @@ async fn memory_tunnels_ended_in_order_free_their_request_slot() {
                     max_requests: 1,
                     ..Config::default()
                 },
-                Executor::new(),
+                WeakScope::never(),
             )
             .unwrap();
             let driver = spawn(driver.run());

@@ -11,6 +11,7 @@ use rama::{
     combinators::Either,
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         Request, Response,
         layer::{
@@ -39,7 +40,6 @@ use rama::{
         proxy::IoForwardService,
     },
     proxy::socks5::{proxy::mitm::Socks5MitmRelayService, server::Socks5PeekRouter},
-    rt::Executor,
     service::MirrorService,
     tls::{boring::proxy::TlsMitmRelay, server::PeekTlsClientHelloService},
 };
@@ -146,7 +146,7 @@ impl DemoTcpMitmService {
 
     fn new_bridge_service<Ingress, Egress>(
         &self,
-        exec: Executor,
+        scope: WeakScope,
         within_connect_tunnel: bool,
     ) -> impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone
     where
@@ -156,8 +156,8 @@ impl DemoTcpMitmService {
         let settings = self.state.load_full();
         let peek_duration = Duration::from_secs_f64(self.peek_duration_s.max(0.5));
 
-        let http_mitm_svc = HttpMitmRelay::new(exec.clone()).with_http_middleware(
-            self.http_relay_middleware(exec.clone(), within_connect_tunnel, settings.clone()),
+        let http_mitm_svc = HttpMitmRelay::new(scope.clone()).with_http_middleware(
+            self.http_relay_middleware(scope.clone(), within_connect_tunnel, settings.clone()),
         );
         // `promote_passthrough` is ONLY safe on a raw kernel-flow ↔
         // NWConnection bridge — see `PromoteHandle`'s safety contract.
@@ -168,7 +168,7 @@ impl DemoTcpMitmService {
         // (non-TLS plain traffic, SNI-excluded TLS passthrough);
         // leave the inner fallback (post-TLS-MITM cleartext) as plain
         // `IoForwardService`.
-        let plain_passthrough = MapOutput::new(IoForwardService::new(exec.clone()), drop);
+        let plain_passthrough = MapOutput::new(IoForwardService::new(scope.clone()), drop);
         let promote_passthrough = PromoteLayer::new().into_layer(plain_passthrough.clone());
 
         let inner_http_router = HttpPeekRouter::new(http_mitm_svc.clone())
@@ -182,7 +182,7 @@ impl DemoTcpMitmService {
 
         let excluded_domains =
             crate::policy::DomainExclusionList::new(settings.exclude_domains.iter());
-        let tls_mitm_relay_policy = TlsMitmRelayPolicyLayer::new(exec.clone())
+        let tls_mitm_relay_policy = TlsMitmRelayPolicyLayer::new(scope.clone())
             .with_excluded_domains(excluded_domains)
             .with_fallback(promote_passthrough);
 
@@ -196,7 +196,7 @@ impl DemoTcpMitmService {
             return Either::A(ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_layer));
         }
 
-        let socks5_mitm_relay = Socks5MitmRelayService::new(exec, app_mitm_layer.clone());
+        let socks5_mitm_relay = Socks5MitmRelayService::new(scope, app_mitm_layer.clone());
         let mitm_svc = Socks5PeekRouter::new(socks5_mitm_relay)
             .with_peek_timeout(peek_duration)
             .with_fallback(app_mitm_layer);
@@ -207,7 +207,7 @@ impl DemoTcpMitmService {
     #[allow(clippy::needless_pass_by_value)]
     fn http_relay_middleware<S>(
         &self,
-        exec: Executor,
+        scope: WeakScope,
         within_connect_tunnel: bool,
         settings: Arc<LiveSettings>,
     ) -> impl Layer<S, Service: Service<Request, Output = Response, Error = BoxError> + Clone>
@@ -239,7 +239,7 @@ impl DemoTcpMitmService {
                 crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
             ),
             HttpUpgradeMitmRelayLayer::new(
-                exec.clone(),
+                scope.clone(),
                 (
                     rama::proxy::masque::connect_udp::mitm::ConnectUdpRelayRequestMatcher::new(
                         (
@@ -247,7 +247,7 @@ impl DemoTcpMitmService {
                             MapOutputLayer::new(drop),
                         )
                             .into_layer(
-                                rama::proxy::masque::connect_udp::mitm::relay(exec.clone()),
+                                rama::proxy::masque::connect_udp::mitm::relay(scope.clone()),
                             ),
                     ),
                     HttpWebSocketRelayServiceRequestMatcher::new(WebSocketRelayService::new(
@@ -258,10 +258,10 @@ impl DemoTcpMitmService {
                         // NOT a raw kernel-flow bridge. Do not promote here;
                         // see `PromoteHandle`'s safety contract.
                         (ConsumeErrLayer::trace_as_debug(), MapOutputLayer::new(drop))
-                            .into_layer(IoForwardService::new(exec))
+                            .into_layer(IoForwardService::new(scope))
                             .boxed()
                     } else {
-                        nested_mitm.new_bridge_service(exec, true).boxed()
+                        nested_mitm.new_bridge_service(scope, true).boxed()
                     }),
                 ),
             ),
@@ -295,8 +295,8 @@ impl Service<BridgeIo<TcpFlow, NwTcpStream>> for TcpInterceptService {
         let permit = self.reservation.activate();
         ingress.extensions().insert(permit);
 
-        let flow_exec = ingress.executor().cloned().unwrap_or_default();
-        let mitm_svc = self.mitm.new_bridge_service(flow_exec, false);
+        let flow_scope = ingress.scope().cloned().unwrap_or_default();
+        let mitm_svc = self.mitm.new_bridge_service(flow_scope, false);
 
         mitm_svc.serve(BridgeIo(ingress, egress)).await
     }
@@ -350,7 +350,7 @@ mod tests {
                         let (mut client, ingress) = duplex(ingress_capacity);
                         let (egress, origin) = duplex(4096);
                         let relay =
-                            mitm.new_bridge_service(Executor::default(), within_connect_tunnel);
+                            mitm.new_bridge_service(WeakScope::never(), within_connect_tunnel);
                         let (write_closed, after_write_close) = oneshot::channel();
                         let (responding, response_started) = oneshot::channel();
 

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use rama_core::rt::Executor;
+use rama_core::graceful::WeakScope;
 
 #[derive(Clone)]
 pub struct TransparentProxyServiceContext {
-    pub executor: Executor,
+    pub scope: WeakScope,
     pub(super) opaque_config: Option<Arc<[u8]>>,
     pub(super) provider_pid: u32,
     pub(super) provider_generation: u64,

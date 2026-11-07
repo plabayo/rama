@@ -46,7 +46,6 @@ use rama::{
     layer::{ConsumeErrLayer, TimeoutLayer},
     net::{proxy::IoForwardService, stream::SocketInfo, user::credentials::basic},
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -72,16 +71,16 @@ async fn main() {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
-    let tcp_service = TcpListener::bind_address("127.0.0.1:62023", exec.clone())
+    let tcp_service = TcpListener::bind_address("127.0.0.1:62023", weak_scope.clone())
         .await
         .expect("bind socks5+http proxy to 127.0.0.1:62023");
 
     let socks5_acceptor =
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
-    let http_service = HttpServer::auto(exec.clone()).service(
+    let http_service = HttpServer::auto(weak_scope.clone()).service(
         (
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
@@ -93,9 +92,9 @@ async fn main() {
                             rama::tcp::client::service::TcpConnector::new(),
                         ),
                     ),
-                    IoForwardService::new(exec.clone()),
+                    IoForwardService::new(weak_scope.clone()),
                 );
-                UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect)
+                UpgradeLayer::new(weak_scope.clone(), MethodMatcher::CONNECT, connect)
             },
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),

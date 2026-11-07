@@ -19,8 +19,8 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
     layer::IntoErr,
-    rt::Executor,
     service::BoxService,
     telemetry::tracing,
 };
@@ -267,9 +267,13 @@ impl<S: DatagramSocket> DatagramDemux<S> {
         self
     }
 
-    /// Serve every new association with `service`, spawned on `exec`, until the listening
-    /// socket fails or `exec`'s graceful shutdown begins.
-    pub async fn serve<Svc>(mut self, exec: Executor, service: Svc) -> Result<(), DatagramError>
+    /// Serve every new association with `service`, spawned on `scope`, until the listening
+    /// socket fails or `scope`'s graceful shutdown begins.
+    pub async fn serve<Svc>(
+        mut self,
+        weak_scope: WeakScope,
+        service: Svc,
+    ) -> Result<(), DatagramError>
     where
         S: Send + 'static,
         S::Sender: Clone,
@@ -291,11 +295,11 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             ReplySockets::new(bind, reader)
         });
         // Serving holds the scope, so every association opened until the cancel is admitted.
-        let Some(scope) = exec.scope().to_scope() else {
-            tracing::debug!("executor scope closed: not serving");
+        let Ok(scope) = weak_scope.try_hold() else {
+            tracing::debug!("scope closed: not serving");
             return Ok(());
         };
-        let cancelled = exec.cancelled();
+        let cancelled = weak_scope.cancelled();
         let mut cancelled = std::pin::pin!(cancelled);
         loop {
             let (mut datagram, local, via_reply_socket) = tokio::select! {
@@ -459,7 +463,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             }
             let service = service.clone();
             // Ended at the hard phase, whatever the service does by then.
-            scope.spawn_abortable_task(async move {
+            scope.spawn_task(async move {
                 if let Err(error) = service.serve(socket).await {
                     let error: BoxError = error.into();
                     tracing::debug!(%error, "datagram association ended with an error");

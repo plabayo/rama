@@ -15,6 +15,7 @@ use tokio::time::Instant;
 
 use super::{
     cause::Cause,
+    context::ScopeClosed,
     join::{JoinAborted, Joined},
     node::{Node, Signal, Target, Wait},
     signal::default_signal,
@@ -407,17 +408,22 @@ impl Scope {
 }
 
 impl WeakScope {
-    /// The weak handle of [`Scope::never`].
-    pub(crate) const fn never() -> Self {
+    /// The weak handle of [`Scope::never`]: unmanaged work, never cancelled.
+    #[must_use]
+    pub const fn never() -> Self {
         Self {
             nodes: Nodes::Never,
         }
     }
 
-    /// Hold the scope, as [`WeakScope::into_scope`] does, keeping this handle.
-    #[must_use]
-    pub fn to_scope(&self) -> Option<Scope> {
-        self.clone().into_scope()
+    /// Hold the scope, as [`WeakScope::into_scope`] does, keeping this handle: the one fallible
+    /// step before starting work in it.
+    ///
+    /// # Errors
+    ///
+    /// [`ScopeClosed`] once the scope is closed.
+    pub fn try_hold(&self) -> Result<Scope, ScopeClosed> {
+        self.clone().into_scope().ok_or(ScopeClosed)
     }
 
     /// Hold the scope again: refused once it is closed, and once it has no holder left while
@@ -964,6 +970,25 @@ impl Default for Scope {
 impl Default for WeakScope {
     fn default() -> Self {
         Self::never()
+    }
+}
+
+impl From<Scope> for WeakScope {
+    /// Gives up the hold of `scope`.
+    fn from(scope: Scope) -> Self {
+        scope.into_weak_scope()
+    }
+}
+
+impl From<&Scope> for WeakScope {
+    fn from(scope: &Scope) -> Self {
+        scope.clone_weak()
+    }
+}
+
+impl From<&Self> for WeakScope {
+    fn from(scope: &Self) -> Self {
+        scope.clone()
     }
 }
 

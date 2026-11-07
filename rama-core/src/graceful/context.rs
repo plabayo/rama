@@ -46,13 +46,13 @@ pub fn enter_scope(extensions: &Extensions) -> Result<Scope, ScopeClosed> {
 }
 
 /// Like [`enter_scope`], with the new scope also below `own` (see [`Scope::child_of`]), such
-/// as the scope of the executor that serves the input.
+/// as the scope of the server that serves the input.
 ///
 /// # Errors
 ///
 /// [`ScopeClosed`] once the scope the input runs in, or `own`, is closed.
 pub fn enter_scope_with(extensions: &Extensions, own: &WeakScope) -> Result<Scope, ScopeClosed> {
-    let own = own.to_scope().ok_or(ScopeClosed)?;
+    let own = own.try_hold()?;
     enter(extensions, Some(&own))
 }
 
@@ -68,6 +68,7 @@ fn enter(extensions: &Extensions, own: Option<&Scope>) -> Result<Scope, ScopeClo
 
 /// The scope an input runs in is closing and admits no new work, see [`enter_scope`].
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct ScopeClosed;
 
 impl fmt::Display for ScopeClosed {

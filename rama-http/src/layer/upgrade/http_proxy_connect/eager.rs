@@ -26,7 +26,7 @@ use rama_net::{
 /// ```ignore
 /// let connect = EagerHttpProxyConnector::new(connector, relay_service);
 /// let layer = UpgradeLayer::new(
-///     executor,
+///     &scope,
 ///     MethodMatcher::CONNECT,
 ///     connect,
 /// );
@@ -330,7 +330,7 @@ mod tests {
             Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
         });
         let service = crate::layer::upgrade::UpgradeLayer::new(
-            rama_core::rt::Executor::default(),
+            rama_core::graceful::WeakScope::default(),
             true,
             connect,
         )
@@ -377,7 +377,7 @@ mod tests {
             Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
         });
         let service = crate::layer::upgrade::UpgradeLayer::new(
-            rama_core::rt::Executor::default(),
+            rama_core::graceful::WeakScope::default(),
             true,
             connect,
         )

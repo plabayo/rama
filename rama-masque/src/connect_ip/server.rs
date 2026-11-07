@@ -5,7 +5,7 @@ use super::{
 use crate::limits::TunnelLimits;
 use rama_core::{
     Service, error::BoxError, extensions::ExtensionsRef as _, futures::StreamExt as _,
-    rt::Executor, telemetry::tracing,
+    graceful::WeakScope, telemetry::tracing,
 };
 use rama_dns::client::{
     GlobalDnsResolver,
@@ -52,7 +52,7 @@ pub struct ConnectIpService<A, H, R = GlobalDnsResolver, L = TunnelLimits> {
     admission: Arc<A>,
     handler: Arc<H>,
     resolver: Arc<R>,
-    exec: Executor,
+    scope: WeakScope,
     limits: L,
     open_timeout: Duration,
     proxy_name: Option<Arc<str>>,
@@ -75,7 +75,7 @@ impl<A, H, R, L: Clone> Clone for ConnectIpService<A, H, R, L> {
             admission: self.admission.clone(),
             handler: self.handler.clone(),
             resolver: self.resolver.clone(),
-            exec: self.exec.clone(),
+            scope: self.scope.clone(),
             limits: self.limits.clone(),
             open_timeout: self.open_timeout,
             proxy_name: self.proxy_name.clone(),
@@ -86,13 +86,19 @@ impl<A, H, R, L: Clone> Clone for ConnectIpService<A, H, R, L> {
 impl<A, H> ConnectIpService<A, H> {
     /// Create a service with optional admission limits and a ten-second
     /// deadline covering admission, DNS and upgrade. No forwarding policy is implicit.
-    pub fn new(template: ConnectIpTemplate, admission: A, handler: H, exec: Executor) -> Self {
+    pub fn new(
+        template: ConnectIpTemplate,
+        admission: A,
+        handler: H,
+        scope: impl Into<WeakScope>,
+    ) -> Self {
+        let scope = scope.into();
         Self {
             template,
             admission: Arc::new(admission),
             handler: Arc::new(handler),
             resolver: Arc::new(GlobalDnsResolver::default()),
-            exec,
+            scope,
             limits: TunnelLimits::default(),
             open_timeout: Duration::from_secs(10),
             proxy_name: None,
@@ -108,7 +114,7 @@ impl<A, H, R, L> ConnectIpService<A, H, R, L> {
             admission: self.admission,
             handler: self.handler,
             resolver: self.resolver,
-            exec: self.exec,
+            scope: self.scope,
             limits,
             open_timeout: self.open_timeout,
             proxy_name: self.proxy_name,
@@ -138,7 +144,7 @@ impl<A, H, R, L> ConnectIpService<A, H, R, L> {
             admission: self.admission,
             handler: self.handler,
             resolver: Arc::new(resolver),
-            exec: self.exec,
+            scope: self.scope,
             limits: self.limits,
             open_timeout: self.open_timeout,
             proxy_name: self.proxy_name,
@@ -223,7 +229,7 @@ where
         };
         config.principal_budget = lease.principal_spend();
         // The tunnel holds the proxy's scope: a closed one admits no new tunnel.
-        let Some(scope) = self.exec.scope().to_scope() else {
+        let Ok(scope) = self.scope.try_hold() else {
             return Ok(refuse(ProxyErrorType::ProxyInternalError));
         };
         let Ok(response) = capsule_response::<Body>(version, &Protocol::CONNECT_IP) else {

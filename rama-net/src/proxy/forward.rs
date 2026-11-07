@@ -7,8 +7,8 @@ use super::IdleGuard;
 
 use crate::conn::LingeringClose;
 
+use rama_core::graceful::WeakScope;
 use rama_core::graceful::{Cause, Scope, enter_scope_with};
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
 use rama_core::{
     Service,
@@ -73,14 +73,14 @@ const LINGER_BUF_SIZE: usize = kib(4);
 /// bidirectionally.
 ///
 /// The bridge stops at the hard phase of its connection's scope (the most recent
-/// [`Scope`] in its extensions, else that of the [`Executor`] passed at construction),
+/// [`Scope`] in its extensions, else that of the [`WeakScope`] passed at construction),
 /// enforces an optional
 /// idle timeout that closes the bridge when neither direction has made
 /// byte progress within the configured window, and emits a single
 /// structured close event when the bridge ends.
 #[derive(Debug, Clone)]
 pub struct IoForwardService {
-    executor: Executor,
+    scope: WeakScope,
     idle_timeout: Option<Duration>,
     first_byte_timeout: Option<Duration>,
     first_byte_timeout_start: FirstByteTimeoutStart,
@@ -91,16 +91,17 @@ pub struct IoForwardService {
 
 impl Default for IoForwardService {
     fn default() -> Self {
-        Self::new(Executor::default())
+        Self::new(WeakScope::never())
     }
 }
 
 impl IoForwardService {
-    /// Create a new [`IoForwardService`] using the given [`Executor`].
+    /// Create a new [`IoForwardService`] using the given [`WeakScope`].
     #[must_use]
-    pub fn new(executor: Executor) -> Self {
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            executor,
+            scope,
             idle_timeout: None,
             first_byte_timeout: None,
             first_byte_timeout_start: FirstByteTimeoutStart::default(),
@@ -217,16 +218,15 @@ impl IoForwardService {
     }
 
     /// The scope a bridge over `io` runs in, below the scope its connection runs in and the
-    /// executor's; the bridge holds it and stops at its hard phase. A byte stream has no way
+    /// configured one; the bridge holds it and stops at its hard phase. A byte stream has no way
     /// to drain, so a graceful phase changes nothing. A connection arriving in a closing
     /// scope stops at once.
     fn stop(&self, io: &impl ExtensionsRef) -> Stop {
-        let scope =
-            enter_scope_with(io.extensions(), self.executor.scope()).unwrap_or_else(|_closed| {
-                let scope = Scope::new();
-                scope.abort(Cause::Reason("the connection's scope is closed"));
-                scope
-            });
+        let scope = enter_scope_with(io.extensions(), &self.scope).unwrap_or_else(|_closed| {
+            let scope = Scope::new();
+            scope.abort(Cause::Reason("the connection's scope is closed"));
+            scope
+        });
         Stop { scope }
     }
 }
@@ -251,7 +251,7 @@ where
             self.idle_timeout
                 .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
                 .unwrap_or(0),
-            !self.executor.scope().is_never(),
+            !self.scope.is_never(),
         );
 
         let stop = self.stop(&left);
@@ -1361,7 +1361,7 @@ mod tests {
     #[tokio::test]
     async fn scope_cancel_keeps_relaying_and_abort_stops_the_bridge() {
         let root = Scope::new();
-        let svc = IoForwardService::new(Executor::from(root.clone()));
+        let svc = IoForwardService::new(root.clone_weak());
 
         let (mut a_user, a_proxy) = duplex(64);
         let (mut b_user, b_proxy) = duplex(64);
@@ -1390,8 +1390,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_aborted_scope_starts_no_close_grace() {
         let root = Scope::new();
-        let svc = IoForwardService::new(Executor::from(root.clone()))
-            .with_shutdown_grace(Duration::from_secs(60));
+        let svc =
+            IoForwardService::new(root.clone_weak()).with_shutdown_grace(Duration::from_secs(60));
         let (_a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);
         let a_proxy = PendingShutdownIo { inner: a_proxy };
@@ -1411,8 +1411,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_abort_cuts_a_close_grace_under_way() {
         let root = Scope::new();
-        let svc = IoForwardService::new(Executor::from(root.clone()))
-            .with_shutdown_grace(Duration::from_secs(60));
+        let svc =
+            IoForwardService::new(root.clone_weak()).with_shutdown_grace(Duration::from_secs(60));
         let (a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);
         let a_proxy = PendingShutdownIo { inner: a_proxy };
@@ -1431,7 +1431,7 @@ mod tests {
     /// The bridge holds the scope it runs in while it relays: a retained context alone does not.
     #[tokio::test]
     async fn a_running_bridge_holds_its_connection_scope() {
-        let svc = IoForwardService::new(Executor::new());
+        let svc = IoForwardService::new(WeakScope::never());
         let (a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);
         let connection = Scope::new();
@@ -1457,7 +1457,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_connection_scope_in_the_extensions_stops_the_bridge() {
-        let svc = IoForwardService::new(Executor::new());
+        let svc = IoForwardService::new(WeakScope::never());
 
         let (_a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);
@@ -1481,7 +1481,7 @@ mod tests {
     #[tokio::test]
     async fn forward_shutdown_drops_idle_bridge() {
         let root = Scope::new();
-        let svc = IoForwardService::new(Executor::from(root.clone()));
+        let svc = IoForwardService::new(root.clone_weak());
 
         let (_a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);
@@ -1508,7 +1508,7 @@ mod tests {
     #[tokio::test]
     async fn forward_shutdown_drops_active_bridge() {
         let root = Scope::new();
-        let svc = IoForwardService::new(Executor::from(root.clone()));
+        let svc = IoForwardService::new(root.clone_weak());
 
         let (mut a_user, a_proxy) = duplex(64);
         let (mut b_user, b_proxy) = duplex(64);
@@ -1822,7 +1822,7 @@ mod tests {
 
     #[tokio::test]
     async fn forward_default_executor_means_no_shutdown_observation() {
-        // Without a graceful executor, the bridge does not observe an
+        // Without a graceful scope, the bridge does not observe an
         // external shutdown signal and only ends on EOF/error/idle.
         let svc = IoForwardService::default();
 
@@ -3094,7 +3094,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn lingering_close_is_cut_short_by_shutdown() {
         let root = Scope::new();
-        let svc = IoForwardService::new(Executor::from(root.clone()))
+        let svc = IoForwardService::new(root.clone_weak())
             .with_idle_timeout(Duration::from_millis(20))
             .with_lingering_close(patient_linger());
         let Chain {

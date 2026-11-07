@@ -36,7 +36,6 @@ use rama::{
     },
     layer::AddInputExtensionLayer,
     layer::ArcLayer,
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -66,7 +65,7 @@ async fn main() {
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         let router = Router::new().with_get("/", Html(INDEX)).with_get(
             "/chat",
@@ -131,13 +130,13 @@ async fn main() {
             )),
         );
 
-        let server = HttpServer::new_http1(exec.clone())
+        let server = HttpServer::new_http1(weak_scope.clone())
             .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(router));
         info!("open mini web chat @ http://127.0.0.1:62033");
         info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama')");
 
 
-        TcpListener::bind_address("127.0.0.1:62033", exec)
+        TcpListener::bind_address("127.0.0.1:62033", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(AddInputExtensionLayer::new(State::default()).into_layer(server))

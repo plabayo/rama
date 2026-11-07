@@ -32,13 +32,13 @@ use std::{
 
 use rama::{
     Service,
+    graceful::WeakScope,
     http::{
         client::EasyHttpWebClient,
         grpc::{Request, Response, Status, protobuf::ProstCodec},
         server::HttpServer,
     },
     net::{address::SocketAddress, uri::Uri},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
 };
@@ -207,10 +207,10 @@ fn spawn_origin(accepted: Arc<AtomicUsize>) -> Origin {
             .unwrap()
             .block_on(async move {
                 let listener =
-                    TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
+                    TcpListener::try_from_std_tcp_listener(listener, WeakScope::never()).unwrap();
                 ready_tx.send(()).unwrap();
                 let http = Arc::new(
-                    HttpServer::auto(Executor::default())
+                    HttpServer::auto(WeakScope::never())
                         .service(echo_server::EchoServer::new(EchoService)),
                 );
                 let serve = listener.serve(service_fn(move |stream| {

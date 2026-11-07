@@ -50,7 +50,6 @@ use rama::{
         service::web::response::IntoResponse,
     },
     net::{address::SocketAddress, client::EstablishedClientConnection},
-    rt::Executor,
     service::service_fn,
     tcp::{TcpStream, client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{
@@ -81,12 +80,12 @@ async fn main() {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
     // Spawn the FastCGI backend: a plain HTTP echo handler wrapped in FastCgiHttpService
     // so it can accept FastCGI connections from the proxy.
     {
-        let tcp = TcpListener::bind_address(BACKEND_ADDR, exec.clone())
+        let tcp = TcpListener::bind_address(BACKEND_ADDR, weak_scope.clone())
             .await
             .expect("bind fastcgi backend");
         let service = Arc::new(FastCgiServer::new(FastCgiHttpService::new(service_fn(
@@ -101,11 +100,11 @@ async fn main() {
 
     // Spawn the HTTP reverse proxy that translates HTTP to FastCGI.
     {
-        let tcp = TcpListener::bind_address(PROXY_ADDR, exec.clone())
+        let tcp = TcpListener::bind_address(PROXY_ADDR, weak_scope.clone())
             .await
             .expect("bind http proxy");
         let proxy = Arc::new(FastCgiProxyService::new());
-        scope.spawn_task(tcp.serve(HttpServer::auto(exec).service(proxy)));
+        scope.spawn_task(tcp.serve(HttpServer::auto(weak_scope).service(proxy)));
         tracing::info!("HTTP→FastCGI reverse proxy listening on {PROXY_ADDR}");
     }
 

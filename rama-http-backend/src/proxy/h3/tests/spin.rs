@@ -56,13 +56,13 @@ async fn captured_hop(allow: [bool; 2]) -> (Endpoint, Endpoint, Connection, Conn
                 .unwrap()
                 .with_rng_seed([seed; 32])
         };
-        let server_endpoint = Endpoint::build(Executor::new())
+        let server_endpoint = Endpoint::build(WeakScope::never())
             .with_config(config(seed.wrapping_add(64)))
             .with_server_config(server_config.clone())
             .bind_address(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
-        let client_endpoint = Endpoint::build(Executor::new())
+        let client_endpoint = Endpoint::build(WeakScope::never())
             .with_config(config(seed))
             .bind_address(SocketAddress::local_ipv4(0))
             .await
@@ -128,14 +128,15 @@ async fn spin_policy_is_independent_across_real_udp_h3_relay_hops() {
             let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
             let origin_driver = spawn(origin_driver.run());
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::never())
                     .with_ingress_config(ordinary_config())
                     .with_egress_config(ordinary_config())
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::never())
+                    .unwrap();
             let browser_driver = spawn(browser_driver.run());
             for sequence in 0..16 {
                 let payload = format!("public spin test {sequence}");

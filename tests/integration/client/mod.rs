@@ -1,13 +1,12 @@
 use rama::http::body::util::BodyExt as _;
 use rama::{
     Layer, Service,
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         Body, HeaderValue, Request, Response, Version, client::EasyHttpWebClient, header,
         header::HOST, server::HttpServer,
     },
     net::test_utils::client::MockConnectorService,
-    rt::Executor,
     service::service_fn,
     tls::boring::server::TlsAcceptorLayer,
     tls::client::TlsClientConfig,
@@ -22,7 +21,7 @@ use std::{convert::Infallible, time::Duration};
 #[tokio::test]
 async fn h2_with_connection_pooling() {
     let http_server =
-        HttpServer::new_h2(Executor::default()).service(service_fn(async |req: Request| {
+        HttpServer::new_h2(WeakScope::never()).service(service_fn(async |req: Request| {
             // We are actually quite forgiving when we receive a http1 request instead of H2,
             // if we see a Host header here it means we received http1, something we don't expect.
             assert_eq!(req.headers().get(HOST), None);
@@ -44,7 +43,7 @@ async fn h2_with_connection_pooling() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .with_default_connection_pool()
         .build_client();
 
@@ -62,7 +61,7 @@ async fn h2_with_connection_pooling() {
 #[tokio::test]
 async fn h1_with_connection_pooling_detects_closed_connections() {
     let http_server =
-        HttpServer::new_http1(Executor::default()).service(service_fn(async |_req: Request| {
+        HttpServer::new_http1(WeakScope::never()).service(service_fn(async |_req: Request| {
             let mut resp = Response::new(Body::empty());
             resp.headers_mut()
                 .insert(header::CONNECTION, HeaderValue::from_static("close"));
@@ -85,7 +84,7 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .with_default_connection_pool()
         .build_client();
 
@@ -105,8 +104,8 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
         let token = CancellationToken::new();
         let shutdown = Scope::new().with_signal(token.clone().cancelled_owned());
 
-        let executor = Executor::from(shutdown);
-        let http_server = HttpServer::auto(executor).service(service_fn(move |_req: Request| {
+        let scope = WeakScope::from(shutdown);
+        let http_server = HttpServer::auto(scope).service(service_fn(move |_req: Request| {
             // Trigger graceful shutdown after single response
             let token = token.clone();
             tokio::spawn(async move {
@@ -145,7 +144,7 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .with_default_connection_pool()
         .build_client();
 
@@ -208,7 +207,7 @@ async fn h1_with_connection_pooling_does_not_reuse_abandoned_streaming_body_conn
     // must dial fresh instead of being handed that connection by the pool (it used
     // to fail with `rama_http_core::Error(ChannelClosed)`).
     let direct_connection = MockConnectorService::new(move || {
-        HttpServer::new_http1(Executor::default()).service(service_fn(async |_req: Request| {
+        HttpServer::new_http1(WeakScope::never()).service(service_fn(async |_req: Request| {
             // infinite SSE-like stream: never reaches end-of-stream
             let stream = rama::futures::stream::repeat_with(|| {
                 Ok::<_, Infallible>(rama::bytes::Bytes::from_static(b"data: ping\n\n"))
@@ -223,7 +222,7 @@ async fn h1_with_connection_pooling_does_not_reuse_abandoned_streaming_body_conn
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .with_default_connection_pool()
         .build_client();
 

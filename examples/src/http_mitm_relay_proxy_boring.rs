@@ -53,7 +53,6 @@ use rama::{
     io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer, MapOutputLayer, TimeoutLayer},
     net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -87,14 +86,14 @@ async fn main() -> Result<(), BoxError> {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
     let ua_db =
         Arc::new(UserAgentDatabase::try_embedded().context("load embedded user-agent database")?);
     let mitm_svc = new_mitm_svc(&scope, ua_db).context("build MITM service")?;
 
     scope.spawn_task(async move {
-        let tcp_service = TcpListener::build(exec.clone())
+        let tcp_service = TcpListener::build(weak_scope.clone())
             .bind_address("127.0.0.1:62049")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62049");
@@ -107,14 +106,14 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         );
-        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
+        let http_service = HttpServer::auto(weak_scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
                 ProxyAuthLayer::new(basic!("john", "secret")),
-                UpgradeLayer::new(exec.clone(), MethodMatcher::CONNECT, connect),
+                UpgradeLayer::new(weak_scope.clone(), MethodMatcher::CONNECT, connect),
                 (
                     RemoveRequestHeaderLayer::hop_by_hop(),
                     SetRequestHeaderLayer::overriding(
@@ -133,7 +132,7 @@ async fn main() -> Result<(), BoxError> {
                 ),
             )
                 .into_layer(
-                    EasyHttpWebClient::default_with_executor(exec)
+                    EasyHttpWebClient::default_with_scope(weak_scope)
                         .with_isolate_forward_proxy_auth_error(true),
                 ),
         ));
@@ -159,8 +158,8 @@ where
     Ingress: Io + Unpin + ExtensionsRef,
     Egress: Io + Unpin + ExtensionsRef,
 {
-    let exec = Executor::from(scope.clone());
-    let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+    let weak_scope = scope.clone_weak();
+    let http_mitm_relay = HttpMitmRelay::new(weak_scope.clone()).with_http_middleware((
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         TraceLayer::new_for_http(),
@@ -185,7 +184,7 @@ where
     ));
     let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
         .with_known_non_http_protocol_methods()
-        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec)));
+        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(weak_scope)));
 
     let tls_mitm_relay =
         TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {

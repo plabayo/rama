@@ -33,9 +33,8 @@ mod unix_example {
         Service,
         error::BoxError,
         extensions::ExtensionsRef,
-        graceful::Scope,
+        graceful::{Scope, WeakScope},
         io::Io,
-        rt::Executor,
         telemetry::tracing::{
             self,
             level_filters::LevelFilter,
@@ -57,11 +56,11 @@ mod unix_example {
             .init();
 
         let scope = Scope::new().with_default_signal();
-        let exec = Executor::from(scope.clone());
+        let weak_scope = scope.clone_weak();
 
         const PATH: &str = "/tmp/rama_example_unix.socket";
 
-        let listener = UnixListener::build(exec.clone())
+        let listener = UnixListener::build(weak_scope.clone())
             .bind_path(PATH)
             .await
             .expect("bind Unix socket");
@@ -71,7 +70,7 @@ mod unix_example {
                 file.path = %PATH,
                 "ready to unix-serve",
             );
-            let svc = GracefulUnixService(exec);
+            let svc = GracefulUnixService(weak_scope);
             listener.serve(svc).await;
         });
 
@@ -83,7 +82,7 @@ mod unix_example {
     }
 
     #[derive(Debug, Clone)]
-    struct GracefulUnixService(Executor);
+    struct GracefulUnixService(WeakScope);
 
     impl<Stream> Service<Stream> for GracefulUnixService
     where

@@ -7,9 +7,9 @@ use crate::{Body, Request, StreamingBody, body::util::BodyExt as _};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::graceful::{Scope, WeakScope};
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Layer, Service};
-use rama_core::{graceful::Scope, rt::Executor};
 use rama_http_types::CaptureBody;
 use std::{fmt::Debug, io, path::PathBuf, sync::Arc};
 use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
@@ -75,25 +75,26 @@ impl DoNotWriteRequest {
 pub struct RequestWriterService<S, W> {
     inner: S,
     writer: Arc<W>,
-    executor: Executor,
+    scope: WeakScope,
 }
 
 impl<S, W> RequestWriterService<S, W> {
     /// Create a new [`RequestWriterService`] with a custom [`RequestWriter`].
     ///
-    /// Use [`Self::new_with_executor`] when streaming writer tasks must
+    /// Use [`Self::new_with_scope`] when streaming writer tasks must
     /// participate in graceful shutdown.
     pub fn new(inner: S, writer: W) -> Self {
-        Self::new_with_executor(inner, writer, Executor::new())
+        Self::new_with_scope(inner, writer, WeakScope::never())
     }
 
     /// Create a new [`RequestWriterService`] with a custom [`RequestWriter`]
-    /// and executor for streaming writer tasks.
-    pub fn new_with_executor(inner: S, writer: W, executor: Executor) -> Self {
+    /// and scope for streaming writer tasks.
+    pub fn new_with_scope(inner: S, writer: W, scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             inner,
             writer: Arc::new(writer),
-            executor,
+            scope,
         }
     }
 }
@@ -128,7 +129,7 @@ impl<S> RequestWriterService<S, UnboundedSender<Request>> {
         let admission = Admission::new(scope);
         let closed = admission.closed();
 
-        scope.spawn_abortable_task(
+        scope.spawn_task(
             async move {
                 drive_request_writer!(writer, rx, closed, write_headers, write_body);
             }
@@ -137,7 +138,7 @@ impl<S> RequestWriterService<S, UnboundedSender<Request>> {
         Self {
             writer: Arc::new(tx),
             inner,
-            executor: admission.executor(),
+            scope: admission.scope(),
         }
     }
 
@@ -161,7 +162,7 @@ impl<S> RequestWriterService<S, PerMessageFileWriter> {
     /// `directory` using the portable filename `prefix`.
     pub async fn file_per_request(
         inner: S,
-        executor: &Executor,
+        scope: &WeakScope,
         directory: impl Into<PathBuf>,
         prefix: impl AsRef<str>,
         mode: Option<WriterMode>,
@@ -170,7 +171,7 @@ impl<S> RequestWriterService<S, PerMessageFileWriter> {
             .await?
             .with_request_mode(mode)
             .with_response_mode(None);
-        Ok(Self::new_with_executor(inner, writer, executor.clone()))
+        Ok(Self::new_with_scope(inner, writer, scope.clone()))
     }
 }
 
@@ -196,7 +197,7 @@ impl<S> RequestWriterService<S, Sender<Request>> {
         let admission = Admission::new(scope);
         let closed = admission.closed();
 
-        scope.spawn_abortable_task(
+        scope.spawn_task(
             async move {
                 drive_request_writer!(writer, rx, closed, write_headers, write_body);
             }
@@ -205,7 +206,7 @@ impl<S> RequestWriterService<S, Sender<Request>> {
         Self {
             writer: Arc::new(tx),
             inner,
-            executor: admission.executor(),
+            scope: admission.scope(),
         }
     }
 
@@ -235,25 +236,30 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if req.extensions().get_ref::<DoNotWriteRequest>().is_some() {
-            self.inner.serve(req.map(Body::new)).await.into_box_error()
-        } else {
-            ensure_traffic_writer_id(req.extensions());
-            let (parts, body) = req.into_parts();
-            let (capture, captured_body) = capture_body_channel();
-            let captured_parts = parts.clone();
-            let captured_request = Request::from_parts(captured_parts, captured_body);
-            let request = Request::from_parts(
-                parts,
-                Body::new(CaptureBody::new(body.map_err(Into::into), capture)),
-            );
-            let writer = Arc::clone(&self.writer);
-            if let Err(refused) = self.executor.try_spawn_abortable_task(async move {
-                writer.write_request(captured_request).await;
-            }) {
-                tracing::debug!(%refused, "request not written: traffic writer scope closed");
-            }
-            self.inner.serve(request).await.into_box_error()
+            return self.inner.serve(req.map(Body::new)).await.into_box_error();
         }
+        // The capture holds the writer's admission; refused, the request is served uncaptured.
+        let scope = match self.scope.try_hold() {
+            Ok(scope) => scope,
+            Err(refused) => {
+                tracing::debug!(%refused, "request not written: traffic writer scope closed");
+                return self.inner.serve(req.map(Body::new)).await.into_box_error();
+            }
+        };
+        ensure_traffic_writer_id(req.extensions());
+        let (parts, body) = req.into_parts();
+        let (capture, captured_body) = capture_body_channel();
+        let captured_parts = parts.clone();
+        let captured_request = Request::from_parts(captured_parts, captured_body);
+        let request = Request::from_parts(
+            parts,
+            Body::new(CaptureBody::new(body.map_err(Into::into), capture)),
+        );
+        let writer = Arc::clone(&self.writer);
+        scope.into_spawn_task(async move {
+            writer.write_request(captured_request).await;
+        });
+        self.inner.serve(request).await.into_box_error()
     }
 }
 
@@ -292,22 +298,22 @@ where
 /// See the [module docs](super) for more details.
 pub struct RequestWriterLayer<W> {
     writer: W,
-    executor: Executor,
+    scope: WeakScope,
 }
 
 impl<W> RequestWriterLayer<W> {
     /// Create a new [`RequestWriterLayer`] with a custom [`RequestWriter`].
     ///
-    /// Use [`Self::new_with_executor`] when streaming writer tasks must
+    /// Use [`Self::new_with_scope`] when streaming writer tasks must
     /// participate in graceful shutdown.
     pub const fn new(writer: W) -> Self {
-        Self::new_with_executor(writer, Executor::new())
+        Self::new_with_scope(writer, WeakScope::never())
     }
 
     /// Create a new [`RequestWriterLayer`] with a custom [`RequestWriter`] and
-    /// executor for streaming writer tasks.
-    pub const fn new_with_executor(writer: W, executor: Executor) -> Self {
-        Self { writer, executor }
+    /// scope for streaming writer tasks.
+    pub const fn new_with_scope(writer: W, scope: WeakScope) -> Self {
+        Self { writer, scope }
     }
 }
 
@@ -335,7 +341,7 @@ impl RequestWriterLayer<UnboundedSender<Request>> {
         let admission = Admission::new(scope);
         let closed = admission.closed();
 
-        scope.spawn_abortable_task(
+        scope.spawn_task(
             async move {
                 drive_request_writer!(writer, rx, closed, write_headers, write_body);
             }
@@ -343,7 +349,7 @@ impl RequestWriterLayer<UnboundedSender<Request>> {
         );
         Self {
             writer: tx,
-            executor: admission.executor(),
+            scope: admission.scope(),
         }
     }
 
@@ -366,7 +372,7 @@ impl RequestWriterLayer<PerMessageFileWriter> {
     /// Create a layer that streams every request into a unique file below
     /// `directory` using the portable filename `prefix`.
     pub async fn file_per_request(
-        executor: &Executor,
+        scope: &WeakScope,
         directory: impl Into<PathBuf>,
         prefix: impl AsRef<str>,
         mode: Option<WriterMode>,
@@ -375,7 +381,7 @@ impl RequestWriterLayer<PerMessageFileWriter> {
             .await?
             .with_request_mode(mode)
             .with_response_mode(None);
-        Ok(Self::new_with_executor(writer, executor.clone()))
+        Ok(Self::new_with_scope(writer, scope.clone()))
     }
 }
 
@@ -400,7 +406,7 @@ impl RequestWriterLayer<Sender<Request>> {
         let admission = Admission::new(scope);
         let closed = admission.closed();
 
-        scope.spawn_abortable_task(
+        scope.spawn_task(
             async move {
                 drive_request_writer!(writer, rx, closed, write_headers, write_body);
             }
@@ -408,7 +414,7 @@ impl RequestWriterLayer<Sender<Request>> {
         );
         Self {
             writer: tx,
-            executor: admission.executor(),
+            scope: admission.scope(),
         }
     }
 
@@ -434,7 +440,7 @@ impl<S, W: Clone> Layer<S> for RequestWriterLayer<W> {
         RequestWriterService {
             inner,
             writer: Arc::new(self.writer.clone()),
-            executor: self.executor.clone(),
+            scope: self.scope.clone(),
         }
     }
 
@@ -442,7 +448,7 @@ impl<S, W: Clone> Layer<S> for RequestWriterLayer<W> {
         RequestWriterService {
             inner,
             writer: Arc::new(self.writer),
-            executor: self.executor,
+            scope: self.scope,
         }
     }
 }
@@ -459,8 +465,11 @@ mod tests {
     };
 
     use rama_core::{
-        Layer as _, Service as _, bytes::Bytes, extensions::ExtensionsRef as _, graceful::Scope,
-        rt::Executor, service::service_fn,
+        Layer as _, Service as _,
+        bytes::Bytes,
+        extensions::ExtensionsRef as _,
+        graceful::{Scope, WeakScope},
+        service::service_fn,
     };
     use tokio::io::AsyncReadExt as _;
 
@@ -494,9 +503,9 @@ mod tests {
     #[tokio::test]
     async fn file_constructors_only_enable_request_capture() {
         let temp = rama_utils::fs::tempdir().unwrap();
-        let executor = Executor::new();
+        let scope = WeakScope::never();
         let layer = RequestWriterLayer::file_per_request(
-            &executor,
+            &scope,
             temp.path(),
             "requests",
             Some(WriterMode::Headers),
@@ -508,7 +517,7 @@ mod tests {
 
         let service = RequestWriterService::file_per_request(
             (),
-            &executor,
+            &scope,
             temp.path(),
             "requests",
             Some(WriterMode::Body),

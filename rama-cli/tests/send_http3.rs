@@ -8,7 +8,7 @@ use rama::{
     bytes::Bytes,
     crypto::pem::PemEncode as _,
     futures::stream,
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         Body, HeaderMap, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
@@ -30,7 +30,6 @@ use rama::{
         },
         tls::TlsOptions,
     },
-    rt::Executor,
     service::service_fn,
     tcp::{TcpStream, server::TcpListener},
     tls::{
@@ -198,7 +197,7 @@ impl Server {
     ) -> TestResult<Self> {
         let (stop, stopped) = oneshot::channel::<()>();
         let shutdown = Scope::new().with_signal(stopped);
-        let executor = Executor::from(shutdown.clone());
+        let scope = shutdown.clone_weak();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let replies = Arc::new(Mutex::new(VecDeque::<Reply>::new()));
         let accepted = Arc::new(AtomicUsize::new(0));
@@ -245,7 +244,7 @@ impl Server {
         let tls = TlsServerConfig::new().with_server_auth(auth);
         if version == Version::HTTP_3 {
             let tls = tls.with_alpn([quic_alpn].into_iter().collect());
-            let endpoint = Endpoint::build(executor.clone())
+            let endpoint = Endpoint::build(scope.clone())
                 .with_server_config(
                     ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?
                         .with_versions(versions),
@@ -257,29 +256,26 @@ impl Server {
                 let endpoint = endpoint.clone();
                 let accepted = accepted.clone();
                 let negotiated = negotiated.clone();
-                let server = HttpServer::new_http3(executor.clone());
+                let server = HttpServer::new_http3(scope.clone());
                 async move {
                     while let Some(mut incoming) = endpoint.accept().await {
                         accepted.fetch_add(1, Ordering::Relaxed);
                         let server = server.clone();
                         let handler = handler.clone();
                         let negotiated = negotiated.clone();
-                        executor
-                            .try_spawn_task(async move {
-                                // Compatible version negotiation needs the whole ClientHello, which
-                                // can span several Initials; accepting earlier keeps the client's version.
-                                if incoming.client_hello().await.is_err() {
-                                    return;
-                                }
-                                if let Ok(connection) = incoming.await {
-                                    negotiated.lock().push((
-                                        connection.original_version(),
-                                        connection.version(),
-                                    ));
-                                    server.serve(connection, handler).await.unwrap_or_default();
-                                }
-                            })
-                            .unwrap();
+                        scope.try_hold().unwrap().into_spawn_task(async move {
+                            // Compatible version negotiation needs the whole ClientHello, which
+                            // can span several Initials; accepting earlier keeps the client's version.
+                            if incoming.client_hello().await.is_err() {
+                                return;
+                            }
+                            if let Ok(connection) = incoming.await {
+                                negotiated
+                                    .lock()
+                                    .push((connection.original_version(), connection.version()));
+                                server.serve(connection, handler).await.unwrap_or_default();
+                            }
+                        });
                     }
                 }
             });
@@ -301,7 +297,7 @@ impl Server {
             tls.with_alpn_http_1()
         };
         let listener =
-            TcpListener::bind_address(SocketAddress::local_ipv4(0), executor.clone()).await?;
+            TcpListener::bind_address(SocketAddress::local_ipv4(0), scope.clone()).await?;
         let address = listener.local_addr()?;
         let service = (
             MapInputLayer::new({
@@ -313,7 +309,7 @@ impl Server {
             }),
             TlsAcceptorLayer::new(tls),
         )
-            .into_layer(HttpServer::auto(executor).service(handler));
+            .into_layer(HttpServer::auto(scope).service(handler));
         let task = tokio::spawn(listener.serve(service));
         Ok(Self {
             address,
@@ -834,7 +830,7 @@ async fn https_proxies_are_trusted_through_proxy_cacert() -> TestResult {
 }
 
 /// A MASQUE proxy over HTTP/3 that requires `john` / `secret` and reaches loopback targets.
-async fn masque_proxy(executor: Executor) -> TestResult<(SocketAddress, Endpoint)> {
+async fn masque_proxy(scope: WeakScope) -> TestResult<(SocketAddress, Endpoint)> {
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default())?;
     let service = (
         ErrorHandlerLayer::new(),
@@ -842,10 +838,10 @@ async fn masque_proxy(executor: Executor) -> TestResult<(SocketAddress, Endpoint
         AddInputExtensionLayer::new(DnsResolveIpMode::SingleIpV4),
     )
         .into_layer(
-            ConnectUdpService::try_new(executor.clone(), None)?
+            ConnectUdpService::try_new(scope.clone(), None)?
                 .with_policy(DestinationScopePolicy::allow_private()),
         );
-    let mut h3 = HttpServer::new_http3(executor.clone());
+    let mut h3 = HttpServer::new_http3(scope.clone());
     h3.http3_mut().extended_connect = true;
     // Room for an inner QUIC packet in each native datagram.
     let mut transport = TransportConfig::default().with_initial_mtu(OUTER_INITIAL_MTU);
@@ -855,16 +851,12 @@ async fn masque_proxy(executor: Executor) -> TestResult<(SocketAddress, Endpoint
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
     let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?;
     config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(executor.clone())
+    let endpoint = Endpoint::build(scope.clone())
         .with_server_config(config)
         .bind_address(SocketAddress::local_ipv4(0))
         .await?;
     let address = SocketAddress::from(endpoint.local_addr()?);
-    tokio::spawn(
-        endpoint
-            .clone()
-            .serve(executor, h3.service(Arc::new(service))),
-    );
+    tokio::spawn(endpoint.clone().serve(scope, h3.service(Arc::new(service))));
     Ok((address, endpoint))
 }
 
@@ -872,7 +864,7 @@ async fn masque_proxy(executor: Executor) -> TestResult<(SocketAddress, Endpoint
 async fn explicit_h3_runs_through_a_masque_proxy_with_credentials() -> TestResult {
     let fixture = Fixture::new().await?;
     let origin = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
-    let (proxy, proxy_endpoint) = masque_proxy(Executor::new()).await?;
+    let (proxy, proxy_endpoint) = masque_proxy(WeakScope::never()).await?;
     let proxy_url = format!("masque://{proxy}");
     let output = fixture
         .send(

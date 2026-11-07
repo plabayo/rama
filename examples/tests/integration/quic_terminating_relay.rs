@@ -24,12 +24,13 @@ use rama::{
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     },
     error::BoxError,
+    graceful::WeakScope,
     net::tls::ApplicationProtocol,
     quic::{
         ClientConfig, Connection, ConnectionError, Endpoint, ReadError, ReadToEndError, RecvStream,
         SendStream, ServerConfig, TransportConfig, WriteError, proto::VarInt, tls::TlsOptions,
     },
-    rt::{Executor, spawn},
+    rt::spawn,
     tls::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
@@ -193,7 +194,7 @@ impl Relay {
         let origin_identity = Identity::generate(&directory, "origin");
 
         let (origin, origin_address, unreachable) = if with_origin {
-            let origin = Endpoint::build(Executor::new())
+            let origin = Endpoint::build(WeakScope::never())
                 .with_server_config(serving(&origin_identity, origin_window, origin_streams))
                 .bind_address(localhost())
                 .await
@@ -235,7 +236,7 @@ impl Relay {
         let announced = process.wait_for_line("relay: listening on", STARTUP).await;
         let address = listening_address(&announced);
 
-        let client = Endpoint::build(Executor::new())
+        let client = Endpoint::build(WeakScope::never())
             .bind_address(localhost())
             .await
             .expect("the client binds");

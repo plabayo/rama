@@ -37,7 +37,6 @@ mod unix_example {
             layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
         },
         layer::ArcLayer,
-        rt::Executor,
         telemetry::tracing::{
             self,
             level_filters::LevelFilter,
@@ -57,11 +56,11 @@ mod unix_example {
             .init();
 
         let scope = Scope::new().with_default_signal();
-        let exec = Executor::from(scope.clone());
+        let weak_scope = scope.clone_weak();
 
         const PATH: &str = "/tmp/rama_example_unix_http.socket";
 
-        let listener = UnixListener::bind_path(PATH, exec.clone())
+        let listener = UnixListener::bind_path(PATH, weak_scope.clone())
             .await
             .expect("bind Unix socket");
 
@@ -72,7 +71,7 @@ mod unix_example {
             );
             listener
                 .serve(
-                    HttpServer::new_http1(exec).service(
+                    HttpServer::new_http1(weak_scope).service(
                         (ArcLayer::new(), ErrorHandlerLayer::new())
                             .into_layer(Router::new().with_get("/ping", "pong")),
                     ),

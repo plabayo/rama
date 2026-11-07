@@ -70,7 +70,6 @@ use rama::{
         service::web::response::{Headers, IntoResponse},
     },
     layer::ConsumeErrLayer,
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -126,7 +125,7 @@ async fn main() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(Executor::from(scope.clone()))
+        .with_default_http_connector(scope.clone_weak())
         .without_connection_pool()
         .build_client()
         .boxed();
@@ -190,9 +189,9 @@ async fn main() {
         key_authorization: key_authorization.clone(),
     });
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     let challenge_server_handle = scope.spawn_task(async move {
-        HttpServer::auto(exec)
+        HttpServer::auto(weak_scope)
             .listen(
                 ADDR,
                 (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
@@ -243,9 +242,9 @@ async fn main() {
 
     // create https server using the configured certificate
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
-        let http_service = HttpServer::auto(exec.clone()).service(service_fn(async || {
+        let http_service = HttpServer::auto(weak_scope.clone()).service(service_fn(async || {
             Ok::<_, Infallible>("hello".into_response())
         }));
 
@@ -257,7 +256,7 @@ async fn main() {
         )
             .into_layer(http_service);
 
-        TcpListener::bind_address(ADDR, exec)
+        TcpListener::bind_address(ADDR, weak_scope)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

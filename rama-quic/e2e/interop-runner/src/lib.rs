@@ -25,13 +25,12 @@ use rama::{
     error_sink::TracingErrorSink,
     extensions::ExtensionsRef as _,
     futures::{self, future::Either},
-    graceful::default_signal,
+    graceful::{WeakScope, default_signal},
     net::tls::ApplicationProtocol,
     quic::{
         Connection, Endpoint, NegotiatedTlsParameters, ShutdownOutcome, TransportConfig,
         qlog::QlogConfig,
     },
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -169,7 +168,7 @@ pub fn init_tracing() {
 pub const SMALL_WINDOWS: &str = "RAMA_INTEROP_SMALL_WINDOWS";
 
 async fn transport(
-    executor: Executor,
+    scope: WeakScope,
     role: &str,
     testcase: TestCase,
 ) -> Result<Arc<TransportConfig>, BoxError> {
@@ -210,7 +209,7 @@ async fn transport(
         config.set_qlog_recorder(
             QlogConfig::default()
                 .with_writer(file)
-                .with_executor(executor)
+                .with_scope(scope)
                 .with_error_sink(TracingErrorSink::warn())
                 .start()?,
         );
@@ -355,7 +354,7 @@ mod tests {
     #[tokio::test]
     async fn multiconnect_idle_timer_never_ends_a_handshake_first() {
         for role in ["client", "server"] {
-            let config = transport(Executor::default(), role, TestCase::MultiConnect)
+            let config = transport(WeakScope::never(), role, TestCase::MultiConnect)
                 .await
                 .unwrap();
             assert!(config.get_max_idle_timeout() >= Some(MULTICONNECT_HANDSHAKE_TIMEOUT));

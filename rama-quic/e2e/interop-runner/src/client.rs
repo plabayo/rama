@@ -15,7 +15,6 @@ use rama::{
         Connection, Endpoint, EndpointConfig, NegotiatedTlsParameters,
         proto::version::{ClientVersionPolicy, Version},
     },
-    rt::Executor,
     telemetry::tracing,
     tls::{
         KeyLogIntent,
@@ -115,8 +114,8 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     let shutdown = Scope::new().with_signal(async move {
         let _ = is_finished.await;
     });
-    let executor = Executor::from(shutdown.clone());
-    let mut builder = Endpoint::build(executor.clone());
+    let scope = shutdown.clone_weak();
+    let mut builder = Endpoint::build(scope.clone());
     if testcase == TestCase::MultiConnect {
         // Keep the per-attempt deadline within the complete batch budget.
         let mut endpoint_config = EndpointConfig::try_with_rand_key()?;
@@ -141,7 +140,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
             &tls,
             crate::tls_options().with_early_data(testcase == TestCase::ZeroRtt),
         )?
-        .with_transport_config(transport(executor.clone(), "client", testcase).await?);
+        .with_transport_config(transport(scope.clone(), "client", testcase).await?);
     if testcase == TestCase::V2 {
         // A v1 first flight that prefers v2, for the server to move (RFC 9368 §2.3).
         config.set_versions(
@@ -229,7 +228,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                     connection.clone(),
                     requests,
                     args.downloads.clone(),
-                    executor.clone(),
+                    scope.clone(),
                 )
                 .await?;
             } else {
@@ -252,7 +251,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         _ = interrupted => Err(BoxError::from("download batch interrupted by shutdown signal")),
     };
     // Release our own hold on the scope before joining the remaining producers.
-    drop(executor);
+    drop(scope);
     endpoint.close(
         if testcase == TestCase::Http3 {
             0x100_u32

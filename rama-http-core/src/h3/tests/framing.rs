@@ -1,10 +1,6 @@
 //! Response framing fields on HTTP/3 follow the rule HTTP/1.1 and HTTP/2 share.
 
-use rama_core::{
-    bytes::Bytes,
-    futures::stream,
-    rt::{Executor, spawn},
-};
+use rama_core::{bytes::Bytes, futures::stream, graceful::WeakScope, rt::spawn};
 use rama_http::io::upgrade::handle_upgrade;
 use rama_http_types::{
     Body, Method, Request, Response, StatusCode,
@@ -132,9 +128,12 @@ fn request(index: usize, case: &Case) -> Request {
 async fn http3_response_framing_follows_the_shared_rule() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         let (mut server, server_driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -190,7 +189,7 @@ async fn http3_strict_connect_framing_rejects_framing_headers() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                Executor::new(),
+                WeakScope::never(),
             )
             .unwrap();
             let config = Config {
@@ -260,7 +259,7 @@ async fn http3_rejects_bodies_that_disagree_with_their_advertised_length() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                Executor::new(),
+                WeakScope::never(),
             )
             .unwrap();
             let (mut server, server_driver) =

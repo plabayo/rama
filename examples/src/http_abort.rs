@@ -42,7 +42,6 @@ use rama::{
         service::web::Router,
     },
     layer::{AbortableLayer, abort::AbortController},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -86,14 +85,13 @@ async fn main() {
     );
 
     let tcp_svc = AbortableLayer::new().into_layer(
-        HttpServer::auto(Executor::from(scope.clone()))
-            .service(Arc::new(http_middlewares.into_layer(router))),
+        HttpServer::auto(scope.clone_weak()).service(Arc::new(http_middlewares.into_layer(router))),
     );
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         tracing::info!("running service at: {ADDRESS}");
-        TcpListener::bind_address(ADDRESS, exec)
+        TcpListener::bind_address(ADDRESS, weak_scope)
             .await
             .unwrap()
             .serve(tcp_svc)

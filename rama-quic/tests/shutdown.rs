@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rama_core::rt::{Executor, spawn};
+use rama_core::{graceful::WeakScope, rt::spawn};
 use rama_quic::{ConnectionError, Endpoint, ShutdownOutcome};
 use rama_quic_proto::VarInt;
 use runtime::{Identities, connect, exchange};
@@ -33,7 +33,7 @@ fn localhost() -> SocketAddr {
 #[tokio::test]
 async fn shutdown_leaves_once_the_close_went_out() {
     let identities = Identities::new();
-    let server = Endpoint::build(Executor::new())
+    let server = Endpoint::build(WeakScope::never())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
@@ -55,7 +55,7 @@ async fn shutdown_leaves_once_the_close_went_out() {
 
     // The control: a close given its whole closing period.
     let served = spawn(serve(server.clone()));
-    let patient = Endpoint::build(Executor::new())
+    let patient = Endpoint::build(WeakScope::never())
         .bind_address(localhost())
         .await
         .expect("the client binds");
@@ -76,7 +76,7 @@ async fn shutdown_leaves_once_the_close_went_out() {
 
     // The subject: a close, then a shutdown.
     let served = spawn(serve(server.clone()));
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::never())
         .bind_address(localhost())
         .await
         .expect("the client binds");

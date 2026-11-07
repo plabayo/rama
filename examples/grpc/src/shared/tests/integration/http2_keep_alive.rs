@@ -15,7 +15,6 @@ use rama::{
     },
     layer::AddInputExtensionLayer,
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
 };
@@ -37,15 +36,15 @@ async fn http2_keepalive_does_not_cause_panics() {
     let (tx, rx) = oneshot::channel::<()>();
 
     let scope = Scope::new().with_signal(async { drop(rx.await) });
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec.clone())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), weak_scope.clone())
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
     let jh = scope.spawn_task(async move {
-        let mut server = HttpServer::new_h2(exec.clone());
+        let mut server = HttpServer::new_h2(weak_scope.clone());
         server
             .h2_mut()
             .set_keep_alive_interval(Duration::from_secs(10));
@@ -75,14 +74,14 @@ async fn http2_keepalive_does_not_cause_panics_on_client_side() {
     let (tx, rx) = oneshot::channel::<()>();
 
     let scope = Scope::new().with_signal(async { drop(rx.await) });
-    let exec = Executor::from(scope.clone());
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec.clone())
+    let weak_scope = scope.clone_weak();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), weak_scope.clone())
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
     let jh = scope.spawn_task(async move {
-        let mut server = HttpServer::new_h2(exec.clone());
+        let mut server = HttpServer::new_h2(weak_scope.clone());
         server
             .h2_mut()
             .set_keep_alive_interval(Duration::from_secs(5));

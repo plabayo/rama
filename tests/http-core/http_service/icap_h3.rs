@@ -6,6 +6,7 @@ use rama::{
     Layer, Service,
     dns::client::DnsConnector,
     error::BoxError,
+    graceful::WeakScope,
     http::{
         Body, Method, Request, Response, StatusCode, Version, body::util::BodyExt as _,
         header::HeaderValue, server::HttpServer,
@@ -23,7 +24,6 @@ use rama::{
     layer::ConsumeErrLayer,
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{Endpoint, ServerConfig, tls::TlsOptions},
-    rt::Executor,
     service::service_fn,
     tcp::{client::service::TcpConnector, server::TcpListener},
     tls::server::TlsServerConfig,
@@ -86,7 +86,7 @@ async fn origin(request: Request) -> Result<Response, Infallible> {
 
 #[tokio::test]
 async fn icap_adapts_both_directions_of_an_http3_exchange() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::new())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
         .await
         .unwrap();
     let icap_address = listener.local_addr().unwrap();
@@ -105,8 +105,8 @@ async fn icap_adapts_both_directions_of_an_http3_exchange() {
     let config = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let executor = Executor::new();
-    let server_endpoint = Endpoint::build(executor.clone())
+    let scope = WeakScope::never();
+    let server_endpoint = Endpoint::build(scope.clone())
         .with_server_config(
             ServerConfig::try_from_rama_tls(&config, TlsOptions::default()).unwrap(),
         )
@@ -116,18 +116,16 @@ async fn icap_adapts_both_directions_of_an_http3_exchange() {
     let port = server_endpoint.local_addr().unwrap().port();
     let server_task = spawn({
         let endpoint = server_endpoint.clone();
-        let server = HttpServer::new_http3(executor.clone());
+        let server = HttpServer::new_http3(scope.clone());
         async move {
             while let Some(incoming) = endpoint.accept().await {
                 let server = server.clone();
                 let service = service.clone();
-                executor
-                    .try_spawn_task(async move {
-                        if let Ok(connection) = incoming.await {
-                            _ = server.serve(connection, service).await;
-                        }
-                    })
-                    .unwrap();
+                scope.try_hold().unwrap().into_spawn_task(async move {
+                    if let Ok(connection) = incoming.await {
+                        _ = server.serve(connection, service).await;
+                    }
+                });
             }
         }
     });

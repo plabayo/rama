@@ -4,10 +4,10 @@ use base64::Engine as _;
 use rama::{
     bytes::Bytes,
     error::{BoxError, BoxErrorExt, ErrorContext},
+    graceful::WeakScope,
     net::apple::xpc::{
         PeerSecurityRequirement, XpcListener, XpcListenerConfig, XpcMessageRouter, XpcServer,
     },
-    rt::Executor,
     service::service_fn,
     telemetry::tracing,
     tls::boring::proxy::TlsMitmRelay,
@@ -142,7 +142,7 @@ pub(crate) fn spawn_xpc_server(
     service_name: String,
     container_signing_identifier: Option<String>,
     state: SharedState,
-    executor: Executor,
+    scope: WeakScope,
 ) -> Result<(), BoxError> {
     // SECURITY: pin the listener to the container app's signing identifier so that
     // only a binary signed by the **same Apple Developer team** *and* carrying that
@@ -312,15 +312,13 @@ pub(crate) fn spawn_xpc_server(
         .context("bind xpc demo listener")
         .with_context_debug_field("serviceName", || service_name.clone())?;
 
-    let exec2 = executor.clone();
-    executor
-        .try_spawn_cancellable_task(async move {
-            tracing::info!(%service_name, "xpc demo server listener active");
-            if let Err(err) = server.serve_listener(listener, exec2).await {
-                tracing::error!(%service_name, %err, "xpc demo server error");
-            }
-        })
-        .map_err(|refused| refused.discard_task())?;
+    let serve_scope = scope.clone();
+    scope.try_hold()?.into_spawn_cancellable_task(async move {
+        tracing::info!(%service_name, "xpc demo server listener active");
+        if let Err(err) = server.serve_listener(listener, serve_scope).await {
+            tracing::error!(%service_name, %err, "xpc demo server error");
+        }
+    });
 
     Ok(())
 }

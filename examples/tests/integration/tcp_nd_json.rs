@@ -4,7 +4,6 @@ use rama::extensions::Extensions;
 use rama::futures::StreamExt;
 use rama::graceful::Scope;
 use rama::net::address::HostWithPort;
-use rama::rt::Executor;
 use rama::stream::codec::FramedRead;
 use rama::stream::json::JsonDecoder;
 use rama::tcp::client::default_tcp_connect;
@@ -26,8 +25,8 @@ async fn test_tcp_nd_json() {
     let mut runner = utils::ExampleRunner::interactive(utils::example!("tcp_nd_json"));
     runner.wait_for_tcp(([0, 0, 0, 0], 62042)).await;
 
-    let exec = Executor::from(scope.clone());
-    let cancelled = exec.cancelled();
+    let weak_scope = scope.clone_weak();
+    let cancelled = weak_scope.cancelled();
     scope.spawn_task(async move {
         cancelled.await;
         tracing::info!("exit runner");

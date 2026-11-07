@@ -71,7 +71,7 @@ use rama::{
         ClientConfig, Connection, ConnectionError, Endpoint, ReadError, RecvStream, SendStream,
         ServerConfig, StoppedError, proto::VarInt, tls::TlsOptions,
     },
-    rt::{Executor, spawn},
+    rt::spawn,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -232,7 +232,7 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let relay = Endpoint::build(Executor::new())
+    let relay = Endpoint::build(WeakScope::never())
         .with_server_config(server_config(&auth)?)
         .bind_address(settings.listen)
         .await?;
@@ -243,7 +243,7 @@ async fn main() -> Result<(), BoxError> {
         true => SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0),
         false => SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
     };
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::never())
         .bind_address(outbound)
         .await?;
     tracing::info!(
@@ -257,7 +257,7 @@ async fn main() -> Result<(), BoxError> {
     // What tells a connection that the relay itself is stopping, rather than its upstream.
     let stopping = scope.clone_weak();
     // Its outcome is joined below, so a failure in it fails this process.
-    let serving = scope.spawn_task(async move {
+    let serving = scope.spawn_task_to_completion(async move {
         let outcome = serve_relay(
             &relay,
             &client,

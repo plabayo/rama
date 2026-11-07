@@ -134,12 +134,12 @@ fn clone_and_drop(bencher: divan::Bencher) {
     bencher.bench_local(|| drop(divan::black_box(scope.clone())));
 }
 
-/// What an executor's spawn takes: a hold from its weak scope while the scope is held.
+/// What a spawn takes: a hold from a weak scope while the scope is held.
 #[divan::bench(sample_count = 100)]
 fn held_upgrade_and_drop(bencher: divan::Bencher) {
     let scope = Scope::new().with_signal(std::future::pending::<()>());
     let weak = scope.clone_weak();
-    bencher.bench_local(|| drop(divan::black_box(&weak).to_scope()));
+    bencher.bench_local(|| drop(divan::black_box(&weak).try_hold()));
 }
 
 #[divan::bench(sample_count = 100)]
@@ -186,15 +186,15 @@ fn clone_and_drop_at_depth(bencher: divan::Bencher, depth: usize) {
 fn held_upgrade_and_drop_at_depth(bencher: divan::Bencher, depth: usize) {
     let (_chain, leaf) = scope_at_depth(depth);
     let weak = leaf.clone_weak();
-    bencher.bench_local(|| drop(divan::black_box(&weak).to_scope()));
+    bencher.bench_local(|| drop(divan::black_box(&weak).try_hold()));
 }
 
-/// An idle executor's first spawn: nothing holds the scope, so the hold revives it.
+/// The first hold taken on an idle scope: nothing holds it, so the hold revives it.
 #[divan::bench(args = DEPTHS, sample_count = 100)]
 fn unheld_upgrade_and_drop_at_depth(bencher: divan::Bencher, depth: usize) {
     let (_chain, leaf) = scope_at_depth(depth);
     let weak = leaf.into_weak_scope();
-    bencher.bench_local(|| drop(divan::black_box(&weak).to_scope()));
+    bencher.bench_local(|| drop(divan::black_box(&weak).try_hold()));
 }
 
 #[divan::bench(args = DEPTHS, sample_count = 100)]

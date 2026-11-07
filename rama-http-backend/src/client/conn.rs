@@ -8,9 +8,8 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef},
-    graceful::{ScopeClosed, attach_scope},
+    graceful::{WeakScope, attach_scope},
     io::{AbortableIo, Io},
-    rt::Executor,
 };
 use rama_http::{StreamingBody, opentelemetry::version_as_protocol_version};
 use rama_http_core::client::conn::http2::H2PeerSettingsHandle;
@@ -189,7 +188,7 @@ mod proxy_metadata_tests {
             }
             let conn = tokio::time::timeout(Duration::from_secs(2), async move {
                 if eager {
-                    http2_eager_handshake::<_, Body>(io, Executor::default())
+                    http2_eager_handshake::<_, Body>(io, WeakScope::never())
                         .await
                         .unwrap()
                         .0
@@ -207,7 +206,7 @@ mod proxy_metadata_tests {
                             .parse()
                             .unwrap(),
                     ));
-                    http_connect::<_, _, Body>(io, input, Executor::default())
+                    http_connect::<_, _, Body>(io, input, WeakScope::never())
                         .await
                         .unwrap()
                         .conn
@@ -367,12 +366,12 @@ fn apply_h2_client_extensions_to_builder(
 #[derive(Debug, Clone, ExtensionsRef)]
 /// A [`Service`] which establishes an HTTP Connection.
 ///
-/// A byte stream connection holds the scope of the executor until its transport is gone, an
+/// A byte stream connection holds the connector's scope until its transport is gone, an
 /// upgraded one included, and is cut at the hard phase of that scope. A QUIC connection holds
 /// it while open, kept so by its live bodies and tunnels, and is closed at that hard phase.
 pub struct HttpConnector<S, Body> {
     inner: S,
-    exec: Executor,
+    scope: WeakScope,
     // Body type this connector will be able to send, this is not
     // necessarily the same one that was used in the request that
     // created this connection
@@ -381,10 +380,11 @@ pub struct HttpConnector<S, Body> {
 
 impl<S, Body> HttpConnector<S, Body> {
     /// Create a new [`HttpConnector`].
-    pub fn new(inner: S, exec: Executor) -> Self {
+    pub fn new(inner: S, scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             inner,
-            exec,
+            scope,
             _phantom: PhantomData,
         }
     }
@@ -401,7 +401,7 @@ impl<S, Body> HttpConnector<S, Body> {
     ) -> HttpConnector<HttpTransportConnector<S, Q>, Body> {
         HttpConnector {
             inner: HttpTransportConnector::new(self.inner, quic),
-            exec: self.exec,
+            scope: self.scope,
             _phantom: PhantomData,
         }
     }
@@ -438,13 +438,13 @@ impl ConnectionReusePolicy for UnclassifiedSecureTransport {
 /// HTTP connection.
 /// Custom QUIC transports can publish [`rama_net::tls::AlpnPolicy::OutOfBandAgreement`] in
 /// connection extensions when HTTP/3 was agreed through another mechanism.
-/// A byte stream holds the scope of `exec` until it is gone, after an upgrade too, and is cut
+/// A byte stream holds `scope` until it is gone, after an upgrade too, and is cut
 /// at the hard phase of that scope. A QUIC connection holds it while open, kept so by its
 /// live bodies and tunnels, and is closed at that hard phase.
 pub async fn http_connect<T, Input, BodyConnection>(
     transport: T,
     input: Input,
-    exec: Executor,
+    scope: WeakScope,
 ) -> Result<EstablishedClientConnection<HttpClientService<BodyConnection>, Input>, OpaqueError>
 where
     T: IntoHttpTransport,
@@ -500,7 +500,7 @@ where
                 input.extensions().insert(TargetHttpVersion(version));
                 io.extensions().insert(TargetHttpVersion(version));
             }
-            http_stream_connect(io, input, exec).await
+            http_stream_connect(io, input, scope).await
         }
         #[cfg(feature = "quic")]
         HttpTransport::Quic(quic) => {
@@ -548,7 +548,7 @@ where
                 .insert(TargetHttpVersion(Version::HTTP_3));
             coalescing::restrict_reuse(input.extensions(), quic.connection.extensions());
             let conn =
-                HttpClientService::http3(quic.connection, Arc::unwrap_or_clone(quic.config), exec)
+                HttpClientService::http3(quic.connection, Arc::unwrap_or_clone(quic.config), scope)
                     .into_opaque_error()?;
             if verify_peer && let SendRequest::Http3(sender) = &conn.sender {
                 sender.peer_settings().await.into_opaque_error()?;
@@ -571,7 +571,7 @@ where
 async fn http_stream_connect<IO, Input, BodyConnection>(
     io: IO,
     input: Input,
-    exec: Executor,
+    weak_scope: WeakScope,
 ) -> Result<EstablishedClientConnection<HttpClientService<BodyConnection>, Input>, OpaqueError>
 where
     IO: Io + Unpin + ExtensionsRef,
@@ -587,13 +587,9 @@ where
     BodyConnection:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    // The transport holds the executor's scope wherever it goes, an upgrade included, and is
+    // The transport holds the scope wherever it goes, an upgrade included, and is
     // cut at its hard phase. A closed scope admits no new connection.
-    let scope = exec
-        .scope()
-        .to_scope()
-        .ok_or(ScopeClosed)
-        .into_opaque_error()?;
+    let scope = weak_scope.try_hold().into_opaque_error()?;
     let io = AbortableIo::new(&scope, io);
     // The connection runs in that scope too, so a pool drains it in its graceful phase.
     attach_scope(io.extensions(), &scope);
@@ -616,9 +612,9 @@ where
             {
                 io.extensions().insert_arc(observer);
             }
-            tracing::trace!("create h2 client executor");
+            tracing::trace!("create h2 client");
 
-            let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
+            let mut builder = rama_http_core::client::conn::http2::Builder::new(weak_scope.clone());
 
             apply_h2_client_extensions_to_builder(&mut builder, input.extensions());
 
@@ -669,7 +665,7 @@ where
             Ok(EstablishedClientConnection { input, conn: svc })
         }
         Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-            tracing::trace!("create ~h1 client executor");
+            tracing::trace!("create ~h1 client");
             let mut builder = rama_http_core::client::conn::http1::Builder::new();
             if let Some(params) = input.extensions().get_ref::<Http1ClientContextParams>() {
                 builder.set_title_case_headers(params.title_header_case);
@@ -677,7 +673,7 @@ where
             let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
             let conn = conn.with_upgrades();
             // Lets a pooled connector drain abandoned response bodies on it.
-            extensions.insert(Http1DrainRuntime::new(&exec));
+            extensions.insert(Http1DrainRuntime::new(&weak_scope));
 
             let conn_span = tracing::trace_root_span!(
                 "h1::conn::serve",
@@ -723,7 +719,7 @@ where
 /// UA-emulation profiles flow through the eager path as well.
 pub async fn http2_eager_handshake<IO, BodyConnection>(
     io: IO,
-    exec: Executor,
+    weak_scope: WeakScope,
 ) -> Result<(HttpClientService<BodyConnection>, H2PeerSettingsHandle), OpaqueError>
 where
     IO: Io + Unpin + ExtensionsRef,
@@ -732,17 +728,13 @@ where
 {
     // As in `http_stream_connect`: held until the transport goes, cut at the hard phase, and
     // drained by a pool in the graceful phase.
-    let scope = exec
-        .scope()
-        .to_scope()
-        .ok_or(ScopeClosed)
-        .into_opaque_error()?;
+    let scope = weak_scope.try_hold().into_opaque_error()?;
     let io = AbortableIo::new(&scope, io);
     attach_scope(io.extensions(), &scope);
     let extensions = io.extensions().clone();
 
     tracing::trace!("eager h2 client handshake");
-    let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
+    let mut builder = rama_http_core::client::conn::http2::Builder::new(weak_scope.clone());
     builder.set_observe_peer_settings(true);
     apply_h2_client_extensions_to_builder(&mut builder, &extensions);
     let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
@@ -805,7 +797,7 @@ where
 
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         let version = resolve_target_http_version(&conn, &input);
-        http_connect(conn, input, self.exec.clone())
+        http_connect(conn, input, self.scope.clone())
             .await
             .map_err(|error| {
                 if matches!(
@@ -831,16 +823,16 @@ where
 #[derive(Clone, Debug)]
 /// A [`Layer`] that produces an [`HttpConnector`].
 pub struct HttpConnectorLayer<Body> {
-    exec: Executor,
+    scope: WeakScope,
     _phantom: PhantomData<Body>,
 }
 
 impl<Body> HttpConnectorLayer<Body> {
     /// Create a new [`HttpConnectorLayer`].
     #[must_use]
-    pub const fn new(exec: Executor) -> Self {
+    pub const fn new(scope: WeakScope) -> Self {
         Self {
-            exec,
+            scope,
             _phantom: PhantomData,
         }
     }
@@ -848,7 +840,7 @@ impl<Body> HttpConnectorLayer<Body> {
 
 impl<Body> Default for HttpConnectorLayer<Body> {
     fn default() -> Self {
-        Self::new(Executor::default())
+        Self::new(WeakScope::never())
     }
 }
 
@@ -858,7 +850,7 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
-            exec: self.exec.clone(),
+            scope: self.scope.clone(),
             _phantom: PhantomData,
         }
     }
@@ -866,7 +858,7 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
     fn into_layer(self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
-            exec: self.exec,
+            scope: self.scope,
             _phantom: PhantomData,
         }
     }
@@ -903,7 +895,7 @@ mod http3_dispatch_tests {
     #[tokio::test]
     async fn stream_only_connector_rejects_h3_before_dialing() {
         let connector =
-            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), Executor::default());
+            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), WeakScope::never());
         let input = ConnectRequest::new("origin.example:443".parse().unwrap());
         input
             .extensions()
@@ -924,7 +916,7 @@ mod http3_dispatch_tests {
                     panic!("HTTP/2 must not dial a QUIC-only connector");
                 },
             ),
-            Executor::default(),
+            WeakScope::never(),
         );
         let input = ConnectRequest::new("origin.example:443".parse().unwrap());
         input
@@ -949,7 +941,7 @@ mod http3_dispatch_tests {
                     ))
                 },
             ),
-            Executor::default(),
+            WeakScope::never(),
         );
         for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
             let input = ConnectRequest::new("origin.example:443".parse().unwrap());
@@ -1014,7 +1006,7 @@ mod http3_dispatch_tests {
                         .extensions()
                         .insert(TargetHttpVersion(Version::HTTP_11));
                     let established =
-                        http_connect::<_, _, Body>(transport, input, Executor::default())
+                        http_connect::<_, _, Body>(transport, input, WeakScope::never())
                             .await
                             .unwrap();
                     let reusable = established
@@ -1047,7 +1039,7 @@ mod http3_dispatch_tests {
             .extensions
             .insert(FallbackHttpVersion(Version::HTTP_2));
         let established =
-            http_connect::<_, _, Body>(ServiceInput::new(io), input, Executor::default())
+            http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::never())
                 .await
                 .unwrap();
         assert_eq!(
@@ -1073,7 +1065,7 @@ mod http3_dispatch_tests {
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
-        let error = http_connect::<_, _, Body>(ServiceInput::new(io), input, Executor::default())
+        let error = http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::never())
             .await
             .err()
             .unwrap();
@@ -1107,7 +1099,7 @@ mod http3_dispatch_tests {
                     panic!("HTTP/1 and HTTP/2 must not use the HTTP/3 transport");
                 },
             );
-            let connector = HttpConnector::<_, Body>::new(stream_connector, Executor::default())
+            let connector = HttpConnector::<_, Body>::new(stream_connector, WeakScope::never())
                 .with_http3_connector(http3);
             let input = ConnectRequest::new("origin.example:443".parse().unwrap());
             input.extensions().insert(TargetHttpVersion(version));
@@ -1145,7 +1137,7 @@ mod http3_dispatch_tests {
             },
         );
         let connector =
-            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), Executor::default())
+            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), WeakScope::never())
                 .with_http3_connector(http3);
         let input = ConnectRequest::new("origin.example:443".parse().unwrap())
             .with_application_protocol(ApplicationProtocol::HTTPS);
@@ -1219,7 +1211,7 @@ mod h2_client_params_tests {
                 ..Default::default()
             });
             let established =
-                http_connect::<_, _, Body>(ServiceInput::new(io), input, Executor::default())
+                http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::never())
                     .await
                     .unwrap();
 
@@ -1253,7 +1245,7 @@ mod h2_client_params_tests {
             )
             .unwrap(),
         );
-        let mut builder = H2ClientBuilder::new(Executor::default()).with_initial_settings(literal);
+        let mut builder = H2ClientBuilder::new(WeakScope::never()).with_initial_settings(literal);
         let extensions = Extensions::new();
         extensions.insert(H2ClientContextParams {
             keep_alive_timeout: Some(Duration::from_secs(3)),

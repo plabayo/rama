@@ -35,10 +35,10 @@ async fn verify(completion: Completion) {
         let (client_config, server_config) = configs();
         let server = endpoint(
             Some(server_config),
-            Executor::new(),
+            WeakScope::never(),
             Duration::from_millis(50),
         );
-        let client = endpoint(None, Executor::new(), Duration::from_millis(50));
+        let client = endpoint(None, WeakScope::never(), Duration::from_millis(50));
         let connecting = client
             .connect_with(client_config, server.local_addr().unwrap(), "localhost")
             .unwrap();

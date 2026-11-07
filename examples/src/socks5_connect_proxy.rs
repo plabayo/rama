@@ -39,7 +39,6 @@ use rama::{
     graceful::Scope,
     net::user::credentials::basic,
     proxy::socks5::Socks5Acceptor,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -64,9 +63,9 @@ async fn main() {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(30));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
-    let tcp_service = TcpListener::bind_address("127.0.0.1:62021", exec)
+    let tcp_service = TcpListener::bind_address("127.0.0.1:62021", weak_scope)
         .await
         .expect("bind proxy to 127.0.0.1:62021");
     let socks5_acceptor =

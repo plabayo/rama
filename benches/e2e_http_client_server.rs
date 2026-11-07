@@ -28,6 +28,7 @@ use rama::{
     combinators::Either,
     error::{BoxError, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
     http::{
         HeaderName, HeaderValue, Request, Response, Version,
         body::util::BodyExt,
@@ -78,7 +79,6 @@ use rama::{
         Endpoint, ServerConfig as QuicServerConfig, TransportConfig,
         tls::{BoringTlsProvider, TlsOptions},
     },
-    rt::Executor,
     service::{BoxService, service_fn},
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{self},
@@ -254,10 +254,10 @@ where
         ));
 
     match params.version {
-        HttpVersion::Http1 => HttpServer::new_http1(Executor::default())
+        HttpVersion::Http1 => HttpServer::new_http1(WeakScope::never())
             .service(http_service)
             .boxed(),
-        HttpVersion::Http2 => HttpServer::new_h2(Executor::default())
+        HttpVersion::Http2 => HttpServer::new_h2(WeakScope::never())
             .service(http_service)
             .boxed(),
     }
@@ -293,18 +293,18 @@ where
 
     let connect = EagerHttpProxyConnector::new(
         TimeoutLayer::new(Duration::from_secs(30)).into_layer(TcpConnector::new()),
-        IoForwardService::new(Executor::default()),
+        IoForwardService::new(WeakScope::never()),
     );
     let http_service = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
-        UpgradeLayer::new(Executor::default(), MethodMatcher::CONNECT, connect),
+        UpgradeLayer::new(WeakScope::never(), MethodMatcher::CONNECT, connect),
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
     )
         .layer(service_fn(handler));
 
-    HttpServer::auto(Executor::default())
+    HttpServer::auto(WeakScope::never())
         .service(http_service)
         .boxed()
 }
@@ -314,7 +314,7 @@ fn spawn_http_proxy(params: TestParameters) -> (SocketAddress, ServerRuntime) {
     let addr = listener.local_addr().unwrap();
     let ((), runtime) = spawn_server_runtime(2, move |ready| async move {
         let async_listener =
-            TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
+            TcpListener::try_from_std_tcp_listener(listener, WeakScope::never()).unwrap();
         ready.send(()).unwrap();
 
         match params.proxy {
@@ -323,7 +323,7 @@ fn spawn_http_proxy(params: TestParameters) -> (SocketAddress, ServerRuntime) {
                 async_listener.serve(service).await
             }
             Proxy::Socks5 => {
-                let socks5_acceptor = Socks5Acceptor::new(Executor::default())
+                let socks5_acceptor = Socks5Acceptor::new(WeakScope::never())
                     .with_authorizer(basic!("john", "secret").into_authorizer())
                     .with_default_connector();
                 async_listener.serve(socks5_acceptor).await
@@ -346,7 +346,7 @@ fn spawn_http_server(
     let addr = listener.local_addr().unwrap();
     let ((), runtime) = spawn_server_runtime(2, move |ready| async move {
         let async_listener =
-            TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
+            TcpListener::try_from_std_tcp_listener(listener, WeakScope::never()).unwrap();
 
         match params.tls {
             Tls::None => {
@@ -401,7 +401,7 @@ fn get_inner_client(
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::never())
             .without_connection_pool()
             .build_client(),
         Tls::Rustls => {
@@ -414,7 +414,7 @@ fn get_inner_client(
                 .without_tls_proxy_support()
                 .with_proxy_support()
                 .with_tls_support_using_rustls(tls_config)
-                .with_default_http_connector(Executor::default())
+                .with_default_http_connector(WeakScope::never())
                 .without_connection_pool()
                 .build_client()
         }
@@ -428,7 +428,7 @@ fn get_inner_client(
                 .without_tls_proxy_support()
                 .with_proxy_support()
                 .with_tls_support_using_boringssl(tls_config)
-                .with_default_http_connector(Executor::default())
+                .with_default_http_connector(WeakScope::never())
                 .without_connection_pool()
                 .build_client()
         }
@@ -723,7 +723,7 @@ fn load_client(
         Either::A(
             builder
                 .with_tls_support_using_boringssl(load_tls_client_config(load_alpn(version)))
-                .with_default_http_connector(Executor::default())
+                .with_default_http_connector(WeakScope::never())
                 .with_connection_pool(load_pool())
                 .build_client(),
         )
@@ -731,7 +731,7 @@ fn load_client(
         Either::B(
             builder
                 .without_tls_support()
-                .with_default_http_connector(Executor::default())
+                .with_default_http_connector(WeakScope::never())
                 .with_connection_pool(load_pool())
                 .build_client(),
         )
@@ -740,7 +740,7 @@ fn load_client(
 
 /// The stock client with HTTP/3 support: pooled, any certificate accepted.
 fn load_h3_client() -> impl Service<Request, Output = Response, Error = OpaqueError> + Clone {
-    let h3 = Http3Connector::builder(Executor::default())
+    let h3 = Http3Connector::builder(WeakScope::never())
         .with_tls_config(load_tls_client_config(ApplicationProtocol::HTTP_3))
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .build_lazy()
@@ -751,7 +751,7 @@ fn load_h3_client() -> impl Service<Request, Output = Response, Error = OpaqueEr
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(load_tls_client_config(ApplicationProtocol::HTTP_2))
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .with_http3_support(h3)
         .with_connection_pool(load_pool())
         .build_client()
@@ -808,7 +808,7 @@ where
     let addr = listener.local_addr().unwrap();
     let ((), runtime) = spawn_load_runtime(move |ready| async move {
         let listener =
-            TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
+            TcpListener::try_from_std_tcp_listener(listener, WeakScope::never()).unwrap();
         ready.send(()).unwrap();
         serve(listener).await;
     });
@@ -849,7 +849,7 @@ fn spawn_load_origin(
 ) -> (SocketAddress, ServerRuntime) {
     spawn_load_server(move |listener| {
         Box::pin(async move {
-            let mut http = HttpServer::auto(Executor::default());
+            let mut http = HttpServer::auto(WeakScope::never());
             http.h2_mut().set_enable_connect_protocol();
             let http = http.service(load_origin_service(body));
             let service: BoxService<rama::tcp::TcpStream, (), BoxError> = if tls {
@@ -887,12 +887,12 @@ fn spawn_h3_origin(body: Bytes, accepted: Arc<AtomicUsize>) -> (SocketAddress, S
             .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
             .expect("self signed")
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-        let server = HttpServer::new_http3(Executor::default());
+        let server = HttpServer::new_http3(WeakScope::never());
         let mut transport = TransportConfig::default();
         server.http3().configure_transport(&mut transport).unwrap();
         let mut config = QuicServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
         config.set_transport_config(Arc::new(transport));
-        let endpoint = Endpoint::build(Executor::default())
+        let endpoint = Endpoint::build(WeakScope::never())
             .with_server_config(config)
             .bind_address(SocketAddress::local_ipv4(0))
             .await
@@ -925,11 +925,11 @@ fn spawn_load_proxy(
                     let egress = load_client(params.version, false);
                     let connect = EagerHttpProxyConnector::new(
                         TcpConnector::new().with_connector(client_socket()),
-                        IoForwardService::new(Executor::default()),
+                        IoForwardService::new(WeakScope::never()),
                     );
-                    let service = HttpServer::auto(Executor::default()).service(Arc::new(
+                    let service = HttpServer::auto(WeakScope::never()).service(Arc::new(
                         (
-                            UpgradeLayer::new(Executor::default(), MethodMatcher::CONNECT, connect),
+                            UpgradeLayer::new(WeakScope::never(), MethodMatcher::CONNECT, connect),
                             ConsumeErrLayer::default(),
                             RemoveResponseHeaderLayer::hop_by_hop(),
                             RemoveRequestHeaderLayer::hop_by_hop(),
@@ -940,12 +940,12 @@ fn spawn_load_proxy(
                 }
                 LoadMode::MitmRelay => {
                     let http_relay = HttpPeekRouter::new(
-                        HttpMitmRelay::new(Executor::default()).with_http_middleware((
+                        HttpMitmRelay::new(WeakScope::never()).with_http_middleware((
                             ConsumeErrLayer::trace_as_debug()
                                 .with_response(DefaultErrorResponse::new()),
                             MapResponseBodyLayer::new_boxed_streaming_body(),
                             HttpUpgradeMitmRelayLayer::new(
-                                Executor::default(),
+                                WeakScope::never(),
                                 HttpWebSocketRelayServiceRequestMatcher::default(),
                             ),
                             ArcLayer::new(),
@@ -953,7 +953,7 @@ fn spawn_load_proxy(
                     )
                     .with_fallback(
                         MapOutputLayer::new(drop)
-                            .into_layer(IoForwardService::new(Executor::default())),
+                            .into_layer(IoForwardService::new(WeakScope::never())),
                     );
                     let tls_relay =
                         boring::proxy::TlsMitmRelay::try_new_with_cached_self_signed_issuer(
@@ -972,8 +972,8 @@ fn spawn_load_proxy(
                         TcpConnector::new().with_connector(client_socket()),
                         relay,
                     );
-                    let service = HttpServer::auto(Executor::default()).service(Arc::new(
-                        UpgradeLayer::new(Executor::default(), MethodMatcher::CONNECT, connect)
+                    let service = HttpServer::auto(WeakScope::never()).service(Arc::new(
+                        UpgradeLayer::new(WeakScope::never(), MethodMatcher::CONNECT, connect)
                             .into_layer(service_fn(async |_: Request| {
                                 Ok::<_, Infallible>(
                                     rama::http::StatusCode::METHOD_NOT_ALLOWED.into_response(),
@@ -1015,7 +1015,7 @@ fn spawn_load_proxy(
                             }
                         }
                     });
-                    let service = HttpServer::auto(Executor::default()).service(Arc::new(
+                    let service = HttpServer::auto(WeakScope::never()).service(Arc::new(
                         (
                             RemoveResponseHeaderLayer::hop_by_hop(),
                             RemoveRequestHeaderLayer::hop_by_hop(),

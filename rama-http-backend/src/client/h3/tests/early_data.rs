@@ -1,11 +1,7 @@
 //! The connector completes every handshake before requests, even when early requests are allowed.
 
 use crate::client::{HttpClientService, HttpConnector, h3::Http3Connector};
-use rama_core::{
-    Service as _,
-    extensions::ExtensionsRef as _,
-    rt::{Executor, spawn},
-};
+use rama_core::{Service as _, extensions::ExtensionsRef as _, graceful::WeakScope, rt::spawn};
 use rama_http_core::h3::{connection::Config, server as h3_server};
 use rama_http_types::{Body, Request, Response, Version, body::util::BodyExt as _};
 use rama_net::{
@@ -57,7 +53,7 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>, early_
         .with_server_auth(identity.clone());
     // The server would accept early data; the connector must still never send any.
     let server = Endpoint::bind_server(
-        Executor::new(),
+        WeakScope::never(),
         ServerConfig::try_from_rama_tls(
             &server_tls,
             TlsOptions::default()
@@ -75,7 +71,7 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>, early_
     let tls = TlsClientConfig::new()
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
         .unwrap();
-    let quic = Http3Connector::builder(Executor::new())
+    let quic = Http3Connector::builder(WeakScope::never())
         .with_tls_provider(provider)
         .with_tls_config(tls)
         .with_config(Config {
@@ -84,7 +80,7 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>, early_
         })
         .build_lazy()
         .unwrap();
-    let connector = HttpConnector::<_, Body>::new(quic, Executor::new());
+    let connector = HttpConnector::<_, Body>::new(quic, WeakScope::never());
 
     for resumed in [false, true] {
         let service = connect(&connector, port).await;

@@ -1,4 +1,4 @@
-use rama_core::rt::{Executor, spawn};
+use rama_core::{graceful::WeakScope, rt::spawn};
 use rama_http::headers::{HeaderMapExt as _, Priority};
 use rama_http_types::{Body, Request, Response, Version};
 use std::time::Duration;
@@ -11,9 +11,12 @@ use crate::h3::{client, connection::Config, server};
 async fn early_priority_handle_forwards_updates_before_response_headers() {
     timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
-        let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::never(),
+        )
+        .unwrap();
         spawn(driver.run());
         let (mut server, driver) =
             server::handshake(pair.server.clone(), Config::default()).unwrap();
@@ -73,7 +76,7 @@ async fn priority_observer_reports_connection_close_without_observation_enabled(
         let config = Config::default();
         assert!(config.observation.is_none());
         let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), Executor::new())
+            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
                 .unwrap();
         spawn(driver.run());
         let (mut server, driver) = server::handshake(pair.server.clone(), config).unwrap();

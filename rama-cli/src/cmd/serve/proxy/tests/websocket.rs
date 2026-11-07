@@ -245,7 +245,7 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
         .with_tls_proxy_support_using_boringssl_config(insecure.clone())
         .with_proxy_support()
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
     let extensions = Extensions::new();
@@ -389,7 +389,7 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
         .with_tls_proxy_support_using_boringssl_config(insecure.clone())
         .with_proxy_support()
         .with_tls_support_using_boringssl(insecure)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::never())
         .without_connection_pool()
         .build_client();
     let extensions = Extensions::new();

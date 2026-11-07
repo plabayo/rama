@@ -42,7 +42,6 @@ async fn main() {
     use rama::{
         graceful::Scope,
         net::apple::xpc::{XpcEndpoint, XpcMessage, XpcServer},
-        rt::Executor,
         service::service_fn,
         telemetry::tracing::{
             self, error, info,
@@ -106,10 +105,10 @@ async fn main() {
         Ok::<_, Infallible>(response)
     }));
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     let server_task = scope.spawn_task(async move {
         info!(target: "xpc_ca_exchange::server", "ready");
-        if let Err(err) = server.serve_connection(server_conn, exec).await {
+        if let Err(err) = server.serve_connection(server_conn, weak_scope).await {
             error!(target: "xpc_ca_exchange::server", %err, "server error");
         }
         info!(target: "xpc_ca_exchange::server", "stopped");

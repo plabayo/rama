@@ -25,7 +25,6 @@ use rama_core::{
     error::BoxError,
     extensions::{Extension, Extensions},
     graceful::{Scope, WeakScope},
-    rt::Executor,
     telemetry::tracing,
 };
 use rama_http_types::{
@@ -61,7 +60,7 @@ use tokio::time::Instant;
 ///   drains, as does one whose final frame crosses it;
 /// - [`timeout`](Self::timeout) elapsed since the body was dropped,
 ///   including the time waiting to be scheduled;
-/// - the body fails (truncated or malformed framing), or the executor shuts down.
+/// - the body fails (truncated or malformed framing), or the scope shuts down.
 ///
 /// Draining only starts if fewer than [`max_concurrent`](Self::max_concurrent)
 /// drains run for the same connector (shared by its clones); otherwise the
@@ -174,8 +173,8 @@ impl Drop for DrainPermit {
     }
 }
 
-/// Marks an HTTP/1 client connection, with the executor its abandoned
-/// response bodies are drained on.
+/// Marks an HTTP/1 client connection, with the scope its abandoned
+/// response bodies are drained in.
 ///
 /// Holds the scope weakly: an idle pooled connection must not delay a graceful shutdown.
 #[derive(Debug, Clone, Extension)]
@@ -185,16 +184,16 @@ pub(super) struct Http1DrainRuntime {
 }
 
 impl Http1DrainRuntime {
-    pub(super) fn new(exec: &Executor) -> Self {
+    pub(super) fn new(weak_scope: &WeakScope) -> Self {
         Self {
-            scope: exec.scope().clone(),
+            scope: weak_scope.clone(),
         }
     }
 
     /// The scope a drain holds while it runs; `None` once it is closed for good, which admits
     /// no new work.
     fn scope(&self) -> Option<Scope> {
-        self.scope.to_scope()
+        self.scope.try_hold().ok()
     }
 }
 

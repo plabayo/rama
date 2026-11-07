@@ -59,7 +59,7 @@ async fn run() {
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let anchor = auth.cert_chain.last().unwrap().clone();
     let endpoint = Endpoint::bind_server(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::never(),
         listener_config(&auth),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
     )

@@ -7,10 +7,10 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, ExtensionsRef as _, Ingress},
     futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered},
+    graceful::WeakScope,
     io::BridgeIo,
     layer::{ArcLayer, ConsumeErrLayer},
     matcher::Matcher,
-    rt::Executor,
     service::service_fn,
     telemetry::tracing,
 };
@@ -88,7 +88,7 @@ pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool, D = HttpDatagramRelay
     middleware: M,
     datagram_relay: D,
     authority: Option<BoundAuthority<P>>,
-    exec: Executor,
+    scope: WeakScope,
     ingress: Config,
     egress: Config,
     settings_timeout: Duration,
@@ -100,7 +100,8 @@ impl Http3MitmRelay {
     /// whenever the origin does. Both hops accept more field lines per section than a
     /// standalone endpoint, so the relay does not refuse messages its peers accept.
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         let mut ingress = Config {
             extended_connect: true,
             ..Default::default()
@@ -115,7 +116,7 @@ impl Http3MitmRelay {
             ),
             datagram_relay: HttpDatagramRelay::default(),
             authority: None,
-            exec,
+            scope,
             ingress,
             egress,
             settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
@@ -137,14 +138,14 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
     /// access denial; HTTP middleware should reject forbidden requests.
     /// The default relay has a two-minute idle timeout and five-second half-close
     /// timeout. It drains accepted tunnels on graceful shutdown, as byte forwarding
-    /// does. Supply a relay with an executor to opt into cancellation.
+    /// does. Supply a relay with a scope to opt into cancellation.
     #[must_use]
     pub fn with_datagram_relay<N>(self, datagram_relay: N) -> Http3MitmRelay<M, P, N> {
         Http3MitmRelay {
             middleware: self.middleware,
             datagram_relay,
             authority: self.authority,
-            exec: self.exec,
+            scope: self.scope,
             ingress: self.ingress,
             egress: self.egress,
             settings_timeout: self.settings_timeout,
@@ -160,7 +161,7 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
             middleware: self.middleware,
             datagram_relay: self.datagram_relay,
             authority: Some(authority),
-            exec: self.exec,
+            scope: self.scope,
             ingress: self.ingress,
             egress: self.egress,
             settings_timeout: self.settings_timeout,
@@ -174,7 +175,7 @@ impl<M, P, D> Http3MitmRelay<M, P, D> {
             middleware,
             datagram_relay: self.datagram_relay,
             authority: self.authority,
-            exec: self.exec,
+            scope: self.scope,
             ingress: self.ingress,
             egress: self.egress,
             settings_timeout: self.settings_timeout,
@@ -358,7 +359,7 @@ where
         let egress_extensions = egress.extensions().clone();
         let close_egress = egress.clone();
         let (sender, driver) =
-            client::handshake::<Body, _>(egress, egress_config, self.exec.clone())?;
+            client::handshake::<Body, _>(egress, egress_config, self.scope.clone())?;
         // Holding a sender keeps the client's clean release from closing egress before this does.
         let held = sender.clone();
         let mut egress_guard = DropGuard::new(move || {
@@ -366,11 +367,15 @@ where
             drop(held);
         });
         // Refused, the dropped driver closes egress.
-        if let Err(refused) = self.exec.try_spawn_task(async move {
+        let scope = match self.scope.try_hold() {
+            Ok(scope) => scope,
+            Err(refused) => {
+                return Err(refused.into());
+            }
+        };
+        scope.into_spawn_task(async move {
             let _driver_result = driver.run().await;
-        }) {
-            return Err(refused.discard_task().into());
-        }
+        });
         let (received, peer) = {
             let mut origin_settings = pin!(sender.peer_settings());
             let peer = tokio::time::timeout_at(settings_deadline, &mut origin_settings)
@@ -384,7 +389,7 @@ where
                 // bounds this wait.
                 let received = tokio::select! {
                     received = &mut receiving => received?,
-                    () = self.exec.cancelled() => {
+                    () = self.scope.cancelled() => {
                         egress_guard.disarm();
                         return Ok(());
                     }
@@ -479,8 +484,8 @@ where
         // Declared after the server state, so it closes ingress before that state's clean stop.
         let mut ingress_guard = DropGuard::new(move || close_ended(&close_ingress));
         let mut upstream_draining = upstream_draining;
-        let mut cancelled = pin!(self.exec.cancelled());
-        let forwarding = IoForwardService::new(self.exec.clone());
+        let mut cancelled = pin!(self.scope.cancelled());
+        let forwarding = IoForwardService::new(self.scope.clone());
         let mut requests = FuturesUnordered::new();
         let mut draining = false;
         // The exchange borrows the HTTP/3 state, so the guards see its outcome while it lives.

@@ -36,7 +36,6 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     net::address::SocketAddress,
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -84,10 +83,10 @@ async fn main() {
     ))
     .into_layer(router);
 
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
     scope.spawn_task(async move {
         tracing::info!("running service at: {ADDRESS}");
-        HttpServer::auto(exec)
+        HttpServer::auto(weak_scope)
             .listen(
                 ADDRESS,
                 (TraceLayer::new_for_http(), ConsumeErrLayer::default()).into_layer(app),

@@ -10,6 +10,7 @@ use rama::{
     combinators::{Either, Either7},
     error::{BoxError, ErrorContext},
     extensions::{Extension, ExtensionsRef},
+    graceful::WeakScope,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue, Request,
         header::COOKIE,
@@ -43,7 +44,6 @@ use rama::{
         tls::ApplicationProtocol,
     },
     proxy::haproxy::server::HaProxyLayer,
-    rt::Executor,
     service::service_fn,
     telemetry::tracing,
     tls::{
@@ -152,7 +152,7 @@ pub struct CliCommandFingerprint {
 
 /// run the rama FP service
 pub async fn run(
-    exec: Executor,
+    scope: WeakScope,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandFingerprint,
 ) -> Result<(), BoxError> {
@@ -199,12 +199,12 @@ pub async fn run(
                         vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
                     }
                 }),
-                exec.clone(),
+                scope.clone(),
             )
         })
         .transpose()?;
     let listeners = HttpListeners::bind_observed(
-        exec.clone(),
+        scope.clone(),
         cfg.bind,
         cfg.http_version,
         maybe_tls_server_config.as_ref(),
@@ -216,7 +216,7 @@ pub async fn run(
     let pg_url = std::env::var("DATABASE_URL").ok();
     let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
-    let mut state = State::new(pg_url, storage_auth.as_deref(), &exec)
+    let mut state = State::new(pg_url, storage_auth.as_deref(), &scope)
         .await
         .context("create state")?;
     state.probe_http3 = listeners.http3.is_some() && listeners.tcp.is_some();
@@ -360,7 +360,7 @@ pub async fn run(
     let http_service = Arc::new(middlewares.into_layer(router));
 
     serve_http(
-        &exec,
+        &scope,
         &http3_endpoints,
         &cfg,
         listeners,
@@ -371,7 +371,7 @@ pub async fn run(
 }
 
 fn serve_http<Response>(
-    exec: &Executor,
+    scope: &WeakScope,
     http3_endpoints: &Http3Endpoints,
     cfg: &CliCommandFingerprint,
     listeners: HttpListeners,
@@ -384,7 +384,7 @@ where
 {
     let (maybe_ha_proxy_layer, collection_layer) = connection_layers;
     // Drain at three quarters of the connection timeout; drop what is left at the timeout.
-    let connection_scope = ScopeLayer::new().with_parent(exec.scope().clone());
+    let connection_scope = ScopeLayer::new().with_parent(scope.clone());
     let connection_timeout = if cfg.timeout > 0. {
         let timeout = Duration::from_secs_f64(cfg.timeout);
         let grace = timeout / 4;
@@ -409,7 +409,7 @@ where
         .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate)));
 
     if let Some(endpoint) = listeners.http3 {
-        let mut http3 = HttpServer::new_http3(exec.clone());
+        let mut http3 = HttpServer::new_http3(scope.clone());
         // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT — see the `/api/ws` route.
         http3.http3_mut().observation = Some(Box::new(OBSERVATION_LIMITS));
         http3.http3_mut().extended_connect = true;
@@ -427,7 +427,7 @@ where
                         .into_layer(http_service.clone()),
                 ),
             );
-        http3_endpoints.serve(exec, "FP", endpoint, Arc::new(http3_service))?;
+        http3_endpoints.serve(scope, "FP", endpoint, Arc::new(http3_service))?;
     }
 
     let Some((tcp_listener, tcp_version)) = listeners.tcp.zip(cfg.http_version.tcp()) else {
@@ -453,54 +453,56 @@ where
     );
 
     let bind = cfg.bind;
-    exec.try_spawn_task_fn(move |exec| async move {
-        match tcp_version {
-            TcpHttpVersion::Auto => {
-                tracing::info!(
-                    network.local.address = %bind_address.ip(),
-                    network.local.port = %bind_address.port(),
-                    "FP Service (auto) listening: bind interface = {}", bind,
-                );
-                let mut http_server = HttpServer::auto(exec);
-                // Advertise RFC 8441 so h2 clients can open WebSockets
-                // (Extended CONNECT) — see the `/api/ws` route.
-                http_server.h2_mut().set_enable_connect_protocol();
-                http_server.h2_mut().set_observe_early_frames(true);
-                tcp_listener
-                    .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
-                    .await;
-            }
-            TcpHttpVersion::H1 => {
-                tracing::info!(
-                    network.local.address = %bind_address.ip(),
-                    network.local.port = %bind_address.port(),
-                    "FP Service (HTTP/1.1) listening: bind interface = {}", bind,
-                );
-                tcp_listener
-                    .serve(
-                        tcp_service_builder
-                            .into_layer(HttpServer::new_http1(exec).service(http_service)),
-                    )
-                    .await;
-            }
-            TcpHttpVersion::H2 => {
-                tracing::info!(
-                    network.local.address = %bind_address.ip(),
-                    network.local.port = %bind_address.port(),
-                    "FP Service (H2) listening: bind interface = {}", bind,
-                );
-                let mut http_server = HttpServer::new_h2(exec);
-                // Advertise RFC 8441 so h2 clients can open WebSockets
-                // (Extended CONNECT) — see the `/api/ws` route.
-                http_server.h2_mut().set_enable_connect_protocol();
-                http_server.h2_mut().set_observe_early_frames(true);
-                tcp_listener
-                    .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
-                    .await;
+    scope.try_hold()?.into_spawn_task({
+        let scope = scope.clone();
+        async move {
+            match tcp_version {
+                TcpHttpVersion::Auto => {
+                    tracing::info!(
+                        network.local.address = %bind_address.ip(),
+                        network.local.port = %bind_address.port(),
+                        "FP Service (auto) listening: bind interface = {}", bind,
+                    );
+                    let mut http_server = HttpServer::auto(scope);
+                    // Advertise RFC 8441 so h2 clients can open WebSockets
+                    // (Extended CONNECT) — see the `/api/ws` route.
+                    http_server.h2_mut().set_enable_connect_protocol();
+                    http_server.h2_mut().set_observe_early_frames(true);
+                    tcp_listener
+                        .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
+                        .await;
+                }
+                TcpHttpVersion::H1 => {
+                    tracing::info!(
+                        network.local.address = %bind_address.ip(),
+                        network.local.port = %bind_address.port(),
+                        "FP Service (HTTP/1.1) listening: bind interface = {}", bind,
+                    );
+                    tcp_listener
+                        .serve(
+                            tcp_service_builder
+                                .into_layer(HttpServer::new_http1(scope).service(http_service)),
+                        )
+                        .await;
+                }
+                TcpHttpVersion::H2 => {
+                    tracing::info!(
+                        network.local.address = %bind_address.ip(),
+                        network.local.port = %bind_address.port(),
+                        "FP Service (H2) listening: bind interface = {}", bind,
+                    );
+                    let mut http_server = HttpServer::new_h2(scope);
+                    // Advertise RFC 8441 so h2 clients can open WebSockets
+                    // (Extended CONNECT) — see the `/api/ws` route.
+                    http_server.h2_mut().set_enable_connect_protocol();
+                    http_server.h2_mut().set_observe_early_frames(true);
+                    tcp_listener
+                        .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
+                        .await;
+                }
             }
         }
-    })
-    .map_err(|refused| refused.discard_task())?;
+    });
 
     Ok(())
 }
@@ -623,7 +625,7 @@ mod tests {
     async fn plaintext_fp_listener_attaches_positive_connection_provenance() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         tokio::time::timeout(Duration::from_secs(5), async {
-            let exec = Executor::new();
+            let scope = WeakScope::never();
             let cfg = CliCommandFingerprint {
                 bind: SocketAddress::local_ipv4(0),
                 concurrent: 0,
@@ -640,12 +642,12 @@ mod tests {
                 secure: false,
             };
             let listeners =
-                HttpListeners::bind(exec.clone(), cfg.bind, cfg.http_version, None, &cfg.http3)
+                HttpListeners::bind(scope.clone(), cfg.bind, cfg.http_version, None, &cfg.http3)
                     .await
                     .unwrap();
             let address = listeners.tcp.as_ref().unwrap().local_addr().unwrap();
             serve_http(
-                &exec,
+                &scope,
                 &Http3Endpoints::default(),
                 &cfg,
                 listeners,

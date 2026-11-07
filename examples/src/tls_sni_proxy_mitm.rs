@@ -89,7 +89,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, extra::OpaqueError},
     extensions::{Extension, ExtensionsRef},
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     http::{
         HeaderValue, Request, Response,
         client::EasyHttpWebClient,
@@ -110,7 +110,6 @@ use rama::{
         client::ConnectorTarget,
         proxy::IoForwardService,
     },
-    rt::Executor,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -140,7 +139,7 @@ async fn main() -> Result<(), BoxError> {
     let scope = Scope::new()
         .with_default_signal()
         .with_grace(Duration::from_secs(8));
-    let exec = Executor::from(scope.clone());
+    let weak_scope = scope.clone_weak();
 
     let tls_service_data = {
         // NOTE for production use:
@@ -160,7 +159,7 @@ async fn main() -> Result<(), BoxError> {
     const INTERFACE: SocketAddress = SocketAddress::local_ipv4(62045);
 
     tracing::info!("bind SNI MITM proxy to {INTERFACE}");
-    let tcp_listener = TcpListener::bind_address(INTERFACE, exec.clone())
+    let tcp_listener = TcpListener::bind_address(INTERFACE, weak_scope.clone())
         .await
         .context("bind tcp proxy")
         .context_field("interface", INTERFACE)?;
@@ -177,7 +176,7 @@ async fn main() -> Result<(), BoxError> {
         .with_tls_support_using_boringssl(
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
-        .with_default_http_connector(exec)
+        .with_default_http_connector(weak_scope)
         // NOTE: up to you define if a pool is acceptable, and especially a global one...
         .with_default_connection_pool()
         .build_client()
@@ -216,12 +215,12 @@ async fn main() -> Result<(), BoxError> {
     );
 
     let https_svc = TlsAcceptorLayer::new(tls_service_data)
-        .into_layer(HttpServer::auto(Executor::from(scope.clone())).service(http_svc));
+        .into_layer(HttpServer::auto(scope.clone_weak()).service(http_svc));
 
     let tcp_service = optional_dns_overwrite_layer_used_for_e2e_only.into_layer(SniRouter::new(
         SniRouterService {
             https_svc,
-            exec: Executor::from(scope.clone()),
+            scope: scope.clone_weak(),
         },
     ));
 
@@ -242,7 +241,7 @@ struct IngressSNI(Domain);
 #[derive(Debug, Clone)]
 struct SniRouterService<T> {
     https_svc: T,
-    exec: Executor,
+    scope: WeakScope,
 }
 
 impl<T, S> Service<SniRequest<S>> for SniRouterService<T>
@@ -290,7 +289,7 @@ where
             .with_connector(rama::dns::client::DnsConnector::new(
                 rama::tcp::client::service::TcpConnector::new(),
             ))
-            .into_layer(IoForwardService::new(self.exec.clone()))
+            .into_layer(IoForwardService::new(self.scope.clone()))
             .serve(stream)
             .await
             .context("forward data")

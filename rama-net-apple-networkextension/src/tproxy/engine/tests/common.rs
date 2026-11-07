@@ -6,7 +6,7 @@ use crate::tproxy::{TransparentProxyConfig, TransparentProxyFlowMeta};
 use rama_core::{
     bytes::Bytes,
     error::BoxError,
-    rt::Executor,
+    graceful::WeakScope,
     service::{BoxService, Service},
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -83,7 +83,7 @@ impl TransparentProxyHandler for TestHandler {
 
     fn handle_app_message(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         message: Bytes,
     ) -> impl Future<Output = Option<Bytes>> + Send + '_ {
         let reply = (self.app_message_handler)(message.to_vec()).map(Bytes::from);
@@ -92,7 +92,7 @@ impl TransparentProxyHandler for TestHandler {
 
     fn match_tcp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<
@@ -109,7 +109,7 @@ impl TransparentProxyHandler for TestHandler {
 
     fn match_udp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<impl Service<crate::UdpFlow, Output = (), Error = Infallible>>,
@@ -125,14 +125,14 @@ impl TransparentProxyHandler for TestHandler {
         self.tcp_egress_options.as_ref().and_then(|f| f(meta))
     }
 
-    fn on_system_sleep(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+    fn on_system_sleep(&self, _scope: WeakScope) -> impl Future<Output = ()> + Send + '_ {
         if let Some(cb) = self.on_sleep.as_ref() {
             cb();
         }
         std::future::ready(())
     }
 
-    fn on_system_wake(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+    fn on_system_wake(&self, _scope: WeakScope) -> impl Future<Output = ()> + Send + '_ {
         if let Some(cb) = self.on_wake.as_ref() {
             cb();
         }

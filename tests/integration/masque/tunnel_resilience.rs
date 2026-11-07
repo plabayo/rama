@@ -10,7 +10,7 @@ use rama::proxy::masque::limits::TunnelLimits;
 use rama::{
     Service as _,
     futures::future::join_all,
-    graceful::Scope,
+    graceful::{Scope, WeakScope},
     net::{
         address::{HostWithPort, ProxyAddress, SocketAddress},
         client::{ConnectRequest, EstablishedClientConnection, ProxyRoute},
@@ -20,7 +20,6 @@ use rama::{
         ConnectUdpConnector, ConnectUdpSocket, DestinationScopePolicy, MaybeTunneledSocket,
         TunnelBudget,
     },
-    rt::Executor,
     udp::{
         DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram,
         proxy::UdpConnector,
@@ -112,7 +111,7 @@ async fn proxy_for(
 
 /// A tunnel for `carrier`, on a client connection of its own.
 async fn tunnel(proxy: &ProxyAddress, target: SocketAddress, carrier: Carrier) -> ConnectUdpSocket {
-    let socket = open_tunnel(Executor::new(), proxy, target, carrier.version())
+    let socket = open_tunnel(WeakScope::never(), proxy, target, carrier.version())
         .await
         .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
     assert_carrier(&socket, carrier);
@@ -314,7 +313,7 @@ async fn a_graceful_proxy_shutdown_ends_every_tunnel_on_every_carrier() {
             });
             let limits = TunnelLimits::new();
             let (proxy, fixture) = masque_proxy_on(
-                Executor::from(shutdown.clone()),
+                shutdown.clone_weak(),
                 None,
                 DestinationScopePolicy::allow_private(),
                 carrier != Carrier::Http3Capsule,
@@ -617,9 +616,9 @@ async fn measure(
     let anonymous = proxy_address("masque://", address);
     let john = ProxyAddress::try_from(format!("masque://john:secret@{address}").as_str()).unwrap();
     let (mut measured, flooding) = if scenario == Flood::SameConnection {
-        let exec = Executor::new();
+        let scope = WeakScope::never();
         let connector =
-            ConnectUdpConnector::new(UdpConnector::new(), http_client(exec.clone()), exec)
+            ConnectUdpConnector::new(UdpConnector::new(), http_client(scope.clone()), scope)
                 .with_version(carrier.version());
         let mut sockets = Vec::new();
         for target in [echo_target, sink] {
@@ -671,9 +670,14 @@ async fn measure(
     if scenario != Flood::SameConnection {
         // The cap is live: a second anonymous tunnel is refused, so john's tunnel counts
         // against john alone.
-        let error = open_tunnel(Executor::new(), &anonymous, echo_target, carrier.version())
-            .await
-            .expect_err("one tunnel per principal");
+        let error = open_tunnel(
+            WeakScope::never(),
+            &anonymous,
+            echo_target,
+            carrier.version(),
+        )
+        .await
+        .expect_err("one tunnel per principal");
         assert!(
             format!("{error:?}").contains("503"),
             "{carrier:?}: {error:?}"

@@ -11,8 +11,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
-    graceful::ScopeClosed,
-    rt::Executor,
+    graceful::WeakScope,
 };
 use rama_http::{
     Request, Response, Version, conn::TargetHttpVersion, datagram::HttpDatagramSession,
@@ -72,7 +71,7 @@ pub const OUTER_IDLE_TIMEOUT: Duration = Duration::from_mins(3);
 pub struct ConnectUdpConnector<S, C> {
     client: S,
     inner: C,
-    exec: Executor,
+    scope: WeakScope,
     socket: ConnectUdpSocketConfig,
     version: Version,
 }
@@ -93,7 +92,7 @@ impl<S: Clone, C: Clone> Clone for ConnectUdpConnector<S, C> {
         Self {
             client: self.client.clone(),
             inner: self.inner.clone(),
-            exec: self.exec.clone(),
+            scope: self.scope.clone(),
             socket: self.socket,
             version: self.version,
         }
@@ -101,13 +100,14 @@ impl<S: Clone, C: Clone> Clone for ConnectUdpConnector<S, C> {
 }
 
 impl<S, C> ConnectUdpConnector<S, C> {
-    /// Tunnel MASQUE routes with `client` and serve the rest with `inner`; `exec` runs each
+    /// Tunnel MASQUE routes with `client` and serve the rest with `inner`; `scope` runs each
     /// tunnel's send task.
-    pub fn new(inner: C, client: S, exec: Executor) -> Self {
+    pub fn new(inner: C, client: S, scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             client,
             inner,
-            exec,
+            scope,
             socket: ConnectUdpSocketConfig::default(),
             version: Version::HTTP_3,
         }
@@ -145,12 +145,7 @@ where
         target: ConnectUdpTarget,
     ) -> Result<ConnectUdpSocket, BoxError> {
         // The tunnel's socket holds the connector's scope: a closed one opens no tunnel.
-        let scope = self
-            .exec
-            .scope()
-            .to_scope()
-            .ok_or(ScopeClosed)
-            .context("connect-udp tunnel")?;
+        let scope = self.scope.try_hold().context("connect-udp tunnel")?;
         let request = connect_udp_request(proxy, &target, self.version)?;
         // The token defines datagram semantics (RFC 9297 §2): declare them for this request.
         request.extensions().insert(HttpDatagrams);
@@ -249,7 +244,7 @@ where
 /// A [`Layer`] producing [`ConnectUdpConnector`]s over its inner datagram connector.
 pub struct ConnectUdpConnectorLayer<S> {
     client: S,
-    exec: Executor,
+    scope: WeakScope,
     socket: ConnectUdpSocketConfig,
     version: Version,
 }
@@ -267,7 +262,7 @@ impl<S: Clone> Clone for ConnectUdpConnectorLayer<S> {
     fn clone(&self) -> Self {
         Self {
             client: self.client.clone(),
-            exec: self.exec.clone(),
+            scope: self.scope.clone(),
             socket: self.socket,
             version: self.version,
         }
@@ -275,11 +270,12 @@ impl<S: Clone> Clone for ConnectUdpConnectorLayer<S> {
 }
 
 impl<S> ConnectUdpConnectorLayer<S> {
-    /// Tunnel MASQUE routes with `client`; `exec` runs each tunnel's send task.
-    pub fn new(client: S, exec: Executor) -> Self {
+    /// Tunnel MASQUE routes with `client`; `scope` runs each tunnel's send task.
+    pub fn new(client: S, scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             client,
-            exec,
+            scope,
             socket: ConnectUdpSocketConfig::default(),
             version: Version::HTTP_3,
         }
@@ -309,7 +305,7 @@ impl<S: Clone, C> Layer<C> for ConnectUdpConnectorLayer<S> {
         ConnectUdpConnector {
             client: self.client.clone(),
             inner,
-            exec: self.exec.clone(),
+            scope: self.scope.clone(),
             socket: self.socket,
             version: self.version,
         }
@@ -319,7 +315,7 @@ impl<S: Clone, C> Layer<C> for ConnectUdpConnectorLayer<S> {
         ConnectUdpConnector {
             client: self.client,
             inner,
-            exec: self.exec,
+            scope: self.scope,
             socket: self.socket,
             version: self.version,
         }

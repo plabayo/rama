@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rama_core::{
     Layer,
     error_sink::{ErrorSink, TracingErrorSink},
-    rt::Executor,
+    graceful::WeakScope,
 };
 
 use super::HttpUpgradeMitmRelay;
@@ -12,7 +12,7 @@ use super::HttpUpgradeMitmRelay;
 #[derive(Clone)]
 /// Layer used to create the middleware [`HttpUpgradeMitmRelay`] service.
 pub struct HttpUpgradeMitmRelayLayer<M> {
-    exec: Executor,
+    scope: WeakScope,
     nested_matcher_svc: M,
     error_sink: Arc<dyn ErrorSink>,
 }
@@ -22,9 +22,10 @@ impl<U> HttpUpgradeMitmRelayLayer<U> {
     #[must_use]
     /// Create a new [`HttpUpgradeMitmRelayLayer`] used to produce
     /// the middleware [`HttpUpgradeMitmRelay`] service.
-    pub fn new(exec: Executor, nested_matcher_svc: U) -> Self {
+    pub fn new(scope: impl Into<WeakScope>, nested_matcher_svc: U) -> Self {
+        let scope = scope.into();
         Self {
-            exec,
+            scope,
             nested_matcher_svc,
             error_sink: Arc::new(TracingErrorSink::default()),
         }
@@ -42,7 +43,7 @@ impl<U> HttpUpgradeMitmRelayLayer<U> {
 impl<M: fmt::Debug> fmt::Debug for HttpUpgradeMitmRelayLayer<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpUpgradeMitmRelayLayer")
-            .field("exec", &self.exec)
+            .field("scope", &self.scope)
             .field("nested_matcher_svc", &self.nested_matcher_svc)
             .finish()
     }
@@ -54,7 +55,7 @@ impl<M: Clone, S> Layer<S> for HttpUpgradeMitmRelayLayer<M> {
     #[inline(always)]
     fn layer(&self, inner_svc: S) -> Self::Service {
         HttpUpgradeMitmRelay::new(
-            self.exec.clone(),
+            self.scope.clone(),
             self.nested_matcher_svc.clone(),
             inner_svc,
         )
@@ -63,7 +64,7 @@ impl<M: Clone, S> Layer<S> for HttpUpgradeMitmRelayLayer<M> {
 
     #[inline(always)]
     fn into_layer(self, inner_svc: S) -> Self::Service {
-        HttpUpgradeMitmRelay::new(self.exec, self.nested_matcher_svc, inner_svc)
+        HttpUpgradeMitmRelay::new(self.scope, self.nested_matcher_svc, inner_svc)
             .with_error_sink(self.error_sink)
     }
 }

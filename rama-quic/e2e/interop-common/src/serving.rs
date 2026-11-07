@@ -44,7 +44,7 @@ pub async fn rama_probe_server<S>(
         .wait(
             &what,
             Endpoint::bind_server(
-                rama::rt::Executor::new(),
+                rama::graceful::WeakScope::never(),
                 rama_server_config(&run.identity),
                 localhost(),
             ),

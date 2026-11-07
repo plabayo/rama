@@ -10,6 +10,7 @@ use rama::{
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
     combinators::Either,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt as _},
+    graceful::WeakScope,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
@@ -23,7 +24,6 @@ use rama::{
         tls::ApplicationProtocol,
     },
     proxy::haproxy::server::HaProxyLayer,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
     tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
@@ -147,7 +147,7 @@ impl fmt::Display for Mode {
 
 /// run the rama echo service
 pub async fn run(
-    exec: Executor,
+    scope: WeakScope,
     etx: Sender<BoxError>,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandEcho,
@@ -165,21 +165,26 @@ pub async fn run(
                         }
                     }
                 }),
-                exec.clone(),
+                scope.clone(),
             )
         })
         .transpose()?;
 
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
-            bind_echo_tcp_service(exec, cfg.clone(), maybe_tls_server_config).await?
+            bind_echo_tcp_service(scope, cfg.clone(), maybe_tls_server_config).await?
         }
         Mode::Udp => {
-            bind_echo_udp_service(exec, cfg.clone(), maybe_tls_server_config, etx.clone()).await?
+            bind_echo_udp_service(scope, cfg.clone(), maybe_tls_server_config, etx.clone()).await?
         }
         Mode::Http | Mode::Https => {
-            bind_echo_http_service(exec, &http3_endpoints, cfg.clone(), maybe_tls_server_config)
-                .await?
+            bind_echo_http_service(
+                scope,
+                &http3_endpoints,
+                cfg.clone(),
+                maybe_tls_server_config,
+            )
+            .await?
         }
     }
 
@@ -187,7 +192,7 @@ pub async fn run(
 }
 
 async fn bind_echo_http_service(
-    exec: Executor,
+    scope: WeakScope,
     http3_endpoints: &Http3Endpoints,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
@@ -202,7 +207,7 @@ async fn bind_echo_http_service(
         cfg.bind
     );
     let listeners = HttpListeners::bind_observed(
-        exec.clone(),
+        scope.clone(),
         cfg.bind,
         cfg.http_version,
         maybe_tls_config.as_ref(),
@@ -225,11 +230,11 @@ async fn bind_echo_http_service(
         .maybe_with_alt_svc(listeners.alt_svc()?)
         .with_user_agent_database(ua_db)
         .maybe_with_geo_db(geo_db)
-        .build_with_http3(exec.clone())
+        .build_with_http3(scope.clone())
         .context("build http(s) echo service")?;
 
     if let Some(endpoint) = listeners.http3 {
-        http3_endpoints.serve(&exec, "echo", endpoint, Arc::new(http3_service))?;
+        http3_endpoints.serve(&scope, "echo", endpoint, Arc::new(http3_service))?;
     }
 
     let Some(tcp_listener) = listeners.tcp else {
@@ -242,7 +247,7 @@ async fn bind_echo_http_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "http");
 
-    exec.try_spawn_task(async move {
+    scope.try_hold()?.into_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -253,14 +258,13 @@ async fn bind_echo_http_service(
             .serve(Arc::new(tcp_service))
             .instrument(span)
             .await;
-    })
-    .map_err(|refused| refused.discard_task())?;
+    });
 
     Ok(())
 }
 
 async fn bind_echo_tcp_service(
-    exec: Executor,
+    scope: WeakScope,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
 ) -> Result<(), BoxError> {
@@ -317,7 +321,7 @@ async fn bind_echo_tcp_service(
     let echo_svc = middleware.into_layer(EchoService::new());
 
     tracing::info!("starting TCP echo service: bind interface = {:?}", cfg.bind);
-    let tcp_listener = TcpListener::build(exec.clone())
+    let tcp_listener = TcpListener::build(scope.clone())
         .bind_address(cfg.bind)
         .await
         .context("bind TCP echo service socket")?;
@@ -329,7 +333,7 @@ async fn bind_echo_tcp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "tcp");
 
-    exec.try_spawn_task(async move {
+    scope.try_hold()?.into_spawn_task(async move {
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -337,14 +341,13 @@ async fn bind_echo_tcp_service(
         );
 
         tcp_listener.serve(echo_svc).instrument(span).await;
-    })
-    .map_err(|refused| refused.discard_task())?;
+    });
 
     Ok(())
 }
 
 async fn bind_echo_udp_service(
-    exec: Executor,
+    weak_scope: WeakScope,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
     etx: tokio::sync::mpsc::Sender<BoxError>,
@@ -392,9 +395,9 @@ async fn bind_echo_udp_service(
     let span =
         tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "udp");
 
-    let task_exec = exec.clone();
+    let task_scope = weak_scope.clone();
     // The receive loop ends at cancel; replies in flight still drain.
-    exec.try_spawn_cancellable_task({
+    weak_scope.try_hold()?.into_spawn_cancellable_task({
         tracing::info!(
             network.local.address = %bind_address.ip(),
             network.local.port = %bind_address.port(),
@@ -449,7 +452,10 @@ async fn bind_echo_udp_service(
                 let socket = shared_udp_socket.clone();
                 let data = buf[..len].to_vec();
                 // This loop's task holds the scope, so a reply is never refused.
-                if task_exec.try_spawn_task(async move {
+                let Ok(scope) = task_scope.try_hold() else {
+                    return;
+                };
+                scope.into_spawn_task(async move {
                     _ = permit;
                     match socket.send_to(&data, addr).await {
                         Ok(len) => {
@@ -459,13 +465,11 @@ async fn bind_echo_udp_service(
                             tracing::debug!("failed to send bytes sent to {addr}: {err}");
                         }
                     }
-                }).is_err() {
-                    return;
-                }
+                });
             }
         }
         .instrument(span)
-    }).map_err(|refused| refused.discard_task())?;
+    });
 
     Ok(())
 }
