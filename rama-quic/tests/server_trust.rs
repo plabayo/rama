@@ -69,7 +69,7 @@ async fn connects(
     let server_tls = TlsServerConfig::new()
         .with_alpn([ApplicationProtocol::from(ALPN)].into_iter().collect())
         .with_server_auth(origin.leaf.clone());
-    let server = Endpoint::build(WeakScope::never())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(
             ServerConfig::try_from_rama_tls_with_provider(
                 &server_tls,
@@ -82,14 +82,14 @@ async fn connects(
         .await
         .expect("the server binds");
     let served = tokio::spawn(server.clone().serve(
-        WeakScope::never(),
+        WeakScope::detached(),
         service_fn(async |connection: Connection| {
             _ = connection.closed().await;
             Ok::<_, Infallible>(())
         }),
     ));
 
-    let client = Endpoint::build(WeakScope::never())
+    let client = Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds");

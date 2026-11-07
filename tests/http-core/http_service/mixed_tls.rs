@@ -136,10 +136,10 @@ async fn boring_stream_policy_is_independent_of_rustls_quic() {
         &origin.origin(),
         &format!("h3=\"{}\"", alternative.address),
     );
-    let endpoint = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
+    let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let h3 = Http3Connector::builder(WeakScope::never())
+    let h3 = Http3Connector::builder(WeakScope::detached())
         .with_endpoint(endpoint.clone())
         .with_tls_config(tls.clone())
         .with_tls_provider(default_tls_provider().unwrap())
@@ -152,7 +152,7 @@ async fn boring_stream_policy_is_independent_of_rustls_quic() {
         .without_tls_proxy_support()
         .with_http_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector::<Body>(WeakScope::never())
+        .with_default_http_connector::<Body>(WeakScope::detached())
         .with_http3_support(h3)
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
@@ -185,10 +185,10 @@ async fn rustls_stream_policy_is_independent_of_boring_quic() {
         &origin.origin(),
         &format!("h3=\"{}\"", alternative.address),
     );
-    let endpoint = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
+    let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let h3 = Http3Connector::builder(WeakScope::never())
+    let h3 = Http3Connector::builder(WeakScope::detached())
         .with_endpoint(endpoint.clone())
         .with_tls_config(tls.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
@@ -201,7 +201,7 @@ async fn rustls_stream_policy_is_independent_of_boring_quic() {
         .without_tls_proxy_support()
         .with_http_proxy_support()
         .with_tls_support_using_rustls(tls)
-        .with_default_http_connector::<Body>(WeakScope::never())
+        .with_default_http_connector::<Body>(WeakScope::detached())
         .with_http3_support(h3)
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)

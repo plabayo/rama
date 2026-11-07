@@ -75,7 +75,7 @@ fn serve(listener: MemoryDatagramSocket, config: DemuxConfig) -> Sockets {
 fn serve_demux(demux: DatagramDemux<MemoryDatagramSocket>) -> Sockets {
     let (sockets, received) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(demux.serve(
-        WeakScope::never(),
+        WeakScope::detached(),
         service_fn(move |socket| {
             let sockets = sockets.clone();
             async move {
@@ -550,7 +550,7 @@ async fn a_datagram_to_the_proxy_itself_is_not_bridged_back_to_it() {
             DatagramForwardService::new(NonZeroUsize::new(2048).unwrap(), EcnPolicy::Discard),
         );
         tokio::spawn(demux.serve(
-            WeakScope::never(),
+            WeakScope::detached(),
             service_fn(move |association: DemuxedSocket<UdpPacketSender>| {
                 counted.fetch_add(1, AtomicOrdering::SeqCst);
                 let bridge = bridge.clone();
@@ -692,7 +692,7 @@ async fn a_datagram_to_a_wildcard_listener_is_not_bridged_back_to_it() {
             DatagramForwardService::new(NonZeroUsize::new(2048).unwrap(), EcnPolicy::Discard),
         );
         tokio::spawn(demux.serve(
-            WeakScope::never(),
+            WeakScope::detached(),
             service_fn(move |association: DemuxedSocket<UdpPacketSender>| {
                 counted.fetch_add(1, AtomicOrdering::SeqCst);
                 if association
@@ -1021,7 +1021,7 @@ async fn a_tproxy_listener_answers_from_the_original_destination() {
     let demux = DatagramDemux::new(listener, config())
         .with_reply_sockets(UdpSocketFactory::new(transparent_config()));
     tokio::spawn(demux.serve(
-        WeakScope::never(),
+        WeakScope::detached(),
         service_fn(move |mut association: DemuxedSocket<UdpPacketSender>| {
             let counted = counted.clone();
             async move {
@@ -1222,7 +1222,7 @@ async fn a_tproxy_redirect_to_this_host_is_not_bridged_back_into_it() {
         EcnPolicy::Discard,
     ));
     tokio::spawn(demux.serve(
-        WeakScope::never(),
+        WeakScope::detached(),
         service_fn(move |association: DemuxedSocket<UdpPacketSender>| {
             counted.fetch_add(1, AtomicOrdering::SeqCst);
             let bridge = bridge.clone();

@@ -435,7 +435,7 @@ where
         tokio::spawn(async move {
             let server = TlsAcceptorLayer::new(TlsServerConfig::default_http().unwrap())
                 .with_store_client_hello(true)
-                .into_layer(HttpServer::auto(WeakScope::never()).service(svc));
+                .into_layer(HttpServer::auto(WeakScope::detached()).service(svc));
             server.serve(server_socket).await.unwrap();
         });
 

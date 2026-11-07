@@ -97,7 +97,7 @@ async fn server(tls: &TlsServerConfig, provider: &dyn QuicServerConfigProvider) 
     let config =
         ServerConfig::try_from_rama_tls_with_provider(tls, TlsOptions::default(), provider)
             .unwrap();
-    Endpoint::build(WeakScope::never())
+    Endpoint::build(WeakScope::detached())
         .with_server_config(config)
         .bind_address(localhost())
         .await
@@ -105,7 +105,7 @@ async fn server(tls: &TlsServerConfig, provider: &dyn QuicServerConfigProvider) 
 }
 
 async fn client() -> Endpoint {
-    Endpoint::build(WeakScope::never())
+    Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds")
@@ -114,7 +114,7 @@ async fn client() -> Endpoint {
 /// Serve every attempt by awaiting it, which resolves its configuration first.
 fn serve(server: &Endpoint) -> tokio::task::JoinHandle<()> {
     tokio::spawn(server.clone().serve(
-        WeakScope::never(),
+        WeakScope::detached(),
         service_fn(async |connection: Connection| {
             _ = connection.closed().await;
             Ok::<_, Infallible>(())
@@ -280,7 +280,7 @@ async fn relay(server: SocketAddr, relaying: Relaying) -> Relay {
 /// Serve every connection by echoing its first bidirectional stream.
 fn serve_echo(server: &Endpoint) -> tokio::task::JoinHandle<()> {
     tokio::spawn(server.clone().serve(
-        WeakScope::never(),
+        WeakScope::detached(),
         service_fn(async |connection: Connection| {
             if let Ok((mut send, mut recv)) = connection.accept_bi().await
                 && let Ok(got) = recv.read_to_end(64).await
@@ -583,7 +583,7 @@ mod boring {
         .unwrap()
         // A token lifetime past any representable instant cannot be sealed into a Retry.
         .with_retry_token_lifetime(Duration::MAX);
-        let server = Endpoint::build(WeakScope::never())
+        let server = Endpoint::build(WeakScope::detached())
             .with_server_config(config)
             .bind_address(localhost())
             .await
@@ -708,7 +708,7 @@ mod boring {
         endpoint_config
             .handshake_timeout(Duration::from_millis(300))
             .unwrap();
-        let server = Endpoint::build(WeakScope::never())
+        let server = Endpoint::build(WeakScope::detached())
             .with_config(endpoint_config)
             .with_server_config(
                 ServerConfig::try_from_rama_tls_with_provider(
@@ -900,7 +900,7 @@ mod boring {
         endpoint_config
             .handshake_timeout(Duration::from_millis(300))
             .unwrap();
-        let server = Endpoint::build(WeakScope::never())
+        let server = Endpoint::build(WeakScope::detached())
             .with_config(endpoint_config)
             .with_server_config(
                 ServerConfig::try_from_rama_tls_with_provider(

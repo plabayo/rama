@@ -65,12 +65,12 @@ async fn shared_http_and_socks5_listener_forwards_end_to_end() {
 /// The proxy forwards trailers as received, also those whose definitions do not allow trailers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_proxy_forwards_trailers_as_received() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let origin = listener.local_addr().unwrap();
-    let origin_task = tokio::spawn(listener.serve(HttpServer::auto(WeakScope::never()).service(
-        service_fn(|_request: Request| async {
+    let origin_task = tokio::spawn(listener.serve(
+        HttpServer::auto(WeakScope::detached()).service(service_fn(|_request: Request| async {
             let mut trailers = HeaderMap::new();
             trailers.insert(header::SET_COOKIE, HeaderValue::from_static("a=b"));
             trailers.insert("x-checksum", HeaderValue::from_static("abc"));
@@ -82,8 +82,8 @@ async fn http_proxy_forwards_trailers_as_received() {
             // Like any origin that sends a trailer its definition does not allow.
             response.extensions().insert(ForbiddenTrailers::AllowAll);
             Ok::<_, Infallible>(response)
-        }),
-    )));
+        })),
+    ));
     let proxy_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str()]);
@@ -244,7 +244,7 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
         .unwrap();
     store.confirm_connection(connection_id);
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: Some(store.clone()),
         inspection: store.inspection_state(),
         har: HarController::default(),
@@ -286,7 +286,7 @@ async fn live_har_controller_records_proxy_traffic_end_to_end() {
     har.start(path.clone()).await.unwrap();
     let upstream = UpstreamProxyConfig::new(None, false, &[]).unwrap();
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: har.clone(),
@@ -328,7 +328,7 @@ async fn live_har_controller_records_proxy_traffic_end_to_end() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn https_connect_is_mitm_relayed_end_to_end() {
     let origin_listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
             .await
             .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
@@ -336,10 +336,11 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .unwrap()
         .with_alpn_http_auto();
-    let origin_http =
-        HttpServer::auto(WeakScope::never()).service(service_fn(|_request: Request| async move {
+    let origin_http = HttpServer::auto(WeakScope::detached()).service(service_fn(
+        |_request: Request| async move {
             Ok::<_, Infallible>(Response::new(Body::from("mitm-roundtrip-ok")))
-        }));
+        },
+    ));
     let origin_task = tokio::spawn(origin_listener.serve(TlsAcceptorService::new(
         origin_tls,
         origin_http,
@@ -365,7 +366,7 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
     let request = Request::builder()
@@ -451,7 +452,7 @@ async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
     let middleware = CaptureHttpLayer::new(Some(store.clone()));
     let relay = tokio::spawn(async move {
         Box::pin(
-            HttpMitmRelay::new(WeakScope::never())
+            HttpMitmRelay::new(WeakScope::detached())
                 .with_http_middleware((middleware, ArcLayer::new()))
                 .serve(BridgeIo(ingress, MockSocket::new(egress_io))),
         )
@@ -469,7 +470,7 @@ async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
         http_connect(
             MockSocket::new(client_io),
             request("setup"),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap()

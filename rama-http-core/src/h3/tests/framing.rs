@@ -131,7 +131,7 @@ async fn http3_response_framing_follows_the_shared_rule() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -189,7 +189,7 @@ async fn http3_strict_connect_framing_rejects_framing_headers() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let config = Config {
@@ -259,7 +259,7 @@ async fn http3_rejects_bodies_that_disagree_with_their_advertised_length() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let (mut server, server_driver) =

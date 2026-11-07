@@ -353,7 +353,7 @@ mod endpoints {
     use crate::{Endpoint, test_helpers};
 
     async fn bind(metrics: &QuicMetrics, server: Option<crate::ServerConfig>) -> Endpoint {
-        Endpoint::build(WeakScope::never())
+        Endpoint::build(WeakScope::detached())
             .maybe_with_server_config(server)
             .with_metrics(metrics.clone())
             .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))

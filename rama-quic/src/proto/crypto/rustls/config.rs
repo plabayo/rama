@@ -826,14 +826,14 @@ mod tests {
                 .unwrap(),
             ));
             let server = Endpoint::bind_server(
-                WeakScope::never(),
+                WeakScope::detached(),
                 server_config,
                 "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
             .unwrap();
             let client = Endpoint::bind_client(
-                WeakScope::never(),
+                WeakScope::detached(),
                 "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
@@ -915,14 +915,14 @@ mod tests {
                 .unwrap(),
             ));
             let server = Endpoint::bind_server(
-                WeakScope::never(),
+                WeakScope::detached(),
                 server_config,
                 "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
             .unwrap();
             let client = Endpoint::bind_client(
-                WeakScope::never(),
+                WeakScope::detached(),
                 "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
@@ -1022,14 +1022,14 @@ mod tests {
                         .unwrap(),
                 ));
                 let server = Endpoint::bind_server(
-                    WeakScope::never(),
+                    WeakScope::detached(),
                     server_config,
                     "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
                 )
                 .await
                 .unwrap();
                 let client = Endpoint::bind_client(
-                    WeakScope::never(),
+                    WeakScope::detached(),
                     "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
                 )
                 .await

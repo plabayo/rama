@@ -49,7 +49,7 @@ async fn failed_reply(native: bool, filed_first: bool) {
             connection_pair().await;
         // Exercise payloads filed both before and after the failed reply, on each carrier.
         let count = 4;
-        let mut http = HttpServer::new_http3(WeakScope::never());
+        let mut http = HttpServer::new_http3(WeakScope::detached());
         http.http3_mut().extended_connect = true;
         http.http3_mut().datagrams = Some(DatagramConfig {
             limits: DatagramLimits {
@@ -84,7 +84,7 @@ async fn failed_reply(native: bool, filed_first: bool) {
                 datagrams: native.then(Default::default),
                 ..Config::default()
             },
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let client_driver = tokio::spawn(driver.run());
@@ -203,11 +203,11 @@ async fn connection_pair() -> (
         SocketAddress::local_ipv4(444),
         NonZeroUsize::MIN,
     );
-    let server_endpoint = Endpoint::build(WeakScope::never())
+    let server_endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .unwrap();
-    let client_endpoint = Endpoint::build(WeakScope::never())
+    let client_endpoint = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .unwrap();
     let (client_connection, server_connection) = tokio::join!(
@@ -259,7 +259,7 @@ async fn stop_sending_preserves_inbound_native_and_capsule_payloads() {
                 let (mut client, client_driver) = client::handshake::<Body, _>(
                     client_connection.clone(),
                     config,
-                    WeakScope::never(),
+                    WeakScope::detached(),
                 )
                 .unwrap();
                 let client_driver = tokio::spawn(client_driver.run());

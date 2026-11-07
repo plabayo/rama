@@ -69,13 +69,13 @@ fn an_endpoint_built_on_a_recorded_runtime_is_traced() {
         );
         let identities = Identities::new();
         let localhost = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
-        let server = Endpoint::build(WeakScope::never())
+        let server = Endpoint::build(WeakScope::detached())
             .with_server_config(identities.server_config())
             .bind_address(localhost)
             .await
             .expect("the server binds");
         let addr = server.local_addr().unwrap();
-        let client = Endpoint::build(WeakScope::never())
+        let client = Endpoint::build(WeakScope::detached())
             .bind_address(localhost)
             .await
             .expect("the client binds");

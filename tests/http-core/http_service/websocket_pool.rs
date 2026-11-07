@@ -34,7 +34,7 @@ use tokio::{task::spawn, time::timeout};
 async fn check_one_pooled_connection(websocket_first: bool) {
     let (auth, tls) = credentials();
     let accepted = Arc::new(AtomicUsize::new(0));
-    let mut http = HttpServer::new_h2(WeakScope::never());
+    let mut http = HttpServer::new_h2(WeakScope::detached());
     http.h2_mut().set_enable_connect_protocol();
     let service = (
         MapInputLayer::new({
@@ -61,7 +61,7 @@ async fn check_one_pooled_connection(websocket_first: bool) {
                 ),
             ),
         );
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -76,7 +76,7 @@ async fn check_one_pooled_connection(websocket_first: bool) {
     #[cfg(not(feature = "boring"))]
     let builder = builder.with_tls_support_using_rustls(tls);
     let client = builder
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_default_connection_pool()
         .build_client();
     let base = format!("https://localhost:{port}");

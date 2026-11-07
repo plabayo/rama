@@ -56,7 +56,7 @@ async fn both_ends_export_the_same_keying_material() {
 
     let client = step(
         "rama binds",
-        Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+        Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
     )
     .await
     .expect("the client binds");
@@ -141,7 +141,7 @@ async fn a_key_update_does_not_disturb_the_traffic_around_it() {
 
     let client = step(
         "rama binds",
-        Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+        Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
     )
     .await
     .expect("the client binds");
@@ -215,7 +215,7 @@ async fn a_client_connecting_to_an_address_sends_no_server_name() {
     let server = step(
         "the rama server binds",
         Endpoint::bind_server(
-            rama::graceful::WeakScope::never(),
+            rama::graceful::WeakScope::detached(),
             rama_server_config(&auth),
             localhost(),
         ),
@@ -310,7 +310,7 @@ async fn a_consumer_reads_the_counters_through_their_public_types() {
 
     let client = step(
         "rama binds",
-        Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+        Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
     )
     .await
     .expect("the client binds");
@@ -424,7 +424,7 @@ async fn a_consumer_configures_keys_and_budgets_by_name() {
 
     let server = step(
         "the rama server binds with the configuration",
-        Endpoint::build(rama::graceful::WeakScope::never())
+        Endpoint::build(rama::graceful::WeakScope::detached())
             .with_config(endpoint_config)
             .maybe_with_server_config(Some(server_config))
             .bind_address_with_socket_config(localhost(), UdpSocketConfig::default()),
@@ -525,7 +525,7 @@ async fn a_consumer_chooses_congestion_control_and_reads_connection_facts() {
 
     let client = step(
         "rama binds",
-        Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+        Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
     )
     .await
     .expect("the client binds");
@@ -572,7 +572,7 @@ async fn a_refused_retry_says_why_and_hands_the_attempt_back() {
     let server = step(
         "the rama server binds",
         Endpoint::bind_server(
-            rama::graceful::WeakScope::never(),
+            rama::graceful::WeakScope::detached(),
             rama_server_config(&auth),
             localhost(),
         ),
@@ -647,7 +647,7 @@ async fn a_consumer_chooses_how_connection_identifiers_are_made() {
     let anchor = auth.cert_chain.last().expect("a chain").clone();
     let server = step(
         "the rama server binds",
-        Endpoint::build(rama::graceful::WeakScope::never())
+        Endpoint::build(rama::graceful::WeakScope::detached())
             .with_config(
                 EndpointConfig::new(
                     rama::crypto::hmac::HmacSha2::try_rand_256().expect("random reset key"),
@@ -709,7 +709,7 @@ async fn a_consumer_chooses_how_connection_identifiers_are_made() {
     );
     let client = step(
         "rama binds",
-        Endpoint::build(rama::graceful::WeakScope::never())
+        Endpoint::build(rama::graceful::WeakScope::detached())
             .with_config(
                 EndpointConfig::new(
                     rama::crypto::hmac::HmacSha2::try_rand_256().expect("random reset key"),
@@ -792,7 +792,7 @@ async fn a_generator_of_ones_own_issues_identifiers_that_outlast_rotation() {
     let anchor = auth.cert_chain.last().expect("a chain").clone();
     let server = step(
         "the rama server binds",
-        Endpoint::build(rama::graceful::WeakScope::never())
+        Endpoint::build(rama::graceful::WeakScope::detached())
             .with_config(
                 EndpointConfig::new(
                     rama::crypto::hmac::HmacSha2::try_rand_256().expect("random reset key"),
@@ -831,7 +831,7 @@ async fn a_generator_of_ones_own_issues_identifiers_that_outlast_rotation() {
 
     let client = step(
         "rama binds",
-        Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+        Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
     )
     .await
     .expect("the client binds");

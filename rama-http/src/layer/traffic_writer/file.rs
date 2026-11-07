@@ -433,7 +433,7 @@ mod tests {
     #[tokio::test]
     async fn file_layers_share_exchange_id_with_request_layer_outermost() {
         let temp = rama_utils::fs::tempdir().unwrap();
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let request = RequestWriterLayer::file_per_request(
             &scope,
             temp.path(),
@@ -475,7 +475,7 @@ mod tests {
     #[tokio::test]
     async fn file_layers_share_exchange_id_with_response_layer_outermost() {
         let temp = rama_utils::fs::tempdir().unwrap();
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let request = RequestWriterLayer::file_per_request(
             &scope,
             temp.path(),

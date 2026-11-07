@@ -80,7 +80,7 @@ async fn dns_lb_rotates_and_pool_reuses() {
 
     let mock = MockConnectorService::new(move || {
         let id = created_connections.fetch_add(1, Ordering::SeqCst);
-        HttpServer::auto(WeakScope::never()).service(GreeterServer::new(RamaGreeter {
+        HttpServer::auto(WeakScope::detached()).service(GreeterServer::new(RamaGreeter {
             instance_id: Some(id),
         }))
     });
@@ -101,7 +101,7 @@ async fn dns_lb_rotates_and_pool_reuses() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_default_connection_pool()
         .build_client();
 

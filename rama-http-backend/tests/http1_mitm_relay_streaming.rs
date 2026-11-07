@@ -135,7 +135,7 @@ impl Relay {
                     failed: false,
                 }),
             );
-            let mut relay = HttpMitmRelay::new(WeakScope::never());
+            let mut relay = HttpMitmRelay::new(WeakScope::detached());
             if let Some(forbidden_trailers) = forbidden_trailers {
                 relay.set_forbidden_trailers(forbidden_trailers);
             }
@@ -780,7 +780,7 @@ async fn explicit_close_delimited_encoding_closes_for_known_and_empty_bodies() {
         let body_bytes = rama_core::bytes::Bytes::copy_from_slice(payload.as_bytes());
         let (client, server) = tokio::io::duplex(4096);
         let done = tokio::spawn(async move {
-            HttpServer::auto(WeakScope::never())
+            HttpServer::auto(WeakScope::detached())
                 .serve(
                     MockSocket::new(server),
                     service_fn(move |_: Request| {

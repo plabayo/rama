@@ -187,7 +187,7 @@ pub async fn rama_client_side(run: &CaseRun<StreamScenario>, peer_addr: SocketAd
     let endpoint = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the rama client binds");
@@ -262,7 +262,7 @@ pub async fn rama_server_side(run: &CaseRun<StreamScenario>) -> (Endpoint, Socke
         .wait(
             what,
             Endpoint::bind_server(
-                rama::graceful::WeakScope::never(),
+                rama::graceful::WeakScope::detached(),
                 rama_server_config(identity),
                 localhost(),
             ),

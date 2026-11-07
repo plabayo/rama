@@ -377,7 +377,7 @@ async fn established_traffic_flows_while_an_accept_runs_its_handshake() {
     let (gate, observer) = (Arc::default(), Arc::default());
     let (client_config, server_config) = gated(&gate, &observer);
     let server = server_endpoint(server_config, LIMIT);
-    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
     let address = server.local_addr().unwrap();
     let connecting = client
         .connect_with(client_config.clone(), address, "localhost")
@@ -431,7 +431,7 @@ async fn an_accept_between_phases_keeps_the_endpoint_from_idle() {
         let (gate, observer) = (Arc::default(), Arc::default());
         let (client_config, server_config) = gated(&gate, &observer);
         let server = server_endpoint(server_config, LIMIT);
-        let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+        let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
         let opener = gate.close();
         let connecting = client
             .connect_with(client_config, server.local_addr().unwrap(), "localhost")
@@ -506,7 +506,7 @@ async fn stopping_between_phases_refuses_the_accept_and_releases_it() {
         let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
         endpoint_config.handshake_timeout(LIMIT).unwrap();
         let server = endpoint_with(endpoint_config, Some(server_config), socket);
-        let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+        let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
         let opener = gate.close();
         let connecting = client
             .connect_with(client_config, server.local_addr().unwrap(), "localhost")
@@ -581,7 +581,7 @@ async fn an_accept_outliving_its_deadline_between_phases_times_out() {
     let (gate, observer) = (Arc::default(), Arc::default());
     let (client_config, server_config) = gated(&gate, &observer);
     let server = server_endpoint(server_config, Duration::from_millis(300));
-    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
     let opener = gate.close();
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
@@ -609,7 +609,7 @@ async fn a_handshake_unwinding_between_phases_settles_the_accept() {
     let (gate, observer) = (Arc::default(), Arc::default());
     let (client_config, server_config) = gated(&gate, &observer);
     let server = server_endpoint(server_config, Duration::from_millis(300));
-    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
     let opener = gate.close();
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
@@ -645,7 +645,7 @@ async fn no_handshake_data_is_read_under_the_endpoint_lock() {
     let (client_config, server_config) = gated_with(&gate, &observer, 300);
     let server = server_endpoint(server_config, LIMIT);
     observer.watch(&server);
-    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();

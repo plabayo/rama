@@ -33,7 +33,7 @@ fn relay(runtime: &tokio::runtime::Runtime) -> (DuplexStream, DuplexStream) {
     let (client, client_side) = duplex(64 * 1024);
     let (origin, origin_side) = duplex(64 * 1024);
     runtime.spawn(async move {
-        _ = IoForwardService::new(WeakScope::never())
+        _ = IoForwardService::new(WeakScope::detached())
             .serve(BridgeIo(
                 ServiceInput::new(client_side),
                 ServiceInput::new(origin_side),

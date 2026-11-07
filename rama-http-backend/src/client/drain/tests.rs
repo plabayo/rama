@@ -254,7 +254,7 @@ async fn next_conn_after_dropping(
 ) -> usize {
     let harness = harness(
         one_connection(drain),
-        WeakScope::never(),
+        WeakScope::detached(),
         move |path, conn| {
             if path == "/next" {
                 sized(conn, b"next")
@@ -291,7 +291,7 @@ async fn disabled_draining_closes_the_connection_of_an_unread_body() {
 #[tokio::test]
 async fn partially_read_body_is_drained_and_reused() {
     let rest = Arc::new(Notify::new());
-    let harness = harness(one_connection(Some(reusing())), WeakScope::never(), {
+    let harness = harness(one_connection(Some(reusing())), WeakScope::detached(), {
         let rest = rest.clone();
         move |path, conn| {
             if path == "/next" {
@@ -346,7 +346,7 @@ async fn unread_chunked_body_with_trailers_is_drained_and_reused() {
 async fn body_dropped_after_its_final_content_length_frame_is_not_drained() {
     let harness = harness(
         one_connection(Some(Default::default())),
-        WeakScope::never(),
+        WeakScope::detached(),
         |_, conn| sized(conn, b"complete"),
     );
     let mut body = send(&harness.client, get("/")).await.into_body();
@@ -366,7 +366,7 @@ async fn body_dropped_after_its_final_content_length_frame_is_not_drained() {
 async fn body_dropped_after_its_trailers_is_not_drained() {
     let harness = harness(
         one_connection(Some(Default::default())),
-        WeakScope::never(),
+        WeakScope::detached(),
         |_, conn| chunked(conn, &[b"hello"], "x-checksum: 1\r\n"),
     );
     let mut body = send(&harness.client, get("/")).await.into_body();
@@ -397,7 +397,7 @@ async fn empty_body_dropped_unpolled_is_not_drained() {
 async fn same_origin_redirect_reuses_the_connection_of_its_unread_body() {
     let harness = harness(
         one_connection(Some(reusing())),
-        WeakScope::never(),
+        WeakScope::detached(),
         |path, conn| {
             if path == "/start" {
                 let body = "moved to /final";
@@ -608,7 +608,11 @@ fn stalling(rest: &Arc<Notify>) -> impl Fn(&str, usize) -> Vec<Step> + Send + Sy
 async fn exhausted_drain_limit_closes_the_connection_right_away() {
     let rest = Arc::new(Notify::new());
     let config = reusing().with_max_concurrent(NonZeroUsize::MIN);
-    let harness = harness(uncapped(Some(config)), WeakScope::never(), stalling(&rest));
+    let harness = harness(
+        uncapped(Some(config)),
+        WeakScope::detached(),
+        stalling(&rest),
+    );
     let drain = harness.drain.clone().unwrap();
 
     let draining = send(&harness.client, get("/stall")).await;
@@ -636,7 +640,7 @@ async fn drain_permits_return_after_success_and_failure() {
         .with_max_bytes(100);
     let harness = harness(
         one_connection(Some(config)),
-        WeakScope::never(),
+        WeakScope::detached(),
         |path, conn| {
             if path == "/large" {
                 sized(conn, &[0; 1000])
@@ -691,7 +695,7 @@ async fn draining_connection_is_not_handed_out() {
     let rest = Arc::new(Notify::new());
     let harness = harness(
         uncapped(Some(reusing())),
-        WeakScope::never(),
+        WeakScope::detached(),
         stalling(&rest),
     );
     let drain = harness.drain.clone().unwrap();
@@ -723,7 +727,7 @@ async fn drain_completion_does_not_revive_a_retired_connection() {
     let rest = Arc::new(Notify::new());
     let harness = harness(
         one_connection(Some(Default::default())),
-        WeakScope::never(),
+        WeakScope::detached(),
         stalling(&rest),
     );
     let drain = harness.drain.clone().unwrap();
@@ -803,7 +807,7 @@ async fn deadline_elapsed_before_first_poll_closes_without_draining() {
     drop(recorded(
         Body::from("unread"),
         &events,
-        &WeakScope::never(),
+        &WeakScope::detached(),
         &Http1BodyDrainConfig::default(),
     ));
     // Advance before the spawned drain gets its first poll. Even a body
@@ -949,7 +953,7 @@ async fn body_of_an_unscoped_executor_is_drained() {
     drop(recorded(
         Body::from("unread"),
         &events,
-        &WeakScope::never(),
+        &WeakScope::detached(),
         &Default::default(),
     ));
     assert_eq!(drains_started(), 1);
@@ -966,7 +970,7 @@ fn runtime_shutdown_invalidates_before_releasing() {
         drop(recorded(
             pending_body(),
             &events,
-            &WeakScope::never(),
+            &WeakScope::detached(),
             &Default::default(),
         ));
     });
@@ -983,7 +987,7 @@ fn dropped_outside_a_runtime_closes_the_connection() {
     drop(recorded(
         Body::from("unread"),
         &events,
-        &WeakScope::never(),
+        &WeakScope::detached(),
         &Default::default(),
     ));
     assert_eq!(drains_started(), 0);
@@ -1011,7 +1015,7 @@ async fn always_ready_bodies_yield_and_end_at_the_deadline() {
         let body = Body::from_stream(stream::repeat_with(move || {
             Ok::<_, Infallible>(frame.clone())
         }));
-        drop(recorded(body, &events, &WeakScope::never(), &config));
+        drop(recorded(body, &events, &WeakScope::detached(), &config));
         recorded_until(&events, 2).await;
         ticker.abort();
         assert_eq!(*events.lock(), ["invalidate", "release"]);
@@ -1083,7 +1087,7 @@ async fn close_delimited_responses_are_marked_and_not_drained() {
     for headers in ["", "transfer-encoding: gzip\r\n"] {
         let harness = harness(
             one_connection(Some(Default::default())),
-            WeakScope::never(),
+            WeakScope::detached(),
             move |path, conn| {
                 if path == "/next" {
                     sized(conn, b"next")
@@ -1162,7 +1166,7 @@ async fn http2_abandoned_body_keeps_its_connection_without_draining() {
         let accepted = accepted.clone();
         move || {
             let conn = accepted.fetch_add(1, Ordering::SeqCst);
-            HttpServer::auto(WeakScope::never()).service(service_fn(
+            HttpServer::auto(WeakScope::detached()).service(service_fn(
                 move |_request: Request| async move {
                     let mut response = Response::new(Body::from(vec![0u8; 256 * 1024]));
                     response
@@ -1199,7 +1203,7 @@ async fn only_http1_connections_carry_the_drain_runtime() {
         let input = ConnectRequest::new("origin.example:80".parse().unwrap());
         input.extensions().insert(TargetHttpVersion(version));
         let established =
-            http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::never())
+            http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::detached())
                 .await
                 .unwrap();
         assert_eq!(

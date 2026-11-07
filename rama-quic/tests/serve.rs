@@ -43,7 +43,7 @@ fn localhost() -> SocketAddr {
 }
 
 async fn server(identities: &Identities) -> Endpoint {
-    Endpoint::build(WeakScope::never())
+    Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
@@ -51,7 +51,7 @@ async fn server(identities: &Identities) -> Endpoint {
 }
 
 async fn client() -> Endpoint {
-    Endpoint::build(WeakScope::never())
+    Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds")
@@ -88,7 +88,7 @@ async fn served_connections_carry_their_socket_info() {
             echo(connection, release.clone())
         }
     });
-    let served = tokio::spawn(server.clone().serve(WeakScope::never(), service));
+    let served = tokio::spawn(server.clone().serve(WeakScope::detached(), service));
 
     let client = client().await;
     for payload in [b"first".as_slice(), b"second"] {
@@ -174,7 +174,7 @@ async fn connections_after_a_rebind_carry_the_new_socket_address() {
             echo(connection, release.clone())
         }
     });
-    let served = tokio::spawn(server.clone().serve(WeakScope::never(), service));
+    let served = tokio::spawn(server.clone().serve(WeakScope::detached(), service));
     let client = client().await;
 
     // Serving is under way on the first socket before the endpoint moves.
@@ -218,7 +218,7 @@ async fn a_failed_handshake_does_not_stop_serving() {
         let release = release.clone();
         move |connection: Connection| echo(connection, release.clone())
     });
-    let served = tokio::spawn(server.clone().serve(WeakScope::never(), service));
+    let served = tokio::spawn(server.clone().serve(WeakScope::detached(), service));
 
     let client = client().await;
     let strangers = Identities::new();

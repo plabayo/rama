@@ -141,12 +141,12 @@ async fn session(inherit_request: bool, accept_upgrade: bool, status: StatusCode
     let client_extensions = client_io.extensions().clone();
     let server_extensions = server_io.extensions().clone();
     let server_task = tokio::spawn(async move {
-        _ = server::conn::http2::Builder::new(WeakScope::never())
+        _ = server::conn::http2::Builder::new(WeakScope::detached())
             .with_max_concurrent_streams(17)
             .serve_connection(server_io, RamaHttpService::new(service))
             .await;
     });
-    let (sender, connection) = conn::http2::Builder::new(WeakScope::never())
+    let (sender, connection) = conn::http2::Builder::new(WeakScope::detached())
         .handshake(client_io)
         .await
         .unwrap();

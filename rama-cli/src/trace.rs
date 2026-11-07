@@ -94,7 +94,7 @@ fn init_structured(
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(TlsClientConfig::default_http())
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_default_connection_pool()
         .build_client();
     let exportor = OtelExporter::from_env_http(svc).context("build OTLP HTTP span exporter")?;

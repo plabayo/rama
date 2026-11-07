@@ -169,7 +169,7 @@ async fn serve<S>(address: SocketAddress, service: S)
 where
     S: Service<Request, Output = Response, Error = std::convert::Infallible> + Clone,
 {
-    TcpListener::build(WeakScope::never())
+    TcpListener::build(WeakScope::detached())
         .bind_address(address)
         .await
         .expect("bind TCP listener")

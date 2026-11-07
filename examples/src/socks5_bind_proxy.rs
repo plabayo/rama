@@ -113,7 +113,7 @@ async fn main() {
 
 async fn spawn_socks5_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(63010), WeakScope::never())
+        TcpListener::bind_address(SocketAddress::local_ipv4(63010), WeakScope::detached())
             .await
             .expect("bind socks5 BIND proxy on open port");
 
@@ -122,7 +122,7 @@ async fn spawn_socks5_server() -> SocketAddress {
         .expect("get bind address of socks5 proxy server")
         .into();
 
-    let socks5_acceptor = Socks5Acceptor::new(WeakScope::never())
+    let socks5_acceptor = Socks5Acceptor::new(WeakScope::detached())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_binder(DefaultBinder::default().with_bind_address(SocketAddress::local_ipv4(0)));
 

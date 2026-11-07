@@ -109,7 +109,7 @@ async fn main() -> Result<(), BoxError> {
             config.set_transport_config(Arc::new(transport));
             // HTTP drains accepted requests first. Cancelling the transport on
             // the same signal would close QUIC before response FINs are acknowledged.
-            let endpoint = Endpoint::build(WeakScope::never())
+            let endpoint = Endpoint::build(WeakScope::detached())
                 .with_server_config(config)
                 .bind_address(listen)
                 .await?;

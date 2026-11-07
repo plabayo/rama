@@ -14,7 +14,7 @@ async fn main() -> Result<(), BoxError> {
         .with_send_compressed(CompressionEncoding::Gzip)
         .with_accept_compressed(CompressionEncoding::Gzip);
 
-    HttpServer::auto(WeakScope::never())
+    HttpServer::auto(WeakScope::detached())
         .listen(SocketAddress::local_ipv6(50051), service)
         .await?;
 

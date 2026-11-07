@@ -26,7 +26,7 @@ async fn zero_credit(provider: Provider) {
             max_requests: 1,
             ..early_config()
         },
-        WeakScope::never(),
+        WeakScope::detached(),
     )
     .unwrap();
     let _driver = Task::spawn(driver.run());

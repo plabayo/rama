@@ -108,7 +108,7 @@ async fn endpoint_remembering(store: Arc<AskedStore>) -> Endpoint {
     let server_config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
         .expect("the server config is built");
     let mut endpoint = Endpoint::bind_server(
-        rama_core::graceful::WeakScope::never(),
+        rama_core::graceful::WeakScope::detached(),
         server_config,
         crate::driver::tests::localhost(),
     )

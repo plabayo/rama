@@ -148,11 +148,11 @@ where
     let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
     let response = if version == Version::HTTP_2 {
         tokio::spawn(
-            server::conn::http2::Builder::new(WeakScope::never())
+            server::conn::http2::Builder::new(WeakScope::detached())
                 .with_enable_connect_protocol()
                 .serve_connection(server_io, service),
         );
-        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
+        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(client_io)
             .await
             .unwrap();
@@ -275,11 +275,11 @@ async fn truncated_capsules_reset_http2_streams_with_protocol_error() {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
         tokio::spawn(
-            server::conn::http2::Builder::new(WeakScope::never())
+            server::conn::http2::Builder::new(WeakScope::detached())
                 .with_enable_connect_protocol()
                 .serve_connection(server_io, capsule_service()),
         );
-        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
+        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(client_io)
             .await
             .unwrap();
@@ -322,11 +322,11 @@ async fn malformed_http2_streams_reset_after_local_end_stream() {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         let (client_io, server_io) = (ServiceInput::new(client_io), ServiceInput::new(server_io));
         tokio::spawn(
-            server::conn::http2::Builder::new(WeakScope::never())
+            server::conn::http2::Builder::new(WeakScope::detached())
                 .with_enable_connect_protocol()
                 .serve_connection(server_io, closing_service()),
         );
-        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
+        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(client_io)
             .await
             .unwrap();
@@ -470,11 +470,11 @@ async fn refused_capsule_requests_leave_the_connection_reusable() {
         // HTTP/2: the refused stream ends; the next Extended CONNECT uses the same connection.
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         tokio::spawn(
-            server::conn::http2::Builder::new(WeakScope::never())
+            server::conn::http2::Builder::new(WeakScope::detached())
                 .with_enable_connect_protocol()
                 .serve_connection(ServiceInput::new(server_io), refuse_once_service()),
         );
-        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
+        let (mut sender, connection) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(ServiceInput::new(client_io))
             .await
             .unwrap();
@@ -650,7 +650,7 @@ async fn http2_graceful_shutdown_drains_live_capsule_sessions() {
         let (drain_tx, drain_rx) = oneshot::channel();
         let (started_tx, started_rx) = oneshot::channel();
         let driver = tokio::spawn(async move {
-            let connection = server::conn::http2::Builder::new(WeakScope::never())
+            let connection = server::conn::http2::Builder::new(WeakScope::detached())
                 .with_enable_connect_protocol()
                 .serve_connection(ServiceInput::new(server_io), service);
             let mut connection = pin!(connection);
@@ -671,7 +671,7 @@ async fn http2_graceful_shutdown_drains_live_capsule_sessions() {
             started_tx.send(()).unwrap();
             connection.await.unwrap();
         });
-        let (mut sender, client_driver) = conn::http2::Builder::new(WeakScope::never())
+        let (mut sender, client_driver) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(ServiceInput::new(client_io))
             .await
             .unwrap();

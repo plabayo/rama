@@ -299,9 +299,11 @@ mod tests {
 
     #[test]
     fn test_issuer_kind_normalize_identity() {
-        let issuer =
-            CertIssuerHttpClient::new(WeakScope::never(), Uri::from_static("http://example.com"))
-                .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
+        let issuer = CertIssuerHttpClient::new(
+            WeakScope::detached(),
+            Uri::from_static("http://example.com"),
+        )
+        .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
         for (input, expected) in [
             ("example.com", None),
             ("www.foo.com", Some("*.foo.com")),

@@ -22,7 +22,7 @@ async fn pending_certificate_policy_is_released_when_the_udp_driver_fails() {
             let (client_config, server_config, started, dropped) = pending_policy(version);
             let server = endpoint(
                 Some(server_config),
-                WeakScope::never(),
+                WeakScope::detached(),
                 Duration::from_secs(1),
             );
             let (socket, _gate, fault, _) = breakable_socket(None);
@@ -164,10 +164,10 @@ async fn closing_drops_a_pending_certificate_policy_before_draining_ends() {
             let (client_config, server_config, started, dropped) = pending_policy(version);
             let server = endpoint(
                 Some(server_config),
-                WeakScope::never(),
+                WeakScope::detached(),
                 Duration::from_secs(1),
             );
-            let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+            let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
             let connecting = client
                 .connect_with(client_config, server.local_addr().unwrap(), "localhost")
                 .unwrap();
@@ -230,10 +230,10 @@ async fn certificate_work_finishing_between_packets_resumes_the_handshake() {
             );
             let server = endpoint(
                 Some(server_config),
-                WeakScope::never(),
+                WeakScope::detached(),
                 Duration::from_secs(1),
             );
-            let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+            let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
             let accepting_endpoint = server.clone();
             let accepting = async move {
                 let mut connecting = accepting_endpoint.accept().await.unwrap().accept().unwrap();

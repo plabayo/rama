@@ -87,7 +87,7 @@ async fn main() {
     let server = TtrpcServer::new().register(greeter::Greeter(GreeterService));
 
     tracing::info!("ttRPC greeter server listening on {ADDR}");
-    TcpListener::bind_address(ADDR, WeakScope::never())
+    TcpListener::bind_address(ADDR, WeakScope::detached())
         .await
         .expect("bind TCP listener")
         .serve(server)

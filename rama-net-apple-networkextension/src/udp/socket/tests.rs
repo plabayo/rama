@@ -60,7 +60,7 @@ fn demux(socket: UdpFlowSocket) -> Associations {
         },
     );
     tokio::spawn(demux.serve(
-        WeakScope::never(),
+        WeakScope::detached(),
         service_fn(move |association| {
             let associations = associations.clone();
             async move {

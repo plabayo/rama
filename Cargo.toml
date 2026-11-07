@@ -278,6 +278,7 @@ tower-layer = "0.3"
 tower-service = "0.3"
 tracing = { version = "0.1", default-features = false }
 tracing-appender = "0.2"
+tracing-core = "0.1"
 tracing-opentelemetry = "0.34"
 tracing-subscriber = "0.3"
 tracing-test = "0.2"

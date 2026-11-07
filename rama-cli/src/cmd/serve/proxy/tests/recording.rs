@@ -5,7 +5,7 @@ use super::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() {
     let origin_listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
             .await
             .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
@@ -13,10 +13,11 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .unwrap()
         .with_alpn_http_auto();
-    let origin_http =
-        HttpServer::auto(WeakScope::never()).service(service_fn(|_request: Request| async move {
+    let origin_http = HttpServer::auto(WeakScope::detached()).service(service_fn(
+        |_request: Request| async move {
             Ok::<_, Infallible>(Response::new(Body::from("pause-roundtrip-ok")))
-        }));
+        },
+    ));
     let origin_task = tokio::spawn(origin_listener.serve(TlsAcceptorService::new(
         origin_tls,
         origin_http,
@@ -51,7 +52,7 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(TlsClientConfig::default_http())
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
     let dashboard = dashboard_client
@@ -78,7 +79,7 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(trusted_tls)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
     let insecure_tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
@@ -88,7 +89,7 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(insecure_tls)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
     // Use a DNS identity so the generated MITM leaf can be verified against

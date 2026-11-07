@@ -72,7 +72,7 @@ async fn origin() -> SocketAddress {
 }
 
 async fn serve_origin() -> Origin {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let listener = TcpListener::build(scope.clone())
         .bind_address(SocketAddress::local_ipv4(0))
         .await

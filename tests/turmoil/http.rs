@@ -39,7 +39,7 @@ async fn start_server(
     let (conn, _) = conn_result?;
     let conn = TcpStream::new(conn);
 
-    let server = HttpServer::new_http1(WeakScope::never());
+    let server = HttpServer::new_http1(WeakScope::detached());
     server
         .serve(
             conn,
@@ -59,7 +59,7 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client(),
     );

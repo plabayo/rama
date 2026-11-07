@@ -44,7 +44,7 @@ impl UnixListenerBuilder {
 
 impl Default for UnixListenerBuilder {
     fn default() -> Self {
-        Self::default_with_scope(WeakScope::never())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 

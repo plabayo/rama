@@ -184,7 +184,7 @@ async fn run_case(case: Case) {
                 proxy.clone(),
                 target.clone(),
                 version,
-                http_client_on(WeakScope::never(), case.quic),
+                http_client_on(WeakScope::detached(), case.quic),
             )
             .await,
         ),
@@ -198,7 +198,7 @@ async fn run_case(case: Case) {
     };
     for run in 0..runs {
         let label = format!("{case:?} run {run}");
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let (client, host, route) = match &egress {
             None => (
                 tunneling_client_with(

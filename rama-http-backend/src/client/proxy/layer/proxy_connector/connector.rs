@@ -125,7 +125,7 @@ impl InnerHttpProxyConnector {
         req: Request,
         stream: S,
     ) -> Result<Response<Incoming>, HttpProxyError> {
-        let (mut tx, conn) = http2::Builder::new(WeakScope::never())
+        let (mut tx, conn) = http2::Builder::new(WeakScope::detached())
             .handshake(stream)
             .await
             .map_err(|err| HttpProxyError::Transport(err.into()))?;

@@ -1959,7 +1959,7 @@ async fn receive_queue_limits_must_hold_one_datagram_and_one_attempt() {
             None,
             socket,
             Vec::new(),
-            rama_core::graceful::WeakScope::never(),
+            rama_core::graceful::WeakScope::detached(),
             Duration::from_secs(1),
         )
         .unwrap_err();

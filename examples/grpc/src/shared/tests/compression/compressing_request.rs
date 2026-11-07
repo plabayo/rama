@@ -63,7 +63,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         )
             .into_layer(svc);
 
-        HttpServer::auto(WeakScope::never()).service(grpc_svc)
+        HttpServer::auto(WeakScope::detached()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -115,7 +115,7 @@ async fn client_enabled_server_enabled_multi_encoding(encoding: CompressionEncod
         )
             .into_layer(svc);
 
-        HttpServer::new_h2(WeakScope::never()).service(grpc_svc)
+        HttpServer::new_h2(WeakScope::detached()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -146,7 +146,7 @@ util::parametrized_tests! {
 async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
     let svc = test_server::TestServer::new(Svc::default());
 
-    let server = HttpServer::auto(WeakScope::never()).service(svc);
+    let server = HttpServer::auto(WeakScope::detached()).service(svc);
 
     let client = test_client::TestClient::new(
         mock_io_client(move || server.clone()),
@@ -195,7 +195,7 @@ async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
 
 //     tokio::spawn({
 //         async move {
-//             HttpServer::auto(WeakScope::never())
+//             HttpServer::auto(WeakScope::detached())
 //                 .serve(ServiceInput::new(server), svc)
 //                 .await
 //                 .unwrap();

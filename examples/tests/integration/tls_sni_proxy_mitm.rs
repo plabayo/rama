@@ -81,7 +81,7 @@ async fn spawn_test_egres_server() {
         HttpServer::default().service("tls-sni-proxy-mitm-example".into_endpoint_service()),
     );
 
-    let listener = TcpListener::bind_address("127.0.0.1:63019", WeakScope::never())
+    let listener = TcpListener::bind_address("127.0.0.1:63019", WeakScope::detached())
         .await
         .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"));
 

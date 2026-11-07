@@ -31,7 +31,7 @@ where
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector::<Body>(WeakScope::never())
+        .with_default_http_connector::<Body>(WeakScope::detached())
         .with_default_connection_pool()
         .build_client()
         .boxed()

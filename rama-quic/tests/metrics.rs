@@ -147,7 +147,7 @@ impl Collector {
 }
 
 async fn endpoint(identities: Option<&Identities>, metrics: &QuicMetrics) -> Endpoint {
-    Endpoint::build(WeakScope::never())
+    Endpoint::build(WeakScope::detached())
         .maybe_with_server_config(identities.map(Identities::server_config))
         .with_metrics(metrics.clone())
         .bind_address(localhost())

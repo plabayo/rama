@@ -65,7 +65,7 @@ pub(super) fn replay_client(
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_custom_connection_pool(pool, replay_pool_id, config.wait_for_pool_timeout)
         .map_connector(|connector| {
             let connector = BindBodyToConnLayer::new().into_layer(connector);

@@ -83,7 +83,7 @@ async fn test_http_tests_throttled() {
 
 async fn http_client() -> BoxService<Request, Response, OpaqueError> {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let http3 = Http3Connector::builder(WeakScope::never())
+    let http3 = Http3Connector::builder(WeakScope::detached())
         .with_tls_config(tls.clone())
         .build()
         .await
@@ -94,7 +94,7 @@ async fn http_client() -> BoxService<Request, Response, OpaqueError> {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_http3_support(http3)
         .without_connection_pool()
         .build_client()

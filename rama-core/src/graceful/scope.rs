@@ -47,11 +47,11 @@ pub struct WeakScope {
     nodes: Nodes,
 }
 
-/// The nodes a handle refers to: none (never), one, or the children of a scope made below
+/// The nodes a handle refers to: none (detached), one, or the children of a scope made below
 /// several parents.
 #[derive(Clone)]
 enum Nodes {
-    Never,
+    Detached,
     One(Arc<Node>),
     Many(std::sync::Arc<Composite>),
 }
@@ -92,11 +92,11 @@ impl Scope {
         }
     }
 
-    /// Create a scope that is never cancelled.
+    /// Create a detached scope: never cancelled, and no join waits for work in it.
     #[must_use]
-    pub const fn never() -> Self {
+    pub const fn detached() -> Self {
         Self {
-            nodes: Nodes::Never,
+            nodes: Nodes::Detached,
         }
     }
 
@@ -104,7 +104,7 @@ impl Scope {
     pub(super) fn node(&self) -> Option<&Arc<Node>> {
         match &self.nodes {
             Nodes::One(node) => Some(node),
-            Nodes::Never | Nodes::Many(_) => None,
+            Nodes::Detached | Nodes::Many(_) => None,
         }
     }
 
@@ -113,15 +113,15 @@ impl Scope {
         self.nodes.as_slice()
     }
 
-    /// Whether this is [`Scope::never`], which tracks nothing and is never cancelled.
+    /// Whether this is [`Scope::detached`], which tracks nothing and is never cancelled.
     #[must_use]
-    pub const fn is_never(&self) -> bool {
-        matches!(self.nodes, Nodes::Never)
+    pub const fn is_detached(&self) -> bool {
+        matches!(self.nodes, Nodes::Detached)
     }
 
     /// Create a child scope: cancelled when this scope is, never the other way around.
     ///
-    /// The child of [`Scope::never`] is a new root.
+    /// The child of [`Scope::detached`] is a new root.
     #[must_use]
     pub fn child(&self) -> Self {
         Self {
@@ -134,16 +134,16 @@ impl Scope {
     ///
     /// Its own phases, holds and builders are those of the new scope only, never of the
     /// parents. A parent that is an ancestor of another parent adds nothing, and neither does
-    /// [`Scope::never`]; without any other parent the new scope is a root.
+    /// [`Scope::detached`]; without any other parent the new scope is a root.
     #[must_use]
     pub fn child_of<'a>(parents: impl IntoIterator<Item = &'a Self>) -> Self {
         let mut parents: Vec<&Nodes> = parents
             .into_iter()
             .map(|parent| &parent.nodes)
-            .filter(|nodes| !matches!(nodes, Nodes::Never))
+            .filter(|nodes| !matches!(nodes, Nodes::Detached))
             .collect();
         let nodes = if parents.len() <= 1 {
-            Nodes::children_of(parents.pop().cloned().unwrap_or(Nodes::Never))
+            Nodes::children_of(parents.pop().cloned().unwrap_or(Nodes::Detached))
         } else {
             let (nodes, composites) = Nodes::merged(parents);
             Nodes::children_of_parts(nodes, composites)
@@ -152,7 +152,7 @@ impl Scope {
     }
 
     fn make_root(&mut self) {
-        if self.is_never() {
+        if self.is_detached() {
             *self = Self::new();
         }
     }
@@ -259,12 +259,12 @@ impl Scope {
         }
     }
 
-    /// Cancel this scope; the first cause is kept. No effect on [`Scope::never`].
+    /// Cancel this scope; the first cause is kept. No effect on [`Scope::detached`].
     pub fn cancel(&self, cause: Cause) {
         self.nodes.cancel(cause);
     }
 
-    /// Abort this scope, which also cancels it. No effect on [`Scope::never`].
+    /// Abort this scope, which also cancels it. No effect on [`Scope::detached`].
     pub fn abort(&self, cause: Cause) {
         self.nodes.abort(cause);
     }
@@ -310,12 +310,12 @@ impl Scope {
     /// [`WeakScope::into_scope`] fails; a scope made by [`Scope::child_of`] is closed as a
     /// whole once any of its parts is. Returns [`JoinAborted`] as soon as the scope is
     /// aborted, even when holders remain; await [`WeakScope::drained`] for their end.
-    /// [`Scope::never`] tracks no holders, so it returns at once and is never closed:
-    /// upgrading it keeps giving [`Scope::never`]. See [`Scope::join_once_cancelled`] to
+    /// [`Scope::detached`] tracks no holders, so it returns at once and is never closed:
+    /// upgrading it keeps giving [`Scope::detached`]. See [`Scope::join_once_cancelled`] to
     /// wait for the cancel first.
     pub async fn join(self) -> Result<Joined, JoinAborted> {
         let start = Instant::now();
-        if self.is_never() {
+        if self.is_detached() {
             return Ok(Joined::new(Duration::ZERO, None));
         }
         let weak = self.clone_weak();
@@ -338,7 +338,7 @@ impl Scope {
     }
 
     /// Wait until this scope is cancelled, then [`Scope::join`] it: the shutdown of a root
-    /// whose work may be done early or detached. Never returns for [`Scope::never`].
+    /// whose work may end before it is cancelled. Never returns for [`Scope::detached`].
     pub async fn join_once_cancelled(self) -> Result<Joined, JoinAborted> {
         self.cancelled().await;
         self.join().await
@@ -358,7 +358,7 @@ impl Scope {
 
     /// Future that completes once no strong holder is left in this scope's subtree.
     ///
-    /// Holding this scope keeps it from completing. [`Scope::never`] tracks no holders, so
+    /// Holding this scope keeps it from completing. [`Scope::detached`] tracks no holders, so
     /// its drain is complete at once.
     #[inline]
     pub fn drained(&self) -> Drained {
@@ -408,11 +408,11 @@ impl Scope {
 }
 
 impl WeakScope {
-    /// The weak handle of [`Scope::never`]: unmanaged work, never cancelled.
+    /// The weak handle of [`Scope::detached`]: work outside any shutdown, never cancelled.
     #[must_use]
-    pub const fn never() -> Self {
+    pub const fn detached() -> Self {
         Self {
-            nodes: Nodes::Never,
+            nodes: Nodes::Detached,
         }
     }
 
@@ -432,7 +432,7 @@ impl WeakScope {
     #[must_use]
     pub fn into_scope(self) -> Option<Scope> {
         let held = match &self.nodes {
-            Nodes::Never => true,
+            Nodes::Detached => true,
             Nodes::One(node) => node.try_retain(),
             Nodes::Many(composite) => composite.try_retain(),
         };
@@ -512,17 +512,17 @@ impl WeakScope {
         self.nodes.cause(true)
     }
 
-    /// See [`Scope::is_never`].
+    /// See [`Scope::is_detached`].
     #[must_use]
-    pub const fn is_never(&self) -> bool {
-        matches!(self.nodes, Nodes::Never)
+    pub const fn is_detached(&self) -> bool {
+        matches!(self.nodes, Nodes::Detached)
     }
 }
 
 impl Nodes {
     fn as_slice(&self) -> &[Arc<Node>] {
         match self {
-            Self::Never => &[],
+            Self::Detached => &[],
             Self::One(node) => std::slice::from_ref(node),
             Self::Many(composite) => &composite.nodes,
         }
@@ -563,8 +563,8 @@ impl Nodes {
 
     fn from_nodes(mut nodes: Vec<Arc<Node>>, parents: Vec<std::sync::Arc<Composite>>) -> Self {
         match nodes.len() {
-            0 => Self::Never,
-            1 => nodes.pop().map_or(Self::Never, Self::One),
+            0 => Self::Detached,
+            1 => nodes.pop().map_or(Self::Detached, Self::One),
             _ => Self::Many(std::sync::Arc::new(Composite {
                 nodes: nodes.into(),
                 parents: parents.into(),
@@ -577,7 +577,7 @@ impl Nodes {
     /// One new held child below each of `parents`; a root without any.
     fn children_of(parents: Self) -> Self {
         match parents {
-            Self::Never => Self::One(held_child(None)),
+            Self::Detached => Self::One(held_child(None)),
             Self::One(parent) => Self::One(held_child(Some(parent))),
             Self::Many(composite) => {
                 let nodes = composite.nodes.to_vec();
@@ -606,7 +606,7 @@ impl Nodes {
     /// Closes every node once all of them are drained; `false` while any holder is left.
     fn close_if_drained(&self) -> bool {
         match self {
-            Self::Never => true,
+            Self::Detached => true,
             Self::One(node) => node.close_if_drained(),
             // Closed only once all parts are drained; a part revived meanwhile stops the
             // closing, and the parts closed before it already close the whole.
@@ -625,7 +625,7 @@ impl Nodes {
             let _output = signal.await;
         });
         match self {
-            Self::Never => {}
+            Self::Detached => {}
             Self::One(node) => node.add_signal(hard, signal),
             Self::Many(composite) => {
                 // One root drives the signal once; every part follows its phase.
@@ -639,7 +639,7 @@ impl Nodes {
 
     fn cancel(&self, cause: Cause) {
         match self {
-            Self::Never => {}
+            Self::Detached => {}
             Self::One(node) => node.cancel(cause),
             Self::Many(composite) => {
                 for_each_node(&composite.nodes, |node| node.cancel(cause.clone()))
@@ -649,7 +649,7 @@ impl Nodes {
 
     fn abort(&self, cause: Cause) {
         match self {
-            Self::Never => {}
+            Self::Detached => {}
             Self::One(node) => node.abort(cause),
             Self::Many(composite) => {
                 for_each_node(&composite.nodes, |node| node.abort(cause.clone()))
@@ -660,7 +660,7 @@ impl Nodes {
     /// Runs `change` on every node; see [`for_each_node`] for a composite.
     fn for_each(&self, change: impl Fn(&Node)) {
         match self {
-            Self::Never => {}
+            Self::Detached => {}
             Self::One(node) => change(node),
             Self::Many(composite) => for_each_node(&composite.nodes, change),
         }
@@ -669,7 +669,7 @@ impl Nodes {
     #[inline]
     fn is_cancelled(&self) -> bool {
         match self {
-            Self::Never => false,
+            Self::Detached => false,
             Self::One(node) => node.phase().graceful(),
             Self::Many(composite) => composite.fact(false).is_some(),
         }
@@ -678,7 +678,7 @@ impl Nodes {
     #[inline]
     fn is_aborted(&self) -> bool {
         match self {
-            Self::Never => false,
+            Self::Detached => false,
             Self::One(node) => node.phase().hard(),
             Self::Many(composite) => composite.fact(true).is_some(),
         }
@@ -686,7 +686,7 @@ impl Nodes {
 
     fn cause(&self, hard: bool) -> Option<Cause> {
         match self {
-            Self::Never => None,
+            Self::Detached => None,
             Self::One(node) => {
                 let (graceful, hard_cause) = node.causes();
                 if hard { hard_cause } else { graceful }
@@ -963,13 +963,13 @@ fn is_ancestor(ancestor: &Node, node: &Node) -> bool {
 
 impl Default for Scope {
     fn default() -> Self {
-        Self::never()
+        Self::detached()
     }
 }
 
 impl Default for WeakScope {
     fn default() -> Self {
-        Self::never()
+        Self::detached()
     }
 }
 
@@ -996,7 +996,7 @@ impl Clone for Scope {
     #[inline]
     fn clone(&self) -> Self {
         let nodes = match &self.nodes {
-            Nodes::Never => Nodes::Never,
+            Nodes::Detached => Nodes::Detached,
             Nodes::One(node) => {
                 node.retain_held();
                 Nodes::One(node.clone())
@@ -1014,7 +1014,7 @@ impl Drop for Scope {
     #[inline]
     fn drop(&mut self) {
         match &self.nodes {
-            Nodes::Never => {}
+            Nodes::Detached => {}
             Nodes::One(node) => node.release(),
             Nodes::Many(composite) => composite.release(),
         }
@@ -1035,7 +1035,7 @@ impl fmt::Debug for WeakScope {
 
 fn debug_scope(f: &mut fmt::Formatter<'_>, name: &str, nodes: &Nodes) -> fmt::Result {
     match nodes {
-        Nodes::Never => f.debug_struct(name).field("never", &true).finish(),
+        Nodes::Detached => f.debug_struct(name).field("detached", &true).finish(),
         Nodes::One(node) => {
             let phase = node.phase();
             f.debug_struct(name)
@@ -1077,7 +1077,7 @@ impl Waits {
     #[inline]
     fn new(nodes: &Nodes, target: Target) -> Self {
         match nodes {
-            Nodes::Never => Self {
+            Nodes::Detached => Self {
                 first: Wait::new(None, target),
                 rest: ManuallyDrop::new(None),
             },

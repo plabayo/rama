@@ -69,6 +69,11 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
         }
     });
     let events = capture.0.lock();
+    assert_eq!(
+        events.len(),
+        4,
+        "one establishment and three failure reports"
+    );
     let event = events.first().expect("establishment event");
     assert_eq!(event.get("flow_id"), Some(&id.to_string()));
     assert_eq!(event.get("pid").map(String::as_str), Some("42"));

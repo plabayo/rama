@@ -21,23 +21,24 @@ async fn test_masque_connect_udp_proxy() {
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let origin = Endpoint::build(WeakScope::never())
+    let origin = Endpoint::build(WeakScope::detached())
         .with_server_config(ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let origin_port = origin.local_addr().unwrap().port();
-    let h3 =
-        HttpServer::new_http3(WeakScope::never()).service(service_fn(async |request: Request| {
+    let h3 = HttpServer::new_http3(WeakScope::detached()).service(service_fn(
+        async |request: Request| {
             Ok::<_, Infallible>(Response::new(Body::from(format!(
                 "{:?} origin",
                 request.version()
             ))))
-        }));
+        },
+    ));
     // Every connection's end, to check that the client closed it.
     let (closed_tx, mut closed) = mpsc::unbounded_channel::<ConnectionError>();
     tokio::spawn(origin.clone().serve(
-        WeakScope::never(),
+        WeakScope::detached(),
         service_fn(move |connection: Connection| {
             let closed_tx = closed_tx.clone();
             let h3 = h3.clone();

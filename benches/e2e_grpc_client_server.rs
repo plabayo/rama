@@ -207,10 +207,11 @@ fn spawn_origin(accepted: Arc<AtomicUsize>) -> Origin {
             .unwrap()
             .block_on(async move {
                 let listener =
-                    TcpListener::try_from_std_tcp_listener(listener, WeakScope::never()).unwrap();
+                    TcpListener::try_from_std_tcp_listener(listener, WeakScope::detached())
+                        .unwrap();
                 ready_tx.send(()).unwrap();
                 let http = Arc::new(
-                    HttpServer::auto(WeakScope::never())
+                    HttpServer::auto(WeakScope::detached())
                         .service(echo_server::EchoServer::new(EchoService)),
                 );
                 let serve = listener.serve(service_fn(move |stream| {

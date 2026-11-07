@@ -1277,7 +1277,7 @@ mod tests {
         };
         let plain = builder()
             .without_tls_support()
-            .with_default_http_connector::<Body>(WeakScope::never())
+            .with_default_http_connector::<Body>(WeakScope::detached())
             .with_default_connection_pool()
             .build_connector();
         assert_future_budget(&plain, "plain pooled");
@@ -1285,13 +1285,13 @@ mod tests {
         {
             let pooled = builder()
                 .with_tls_support_using_rustls(TlsClientConfig::new())
-                .with_default_http_connector::<Body>(WeakScope::never())
+                .with_default_http_connector::<Body>(WeakScope::detached())
                 .with_default_connection_pool()
                 .build_connector();
             assert_future_budget(&pooled, "rustls pooled");
             let unpooled = builder()
                 .with_tls_support_using_rustls(TlsClientConfig::new())
-                .with_default_http_connector::<Body>(WeakScope::never())
+                .with_default_http_connector::<Body>(WeakScope::detached())
                 .without_connection_pool()
                 .build_connector();
             assert_future_budget(&unpooled, "rustls unpooled");
@@ -1484,7 +1484,7 @@ mod tests {
     async fn built_in_quic_uses_the_configured_dns_resolver() {
         let calls = Arc::new(AtomicUsize::new(0));
         let applied = Arc::new(AtomicUsize::new(0));
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let h3 = Http3Connector::builder(scope.clone())
             .build()
             .await
@@ -1526,7 +1526,7 @@ mod tests {
     ))]
     #[tokio::test]
     async fn ipv4_quic_endpoint_skips_ipv6_candidates_without_terminal_failure() {
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let endpoint = Endpoint::bind_client(scope.clone(), SocketAddress::local_ipv4(0))
             .await
             .unwrap();

@@ -144,24 +144,24 @@ fn abort_implies_cancel_and_first_cause_wins() {
 }
 
 #[test]
-fn never_scope_and_its_children() {
-    let never = Scope::never();
-    never.cancel(Cause::Owner);
-    assert!(!never.is_cancelled());
-    assert!(poll_noop(&mut never.cancelled()).is_pending());
+fn detached_scope_and_its_children() {
+    let detached = Scope::detached();
+    detached.cancel(Cause::Owner);
+    assert!(!detached.is_cancelled());
+    assert!(poll_noop(&mut detached.cancelled()).is_pending());
 
-    let first = never.child();
-    let second = never.child();
+    let first = detached.child();
+    let second = detached.child();
     first.cancel(Cause::Owner);
     assert!(first.is_cancelled());
     assert!(!second.is_cancelled());
 }
 
 #[test]
-fn never_scope_is_drained_and_never_ends_its_phases() {
-    let never = Scope::never();
-    let weak = never.clone_weak();
-    let mut drained = never.drained();
+fn detached_scope_is_drained_and_never_ends_its_phases() {
+    let detached = Scope::detached();
+    let weak = detached.clone_weak();
+    let mut drained = detached.drained();
     let mut weak_drained = weak.drained();
     let mut cancelled = weak.cancelled();
     let mut aborted = weak.aborted();
@@ -171,15 +171,15 @@ fn never_scope_is_drained_and_never_ends_its_phases() {
         assert!(poll_noop(&mut cancelled).is_pending());
         assert!(poll_noop(&mut aborted).is_pending());
     }
-    drop(never);
+    drop(detached);
     assert!(poll_noop(&mut weak.drained()).is_ready());
-    assert!(weak.into_scope().is_some_and(|scope| scope.is_never()));
+    assert!(weak.into_scope().is_some_and(|scope| scope.is_detached()));
 }
 
 #[test]
-fn timeout_on_never_creates_a_root() {
+fn timeout_on_detached_creates_a_root() {
     rt().block_on(async {
-        let scope = Scope::never().with_timeout(SEC);
+        let scope = Scope::detached().with_timeout(SEC);
         assert!(!scope.is_cancelled());
         advance(SEC).await;
         assert!(scope.is_cancelled());
@@ -783,7 +783,7 @@ fn weak_scope_observes_and_drives_its_node() {
 }
 
 #[test]
-fn weak_never_scope_stays_inert() {
+fn weak_detached_scope_stays_inert() {
     let weak = Scope::default().into_weak_scope();
     weak.cancel(Cause::Owner);
     weak.abort(Cause::Owner);
@@ -829,7 +829,7 @@ fn debug_reflects_the_phase() {
     assert!(format!("{scope:?}").contains("cancelled: false"));
     scope.cancel(Cause::Owner);
     assert!(format!("{weak:?}").contains("cancelled: true"));
-    assert!(format!("{:?}", Scope::never()).contains("never"));
+    assert!(format!("{:?}", Scope::detached()).contains("detached: true"));
     assert!(format!("{:?}", scope.cancelled()).starts_with("Cancelled"));
 }
 
@@ -995,8 +995,8 @@ fn run_until_never_polls_a_future_of_a_finished_phase() {
 }
 
 #[test]
-fn join_of_a_never_scope_returns_at_once() {
-    let mut join = Box::pin(Scope::never().join());
+fn join_of_a_detached_scope_returns_at_once() {
+    let mut join = Box::pin(Scope::detached().join());
     assert!(matches!(
         poll_noop(&mut join),
         Poll::Ready(Ok(joined)) if joined.elapsed() == Duration::ZERO
@@ -1346,12 +1346,12 @@ fn panicking_driver_wakes_a_waiter_that_registered_during_its_drive() {
 }
 
 #[test]
-fn only_never_is_never() {
-    assert!(Scope::never().is_never());
-    assert!(Scope::default().is_never());
-    assert!(!Scope::new().is_never());
-    assert!(!Scope::never().child().is_never());
-    assert!(!Scope::never().with_timeout(SEC).is_never());
+fn only_detached_is_detached() {
+    assert!(Scope::detached().is_detached());
+    assert!(Scope::default().is_detached());
+    assert!(!Scope::new().is_detached());
+    assert!(!Scope::detached().child().is_detached());
+    assert!(!Scope::detached().with_timeout(SEC).is_detached());
 }
 
 // ---- scopes below several parents ----
@@ -1383,13 +1383,13 @@ fn child_of_ends_with_any_parent_and_holds_each() {
 fn child_of_one_lineage_is_a_single_child_of_the_deepest() {
     let a = Scope::new();
     let x = a.child();
-    let work = Scope::child_of([&a, &Scope::never(), &x, &x]);
+    let work = Scope::child_of([&a, &Scope::detached(), &x, &x]);
     assert!(work.node().is_some(), "one part");
     x.cancel(Cause::Owner);
     assert!(work.is_cancelled());
 
-    let root = Scope::child_of([&Scope::never()]);
-    assert!(!root.is_never());
+    let root = Scope::child_of([&Scope::detached()]);
+    assert!(!root.is_detached());
     assert!(!root.is_cancelled());
 }
 
@@ -1743,7 +1743,7 @@ fn a_dropped_join_once_cancelled_closes_nothing() {
 fn entering_without_any_scope_makes_a_root() {
     let extensions = Extensions::new();
     let scope = enter_scope(&extensions).unwrap();
-    assert!(!scope.is_never());
+    assert!(!scope.is_detached());
     assert!(scope_context(&extensions).is_some());
 }
 
@@ -1757,11 +1757,11 @@ fn entering_with_only_an_own_scope_makes_its_child() {
 }
 
 #[test]
-fn an_attached_never_scope_is_no_context() {
+fn attaching_a_detached_scope_sets_no_context() {
     let extensions = Extensions::new();
-    attach_scope(&extensions, &Scope::never());
+    attach_scope(&extensions, &Scope::detached());
     assert!(scope_context(&extensions).is_none());
-    assert!(!enter_scope(&extensions).unwrap().is_never());
+    assert!(!enter_scope(&extensions).unwrap().is_detached());
 }
 
 #[test]

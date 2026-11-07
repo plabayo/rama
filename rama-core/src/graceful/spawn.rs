@@ -287,9 +287,9 @@ mod tests {
     }
 
     #[test]
-    fn a_never_scope_spawns_without_holding() {
+    fn a_detached_scope_spawns_without_holding() {
         rt().block_on(async {
-            let weak = WeakScope::never();
+            let weak = WeakScope::detached();
             let task = weak
                 .try_hold()
                 .unwrap()

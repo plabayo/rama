@@ -8,7 +8,7 @@ use rama::{
 };
 
 async fn transparent(proxy: SocketAddress, intercepted: bool) -> (SocketAddress, Tasks) {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let (ca, key) = generate_certificate_authority_x509(&SelfSignedCaConfig::default()).unwrap();
     let tls = TlsMitmRelay::new_cached_in_memory(ca, key);
     let requests = Arc::new(AtomicUsize::new(0));
@@ -126,7 +126,7 @@ async fn own_masque_sessions_survive_transparent_interception_and_passthrough() 
                 .unwrap();
                 for run in 0..10 {
                     eprintln!("carrier={carrier:?}, intercepted={intercepted}, run={run}");
-                    let client = tunneling_client(WeakScope::never(), carrier.version());
+                    let client = tunneling_client(WeakScope::detached(), carrier.version());
                     assert_eq!(
                         get_through(&client, &format!("localhost:{}", origin.port), &address).await,
                         "HTTP/3.0 origin"

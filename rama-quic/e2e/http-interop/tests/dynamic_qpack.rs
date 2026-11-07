@@ -77,7 +77,7 @@ async fn dynamic_qpack_blocks_and_resumes_against_aioquic() -> Result<(), BoxErr
             .with_event_schemas(rama::http::core::h3::qlog::EVENT_SCHEMAS)
             .with_writer(Box::new(tokio::fs::File::create(&trace_path).await?))
             .start()?;
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let endpoint = Endpoint::build(scope.clone())
             .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
             .await?;

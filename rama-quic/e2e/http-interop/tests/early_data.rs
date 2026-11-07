@@ -66,7 +66,7 @@ async fn custom_rama_owner_recovers_quic_go_425_without_retry_layer() -> Result<
         let mut lines = BufReader::new(process.stdout.take().unwrap()).lines();
         let ready: serde_json::Value = serde_json::from_str(&lines.next_line().await?.ok_or("no readiness")?)?;
         let address: SocketAddr = ready["address"].as_str().ok_or("no address")?.parse()?;
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let endpoint = Endpoint::build(scope.clone()).bind_address("127.0.0.1:0".parse::<SocketAddr>()?).await?;
         let tls = TlsClientConfig::new().try_with_server_trust_anchors(auth.cert_chain)?
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
@@ -132,7 +132,7 @@ async fn quic_go_early_client_recovers_rama_425() -> Result<(), BoxError> {
                 .map(|c| c.to_pem())
                 .collect::<String>(),
         )?;
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let mut server = HttpServer::new_http3(scope.clone());
         server.http3_mut().early_dispatch = true;
         let tls = TlsServerConfig::new()

@@ -131,7 +131,7 @@ async fn assert_relay(ingress: Version, egress: Version) {
     let relay =
         WebSocketRelayIoService::new(WebSocketRelayService::new(service_fn(tag_relay_message)));
     let service = HttpUpgradeMitmRelayLayer::new(
-        WeakScope::never(),
+        WeakScope::detached(),
         HttpWebSocketRelayServiceRequestMatcher::new(relay),
     )
     .into_layer(ResponseVersionAdapter::new(upstream));

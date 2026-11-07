@@ -350,7 +350,7 @@ mod tests {
                         let (mut client, ingress) = duplex(ingress_capacity);
                         let (egress, origin) = duplex(4096);
                         let relay =
-                            mitm.new_bridge_service(WeakScope::never(), within_connect_tunnel);
+                            mitm.new_bridge_service(WeakScope::detached(), within_connect_tunnel);
                         let (write_closed, after_write_close) = oneshot::channel();
                         let (responding, response_started) = oneshot::channel();
 

@@ -186,7 +186,7 @@ async fn main() {
 
 #[cfg(target_os = "linux")]
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
 
     // Socket tuning shared by both address families. The transparent + freebind
     // options are per-family (set below): `IP_TRANSPARENT` / `IP_FREEBIND` apply

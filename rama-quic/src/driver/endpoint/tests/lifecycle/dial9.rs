@@ -16,10 +16,10 @@ async fn handshake_and_shutdown() {
     let (client_config, server_config) = configs();
     let server = endpoint(
         Some(server_config),
-        WeakScope::never(),
+        WeakScope::detached(),
         Duration::from_secs(1),
     );
-    let client = endpoint(None, WeakScope::never(), Duration::from_secs(1));
+    let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();

@@ -271,7 +271,7 @@ async fn memory_response_close_waits_for_buffered_goaway_before_classifying_reje
             let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let mut driver = pin!(driver.run());
@@ -348,7 +348,7 @@ async fn memory_response_failure_provenance_separates_peer_reset_from_applicatio
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -442,7 +442,7 @@ async fn memory_received_body_length_and_trailer_errors_are_remote() {
         let (client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -520,7 +520,7 @@ async fn memory_trailers_after_a_short_body_are_malformed() {
         let (client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -595,7 +595,7 @@ async fn memory_tunnels_ended_in_order_free_their_request_slot() {
                     max_requests: 1,
                     ..Config::default()
                 },
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let driver = spawn(driver.run());

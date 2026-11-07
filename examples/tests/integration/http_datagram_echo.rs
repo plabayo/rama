@@ -101,9 +101,9 @@ async fn test_http_datagram_echo() {
     #[cfg(all(not(feature = "rustls"), feature = "boring"))]
     let client_builder = client_builder.with_tls_support_using_boringssl(tls.clone());
     let client = client_builder
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_http3_support(
-            Http3Connector::builder(WeakScope::never())
+            Http3Connector::builder(WeakScope::detached())
                 .with_tls_config(tls)
                 .build()
                 .await

@@ -179,7 +179,7 @@ where
 {
     #[inline(always)]
     fn default() -> Self {
-        Self::default_with_scope(WeakScope::never())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 
@@ -807,7 +807,7 @@ mod tests {
             // count responses created on this specific connection
             let created_response = Arc::new(AtomicUsize::new(0));
 
-            HttpServer::auto(WeakScope::never()).service(service_fn(move |_req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
                 let created_response = created_response.clone();
                 let resp = created_response.fetch_add(1, Ordering::Relaxed);
                 async move {
@@ -1014,7 +1014,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client()
             .try_into_blocking()
@@ -1087,7 +1087,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_custom_proxy_connector(())
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
@@ -1124,7 +1124,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let request = Request::builder()
@@ -1181,7 +1181,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .with_default_connection_pool()
             .build_client();
 
@@ -1238,7 +1238,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let request = Request::builder()
@@ -1295,7 +1295,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_custom_proxy_connector(())
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .with_default_connection_pool()
             .build_client();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
@@ -1349,7 +1349,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_custom_proxy_connector(())
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .without_proxy_route_failure_cache()
             .without_connection_pool()
             .build_client();
@@ -1401,7 +1401,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap());
@@ -1455,7 +1455,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .with_proxy_route_failure_cache(failure_cache)
             .without_connection_pool()
             .build_client();
@@ -1522,7 +1522,7 @@ mod tests {
         let connect_version = Arc::new(parking_lot::Mutex::new(None));
         let observed_version = connect_version.clone();
         let proxy_http =
-            HttpServer::auto(WeakScope::never()).service(service_fn(move |req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
                 let origin_server = origin_server.clone();
                 let origin_done_tx = origin_done_tx.clone();
                 let observed_version = observed_version.clone();
@@ -1662,7 +1662,7 @@ mod tests {
         let connect_version = Arc::new(parking_lot::Mutex::new(None));
         let observed_version = connect_version.clone();
         let proxy_http =
-            HttpServer::auto(WeakScope::never()).service(service_fn(move |req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
                 let origin_server = origin_server.clone();
                 let origin_done_tx = origin_done_tx.clone();
                 let observed_version = observed_version.clone();
@@ -1759,7 +1759,7 @@ mod tests {
     #[cfg(feature = "boring")]
     #[tokio::test]
     async fn default_client_resumes_tls_sessions() {
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let resumed = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let record = resumed.clone();
         let server = TlsAcceptorLayer::new(
@@ -1825,7 +1825,7 @@ mod tests {
                 crate::tls::client::TlsClientConfig::default_http(),
                 Version::HTTP_11,
             )
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let request = Request::builder()
@@ -1850,7 +1850,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_streams_per_connection: NonZeroUsize::new(1),
                 max_connections_total: NonZeroUsize::new(4),
@@ -1896,7 +1896,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .with_default_connection_pool()
             .build_client();
 
@@ -1929,7 +1929,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .with_default_connection_pool()
             .build_client();
 
@@ -1963,7 +1963,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_streams_per_connection: NonZeroUsize::new(2),
                 ..Default::default()

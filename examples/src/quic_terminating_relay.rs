@@ -232,7 +232,7 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
-    let relay = Endpoint::build(WeakScope::never())
+    let relay = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config(&auth)?)
         .bind_address(settings.listen)
         .await?;
@@ -243,7 +243,7 @@ async fn main() -> Result<(), BoxError> {
         true => SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0),
         false => SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
     };
-    let client = Endpoint::build(WeakScope::never())
+    let client = Endpoint::build(WeakScope::detached())
         .bind_address(outbound)
         .await?;
     tracing::info!(

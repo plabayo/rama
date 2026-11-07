@@ -28,7 +28,7 @@ pub fn scope_context(extensions: &Extensions) -> Option<WeakScope> {
 ///
 /// Attaching holds nothing: whoever runs the input holds the scopes it runs in.
 pub fn attach_scope(extensions: &Extensions, scope: &Scope) {
-    if !scope.is_never() {
+    if !scope.is_detached() {
         extensions.insert(ScopeContext(scope.clone_weak()));
     }
 }

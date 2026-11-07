@@ -178,7 +178,10 @@ async fn native_h2_wire_preferences_partition_actual_pool_connections_by_value()
                 idle_timeout: None,
                 ..Default::default()
             }
-            .build_connector(HttpConnector::<_, Body>::new(transport, WeakScope::never())),
+            .build_connector(HttpConnector::<_, Body>::new(
+                transport,
+                WeakScope::detached(),
+            )),
         );
 
         let first = vec![(2, 0), (4, 65535), (6, 1048576)];

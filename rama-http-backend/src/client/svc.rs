@@ -737,9 +737,10 @@ mod tests {
                     }
                 }
             });
-            let (sender, connection) = http2::handshake(WeakScope::never(), ServiceInput::new(io))
-                .await
-                .unwrap();
+            let (sender, connection) =
+                http2::handshake(WeakScope::detached(), ServiceInput::new(io))
+                    .await
+                    .unwrap();
             let connection = tokio::spawn(async move { drop(connection.await) });
             let service = HttpClientService {
                 sender: SendRequest::Http2(sender),
@@ -829,7 +830,7 @@ mod tests {
             while connection.accept().await.is_some() {}
             reset.abort();
         });
-        let (sender, connection) = http2::handshake(WeakScope::never(), ServiceInput::new(io))
+        let (sender, connection) = http2::handshake(WeakScope::detached(), ServiceInput::new(io))
             .await
             .unwrap();
         let connection = tokio::spawn(async move { drop(connection.await) });
@@ -926,11 +927,11 @@ mod tests {
             SocketAddress::local_ipv4(444),
             NonZeroUsize::MIN,
         );
-        let server_endpoint = Endpoint::build(WeakScope::never())
+        let server_endpoint = Endpoint::build(WeakScope::detached())
             .with_server_config(server_config)
             .with_datagram_socket(server_socket)
             .unwrap();
-        let client_endpoint = Endpoint::build(WeakScope::never())
+        let client_endpoint = Endpoint::build(WeakScope::detached())
             .with_datagram_socket(client_socket)
             .unwrap();
         let (client, server) = tokio::join!(
@@ -974,7 +975,7 @@ mod tests {
                 let service = HttpClientService::<Body>::http3(
                     BoxedQuicConnection::new(client),
                     Http3Config::default(),
-                    WeakScope::never(),
+                    WeakScope::detached(),
                 )
                 .unwrap();
                 let attempts = Arc::new(SendAttempts::default());

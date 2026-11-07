@@ -70,7 +70,7 @@ async fn text_request() {
 
 async fn spawn() -> String {
     let addr = SocketAddress::local_ipv4(0);
-    let listener = TcpListener::bind_address(addr, WeakScope::never())
+    let listener = TcpListener::bind_address(addr, WeakScope::detached())
         .await
         .expect("listener");
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -78,7 +78,7 @@ async fn spawn() -> String {
     drop(tokio::spawn(async move {
         let http_svc = GrpcWebLayer::new().into_layer(test_server::TestServer::new(Svc));
         listener
-            .serve(HttpServer::auto(WeakScope::never()).service(http_svc))
+            .serve(HttpServer::auto(WeakScope::detached()).service(http_svc))
             .await;
     }));
 

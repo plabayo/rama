@@ -101,7 +101,7 @@ fn identity(kind: Identity) -> (ServerAuthData, String) {
 }
 
 async fn origins(auth: ServerAuthData) -> (SocketAddr, SocketAddr, AbortOnDrop, Endpoint) {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let tls = TlsServerConfig::new().with_server_auth(auth).with_alpn(
         [
             ApplicationProtocol::HTTP_3,
@@ -175,7 +175,7 @@ async fn tcp_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
 
 async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
     let socket = UdpFfiSession::new(engine, origin).into_datagram_socket(origin);
-    let endpoint = Endpoint::build(WeakScope::never())
+    let endpoint = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(socket)
         .unwrap();
     let tls = TlsClientConfig::new()
@@ -191,7 +191,7 @@ async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
             return false;
         };
         let (mut client, driver) =
-            client::handshake::<Body, _>(connection, Config::default(), WeakScope::never())
+            client::handshake::<Body, _>(connection, Config::default(), WeakScope::detached())
                 .unwrap();
         let driver = tokio::spawn(driver.run());
         let result = client

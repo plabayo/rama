@@ -14,7 +14,7 @@
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {
-//!     TcpListener::bind_address("127.0.0.1:9000", WeakScope::never())
+//!     TcpListener::bind_address("127.0.0.1:9000", WeakScope::detached())
 //!         .await
 //!         .expect("bind TCP Listener")
 //!         .serve(service_fn(async |mut stream: TcpStream| {

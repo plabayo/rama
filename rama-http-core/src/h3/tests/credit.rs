@@ -303,7 +303,7 @@ async fn draining_connection_wakes_admission_waiters_without_stream_credit() {
         let (sender, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let client_driver = spawn(driver.run());
@@ -406,7 +406,7 @@ async fn admission_after_remote_close_preserves_retryable_transport_classificati
         let (sender, _driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         pair.server
@@ -430,9 +430,12 @@ async fn admission_after_remote_close_preserves_retryable_transport_classificati
 #[tokio::test(start_paused = true)]
 async fn closed_transports_are_never_busy() {
     let pair = Pair::in_memory(None, None).await;
-    let (sender, driver) =
-        client::handshake::<Body, _>(pair.client.clone(), Config::default(), WeakScope::never())
-            .unwrap();
+    let (sender, driver) = client::handshake::<Body, _>(
+        pair.client.clone(),
+        Config::default(),
+        WeakScope::detached(),
+    )
+    .unwrap();
     let admission = sender.connection_admission();
     let held = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
     assert!(admission.in_use());
@@ -465,7 +468,7 @@ async fn closing_the_transport_wakes_admission_subscribers() {
         let (sender, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let admission = sender.connection_admission();
@@ -501,9 +504,12 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
     struct Conn(Extensions);
 
     let pair = Pair::in_memory(None, None).await;
-    let (sender, driver) =
-        client::handshake::<Body, _>(pair.client.clone(), Config::default(), WeakScope::never())
-            .unwrap();
+    let (sender, driver) = client::handshake::<Body, _>(
+        pair.client.clone(),
+        Config::default(),
+        WeakScope::detached(),
+    )
+    .unwrap();
     let admission = sender.connection_admission();
     let input = Extensions::new();
     // Work that outlives its pool handout, as an upgraded tunnel does.
@@ -601,7 +607,8 @@ async fn admission_without_a_free_permit_leaves_stream_credit_alone() {
             ..Config::default()
         };
         let (sender, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::never()).unwrap();
+            client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::detached())
+                .unwrap();
         let client_driver = spawn(driver.run());
         let (_server, driver) = server::handshake(pair.server.clone(), Config::default()).unwrap();
         let server_driver = spawn(driver.run());

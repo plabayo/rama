@@ -170,7 +170,7 @@ async fn start_both(
     ServerConnection<QuicConnection>,
 ) {
     let (client, client_driver) =
-        client::handshake::<Body, _>(pair.client.clone(), client, WeakScope::never()).unwrap();
+        client::handshake::<Body, _>(pair.client.clone(), client, WeakScope::detached()).unwrap();
     let (server, server_driver) = server::handshake(pair.server.clone(), server).unwrap();
     spawn(client_driver.run());
     spawn(server_driver.run());
@@ -2071,7 +2071,7 @@ async fn clean_connection_close_drains_native_datagrams(
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         spawn(client_driver.run());
@@ -2854,7 +2854,7 @@ async fn datagram_violation_racing_clean_close_is_reported_consistently() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             spawn(client_driver.run());
@@ -2900,7 +2900,7 @@ async fn error_close_after_observed_fin_reports_undrained_datagrams() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         spawn(client_driver.run());
@@ -2979,7 +2979,7 @@ async fn tunnel_fin_is_transmitted_after_earlier_queued_datagrams() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let client_driver = spawn(client_driver.run());
@@ -3229,7 +3229,7 @@ mod metrics {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let (mut server, server_driver) =

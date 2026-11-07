@@ -178,7 +178,7 @@ async fn run(args: Args) -> Result<(), BoxError> {
     server.http3().configure_transport(&mut transport)?;
     let mut config = ServerConfig::try_from_rama_tls(&server_tls, options)?;
     config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(WeakScope::never())
+    let endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(config)
         .bind_address(SocketAddress::local_ipv4(0))
         .await?;

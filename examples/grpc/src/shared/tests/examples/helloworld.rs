@@ -15,7 +15,7 @@ async fn hello_world_client_server_flow() {
         crate::hello_world::RamaGreeter::default(),
     );
 
-    let server = HttpServer::auto(WeakScope::never()).service(svc);
+    let server = HttpServer::auto(WeakScope::detached()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
         super::mock_io_client(move || server.clone()),
@@ -42,7 +42,7 @@ async fn hello_world_client_server_flow_with_compression_mismatch() {
     .with_accept_compressed(CompressionEncoding::Deflate)
     .with_send_compressed(CompressionEncoding::Gzip);
 
-    let server = HttpServer::auto(WeakScope::never()).service(svc);
+    let server = HttpServer::auto(WeakScope::detached()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
         super::mock_io_client(move || server.clone()),
@@ -71,7 +71,7 @@ async fn hello_world_client_server_flow_with_compression_mix() {
     .with_accept_compressed(CompressionEncoding::Deflate)
     .with_send_compressed(CompressionEncoding::Gzip);
 
-    let server = HttpServer::auto(WeakScope::never()).service(svc);
+    let server = HttpServer::auto(WeakScope::detached()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
         super::mock_io_client(move || server.clone()),
@@ -116,7 +116,7 @@ async fn hello_world_client_server_flow_with_compression(encoding: CompressionEn
     .with_accept_compressed(encoding)
     .with_send_compressed(encoding);
 
-    let server = HttpServer::auto(WeakScope::never()).service(svc);
+    let server = HttpServer::auto(WeakScope::detached()).service(svc);
 
     let client = crate::hello_world::greeter_client::GreeterClient::new(
         super::mock_io_client(move || server.clone()),

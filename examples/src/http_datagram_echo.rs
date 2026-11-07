@@ -244,7 +244,7 @@ async fn serve(
     server.http3().configure_transport(&mut transport)?;
     let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())?;
     config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(WeakScope::never())
+    let endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(config)
         .bind_address(listen)
         .await?;

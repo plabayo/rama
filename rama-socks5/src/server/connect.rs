@@ -191,7 +191,7 @@ impl DefaultConnector {
 
 impl Default for DefaultConnector {
     fn default() -> Self {
-        Self::default_with_scope(WeakScope::never())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 
@@ -332,7 +332,7 @@ impl LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
 impl Default for LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
     #[inline(always)]
     fn default() -> Self {
-        Self::default_with_scope(WeakScope::never())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 

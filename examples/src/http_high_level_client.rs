@@ -183,7 +183,7 @@ async fn run_server(addr: SocketAddress) {
         network.local.port = %addr.port,
         "running server",
     );
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     HttpServer::auto(scope)
         .listen(
             addr,

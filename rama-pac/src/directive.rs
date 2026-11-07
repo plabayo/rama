@@ -331,7 +331,17 @@ impl<'a> IntoIterator for &'a PacDirectives {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::assert_matches;
+    use parking_lot::Mutex;
+    use rama_core::telemetry::tracing::test_utils::prepare_for_captures;
+    use std::{
+        assert_matches,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        },
+        thread::{self, ThreadId},
+        time::Duration,
+    };
 
     use rama_net::address::{Domain, Host};
     use rama_utils::octets::{kib, mib};
@@ -342,7 +352,7 @@ mod tests {
 
     /// Records the `pac.directive` field of every event on this thread, so a
     /// test can see what a script's token actually turns into in the log.
-    struct CaptureDirectives(std::sync::mpsc::Sender<String>);
+    struct CaptureDirectives(mpsc::Sender<String>);
 
     struct DirectiveField(Option<String>);
 
@@ -545,11 +555,105 @@ mod tests {
 
     /// What `f` returns, and the `pac.directive` fields it logs on this thread.
     fn logged_directives<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
-        // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
-        let _registered = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
-        let (sender, received) = std::sync::mpsc::channel();
+        prepare_for_captures();
+        let (sender, received) = mpsc::channel();
         let output = tracing::subscriber::with_default(CaptureDirectives(sender), f);
         (output, received.try_iter().collect())
+    }
+
+    #[test]
+    fn a_token_first_logged_on_another_thread_is_still_captured() {
+        let ((), logged) = logged_directives(|| {
+            thread::spawn(|| {
+                let _: PacDirectives = "SOCKS4 elsewhere; DIRECT".parse().unwrap();
+            })
+            .join()
+            .unwrap();
+            let _: PacDirectives = "SOCKS4 here; DIRECT".parse().unwrap();
+        });
+        assert_eq!(logged, ["SOCKS4 here"]);
+    }
+
+    /// Holds the first registration of the `registration_probe` line on its thread open until
+    /// released, wanting none of it; every other registration passes straight through.
+    struct PausedRegistration {
+        thread: ThreadId,
+        paused: AtomicBool,
+        started: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl tracing::Subscriber for PausedRegistration {
+        fn register_callsite(
+            &self,
+            metadata: &'static tracing::Metadata<'static>,
+        ) -> tracing::subscriber::Interest {
+            if metadata.fields().field("registration_probe").is_some()
+                && thread::current().id() == self.thread
+                && !self.paused.swap(true, Ordering::Relaxed)
+            {
+                _ = self.started.send(());
+                // Bounded, so a regression fails the test instead of hanging it.
+                _ = self.release.lock().recv_timeout(Duration::from_secs(10));
+            }
+            tracing::subscriber::Interest::never()
+        }
+
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            false
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, _event: &tracing::Event<'_>) {}
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn a_line_whose_first_registration_is_in_flight_is_still_captured() {
+        fn line() {
+            tracing::debug!(registration_probe = true, pac.directive = %"in flight");
+        }
+
+        // Before the worker starts, so its registration is decided across both dispatchers.
+        prepare_for_captures();
+        // Lines registered before the paused subscriber is installed are rebuilt on its thread.
+        let _: PacDirectives = "SOCKS4 warm; DIRECT".parse().unwrap();
+
+        let (started, on_started) = mpsc::channel();
+        let (release, on_release) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let paused = PausedRegistration {
+                thread: thread::current().id(),
+                paused: AtomicBool::new(false),
+                started,
+                release: Mutex::new(on_release),
+            };
+            tracing::subscriber::with_default(paused, line);
+        });
+        on_started
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the probe line registers on the worker");
+        // Released from elsewhere: the capture below may wait for the paused registration.
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            _ = release.send(());
+        });
+        let ((), logged) = logged_directives(|| {
+            worker.join().unwrap();
+            line();
+        });
+        releaser.join().unwrap();
+        assert_eq!(logged, ["in flight"]);
     }
 
     #[test]

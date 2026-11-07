@@ -52,7 +52,7 @@ async fn main() {
         )
         .init();
 
-    let listener = TcpListener::bind_address("127.0.0.1:62037", WeakScope::never())
+    let listener = TcpListener::bind_address("127.0.0.1:62037", WeakScope::detached())
         .await
         .expect("bind TCP Listener");
 

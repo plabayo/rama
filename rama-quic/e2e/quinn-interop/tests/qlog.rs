@@ -85,7 +85,7 @@ async fn a_configured_qlog_writer_receives_the_connection_s_trace() {
 
     let client = step(
         "rama binds",
-        Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+        Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
     )
     .await
     .expect("the client binds");
@@ -204,7 +204,7 @@ async fn connections_sharing_a_writer_keep_their_own_group() {
 
     let client = step(
         "rama binds",
-        Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+        Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
     )
     .await
     .expect("the client binds");
@@ -357,7 +357,7 @@ async fn both_ends_group_a_retried_connection_the_same_way() {
     let server = step(
         "the rama server binds",
         Endpoint::bind_server(
-            rama::graceful::WeakScope::never(),
+            rama::graceful::WeakScope::detached(),
             rama_server_config(&auth).with_transport_config(Arc::new(
                 TransportConfig::default().with_qlog_recorder(writer(&server_trace)),
             )),
@@ -402,7 +402,7 @@ async fn both_ends_group_a_retried_connection_the_same_way() {
     let client_trace = Trace::default();
     let client = step(
         "rama binds",
-        Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+        Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
     )
     .await
     .expect("the client binds");

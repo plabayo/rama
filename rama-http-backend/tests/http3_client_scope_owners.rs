@@ -141,11 +141,11 @@ fn serve_origin() -> Origin {
         SocketAddress::local_ipv4(444),
         NonZeroUsize::MIN,
     );
-    let server_endpoint = Endpoint::build(WeakScope::never())
+    let server_endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .expect("server endpoint");
-    let client_endpoint = Endpoint::build(WeakScope::never())
+    let client_endpoint = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .expect("client endpoint");
     let address = server_endpoint.local_addr().expect("server address");

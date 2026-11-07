@@ -169,11 +169,11 @@ impl QuicPair {
             SocketAddress::local_ipv4(444),
             NonZeroUsize::MIN,
         );
-        let server_endpoint = Endpoint::build(WeakScope::never())
+        let server_endpoint = Endpoint::build(WeakScope::detached())
             .with_server_config(server_config)
             .with_datagram_socket(server_socket)
             .expect("server endpoint");
-        let client_endpoint = Endpoint::build(WeakScope::never())
+        let client_endpoint = Endpoint::build(WeakScope::detached())
             .with_datagram_socket(client_socket)
             .expect("client endpoint");
         let accept = spawn({
@@ -239,7 +239,7 @@ impl Hop {
     where
         S: Service<rama_http::Request, Output = Response, Error = Infallible> + Clone,
     {
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         if version == Version::HTTP_3 {
             let quic = QuicPair::new().await;
             let mut server = HttpServer::new_http3(scope.clone());
@@ -450,7 +450,7 @@ async fn assert_relay(ingress: Version, egress: Version, closer: Closer) {
     let relay = WebSocketRelayIoLayer::new()
         .into_layer(WebSocketRelayService::new(service_fn(tag_relay_message)));
     let proxy = HttpUpgradeMitmRelayLayer::new(
-        WeakScope::never(),
+        WeakScope::detached(),
         HttpWebSocketRelayServiceRequestMatcher::new(relay),
     )
     .into_layer(ResponseVersionAdapter::new(forward));
@@ -831,7 +831,7 @@ async fn har_records_relayed_websockets_on_every_version() {
                 .into_layer(WebSocketRelayService::new(service_fn(tag_relay_message))),
         );
         let proxy = HttpUpgradeMitmRelayLayer::new(
-            WeakScope::never(),
+            WeakScope::detached(),
             HttpWebSocketRelayServiceRequestMatcher::new(relay),
         )
         .into_layer(

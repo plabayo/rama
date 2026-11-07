@@ -55,7 +55,7 @@ async fn settings_profile_reaches_peer_in_literal_order() {
             .unwrap();
             spawn(driver.run());
             let (mut client, driver) =
-                client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::never())
+                client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::detached())
                     .unwrap();
             spawn(driver.run());
 
@@ -122,7 +122,7 @@ async fn settings_profile_omitting_an_available_capability_does_not_advertise_it
     // QUIC DATAGRAM is available and enabled locally, but the profile omits it.
     config.settings_profile = Some(Arc::new(settings));
     let (sender, driver) =
-        client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::never()).unwrap();
+        client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::detached()).unwrap();
     drop((sender, driver));
     pair.close().await;
 }

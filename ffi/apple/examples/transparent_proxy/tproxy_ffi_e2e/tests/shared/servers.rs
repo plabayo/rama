@@ -223,7 +223,7 @@ fn http_app(
     Arc::new(
         (
             UpgradeLayer::new_with_services(
-                WeakScope::never(),
+                WeakScope::detached(),
                 HttpMatcher::path("/ws").and_custom(WebSocketMatcher::new()),
                 WebSocketAcceptor::new().with_per_message_deflate(),
                 ConsumeErrLayer::trace_as_debug().into_layer(WebSocketEchoService::new()),
@@ -239,9 +239,9 @@ fn http_app(
 pub(crate) async fn spawn_http_server(
     observations: SharedObservations,
 ) -> (u16, tokio::task::JoinHandle<()>) {
-    let mut server = HttpServer::auto(WeakScope::never());
+    let mut server = HttpServer::auto(WeakScope::detached());
     server.h2_mut().set_enable_connect_protocol();
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .expect("bind plain http server");
     let port = listener.local_addr().expect("plain http local addr").port();
@@ -290,11 +290,11 @@ async fn spawn_https_server_inner(
         .expect("self-signed")
         .with_alpn_http_auto();
 
-    let mut server = HttpServer::auto(WeakScope::never());
+    let mut server = HttpServer::auto(WeakScope::detached());
     if advertise_connect {
         server.h2_mut().set_enable_connect_protocol();
     }
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .expect("bind https server");
     let port = listener.local_addr().expect("https local addr").port();
@@ -360,7 +360,7 @@ pub(crate) async fn spawn_raw_tls_echo() -> (u16, tokio::task::JoinHandle<()>) {
         })
         .expect("self-signed");
 
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .expect("bind raw tls echo");
     let port = listener.local_addr().expect("raw tls local addr").port();
@@ -411,7 +411,7 @@ pub(crate) async fn spawn_udp_echo() -> (u16, tokio::task::JoinHandle<()>) {
 }
 
 pub(crate) async fn spawn_combined_proxy() -> (u16, tokio::task::JoinHandle<()>) {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let mut http_server = HttpServer::auto(scope.clone());
     http_server.h2_mut().set_enable_connect_protocol();
 
@@ -433,7 +433,7 @@ pub(crate) async fn spawn_combined_proxy() -> (u16, tokio::task::JoinHandle<()>)
         .into_layer(service_fn(http_plain_proxy)),
     );
 
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .expect("bind proxy listener");
     let port = listener.local_addr().expect("proxy local addr").port();
@@ -453,7 +453,7 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
 
@@ -461,7 +461,7 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         let ws_client = (
             RemoveRequestHeaderLayer::hop_by_hop(),
             HttpUpgradeMitmRelayLayer::new(
-                WeakScope::never(),
+                WeakScope::detached(),
                 HttpWebSocketRelayServiceRequestMatcher::new(
                     (ConsumeErrLayer::trace_as_debug(), MapOutputLayer::new(drop))
                         .into_layer(IoForwardService::default()),

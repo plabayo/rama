@@ -167,11 +167,11 @@ async fn selected_chrome_h3_settings_reach_peer_with_evidenced_generation() {
                 SocketAddress::local_ipv4(444),
                 NonZeroUsize::MIN,
             );
-            let server_endpoint = Endpoint::build(WeakScope::never())
+            let server_endpoint = Endpoint::build(WeakScope::detached())
                 .with_server_config(server_config.clone())
                 .with_datagram_socket(server_socket)
                 .unwrap();
-            let client_endpoint = Endpoint::build(WeakScope::never())
+            let client_endpoint = Endpoint::build(WeakScope::detached())
                 .with_datagram_socket(client_socket)
                 .unwrap();
             let (client_connection, server_connection) = tokio::join!(
@@ -187,7 +187,7 @@ async fn selected_chrome_h3_settings_reach_peer_with_evidenced_generation() {
             let (client, client_driver) = client::handshake::<Body, _>(
                 client_connection.unwrap(),
                 config,
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let (server, server_driver) =

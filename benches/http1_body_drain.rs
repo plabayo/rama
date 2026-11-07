@@ -272,7 +272,7 @@ fn spawn_origin(transport: Transport, stats: Arc<Stats>) -> (SocketAddress, Serv
             .with_alpn_http_1()
     });
     let addr = runtime.block_on(async {
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let listener = TcpListener::build(scope.clone())
             .bind_address(SocketAddress::local_ipv4(0))
             .await
@@ -325,7 +325,7 @@ fn client(
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_rustls(tls)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_connection_pool(pool_config(pool, drain))
         .build_client()
 }

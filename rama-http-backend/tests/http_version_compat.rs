@@ -82,11 +82,11 @@ impl QuicPair {
             SocketAddress::local_ipv4(444),
             NonZeroUsize::MIN,
         );
-        let server_endpoint = Endpoint::build(WeakScope::never())
+        let server_endpoint = Endpoint::build(WeakScope::detached())
             .with_server_config(server_config)
             .with_datagram_socket(server_socket)
             .expect("server endpoint");
-        let client_endpoint = Endpoint::build(WeakScope::never())
+        let client_endpoint = Endpoint::build(WeakScope::detached())
             .with_datagram_socket(client_socket)
             .expect("client endpoint");
         let accept = spawn({
@@ -157,7 +157,7 @@ impl Hop {
     where
         S: Service<rama_http::Request, Output = Response, Error = Infallible> + Clone,
     {
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         if version == Version::HTTP_3 {
             let quic = QuicPair::new().await;
             let server = HttpServer::new_http3(scope.clone());

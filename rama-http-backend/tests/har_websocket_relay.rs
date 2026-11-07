@@ -53,7 +53,7 @@ async fn assert_protocol_relay_file_recording(version: Version) {
     );
     let (client_io, proxy_ingress_io) = tokio::io::duplex(16 * 1024);
     let (proxy_egress_io, server_io) = tokio::io::duplex(16 * 1024);
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
 
     let upstream =
         ConsumeErrLayer::trace_as_debug().into_layer(WebSocketAcceptor::new().into_echo_service());

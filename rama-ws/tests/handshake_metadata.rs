@@ -115,7 +115,7 @@ where
                     .await;
             }
             Http::H2 => {
-                _ = server::conn::http2::Builder::new(WeakScope::never())
+                _ = server::conn::http2::Builder::new(WeakScope::detached())
                     .with_enable_connect_protocol()
                     .serve_connection(server_io, RamaHttpService::new(service))
                     .await;
@@ -131,7 +131,7 @@ where
             Sender::H1(sender)
         }
         Http::H2 => {
-            let (sender, mut connection) = conn::http2::Builder::new(WeakScope::never())
+            let (sender, mut connection) = conn::http2::Builder::new(WeakScope::detached())
                 .handshake(client_io)
                 .await
                 .unwrap();
@@ -325,7 +325,7 @@ async fn matrix_case(
         .maybe_with_websocket_config(
             configured.then(|| WebSocketConfig::default().with_max_message_size(12345)),
         );
-    let proxy = HttpUpgradeMitmRelay::new(WeakScope::never(), matcher, forward);
+    let proxy = HttpUpgradeMitmRelay::new(WeakScope::detached(), matcher, forward);
     let proxy = Arc::new(proxy);
     let proxy_service = service_fn(move |request: Request| {
         let proxy = proxy.clone();
@@ -666,7 +666,7 @@ mod compressed_frames {
         // No base config and no stored heads: PMD must come solely from the
         // response matcher and its explicit transfer onto the egress upgrade.
         let proxy = HttpUpgradeMitmRelay::new(
-            WeakScope::never(),
+            WeakScope::detached(),
             HttpWebSocketRelayServiceRequestMatcher::new(relay),
             forward,
         );

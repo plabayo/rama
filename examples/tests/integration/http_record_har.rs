@@ -16,7 +16,7 @@ async fn test_http_record_har() {
     utils::init_tracing();
 
     tokio::spawn(async {
-        HttpServer::auto(WeakScope::never())
+        HttpServer::auto(WeakScope::detached())
             .listen(
                 "127.0.0.1:63007",
                 service_fn(async |req: Request| {

@@ -354,7 +354,7 @@ mod tests {
     #[tokio::test]
     async fn multiconnect_idle_timer_never_ends_a_handshake_first() {
         for role in ["client", "server"] {
-            let config = transport(WeakScope::never(), role, TestCase::MultiConnect)
+            let config = transport(WeakScope::detached(), role, TestCase::MultiConnect)
                 .await
                 .unwrap();
             assert!(config.get_max_idle_timeout() >= Some(MULTICONNECT_HANDSHAKE_TIMEOUT));

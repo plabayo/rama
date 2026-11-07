@@ -129,16 +129,17 @@ async fn proxy_get(
 
 async fn spawn_origins() -> (u16, u16, Bytes) {
     let http_listener =
-        TcpListener::bind_address(SocketAddress::default_ipv4(0), WeakScope::never())
+        TcpListener::bind_address(SocketAddress::default_ipv4(0), WeakScope::detached())
             .await
             .unwrap();
     let http_port = http_listener.local_addr().unwrap().port();
     let payload = Bytes::from("rama".repeat(1025));
-    let http_server = HttpServer::auto(WeakScope::never()).service(origin_service(payload.clone()));
+    let http_server =
+        HttpServer::auto(WeakScope::detached()).service(origin_service(payload.clone()));
     tokio::spawn(http_listener.serve(http_server));
 
     let https_listener =
-        TcpListener::bind_address(SocketAddress::default_ipv4(0), WeakScope::never())
+        TcpListener::bind_address(SocketAddress::default_ipv4(0), WeakScope::detached())
             .await
             .unwrap();
     let https_port = https_listener.local_addr().unwrap().port();
@@ -146,8 +147,9 @@ async fn spawn_origins() -> (u16, u16, Bytes) {
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .unwrap()
         .with_alpn_http_auto();
-    let https_server = TlsAcceptorLayer::new(tls)
-        .into_layer(HttpServer::auto(WeakScope::never()).service(origin_service(payload.clone())));
+    let https_server = TlsAcceptorLayer::new(tls).into_layer(
+        HttpServer::auto(WeakScope::detached()).service(origin_service(payload.clone())),
+    );
     tokio::spawn(https_listener.serve(https_server));
 
     (http_port, https_port, payload)

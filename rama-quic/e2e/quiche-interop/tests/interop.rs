@@ -36,7 +36,7 @@ async fn a_quiche_client_refuses_a_rama_server_it_does_not_trust() {
         .wait(
             "the rama server binds",
             Endpoint::bind_server(
-                rama::graceful::WeakScope::never(),
+                rama::graceful::WeakScope::detached(),
                 rama_server_config(&identity),
                 localhost(),
             ),
@@ -280,7 +280,7 @@ async fn a_rama_client_refuses_a_quiche_server_it_does_not_trust() {
     let client = deadline
         .wait(
             "rama binds",
-            Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the client binds");

@@ -144,7 +144,7 @@ fn pooled_connector_future(bencher: divan::Bencher) {
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector::<Body>(WeakScope::never())
+        .with_default_http_connector::<Body>(WeakScope::detached())
         .with_default_connection_pool()
         .build_connector();
 
@@ -171,7 +171,7 @@ fn pooled_tls_connector_future(bencher: divan::Bencher) {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_rustls(TlsClientConfig::new())
-        .with_default_http_connector::<Body>(WeakScope::never())
+        .with_default_http_connector::<Body>(WeakScope::detached())
         .with_default_connection_pool()
         .build_connector();
 
@@ -226,7 +226,7 @@ mod roundtrip {
             ApplicationProtocol::HTTP_11
         };
         let address = server_runtime.block_on(async {
-            let listener = TcpListener::build(WeakScope::never())
+            let listener = TcpListener::build(WeakScope::detached())
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await
                 .unwrap();
@@ -235,7 +235,7 @@ mod roundtrip {
                 .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
                 .unwrap()
                 .with_alpn([protocol.clone()].into_iter().collect());
-            let http = HttpServer::auto(WeakScope::never()).service(service_fn(
+            let http = HttpServer::auto(WeakScope::detached()).service(service_fn(
                 |_request: Request| async {
                     Ok::<_, Infallible>(Bytes::from_static(b"ok").into_response())
                 },
@@ -261,7 +261,7 @@ mod roundtrip {
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_rustls(tls)
-            .with_default_http_connector::<Body>(WeakScope::never())
+            .with_default_http_connector::<Body>(WeakScope::detached())
             .with_default_connection_pool();
         let builder = if discovery {
             builder
@@ -309,12 +309,12 @@ mod roundtrip {
                 .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
                 .unwrap()
                 .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let server = HttpServer::new_http3(WeakScope::never());
+            let server = HttpServer::new_http3(WeakScope::detached());
             let mut transport = TransportConfig::default();
             server.http3().configure_transport(&mut transport).unwrap();
             let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
             config.set_transport_config(Arc::new(transport));
-            let endpoint = Endpoint::build(WeakScope::never())
+            let endpoint = Endpoint::build(WeakScope::detached())
                 .with_server_config(config)
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await
@@ -345,7 +345,7 @@ mod roundtrip {
             .with_server_verify(ServerVerifyMode::Disable);
         let connector = client_runtime
             .block_on(
-                Http3Connector::builder(WeakScope::never())
+                Http3Connector::builder(WeakScope::detached())
                     .with_tls_config(tls.clone())
                     .build(),
             )
@@ -356,7 +356,7 @@ mod roundtrip {
             .without_tls_proxy_support()
             .without_proxy_support()
             .with_tls_support_using_rustls(tls)
-            .with_default_http_connector::<Body>(WeakScope::never())
+            .with_default_http_connector::<Body>(WeakScope::detached())
             .with_http3_support(connector)
             .with_default_connection_pool()
             .build_client()

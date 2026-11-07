@@ -78,7 +78,7 @@ async fn hop(version: Version, allow: [bool; 2], enabled: [bool; 2], preferred: 
             Some(server_config),
             server_socket,
             advertised,
-            WeakScope::never(),
+            WeakScope::detached(),
             Duration::from_secs(1),
         )
         .unwrap();

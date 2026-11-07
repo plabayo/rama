@@ -1516,7 +1516,7 @@ impl Future for Wait {
             return Poll::Ready(());
         }
         let Some(node) = node.as_deref() else {
-            // A never scope tracks no holders, so it is drained, and never cancelled or aborted.
+            // A detached scope tracks no holders, so it is drained, and never cancelled or aborted.
             return match state.target {
                 Target::Drained => Poll::Ready(()),
                 Target::Graceful | Target::Hard => Poll::Pending,

@@ -19,7 +19,7 @@ async fn test_http_mitm_proxy() {
     utils::init_tracing();
 
     tokio::spawn(async {
-        HttpServer::auto(WeakScope::never())
+        HttpServer::auto(WeakScope::detached())
             .listen(
                 "127.0.0.1:63005",
                 service_fn(async |req: Request| {
@@ -39,7 +39,7 @@ async fn test_http_mitm_proxy() {
         .with_alpn_http_auto()
         .with_keylog(KeyLogIntent::Environment);
 
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
 
     let tcp_service = TlsAcceptorLayer::new(data).into_layer(HttpServer::auto(scope).service(
         service_fn(async |req: Request| {
@@ -51,7 +51,7 @@ async fn test_http_mitm_proxy() {
     ));
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63006", WeakScope::never())
+        TcpListener::bind_address("127.0.0.1:63006", WeakScope::detached())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)

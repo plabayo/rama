@@ -310,7 +310,7 @@ async fn serve_listener_returns_err_when_listener_terminated() {
     let server = crate::XpcServer::new(crate::XpcMessageRouter::new());
     let result = timeout(
         Duration::from_secs(2),
-        server.serve_listener(listener, rama_core::graceful::WeakScope::never()),
+        server.serve_listener(listener, rama_core::graceful::WeakScope::detached()),
     )
     .await
     .expect("terminated listener must end the serve loop");
@@ -512,7 +512,7 @@ async fn server_survives_unknown_selector_and_handler_error() {
         );
 
     let server = XpcServer::new(router);
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     tokio::spawn(async move {
         _ = server.serve_connection(server_conn, scope).await;
     });

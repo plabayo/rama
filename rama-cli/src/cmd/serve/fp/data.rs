@@ -587,11 +587,11 @@ mod observation_tests {
                 SocketAddress::local_ipv4(444),
                 NonZeroUsize::MIN,
             );
-            let server_endpoint = Endpoint::build(WeakScope::never())
+            let server_endpoint = Endpoint::build(WeakScope::detached())
                 .with_server_config(server_config)
                 .with_datagram_socket(server_socket)
                 .unwrap();
-            let client_endpoint = Endpoint::build(WeakScope::never())
+            let client_endpoint = Endpoint::build(WeakScope::detached())
                 .with_datagram_socket(client_socket)
                 .unwrap();
             let accepting = spawn({
@@ -694,7 +694,7 @@ mod observation_tests {
                 .unwrap();
             echo_request.extensions().insert(Ingress(ext.clone()));
             let response = EchoServiceBuilder::new()
-                .build_http(WeakScope::never())
+                .build_http(WeakScope::detached())
                 .serve(echo_request)
                 .await
                 .unwrap()

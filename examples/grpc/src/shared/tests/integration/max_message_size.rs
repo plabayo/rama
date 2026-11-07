@@ -125,7 +125,7 @@ async fn response_stream_limit() {
 
     let svc = test1_server::Test1Server::new(Svc);
 
-    let server = HttpServer::new_h2(WeakScope::never()).service(svc);
+    let server = HttpServer::new_h2(WeakScope::detached()).service(svc);
 
     let client = test1_client::Test1Client::new(
         super::mock_io_client(move || server.clone()),
@@ -255,7 +255,7 @@ async fn max_message_run(case: &TestCase) -> Result<(), Status> {
         svc.set_max_encoding_message_size(size);
     }
 
-    let server = HttpServer::new_h2(WeakScope::never()).service(svc);
+    let server = HttpServer::new_h2(WeakScope::detached()).service(svc);
 
     let mut client = test1_client::Test1Client::new(
         super::mock_io_client(move || server.clone()),

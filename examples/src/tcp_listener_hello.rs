@@ -56,7 +56,7 @@ async fn main() {
         .init();
 
     tracing::info!("listening on: {ADDR}");
-    TcpListener::bind_address(ADDR, WeakScope::never())
+    TcpListener::bind_address(ADDR, WeakScope::detached())
         .await
         .expect("bind TCP Listener")
         .serve(service_fn(handle))

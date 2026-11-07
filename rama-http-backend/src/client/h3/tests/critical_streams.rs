@@ -41,7 +41,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
             .with_server_auth(identity.clone());
         let server = Endpoint::bind_server(
-            WeakScope::never(),
+            WeakScope::detached(),
             ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
             SocketAddress::local_ipv4(0),
         )
@@ -57,7 +57,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
             decoder: Startup::OnDemand,
             ..Preferences::default()
         };
-        let connector = Http3Connector::builder(WeakScope::never())
+        let connector = Http3Connector::builder(WeakScope::detached())
             .with_tls_config(tls)
             .with_config(Config {
                 critical_streams: fixed,
@@ -131,7 +131,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
             let (_sender, driver) = client::handshake::<Body, _>(
                 transport.connection,
                 Arc::unwrap_or_clone(transport.config),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let driver = spawn(driver.run());

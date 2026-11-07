@@ -118,7 +118,7 @@ async fn relay_headers(case: Case) -> Outcome {
                 max_header_list_size: Some(mib_u32(1)),
                 ..Default::default()
             });
-            HttpServer::new_h2(WeakScope::never())
+            HttpServer::new_h2(WeakScope::detached())
                 .serve(
                     origin,
                     service_fn(move |request: Request| async move {
@@ -140,11 +140,11 @@ async fn relay_headers(case: Case) -> Outcome {
                 .await
         });
         let relay = tokio::spawn(async move {
-            HttpMitmRelay::new(WeakScope::never())
+            HttpMitmRelay::new(WeakScope::detached())
                 .serve(BridgeIo(ingress, egress))
                 .await
         });
-        let (mut sender, connection) = ClientBuilder::new(WeakScope::never())
+        let (mut sender, connection) = ClientBuilder::new(WeakScope::detached())
             .with_initial_settings(settings(case.client_cap))
             .with_max_header_list_size(mib_u32(1))
             .with_observe_peer_settings(true)

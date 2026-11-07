@@ -23,7 +23,7 @@ async fn preferring_server() -> (Endpoint, ClientConfig, SocketAddr, SocketAddr)
     let (client_config, mut server_config) = configs();
     server_config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
     let server = Endpoint::bind_server(
-        rama_core::graceful::WeakScope::never(),
+        rama_core::graceful::WeakScope::detached(),
         server_config,
         localhost_v4(),
     )
@@ -44,7 +44,7 @@ async fn preferring_server() -> (Endpoint, ClientConfig, SocketAddr, SocketAddr)
 #[tokio::test]
 async fn a_client_moves_to_the_advertised_address_and_data_flows() {
     let (server, client_config, initial, preferred) = preferring_server().await;
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .expect("the client binds");
     let connecting = client
@@ -100,7 +100,7 @@ fn connected_socket(peer: SocketAddr) -> std::net::UdpSocket {
 #[tokio::test]
 async fn a_socket_fixed_to_one_peer_declines_the_advertised_address() {
     let (server, config, initial, _preferred) = preferring_server().await;
-    let client = Endpoint::build(rama_core::graceful::WeakScope::never())
+    let client = Endpoint::build(rama_core::graceful::WeakScope::detached())
         .with_std_socket(connected_socket(initial))
         .unwrap();
     assert_eq!(settled_remote(&client, &server, config).await, initial);
@@ -110,7 +110,7 @@ async fn a_socket_fixed_to_one_peer_declines_the_advertised_address() {
 #[tokio::test]
 async fn new_connections_follow_the_reach_of_the_socket_rebound_to() {
     let (server, config, initial, preferred) = preferring_server().await;
-    let client = Endpoint::build(rama_core::graceful::WeakScope::never())
+    let client = Endpoint::build(rama_core::graceful::WeakScope::detached())
         .with_std_socket(connected_socket(initial))
         .unwrap();
     client
@@ -156,7 +156,7 @@ async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tup
 
     // The client sends to a concrete address of ours that the wildcard listener receives on.
     let reachable = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener.port());
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .expect("the client binds");
     let connecting = client
@@ -220,7 +220,7 @@ async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tup
 #[tokio::test]
 async fn the_listener_still_admits_clients_after_a_move_and_paths_stay_apart() {
     let (client_config, server, initial, preferred) = preferring_server_with_config().await;
-    let first = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let first = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .unwrap();
     let (fc, fs) = connect_through(&first, &server, client_config.clone(), initial).await;
@@ -233,7 +233,7 @@ async fn the_listener_still_admits_clients_after_a_move_and_paths_stay_apart() {
     // declines the advertised address so it stays there.
     let mut declining = client_config;
     declining.set_preferred_address_policy(crate::proto::PreferredAddressPolicy::Decline);
-    let second = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let second = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .unwrap();
     let (sc, ss) = connect_through(&second, &server, declining, initial).await;
@@ -264,7 +264,7 @@ async fn an_ipv6_server_advertises_an_ipv6_address() {
     let (client_config, mut server_config) = configs();
     server_config.set_preferred_address_v6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0));
     let server = Endpoint::bind_server(
-        rama_core::graceful::WeakScope::never(),
+        rama_core::graceful::WeakScope::detached(),
         server_config,
         SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0),
     )
@@ -279,7 +279,7 @@ async fn an_ipv6_server_advertises_an_ipv6_address() {
     assert!(preferred.is_ipv6());
 
     let client = Endpoint::bind_client(
-        rama_core::graceful::WeakScope::never(),
+        rama_core::graceful::WeakScope::detached(),
         SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0),
     )
     .await
@@ -302,7 +302,7 @@ async fn a_wildcard_preferred_address_is_refused() {
     let (_client_config, mut server_config) = configs();
     server_config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
     let error = Endpoint::bind_server(
-        rama_core::graceful::WeakScope::never(),
+        rama_core::graceful::WeakScope::detached(),
         server_config,
         localhost_v4(),
     )
@@ -321,7 +321,7 @@ async fn a_wildcard_preferred_address_is_refused() {
 async fn shutdown_drops_the_advertised_socket() {
     let (client_config, server_config) = configs();
     let server = Endpoint::bind_server(
-        rama_core::graceful::WeakScope::never(),
+        rama_core::graceful::WeakScope::detached(),
         server_config,
         localhost_v4(),
     )
@@ -333,7 +333,7 @@ async fn shutdown_drops_the_advertised_socket() {
         .expect("the endpoint takes the advertised socket");
     assert_eq!(server.local_addrs().len(), 2, "it owns both");
 
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .unwrap();
     let initial = server.local_addr().unwrap();
@@ -359,7 +359,7 @@ async fn shutdown_drops_the_advertised_socket() {
 async fn a_server_without_a_preferred_address_owns_one_socket() {
     let (_client_config, server_config) = configs();
     let server = Endpoint::bind_server(
-        rama_core::graceful::WeakScope::never(),
+        rama_core::graceful::WeakScope::detached(),
         server_config,
         localhost_v4(),
     )
@@ -417,7 +417,7 @@ async fn the_datagrams_of_each_path_leave_by_that_paths_socket() {
         .advertise_abstract(advertised)
         .expect("the endpoint takes the advertised socket");
 
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .expect("the client binds");
     let client_addr = client.local_addr().unwrap();
@@ -519,7 +519,7 @@ async fn the_datagrams_of_each_path_leave_by_that_paths_socket() {
 async fn a_wildcard_client_keeps_working_across_a_replacement() {
     let (client_config, server_config) = configs();
     let server = Endpoint::bind_server(
-        rama_core::graceful::WeakScope::never(),
+        rama_core::graceful::WeakScope::detached(),
         server_config,
         localhost_v4(),
     )
@@ -529,7 +529,7 @@ async fn a_wildcard_client_keeps_working_across_a_replacement() {
 
     // The client sends from a wildcard socket, so its path's local address is a concrete address
     // the socket covers rather than the address the socket is bound to.
-    let client = Endpoint::build(rama_core::graceful::WeakScope::never())
+    let client = Endpoint::build(rama_core::graceful::WeakScope::detached())
         .bind_address_with_socket_config(
             SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
             UdpSocketConfig::default(),
@@ -602,7 +602,7 @@ async fn a_failed_advertised_socket_stops_being_advertised() {
     );
 
     // A client connecting now is never told about it, so it stays on the listener.
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
@@ -648,7 +648,7 @@ async fn a_socket_advertised_after_the_driver_parked_is_polled() {
 
     // The client reaches the advertised address and nothing else: its handshake is answered only
     // if that socket is being polled.
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .unwrap();
     let (c, s) = connect_through(&client, &server, client_config, advertised_addr).await;
@@ -694,7 +694,7 @@ async fn preferring_server_with_a_stuck_candidate() -> (
         .advertise_abstract(advertised)
         .expect("the endpoint takes the advertised socket");
 
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .expect("the client binds");
     let client_addr = client.local_addr().unwrap();
@@ -852,7 +852,7 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
     );
     server.advertise_abstract(advertised).unwrap();
 
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .unwrap();
     let (c, s) = connect_through(&client, &server, client_config.clone(), initial).await;
@@ -934,7 +934,7 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
     );
 
     // A second connection on the same endpoint progresses while the first suffix is held.
-    let other = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let other = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .unwrap();
     let (other_client, other_server) =
@@ -1072,7 +1072,7 @@ async fn a_candidate_paths_answer_waits_for_its_route_with_nothing_on_the_wire()
     let initial = server.local_addr().unwrap();
     server.advertise_abstract(advertised).unwrap();
 
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .unwrap();
     let peer = client.local_addr().unwrap();
@@ -1136,7 +1136,7 @@ async fn a_candidate_paths_answer_is_given_up_when_its_route_is_refused() {
     let initial = server.local_addr().unwrap();
     server.advertise_abstract(advertised).unwrap();
 
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
@@ -1250,7 +1250,7 @@ async fn a_descriptor_whose_bytes_are_gone_is_retired_rather_than_carried() {
         .advertise_abstract(advertised)
         .expect("the endpoint takes the advertised socket");
 
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .expect("the client binds");
     let client_addr = client.local_addr().unwrap();
@@ -1493,7 +1493,7 @@ async fn a_spent_allowance_with_both_handles_held_asks_for_no_further_turn() {
 async fn a_covered_address_is_answered_by_the_handle_that_covers_it() {
     let (client_config, server_config) = configs();
     let server = Endpoint::bind_server(
-        rama_core::graceful::WeakScope::never(),
+        rama_core::graceful::WeakScope::detached(),
         server_config,
         SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
     )
@@ -1506,7 +1506,7 @@ async fn a_covered_address_is_answered_by_the_handle_that_covers_it() {
     // that address, and not the bind, is what the server's path names.
     let reachable = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener.port());
     let elsewhere = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 2).into(), listener.port());
-    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::never(), localhost_v4())
+    let client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost_v4())
         .await
         .expect("the client binds");
     let (c, s) = connect_through(&client, &server, client_config, reachable).await;

@@ -53,13 +53,13 @@ fn zero_cid_profile() -> QuicProfile {
 
 #[test]
 fn managed_endpoint_construction_needs_no_runtime() {
-    let shared = SharedQuicEndpoint::managed(WeakScope::never());
+    let shared = SharedQuicEndpoint::managed(WeakScope::detached());
     assert_eq!(shared.managed_state(), Some((false, 0)));
 }
 
 #[tokio::test]
 async fn managed_endpoint_clones_share_concurrent_initialization() {
-    let shared = SharedQuicEndpoint::managed(WeakScope::never());
+    let shared = SharedQuicEndpoint::managed(WeakScope::detached());
     let clone = shared.clone();
     let (first, second) = tokio::join!(endpoint(&shared, None), endpoint(&clone, None));
     let first = first.unwrap();
@@ -72,7 +72,7 @@ async fn managed_endpoint_clones_share_concurrent_initialization() {
 
 #[test]
 fn managed_endpoint_recovers_after_its_runtime_is_dropped() {
-    let shared = SharedQuicEndpoint::managed(WeakScope::never());
+    let shared = SharedQuicEndpoint::managed(WeakScope::detached());
     let runtime = Runtime::new().unwrap();
     let first = runtime.block_on(endpoint(&shared, None)).unwrap();
     assert!(!first.is_closed());
@@ -102,10 +102,10 @@ async fn cancelled_executor_does_not_initialize_an_endpoint() {
 
 #[tokio::test]
 async fn supplied_endpoint_is_not_replaced_after_shutdown() {
-    let supplied = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
+    let supplied = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let shared = SharedQuicEndpoint::supplied(supplied.clone(), WeakScope::never());
+    let shared = SharedQuicEndpoint::supplied(supplied.clone(), WeakScope::detached());
     supplied.shutdown().await;
     assert!(endpoint(&shared, None).await.unwrap().is_closed());
     assert!(
@@ -119,10 +119,10 @@ async fn supplied_endpoint_is_not_replaced_after_shutdown() {
 
 #[tokio::test]
 async fn supplied_zero_cid_endpoint_serves_one_attempt_at_a_time() {
-    let supplied = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
+    let supplied = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let shared = SharedQuicEndpoint::supplied(supplied.clone(), WeakScope::never());
+    let shared = SharedQuicEndpoint::supplied(supplied.clone(), WeakScope::detached());
     let request = |profile: QuicProfile| {
         let input = ConnectRequest::new(HostWithPort::local_ipv4(443));
         input.extensions().insert(profile);
@@ -158,7 +158,7 @@ async fn supplied_zero_cid_endpoint_serves_one_attempt_at_a_time() {
 
 #[tokio::test]
 async fn profile_endpoints_cache_only_endpoint_wide_policy() {
-    let shared = SharedQuicEndpoint::managed(WeakScope::never());
+    let shared = SharedQuicEndpoint::managed(WeakScope::detached());
     let profile = QuicProfile::standard();
     let first = endpoint(&shared, Some(&profile)).await.unwrap();
     let reordered = profile.clone().with_transport_parameters(
@@ -201,7 +201,7 @@ async fn profile_endpoints_cache_only_endpoint_wide_policy() {
 
 #[tokio::test]
 async fn profile_endpoints_zero_cids_never_share_a_bound_socket() {
-    let shared = SharedQuicEndpoint::managed(WeakScope::never());
+    let shared = SharedQuicEndpoint::managed(WeakScope::detached());
     let profile = zero_cid_profile();
     let (first, second) = tokio::join!(
         endpoint(&shared, Some(&profile)),
@@ -217,7 +217,7 @@ async fn profile_endpoints_zero_cids_never_share_a_bound_socket() {
 
 #[tokio::test]
 async fn profile_endpoints_cache_has_a_finite_bound() {
-    let shared = SharedQuicEndpoint::managed(WeakScope::never());
+    let shared = SharedQuicEndpoint::managed(WeakScope::detached());
     for len in 1..=(MAX_CACHED_PROFILE_ENDPOINTS + 1) {
         let profile = QuicProfile::standard().with_connection_ids(
             ConnectionIdProfile::standard()
@@ -251,7 +251,7 @@ fn memory_path(identity: &ServerAuthData) -> (MemoryDatagramSocket, SocketAddr, 
     let client = SocketAddr::from(([10, 0, 0, 1], 50_000));
     let peer = SocketAddr::from(([10, 0, 0, 2], 4433));
     let (socket, remote) = MemoryDatagramSocket::pair(client, peer, NonZeroUsize::new(64).unwrap());
-    let server = Endpoint::build(WeakScope::never())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(server(identity))
         .with_datagram_socket(remote)
         .unwrap();
@@ -267,7 +267,7 @@ async fn quic_endpoint_connector_adopts_the_socket_peer_and_extensions() {
         .insert(EstablishedProxyRoute::Tunnel(proxy.clone()));
     let sockets = PreparedSockets::default();
     sockets.0.lock().push(socket);
-    let established = QuicEndpointConnector::new(sockets, WeakScope::never())
+    let established = QuicEndpointConnector::new(sockets, WeakScope::detached())
         .serve(ConnectRequest::new(HostWithPort::local_ipv4(443)))
         .await
         .unwrap();
@@ -293,7 +293,7 @@ async fn quic_endpoint_connector_dials_the_socket_peer() {
         let accept = server.clone();
         let serve = spawn(async move { accept.accept().await.unwrap().await.unwrap() });
         let quic = connector(
-            QuicEndpointConnector::new(sockets, WeakScope::never()),
+            QuicEndpointConnector::new(sockets, WeakScope::detached()),
             &identity,
         );
         let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(443));
@@ -325,7 +325,7 @@ async fn a_profile_dials_over_a_socket_smaller_than_its_receive_size() {
         let accept = server.clone();
         let serve = spawn(async move { accept.accept().await.unwrap().await.unwrap() });
         let quic = connector(
-            QuicEndpointConnector::new(sockets, WeakScope::never()),
+            QuicEndpointConnector::new(sockets, WeakScope::detached()),
             &identity,
         );
         let profile = QuicProfile::standard();
@@ -366,7 +366,7 @@ async fn quic_endpoint_connector_serves_the_proxy_route_its_socket_establishes()
         let accept = server.clone();
         let serve = spawn(async move { accept.accept().await.unwrap().await.unwrap() });
         let quic = connector(
-            QuicEndpointConnector::new(sockets, WeakScope::never()),
+            QuicEndpointConnector::new(sockets, WeakScope::detached()),
             &identity,
         );
         let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(443));

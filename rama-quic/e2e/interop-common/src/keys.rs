@@ -167,7 +167,7 @@ pub async fn rama_client_connects(
     let client = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::graceful::WeakScope::never(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the rama client binds");
@@ -242,7 +242,7 @@ pub async fn rama_server_side(
         .wait(
             &what,
             Endpoint::bind_server(
-                rama::graceful::WeakScope::never(),
+                rama::graceful::WeakScope::detached(),
                 rama_server_config(&run.identity),
                 localhost(),
             ),
@@ -437,13 +437,13 @@ mod tests {
         let deadline = Deadline::new();
         let identity = server_identity();
         let server = Endpoint::bind_server(
-            WeakScope::never(),
+            WeakScope::detached(),
             rama_server_config(&identity),
             localhost(),
         )
         .await
         .unwrap();
-        let client = Endpoint::bind_client(WeakScope::never(), localhost())
+        let client = Endpoint::bind_client(WeakScope::detached(), localhost())
             .await
             .unwrap();
         let connecting = client

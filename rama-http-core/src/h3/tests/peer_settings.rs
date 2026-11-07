@@ -66,7 +66,7 @@ async fn peer_settings_snapshot_waits_preserves_order_and_survives_cancelled_wai
             let (client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 config.clone(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let (server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
@@ -104,7 +104,7 @@ async fn peer_settings_snapshot_wakes_on_close_before_settings() {
             let (client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let (server, server_driver) =
@@ -141,7 +141,7 @@ async fn receive_settings_unpolled_future_and_unfinished_owner_close_the_native_
                 let (client, driver) = client::handshake::<Body, _>(
                     pair.client.clone(),
                     config.clone(),
-                    WeakScope::never(),
+                    WeakScope::detached(),
                 )
                 .unwrap();
                 client_owner = Some(client);
@@ -190,7 +190,7 @@ async fn receive_settings_defers_output_and_finishes_with_one_observed_settings_
             .try_with_client_settings(Arc::new(literal.clone()))
             .unwrap();
         let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), client_config, WeakScope::never())
+            client::handshake::<Body, _>(pair.client.clone(), client_config, WeakScope::detached())
                 .unwrap();
         spawn(driver.run());
         let received = server::receive_settings(pair.server.clone(), &config)
@@ -322,7 +322,7 @@ async fn receive_settings_rejects_changed_parser_envelope_before_local_output() 
             let (client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 config.clone(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             spawn(driver.run());

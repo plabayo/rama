@@ -625,7 +625,7 @@ mod tests {
     async fn plaintext_fp_listener_attaches_positive_connection_provenance() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         tokio::time::timeout(Duration::from_secs(5), async {
-            let scope = WeakScope::never();
+            let scope = WeakScope::detached();
             let cfg = CliCommandFingerprint {
                 bind: SocketAddress::local_ipv4(0),
                 concurrent: 0,

@@ -788,7 +788,7 @@ async fn outer_http_capture_metadata_reaches_default_websocket_relay() {
         // Match the CLI ordering: capture response metadata is added only
         // after the inner relay has already returned its upgrade response.
         let service = CaptureHttpLayer::new(Some(store.clone())).layer(HttpUpgradeMitmRelay::new(
-            WeakScope::never(),
+            WeakScope::detached(),
             HttpWebSocketRelayServiceRequestMatcher::new(relay),
             upstream,
         ));

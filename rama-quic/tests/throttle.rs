@@ -54,7 +54,7 @@ fn localhost() -> SocketAddr {
 }
 
 async fn server(identities: &Identities) -> Endpoint {
-    Endpoint::build(WeakScope::never())
+    Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
@@ -62,7 +62,7 @@ async fn server(identities: &Identities) -> Endpoint {
 }
 
 async fn client() -> Endpoint {
-    Endpoint::build(WeakScope::never())
+    Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds")
@@ -72,7 +72,7 @@ fn serve<S>(server: &Endpoint, service: S) -> JoinHandle<()>
 where
     S: Service<Connection> + Clone,
 {
-    tokio::spawn(server.clone().serve(WeakScope::never(), service))
+    tokio::spawn(server.clone().serve(WeakScope::detached(), service))
 }
 
 /// How a stream is written: each way meets the throttle on its own path.

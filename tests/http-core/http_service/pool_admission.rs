@@ -49,7 +49,7 @@ struct OneStreamServer {
 impl OneStreamServer {
     async fn start(auth: ServerAuthData) -> Self {
         let accepted = Arc::new(AtomicUsize::new(0));
-        let mut http = HttpServer::new_h2(WeakScope::never());
+        let mut http = HttpServer::new_h2(WeakScope::detached());
         http.h2_mut().set_enable_connect_protocol();
         http.h2_mut().set_max_concurrent_streams(1);
         let service = (
@@ -86,9 +86,10 @@ impl OneStreamServer {
                     ),
                 ),
             );
-        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
-            .await
-            .unwrap();
+        let listener =
+            TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
+                .await
+                .unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = spawn(listener.serve(service));
         Self {
@@ -128,7 +129,7 @@ macro_rules! client {
         #[cfg(not(feature = "boring"))]
         let builder = builder.with_tls_support_using_rustls(tls);
         builder
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_connections_total: NonZeroUsize::new(2),
                 ..Default::default()

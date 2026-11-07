@@ -54,7 +54,7 @@ struct Origin {
 }
 
 async fn origin() -> Origin {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let listener = TcpListener::build(scope.clone())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
@@ -140,7 +140,7 @@ fn client(
         }
         .build_connector(HttpConnector::<_, Body>::new(
             TcpConnector::new(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )),
     )
 }

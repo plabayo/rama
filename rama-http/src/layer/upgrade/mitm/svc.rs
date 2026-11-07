@@ -289,7 +289,7 @@ mod tests {
                 async { Ok::<_, Infallible>(()) }
             });
             let matcher = MatcherServicePair::new(true, MatcherServicePair::new(true, relay));
-            let res = HttpUpgradeMitmRelay::new(WeakScope::never(), matcher, upstream)
+            let res = HttpUpgradeMitmRelay::new(WeakScope::detached(), matcher, upstream)
                 .serve(req)
                 .await
                 .unwrap();
@@ -349,7 +349,7 @@ mod tests {
             });
             let matcher = MatcherServicePair::new(true, MatcherServicePair::new(true, relay));
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            let service = HttpUpgradeMitmRelay::new(WeakScope::never(), matcher, upstream)
+            let service = HttpUpgradeMitmRelay::new(WeakScope::detached(), matcher, upstream)
                 .with_error_sink(move |error: BoxError| {
                     tx.send(error.to_string()).unwrap();
                 });

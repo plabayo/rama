@@ -50,7 +50,7 @@ async fn idle_recovery(reserve_before_timeout: bool) {
         let requests = requests.clone();
         move || {
             let id = connections.fetch_add(1, Ordering::Relaxed);
-            let mut server = HttpServer::new_h2(WeakScope::never());
+            let mut server = HttpServer::new_h2(WeakScope::detached());
             server.h2_mut().set_idle_timeout(IdleTimeout {
                 first_request: Duration::from_secs(1),
                 idle: Duration::from_secs(2),

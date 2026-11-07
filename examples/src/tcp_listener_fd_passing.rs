@@ -93,7 +93,7 @@ mod unix_example {
         tracing::info!("Creating TCP listener...");
 
         // Create listener
-        let listener = TcpListener::bind_address("127.0.0.1:62046", WeakScope::never()).await?;
+        let listener = TcpListener::bind_address("127.0.0.1:62046", WeakScope::detached()).await?;
         let addr = listener.local_addr()?;
         tracing::info!("✓ Listening on {addr}");
 

@@ -144,7 +144,7 @@ impl Connection {
                     .unwrap();
             client_config.set_transport_config(transport);
             let bind = SocketAddress::local_ipv4(0);
-            let server_endpoint = Endpoint::build(WeakScope::never())
+            let server_endpoint = Endpoint::build(WeakScope::detached())
                 .with_server_config(server_config)
                 .bind_address(bind)
                 .await
@@ -159,7 +159,7 @@ impl Connection {
                     server
                 }
             });
-            let client_endpoint = Endpoint::build(WeakScope::never())
+            let client_endpoint = Endpoint::build(WeakScope::detached())
                 .bind_address(bind)
                 .await
                 .unwrap();
@@ -173,7 +173,7 @@ impl Connection {
                 .await
                 .unwrap();
             let (client, driver) =
-                client::handshake::<Body, _>(connection, config, WeakScope::never()).unwrap();
+                client::handshake::<Body, _>(connection, config, WeakScope::detached()).unwrap();
             tokio::spawn(driver.run());
             let server = accept.await.unwrap();
             (client, server, client_endpoint, server_endpoint)

@@ -112,7 +112,7 @@ fn short_proxy_flow(bencher: divan::Bencher, mode: Mode) {
         fixture.runtime.block_on(async {
             let (mut client, ingress) = tokio::io::duplex(8192);
             let (mut origin, egress) = tokio::io::duplex(8192);
-            let forward = IoForwardService::new(WeakScope::never());
+            let forward = IoForwardService::new(WeakScope::detached());
             let bridge = forward.serve(BridgeIo(
                 ServiceInput::new(ingress),
                 ServiceInput::new(egress),
@@ -138,7 +138,7 @@ fn proxy_megabyte(bencher: divan::Bencher, mode: Mode) {
     let (mut client, ingress) = tokio::io::duplex(64 << 10);
     let (mut origin, egress) = tokio::io::duplex(64 << 10);
     let bridge = fixture.runtime.spawn(async move {
-        IoForwardService::new(WeakScope::never())
+        IoForwardService::new(WeakScope::detached())
             .serve(BridgeIo(
                 ServiceInput::new(ingress),
                 ServiceInput::new(egress),

@@ -331,7 +331,7 @@ async fn origin_h2(
             }
         }
     });
-    let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
+    let (mut sender, connection) = conn::http2::Builder::new(WeakScope::detached())
         .handshake(ServiceInput::new(client_io))
         .await
         .unwrap();
@@ -373,7 +373,7 @@ where
                 .serve_connection(io, RamaHttpService::new(service))
                 .await
                 .unwrap(),
-            Protocol::H2 => server::conn::http2::Builder::new(WeakScope::never())
+            Protocol::H2 => server::conn::http2::Builder::new(WeakScope::detached())
                 .serve_connection(io, RamaHttpService::new(service))
                 .await
                 .unwrap(),
@@ -390,7 +390,7 @@ where
             sender.send_request(request).await.unwrap().map(Body::new)
         }
         Protocol::H2 => {
-            let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
+            let (mut sender, connection) = conn::http2::Builder::new(WeakScope::detached())
                 .handshake(ServiceInput::new(client_io))
                 .await
                 .unwrap();

@@ -16,28 +16,30 @@ fn upstream_forward_proxy_options_are_explicit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_client_isolates_upstream_proxy_407() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
-    let proxy_task = tokio::spawn(listener.serve(HttpServer::auto(WeakScope::never()).service(
-        service_fn(|request: Request| async move {
-            assert_eq!(
-                request.uri().to_string(),
-                "http://origin.example/upstream-challenge"
-            );
-            Ok::<_, Infallible>(
-                Response::builder()
-                    .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                    .header("proxy-authenticate", "Basic realm=upstream-secret")
-                    .header("proxy-authentication-info", "nextnonce=upstream-secret")
-                    .body(Body::from("upstream-secret-body"))
-                    .unwrap(),
-            )
-        }),
-    )));
+    let proxy_task = tokio::spawn(
+        listener.serve(HttpServer::auto(WeakScope::detached()).service(service_fn(
+            |request: Request| async move {
+                assert_eq!(
+                    request.uri().to_string(),
+                    "http://origin.example/upstream-challenge"
+                );
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                        .header("proxy-authenticate", "Basic realm=upstream-secret")
+                        .header("proxy-authentication-info", "nextnonce=upstream-secret")
+                        .body(Body::from("upstream-secret-body"))
+                        .unwrap(),
+                )
+            },
+        ))),
+    );
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -78,24 +80,26 @@ async fn forward_client_isolates_upstream_proxy_407() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_client_can_disable_automatic_upstream_proxy_auth() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
-    let proxy_task = tokio::spawn(listener.serve(HttpServer::auto(WeakScope::never()).service(
-        service_fn(|request: Request| async move {
-            assert_eq!(
-                request.uri().to_string(),
-                "http://origin.example/no-upstream-auth"
-            );
-            assert!(
-                !request
-                    .headers()
-                    .contains_key(rama::http::header::PROXY_AUTHORIZATION)
-            );
-            Ok::<_, Infallible>(Response::new(Body::from("ok")))
-        }),
-    )));
+    let proxy_task = tokio::spawn(
+        listener.serve(HttpServer::auto(WeakScope::detached()).service(service_fn(
+            |request: Request| async move {
+                assert_eq!(
+                    request.uri().to_string(),
+                    "http://origin.example/no-upstream-auth"
+                );
+                assert!(
+                    !request
+                        .headers()
+                        .contains_key(rama::http::header::PROXY_AUTHORIZATION)
+                );
+                Ok::<_, Infallible>(Response::new(Body::from("ok")))
+            },
+        ))),
+    );
     let mut proxy: ProxyAddress = format!("http://{proxy_address}").parse().unwrap();
     proxy.credential = Some(rama::net::user::ProxyCredential::Basic(
         rama::net::user::Basic::try_from("pu:pp").unwrap(),
@@ -104,7 +108,7 @@ async fn forward_client_can_disable_automatic_upstream_proxy_auth() {
         .unwrap()
         .with_forward_proxy_auth(false);
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -131,29 +135,31 @@ async fn forward_client_can_disable_automatic_upstream_proxy_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_client_authenticates_plaintext_upstream_proxy_by_default() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
-    let proxy_task = tokio::spawn(listener.serve(HttpServer::auto(WeakScope::never()).service(
-        service_fn(|request: Request| async move {
-            assert_eq!(
-                request.uri().to_string(),
-                "http://origin.example/upstream-auth"
-            );
-            assert_eq!(
-                request.headers()[rama::http::header::PROXY_AUTHORIZATION],
-                "Basic cHU6cHA="
-            );
-            Ok::<_, Infallible>(Response::new(Body::from("ok")))
-        }),
-    )));
+    let proxy_task = tokio::spawn(
+        listener.serve(HttpServer::auto(WeakScope::detached()).service(service_fn(
+            |request: Request| async move {
+                assert_eq!(
+                    request.uri().to_string(),
+                    "http://origin.example/upstream-auth"
+                );
+                assert_eq!(
+                    request.headers()[rama::http::header::PROXY_AUTHORIZATION],
+                    "Basic cHU6cHA="
+                );
+                Ok::<_, Infallible>(Response::new(Body::from("ok")))
+            },
+        ))),
+    );
     let mut proxy: ProxyAddress = format!("http://{proxy_address}").parse().unwrap();
     proxy.credential = Some(rama::net::user::ProxyCredential::Basic(
         rama::net::user::Basic::try_from("pu:pp").unwrap(),
     ));
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -212,7 +218,7 @@ async fn forward_client_can_tunnel_plaintext_without_leaking_proxy_auth() {
         .unwrap()
         .with_tunnel_plaintext_http(true);
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -257,7 +263,7 @@ async fn forward_http_client_applies_connect_timeout_to_tls_handshake() {
     });
     let connect_timeout = Duration::from_secs(30);
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),

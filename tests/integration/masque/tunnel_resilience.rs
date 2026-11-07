@@ -111,7 +111,7 @@ async fn proxy_for(
 
 /// A tunnel for `carrier`, on a client connection of its own.
 async fn tunnel(proxy: &ProxyAddress, target: SocketAddress, carrier: Carrier) -> ConnectUdpSocket {
-    let socket = open_tunnel(WeakScope::never(), proxy, target, carrier.version())
+    let socket = open_tunnel(WeakScope::detached(), proxy, target, carrier.version())
         .await
         .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
     assert_carrier(&socket, carrier);
@@ -616,7 +616,7 @@ async fn measure(
     let anonymous = proxy_address("masque://", address);
     let john = ProxyAddress::try_from(format!("masque://john:secret@{address}").as_str()).unwrap();
     let (mut measured, flooding) = if scenario == Flood::SameConnection {
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let connector =
             ConnectUdpConnector::new(UdpConnector::new(), http_client(scope.clone()), scope)
                 .with_version(carrier.version());
@@ -671,7 +671,7 @@ async fn measure(
         // The cap is live: a second anonymous tunnel is refused, so john's tunnel counts
         // against john alone.
         let error = open_tunnel(
-            WeakScope::never(),
+            WeakScope::detached(),
             &anonymous,
             echo_target,
             carrier.version(),

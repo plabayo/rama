@@ -54,6 +54,8 @@ opentelemetry = [
 # up wake-event tracking when a recorder is attached. Inert when
 # no traced runtime is present. `--cfg tokio_unstable` widens dial9's task coverage.
 dial9 = ["std", "dep:dial9", "dep:dial9-trace-format", "dep:metrique-writer-core"]
+# Tracing setup for test binaries.
+test-utils = ["std"]
 
 [dependencies]
 ahash = { workspace = true, optional = true }
@@ -85,11 +87,13 @@ tracing-opentelemetry = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+parking_lot = { workspace = true }
 quickcheck = { workspace = true }
 rand = { workspace = true }
 rustversion = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-test = { workspace = true }
+tracing-core = { workspace = true }
 trybuild = { workspace = true, features = ["diff"] }
 
 # tokio rewrites itself under `cfg(loom)`; rama-core needs its signal and io modules.

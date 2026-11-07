@@ -903,7 +903,7 @@ mod tests {
             _ = poll_fn(|cx| origin.poll_closed(cx)).await;
         });
 
-        let opts = Builder::new(WeakScope::never());
+        let opts = Builder::new(WeakScope::detached());
         let builder = proto::h2::client::new_builder(&opts.h2_builder)
             .try_with_initial_stream_id(u32::MAX >> 1)
             .unwrap();
@@ -946,7 +946,7 @@ mod tests {
             let (_sender, conn) = crate::client::conn::http2::handshake::<
                 _,
                 Empty<rama_core::bytes::Bytes>,
-            >(WeakScope::never(), io)
+            >(WeakScope::detached(), io)
             .await
             .unwrap();
 
@@ -962,7 +962,7 @@ mod tests {
     async fn ordinary_request_futures_stay_small() {
         let (client_io, _server_io) = tokio::io::duplex(1024);
         let (mut sender, _connection) = crate::client::conn::http2::handshake::<_, Body>(
-            WeakScope::never(),
+            WeakScope::detached(),
             ServiceInput::new(client_io),
         )
         .await
@@ -985,13 +985,13 @@ mod tests {
     {
         let (client_io, server_io) = tokio::io::duplex(1 << 20);
         let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
-            WeakScope::never(),
+            WeakScope::detached(),
             ServiceInput::new(client_io),
         )
         .await
         .unwrap();
         let task = tokio::spawn(connection);
-        let mut builder = server::conn::http2::Builder::new(WeakScope::never());
+        let mut builder = server::conn::http2::Builder::new(WeakScope::detached());
         builder.set_max_concurrent_streams(1);
         builder.set_initial_stream_window_size(stream_window);
         tokio::spawn(
@@ -1277,13 +1277,13 @@ mod tests {
             })
         };
         let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
-            WeakScope::never(),
+            WeakScope::detached(),
             ServiceInput::new(client_io),
         )
         .await
         .unwrap();
         tokio::spawn(connection);
-        let mut builder = server::conn::http2::Builder::new(WeakScope::never());
+        let mut builder = server::conn::http2::Builder::new(WeakScope::detached());
         builder.set_enable_connect_protocol();
         tokio::spawn(
             builder.serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service)),
@@ -1321,7 +1321,7 @@ mod tests {
                 })
             };
             let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
-                WeakScope::never(),
+                WeakScope::detached(),
                 ServiceInput::new(client_io),
             )
             .await
@@ -1336,7 +1336,7 @@ mod tests {
             // Issued before the server has written its SETTINGS.
             let response = tokio::spawn(async move { sender.send_request(request).await });
             tokio::task::yield_now().await;
-            let mut builder = server::conn::http2::Builder::new(WeakScope::never());
+            let mut builder = server::conn::http2::Builder::new(WeakScope::detached());
             if enabled {
                 builder.set_enable_connect_protocol();
             }

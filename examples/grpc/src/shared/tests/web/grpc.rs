@@ -107,7 +107,7 @@ async fn smoke_error() {
 
 async fn bind() -> (TcpListener, String) {
     let addr = SocketAddress::local_ipv4(0);
-    let lis = TcpListener::bind_address(addr, WeakScope::never())
+    let lis = TcpListener::bind_address(addr, WeakScope::detached())
         .await
         .expect("listener");
     let url = format!("http://{}", lis.local_addr().unwrap());
@@ -123,11 +123,11 @@ async fn grpc(accept_h1: bool) -> (impl Future<Output = ()>, String) {
     let fut = async move {
         if accept_h1 {
             listener
-                .serve(HttpServer::auto(WeakScope::never()).service(http_svc))
+                .serve(HttpServer::auto(WeakScope::detached()).service(http_svc))
                 .await;
         } else {
             listener
-                .serve(HttpServer::new_h2(WeakScope::never()).service(http_svc))
+                .serve(HttpServer::new_h2(WeakScope::detached()).service(http_svc))
                 .await;
         }
     };
@@ -143,11 +143,11 @@ async fn grpc_web(accept_h1: bool) -> (impl Future<Output = ()>, String) {
     let fut = async move {
         if accept_h1 {
             listener
-                .serve(HttpServer::auto(WeakScope::never()).service(http_svc))
+                .serve(HttpServer::auto(WeakScope::detached()).service(http_svc))
                 .await;
         } else {
             listener
-                .serve(HttpServer::new_h2(WeakScope::never()).service(http_svc))
+                .serve(HttpServer::new_h2(WeakScope::detached()).service(http_svc))
                 .await;
         }
     };

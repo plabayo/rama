@@ -28,8 +28,8 @@ async fn test_ws_blocking_wss_client() {
         ),
     );
     let service = TlsAcceptorLayer::new(tls.server.clone())
-        .into_layer(HttpServer::new_http1(WeakScope::never()).service(web_service));
-    let listener = TcpListener::bind_address(ADDRESS, WeakScope::never())
+        .into_layer(HttpServer::new_http1(WeakScope::detached()).service(web_service));
+    let listener = TcpListener::bind_address(ADDRESS, WeakScope::detached())
         .await
         .expect("bind WSS test server");
     let server = tokio::spawn(listener.serve(service));

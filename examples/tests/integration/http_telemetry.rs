@@ -150,7 +150,7 @@ fn find_string_attr<'a>(attrs: &'a [KeyValue], key: &str) -> Option<&'a str> {
 }
 
 async fn spawn_fake_otlp_collector(state: Arc<CollectorState>) {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let web = WebService::new_with_state(state)
         .with_post(
             "/v1/metrics",

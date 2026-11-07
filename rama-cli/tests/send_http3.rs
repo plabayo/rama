@@ -864,7 +864,7 @@ async fn masque_proxy(scope: WeakScope) -> TestResult<(SocketAddress, Endpoint)>
 async fn explicit_h3_runs_through_a_masque_proxy_with_credentials() -> TestResult {
     let fixture = Fixture::new().await?;
     let origin = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
-    let (proxy, proxy_endpoint) = masque_proxy(WeakScope::never()).await?;
+    let (proxy, proxy_endpoint) = masque_proxy(WeakScope::detached()).await?;
     let proxy_url = format!("masque://{proxy}");
     let output = fixture
         .send(

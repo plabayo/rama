@@ -258,7 +258,7 @@ mod tests {
                 let connection_service = service_fn(move |io: ServiceInput<DuplexStream>| {
                     let http_service = http_service.clone();
                     async move {
-                        crate::server::conn::http2::Builder::new(WeakScope::never())
+                        crate::server::conn::http2::Builder::new(WeakScope::detached())
                             .serve_connection(io, http_service)
                             .await
                     }
@@ -285,7 +285,7 @@ mod tests {
             }
             TestProtocol::Http2 => {
                 let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
-                    WeakScope::never(),
+                    WeakScope::detached(),
                     ServiceInput::new(client_io),
                 )
                 .await

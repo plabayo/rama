@@ -14,7 +14,7 @@ async fn test_http_connect_proxy() {
     utils::init_tracing();
 
     tokio::spawn(async {
-        HttpServer::auto(WeakScope::never())
+        HttpServer::auto(WeakScope::detached())
             .listen(
                 "127.0.0.1:63001",
                 service_fn(async |req: Request| {

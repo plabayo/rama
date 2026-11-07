@@ -146,7 +146,7 @@ async fn consuming_early_response_keeps_request_upload_alive() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -207,7 +207,7 @@ async fn local_reset_while_waiting_for_fin_ack_resolves_as_failure() {
         let (_client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -276,7 +276,7 @@ async fn dropping_complete_unpolled_bodyless_response_keeps_upload_alive() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -341,7 +341,7 @@ async fn transport_no_error_preserves_finished_response_but_rejects_missing_fin(
             let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let driver = spawn(driver.run());
@@ -408,7 +408,7 @@ async fn bodyless_responses_retain_admission_until_fin_is_acknowledged() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let (mut server, server_driver) =

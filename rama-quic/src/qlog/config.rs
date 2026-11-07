@@ -182,7 +182,7 @@ impl Default for QlogConfig {
             limits: QueueLimits::default(),
             history: None,
             enabled: true,
-            scope: rama_core::graceful::WeakScope::never(),
+            scope: rama_core::graceful::WeakScope::detached(),
             error_sink: Arc::new(TracingErrorSink::default()),
         }
     }

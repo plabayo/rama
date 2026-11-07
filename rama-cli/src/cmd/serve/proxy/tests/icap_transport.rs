@@ -24,7 +24,7 @@ async fn peer_max_connections_clamps_concurrent_icap_transactions() {
     )
     .unwrap();
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -67,7 +67,7 @@ async fn peer_max_connections_clamps_concurrent_icap_transactions() {
 async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
     let (icap_address, icap_task, _icap_state) = spawn_proxy_test_icap().await;
     let origin_listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
             .await
             .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
@@ -75,8 +75,8 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .unwrap()
         .with_alpn_http_auto();
-    let origin_http =
-        HttpServer::auto(WeakScope::never()).service(service_fn(|request: Request| async move {
+    let origin_http = HttpServer::auto(WeakScope::detached()).service(service_fn(
+        |request: Request| async move {
             assert_eq!(request.headers()["x-rama-icap-reqmod"], "yes");
             assert!(
                 !request
@@ -84,7 +84,8 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
                     .contains_key(rama::http::header::PROXY_AUTHORIZATION)
             );
             Ok::<_, Infallible>(Response::new(Body::from("mitm-icap-ok")))
-        }));
+        },
+    ));
     let origin_task = tokio::spawn(origin_listener.serve(TlsAcceptorService::new(
         origin_tls,
         origin_http,
@@ -118,7 +119,7 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
     for scheme in ["http", "socks5h"] {

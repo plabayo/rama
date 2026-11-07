@@ -68,7 +68,7 @@ impl<W> ResponseWriterLayer<W> {
     /// Use [`Self::new_with_scope`] when streaming writer tasks must participate
     /// in graceful shutdown.
     pub const fn new(writer: W) -> Self {
-        Self::new_with_scope(writer, WeakScope::never())
+        Self::new_with_scope(writer, WeakScope::detached())
     }
 
     /// Create a new [`ResponseWriterLayer`] with a custom [`ResponseWriter`]
@@ -250,7 +250,7 @@ impl<S, W> ResponseWriterService<S, W> {
     /// Use [`Self::new_with_scope`] when streaming writer tasks must participate
     /// in graceful shutdown.
     pub fn new(writer: W, inner: S) -> Self {
-        Self::new_with_scope(writer, inner, WeakScope::never())
+        Self::new_with_scope(writer, inner, WeakScope::detached())
     }
 
     /// Create a new [`ResponseWriterService`] with a custom [`ResponseWriter`]
@@ -471,7 +471,7 @@ mod tests {
     #[tokio::test]
     async fn file_constructors_only_enable_response_capture() {
         let temp = rama_utils::fs::tempdir().unwrap();
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let layer = ResponseWriterLayer::file_per_response(
             &scope,
             temp.path(),

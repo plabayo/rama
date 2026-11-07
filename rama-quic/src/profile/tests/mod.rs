@@ -169,7 +169,7 @@ fn rama_first_flight_with(
             client_config.apply_quic_profile(&narrowed).unwrap();
         }
 
-        let client = Endpoint::build(WeakScope::never())
+        let client = Endpoint::build(WeakScope::detached())
             .with_config(endpoint_config)
             .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
             .await

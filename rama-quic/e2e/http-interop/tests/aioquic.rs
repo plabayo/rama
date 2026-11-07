@@ -44,7 +44,7 @@ async fn aioquic_uploads_and_trailers_against_rama() -> Result<(), BoxError> {
                 .map(|c| c.to_pem())
                 .collect::<String>(),
         )?;
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let tls = TlsServerConfig::new()
             .with_server_auth(auth)
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());

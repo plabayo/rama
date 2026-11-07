@@ -86,7 +86,7 @@ async fn origin(request: Request) -> Result<Response, Infallible> {
 
 #[tokio::test]
 async fn icap_adapts_both_directions_of_an_http3_exchange() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let icap_address = listener.local_addr().unwrap();
@@ -105,7 +105,7 @@ async fn icap_adapts_both_directions_of_an_http3_exchange() {
     let config = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let server_endpoint = Endpoint::build(scope.clone())
         .with_server_config(
             ServerConfig::try_from_rama_tls(&config, TlsOptions::default()).unwrap(),

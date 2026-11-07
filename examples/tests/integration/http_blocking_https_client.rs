@@ -16,10 +16,10 @@ async fn test_http_blocking_https_client() {
 
     let tls = utils::TestTlsConfig::new();
     let service = TlsAcceptorLayer::new(tls.server.clone()).into_layer(
-        HttpServer::new_http1(WeakScope::never())
+        HttpServer::new_http1(WeakScope::detached())
             .service(WebService::default().with_get("/", BODY)),
     );
-    let listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::never())
+    let listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::detached())
         .await
         .expect("bind HTTPS test server");
     let address = listener.local_addr().unwrap();

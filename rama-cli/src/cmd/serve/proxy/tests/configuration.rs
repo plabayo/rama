@@ -520,7 +520,7 @@ async fn mitm_certificate_portal_is_hijacked_over_http_and_https() {
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
     let proxy_route = || ProxyRoute::Proxy(format!("http://{proxy_address}").parse().unwrap());

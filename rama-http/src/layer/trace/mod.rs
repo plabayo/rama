@@ -511,7 +511,7 @@ mod tests {
     use rama_core::bytes::Bytes;
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
-    use rama_core::telemetry::tracing::{self, Span};
+    use rama_core::telemetry::tracing::{self, Span, test_utils::prepare_for_captures};
     use rama_core::{Layer, Service};
     use std::sync::OnceLock;
     use std::{
@@ -907,10 +907,7 @@ mod tests {
     fn events_have_span_context_when_span_is_disabled() {
         use parking_lot::Mutex;
         use std::sync::Arc;
-        use tracing::{
-            Dispatch,
-            subscriber::{NoSubscriber, with_default},
-        };
+        use tracing::subscriber::with_default;
         use tracing_subscriber::{Layer as _, layer::SubscriberExt, registry::LookupSpan};
 
         /// A filter that disables spans (by rejecting at the span level)
@@ -971,8 +968,7 @@ mod tests {
 
         // Use with_default to guarantee cleanup even on panic, avoiding
         // cross-test subscriber pollution.
-        // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
-        let _registered = Dispatch::new(NoSubscriber::default());
+        prepare_for_captures();
         with_default(subscriber, || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

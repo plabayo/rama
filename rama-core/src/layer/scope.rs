@@ -207,7 +207,7 @@ mod tests {
             Ok::<_, Infallible>(scope)
         }));
         let scope = service.serve(Extensions::new()).await.unwrap().unwrap();
-        assert!(!scope.is_never());
+        assert!(!scope.is_detached());
         assert!(!scope.is_cancelled());
     }
 

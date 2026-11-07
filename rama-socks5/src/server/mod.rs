@@ -222,7 +222,7 @@ impl Socks5Acceptor {
 impl Default for Socks5Acceptor {
     #[inline]
     fn default() -> Self {
-        Self::default_with_scope(WeakScope::never())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 

@@ -48,7 +48,7 @@ async fn test_http_mitm_proxy() {
     utils::init_tracing();
 
     tokio::spawn(async {
-        HttpServer::auto(WeakScope::never())
+        HttpServer::auto(WeakScope::detached())
             .listen(
                 "127.0.0.1:63003",
                 (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
@@ -72,7 +72,7 @@ async fn test_http_mitm_proxy() {
     });
 
     tokio::spawn(async {
-        HttpServer::new_http1(WeakScope::never())
+        HttpServer::new_http1(WeakScope::detached())
             .listen(
                 "127.0.0.1:63013",
                 Arc::new((
@@ -131,7 +131,7 @@ async fn test_http_mitm_proxy() {
         .with_alpn_http_auto()
         .with_keylog(KeyLogIntent::Environment);
 
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
 
     let mut http_tp = HttpServer::auto(scope);
     http_tp.h2_mut().set_enable_connect_protocol();
@@ -159,7 +159,7 @@ async fn test_http_mitm_proxy() {
     );
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63004", WeakScope::never())
+        TcpListener::bind_address("127.0.0.1:63004", WeakScope::detached())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)
@@ -171,7 +171,7 @@ async fn test_http_mitm_proxy() {
         .expect("self-signed")
         .with_keylog(KeyLogIntent::Environment);
 
-    let http_1_over_tls_server = HttpServer::new_http1(WeakScope::never());
+    let http_1_over_tls_server = HttpServer::new_http1(WeakScope::detached());
     let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn).into_layer(
         http_1_over_tls_server.service(
             (ArcLayer::new(), ErrorHandlerLayer::new())
@@ -180,7 +180,7 @@ async fn test_http_mitm_proxy() {
     );
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63008", WeakScope::never())
+        TcpListener::bind_address("127.0.0.1:63008", WeakScope::detached())
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener: secure web service (for h1 traffic): {e}")

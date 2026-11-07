@@ -73,11 +73,11 @@ async fn tunnel() -> Tunnel {
     });
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let server_task = tokio::spawn(async move {
-        _ = server::conn::http2::Builder::new(WeakScope::never())
+        _ = server::conn::http2::Builder::new(WeakScope::detached())
             .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
             .await;
     });
-    let (mut sender, connection) = conn::http2::Builder::new(WeakScope::never())
+    let (mut sender, connection) = conn::http2::Builder::new(WeakScope::detached())
         .handshake(ServiceInput::new(client_io))
         .await
         .unwrap();

@@ -56,7 +56,7 @@ async fn server_sends_close_notify_when_response_body_errors() {
     });
 
     let server = TlsAcceptorLayer::new(acceptor_data)
-        .into_layer(HttpServer::auto(WeakScope::never()).service(svc));
+        .into_layer(HttpServer::auto(WeakScope::detached()).service(svc));
 
     let (client_io, server_io) = duplex(64 * 1024);
 

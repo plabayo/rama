@@ -113,7 +113,7 @@ async fn main() -> Result<(), BoxError> {
         "HTTP and gRPC job service listening",
     );
 
-    HttpServer::auto(WeakScope::never())
+    HttpServer::auto(WeakScope::detached())
         .listen(ADDR, Arc::new(ErrorHandlerLayer::new().into_layer(router)))
         .await?;
 

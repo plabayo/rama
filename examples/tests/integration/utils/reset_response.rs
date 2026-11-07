@@ -118,7 +118,7 @@ pub(crate) async fn through_mitm(proxy: &str) {
         .with_tls_support_using_boringssl(
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
     let proxy = ProxyAddress::try_from(proxy).unwrap();

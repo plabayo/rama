@@ -95,7 +95,7 @@ async fn rama_client_against_quic_go() -> Result<(), BoxError> {
             .parse()?;
         let logs =
             tokio::spawn(async move { while lines.next_line().await.ok().flatten().is_some() {} });
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let endpoint = Endpoint::build(scope.clone())
             .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
             .await?;
@@ -195,7 +195,7 @@ async fn quic_go_client_against_rama() -> Result<(), BoxError> {
                 .map(|c| c.to_pem())
                 .collect::<String>(),
         )?;
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let tls = TlsServerConfig::new()
             .with_server_auth(auth)
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());

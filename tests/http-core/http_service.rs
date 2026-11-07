@@ -380,7 +380,7 @@ fn client_with_transport(
     #[cfg(not(feature = "boring"))]
     let builder = builder.with_tls_support_using_rustls(tls);
     builder
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
         .map_connector(|mut connector| {
@@ -423,11 +423,11 @@ async fn client_with_http3_cache_and_timeout(
     impl Service<Request, Output = Response, Error: Debug>,
     Endpoint,
 ) {
-    let endpoint = Endpoint::build(WeakScope::never())
+    let endpoint = Endpoint::build(WeakScope::detached())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let h3 = Http3Connector::builder(WeakScope::never())
+    let h3 = Http3Connector::builder(WeakScope::detached())
         .with_endpoint(endpoint.clone())
         .with_tls_config(tls.clone());
     // Match the stream provider so native overrides exercise both transports.
@@ -444,7 +444,7 @@ async fn client_with_http3_cache_and_timeout(
     #[cfg(not(feature = "boring"))]
     let builder = builder.with_tls_support_using_rustls(tls);
     let client = builder
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_http3_support(h3)
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
@@ -1509,7 +1509,7 @@ async fn fixed_custom_tls_connector_reuses_connections() {
             .without_tls_proxy_support()
             .with_http_proxy_support()
             .with_custom_tls_connector(TlsConnectorLayer::auto().with_base_config(tls))
-            .with_default_http_connector(WeakScope::never())
+            .with_default_http_connector(WeakScope::detached())
             .with_default_connection_pool()
             .build_client();
 
@@ -1555,10 +1555,10 @@ async fn fixed_custom_tls_connector_reuses_connections() {
 async fn custom_http3_connector_publishes_its_own_pool_policy() {
     let (auth, tls) = credentials();
     let origin = Server::start(auth, Version::HTTP_3).await;
-    let endpoint = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
+    let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let h3 = Http3Connector::builder(WeakScope::never())
+    let h3 = Http3Connector::builder(WeakScope::detached())
         .with_endpoint(endpoint.clone())
         .with_tls_config(tls)
         .build()
@@ -1572,7 +1572,7 @@ async fn custom_http3_connector_publishes_its_own_pool_policy() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .without_tls_support()
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_http3_connector(DnsConnector::new(h3))
         .with_default_connection_pool()
         .build_client();
@@ -1933,14 +1933,14 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
         let server_tls = TlsServerConfig::new()
             .with_server_auth(auth)
             .with_alpn([alpn.clone()].into_iter().collect());
-        let server = Endpoint::build(WeakScope::never())
+        let server = Endpoint::build(WeakScope::detached())
             .with_server_config(
                 ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
             )
             .bind_address(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
-        let client = Endpoint::build(WeakScope::never())
+        let client = Endpoint::build(WeakScope::detached())
             .bind_address(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
@@ -1978,7 +1978,7 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
         };
         let result = timeout(
             TEST_TIMEOUT,
-            http_connect::<_, _, Body>(transport, input, WeakScope::never()),
+            http_connect::<_, _, Body>(transport, input, WeakScope::detached()),
         )
         .await
         .unwrap();
@@ -2150,10 +2150,11 @@ async fn check_http3_connector_resumption(provider: Arc<dyn QuicClientConfigProv
                 configurations: AtomicUsize::new(0),
                 opaque,
             });
-            let endpoint = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
-                .await
-                .unwrap();
-            let connector = Http3Connector::builder(WeakScope::never())
+            let endpoint =
+                Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
+                    .await
+                    .unwrap();
+            let connector = Http3Connector::builder(WeakScope::detached())
                 .with_endpoint(endpoint.clone())
                 .with_tls_config(tls.clone())
                 .with_tls_provider(provider.clone())
@@ -2191,7 +2192,7 @@ async fn check_http3_connector_resumption(provider: Arc<dyn QuicClientConfigProv
                 let established = http_connect::<_, _, Body>(
                     established.conn,
                     established.input,
-                    WeakScope::never(),
+                    WeakScope::detached(),
                 )
                 .await
                 .unwrap();
@@ -2222,10 +2223,10 @@ async fn check_http3_config_cache_tracks_mutated_defaults(
             cert_chain: auth.cert_chain.clone(),
         });
         let server = Server::start(auth, Version::HTTP_3).await;
-        let endpoint = Endpoint::bind_client(WeakScope::never(), SocketAddress::local_ipv4(0))
+        let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
             .await
             .unwrap();
-        let connector = Http3Connector::builder(WeakScope::never())
+        let connector = Http3Connector::builder(WeakScope::detached())
             .with_endpoint(endpoint.clone())
             .with_tls_config(
                 TlsClientConfig::default_http()
@@ -2312,7 +2313,7 @@ async fn http3_pool_opens_another_connection_after_early_response_while_upload_s
 
 async fn check_http3_busy_peer_credit(early_response: bool) {
     let (auth, tls) = credentials();
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let config = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());

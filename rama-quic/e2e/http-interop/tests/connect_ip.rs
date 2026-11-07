@@ -221,7 +221,7 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
             (Version::HTTP_3, false),
             (Version::HTTP_3, true),
         ] {
-            let scope = WeakScope::never();
+            let scope = WeakScope::detached();
             let template = ConnectIpTemplate::try_new("https://localhost/vpn")?;
             let (finished, mut completion) = tokio::sync::mpsc::unbounded_channel();
             let service = ConnectIpService::new(
@@ -440,7 +440,7 @@ async fn rama_ip_client_against_connect_ip_go() -> Result<(), BoxError> {
             .as_str()
             .ok_or("missing address")?
             .parse()?;
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let endpoint = Endpoint::build(scope.clone())
             .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
             .await?;
@@ -605,7 +605,7 @@ async fn rama_ip_server_against_connect_ip_go() -> Result<(), BoxError> {
             .map(|p| p.iter().map(|b| format!("{b:02x}")).collect())
             .collect();
         std::fs::write(&packet_file, serde_json::to_vec(&values)?)?;
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let tls = TlsServerConfig::new()
             .with_server_auth(auth)
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())

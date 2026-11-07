@@ -27,7 +27,7 @@ fn listening(line: &str, needle: &str) -> SocketAddr {
 /// and the body.
 async fn get(proxy: SocketAddr, ca: &Path) -> (StatusCode, Option<String>, String) {
     let ca = CertificateDer::from_pem_file(ca).unwrap();
-    let endpoint = Endpoint::build(WeakScope::never())
+    let endpoint = Endpoint::build(WeakScope::detached())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
@@ -44,7 +44,7 @@ async fn get(proxy: SocketAddr, ca: &Path) -> (StatusCode, Option<String>, Strin
     .unwrap()
     .unwrap();
     let (mut client, driver) =
-        h3_client::handshake::<Body, _>(connection, H3Config::default(), WeakScope::never())
+        h3_client::handshake::<Body, _>(connection, H3Config::default(), WeakScope::detached())
             .unwrap();
     let driver = spawn(driver.run());
     let request = Request::get(format!("https://localhost:{}/", proxy.port()))

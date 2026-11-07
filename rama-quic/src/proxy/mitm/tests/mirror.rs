@@ -119,7 +119,7 @@ async fn through_relay(
     let origin_tls = TlsServerConfig::new()
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
         .with_server_auth(origin_identity.clone());
-    let origin = Endpoint::build(WeakScope::never())
+    let origin = Endpoint::build(WeakScope::detached())
         .with_server_config(
             ServerConfig::try_from_rama_tls_with_provider(
                 &origin_tls,
@@ -148,7 +148,7 @@ async fn through_relay(
 
     let mut mitm = QuicMitmRelay::new(
         issuer(&mitm_identity),
-        WeakScope::never(),
+        WeakScope::detached(),
         trusting_with_alpn(&origin_identity, b"h3"),
         VarInt::from_u32(0x0101),
     );
@@ -227,7 +227,7 @@ async fn through_relay(
     config.apply_quic_profile(&profile).unwrap();
     let mut endpoint_config = crate::EndpointConfig::try_with_rand_key().unwrap();
     endpoint_config.apply_quic_profile(&profile).unwrap();
-    let client = Endpoint::build(WeakScope::never())
+    let client = Endpoint::build(WeakScope::detached())
         .with_config(endpoint_config)
         .with_datagram_socket(client_socket)
         .unwrap();

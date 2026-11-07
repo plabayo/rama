@@ -82,10 +82,10 @@ async fn hop_with_early_data(
         server_address,
         NonZeroUsize::new(64).unwrap(),
     );
-    let mut client = Endpoint::build(WeakScope::never())
+    let mut client = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .unwrap();
-    let server = Endpoint::build(WeakScope::never())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .unwrap();

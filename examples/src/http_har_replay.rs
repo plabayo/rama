@@ -171,7 +171,7 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
         "running server",
     );
 
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let http_svc = HttpServer::auto(scope.clone()).service(
         (
             AddRequiredResponseHeadersLayer::new(),

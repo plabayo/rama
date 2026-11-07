@@ -127,8 +127,8 @@ impl Pair {
             .set_transport_config(Arc::new(server_transport.unwrap_or_else(default_transport)));
         client_config
             .set_transport_config(Arc::new(client_transport.unwrap_or_else(default_transport)));
-        let server = Endpoint::build(WeakScope::never()).with_server_config(server_config);
-        let client = Endpoint::build(WeakScope::never());
+        let server = Endpoint::build(WeakScope::detached()).with_server_config(server_config);
+        let client = Endpoint::build(WeakScope::detached());
         let (server_endpoint, client_endpoint, datagram_faults) =
             if let Some(capacity) = memory_capacity {
                 let (server_socket, client_socket) = MemoryDatagramSocket::pair(
@@ -191,7 +191,7 @@ async fn dropping_last_client_sender_stops_its_driver() {
         let (client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -215,7 +215,7 @@ async fn response_body_keeps_driver_alive_after_client_sender_drop() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -262,7 +262,7 @@ async fn streaming_round_trip_reuses_connection_and_dynamic_qpack() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -383,7 +383,7 @@ async fn request_headers_record_the_fields_as_sent() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -462,7 +462,7 @@ async fn header_order_survives_transport_and_message_forwarding() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -533,7 +533,7 @@ async fn idle_qpack_stream_stop_closes_connection() {
         let (_sender, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -595,7 +595,7 @@ async fn upload_error_does_not_wait_for_response_headers() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -629,7 +629,7 @@ async fn goaway_wakes_request_waiting_for_stream_credit() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -672,7 +672,7 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -835,7 +835,7 @@ async fn tiny_windows_fall_back_without_qpack_deadlock() {
                         critical_streams,
                         ..Config::default()
                     },
-                    WeakScope::never(),
+                    WeakScope::detached(),
                 )
                 .unwrap();
                 let (mut server, server_driver) = server::handshake(
@@ -912,9 +912,12 @@ async fn opt_in_push_delivers_common_body_and_enforces_quota() {
             max_pushes: 1,
             ..Config::default()
         };
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config.clone(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let mut pushes = client.take_pushes().unwrap();
         assert!(client.take_pushes().is_none());
         let (mut server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
@@ -998,7 +1001,7 @@ async fn connect_upstream_failure_resets_with_connect_error() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -1068,7 +1071,7 @@ async fn tunnel_writes_are_sent_without_an_explicit_flush() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -1164,7 +1167,7 @@ async fn early_response_survives_peer_stopping_request_upload() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let (_server, server_driver) =

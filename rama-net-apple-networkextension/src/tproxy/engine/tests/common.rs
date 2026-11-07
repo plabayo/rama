@@ -8,6 +8,7 @@ use rama_core::{
     error::BoxError,
     graceful::WeakScope,
     service::{BoxService, Service},
+    telemetry::tracing::test_utils::prepare_for_captures,
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
@@ -362,6 +363,7 @@ impl tracing::Subscriber for CloseCaptureSubscriber {
 /// other tests already have running engines in the same libtest process.
 pub(super) fn install_close_capture() {
     INSTALL_CAPTURE.call_once(|| {
+        prepare_for_captures();
         tracing::subscriber::set_global_default(CloseCaptureSubscriber)
             .expect("close-capture subscriber must own the test process global default");
     });
@@ -397,8 +399,7 @@ pub(in crate::tproxy::engine) struct Capture(
 impl Capture {
     /// Runs `f` with this capture as the thread's default subscriber.
     pub(in crate::tproxy::engine) fn record<R>(&self, f: impl FnOnce() -> R) -> R {
-        // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
-        let _registered = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        prepare_for_captures();
         tracing::subscriber::with_default(self.clone(), f)
     }
 }

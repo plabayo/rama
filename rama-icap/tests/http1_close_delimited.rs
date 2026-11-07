@@ -90,11 +90,11 @@ impl Relay {
                         )
                     }
                 });
-                rama_http_backend::server::HttpServer::auto(WeakScope::never())
+                rama_http_backend::server::HttpServer::auto(WeakScope::detached())
                     .serve(MockSocket::new(ingress), service)
                     .await
             } else {
-                HttpMitmRelay::new(WeakScope::never())
+                HttpMitmRelay::new(WeakScope::detached())
                     .with_http_middleware((layer, ArcLayer::new()))
                     .serve(BridgeIo(
                         MockSocket::new(ingress),

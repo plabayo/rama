@@ -139,7 +139,7 @@ impl Identity {
 }
 
 pub async fn client_endpoint() -> Endpoint {
-    Endpoint::bind_client(WeakScope::never(), localhost())
+    Endpoint::bind_client(WeakScope::detached(), localhost())
         .await
         .unwrap()
 }

@@ -194,7 +194,7 @@ impl Relay {
         let origin_identity = Identity::generate(&directory, "origin");
 
         let (origin, origin_address, unreachable) = if with_origin {
-            let origin = Endpoint::build(WeakScope::never())
+            let origin = Endpoint::build(WeakScope::detached())
                 .with_server_config(serving(&origin_identity, origin_window, origin_streams))
                 .bind_address(localhost())
                 .await
@@ -236,7 +236,7 @@ impl Relay {
         let announced = process.wait_for_line("relay: listening on", STARTUP).await;
         let address = listening_address(&announced);
 
-        let client = Endpoint::build(WeakScope::never())
+        let client = Endpoint::build(WeakScope::detached())
             .bind_address(localhost())
             .await
             .expect("the client binds");

@@ -58,7 +58,7 @@ async fn reset_tunnel(reason: Reason) -> Upgraded {
         );
         stream.send_reset(reason);
     });
-    let (mut client, conn) = http2::handshake(WeakScope::never(), ServiceInput::new(client_io))
+    let (mut client, conn) = http2::handshake(WeakScope::detached(), ServiceInput::new(client_io))
         .await
         .unwrap();
     tokio::spawn(conn);

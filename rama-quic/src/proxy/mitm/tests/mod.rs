@@ -10,7 +10,10 @@ use std::{
     time::Duration,
 };
 
-use rama_core::{Service, error::BoxError, graceful::WeakScope, io::BridgeIo, service::service_fn};
+use rama_core::{
+    Service, error::BoxError, graceful::WeakScope, io::BridgeIo, service::service_fn,
+    telemetry::tracing::test_utils::prepare_for_captures,
+};
 use rama_crypto::dep::boring::{pkey::PKey, x509::X509};
 use rama_net::{
     http::{TargetHttpVersion, Version},
@@ -68,7 +71,7 @@ impl RefusalLog {
 
 // These tests use Tokio's current-thread runtime, so spawned resolver work uses
 // the same thread-local subscriber throughout the awaited test.
-fn capture_refusals() -> (RefusalLog, Captured) {
+fn capture_refusals() -> (RefusalLog, tracing::subscriber::DefaultGuard) {
     let log = RefusalLog::default();
     let writer = log.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -76,18 +79,8 @@ fn capture_refusals() -> (RefusalLog, Captured) {
         .with_ansi(false)
         .with_writer(move || writer.clone())
         .finish();
-    let captured = Captured {
-        // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
-        _registered: tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()),
-        _guard: tracing::subscriber::set_default(subscriber),
-    };
-    (log, captured)
-}
-
-/// Keeps the refusal capture as this thread's default while it lives.
-struct Captured {
-    _registered: tracing::Dispatch,
-    _guard: tracing::subscriber::DefaultGuard,
+    prepare_for_captures();
+    (log, tracing::subscriber::set_default(subscriber))
 }
 
 const ALPN: &[u8] = b"rama-quic-test";
@@ -132,11 +125,11 @@ fn sockets_with_alpn(origin_identity: &ServerAuthData, port: u16, alpn: &[u8]) -
     let tls = rama_tls::server::TlsServerConfig::new()
         .with_alpn([alpn.into()].into_iter().collect())
         .with_server_auth(origin_identity.clone());
-    let origin = Endpoint::build(WeakScope::never())
+    let origin = Endpoint::build(WeakScope::detached())
         .with_server_config(ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap())
         .with_datagram_socket(origin_socket)
         .unwrap();
-    let client = Endpoint::build(WeakScope::never())
+    let client = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .unwrap();
     Sockets {
@@ -151,7 +144,7 @@ fn sockets_with_alpn(origin_identity: &ServerAuthData, port: u16, alpn: &[u8]) -
 fn relay<I>(issuer: I, origin_identity: &ServerAuthData) -> QuicMitmRelay<I> {
     QuicMitmRelay::new(
         issuer,
-        WeakScope::never(),
+        WeakScope::detached(),
         trusting(origin_identity),
         VarInt::from_u32(0x0101),
     )
@@ -494,7 +487,7 @@ async fn an_http3_origin_marks_the_egress_http_version() {
             BoringTlsProvider,
             QuicMitmRelay::new(
                 issuer(&mitm_identity),
-                WeakScope::never(),
+                WeakScope::detached(),
                 trusting_with_alpn(&origin_identity, b"h3"),
                 VarInt::from_u32(0x0101),
             )
@@ -607,7 +600,7 @@ async fn no_origin_work_runs_for_a_client_that_never_proves_its_address() {
                 .unwrap();
             let mut mitm = QuicMitmRelay::new(
                 issuer,
-                WeakScope::never(),
+                WeakScope::detached(),
                 egress_tls,
                 VarInt::from_u32(0x0101),
             )
@@ -777,13 +770,13 @@ async fn the_origin_sees_the_clients_protocols_in_order_and_its_version() {
                         .collect(),
                 )
                 .with_server_auth(origin_identity.clone());
-            let origin = Endpoint::build(WeakScope::never())
+            let origin = Endpoint::build(WeakScope::detached())
                 .with_server_config(
                     ServerConfig::try_from_rama_tls(&origin_tls, TlsOptions::default()).unwrap(),
                 )
                 .with_datagram_socket(origin_socket)
                 .unwrap();
-            let client = Endpoint::build(WeakScope::never())
+            let client = Endpoint::build(WeakScope::detached())
                 .with_datagram_socket(client_socket)
                 .unwrap();
             let origin_task = tokio::spawn(async move {
@@ -804,7 +797,7 @@ async fn the_origin_sees_the_clients_protocols_in_order_and_its_version() {
                 BoringTlsProvider,
                 QuicMitmRelay::new(
                     issuer(&mitm_identity),
-                    WeakScope::never(),
+                    WeakScope::detached(),
                     egress_tls,
                     VarInt::from_u32(0x0101),
                 )

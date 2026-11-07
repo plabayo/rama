@@ -101,11 +101,11 @@ fn endpoints() -> Endpoints {
         NonZeroUsize::MIN,
     );
     let client_faults = client_socket.fault_control();
-    let server_endpoint = Endpoint::build(WeakScope::never())
+    let server_endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .expect("server endpoint");
-    let client_endpoint = Endpoint::build(WeakScope::never())
+    let client_endpoint = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .expect("client endpoint");
     let address = server_endpoint.local_addr().expect("server address");
@@ -141,7 +141,7 @@ async fn shutdown(
         _ = signalled.await;
     };
     let (shutdown, root) = match trigger {
-        Trigger::Guard => (Some(Scope::new().with_signal(signalled)), Scope::never()),
+        Trigger::Guard => (Some(Scope::new().with_signal(signalled)), Scope::detached()),
         Trigger::Scope => (None, Scope::new().with_signal(signalled)),
     };
     let scope = match &shutdown {
@@ -193,7 +193,7 @@ async fn shutdown(
         .await
         .expect("connect QUIC");
     let (mut requests, driver) =
-        client::handshake::<Body, _>(connection.clone(), Config::default(), WeakScope::never())
+        client::handshake::<Body, _>(connection.clone(), Config::default(), WeakScope::detached())
             .expect("HTTP/3 client");
     tokio::spawn(driver.run());
     let request = Request::builder()
@@ -387,7 +387,7 @@ async fn default_connections_get_isolated_cancellable_scopes() {
     } = endpoints();
     let (scopes_tx, mut scopes) = mpsc::unbounded_channel();
     let respond = Arc::new(Notify::new());
-    let server = HttpServer::new_http3(WeakScope::never());
+    let server = HttpServer::new_http3(WeakScope::detached());
     let serving = tokio::spawn({
         let respond = respond.clone();
         async move {
@@ -427,9 +427,12 @@ async fn default_connections_get_isolated_cancellable_scopes() {
             .expect("start QUIC connection")
             .await
             .expect("connect QUIC");
-        let (mut requests, driver) =
-            client::handshake::<Body, _>(connection.clone(), Config::default(), WeakScope::never())
-                .expect("HTTP/3 client");
+        let (mut requests, driver) = client::handshake::<Body, _>(
+            connection.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .expect("HTTP/3 client");
         tokio::spawn(driver.run());
         let request = Request::builder()
             .uri("https://localhost/")
@@ -451,7 +454,7 @@ async fn default_connections_get_isolated_cancellable_scopes() {
             .expect("the request arrives")
             .flatten()
             .expect("every request sees its connection scope");
-        assert!(!scope.is_never());
+        assert!(!scope.is_detached());
         clients.push((connection, exchange, scope));
     }
 
@@ -554,7 +557,7 @@ async fn capped(max_age: Duration, grace: Duration, answer_after: Option<Duratio
         .await
         .expect("connect QUIC");
     let (mut requests, driver) =
-        client::handshake::<Body, _>(connection.clone(), Config::default(), WeakScope::never())
+        client::handshake::<Body, _>(connection.clone(), Config::default(), WeakScope::detached())
             .expect("HTTP/3 client");
     tokio::spawn(driver.run());
     let draining = requests.closed_or_draining();

@@ -158,12 +158,12 @@ impl ObservedHandshake {
         }
         let config = ClientConfig::try_from_rama_tls(&client_tls, options).unwrap();
         let (server, client) = runtime.block_on(async {
-            let server = Endpoint::build(WeakScope::never())
+            let server = Endpoint::build(WeakScope::detached())
                 .with_server_config(server_config)
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await
                 .unwrap();
-            let client = Endpoint::build(WeakScope::never())
+            let client = Endpoint::build(WeakScope::detached())
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await
                 .unwrap();
@@ -272,7 +272,7 @@ fn round_trip(
                 .unwrap();
         client_config.set_transport_config(transport);
         let bind = SocketAddress::local_ipv4(0);
-        let endpoint = Endpoint::build(WeakScope::never())
+        let endpoint = Endpoint::build(WeakScope::detached())
             .with_server_config(server_config)
             .bind_address(bind)
             .await
@@ -281,7 +281,7 @@ fn round_trip(
             let endpoint = endpoint.clone();
             async move { endpoint.accept().await.unwrap().await.unwrap() }
         });
-        let client_endpoint = Endpoint::build(WeakScope::never())
+        let client_endpoint = Endpoint::build(WeakScope::detached())
             .bind_address(bind)
             .await
             .unwrap();
@@ -358,7 +358,7 @@ impl RoundTrip {
                 }
             });
             let (sender, driver) =
-                client::handshake::<Body, _>(sending, config, WeakScope::never()).unwrap();
+                client::handshake::<Body, _>(sending, config, WeakScope::detached()).unwrap();
             tokio::spawn(driver.run());
             let mut retained = Vec::with_capacity(idle);
             for _ in 0..idle {

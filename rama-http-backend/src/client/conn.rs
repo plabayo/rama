@@ -188,7 +188,7 @@ mod proxy_metadata_tests {
             }
             let conn = tokio::time::timeout(Duration::from_secs(2), async move {
                 if eager {
-                    http2_eager_handshake::<_, Body>(io, WeakScope::never())
+                    http2_eager_handshake::<_, Body>(io, WeakScope::detached())
                         .await
                         .unwrap()
                         .0
@@ -206,7 +206,7 @@ mod proxy_metadata_tests {
                             .parse()
                             .unwrap(),
                     ));
-                    http_connect::<_, _, Body>(io, input, WeakScope::never())
+                    http_connect::<_, _, Body>(io, input, WeakScope::detached())
                         .await
                         .unwrap()
                         .conn
@@ -840,7 +840,7 @@ impl<Body> HttpConnectorLayer<Body> {
 
 impl<Body> Default for HttpConnectorLayer<Body> {
     fn default() -> Self {
-        Self::new(WeakScope::never())
+        Self::new(WeakScope::detached())
     }
 }
 
@@ -894,8 +894,10 @@ mod http3_dispatch_tests {
 
     #[tokio::test]
     async fn stream_only_connector_rejects_h3_before_dialing() {
-        let connector =
-            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), WeakScope::never());
+        let connector = HttpConnector::<_, Body>::new(
+            stream_connector_must_not_connect(),
+            WeakScope::detached(),
+        );
         let input = ConnectRequest::new("origin.example:443".parse().unwrap());
         input
             .extensions()
@@ -916,7 +918,7 @@ mod http3_dispatch_tests {
                     panic!("HTTP/2 must not dial a QUIC-only connector");
                 },
             ),
-            WeakScope::never(),
+            WeakScope::detached(),
         );
         let input = ConnectRequest::new("origin.example:443".parse().unwrap());
         input
@@ -941,7 +943,7 @@ mod http3_dispatch_tests {
                     ))
                 },
             ),
-            WeakScope::never(),
+            WeakScope::detached(),
         );
         for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
             let input = ConnectRequest::new("origin.example:443".parse().unwrap());
@@ -1006,7 +1008,7 @@ mod http3_dispatch_tests {
                         .extensions()
                         .insert(TargetHttpVersion(Version::HTTP_11));
                     let established =
-                        http_connect::<_, _, Body>(transport, input, WeakScope::never())
+                        http_connect::<_, _, Body>(transport, input, WeakScope::detached())
                             .await
                             .unwrap();
                     let reusable = established
@@ -1039,7 +1041,7 @@ mod http3_dispatch_tests {
             .extensions
             .insert(FallbackHttpVersion(Version::HTTP_2));
         let established =
-            http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::never())
+            http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::detached())
                 .await
                 .unwrap();
         assert_eq!(
@@ -1065,7 +1067,7 @@ mod http3_dispatch_tests {
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
-        let error = http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::never())
+        let error = http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::detached())
             .await
             .err()
             .unwrap();
@@ -1099,7 +1101,7 @@ mod http3_dispatch_tests {
                     panic!("HTTP/1 and HTTP/2 must not use the HTTP/3 transport");
                 },
             );
-            let connector = HttpConnector::<_, Body>::new(stream_connector, WeakScope::never())
+            let connector = HttpConnector::<_, Body>::new(stream_connector, WeakScope::detached())
                 .with_http3_connector(http3);
             let input = ConnectRequest::new("origin.example:443".parse().unwrap());
             input.extensions().insert(TargetHttpVersion(version));
@@ -1136,9 +1138,11 @@ mod http3_dispatch_tests {
                 ))
             },
         );
-        let connector =
-            HttpConnector::<_, Body>::new(stream_connector_must_not_connect(), WeakScope::never())
-                .with_http3_connector(http3);
+        let connector = HttpConnector::<_, Body>::new(
+            stream_connector_must_not_connect(),
+            WeakScope::detached(),
+        )
+        .with_http3_connector(http3);
         let input = ConnectRequest::new("origin.example:443".parse().unwrap())
             .with_application_protocol(ApplicationProtocol::HTTPS);
         input
@@ -1211,7 +1215,7 @@ mod h2_client_params_tests {
                 ..Default::default()
             });
             let established =
-                http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::never())
+                http_connect::<_, _, Body>(ServiceInput::new(io), input, WeakScope::detached())
                     .await
                     .unwrap();
 
@@ -1245,7 +1249,8 @@ mod h2_client_params_tests {
             )
             .unwrap(),
         );
-        let mut builder = H2ClientBuilder::new(WeakScope::never()).with_initial_settings(literal);
+        let mut builder =
+            H2ClientBuilder::new(WeakScope::detached()).with_initial_settings(literal);
         let extensions = Extensions::new();
         extensions.insert(H2ClientContextParams {
             keep_alive_timeout: Some(Duration::from_secs(3)),

@@ -46,7 +46,7 @@ async fn health_server_via_router() {
         .with_service(GreeterServer::new(greeter))
         .with_service(health_service);
 
-    let server = HttpServer::auto(WeakScope::never()).service(grpc_svc);
+    let server = HttpServer::auto(WeakScope::detached()).service(grpc_svc);
 
     // hello world capabilities
 

@@ -12,7 +12,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     UnixListener::bind_path("/tmp/example.socket", WeakScope::never())
+//!     UnixListener::bind_path("/tmp/example.socket", WeakScope::detached())
 //!         .await
 //!         .expect("bind Unix Listener")
 //!         .serve(service_fn(async |mut stream: UnixStream| {

@@ -153,7 +153,7 @@ impl Fixture {
         let socket = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
-        let server = Endpoint::build(WeakScope::never())
+        let server = Endpoint::build(WeakScope::detached())
             .maybe_with_config(endpoint_config)
             .with_server_config(server_config)
             .with_datagram_socket(GatedSocket {
@@ -161,7 +161,7 @@ impl Fixture {
                 gate: gate.clone(),
             })
             .unwrap();
-        let client = Endpoint::build(WeakScope::never())
+        let client = Endpoint::build(WeakScope::detached())
             .bind_address(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
@@ -275,7 +275,7 @@ fn request(method: Method, body: &'static str) -> Request<Body> {
 /// Send one request from a client task and collect its response body.
 fn send(client: Connection, config: Config, request: Request<Body>) -> Task<Result<Bytes, Error>> {
     let (mut sender, driver) =
-        client::handshake::<Body, _>(client, config, WeakScope::never()).unwrap();
+        client::handshake::<Body, _>(client, config, WeakScope::detached()).unwrap();
     Task::spawn(async move {
         let _driver = Task::spawn(driver.run());
         let response = sender.send_request(request).await?;
@@ -369,7 +369,8 @@ async fn early_critical_streams(provider: Provider) {
     fixture.gate.hold();
     let (client, server) = fixture.early_pair().await;
     let (_sender, driver) =
-        client::handshake::<Body, _>(client.clone(), early_config(), WeakScope::never()).unwrap();
+        client::handshake::<Body, _>(client.clone(), early_config(), WeakScope::detached())
+            .unwrap();
     let _driver = Task::spawn(driver.run());
     // All server output is held, so a stream arriving now was sent with early keys.
     let mut control = timeout(PROBE, server.accept_uni())
@@ -410,7 +411,7 @@ async fn reversed_without_early_data(provider: Provider) {
     let (mut sender, driver) = client::handshake::<Body, _>(
         Reversed::new(server.clone()),
         early_config(),
-        WeakScope::never(),
+        WeakScope::detached(),
     )
     .unwrap();
     let _client_driver = Task::spawn(driver.run());
@@ -546,7 +547,7 @@ async fn rejection_race(provider: Provider) {
         ..early_config()
     };
     let (sender, _driver) =
-        client::handshake::<Body, _>(client.clone(), config, WeakScope::never()).unwrap();
+        client::handshake::<Body, _>(client.clone(), config, WeakScope::detached()).unwrap();
     let mut first = {
         let mut sender = sender.clone();
         Box::pin(async move { sender.send_request(request(Method::GET, "")).await })

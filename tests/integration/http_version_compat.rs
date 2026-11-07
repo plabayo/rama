@@ -357,11 +357,11 @@ async fn origin() -> Fixture {
 }
 
 async fn origin_with_upload_wait(wait_for_upload: bool) -> Fixture {
-    let listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::never())
+    let listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::detached())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap().to_string();
-    let service = HttpServer::new_http1(WeakScope::never()).service(service_fn(
+    let service = HttpServer::new_http1(WeakScope::detached()).service(service_fn(
         move |req: Request| async move {
             assert_eq!(req.version(), Version::HTTP_11);
             if is_http_req_websocket_handshake(&req) {
@@ -431,7 +431,7 @@ async fn endpoint_with_connect_support(
     bind: &str,
     extended_connect: bool,
 ) -> Fixture {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let (web, _) = client(
         scope.clone(),
@@ -656,7 +656,7 @@ async fn endpoint_with_connect_support(
         connection
     })
     .into_layer(service);
-    let quic_task = tokio::spawn(endpoint.clone().serve(WeakScope::never(), service));
+    let quic_task = tokio::spawn(endpoint.clone().serve(WeakScope::detached(), service));
     Fixture {
         address: address.to_string(),
         tasks: vec![tcp_task, quic_task],
@@ -670,7 +670,7 @@ async fn endpoint_with_connect_support(
 }
 
 async fn proxy(selected: Option<Version>) -> Fixture {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let (web, preflight) = client(
         scope.clone(),
         TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
@@ -704,7 +704,7 @@ async fn connect(proxy: &str, target: &str, outer: Version) -> Response {
         .body(Body::empty())
         .unwrap();
     let client: HttpClientService<Body> =
-        http_connect(ServiceInput::new(io), handshake, WeakScope::never())
+        http_connect(ServiceInput::new(io), handshake, WeakScope::detached())
             .await
             .unwrap()
             .conn;
@@ -759,7 +759,7 @@ async fn tunnel_with_alpn(
         .uri(format!("https://{target}/echo?test=1"))
         .body(Body::empty())
         .unwrap();
-    http_connect(io, request, WeakScope::never())
+    http_connect(io, request, WeakScope::detached())
         .await
         .unwrap()
         .conn
@@ -790,7 +790,7 @@ async fn exchange(
 }
 
 fn websocket_client(outer: Version) -> BoxService<Request, Response, OpaqueError> {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
     let h3 = Http3Connector::builder(scope.clone())
         .with_tls_config(tls.clone())
@@ -1061,7 +1061,7 @@ async fn ingress_and_mitm_version_matrix() {
         .await;
         // Each direct ingress protocol, independently of CONNECT.
         let (web, _) = client(
-            WeakScope::never(),
+            WeakScope::detached(),
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
         .unwrap();
@@ -1319,7 +1319,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
         )
         .await;
         let (web, _) = client(
-            WeakScope::never(),
+            WeakScope::detached(),
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
         .unwrap();
@@ -1699,7 +1699,7 @@ async fn connection_timeout_returns_gateway_timeout() {
         )
         .await;
         let (web, _) = client(
-            WeakScope::never(),
+            WeakScope::detached(),
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
         .unwrap();
@@ -1883,7 +1883,7 @@ async fn rewritten_https_origin_omits_default_port_on_the_wire() {
         )
         .await;
         let (web, _) = client(
-            WeakScope::never(),
+            WeakScope::detached(),
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
         .unwrap();
@@ -1916,7 +1916,7 @@ async fn rewritten_https_origin_omits_default_port_on_the_wire() {
 #[tokio::test]
 async fn http2_without_alpn_respects_policy_and_pool_reuse() {
     timeout(Duration::from_secs(30), async {
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone())
             .await
             .unwrap();
@@ -2083,7 +2083,7 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
 #[tokio::test]
 async fn missing_alpn_preflight_waits_for_http2_settings_with_a_deadline() {
     timeout(Duration::from_secs(10), async {
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let listener = TcpListener::bind_address("127.0.0.1:0", scope)
             .await
             .unwrap();

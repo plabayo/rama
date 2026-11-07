@@ -91,7 +91,7 @@ pub struct IoForwardService {
 
 impl Default for IoForwardService {
     fn default() -> Self {
-        Self::new(WeakScope::never())
+        Self::new(WeakScope::detached())
     }
 }
 
@@ -251,7 +251,7 @@ where
             self.idle_timeout
                 .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
                 .unwrap_or(0),
-            !self.scope.is_never(),
+            !self.scope.is_detached(),
         );
 
         let stop = self.stop(&left);
@@ -452,7 +452,7 @@ impl Stop {
     #[cfg(test)]
     fn never() -> Self {
         Self {
-            scope: Scope::never(),
+            scope: Scope::detached(),
         }
     }
 
@@ -1431,7 +1431,7 @@ mod tests {
     /// The bridge holds the scope it runs in while it relays: a retained context alone does not.
     #[tokio::test]
     async fn a_running_bridge_holds_its_connection_scope() {
-        let svc = IoForwardService::new(WeakScope::never());
+        let svc = IoForwardService::new(WeakScope::detached());
         let (a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);
         let connection = Scope::new();
@@ -1457,7 +1457,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_connection_scope_in_the_extensions_stops_the_bridge() {
-        let svc = IoForwardService::new(WeakScope::never());
+        let svc = IoForwardService::new(WeakScope::detached());
 
         let (_a_user, a_proxy) = duplex(64);
         let (_b_user, b_proxy) = duplex(64);

@@ -37,7 +37,7 @@ pub struct HttpServer<B> {
 impl Default for HttpServer<AutoConnBuilder> {
     #[inline(always)]
     fn default() -> Self {
-        Self::auto(WeakScope::never())
+        Self::auto(WeakScope::detached())
     }
 }
 

@@ -60,7 +60,7 @@ async fn exchange(client_ciphers: Option<Vec<CipherSuite>>, port: u16) -> (Answe
         observed.observe(ssl, true);
         Ok(())
     })));
-    let origin = Endpoint::build(WeakScope::never())
+    let origin = Endpoint::build(WeakScope::detached())
         .with_server_config(
             ServerConfig::try_from_rama_tls_with_provider(
                 &origin_tls,
@@ -111,7 +111,7 @@ async fn exchange(client_ciphers: Option<Vec<CipherSuite>>, port: u16) -> (Answe
         &BoringTlsProvider,
     )
     .unwrap();
-    let client = Endpoint::build(WeakScope::never())
+    let client = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .unwrap();
     let connection = client

@@ -45,13 +45,13 @@ struct Pair {
 
 impl Pair {
     async fn new(identities: &Identities) -> Self {
-        let server = Endpoint::build(WeakScope::never())
+        let server = Endpoint::build(WeakScope::detached())
             .with_server_config(identities.server_config())
             .bind_address(localhost())
             .await
             .expect("the server binds");
         let addr = server.local_addr().unwrap();
-        let client = Endpoint::build(WeakScope::never())
+        let client = Endpoint::build(WeakScope::detached())
             .bind_address(localhost())
             .await
             .expect("the client binds");

@@ -104,7 +104,7 @@ async fn request(
 }
 
 fn proxy() -> ConnectUdpService {
-    ConnectUdpService::try_new(WeakScope::never(), None)
+    ConnectUdpService::try_new(WeakScope::detached(), None)
         .unwrap()
         .with_policy(DestinationScopePolicy::allow_private())
 }

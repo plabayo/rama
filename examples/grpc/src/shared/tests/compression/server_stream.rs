@@ -40,7 +40,7 @@ async fn client_enabled_server_enabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::new_h2(WeakScope::never()).service(grpc_svc)
+        HttpServer::new_h2(WeakScope::detached()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -95,7 +95,7 @@ async fn client_disabled_server_enabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::auto(WeakScope::never()).service(grpc_svc)
+        HttpServer::auto(WeakScope::detached()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(
@@ -137,7 +137,7 @@ async fn client_enabled_server_disabled(encoding: CompressionEncoding) {
         })
         .into_layer(svc);
 
-        HttpServer::auto(WeakScope::never()).service(grpc_svc)
+        HttpServer::auto(WeakScope::detached()).service(grpc_svc)
     };
 
     let client = test_client::TestClient::new(

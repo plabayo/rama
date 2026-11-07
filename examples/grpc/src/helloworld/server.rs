@@ -7,7 +7,7 @@ use rama_grpc_examples::hello_world::{RamaGreeter, greeter_server::GreeterServer
 async fn main() -> Result<(), BoxError> {
     let greeter = RamaGreeter::default();
 
-    HttpServer::auto(WeakScope::never())
+    HttpServer::auto(WeakScope::detached())
         .listen(
             SocketAddress::local_ipv6(50051),
             GreeterServer::new(greeter),

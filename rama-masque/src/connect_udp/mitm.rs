@@ -83,7 +83,7 @@ pub struct ConnectUdpRelayRequestMatcher<S = HttpDatagramRelay, M = bool> {
 
 impl Default for ConnectUdpRelayRequestMatcher {
     fn default() -> Self {
-        Self::default_with_scope(WeakScope::never())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 

@@ -43,7 +43,7 @@ async fn memory_loss_and_reordering_recover_headers_bodies_trailers_and_qpack() 
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -141,9 +141,12 @@ async fn memory_mid_body_cancellation_then_graceful_drain_survives_packet_loss()
             max_requests: 1,
             ..Config::default()
         };
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config.clone(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let (mut server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
         let client_driver = spawn(client_driver.run());
         let server_driver = spawn(server_driver.run());

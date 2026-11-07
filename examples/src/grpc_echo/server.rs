@@ -52,7 +52,7 @@ async fn main() -> Result<(), BoxError> {
         .init();
 
     tracing::info!("grpc echo server listening on {ADDR}");
-    HttpServer::auto(WeakScope::never())
+    HttpServer::auto(WeakScope::detached())
         .listen(ADDR, echo_server::EchoServer::new(EchoService))
         .await?;
 

@@ -31,7 +31,7 @@ async fn mismatched_alpn(provider: Provider) {
             }),
         },
         input,
-        WeakScope::never(),
+        WeakScope::detached(),
     )
     .await
     .unwrap()

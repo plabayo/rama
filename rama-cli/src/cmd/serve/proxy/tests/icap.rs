@@ -432,19 +432,21 @@ async fn icap_pool_retirement_is_not_held_open_by_a_pending_connect() {
 async fn forward_client_applies_icap_reqmod_and_respmod() {
     let (icap_address, icap_task, _icap_state) = spawn_proxy_test_icap().await;
     let origin_listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
             .await
             .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_task = tokio::spawn(origin_listener.serve(
-        HttpServer::auto(WeakScope::never()).service(service_fn(|request: Request| async move {
-            assert_eq!(request.headers()["x-rama-icap-reqmod"], "yes");
-            assert_eq!(
-                request.into_body().collect().await.unwrap().to_bytes(),
-                "request body"
-            );
-            Ok::<_, Infallible>(Response::new(Body::from("response body")))
-        })),
+        HttpServer::auto(WeakScope::detached()).service(service_fn(
+            |request: Request| async move {
+                assert_eq!(request.headers()["x-rama-icap-reqmod"], "yes");
+                assert_eq!(
+                    request.into_body().collect().await.unwrap().to_bytes(),
+                    "request body"
+                );
+                Ok::<_, Infallible>(Response::new(Body::from("response body")))
+            },
+        )),
     ));
     let cli = TestCli::parse_from(vec![
         "test".to_owned(),
@@ -459,7 +461,7 @@ async fn forward_client_applies_icap_reqmod_and_respmod() {
     )
     .unwrap();
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -503,31 +505,33 @@ async fn forward_client_applies_icap_reqmod_and_respmod() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_client_consumes_proxy_auth_without_icap() {
     let origin_listener =
-        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
             .await
             .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_task = tokio::spawn(origin_listener.serve(
-        HttpServer::auto(WeakScope::never()).service(service_fn(|request: Request| async move {
-            assert!(
-                !request
-                    .headers()
-                    .contains_key(rama::http::header::PROXY_AUTHORIZATION)
-            );
-            Ok::<_, Infallible>(
-                Response::builder()
-                    .header(rama::http::header::PROXY_AUTHENTICATE, "Basic")
-                    .header(
-                        rama::http::header::PROXY_AUTHENTICATION_INFO,
-                        "nextnonce=deadbeef",
-                    )
-                    .body(Body::from("proxy auth consumed"))
-                    .unwrap(),
-            )
-        })),
+        HttpServer::auto(WeakScope::detached()).service(service_fn(
+            |request: Request| async move {
+                assert!(
+                    !request
+                        .headers()
+                        .contains_key(rama::http::header::PROXY_AUTHORIZATION)
+                );
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header(rama::http::header::PROXY_AUTHENTICATE, "Basic")
+                        .header(
+                            rama::http::header::PROXY_AUTHENTICATION_INFO,
+                            "nextnonce=deadbeef",
+                        )
+                        .body(Body::from("proxy auth consumed"))
+                        .unwrap(),
+                )
+            },
+        )),
     ));
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -591,7 +595,7 @@ async fn default_icap_directions_follow_single_method_capabilities() {
     )
     .unwrap();
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -650,7 +654,7 @@ async fn stalled_icap_options_is_bounded_for_all_waiters() {
     )
     .unwrap();
     let client = new_proxy_client(ProxyClientConfig {
-        scope: WeakScope::never(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),

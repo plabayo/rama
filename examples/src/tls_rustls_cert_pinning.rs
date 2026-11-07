@@ -86,7 +86,7 @@ async fn main() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_rustls(tls_config)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
 

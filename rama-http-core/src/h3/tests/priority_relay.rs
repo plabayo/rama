@@ -14,7 +14,7 @@ async fn early_priority_handle_forwards_updates_before_response_headers() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         spawn(driver.run());
@@ -75,9 +75,12 @@ async fn priority_observer_reports_connection_close_without_observation_enabled(
         let pair = Pair::in_memory(None, None).await;
         let config = Config::default();
         assert!(config.observation.is_none());
-        let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
-                .unwrap();
+        let (mut client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config.clone(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         spawn(driver.run());
         let (mut server, driver) = server::handshake(pair.server.clone(), config).unwrap();
         spawn(driver.run());

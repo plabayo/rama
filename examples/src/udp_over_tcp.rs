@@ -97,7 +97,7 @@ async fn main() -> Result<(), BoxError> {
     let tcp = match mode {
         "listen" => {
             let listener =
-                TcpListener::bind_address(SocketAddress::from(tcp_addr), WeakScope::never())
+                TcpListener::bind_address(SocketAddress::from(tcp_addr), WeakScope::detached())
                     .await?;
             tracing::info!("tcp listening on {}", listener.local_addr()?);
             let (tcp, peer) = listener.accept().await?;

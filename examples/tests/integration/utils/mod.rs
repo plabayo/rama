@@ -555,7 +555,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls_config)
-                    .with_default_http_connector(WeakScope::never())
+                    .with_default_http_connector(WeakScope::detached())
                     .without_connection_pool()
                     .build_client()
             };
@@ -580,7 +580,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls_config)
-                    .with_default_http_connector(WeakScope::never())
+                    .with_default_http_connector(WeakScope::detached())
                     .without_connection_pool()
                     .build_client()
             };

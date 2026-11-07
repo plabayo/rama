@@ -133,7 +133,7 @@ async fn h2_connection_scope_cancel_sends_goaway_and_finishes_in_flight_stream()
     let server_io = MockSocket::new(server_io);
     let scope = Scope::new();
     attach_scope(server_io.extensions(), &scope);
-    let (server, mut arrived) = serve(server_io, WeakScope::never(), None, release);
+    let (server, mut arrived) = serve(server_io, WeakScope::detached(), None, release);
 
     let client = h2_request(client_io).await;
     arrived.wait_for(Option::is_some).await.unwrap();
@@ -178,7 +178,7 @@ async fn h1_connection_scope_cancel_closes_after_in_flight_response() {
     let server_io = MockSocket::new(server_io);
     let scope = Scope::new();
     attach_scope(server_io.extensions(), &scope);
-    let (server, mut arrived) = serve(server_io, WeakScope::never(), None, release);
+    let (server, mut arrived) = serve(server_io, WeakScope::detached(), None, release);
 
     let (mut sender, conn) = client_conn::http1::handshake(MockSocket::new(client_io))
         .await
@@ -215,7 +215,7 @@ async fn abort_drops_a_connection_with_a_stuck_request() {
     let server_io = MockSocket::new(server_io);
     let scope = Scope::new();
     attach_scope(server_io.extensions(), &scope);
-    let (server, mut arrived) = serve(server_io, WeakScope::never(), None, release);
+    let (server, mut arrived) = serve(server_io, WeakScope::detached(), None, release);
 
     let client = h2_request(client_io).await;
     arrived.wait_for(Option::is_some).await.unwrap();
@@ -244,7 +244,7 @@ async fn scope_layer_drains_at_max_age_and_aborts_after_grace() {
     let start = Instant::now();
     let (server, mut arrived) = serve(
         MockSocket::new(server_io),
-        WeakScope::never(),
+        WeakScope::detached(),
         Some(layer),
         release,
     );
@@ -274,13 +274,13 @@ async fn default_connections_get_isolated_cancellable_scopes() {
     let (release_tx, release) = watch::channel(false);
     let (first_server, mut first_arrived) = serve(
         MockSocket::new(first_server_io),
-        WeakScope::never(),
+        WeakScope::detached(),
         None,
         release.clone(),
     );
     let (second_server, mut second_arrived) = serve(
         MockSocket::new(second_server_io),
-        WeakScope::never(),
+        WeakScope::detached(),
         None,
         release,
     );
@@ -291,8 +291,8 @@ async fn default_connections_get_isolated_cancellable_scopes() {
     second_arrived.wait_for(Option::is_some).await.unwrap();
     let first_scope = request_scope(&first_arrived);
     let second_scope = request_scope(&second_arrived);
-    assert!(!first_scope.is_never());
-    assert!(!second_scope.is_never());
+    assert!(!first_scope.is_detached());
+    assert!(!second_scope.is_detached());
 
     // Cancelled from state the handler sees: only its own connection drains.
     first_scope.cancel(Cause::Reason("handler"));
@@ -324,7 +324,7 @@ async fn default_h1_connection_closes_on_its_request_scope() {
     let (release_tx, release) = watch::channel(false);
     let (server, mut arrived) = serve(
         MockSocket::new(server_io),
-        WeakScope::never(),
+        WeakScope::detached(),
         None,
         release,
     );

@@ -181,7 +181,7 @@ async fn main() -> Result<(), BoxError> {
         }
     }
 
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
 
     // MITM relay with a fresh in-memory CA; export the CA cert for the client.
     let (ca_crt, ca_key) = generate_certificate_authority_x509(&SelfSignedCaConfig {

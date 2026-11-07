@@ -170,20 +170,20 @@ impl Loopback {
             ClientConfig::try_from_rama_tls_with_provider(&client_tls, options, &BoringTlsProvider)
                 .unwrap();
         let (client, server) = runtime.block_on(async {
-            let server = Endpoint::build(WeakScope::never())
+            let server = Endpoint::build(WeakScope::detached())
                 .with_server_config(server_config)
                 .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
                 .await
                 .unwrap();
             let addr = server.local_addr().unwrap();
             tokio::spawn(server.serve(
-                WeakScope::never(),
+                WeakScope::detached(),
                 service_fn(async |connection: Connection| {
                     _ = connection.closed().await;
                     Ok::<_, Infallible>(())
                 }),
             ));
-            let client = Endpoint::build(WeakScope::never())
+            let client = Endpoint::build(WeakScope::detached())
                 .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
                 .await
                 .unwrap();
@@ -324,14 +324,18 @@ impl Flooded {
         });
         let offload = handshakes.as_ref().map(|runtime| runtime.handle().clone());
         let server = server_rt.block_on(async {
-            let server = Endpoint::build(WeakScope::never())
+            let server = Endpoint::build(WeakScope::detached())
                 .with_server_config(server_config)
                 .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
                 .await
                 .unwrap();
             match offload {
                 None => {
-                    tokio::spawn(server.clone().serve(WeakScope::never(), service_fn(echo)));
+                    tokio::spawn(
+                        server
+                            .clone()
+                            .serve(WeakScope::detached(), service_fn(echo)),
+                    );
                 }
                 // The established connections are accepted here and the flood on the other
                 // runtime, so only the endpoint couples their handshake work to this traffic.
@@ -361,7 +365,7 @@ impl Flooded {
 
         let measure = Builder::new_current_thread().enable_all().build().unwrap();
         let (connections, streams) = measure.block_on(async {
-            let client = Endpoint::build(WeakScope::never())
+            let client = Endpoint::build(WeakScope::detached())
                 .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
                 .await
                 .unwrap();
@@ -404,7 +408,7 @@ impl Flooded {
                 let config = client_config.clone();
                 let start = first + period.mul_f64(client as f64 / load.clients as f64);
                 flood.spawn(async move {
-                    let client = Endpoint::build(WeakScope::never())
+                    let client = Endpoint::build(WeakScope::detached())
                         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
                         .await
                         .unwrap();

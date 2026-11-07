@@ -103,7 +103,7 @@ async fn accepted_native_settings_are_logged_once_with_or_without_readiness_hand
             let (client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 config(Role::Client),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             spawn(client_driver.run());
@@ -183,7 +183,7 @@ async fn actual_transport_binding_retains_disabled_handle_and_does_not_enable_ca
         let (client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             config(Role::Client),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         assert_eq!(log.count("http3:parameters_set"), 0);
@@ -213,7 +213,7 @@ async fn request_stream_metadata_never_retains_http_names_paths_or_bodies() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             config(Role::Client),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         spawn(driver.run());
@@ -463,7 +463,7 @@ async fn recorder_writes_http3_events_only_for_declared_schemas() {
             let (client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 config(Role::Client),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             spawn(driver.run());
@@ -524,7 +524,7 @@ async fn local_and_peer_control_frames_are_logged() {
         let mut client_config = config(Role::Client);
         client_config.max_pushes = 2;
         let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), client_config, WeakScope::never())
+            client::handshake::<Body, _>(pair.client.clone(), client_config, WeakScope::detached())
                 .unwrap();
         spawn(driver.run());
         let (mut server, driver) =

@@ -2095,7 +2095,7 @@ async fn h2_connect() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
-    http2::Builder::new(WeakScope::never())
+    http2::Builder::new(WeakScope::detached())
         .serve_connection(socket, svc)
         //.with_upgrades()
         .await
@@ -2207,7 +2207,7 @@ async fn h2_connect_multiplex() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
-    http2::Builder::new(WeakScope::never())
+    http2::Builder::new(WeakScope::detached())
         .serve_connection(socket, svc)
         //.with_upgrades()
         .await
@@ -2283,7 +2283,7 @@ async fn h2_connect_large_body() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
-    http2::Builder::new(WeakScope::never())
+    http2::Builder::new(WeakScope::detached())
         .serve_connection(socket, svc)
         //.with_upgrades()
         .await
@@ -2356,7 +2356,7 @@ async fn h2_connect_empty_frames() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
-    http2::Builder::new(WeakScope::never())
+    http2::Builder::new(WeakScope::detached())
         .serve_connection(socket, svc)
         //.with_upgrades()
         .await
@@ -2429,7 +2429,7 @@ async fn h2_connect_backpressure_respected() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
-    http2::Builder::new(WeakScope::never())
+    http2::Builder::new(WeakScope::detached())
         .serve_connection(socket, svc)
         .await
         .unwrap();
@@ -2497,7 +2497,7 @@ async fn h2_connect_zero_window_then_release() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
-    http2::Builder::new(WeakScope::never())
+    http2::Builder::new(WeakScope::detached())
         .serve_connection(socket, svc)
         .await
         .unwrap();
@@ -2575,7 +2575,7 @@ async fn h2_connect_shutdown_while_send_backpressured() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     drop(
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .serve_connection(socket, svc)
             .await,
     );
@@ -2659,7 +2659,7 @@ async fn h2_connect_reset_during_backpressure() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     drop(
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .serve_connection(socket, svc)
             .await,
     );
@@ -2740,7 +2740,7 @@ async fn h2_connect_backpressure_bidirectional() {
 
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
-    http2::Builder::new(WeakScope::never())
+    http2::Builder::new(WeakScope::detached())
         .serve_connection(socket, svc)
         .await
         .unwrap();
@@ -3170,7 +3170,7 @@ async fn http2_keep_alive_detects_unresponsive_client() {
     let (socket, _) = listener.accept().await.expect("accept");
     let socket = ServiceInput::new(socket);
 
-    let err = http2::Builder::new(WeakScope::never())
+    let err = http2::Builder::new(WeakScope::detached())
         .with_keep_alive_interval(Duration::from_secs(1))
         .with_keep_alive_timeout(Duration::from_secs(1))
         .with_auto_date_header(true)
@@ -3189,7 +3189,7 @@ async fn http2_keep_alive_with_responsive_client() {
         let (socket, _) = listener.accept().await.expect("accept");
         let socket = ServiceInput::new(socket);
 
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .with_keep_alive_interval(Duration::from_secs(1))
             .with_keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, RamaHttpService::new(HelloWorld))
@@ -3200,7 +3200,7 @@ async fn http2_keep_alive_with_responsive_client() {
     let tcp = connect_async(addr).await;
     let tcp = ServiceInput::new(tcp);
     let (mut client, conn) =
-        rama::http::core::client::conn::http2::Builder::new(WeakScope::never())
+        rama::http::core::client::conn::http2::Builder::new(WeakScope::detached())
             .handshake(tcp)
             .await
             .expect("http handshake");
@@ -3235,7 +3235,7 @@ async fn http2_server_context_params_override_initial_settings() {
             ..Default::default()
         });
 
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .serve_connection(socket, RamaHttpService::new(HelloWorld))
             .await
             .expect("serve_connection");
@@ -3278,7 +3278,7 @@ async fn http2_server_context_params_absent_keeps_builder_defaults() {
     tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
         let socket = ServiceInput::new(socket);
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .with_max_concurrent_streams(17)
             .serve_connection(socket, RamaHttpService::new(HelloWorld))
             .await
@@ -3329,7 +3329,7 @@ async fn http2_peer_settings_handle_does_not_extend_conn_lifetime() {
             enable_connect_protocol: Some(true),
             ..Default::default()
         });
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .serve_connection(socket, RamaHttpService::new(HelloWorld))
             .await
             .expect("serve_connection");
@@ -3337,7 +3337,7 @@ async fn http2_peer_settings_handle_does_not_extend_conn_lifetime() {
 
     let tcp = connect_async(addr).await;
     let tcp = ServiceInput::new(tcp);
-    let (client, conn) = h2_client::Builder::new(WeakScope::never())
+    let (client, conn) = h2_client::Builder::new(WeakScope::detached())
         .handshake::<_, Empty<Bytes>>(tcp)
         .await
         .expect("h2 handshake");
@@ -3384,7 +3384,7 @@ async fn http2_check_date_header_disabled() {
         let (socket, _) = listener.accept().await.expect("accept");
         let socket = ServiceInput::new(socket);
 
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .with_keep_alive_interval(Duration::from_secs(1))
             .with_auto_date_header(false)
             .with_keep_alive_timeout(Duration::from_secs(1))
@@ -3396,7 +3396,7 @@ async fn http2_check_date_header_disabled() {
     let tcp = connect_async(addr).await;
     let tcp = ServiceInput::new(tcp);
     let (mut client, conn) =
-        rama::http::core::client::conn::http2::Builder::new(WeakScope::never())
+        rama::http::core::client::conn::http2::Builder::new(WeakScope::detached())
             .handshake(tcp)
             .await
             .expect("http handshake");
@@ -3452,7 +3452,7 @@ async fn http2_keep_alive_count_server_pings() {
         let (socket, _) = listener.accept().await.expect("accept");
         let socket = ServiceInput::new(socket);
 
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .with_keep_alive_interval(Duration::from_secs(1))
             .with_keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, RamaHttpService::new(unreachable_service()))
@@ -4126,7 +4126,7 @@ impl ServeOptions {
                                     });
 
                                     if _options.http2 {
-                                        http2::Builder::new(WeakScope::never())
+                                        http2::Builder::new(WeakScope::detached())
                                             .serve_connection(stream, service).await.unwrap();
                                     } else {
                                         http1::Builder::new()
@@ -4352,7 +4352,7 @@ impl TestClient {
 
         if self.http2_only {
             let (mut sender, conn) =
-                rama::http::core::client::conn::http2::Builder::new(WeakScope::never())
+                rama::http::core::client::conn::http2::Builder::new(WeakScope::detached())
                     .handshake(stream)
                     .await
                     .unwrap();

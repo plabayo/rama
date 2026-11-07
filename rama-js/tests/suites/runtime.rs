@@ -1,10 +1,7 @@
 use std::assert_matches;
 use std::net::IpAddr;
 
-use rama_core::telemetry::tracing::{
-    Dispatch, Subscriber,
-    subscriber::{NoSubscriber, with_default},
-};
+use rama_core::telemetry::tracing::test_utils::prepare_for_captures;
 use rama_js::{
     Console, IntoJsGlobal, JsArgs, JsArray, JsError, JsErrorKind, JsHostClass, JsHostObject,
     JsNamespace, JsObject, JsRuntime, JsRuntimeBuilder, JsSnapshotLimits, JsStr, JsValue,
@@ -1128,13 +1125,6 @@ fn thrown_error_messages_truncate_on_a_character_boundary() {
     }
 }
 
-/// Runs `f` with `subscriber` as this thread's default.
-fn traced<R>(subscriber: impl Subscriber + Send + Sync + 'static, f: impl FnOnce() -> R) -> R {
-    // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
-    let _registered = Dispatch::new(NoSubscriber::default());
-    with_default(subscriber, f)
-}
-
 #[test]
 fn console_trace_never_throws_and_renders_placeholders() {
     use std::io;
@@ -1168,7 +1158,8 @@ fn console_trace_never_throws_and_renders_placeholders() {
         .build()
         .unwrap();
 
-    traced(subscriber, || {
+    prepare_for_captures();
+    rama_core::telemetry::tracing::subscriber::with_default(subscriber, || {
         runtime
             .eval(
                 r#"
@@ -1228,7 +1219,8 @@ fn console_trace_escapes_control_characters() {
         .build()
         .unwrap();
 
-    traced(subscriber, || {
+    prepare_for_captures();
+    rama_core::telemetry::tracing::subscriber::with_default(subscriber, || {
         runtime
             .eval(r#" console.log("a\r\n2026-01-01 ERROR forged", "\u001b[31mred") "#)
             .unwrap();

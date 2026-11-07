@@ -234,7 +234,7 @@ async fn observation_disabled_leaves_connection_and_request_extensions_empty() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         spawn(driver.run());

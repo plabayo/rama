@@ -41,6 +41,7 @@ regex-automata = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
+rama-core = { workspace = true, features = ["std", "test-utils"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

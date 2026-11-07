@@ -94,7 +94,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_storage_secret_is_rejected_before_starting_storage() {
-        State::new(None, Some(""), &WeakScope::never())
+        State::new(None, Some(""), &WeakScope::detached())
             .await
             .unwrap_err();
     }

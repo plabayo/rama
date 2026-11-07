@@ -108,7 +108,7 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
 
 async fn spawn_http_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(63009), WeakScope::never())
+        TcpListener::bind_address(SocketAddress::local_ipv4(63009), WeakScope::detached())
             .await
             .expect("bind HTTP server on open port");
 
@@ -118,7 +118,7 @@ async fn spawn_http_server() -> SocketAddress {
         .into();
 
     let app = Router::new().with_get("/ping", "pong");
-    let server = HttpServer::auto(WeakScope::never())
+    let server = HttpServer::auto(WeakScope::detached())
         .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     tokio::spawn(tcp_service.serve(server));
@@ -127,9 +127,10 @@ async fn spawn_http_server() -> SocketAddress {
 }
 
 async fn spawn_https_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
-        .await
-        .expect("bind HTTP server on open port");
+    let tcp_service =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
+            .await
+            .expect("bind HTTP server on open port");
 
     let bind_addr = tcp_service
         .local_addr()
@@ -137,7 +138,7 @@ async fn spawn_https_server() -> SocketAddress {
         .into();
 
     let app = Router::new().with_get("/ping", "pong");
-    let http_server = HttpServer::auto(WeakScope::never())
+    let http_server = HttpServer::auto(WeakScope::detached())
         .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     let config = TlsServerConfig::new()

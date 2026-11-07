@@ -422,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_and_error_need_not_be_sync() {
-        let service = UpgradeLayer::new(WeakScope::never(), false, SendOnlyOutputResponder)
+        let service = UpgradeLayer::new(WeakScope::detached(), false, SendOnlyOutputResponder)
             .into_layer(SendOnlyInner);
 
         let error = service
@@ -458,7 +458,7 @@ mod tests {
             service_fn(
                 |_req: Request| async move { Ok::<_, Infallible>(Response::new(Body::empty())) },
             );
-        let svc = UpgradeLayer::new(WeakScope::never(), true, service).into_layer(inner);
+        let svc = UpgradeLayer::new(WeakScope::detached(), true, service).into_layer(inner);
 
         let _response = svc.serve(req).await.expect("upgrade response");
         assert!(handled_rx.try_recv().is_err());
@@ -494,7 +494,7 @@ mod tests {
                 |_req: Request| async move { Ok::<_, Infallible>(Response::new(Body::empty())) },
             );
         let svc = UpgradeLayer::new_with_error_sink(
-            WeakScope::never(),
+            WeakScope::detached(),
             true,
             service,
             move |err: BoxError| {
@@ -552,7 +552,7 @@ mod tests {
         // The handler keeps its own error type; its (raw) error is routed to
         // the per-handler sink given here.
         let svc = UpgradeLayer::new_with_services_and_error_sink(
-            WeakScope::never(),
+            WeakScope::detached(),
             true,
             responder,
             handler,

@@ -46,7 +46,7 @@ async fn an_empty_request_body_drops_a_positive_content_length() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -91,7 +91,7 @@ async fn memory_goaway_prevents_new_headers_when_stream_credit_arrives_concurren
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -180,7 +180,7 @@ async fn check_goaway_preserves_active_response(max_requests: usize) {
                 max_requests,
                 ..Config::default()
             },
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -375,9 +375,12 @@ async fn check_malformed_request_streams_leave_connection_and_admission_usable(i
             max_requests: 1,
             ..Config::default()
         };
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config.clone(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let (mut server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
         let client_driver = spawn(client_driver.run());
         let server_driver = spawn(server_driver.run());
@@ -474,9 +477,12 @@ async fn check_cancelled_idle_response_releases_single_admission_slot(in_memory:
             max_requests: 1,
             ..Config::default()
         };
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config.clone(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let (mut server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
         let client_driver = spawn(client_driver.run());
         let server_driver = spawn(server_driver.run());
@@ -564,9 +570,12 @@ async fn check_concurrent_stream_waves_recover_admission_and_flow_control_credit
             transport
         };
         let pair = pair(Some(transport()), Some(transport()), in_memory).await;
-        let (client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
-                .unwrap();
+        let (client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config.clone(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let (mut server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
         let client_driver = spawn(client_driver.run());
         let server_driver = spawn(server_driver.run());
@@ -652,7 +661,7 @@ async fn memory_reset_before_headers_does_not_fragment_priority_history() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -720,7 +729,7 @@ async fn memory_clean_close_preserves_buffered_response_and_trailers() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -792,7 +801,7 @@ async fn memory_closed_connection_preserves_only_complete_successful_responses()
             let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let driver = spawn(driver.run());
@@ -924,7 +933,7 @@ async fn memory_clean_peer_close_has_one_driver_result() {
             let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let (server, server_driver) =
@@ -951,7 +960,7 @@ async fn memory_drained_server_driver_drop_sends_no_error() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -983,7 +992,8 @@ async fn memory_oversized_outgoing_trailers_preserve_connection() {
         config.decoder.max_field_section_size = 256;
         config.max_pushes = 1;
         let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::never()).unwrap();
+            client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::detached())
+                .unwrap();
         let (mut server, server_driver) = server::handshake(
             pair.server.clone(),
             Config {
@@ -1075,7 +1085,7 @@ async fn completed_post_body_drop(read_body: bool) {
         let (_client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -1137,7 +1147,7 @@ async fn memory_unread_request_body_is_stopped_without_error() {
         let (_client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -1189,7 +1199,7 @@ async fn memory_malformed_request_body_and_trailers_abort_both_directions() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (_client, client_driver) = client::handshake::<Body, _>(
-            pair.client.clone(), Config::default(), WeakScope::never()).unwrap();
+            pair.client.clone(), Config::default(), WeakScope::detached()).unwrap();
         let (mut server, server_driver) = server::handshake(
             pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
@@ -1240,7 +1250,7 @@ async fn memory_headers_after_trailers_are_a_connection_error() {
         let (_client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -1292,7 +1302,7 @@ async fn memory_rejected_connect_retains_response_and_stops_without_error() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -1384,7 +1394,7 @@ async fn memory_clean_close_with_pending_upload_keeps_complete_response() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -1441,7 +1451,7 @@ async fn memory_malformed_response_aborts_pending_upload() {
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::in_memory(None, None).await;
         let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), WeakScope::never())
+            client::handshake::<Body, _>(pair.client.clone(), Config::default(), WeakScope::detached())
                 .unwrap();
         let driver = spawn(driver.run());
         client.ready().await.unwrap();
@@ -1501,9 +1511,12 @@ async fn memory_cancel_before_headers_releases_admission() {
             max_requests: 1,
             ..Config::default()
         };
-        let (client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
-                .unwrap();
+        let (client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config.clone(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let (mut server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
         let client_driver = spawn(client_driver.run());
         let server_driver = spawn(server_driver.run());
@@ -1572,7 +1585,7 @@ async fn memory_goaway_before_clean_close_preserves_retryable_rejection() {
             let (mut client, driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             let driver = spawn(driver.run());
@@ -1653,7 +1666,8 @@ async fn memory_blocked_field_storage_limit_resets_only_affected_request() {
         let mut config = Config::default();
         config.decoder.max_blocked_bytes = 0;
         let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::never()).unwrap();
+            client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::detached())
+                .unwrap();
         let driver = spawn(driver.run());
         client.ready().await.unwrap();
         let mut control = pair.server.open_uni().await.unwrap();
@@ -1726,7 +1740,7 @@ async fn memory_stalled_response_reader_does_not_starve_other_requests() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -1829,7 +1843,7 @@ async fn memory_goaway_rejects_connect_waiting_for_request_send_credit() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -1877,7 +1891,8 @@ async fn memory_peer_exceeding_blocked_stream_setting_closes_connection() {
         let mut config = Config::default();
         config.decoder.max_blocked_streams = 0;
         let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::never()).unwrap();
+            client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::detached())
+                .unwrap();
         let driver = spawn(driver.run());
         client.ready().await.unwrap();
         let mut control = pair.server.open_uni().await.unwrap();
@@ -1928,7 +1943,7 @@ async fn memory_clean_close_upload_error_does_not_discard_response_behind_unknow
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let driver = spawn(driver.run());
@@ -1996,9 +2011,12 @@ async fn memory_long_lived_responses_preserve_the_last_reusable_stream_slot() {
         let mut transport = TransportConfig::default();
         config.configure_transport(&mut transport).unwrap();
         let pair = Pair::in_memory(None, Some(transport)).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), config.clone(), WeakScope::never())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            config.clone(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let (mut server, server_driver) = server::handshake(pair.server.clone(), config).unwrap();
         let client_driver = spawn(client_driver.run());
         let server_driver = spawn(server_driver.run());
@@ -2101,7 +2119,7 @@ async fn check_graceful_drain_delivers_queued_response_before_close(in_memory: b
         let (mut client, client_driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =
@@ -2149,7 +2167,7 @@ async fn memory_rejected_connect_preserves_response_and_connection() {
         let (mut client, driver) = client::handshake::<Body, _>(
             pair.client.clone(),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =

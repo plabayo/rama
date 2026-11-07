@@ -84,7 +84,7 @@ impl<S, W> RequestWriterService<S, W> {
     /// Use [`Self::new_with_scope`] when streaming writer tasks must
     /// participate in graceful shutdown.
     pub fn new(inner: S, writer: W) -> Self {
-        Self::new_with_scope(inner, writer, WeakScope::never())
+        Self::new_with_scope(inner, writer, WeakScope::detached())
     }
 
     /// Create a new [`RequestWriterService`] with a custom [`RequestWriter`]
@@ -307,7 +307,7 @@ impl<W> RequestWriterLayer<W> {
     /// Use [`Self::new_with_scope`] when streaming writer tasks must
     /// participate in graceful shutdown.
     pub const fn new(writer: W) -> Self {
-        Self::new_with_scope(writer, WeakScope::never())
+        Self::new_with_scope(writer, WeakScope::detached())
     }
 
     /// Create a new [`RequestWriterLayer`] with a custom [`RequestWriter`] and
@@ -503,7 +503,7 @@ mod tests {
     #[tokio::test]
     async fn file_constructors_only_enable_request_capture() {
         let temp = rama_utils::fs::tempdir().unwrap();
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let layer = RequestWriterLayer::file_per_request(
             &scope,
             temp.path(),

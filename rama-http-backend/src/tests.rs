@@ -65,7 +65,7 @@ async fn byte_stream_transport_rejects_http3_before_dialing() {
         let dials = dials.clone();
         move || {
             dials.fetch_add(1, Ordering::SeqCst);
-            HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
         }
     }));
 
@@ -127,7 +127,7 @@ async fn negotiated_stream_version_must_match_the_required_version() {
         let input = ConnectRequest::new(HostWithPort::example_domain_https());
         input.extensions.insert(TargetHttpVersion(required));
 
-        let error = http_connect::<_, _, Body>(io, input, WeakScope::never())
+        let error = http_connect::<_, _, Body>(io, input, WeakScope::detached())
             .await
             .err()
             .expect("negotiated protocol must satisfy the required version");
@@ -139,7 +139,7 @@ async fn negotiated_stream_version_must_match_the_required_version() {
 async fn http_connector_accepts_protocol_independent_input() {
     let connector =
         HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
-            HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
         }));
 
     let input = ConnectRequest::new(HostWithPort::example_domain_https());
@@ -163,7 +163,7 @@ async fn http_connector_accepts_protocol_independent_input() {
 async fn http_request_adapter_composes_with_http_connector() {
     let connector = HttpConnectRequestAdapter::new(
         HttpConnectorLayer::<Body>::default().into_layer(MockConnectorService::new(|| {
-            HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
+            HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
         })),
     );
 
@@ -184,7 +184,7 @@ async fn http_request_adapter_composes_with_http_connector() {
 #[tokio::test]
 async fn test_http11_pipelining() {
     let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
+        HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
     }));
 
     let conn = connector
@@ -224,7 +224,7 @@ async fn test_http2_multiplex() {
         move || {
             let inflight = inflight.clone();
             let max_inflight = max_inflight.clone();
-            HttpServer::auto(WeakScope::never()).service(service_fn(move |_req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
                 let inflight = inflight.clone();
                 let max_inflight = max_inflight.clone();
                 async move {
@@ -260,7 +260,7 @@ async fn test_http2_multiplex() {
 #[tokio::test]
 async fn test_http11_handles_4_concurrent_requests() {
     let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
+        HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
     }));
 
     let conn = connector
@@ -284,7 +284,7 @@ async fn test_http11_handles_4_concurrent_requests() {
 #[tokio::test]
 async fn test_http2_handles_200_concurrent_requests() {
     let connector = HttpConnectorLayer::default().into_layer(MockConnectorService::new(|| {
-        HttpServer::auto(WeakScope::never()).service(service_fn(server_svc_fn))
+        HttpServer::auto(WeakScope::detached()).service(service_fn(server_svc_fn))
     }));
 
     let conn = connector
@@ -1500,10 +1500,13 @@ async fn h2_client_exact_replay_reaches_the_wire() {
         ..Default::default()
     });
 
-    let established =
-        http_connect::<_, _, Body>(MockSocket::new(client_stream), request, WeakScope::never())
-            .await
-            .unwrap();
+    let established = http_connect::<_, _, Body>(
+        MockSocket::new(client_stream),
+        request,
+        WeakScope::detached(),
+    )
+    .await
+    .unwrap();
     let payload = timeout(Duration::from_secs(1), peer)
         .await
         .expect("client SETTINGS timeout")

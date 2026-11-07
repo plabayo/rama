@@ -731,7 +731,7 @@ async fn http_connect_tunnel_carries_and_reuses_plain_icap() {
         )
         .unwrap(),
     };
-    let proxy_server = HttpServer::auto(WeakScope::never()).service(service_fn({
+    let proxy_server = HttpServer::auto(WeakScope::detached()).service(service_fn({
         let tunnels = Arc::clone(&tunnels);
         move |request: Request| {
             let tunnels = Arc::clone(&tunnels);
@@ -822,7 +822,7 @@ async fn http_connect_tunnel_carries_and_reuses_icaps() {
         TlsAcceptorLayer::new(tls_config).into_layer(icap_server),
     );
     let tunnels = Arc::new(AtomicUsize::new(0));
-    let proxy_server = HttpServer::auto(WeakScope::never()).service(service_fn({
+    let proxy_server = HttpServer::auto(WeakScope::detached()).service(service_fn({
         let tunnels = Arc::clone(&tunnels);
         move |request: Request| {
             let tunnels = Arc::clone(&tunnels);

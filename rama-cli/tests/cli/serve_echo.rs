@@ -311,7 +311,7 @@ async fn test_https_echo() {
                 .with_alpn_http_1()
                 .with_server_verify(ServerVerifyMode::Disable),
         )
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
 
@@ -396,7 +396,7 @@ async fn test_http3_echo() {
 
     // WebSockets over HTTP/3 (RFC 9220)
     let tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
-    let connector = Http3Connector::builder(WeakScope::never())
+    let connector = Http3Connector::builder(WeakScope::detached())
         .with_tls_config(tls.clone())
         .build()
         .await
@@ -407,7 +407,7 @@ async fn test_http3_echo() {
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(WeakScope::never())
+        .with_default_http_connector(WeakScope::detached())
         .with_http3_support(connector)
         .without_connection_pool()
         .build_client();
@@ -694,11 +694,11 @@ async fn test_https_with_remote_tls_cert_issuer() {
         HaProxyLayer::new().with_peek(true),
         TlsAcceptorLayer::new(tls_acceptor_data),
     )
-        .into_layer(HttpServer::auto(WeakScope::never()).service(http_svc));
+        .into_layer(HttpServer::auto(WeakScope::detached()).service(http_svc));
 
     tracing::info!("spawning tcp listener for remote tls issuer");
 
-    let tpc_listener = TcpListener::bind_address("[::1]:0", WeakScope::never())
+    let tpc_listener = TcpListener::bind_address("[::1]:0", WeakScope::detached())
         .await
         .unwrap();
 

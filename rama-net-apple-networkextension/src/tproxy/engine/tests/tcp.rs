@@ -1483,7 +1483,7 @@ fn tcp_relay_reflects_an_upstream_reset_and_keeps_an_orderly_end() {
     ] {
         let service = service_fn(
             move |BridgeIo(ingress, _egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
-                _ = IoForwardService::new(WeakScope::never())
+                _ = IoForwardService::new(WeakScope::detached())
                     .serve(BridgeIo(ingress, EndingUpstream::new(end)))
                     .await;
                 Ok::<_, Infallible>(())

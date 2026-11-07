@@ -77,7 +77,7 @@ impl HttpDatagramRelay {
             config,
             idle_timeout: Some(Duration::from_mins(2)),
             close_timeout: Some(Duration::from_secs(5)),
-            scope: WeakScope::never(),
+            scope: WeakScope::detached(),
         }
     }
 

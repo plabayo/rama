@@ -33,7 +33,7 @@ async fn start(
     let (client, driver) = client::handshake::<Body, _>(
         Reversed::new(pair.server.clone()),
         client,
-        WeakScope::never(),
+        WeakScope::detached(),
     )
     .unwrap();
     spawn(driver.run());
@@ -64,7 +64,7 @@ async fn the_quic_client_serves_requests_sent_by_the_quic_server() {
         let (mut client, client_driver) = client::handshake::<Body, _>(
             sent_by_quic_server,
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let server_driver = spawn(server_driver.run());
@@ -120,7 +120,8 @@ async fn reversed_nests_with_boxed_connection_either_way() {
         let (mut server, driver) = server::handshake(served, Config::default()).unwrap();
         spawn(driver.run());
         let (mut client, driver) =
-            client::handshake::<Body, _>(sending, Config::default(), WeakScope::never()).unwrap();
+            client::handshake::<Body, _>(sending, Config::default(), WeakScope::detached())
+                .unwrap();
         spawn(driver.run());
         let serve = spawn(async move {
             let (_, response) = server.accept().await.unwrap().resolve().await.unwrap();

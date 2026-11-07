@@ -258,7 +258,7 @@ async fn bind_http3_with_capture(
     if capture {
         config.set_capture(CaptureLimits::default());
     }
-    let builder = Endpoint::build(WeakScope::never()).with_server_config(config);
+    let builder = Endpoint::build(WeakScope::detached()).with_server_config(config);
     #[cfg(target_os = "windows")]
     let endpoint = builder
         .bind_address_with_socket_config(addr, exclusive_socket_config())
@@ -382,7 +382,7 @@ mod tests {
     #[tokio::test]
     async fn ephemeral_http3_is_advertised_on_its_own_port() {
         let listeners = HttpListeners::bind(
-            WeakScope::never(),
+            WeakScope::detached(),
             localhost(),
             HttpVersions::AUTO,
             Some(&tls()),
@@ -415,7 +415,7 @@ mod tests {
             };
             let listeners = if capture {
                 HttpListeners::bind_observed(
-                    WeakScope::never(),
+                    WeakScope::detached(),
                     localhost(),
                     versions,
                     Some(&tls),
@@ -424,7 +424,7 @@ mod tests {
                 .await
             } else {
                 HttpListeners::bind(
-                    WeakScope::never(),
+                    WeakScope::detached(),
                     localhost(),
                     versions,
                     Some(&tls),
@@ -434,7 +434,7 @@ mod tests {
             }
             .unwrap();
             let server = listeners.http3.as_ref().unwrap();
-            let client = Endpoint::build(WeakScope::never())
+            let client = Endpoint::build(WeakScope::detached())
                 .bind_address(localhost())
                 .await
                 .unwrap();
@@ -477,7 +477,7 @@ mod tests {
             ("h1,h2".parse().unwrap(), Some(tls())),
         ] {
             let listeners = HttpListeners::bind(
-                WeakScope::never(),
+                WeakScope::detached(),
                 localhost(),
                 versions,
                 tls.as_ref(),
@@ -498,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn h3_bind_requires_http3() {
         let error = HttpListeners::bind(
-            WeakScope::never(),
+            WeakScope::detached(),
             localhost(),
             "h1,h2".parse().unwrap(),
             Some(&tls()),
@@ -521,7 +521,7 @@ mod tests {
             h3_bootstrap_bind: Some(localhost()),
         };
         let error = HttpListeners::bind(
-            WeakScope::never(),
+            WeakScope::detached(),
             localhost(),
             HttpVersions::AUTO,
             Some(&tls()),
@@ -531,7 +531,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("--h3-bootstrap-bind"), "{error}");
         let listeners = HttpListeners::bind(
-            WeakScope::never(),
+            WeakScope::detached(),
             localhost(),
             "h3".parse().unwrap(),
             Some(&tls()),
@@ -544,10 +544,10 @@ mod tests {
 
     /// A TCP listener, and a UDP address held so that binding HTTP/3 on it fails.
     async fn occupied_udp_port() -> (TcpListener, Endpoint, SocketAddress) {
-        let tcp = TcpListener::bind_address(localhost(), WeakScope::never())
+        let tcp = TcpListener::bind_address(localhost(), WeakScope::detached())
             .await
             .unwrap();
-        let held = Endpoint::build(WeakScope::never())
+        let held = Endpoint::build(WeakScope::detached())
             .bind_address(localhost())
             .await
             .unwrap();
@@ -611,7 +611,7 @@ mod tests {
     #[tokio::test]
     async fn http3_alone_binds_no_tcp_listener() {
         let listeners = HttpListeners::bind(
-            WeakScope::never(),
+            WeakScope::detached(),
             localhost(),
             "h3".parse().unwrap(),
             Some(&tls()),
@@ -640,7 +640,7 @@ mod tests {
         let served = Http3Endpoints::default();
         served
             .serve(
-                &WeakScope::never(),
+                &WeakScope::detached(),
                 "test",
                 endpoint,
                 service_fn(async |connection: Connection| {
@@ -650,7 +650,7 @@ mod tests {
             )
             .unwrap();
 
-        let client = Endpoint::build(WeakScope::never())
+        let client = Endpoint::build(WeakScope::detached())
             .bind_address(localhost())
             .await
             .unwrap();

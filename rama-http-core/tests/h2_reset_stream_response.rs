@@ -39,7 +39,7 @@ async fn handler(req: Request) -> Result<Response, Infallible> {
 async fn h2_server_resets_stream_with_requested_reason() {
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     tokio::spawn(
-        server::conn::http2::Builder::new(WeakScope::never()).serve_connection(
+        server::conn::http2::Builder::new(WeakScope::detached()).serve_connection(
             ServiceInput::new(server_io),
             RamaHttpService::new(service_fn(handler)),
         ),

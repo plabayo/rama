@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn alt_svc_client_construction_needs_no_udp_socket_or_runtime() {
         let cfg = send_cfg(&["--alt-svc", "https://example.com/"]);
-        let _client = new_inner_client(&cfg, WeakScope::never(), false)
+        let _client = new_inner_client(&cfg, WeakScope::detached(), false)
             .now_or_never()
             .expect("construct the client without binding a QUIC endpoint")
             .unwrap();
@@ -738,7 +738,7 @@ mod tests {
     where
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
     {
-        let scope = WeakScope::never();
+        let scope = WeakScope::detached();
         let listener = TcpListener::build(scope.clone())
             .bind_address(SocketAddress::local_ipv4(0))
             .await
@@ -792,7 +792,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(SystemProxyConfig::default()),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
     }
@@ -861,7 +861,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(SystemProxyConfig::default()),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1121,7 +1121,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1160,7 +1160,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1327,7 +1327,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(factory),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1394,7 +1394,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1495,7 +1495,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1576,7 +1576,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1624,7 +1624,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1672,7 +1672,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(pac),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1709,7 +1709,7 @@ mod tests {
                 system_proxy_layer: SystemProxyLayer::from_cached(system).with_pac_service(factory),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();
@@ -1792,7 +1792,7 @@ mod tests {
                     .with_pac_service(pac_factory),
             },
             None,
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .await
         .unwrap();

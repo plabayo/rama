@@ -102,12 +102,12 @@ impl Loopback {
             ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default()).unwrap();
         let (client, server, connections) = runtime.block_on(async {
             timeout(DEADLINE, async {
-                let server = Endpoint::build(WeakScope::never())
+                let server = Endpoint::build(WeakScope::detached())
                     .with_server_config(server_config)
                     .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
                     .await
                     .unwrap();
-                let client = Endpoint::build(WeakScope::never())
+                let client = Endpoint::build(WeakScope::detached())
                     .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
                     .await
                     .unwrap();

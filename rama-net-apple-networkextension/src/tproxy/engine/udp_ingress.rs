@@ -4498,7 +4498,36 @@ mod tests {
                 budget.record_recovery(41, state);
             }
         });
-        for event in capture.0.lock().iter() {
+        let events = capture.0.lock();
+        // The first drop and resumption of each pressure are always sampled.
+        let sampled: Vec<_> = events
+            .iter()
+            .map(|event| {
+                let kind = if event.get("cumulative_drops").is_some_and(|n| n == "1") {
+                    "drop"
+                } else if event
+                    .get("cumulative_resumptions")
+                    .is_some_and(|n| n == "1")
+                {
+                    "resumption"
+                } else {
+                    "unexpected"
+                };
+                (event["flow_id"].as_str(), event["pressure"].as_str(), kind)
+            })
+            .collect();
+        assert_eq!(
+            sampled,
+            [
+                ("41", r#""channel_count""#, "drop"),
+                ("41", r#""channel_count""#, "resumption"),
+                ("41", r#""flow_bytes""#, "drop"),
+                ("41", r#""flow_bytes""#, "resumption"),
+                ("41", r#""global_bytes""#, "drop"),
+                ("41", r#""global_bytes""#, "resumption"),
+            ],
+        );
+        for event in events.iter() {
             println!("RAMA_PRESSURE_TELEMETRY {}", event["message"]);
         }
     }

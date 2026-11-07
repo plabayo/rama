@@ -68,7 +68,7 @@ async fn gnutls_client_exchanges_streams_and_datagrams_with_aioquic_after_key_up
 #[tokio::test]
 async fn aioquic_client_exchanges_streams_and_datagrams_with_gnutls_after_retry() {
     let identity = Identity::generate();
-    let endpoint = Endpoint::bind_server(WeakScope::never(), identity.server(), localhost())
+    let endpoint = Endpoint::bind_server(WeakScope::detached(), identity.server(), localhost())
         .await
         .unwrap();
     let port = endpoint.local_addr().unwrap().port().to_string();
@@ -198,7 +198,7 @@ async fn gnutls_rejects_untrusted_certificates_and_wrong_hostnames_from_aioquic(
 #[tokio::test]
 async fn external_providers_agree_on_exporters_and_accept_retry() {
     let identity = Identity::generate();
-    let server = Endpoint::bind_server(WeakScope::never(), identity.server(), localhost())
+    let server = Endpoint::bind_server(WeakScope::detached(), identity.server(), localhost())
         .await
         .unwrap();
     let client = client_endpoint().await;

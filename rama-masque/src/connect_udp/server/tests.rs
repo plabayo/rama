@@ -26,7 +26,7 @@ use crate::connect_udp::{ConnectUdpAction, ConnectUdpRule, ConnectUdpRules, conn
 const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
 
 fn service() -> ConnectUdpService {
-    ConnectUdpService::try_new(WeakScope::never(), None).unwrap()
+    ConnectUdpService::try_new(WeakScope::detached(), None).unwrap()
 }
 
 fn request(version: Version) -> Request {
@@ -833,7 +833,7 @@ mod metrics {
     #[tokio::test]
     async fn a_tunnel_is_recorded_from_its_opening_to_its_end() {
         let collector = Collector::new();
-        let service = proxy(&collector, WeakScope::never());
+        let service = proxy(&collector, WeakScope::detached());
         let (target, address) = target().await;
         let mut client = open(&service, address).await;
         let user = kv("principal.kind", "user");
@@ -895,14 +895,14 @@ mod metrics {
     async fn a_failed_upgrade_and_a_failed_relay_are_recorded_as_such() {
         let collector = Collector::new();
         // Accepted, but never served by a connection that can upgrade.
-        let response = proxy(&collector, WeakScope::never())
+        let response = proxy(&collector, WeakScope::detached())
             .serve(request(Version::HTTP_2))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         ended(&collector, "upgrade_failed", 1).await;
 
-        let failing = proxy(&collector, WeakScope::never()).with_relay(service_fn(
+        let failing = proxy(&collector, WeakScope::detached()).with_relay(service_fn(
             |_: BridgeIo<ConnectUdpSocket, UdpPacketSocket>| async {
                 Err::<(), BoxError>(BoxError::from("relay failed"))
             },

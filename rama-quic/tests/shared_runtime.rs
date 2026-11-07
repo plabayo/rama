@@ -133,14 +133,14 @@ async fn a_pending_accept_ends_with_the_application() {
 #[tokio::test]
 async fn a_zero_budget_joins_a_live_endpoint_at_once() {
     let identities = Identities::new();
-    let server = Endpoint::build(WeakScope::never())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .with_shutdown_budget(Duration::ZERO)
         .bind_address(localhost())
         .await
         .expect("the server binds");
     let addr = server.local_addr().unwrap();
-    let client = Endpoint::build(WeakScope::never())
+    let client = Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds");
@@ -179,7 +179,7 @@ async fn a_zero_budget_joins_a_live_endpoint_at_once() {
 #[tokio::test]
 async fn a_zero_budget_on_an_idle_endpoint_may_drain() {
     let identities = Identities::new();
-    let server = Endpoint::build(WeakScope::never())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .with_shutdown_budget(Duration::ZERO)
         .bind_address(localhost())
@@ -327,13 +327,13 @@ async fn a_failed_bind_releases_the_guard() {
 #[tokio::test]
 async fn an_endpoint_without_a_graceful_runtime_shuts_itself_down() {
     let identities = Identities::new();
-    let server = Endpoint::build(WeakScope::never())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
         .expect("the server binds");
     let addr = server.local_addr().unwrap();
-    let client = Endpoint::build(WeakScope::never())
+    let client = Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds");
@@ -380,7 +380,7 @@ async fn a_prepared_socket_keeps_what_the_caller_gave_it() {
         .wrap_std(bound)
         .expect("the socket is wrapped");
 
-    let server = Endpoint::build(WeakScope::never())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .with_packet_socket(prepared)
         .expect("the server takes the prepared socket");
@@ -400,7 +400,7 @@ async fn a_prepared_socket_keeps_what_the_caller_gave_it() {
         "taking the socket over left the caller's own setting alone"
     );
 
-    let client = Endpoint::build(WeakScope::never())
+    let client = Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds");

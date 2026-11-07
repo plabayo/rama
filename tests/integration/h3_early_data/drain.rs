@@ -31,7 +31,8 @@ async fn response_after_drain(provider: Provider, drain: Drain) {
     fixture.gate.hold();
     let (client, server) = fixture.early_pair().await;
     let (mut sender, driver) =
-        client::handshake::<Body, _>(client.clone(), early_config(), WeakScope::never()).unwrap();
+        client::handshake::<Body, _>(client.clone(), early_config(), WeakScope::detached())
+            .unwrap();
     let observer = sender.clone();
     let _client_driver = Task::spawn(driver.run());
     let (mut receiver, driver) = server::handshake(server.clone(), Config::default()).unwrap();

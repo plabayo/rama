@@ -61,11 +61,11 @@ async fn h3_rejects_disallowed_literal_and_custom_candidates_before_sending() {
     ] {
         let peer = UdpSocket::bind(SocketAddr::from(family)).await.unwrap();
         let address = peer.local_addr().unwrap();
-        let endpoint = Endpoint::build(WeakScope::never())
+        let endpoint = Endpoint::build(WeakScope::detached())
             .bind_address(family)
             .await
             .unwrap();
-        let builder = Http3Connector::builder(WeakScope::never())
+        let builder = Http3Connector::builder(WeakScope::detached())
             .with_endpoint(endpoint.clone())
             .with_tls_config(tls.clone());
         #[cfg(feature = "boring")]

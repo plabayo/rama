@@ -4872,6 +4872,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-appender",
+ "tracing-core",
  "tracing-opentelemetry",
  "trybuild",
  "windows-sys 0.61.2",

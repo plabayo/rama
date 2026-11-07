@@ -46,7 +46,7 @@ async fn round_trip<C: transport::Connection>(wrap: impl Fn(rama_quic::Connectio
         let (mut client, client_driver) = client::handshake::<Body, _>(
             wrap(pair.client.clone()),
             Config::default(),
-            WeakScope::never(),
+            WeakScope::detached(),
         )
         .unwrap();
         let (mut server, server_driver) =

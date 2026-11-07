@@ -27,7 +27,7 @@ async fn main() -> Result<(), BoxError> {
         .with_service(GreeterServer::new(greeter))
         .with_service(health_service);
 
-    HttpServer::auto(WeakScope::never())
+    HttpServer::auto(WeakScope::detached())
         .listen(SocketAddress::local_ipv6(50051), grpc_svc)
         .await?;
 

@@ -53,7 +53,7 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>, early_
         .with_server_auth(identity.clone());
     // The server would accept early data; the connector must still never send any.
     let server = Endpoint::bind_server(
-        WeakScope::never(),
+        WeakScope::detached(),
         ServerConfig::try_from_rama_tls(
             &server_tls,
             TlsOptions::default()
@@ -71,7 +71,7 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>, early_
     let tls = TlsClientConfig::new()
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
         .unwrap();
-    let quic = Http3Connector::builder(WeakScope::never())
+    let quic = Http3Connector::builder(WeakScope::detached())
         .with_tls_provider(provider)
         .with_tls_config(tls)
         .with_config(Config {
@@ -80,7 +80,7 @@ async fn resumed_round_trips(provider: Arc<dyn QuicClientConfigProvider>, early_
         })
         .build_lazy()
         .unwrap();
-    let connector = HttpConnector::<_, Body>::new(quic, WeakScope::never());
+    let connector = HttpConnector::<_, Body>::new(quic, WeakScope::detached());
 
     for resumed in [false, true] {
         let service = connect(&connector, port).await;

@@ -63,8 +63,11 @@ async fn udp_echo() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
 fn masque_client()
 -> impl Service<Request, Output = Response, Error = rama::error::extra::OpaqueError> + Clone {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(WeakScope::never(), tls)
-        .unwrap()
+    DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
+        WeakScope::detached(),
+        tls,
+    )
+    .unwrap()
 }
 
 /// A CONNECT-UDP tunnel to `target` through `proxy` over `version`.
@@ -74,7 +77,7 @@ async fn tunnel(
     version: Version,
 ) -> Result<ConnectUdpSocket, BoxError> {
     let connector =
-        ConnectUdpConnector::new(UdpConnector::new(), masque_client(), WeakScope::never())
+        ConnectUdpConnector::new(UdpConnector::new(), masque_client(), WeakScope::detached())
             .with_version(version);
     let request = ConnectRequest::new(HostWithPort::from(target));
     request
@@ -116,10 +119,10 @@ async fn mitm_preserves_inner_http_proxy_credentials_and_challenges() {
     };
     use tokio::io::AsyncWriteExt as _;
     timeout(Duration::from_secs(30), async {
-        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never()).await.unwrap();
+        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached()).await.unwrap();
         let own = listener.local_addr().unwrap();
         let (seen, mut requests) = mpsc::unbounded_channel();
-        let inner = HttpServer::auto(WeakScope::never()).service(service_fn(move |request: Request| {
+        let inner = HttpServer::auto(WeakScope::detached()).service(service_fn(move |request: Request| {
             let credential = request.headers().get(header::PROXY_AUTHORIZATION).cloned();
             seen.send(credential.clone()).unwrap();
             async move {
@@ -147,7 +150,7 @@ async fn mitm_preserves_inner_http_proxy_credentials_and_challenges() {
                 let mut request = Request::get("http://destination.example/resource").version(version).body(Body::empty()).unwrap();
                 request.extensions().insert(TargetHttpVersion(version));
                 if let Some(credential) = credential { request.headers_mut().insert(header::PROXY_AUTHORIZATION, HeaderValue::from_static(credential)); }
-                let connection = http_connect::<_, _, Body>(stream, request, WeakScope::never()).await.unwrap();
+                let connection = http_connect::<_, _, Body>(stream, request, WeakScope::detached()).await.unwrap();
                 let response = connection.conn.serve(connection.input).await.unwrap();
                 assert_eq!(requests.recv().await.unwrap(), credential.map(HeaderValue::from_static), "outer credentials must never enter the inner exchange");
                 if credential == Some("Basic aW5uZXI6c2VjcmV0") {
@@ -256,7 +259,7 @@ async fn mitm_relays_a_clients_own_authenticated_masque_session() {
                 let socket = tunnel(&format!("masque://outer:x@{front}"), own, Version::HTTP_3)
                     .await
                     .unwrap();
-                let ep = Endpoint::build(WeakScope::never())
+                let ep = Endpoint::build(WeakScope::detached())
                     .with_datagram_socket(socket)
                     .unwrap();
                 let mut config = rama::quic::ClientConfig::try_from_rama_tls_with_provider(
@@ -274,7 +277,7 @@ async fn mitm_relays_a_clients_own_authenticated_masque_session() {
                 let (mut client, task) = client::handshake::<Body, _>(
                     connection,
                     H3Config::default(),
-                    WeakScope::never(),
+                    WeakScope::detached(),
                 )
                 .unwrap();
                 driver = Some(tokio::spawn(task.run()));
@@ -306,7 +309,7 @@ async fn mitm_relays_a_clients_own_authenticated_masque_session() {
                 )
                 .await
                 .unwrap();
-                let connection = http_connect::<_, _, Body>(stream, request, WeakScope::never())
+                let connection = http_connect::<_, _, Body>(stream, request, WeakScope::detached())
                     .await
                     .unwrap();
                 connection.conn.serve(connection.input).await.unwrap()
@@ -667,13 +670,12 @@ async fn h3_origin_reporting_connections() -> (
         .unwrap();
     let endpoint = bind_dual_stack_http3(&tls).await;
     let port = endpoint.local_addr().unwrap().port();
-    let h3 =
-        HttpServer::new_http3(WeakScope::never()).service(service_fn(async |_request: Request| {
-            Ok::<_, Infallible>(Response::new(Body::from("h3 origin")))
-        }));
+    let h3 = HttpServer::new_http3(WeakScope::detached()).service(service_fn(
+        async |_request: Request| Ok::<_, Infallible>(Response::new(Body::from("h3 origin"))),
+    ));
     let (report, connections) = mpsc::unbounded_channel();
     tokio::spawn(endpoint.clone().serve(
-        WeakScope::never(),
+        WeakScope::detached(),
         service_fn(move |connection: Connection| {
             let report = report.clone();
             let h3 = h3.clone();
@@ -710,7 +712,7 @@ async fn bind_dual_stack_http3(tls: &TlsServerConfig) -> Endpoint {
         only_v6: Some(false),
         ..socket.socket_options().clone()
     };
-    Endpoint::build(WeakScope::never())
+    Endpoint::build(WeakScope::detached())
         .with_server_config(config)
         .bind_address_with_socket_config(
             SocketAddress::default_ipv6(0),
@@ -728,8 +730,8 @@ fn tunneling_endpoints() -> QuicEndpointConnector<
     >,
 > {
     QuicEndpointConnector::new(
-        ConnectUdpConnector::new(UdpConnector::new(), masque_client(), WeakScope::never()),
-        WeakScope::never(),
+        ConnectUdpConnector::new(UdpConnector::new(), masque_client(), WeakScope::detached()),
+        WeakScope::detached(),
     )
 }
 
@@ -752,7 +754,7 @@ async fn origin_connection(port: u16, proxy: Option<&str>) -> Connection {
             .extensions
             .insert(ConnectorTarget(HostWithPort::local_ipv4(port)));
         QuicConnector::new(
-            SharedQuicEndpoint::managed(WeakScope::never()),
+            SharedQuicEndpoint::managed(WeakScope::detached()),
             tls,
             Arc::new(BoringTlsProvider),
         )
@@ -780,7 +782,7 @@ async fn origin_leaf(port: u16, proxy: Option<&str>) -> Vec<u8> {
 async fn h3_get_through(port: u16, proxy: &str) -> Bytes {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
     let client = DefaultHttpWebClient::try_default_masque_using_boringssl(
-        WeakScope::never(),
+        WeakScope::detached(),
         tls.clone(),
         tls,
     )

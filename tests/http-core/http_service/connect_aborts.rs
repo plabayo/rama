@@ -49,7 +49,7 @@ enum End {
 
 /// The proxied service: CONNECT establishes egress first, then relays the tunnel.
 fn proxy() -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     UpgradeLayer::new(
         scope.clone(),
         MethodMatcher::CONNECT,
@@ -66,11 +66,11 @@ fn proxy() -> impl Service<Request, Output = Response, Error = Infallible> + Clo
 }
 
 async fn tcp_proxy() -> SocketAddr {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::never())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
-    spawn(listener.serve(HttpServer::auto(WeakScope::never()).service(proxy())));
+    spawn(listener.serve(HttpServer::auto(WeakScope::detached()).service(proxy())));
     address
 }
 
@@ -78,7 +78,7 @@ async fn quic_proxy(auth: ServerAuthData) -> (SocketAddr, Endpoint) {
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let scope = WeakScope::never();
+    let scope = WeakScope::detached();
     let endpoint = Endpoint::build(scope.clone())
         .with_server_config(ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap())
         .bind_address(SocketAddress::local_ipv4(0))
@@ -149,7 +149,7 @@ async fn tunnel(version: Wire, origin: SocketAddr) -> (Box<dyn Tunnel>, Option<E
         }
         Wire::H2 => {
             let io = TokioTcpStream::connect(tcp_proxy().await).await.unwrap();
-            let (mut client, connection) = conn::http2::Builder::new(WeakScope::never())
+            let (mut client, connection) = conn::http2::Builder::new(WeakScope::detached())
                 .handshake::<_, Body>(ServiceInput::new(io))
                 .await
                 .unwrap();
@@ -162,7 +162,7 @@ async fn tunnel(version: Wire, origin: SocketAddr) -> (Box<dyn Tunnel>, Option<E
             let (auth, tls) = credentials();
             let (address, _server) = quic_proxy(auth).await;
             let tls = tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let endpoint = Endpoint::build(WeakScope::never())
+            let endpoint = Endpoint::build(WeakScope::detached())
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await
                 .unwrap();
@@ -175,7 +175,7 @@ async fn tunnel(version: Wire, origin: SocketAddr) -> (Box<dyn Tunnel>, Option<E
             let (mut client, driver) = h3::client::handshake::<Body, _>(
                 connection,
                 h3::connection::Config::default(),
-                WeakScope::never(),
+                WeakScope::detached(),
             )
             .unwrap();
             spawn(driver.run());

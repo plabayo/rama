@@ -132,7 +132,7 @@ async fn expect_eof(peer: &mut DuplexStream) {
 
 #[tokio::test(start_paused = true)]
 async fn first_request_idle_sends_goaway_then_bounds_unacknowledged_drain() {
-    let (mut peer, task) = server(http2::Builder::new(WeakScope::never()), false).await;
+    let (mut peer, task) = server(http2::Builder::new(WeakScope::detached()), false).await;
     let start = Instant::now();
     let (last, code, ping) = goaway_and_ping(&mut peer).await;
     assert_eq!((last, code), (0x7fff_ffff, 0), "a graceful GOAWAY first");
@@ -148,7 +148,7 @@ async fn first_request_idle_sends_goaway_then_bounds_unacknowledged_drain() {
 
 #[tokio::test(start_paused = true)]
 async fn acknowledged_shutdown_ping_closes_before_the_drain() {
-    let (mut peer, task) = server(http2::Builder::new(WeakScope::never()), false).await;
+    let (mut peer, task) = server(http2::Builder::new(WeakScope::detached()), false).await;
     let start = Instant::now();
     let (last, code, _) = goaway_and_ping(&mut peer).await;
     assert_eq!((last, code), (0x7fff_ffff, 0));
@@ -173,7 +173,7 @@ async fn settings_round_trip_extends_the_first_window_and_the_drain() {
         let svc = RamaHttpService::new(service_fn(async |_: Request| {
             Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .serve_connection(ServiceInput::new(io), svc)
             .await
     });
@@ -206,7 +206,7 @@ async fn stalled_preface_is_cut_by_the_head_deadline_alone() {
         let svc = RamaHttpService::new(service_fn(async |_: Request| {
             Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .without_idle_timeout()
             .with_header_read_timeout(head(2, 256, 5))
             .serve_connection(ServiceInput::new(io), svc)
@@ -220,7 +220,7 @@ async fn stalled_preface_is_cut_by_the_head_deadline_alone() {
 
 #[tokio::test(start_paused = true)]
 async fn bytes_before_a_frame_type_are_head_progress_on_an_idle_connection() {
-    let builder = http2::Builder::new(WeakScope::never())
+    let builder = http2::Builder::new(WeakScope::detached())
         .without_idle_timeout()
         .with_header_read_timeout(head(2, 256, 5));
     let (mut peer, task) = server(builder, false).await;
@@ -233,7 +233,7 @@ async fn bytes_before_a_frame_type_are_head_progress_on_an_idle_connection() {
 
 #[tokio::test(start_paused = true)]
 async fn completed_request_earns_90s_idle_window_despite_pings() {
-    let (mut peer, task) = server(http2::Builder::new(WeakScope::never()), false).await;
+    let (mut peer, task) = server(http2::Builder::new(WeakScope::detached()), false).await;
     request(&mut peer, true).await;
     settle().await;
     let start = Instant::now();
@@ -257,7 +257,8 @@ async fn completed_request_earns_90s_idle_window_despite_pings() {
 
 #[tokio::test(start_paused = true)]
 async fn incomplete_headers_payload_times_out_before_whole_frame_arrives() {
-    let builder = http2::Builder::new(WeakScope::never()).with_header_read_timeout(head(2, 256, 5));
+    let builder =
+        http2::Builder::new(WeakScope::detached()).with_header_read_timeout(head(2, 256, 5));
     let (mut peer, task) = server(builder, false).await;
     peer.write_all(&[0, 0, 3, 1, 1, 0, 0, 0, 1, 0x82])
         .await
@@ -270,7 +271,8 @@ async fn incomplete_headers_payload_times_out_before_whole_frame_arrives() {
 
 #[tokio::test(start_paused = true)]
 async fn continuation_progress_extends_grace_but_not_absolute_ceiling() {
-    let builder = http2::Builder::new(WeakScope::never()).with_header_read_timeout(head(1, 10, 5));
+    let builder =
+        http2::Builder::new(WeakScope::detached()).with_header_read_timeout(head(1, 10, 5));
     let (mut peer, task) = server(builder, false).await;
     let mut block = vec![0x82, 0x87, 0x84, 0x01, 100];
     block.extend_from_slice(&[b'a'; 20]);
@@ -288,7 +290,7 @@ async fn continuation_progress_extends_grace_but_not_absolute_ceiling() {
 
 #[tokio::test(start_paused = true)]
 async fn active_request_is_exempt_from_idle_deadline() {
-    let (mut peer, task) = server(http2::Builder::new(WeakScope::never()), true).await;
+    let (mut peer, task) = server(http2::Builder::new(WeakScope::detached()), true).await;
     request(&mut peer, false).await;
     yield_now().await;
     advance(SECOND * 120).await;
@@ -301,7 +303,8 @@ async fn active_request_is_exempt_from_idle_deadline() {
 
 #[tokio::test(start_paused = true)]
 async fn incomplete_second_head_times_out_even_with_an_active_request() {
-    let builder = http2::Builder::new(WeakScope::never()).with_header_read_timeout(head(2, 256, 5));
+    let builder =
+        http2::Builder::new(WeakScope::detached()).with_header_read_timeout(head(2, 256, 5));
     let (mut peer, task) = server(builder, true).await;
     request(&mut peer, false).await;
     peer.write_all(&[0, 0, 3, 1, 1, 0, 0, 0, 3, 0x82])
@@ -315,7 +318,7 @@ async fn incomplete_second_head_times_out_even_with_an_active_request() {
 
 #[tokio::test(start_paused = true)]
 async fn disabled_deadlines_leave_idle_and_partial_headers_open() {
-    let builder = http2::Builder::new(WeakScope::never())
+    let builder = http2::Builder::new(WeakScope::detached())
         .maybe_with_idle_timeout(None)
         .maybe_with_header_read_timeout(None);
     let (mut peer, task) = server(builder, false).await;
@@ -341,7 +344,7 @@ async fn configured_idle_budget_applies_while_waiting_for_preface() {
         let svc = RamaHttpService::new(service_fn(async |_: Request| {
             Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
-        http2::Builder::new(WeakScope::never())
+        http2::Builder::new(WeakScope::detached())
             .with_idle_timeout(IdleTimeout {
                 first_request: SECOND * 2,
                 idle: SECOND * 3,
@@ -366,7 +369,7 @@ async fn pending_response_body_is_exempt_after_request_end_stream() {
                 rama::futures::stream::pending::<Result<rama::bytes::Bytes, Infallible>>(),
             )))
         }));
-        _ = http2::Builder::new(WeakScope::never())
+        _ = http2::Builder::new(WeakScope::detached())
             .serve_connection(ServiceInput::new(io), svc)
             .await;
     });
@@ -390,7 +393,7 @@ async fn pending_response_body_is_exempt_after_request_end_stream() {
 
 #[tokio::test(start_paused = true)]
 async fn continuously_ready_extension_frames_cannot_starve_idle_deadline() {
-    let (mut peer, task) = server(http2::Builder::new(WeakScope::never()), false).await;
+    let (mut peer, task) = server(http2::Builder::new(WeakScope::detached()), false).await;
     let writer = spawn(async move {
         let frames = [0, 0, 0, 0xff, 0, 0, 0, 0, 0].repeat(4096);
         while peer.write_all(&frames).await.is_ok() {}
@@ -497,7 +500,8 @@ async fn read_response(peer: &mut DuplexStream, stream: u32) -> Option<usize> {
 
 #[tokio::test(start_paused = true)]
 async fn second_head_in_the_same_read_gets_its_own_grace() {
-    let builder = http2::Builder::new(WeakScope::never()).with_header_read_timeout(head(2, 20, 60));
+    let builder =
+        http2::Builder::new(WeakScope::detached()).with_header_read_timeout(head(2, 20, 60));
     let (mut peer, task) = responding_server(builder, 65536, 2, Duration::ZERO).await;
     let start = Instant::now();
     // HEADERS for stream 1 with END_STREAM but without END_HEADERS.
@@ -522,7 +526,8 @@ async fn second_head_in_the_same_read_gets_its_own_grace() {
 
 #[tokio::test(start_paused = true)]
 async fn head_after_a_refused_one_in_the_same_read_gets_its_own_grace() {
-    let builder = http2::Builder::new(WeakScope::never()).with_header_read_timeout(head(2, 20, 60));
+    let builder =
+        http2::Builder::new(WeakScope::detached()).with_header_read_timeout(head(2, 20, 60));
     let (mut peer, task) = responding_server(builder, 65536, 2, Duration::ZERO).await;
     let start = Instant::now();
     // A head for stream 1 without :scheme or :path, which is reset rather than served.
@@ -545,7 +550,8 @@ async fn head_after_a_refused_one_in_the_same_read_gets_its_own_grace() {
 
 #[tokio::test(start_paused = true)]
 async fn slow_head_alone_is_served() {
-    let builder = http2::Builder::new(WeakScope::never()).with_header_read_timeout(head(2, 20, 60));
+    let builder =
+        http2::Builder::new(WeakScope::detached()).with_header_read_timeout(head(2, 20, 60));
     let (mut peer, task) = responding_server(builder, 65536, 2, Duration::ZERO).await;
     frame(&mut peer, 1, 0x1, 1, b"\x82\x87\x84\x01\x09localhost").await;
     settle().await;
@@ -565,7 +571,7 @@ async fn response_racing_the_idle_goaway_is_not_truncated() {
     for capacity in [8192, 1 << 20] {
         let body_len = 60_000;
         let (mut peer, task) = responding_server(
-            http2::Builder::new(WeakScope::never()),
+            http2::Builder::new(WeakScope::detached()),
             capacity,
             body_len,
             SECOND * 3,
@@ -591,7 +597,7 @@ async fn response_racing_the_idle_goaway_is_not_truncated() {
 async fn final_close_flushes_a_response_the_peer_reads_late() {
     let body_len = 60_000;
     let (mut peer, task) = responding_server(
-        http2::Builder::new(WeakScope::never()),
+        http2::Builder::new(WeakScope::detached()),
         8192,
         body_len,
         SECOND * 3,
@@ -624,7 +630,7 @@ async fn final_close_flushes_a_response_the_peer_reads_late() {
 #[tokio::test(start_paused = true)]
 async fn rejected_heads_do_not_restart_the_first_request_window() {
     let (peer, task) = responding_server(
-        http2::Builder::new(WeakScope::never()),
+        http2::Builder::new(WeakScope::detached()),
         65536,
         2,
         Duration::ZERO,
