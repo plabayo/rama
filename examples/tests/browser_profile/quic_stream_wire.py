@@ -143,6 +143,9 @@ CONNECTION_CLOSE = {
 }
 # HTTP/3 closes idle or requestless connections with H3_NO_ERROR (0x100).
 CLEAN_CLOSE_CODES = {0x1C: {0}, 0x1D: {0, 0x100}}
+# RFC 9000 §10.2.3: Initial/Handshake packets carry an application close as APPLICATION_ERROR.
+HANDSHAKE_PACKET_TYPES = (["0"], ["2"])
+APPLICATION_ERROR = 0x0C
 
 
 def bidirectional_stream(frame, kind):
@@ -155,7 +158,7 @@ def bidirectional_stream(frame, kind):
     return not varint_field(frame, name)[0] & 2
 
 
-def close_problem(frame, kind):
+def close_problem(frame, kind, handshake):
     """Why a CONNECTION_CLOSE is not clean, or None for any other or a clean frame."""
     if kind not in CONNECTION_CLOSE:
         return None
@@ -164,7 +167,9 @@ def close_problem(frame, kind):
     if not names:
         return f"close 0x{kind:x} without an error code"
     code = varint_field(frame, names[0])[0]
-    return None if code in CLEAN_CLOSE_CODES[kind] else f"close 0x{kind:x} code 0x{code:x}"
+    if code in CLEAN_CLOSE_CODES[kind] or (handshake and kind == 0x1C and code == APPLICATION_ERROR):
+        return None
+    return f"close 0x{kind:x} code 0x{code:x}"
 
 
 def requestless_connections(data, server_port):
@@ -173,9 +178,10 @@ def requestless_connections(data, server_port):
     Unanswered Initial attempts and connections carrying only control/QPACK
     streams qualify; they are reported, not attributed to the browser. Any
     undecrypted packet, frame naming a bidirectional stream, or CONNECTION_CLOSE
-    with an error excludes the connection. A client packet without a native QUIC
-    element or connection number cannot be attributed, so it excludes all; such a
-    server packet carries no request and is skipped.
+    with an error excludes the connection. A coalesced packet with the datagram's
+    DCID belongs to its first packet's connection. Any other client packet without
+    a native QUIC element or connection number excludes all; such a server packet
+    carries no request and is skipped.
     """
     decoded, excluded, stray = quic_exclusions(data, server_port)
     return set() if stray else decoded - set(excluded)
@@ -207,27 +213,35 @@ def quic_exclusions(data, server_port):
             if from_server:
                 continue
             return decoded, dict(excluded), stray_client_packet(packet)
+        datagram = None
         for proto in protos:
             names = {node.get("name", "") for node in proto.iter("field")}
             if "quic.coalesced_padding_data" in names and names <= DATAGRAM_PADDING:
                 continue  # Bytes appended after the datagram's last QUIC packet.
-            if not values(proto, "quic.connection.number"):
-                if from_server:
-                    continue
+            dcid = values(proto, "quic.dcid")
+            if values(proto, "quic.connection.number"):
+                connection = identity(proto, "quic.connection.number")
+                datagram = (connection, dcid)
+            elif datagram is not None and dcid and dcid == datagram[1]:
+                # Tshark numbers only a datagram's first packet; coalesced ones share its DCID.
+                connection = datagram[0]
+            elif from_server:
+                continue
+            else:
                 # An unattributable client packet could belong to any connection.
                 return decoded, dict(excluded), stray_client_packet(packet, proto)
-            connection = identity(proto, "quic.connection.number")
             decoded.add(connection)
             frames = [
                 node for node in proto.iter("field") if node.get("name") == "quic.frame"
             ]
             if not frames or not values(proto, "quic.packet_number"):
                 excluded[connection].add("undecrypted packet")
+            handshake = values(proto, "quic.long.packet_type") in HANDSHAKE_PACKET_TYPES
             for frame in frames:
                 kind, _ = varint_field(frame, "quic.frame_type")
                 if bidirectional_stream(frame, kind):
                     excluded[connection].add(f"frame 0x{kind:x} on a request stream")
-                problem = close_problem(frame, kind)
+                problem = close_problem(frame, kind, handshake)
                 if problem:
                     excluded[connection].add(problem)
     return decoded, dict(excluded), None

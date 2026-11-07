@@ -134,6 +134,66 @@ class RequestlessQuicTests(unittest.TestCase):
         unattributable = document(control(1), stream_packet(2, b"\x00", connection=1))
         self.assertIn("no QUIC element", quic_exclusions(unattributable, 443)[2])
 
+    def test_handshake_packets_may_carry_an_application_close_as_application_error(self):
+        def close(code, packet_type):
+            kind = scalar("quic.frame_type", b"\x1c") + scalar("quic.cc.error_code", bytes([code]))
+            root = ET.fromstring(
+                native(
+                    "<packet>"
+                    + computed("quic.connection.number", 2)
+                    + scalar("udp.srcport", (10000).to_bytes(2, "big"))
+                    + scalar("udp.dstport", (443).to_bytes(2, "big"))
+                    + f'<field name="quic.frame">{kind}</field></packet>'
+                )
+            )
+            if packet_type is not None:
+                long = scalar("quic.long.packet_type", b"", show=packet_type)
+                root.find("proto[@name='quic']").append(ET.fromstring(long))
+            return ET.tostring(root).decode()
+
+        # RFC 9000 §10.2.3: an application close in Initial/Handshake becomes 0x1c APPLICATION_ERROR.
+        for code, packet_type, clean in (
+            (0x0C, "0", True),
+            (0x0C, "2", True),
+            (0x0C, "1", False),
+            (0x0C, None, False),
+            (0x0A, "2", False),
+        ):
+            data = document(control(1), control(2), close(code, packet_type))
+            with self.subTest(code=code, packet_type=packet_type):
+                self.assertEqual(requestless_connections(data, 443), {1, 2} if clean else {1})
+
+    def test_coalesced_packets_share_the_first_packets_connection(self):
+        def coalesced(dcid, separate=False, first_dcid=b"\xaa"):
+            # Tshark numbers only the first QUIC packet; the second carries a request stream.
+            root = ET.fromstring(control(1))
+            first = root.find("proto[@name='quic']")
+            if first_dcid is not None:
+                first.append(ET.fromstring(scalar("quic.dcid", first_dcid, show=first_dcid.hex())))
+            later = ET.fromstring(control(1)) if separate else root
+            if separate:
+                later.remove(later.find("proto[@name='quic']"))
+            second = ET.SubElement(later, "proto", name="quic")
+            if dcid is not None:
+                second.append(ET.fromstring(scalar("quic.dcid", dcid, show=dcid.hex())))
+            second.append(ET.fromstring(scalar("quic.packet_number", b"\x02", show=2)))
+            request = ET.fromstring(native(stream_packet(0, b"request", connection=1)))
+            second.append(request.find("proto[@name='quic']").find("field[@name='quic.frame']"))
+            packets = [root, later] if separate else [root]
+            return document(control(1, server=True), *(ET.tostring(p).decode() for p in packets))
+
+        decoded, excluded, stray = quic_exclusions(coalesced(b"\xaa"), 443)
+        self.assertEqual((decoded, stray), ({1}, None))
+        self.assertTrue(all("request stream" in reason for reason in excluded[1]))
+        # A different DCID, no DCID, or another datagram leaves the packet unattributable.
+        for data in (
+            coalesced(b"\xbb"),
+            coalesced(None),
+            coalesced(None, first_dcid=None),
+            coalesced(b"\xaa", separate=True),
+        ):
+            self.assertIn("without a connection number", quic_exclusions(data, 443)[2])
+
     def test_admission_names_a_stray_client_packet_without_a_connection(self):
         page = {"protocols": dict.fromkeys(FLOWS, "h3"), "page_results": {}, "user_agent": "test"}
         for native in (False, True):
