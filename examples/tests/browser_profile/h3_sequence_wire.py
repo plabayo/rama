@@ -83,8 +83,11 @@ def sequence_evidence(data, server_port):
         control = [
             stream for stream in prefixes if stream.stream_type == CONTROL_STREAM
         ]
-        if len(control) != 1 or connection not in settings:
-            raise ValueError("missing control stream or server decoder SETTINGS")
+        if len(control) != 1:
+            raise ValueError("missing or repeated HTTP/3 control stream")
+        # Abandoned before server SETTINGS; comparison still requires request connections.
+        if connection not in settings:
+            continue
         context = dict(settings[connection])
         context["fields"] = [
             entry
