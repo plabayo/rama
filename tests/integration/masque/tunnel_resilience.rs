@@ -711,24 +711,27 @@ async fn measure(
     }
 }
 
-/// The measured round trips beside a flood are all answered on a reliable carrier; native
-/// datagrams may lose a few, as every connection reaches the proxy through its one UDP socket.
+/// The measured round trips are all answered on a reliable carrier without a flood, and beside
+/// one at most a rare few go unanswered: the proxy reaches both targets over loopback UDP, which
+/// a flood can overflow. Native datagrams may lose more, as every connection reaches the proxy
+/// through its one UDP socket.
 fn assert_live(carrier: Carrier, scenario: Flood, measured: &Measured, count: usize) {
     assert_eq!(
         measured.trips.sent(),
         count as u64,
         "{carrier:?} {scenario:?}"
     );
-    if carrier == Carrier::Http3Datagram {
-        assert!(
-            measured.trips.lost * 10 <= measured.trips.sent(),
-            "{carrier:?} {scenario:?}: lost {} of {}",
-            measured.trips.lost,
-            measured.trips.sent(),
-        );
-    } else {
-        assert_eq!(measured.trips.lost, 0, "{carrier:?} {scenario:?}");
-    }
+    let tolerated = match (carrier, scenario) {
+        (Carrier::Http3Datagram, _) => measured.trips.sent() / 10,
+        (_, Flood::None) => 0,
+        _ => measured.trips.sent() / 50,
+    };
+    assert!(
+        measured.trips.lost <= tolerated,
+        "{carrier:?} {scenario:?}: lost {} of {}",
+        measured.trips.lost,
+        measured.trips.sent(),
+    );
 }
 
 fn report(carrier: Carrier, scenario: Flood, measured: &Measured) {
