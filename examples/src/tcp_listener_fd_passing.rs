@@ -13,12 +13,12 @@
 //!
 //! # Expected output
 //!
-//! - Parent binds to 127.0.0.1:62046
+//! - Parent binds to 127.0.0.1:12046
 //! - Parent spawns child process
 //! - Parent sends listener FD via Unix socket
 //! - Child receives FD and starts serving
 //! - Parent gracefully exits
-//! - Test with: `curl http://127.0.0.1:62046`
+//! - Test with: `curl http://127.0.0.1:12046`
 //!
 //! This only works on Unix systems (Linux, macOS, BSDs).
 
@@ -94,7 +94,7 @@ mod unix_example {
         tracing::info!("Creating TCP listener...");
 
         // Create listener
-        let listener = TcpListener::bind_address("127.0.0.1:62046", Executor::default()).await?;
+        let listener = TcpListener::bind_address("127.0.0.1:12046", Executor::default()).await?;
         let addr = listener.local_addr()?;
         tracing::info!("✓ Listening on {addr}");
 
@@ -138,7 +138,7 @@ mod unix_example {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         tracing::info!("\n=== Parent exiting - child now serving ===");
-        tracing::info!("Test with: curl http://127.0.0.1:62046\n");
+        tracing::info!("Test with: curl http://127.0.0.1:12046\n");
 
         // Wait for child to finish (it will run for 10 seconds)
         _ = child.wait();

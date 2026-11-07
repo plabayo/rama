@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62501`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12501`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! telnet 127.0.0.1 62501
+//! telnet 127.0.0.1 12501
 //! ```
 //!
 //! Within the telnet session, you can type anything and it will be echoed back to you.
@@ -62,7 +62,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind_address("0.0.0.0:62501", exec)
+    let listener = TcpListener::bind_address("0.0.0.0:12501", exec)
         .await
         .expect("bind TCP Listener");
 

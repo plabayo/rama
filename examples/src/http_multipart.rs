@@ -4,7 +4,7 @@
 //! [`HttpServer`]: rama::http::server::HttpServer
 //! [`Multipart`]: rama::http::service::web::extract::multipart::Multipart
 //!
-//! This example will create a server that listens on `127.0.0.1:62028`.
+//! This example will create a server that listens on `127.0.0.1:12028`.
 //!
 //! # Run the example
 //!
@@ -14,12 +14,12 @@
 //!
 //! # Expected output
 //!
-//! The server starts and listens on `:62028`. Submit a multipart upload with
+//! The server starts and listens on `:12028`. Submit a multipart upload with
 //! `curl`:
 //!
 //! ```sh
 //! echo "hello rama" > /tmp/rama-upload.txt
-//! curl -v -X POST http://127.0.0.1:62028/upload \
+//! curl -v -X POST http://127.0.0.1:12028/upload \
 //!   -F "username=glen" \
 //!   -F "attachment=@/tmp/rama-upload.txt;type=text/plain"
 //! ```
@@ -30,7 +30,7 @@
 //! Or open the page in a browser:
 //!
 //! ```sh
-//! open http://127.0.0.1:62028
+//! open http://127.0.0.1:12028
 //! ```
 //!
 //! and use the upload form.
@@ -80,7 +80,7 @@ async fn main() {
         let exec = Executor::graceful(guard);
         HttpServer::auto(exec)
             .listen(
-                "127.0.0.1:62028",
+                "127.0.0.1:12028",
                 TraceLayer::new_for_http().layer(
                     WebService::default()
                         .with_get(

@@ -1,6 +1,7 @@
 use super::*;
 use crate::profile::{
     capture::{
+        CAPTURE_REVISION,
         completeness::ProfileCaptureCompleteness,
         joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
         observation::ProfileCapture,
@@ -121,6 +122,7 @@ fn offline_archives_reproduce_their_recorded_window() {
 fn observed(client: &str, authorized: bool) -> ProfileArchiveEntry {
     let limits = OrderCaptureLimits::default();
     let capture = ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: ProfileKey::new(client),
         flow: None,
         connection: ConnectionContext::default(),
@@ -194,6 +196,27 @@ fn the_authorized_partition_grants_nothing_beyond_its_scopes() {
                 .unwrap()
                 .remove("scope");
         }
+        // Scope IDs hash the partition, so compare scopes and components by content.
+        let scopes: Vec<String> = analysis["scopes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        for indices in analysis["components"].as_object_mut().unwrap().values_mut() {
+            if let Some(indices) = indices.as_array_mut() {
+                let mut named: Vec<_> = indices
+                    .iter()
+                    .map(|index| scopes[index.as_u64().unwrap() as usize].clone())
+                    .collect();
+                named.sort();
+                *indices = named.into_iter().map(serde_json::Value::from).collect();
+            }
+        }
+        analysis["scopes"]
+            .as_array_mut()
+            .unwrap()
+            .sort_by_key(ToString::to_string);
         analysis
     });
     assert_eq!(public, private);

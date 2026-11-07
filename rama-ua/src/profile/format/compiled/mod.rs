@@ -5,6 +5,10 @@
 //! so only data produced by Rama's own export belongs in this format. Archives
 //! keep the evidence and are reanalyzed whenever they are loaded.
 //!
+//! Only what selection and replay read is kept: scope totals and losses, and the
+//! samples HTTP/3 SETTINGS replay derives its generators from. Other per-value
+//! counters and samples stay in archives.
+//!
 //! A value whose bytes already exist elsewhere in the set, such as a component
 //! capture also held by a joint capture, is stored once. Loaded values share
 //! those bytes instead of each owning a copy.
@@ -29,7 +33,7 @@ use crate::profile::{
 
 const MAGIC: &[u8; 7] = b"RAMAUAC";
 /// Bumped whenever the encoding changes; sets in another version must be re-exported.
-const FORMAT_VERSION: u8 = 2;
+const FORMAT_VERSION: u8 = 3;
 // Fixed single-threaded parameters keep the output reproducible. The long window
 // lets identical captures shared by several profiles compress to back-references.
 const LEVEL: i32 = 19;

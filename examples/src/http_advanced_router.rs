@@ -24,16 +24,16 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62031`. You can use `curl` to inspect
+//! The server will start and listen on `:12031`. You can use `curl` to inspect
 //! the different success and error paths:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62031/
-//! curl -v 'http://127.0.0.1:62031/api/v2/info'
-//! curl -v 'http://127.0.0.1:62031/api/v2/greet?name=Jane'
-//! curl -v 'http://127.0.0.1:62031/api/v2/greet?name=John'
-//! curl -v 'http://127.0.0.1:62031/api/v2/greet?name=Mike'
-//! curl -v 'http://127.0.0.1:62031/api/v2/greet?name=Mike'
+//! curl -v http://127.0.0.1:12031/
+//! curl -v 'http://127.0.0.1:12031/api/v2/info'
+//! curl -v 'http://127.0.0.1:12031/api/v2/greet?name=Jane'
+//! curl -v 'http://127.0.0.1:12031/api/v2/greet?name=John'
+//! curl -v 'http://127.0.0.1:12031/api/v2/greet?name=Mike'
+//! curl -v 'http://127.0.0.1:12031/api/v2/greet?name=Mike'
 //! ```
 //!
 //! The `Jane` request shows the generic signed-success path, `John` shows a
@@ -82,7 +82,7 @@ use rama::{
 
 use serde::{Deserialize, Serialize};
 
-const ADDRESS: &str = "127.0.0.1:62031";
+const ADDRESS: &str = "127.0.0.1:12031";
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {

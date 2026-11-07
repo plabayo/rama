@@ -14,12 +14,12 @@
 //! cargo run -p rama-examples --bin http_mitm_proxy_boring --features=http-full,boring
 //! ```
 //!
-//! The server listens on `127.0.0.1:62017`:
+//! The server listens on `127.0.0.1:12017`:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' http://www.example.com/
-//! curl -k -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' https://www.example.com/
-//! rama -k --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' wss://echo.ramaproxy.org
+//! curl -v -x http://127.0.0.1:12017 --proxy-user 'john:secret' http://www.example.com/
+//! curl -k -v -x http://127.0.0.1:12017 --proxy-user 'john:secret' https://www.example.com/
+//! rama -k --proxy http://127.0.0.1:12017 --proxy-user 'john:secret' wss://echo.ramaproxy.org
 //! ```
 
 #![expect(
@@ -94,9 +94,9 @@ async fn main() -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
-            .bind_address("127.0.0.1:62017")
+            .bind_address("127.0.0.1:12017")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62017");
+            .expect("bind tcp proxy to 127.0.0.1:12017");
 
         // Post receives on raw upstream TCP before protocol peeking or TLS interception.
         let connect = EagerHttpProxyConnector::new(

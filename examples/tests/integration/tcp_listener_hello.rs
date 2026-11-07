@@ -11,7 +11,7 @@ async fn test_tcp_listener_hello() {
     let runner = utils::ExampleRunner::interactive(utils::example!("tcp_listener_hello"));
 
     let file_content = runner
-        .get("http://127.0.0.1:62500")
+        .get("http://127.0.0.1:12500")
         .send()
         .await
         .unwrap()

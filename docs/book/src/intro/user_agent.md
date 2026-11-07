@@ -51,7 +51,7 @@ Rama's UA emulation capabilities are powered by [its automated fingerprinting se
 H2 SETTINGS acknowledgements remain in literal captures but do not define new
 structural groups. Older ACK-bearing groups remain readable with their original
 counts and sampling identities. Old and new group IDs can coexist until the
-older observations leave the 14-day retention window.
+older observations leave the 30-day retention window.
 
 ## User Agent Emulation
 

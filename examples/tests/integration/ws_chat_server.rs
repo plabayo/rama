@@ -18,7 +18,7 @@ async fn test_ws_chat_server() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner.get("http://127.0.0.1:62033").send().await.unwrap();
+    let index_response = runner.get("http://127.0.0.1:12033").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -33,7 +33,7 @@ async fn test_ws_chat_server() {
     // test the actual ws content
 
     let mut ws_1 = runner
-        .websocket("ws://127.0.0.1:62033/chat")
+        .websocket("ws://127.0.0.1:12033/chat")
         .handshake(Extensions::default())
         .await
         .unwrap();
@@ -51,7 +51,7 @@ async fn test_ws_chat_server() {
     );
 
     let mut ws_2 = runner
-        .websocket("ws://127.0.0.1:62033/chat")
+        .websocket("ws://127.0.0.1:12033/chat")
         .handshake(Extensions::default())
         .await
         .unwrap();

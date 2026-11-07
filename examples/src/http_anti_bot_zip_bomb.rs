@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62036`. You can use your browser to interact with the service:
+//! The server will start and listen on `:12036`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://127.0.0.1:62036
+//! open http://127.0.0.1:12036
 //! ```
 //!
 //! Will return a greeting for humans.
@@ -19,7 +19,7 @@
 //! Here are the other resources:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62036/api/rates/2024.csv  # protected resource
+//! curl -v http://127.0.0.1:12036/api/rates/2024.csv  # protected resource
 //! ```
 
 // rama provides everything out of the box to build a complete web service.
@@ -89,7 +89,7 @@ async fn main() {
             .into_layer(router),
     );
 
-    let address = SocketAddress::local_ipv4(62036);
+    let address = SocketAddress::local_ipv4(12036);
     tracing::info!("running service at: {address}");
     let exec = Executor::graceful(graceful.guard());
     let tcp_server = TcpListener::bind_address(address, exec)

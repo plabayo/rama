@@ -6,7 +6,7 @@ async fn test_grpc_echo() {
     utils::init_tracing();
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("grpc_echo_server"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62072)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12072)).await;
 
     let output =
         utils::ExampleRunner::run_with_args_output(utils::example!("grpc_echo_client"), [""; 0])

@@ -42,6 +42,8 @@ pub(in super::super) struct ScopeTruncation {
     pub stored_scopes: usize,
     /// Stored scopes not exported because their normalized scope did not fit.
     pub dropped_stored_scopes: usize,
+    /// Stored scopes not exported because the profile has captures of a newer revision.
+    pub superseded_scopes: usize,
 }
 
 impl ScopeTruncation {
@@ -57,6 +59,16 @@ fn canonical(id: Vec<u8>, bytes: Option<Vec<u8>>) -> Result<CanonicalValue, BoxE
             .ok_or_else(|| bounded("export metadata bytes"))?
             .into(),
     })
+}
+
+/// SQL capture revision of bucket `b`: the structure-ID frame tells revision 0 from a u16 tail.
+macro_rules! scope_revision {
+    () => {
+        "(CASE WHEN substring(b.scope_canonical FROM octet_length(b.scope_canonical)-41 FOR 8)
+           ='\\x0000000000000020'::bytea
+          THEN get_byte(b.scope_canonical,octet_length(b.scope_canonical)-2)*256
+           +get_byte(b.scope_canonical,octet_length(b.scope_canonical)-1) ELSE 0 END)"
+    };
 }
 
 /// Run `count` loads in pipelined chunks. Each chunk's bytes are charged before the next
@@ -161,8 +173,22 @@ pub(in super::super) async fn next_profile(
             quota.try_get(4)?,
         )?
         .ok_or_else(|| invalid("export sampler seed missing"))?;
+        // Rank and limit only the newest revision so superseded captures never replay.
+        let newest: i32 = transaction
+            .query_one(
+                concat!(
+                    "SELECT max(",
+                    scope_revision!(),
+                    ") FROM fp_v2.buckets b
+                     WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4"
+                ),
+                &[&authorized, &&profile.id.0[..], &i64::from(first), &i64::from(current_day)],
+            )
+            .await?
+            .try_get::<_, Option<i32>>(0)?
+            .ok_or_else(|| invalid("export profile without buckets"))?;
         let rows=transaction.query(
-            "SELECT b.scope,
+            concat!("SELECT b.scope,
               CASE WHEN octet_length(b.scope_canonical)::bigint <= $5 THEN b.scope_canonical END,
               b.domain,b.structure_id,
               CASE WHEN octet_length(s.canonical)::bigint <= $5 THEN s.canonical END,
@@ -170,23 +196,42 @@ pub(in super::super) async fn next_profile(
               array_agg(b.day ORDER BY b.day)
              FROM fp_v2.buckets b JOIN fp_v2.structures s ON s.authorized=b.authorized AND s.id=b.structure_id
              LEFT JOIN fp_v2.flows f ON f.authorized=b.authorized AND f.profile_id=b.profile_id AND f.id=b.flow_id
-             WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4
+             WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4 AND ",
+             scope_revision!(),
+             "=$7
              GROUP BY b.scope,b.scope_canonical,b.domain,b.structure_id,s.canonical,b.flow_id,f.canonical
              ORDER BY (SELECT count(DISTINCT x.run) FROM fp_v2.samples x WHERE x.authorized=$1
                AND x.scope=b.scope AND x.day BETWEEN $3 AND $4) DESC,
-              count(*) DESC, sum(b.total) DESC, b.scope LIMIT $6",
-            &[&authorized,&&profile.id.0[..],&i64::from(first),&i64::from(current_day),&maximum,&bounded_rows(analysis_limits.stored_scopes)?],
+              count(*) DESC, sum(b.total) DESC, b.scope LIMIT $6"),
+            &[&authorized,&&profile.id.0[..],&i64::from(first),&i64::from(current_day),&maximum,&bounded_rows(analysis_limits.stored_scopes)?,&newest],
         ).await?;
+        let superseded: i64 = transaction
+            .query_one(
+                concat!(
+                    "SELECT count(DISTINCT b.scope) FROM fp_v2.buckets b
+                     WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4 AND ",
+                    scope_revision!(),
+                    "<>$5"
+                ),
+                &[&authorized, &&profile.id.0[..], &i64::from(first), &i64::from(current_day), &newest],
+            )
+            .await?
+            .try_get(0)?;
         let mut truncation = ScopeTruncation {
             stored_scopes: rows.len(),
-            dropped_stored_scopes: 0,
+            superseded_scopes: usize::try_from(superseded)?,
+            ..ScopeTruncation::default()
         };
         if rows.len() > analysis_limits.stored_scopes {
             let stored: i64 = transaction
                 .query_one(
-                    "SELECT count(DISTINCT scope) FROM fp_v2.buckets
-                     WHERE authorized=$1 AND profile_id=$2 AND day BETWEEN $3 AND $4",
-                    &[&authorized, &&profile.id.0[..], &i64::from(first), &i64::from(current_day)],
+                    concat!(
+                        "SELECT count(DISTINCT b.scope) FROM fp_v2.buckets b
+                         WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4 AND ",
+                        scope_revision!(),
+                        "=$5"
+                    ),
+                    &[&authorized, &&profile.id.0[..], &i64::from(first), &i64::from(current_day), &newest],
                 )
                 .await?
                 .try_get(0)?;
@@ -206,6 +251,12 @@ pub(in super::super) async fn next_profile(
         let mut work = analysis_limits.maximum_work;
         for row in rows.into_iter().take(analysis_limits.stored_scopes) {
             let scope = canonical(row.try_get(0)?, row.try_get(1)?)?;
+            let revision =
+                ProfileObservationScope::from_canonical(&scope, analysis_limits.metadata_bytes)?
+                    .revision;
+            if i32::from(revision) != newest {
+                return Err(invalid("export scope revision"));
+            }
             if !seen.insert(scope.id) {
                 return Err(invalid("export duplicate scope"));
             }

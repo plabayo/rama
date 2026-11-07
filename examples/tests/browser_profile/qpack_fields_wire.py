@@ -180,11 +180,13 @@ def policy_key(metadata):
     )
 
 
-def matching_representations(capture, headers, representations, *, fresh_table=False):
+def matching_representations(
+    capture, headers, representations, *, fresh_table=False, scope=None
+):
     """Keep pseudo/regular metadata in the same joint as its actual HTTP fields."""
     if (
         len(headers) != len(representations)
-        or matching_fields(capture, headers) is None
+        or matching_fields(capture, headers, scope=scope) is None
     ):
         return False
     slots = {slot["kind"]: slot["capture"] for slot in capture["slots"]}
@@ -316,9 +318,13 @@ def _compare_fields(
         candidates = request_candidates(inspected, block, flow)
         if not any(
             matching_representations(
-                capture, block.headers, section.fields, fresh_table=fresh_table
+                capture,
+                block.headers,
+                section.fields,
+                fresh_table=fresh_table,
+                scope=scope,
             )
-            for capture in candidates
+            for scope, capture in candidates
         ):
             raise ValueError(
                 "retained QPACK metadata has no matching request joint "

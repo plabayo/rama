@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
+from read_form import is_network_hint
+
 FLOWS = ("navigate", "fetch", "xhr", "ws", "form", "form_get")
 FLOW_NAMES = set(FLOWS)
 
@@ -87,7 +89,6 @@ class ReplayTarget:
     protocol: str
     origin: str
     certificate: Path | None = None
-    trust_anchors: str | None = None
     resolve: tuple[str, ...] = ()
 
 
@@ -145,8 +146,6 @@ def replay_args(
     ]
     if target.certificate is not None:
         args += ["--cacert", str(target.certificate)]
-    if target.trust_anchors is not None:
-        args += ["--tls-requested-trust-anchors", target.trust_anchors]
     expected_resolution = f"{destination.hostname}:{destination.port or 443}:127.0.0.1"
     for resolution in target.resolve:
         require(
@@ -342,6 +341,21 @@ def flow_protocols(blocks, *, operations=None):
     return {flow: next(iter(values)) for flow, values in protocols.items()}
 
 
+def without_hint_value(header):
+    """H1 keeps `name:value` lines, H2/H3 `(name, value)` pairs."""
+    if isinstance(header, str):
+        name = header.split(":", 1)[0]
+        return name + ":<network-hint>" if is_network_hint(name) else header
+    name, value = header
+    return (name, "<network-hint>") if is_network_hint(name) else header
+
+
+def drawn_wire_tuple(request):
+    """Hint values are drawn per request; field checks verify their combination."""
+    protocol, method, uri, headers, body = request.wire_tuple()
+    return protocol, method, uri, tuple(map(without_hint_value, headers)), body
+
+
 def compare_requests(reference, replay, *, expected_per_flow=1, operations=None):
     names = FLOWS if operations is None else operations.names
     require(
@@ -362,7 +376,7 @@ def compare_requests(reference, replay, *, expected_per_flow=1, operations=None)
         observed = replay[flow][0]
         matched = all(
             any(
-                actual.wire_tuple() == candidate.wire_tuple()
+                drawn_wire_tuple(actual) == drawn_wire_tuple(candidate)
                 for candidate in reference[flow]
             )
             for actual in replay[flow]

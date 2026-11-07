@@ -13,6 +13,7 @@ fn scope() -> ProfileObservationScope {
         flow: None,
         connection: ConnectionContext::default(),
         structure: ValueId([2; 32]),
+        revision: 0,
     }
 }
 
@@ -57,6 +58,11 @@ fn scope_identity_separates_authorization_references_and_observed_context() {
     for family in [ConnectionIpFamily::V4, ConnectionIpFamily::V6] {
         let mut other = base.clone();
         other.connection.ip_family = Some(family);
+        variants.push(other);
+    }
+    for revision in [1, u16::MAX] {
+        let mut other = base.clone();
+        other.revision = revision;
         variants.push(other);
     }
     let mut identities = BTreeSet::new();
@@ -133,4 +139,29 @@ fn scope_canonical_format_has_an_independent_fixed_vector() {
             4, 114, 176, 214, 6, 240, 21, 247, 145, 45, 103, 122, 156
         ]
     );
+}
+
+#[test]
+fn a_revision_extends_the_revision_zero_encoding_and_is_never_explicitly_zero() {
+    let legacy = scope().canonical(kib(1)).unwrap();
+    let mut revised = scope();
+    revised.revision = 0x0102;
+    let canonical = revised.canonical(kib(1)).unwrap();
+    let mut expected = legacy.bytes.to_vec();
+    expected.extend_from_slice(&[1, 2]);
+    assert_eq!(canonical.bytes.as_ref(), expected);
+    let restored = ProfileObservationScope::from_canonical(&canonical, kib(1)).unwrap();
+    assert_eq!(restored.revision, 0x0102);
+    assert_eq!(
+        ProfileObservationScope::from_canonical(&legacy, kib(1))
+            .unwrap()
+            .revision,
+        0
+    );
+
+    for tail in [&[0, 0][..], &[0, 1, 0][..]] {
+        let mut bytes = legacy.bytes.to_vec();
+        bytes.extend_from_slice(tail);
+        ProfileObservationScope::from_canonical(&rehash(bytes), kib(1)).unwrap_err();
+    }
 }

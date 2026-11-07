@@ -206,7 +206,7 @@ def settings_document():
 
 def comparison_fixture():
     observed = first_flights(initial_document(), 443)[0]
-    tls = {"transport": "Quic", "ciphers": [4865]}
+    tls = {"transport": "Quic", "ciphers": [4865], "extensions": []}
     retained_parameters = dict(
         completeness="Complete",
         namespace="QuicParameter",
@@ -398,7 +398,7 @@ def connection_fields_document(*, magic=True, setting=4096):
 
 def connection_fields_fixture():
     prefix = h2_prefixes(connection_fields_document(), 443)[7]
-    tls = {"transport": "Tcp", "ciphers": [4865]}
+    tls = {"transport": "Tcp", "ciphers": [4865], "extensions": []}
     joint = {
         "level": "Connection",
         "slots": [

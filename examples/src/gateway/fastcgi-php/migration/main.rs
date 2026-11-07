@@ -24,7 +24,7 @@
 //!
 //! Configuration via environment:
 //!
-//! - `RAMA_FASTCGI_PHP_LISTEN`           HTTP listen address (default `127.0.0.1:62081`).
+//! - `RAMA_FASTCGI_PHP_LISTEN`           HTTP listen address (default `127.0.0.1:12081`).
 //! - `RAMA_FASTCGI_PHP_BACKEND_SOCKET`   Path to the php-fpm Unix socket (required).
 //! - `RAMA_FASTCGI_PHP_SCRIPT_FILENAME`  Absolute path of the PHP front controller (required).
 //! - `RAMA_FASTCGI_PHP_DOCUMENT_ROOT`    Document root (defaults to the script's parent dir).
@@ -82,7 +82,7 @@ mod unix_impl {
         let listen: SocketAddress = std::env::var("RAMA_FASTCGI_PHP_LISTEN")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| SocketAddress::local_ipv4(62081));
+            .unwrap_or_else(|| SocketAddress::local_ipv4(12081));
 
         let backend_socket = PathBuf::from(
             std::env::var("RAMA_FASTCGI_PHP_BACKEND_SOCKET")

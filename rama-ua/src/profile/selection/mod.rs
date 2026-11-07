@@ -47,6 +47,10 @@ pub enum DrawDomain {
     Layout = 3,
     /// Independent connection-scoped HTTP/3 SETTINGS generation.
     Http3Settings = 4,
+    /// Independent connection-scoped order of shuffled TLS extensions.
+    TlsExtensions = 5,
+    /// Independent request-scoped network quality hint values.
+    NetworkHints = 6,
 }
 
 /// Every logical draw is independent of scheduling and other draw consumption.

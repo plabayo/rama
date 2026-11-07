@@ -15,6 +15,8 @@ use crate::profile::{
 
 #[derive(Debug, Clone)]
 pub struct ProfileCapture {
+    /// [`CAPTURE_REVISION`](super::CAPTURE_REVISION) for live captures; stored evidence keeps its own.
+    pub revision: u16,
     pub profile: ProfileKey,
     pub flow: Option<FlowKey>,
     pub connection: ConnectionContext,
@@ -112,6 +114,7 @@ impl ProfileCapture {
                 flow: flow.as_ref().map(|flow| flow.id),
                 connection: self.connection.clone(),
                 structure: structure.id,
+                revision: self.revision,
             }
             .canonical(limits.value_bytes)?;
             Ok(ProfileBucketInput {

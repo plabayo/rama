@@ -41,7 +41,7 @@
 //!     sudo target/debug/linux_tproxy_tcp
 //! ```
 //!
-//! The proxy listens on `0.0.0.0:62052` (IPv4) and `[::]:62052` (IPv6).
+//! The proxy listens on `0.0.0.0:12052` (IPv4) and `[::]:12052` (IPv6).
 //!
 //! # Required Linux setup
 //!
@@ -70,7 +70,7 @@
 //!
 //! The setup script defaults to:
 //!
-//! - listener port `62052`
+//! - listener port `12052`
 //! - intercepted destination port `80`
 //! - fwmark `1`
 //! - route table `100`
@@ -79,7 +79,7 @@
 //! You can override them:
 //!
 //! ```sh
-//! sudo PORT=62052 INTERCEPT_PORT=443 FWMARK=9 ROUTE_TABLE=109 PROXY_UID=1000 \
+//! sudo PORT=12052 INTERCEPT_PORT=443 FWMARK=9 ROUTE_TABLE=109 PROXY_UID=1000 \
 //!   ./examples/src/linux_tproxy_tcp_setup.sh
 //! ```
 //!
@@ -152,10 +152,10 @@ use ::{
 use rama::error::{BoxError, BoxErrorExt};
 
 #[cfg(target_os = "linux")]
-const LISTEN_ADDR_V4: SocketAddress = SocketAddress::default_ipv4(62052);
+const LISTEN_ADDR_V4: SocketAddress = SocketAddress::default_ipv4(12052);
 
 #[cfg(target_os = "linux")]
-const LISTEN_ADDR_V6: SocketAddress = SocketAddress::default_ipv6(62052);
+const LISTEN_ADDR_V6: SocketAddress = SocketAddress::default_ipv6(12052);
 
 #[cfg(target_os = "linux")]
 fn tcp_keep_alive() -> TcpKeepAlive {

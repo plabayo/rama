@@ -12,7 +12,28 @@ use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAccepto
 use super::rustls::client::Resumption;
 use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
 use crate::proto::ServerCrypto;
-pub(crate) use crate::proto::crypto::config::{ClientSessionPolicy, TlsConfigError, TlsOptions};
+pub(crate) use crate::proto::crypto::config::{
+    ClientSessionPolicy, ServerSessionPolicy, TlsConfigError, TlsOptions,
+};
+
+/// Issues no tickets and opens none.
+#[derive(Debug)]
+struct NoTickets;
+
+impl rustls::server::ProducesTickets for NoTickets {
+    fn enabled(&self) -> bool {
+        false
+    }
+    fn lifetime(&self) -> u32 {
+        0
+    }
+    fn encrypt(&self, _plain: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+    fn decrypt(&self, _cipher: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+}
 
 /// Carry a backend error as the cause, without that conversion being part of this crate's API.
 fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
@@ -121,11 +142,17 @@ impl QuicServerConfig {
 
     /// Check a native configuration against QUIC's requirements, then take it.
     pub(super) fn from_native(
-        native: rustls::ServerConfig,
+        mut native: rustls::ServerConfig,
         options: TlsOptions,
         store_peer_chain: bool,
     ) -> Result<Self, TlsConfigError> {
         options.validate_server()?;
+        if options.server_sessions == ServerSessionPolicy::Fresh {
+            // After any application hook: a shared ticketer must not decrypt older tickets.
+            native.send_tls13_tickets = 0;
+            native.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+            native.ticketer = Arc::new(NoTickets);
+        }
         validate_alpn(&native.alpn_protocols, options.alpn)?;
         if native.max_early_data_size != 0 && !options.early_data {
             return Err(TlsConfigError::EarlyDataNotEnabled);
@@ -430,6 +457,62 @@ mod tests {
                 "context={context:?}, limit={limit}"
             );
             assert_eq!(server.scoped.lock().configs.len(), 1);
+        }
+    }
+
+    /// Readable tickets, shared across configurations like an application's own ticketer.
+    #[derive(Debug)]
+    struct SharedTickets;
+
+    impl rustls::server::ProducesTickets for SharedTickets {
+        fn enabled(&self) -> bool {
+            true
+        }
+        fn lifetime(&self) -> u32 {
+            3600
+        }
+        fn encrypt(&self, plain: &[u8]) -> Option<Vec<u8>> {
+            Some(plain.to_vec())
+        }
+        fn decrypt(&self, cipher: &[u8]) -> Option<Vec<u8>> {
+            Some(cipher.to_vec())
+        }
+    }
+
+    #[test]
+    fn fresh_servers_refuse_tickets_a_shared_ticketer_issued_before() {
+        let (client, server) = configs();
+        let server = server.with_modify_rustls_config(|mut native| {
+            native.ticketer = Arc::new(SharedTickets);
+            Ok(native)
+        });
+        let client = Arc::new(
+            QuicClientConfig::from_rama(&client, configured_provider(), TlsOptions::default())
+                .unwrap(),
+        );
+        let params = TransportParameters::default();
+        for version in [Version::V1, Version::V2] {
+            for (policy, resumed) in [
+                (ServerSessionPolicy::Resume, false),
+                (ServerSessionPolicy::Resume, true),
+                (ServerSessionPolicy::Fresh, false),
+            ] {
+                let options = TlsOptions::default().with_server_sessions(policy);
+                let server = Arc::new(
+                    QuicServerConfig::from_rama(&server, configured_provider(), options).unwrap(),
+                );
+                let mut c = client
+                    .clone()
+                    .start_session(version, "localhost", &params)
+                    .unwrap();
+                let mut s = server.start_session(version, &params).unwrap();
+                handshake(&mut *c, &mut *s).unwrap();
+                assert_eq!(
+                    s.handshake_summary().unwrap().resumed,
+                    Some(resumed),
+                    "{version:?} {policy:?}"
+                );
+            }
         }
     }
 

@@ -171,6 +171,6 @@ mod backend_tests {
             rama::js::JsBackend::Interpreter
         );
         #[cfg(not(feature = "js-interpreter"))]
-        assert!(JsBackendArg::from_str("interpreter", false).is_err());
+        JsBackendArg::from_str("interpreter", false).unwrap_err();
     }
 }

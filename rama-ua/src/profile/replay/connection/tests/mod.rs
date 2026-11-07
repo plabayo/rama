@@ -52,6 +52,7 @@ fn selection(capture: CanonicalValue) -> ConnectionSelection {
                 flow: None,
                 connection: ConnectionContext::default(),
                 structure: ValueId([4; 32]),
+                revision: 0,
             },
         },
     }

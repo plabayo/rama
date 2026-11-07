@@ -33,6 +33,7 @@ class Operation:
     joint: str | None = None
     request: str | None = None
     capture: dict | None = field(default=None, repr=False, compare=False)
+    capture_scope: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def key(self):
@@ -244,7 +245,10 @@ class OperationLedger:
                 for operation in candidates
                 if operation.capture is not None
                 and matching_fields(
-                    operation.capture, block.headers, protocol=block.protocol
+                    operation.capture,
+                    block.headers,
+                    protocol=block.protocol,
+                    scope=operation.capture_scope,
                 )
                 is not None
             ]
@@ -345,7 +349,7 @@ class OperationLedger:
                     if (
                         capture.get("level") != "Request"
                         or matching_fields(
-                            capture, block.headers, protocol=block.protocol
+                            capture, block.headers, protocol=block.protocol, scope=scope
                         )
                         is None
                     ):
@@ -359,7 +363,7 @@ class OperationLedger:
                             "declared request lacks raw QPACK evidence",
                         )
                         if not matching_representations(
-                            capture, block.headers, section.fields
+                            capture, block.headers, section.fields, scope=scope
                         ):
                             continue
                     raw = variant["id"]
@@ -372,13 +376,19 @@ class OperationLedger:
                         "invalid declared request joint ID",
                     )
                     candidates.add(bytes(raw).hex())
-                    captures[bytes(raw).hex()] = capture
+                    captures[bytes(raw).hex()] = scope, capture
             require(
                 len(candidates) == 1, "declared request joint is missing or ambiguous"
             )
             identifier = candidates.pop()
+            scope, capture = captures[identifier]
             observed.append(
-                replace(operation, request=identifier, capture=captures[identifier])
+                replace(
+                    operation,
+                    request=identifier,
+                    capture=capture,
+                    capture_scope=scope,
+                )
             )
         return replace(self, operations=tuple(observed))
 

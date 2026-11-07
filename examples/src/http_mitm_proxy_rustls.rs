@@ -47,11 +47,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62019`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12019`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62019 --proxy-user 'john:secret' http://www.example.com/
-//! curl -k -v -x http://127.0.0.1:62019 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x http://127.0.0.1:12019 --proxy-user 'john:secret' http://www.example.com/
+//! curl -k -v -x http://127.0.0.1:12019 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 
 #![expect(
@@ -128,9 +128,9 @@ async fn main() -> Result<(), BoxError> {
 
     graceful.spawn_task(async {
         let tcp_service = TcpListener::build(exec.clone())
-            .bind_address("127.0.0.1:62019")
+            .bind_address("127.0.0.1:12019")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62019");
+            .expect("bind tcp proxy to 127.0.0.1:12019");
 
         let http_mitm_service = new_http_mitm_proxy();
         let http_service = HttpServer::auto(exec.clone()).service(Arc::new(

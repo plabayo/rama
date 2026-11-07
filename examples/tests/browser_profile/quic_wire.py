@@ -15,6 +15,7 @@ from flows import FLOWS, operation_flow
 from pdml import field, identity, one, pdml_packets
 from qpack_bootstrap_wire import verify_bootstrap
 from quic_stream_wire import stream_prefixes, varint, varint_field
+from read_form import tls_read_form
 from tls_wire import Reader, byte_span
 
 VERSION_1 = 1
@@ -507,11 +508,11 @@ def compare_quic_captures(
             raise ValueError("missing or ambiguous QUIC connection evidence")
         flight = flights[connection][0]
         matches, mismatches = [], []
-        for index, (identity, _variant, slots, _profile, _scope) in enumerate(candidates):
+        for index, (identity, _variant, slots, _profile, scope) in enumerate(candidates):
             if identity != agent:
                 continue
             checks = {
-                "QuicTls": slots["QuicTls"] == tls[connection][0],
+                "QuicTls": slots["QuicTls"] == tls_read_form(tls[connection][0], scope),
                 "QuicFirstFlight": slots["QuicFirstFlight"]
                 == {"completeness": "Complete", "flight": flight.flight},
                 "QuicParameters": parameters_match(slots["QuicParameters"], flight.parameters),

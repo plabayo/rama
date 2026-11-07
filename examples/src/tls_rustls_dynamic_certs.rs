@@ -11,7 +11,7 @@
 //!
 //! Example certificate:
 //! ```sh
-//! curl -vik --resolve example:64802:127.0.0.1 https://example:64802
+//! curl -vik --resolve example:14802:127.0.0.1 https://example:14802
 //! ```
 //! Output
 //! ```
@@ -25,7 +25,7 @@
 //!
 //! Second example certificate:
 //! ```sh
-//! curl -vik --resolve second.example:64802:127.0.0.1 https://second.example:64802
+//! curl -vik --resolve second.example:14802:127.0.0.1 https://second.example:14802
 //! ```
 //! Output
 //! ```
@@ -39,7 +39,7 @@
 //!
 //! Fallback to to default (example certificate) if no matches are found:
 //! ```sh
-//! curl -vik https://127.0.0.1:64802
+//! curl -vik https://127.0.0.1:14802
 //! ```
 //! Output
 //! ```
@@ -105,7 +105,7 @@ async fn main() {
 
     let dynamic_issuer = Arc::new(DynamicIssuer::new());
     let bind_address = env::var("RAMA_TLS_RUSTLS_DYNAMIC_CERTS_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:64802".to_owned());
+        .unwrap_or_else(|_| "127.0.0.1:14802".to_owned());
 
     // The common pieces can't express a custom synchronous [`ResolvesServerCert`],
     // so use the rustls escape-hatch closure to install it. With no server-auth

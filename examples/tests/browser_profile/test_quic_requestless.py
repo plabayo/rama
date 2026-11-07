@@ -2,7 +2,7 @@
 
 import unittest
 import xml.etree.ElementTree as ET
-from quic_stream_wire import requestless_connections
+from quic_stream_wire import quic_exclusions, requestless_connections
 from wire_fixtures import computed, document, scalar, stream_packet
 
 
@@ -116,6 +116,20 @@ class RequestlessQuicTests(unittest.TestCase):
                 self.assertEqual(
                     requestless_connections(data, 443), {1} if excludes else {1, 2}
                 )
+
+    def test_exclusions_name_why_a_connection_is_not_requestless(self):
+        data = document(
+            control(1),
+            native(stream_packet(0, b"request", connection=2)),
+            native(stream_packet(2, b"\x00", connection=3), decrypted=False),
+        )
+        decoded, excluded = quic_exclusions(data, 443)
+        self.assertEqual(decoded, {1, 2, 3})
+        self.assertEqual(set(excluded), {2, 3})
+        self.assertTrue(all("request stream" in reason for reason in excluded[2]))
+        self.assertEqual(excluded[3], {"undecrypted packet"})
+        unattributable = document(control(1), stream_packet(2, b"\x00", connection=1))
+        self.assertIsNone(quic_exclusions(unattributable, 443)[1])
 
     def test_other_ports_are_ignored(self):
         self.assertEqual(requestless_connections(document(control(1)), 8443), set())

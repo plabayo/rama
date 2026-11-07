@@ -15,30 +15,30 @@
 //!
 //! # Expected output
 //!
-//! The foo.local server will start and listen on `:63804`. You can use `curl` to interact with the service:
+//! The foo.local server will start and listen on `:13804`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -k https://127.0.0.1:63804  # outputs foo
+//! curl -k https://127.0.0.1:13804  # outputs foo
 //! ```
 //!
-//! The bar.local server will start and listen on `:63805`. You can use `curl` to interact with the service:
+//! The bar.local server will start and listen on `:13805`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -k https://127.0.0.1:63805  # outputs bar
+//! curl -k https://127.0.0.1:13805  # outputs bar
 //! ```
-//! The no SNI server will start and listen on `:63806`. You can use `curl` to interact with the service:
+//! The no SNI server will start and listen on `:13806`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -k https://127.0.0.1:63806  # outputs baz
+//! curl -k https://127.0.0.1:13806  # outputs baz
 //! ```
 //!
-//! Those services are available in a single interface (exposed by this example as `:62026`),
+//! Those services are available in a single interface (exposed by this example as `:12026`),
 //! routed to the correct backend service based on its TLS SNI value or lack of:
 //!
 //! ```sh
-//! curl -k --resolve foo.local:62026:127.0.0.1 https://foo.local:62026  # outputs foo
-//! curl -k --resolve bar.local:62026:127.0.0.1 https://bar.local:62026  # outputs bar
-//! curl -k https://127.0.0.1:62026  # outputs baz
+//! curl -k --resolve foo.local:12026:127.0.0.1 https://foo.local:12026  # outputs foo
+//! curl -k --resolve bar.local:12026:127.0.0.1 https://bar.local:12026  # outputs bar
+//! curl -k https://127.0.0.1:12026  # outputs baz
 //! ```
 
 // rama provides everything out of the box to build a TLS termination proxy
@@ -96,7 +96,7 @@ async fn main() {
     spawn_https_server(shutdown.guard(), NAME_BAZ, INTERFACE_BAZ);
 
     shutdown.spawn_task_fn(async move |guard| {
-        let socket_address = SocketAddress::default_ipv4(62026);
+        let socket_address = SocketAddress::default_ipv4(12026);
         tracing::info!(
             network.local.address = %socket_address.ip_addr,
             network.local.port = %socket_address.port,
@@ -119,14 +119,14 @@ async fn main() {
 
 const NAME_FOO: &str = "foo";
 const HOST_FOO: Domain = Domain::from_static("foo.local");
-const INTERFACE_FOO: SocketAddress = SocketAddress::local_ipv4(63804);
+const INTERFACE_FOO: SocketAddress = SocketAddress::local_ipv4(13804);
 
 const NAME_BAR: &str = "bar";
 const HOST_BAR: Domain = Domain::from_static("bar.local");
-const INTERFACE_BAR: SocketAddress = SocketAddress::local_ipv4(63805);
+const INTERFACE_BAR: SocketAddress = SocketAddress::local_ipv4(13805);
 
 const NAME_BAZ: &str = "baz";
-const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(63806);
+const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(13806);
 
 #[derive(Debug, Clone)]
 struct SniRouterSvc {

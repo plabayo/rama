@@ -11,16 +11,16 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:63014`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:13014`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -k -v https://127.0.0.1:63014
+//! curl -k -v https://127.0.0.1:13014
 //! ```
 //!
 //! This won't work as the client is not authorized. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62014/hello
+//! curl -v http://127.0.0.1:12014/hello
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with `Hello, authorized client!`.
@@ -68,8 +68,8 @@ use rama::{
 
 use std::time::Duration;
 
-const SERVER_AUTHORITY: SocketAddress = SocketAddress::local_ipv4(63014);
-const TUNNEL_AUTHORITY: SocketAddress = SocketAddress::local_ipv4(62014);
+const SERVER_AUTHORITY: SocketAddress = SocketAddress::local_ipv4(13014);
+const TUNNEL_AUTHORITY: SocketAddress = SocketAddress::local_ipv4(12014);
 
 #[tokio::main]
 async fn main() {

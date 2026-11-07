@@ -21,11 +21,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62042`.
+//! The server will start and listen on `:12042`.
 //! With a utility like `socat`, `nc` or `telnet you can talk to your server:
 //!
 //! ```sh
-//! socat - TCP:127.0.0.1:62042
+//! socat - TCP:127.0.0.1:12042
 //! ```
 //!
 //! You should see the items coming through and could also pipe it to
@@ -92,7 +92,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62042), exec.clone())
+    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(12042), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");

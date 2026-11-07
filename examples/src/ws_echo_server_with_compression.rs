@@ -8,7 +8,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62038`.
+//! The server will start and listen on `:12038`.
 //! Open it in the browser to see it in action or use `rama` cli client to test it.
 
 #![expect(
@@ -63,9 +63,9 @@ async fn main() {
                 ),
             ),
         );
-        info!("open web echo chat @ http://127.0.0.1:62038");
-        info!("or connect directly to ws://127.0.0.1:62038/echo (via 'rama')");
-        TcpListener::bind_address("127.0.0.1:62038", Executor::graceful(guard))
+        info!("open web echo chat @ http://127.0.0.1:12038");
+        info!("or connect directly to ws://127.0.0.1:12038/echo (via 'rama')");
+        TcpListener::bind_address("127.0.0.1:12038", Executor::graceful(guard))
             .await
             .expect("bind TCP Listener")
             .serve(server)

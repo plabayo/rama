@@ -1,6 +1,7 @@
 use super::*;
 use rama_ua::profile::{
     capture::{
+        CAPTURE_REVISION,
         headers::{HeaderCapture, HeaderCapturePolicy},
         http2::{H2Capture, H2CaptureLimits, H2CapturedFrame},
         joint::{CaptureLevel, CapturedSlot, JointCapture, JointCaptureLimits},
@@ -41,6 +42,7 @@ pub(super) fn selected_with_tls(
     let mut scopes = Vec::new();
     for level in [CaptureLevel::Connection, CaptureLevel::Request] {
         let observation = ProfileCapture {
+            revision: CAPTURE_REVISION,
             profile: ProfileKey::new(client),
             flow: (level == CaptureLevel::Request).then(|| flow.clone()),
             connection: ConnectionContext::default(),

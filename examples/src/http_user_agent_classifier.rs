@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62015`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12015`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62015
+//! curl -v http://127.0.0.1:12015
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the user agent info exposed by Rama.
@@ -42,7 +42,7 @@ use serde_json::json;
 async fn main() {
     HttpServer::default()
         .listen(
-            "127.0.0.1:62015",
+            "127.0.0.1:12015",
             (
                 UserAgentClassifierLayer::new()
                     .with_overwrite_header(HeaderName::from_static("x-proxy-ua")),

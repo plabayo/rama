@@ -187,6 +187,7 @@ fn scope_with(
             flow,
             connection: ConnectionContext::default(),
             structure: ValueId([tag.wrapping_add(100); 32]),
+            revision: 0,
         },
         flow: None,
         structure: value.clone(),
@@ -204,6 +205,7 @@ fn scope_with(
             }]
             .into(),
             orders: Box::default(),
+            network_hints: Box::default(),
             numeric: Box::default(),
         },
     }

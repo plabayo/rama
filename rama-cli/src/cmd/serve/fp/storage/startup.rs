@@ -86,7 +86,7 @@ pub(super) fn store_limits() -> StoreLimits {
             1_048_576,
             16_384,
             1_048_576,
-            gib(1),
+            gib(2),
         ],
         checkpoint_bytes: kib(16),
     }

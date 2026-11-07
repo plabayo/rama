@@ -125,6 +125,7 @@ fn scope(
             flow,
             connection: context,
             structure: ValueId([tag.wrapping_add(100); 32]),
+            revision: 0,
         },
         flow: None,
         structure: request_variant(),
@@ -144,6 +145,7 @@ fn scope(
                 })
                 .collect(),
             orders: Box::default(),
+            network_hints: Box::default(),
             numeric: Box::default(),
         },
     }

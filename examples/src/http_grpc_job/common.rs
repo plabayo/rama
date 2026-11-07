@@ -17,7 +17,7 @@ pub(crate) const JOB_PATH: &str = "/jobs/{id}";
 pub(crate) const EXAMPLE_JOB_PATH: &str = "/jobs/1";
 
 pub(crate) fn default_origin() -> Uri {
-    Uri::from_static("http://127.0.0.1:62073")
+    Uri::from_static("http://127.0.0.1:12073")
 }
 
 pub(crate) fn health_uri(origin: &Uri) -> Uri {

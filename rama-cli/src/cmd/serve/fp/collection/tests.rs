@@ -3,6 +3,7 @@ use rama::{
     ServiceInput,
     service::service_fn,
     ua::profile::{
+        capture::CAPTURE_REVISION,
         capture::completeness::ProfileCaptureCompleteness,
         capture::joint::{CaptureLevel, JointCapture},
         model::identity::{ConnectionContext, ProfileKey},
@@ -66,6 +67,7 @@ fn each_partition_collects_the_connection_once() {
 
 fn handover() -> Box<ConnectionHandover> {
     let capture = || ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: ProfileKey::new("handover"),
         connection: ConnectionContext::default(),
         flow: None,

@@ -83,7 +83,7 @@ Mozilla/5.0 (iPhone; CPU iPhone OS 16_5_1 like Mac OS X) AppleWebKit/605.1.15 (K
 # The database is only reachable over Fly's private network, e.g. after `fly wireguard`.
 # Refresh rama-ua's embedded profiles from the fp database in RAMA_FP_DATABASE_URL.
 [unix]
-update-embedded-profiles DAYS="14":
+update-embedded-profiles DAYS="30":
     #!/usr/bin/env bash
     set -euo pipefail
     days={{quote(DAYS)}}

@@ -286,6 +286,13 @@ pub(super) fn prepare(
         // Peer limits, Huffman defaults and later compression follow native policy.
         _ => encoding.defer_dynamic_first_section = Some(defer_dynamic),
     }
+    // A captured capacity-only prefix preceded the first request, after peer SETTINGS.
+    if sequence.and_then(capacity_only).is_some() {
+        match encoding.capacity_before_first_section {
+            Some(false) => lower(report, LoweredProfileItem::CallerQpackEncoding),
+            _ => encoding.capacity_before_first_section = Some(true),
+        }
+    }
     if let Some(capacity) = sequence.and_then(capacity_only).or_else(|| {
         bootstrap
             .zip(sequence)

@@ -41,6 +41,8 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 Tls implementations for `rama` using rustls.
 
+The client ignores `TlsEncryptedClientHello`: it sends neither ECH nor ECH GREASE.
+
 Learn more about `rama`:
 
 - Github: <https://github.com/plabayo/rama>

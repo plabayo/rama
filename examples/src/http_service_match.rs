@@ -9,11 +9,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62011`. You can use your browser to interact with the service:
+//! The server will start and listen on `:12011`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://127.0.0.1:62011
-//! curl -v -X PATCH http://127.0.0.1:62011/echo
+//! open http://127.0.0.1:12011
+//! curl -v -X PATCH http://127.0.0.1:12011/echo
 //! ```
 //!
 //! You should see the homepage in your browser.
@@ -62,7 +62,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let addr = "127.0.0.1:62011";
+        let addr = "127.0.0.1:12011";
         tracing::info!("running service at: {addr}");
         let exec = Executor::graceful(guard);
         HttpServer::auto(exec)

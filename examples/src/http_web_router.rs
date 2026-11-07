@@ -12,15 +12,15 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62018`. You can use your browser to interact with the service:
+//! The server will start and listen on `:12018`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://127.0.0.1:62018
-//! curl -v -X POST http://127.0.0.1:62018/greet/world
-//! curl -v http://127.0.0.1:62018/lang/fr
-//! curl -v -L 'http://127.0.0.1:62018/greet?lang=fr'
-//! curl -v -L http://127.0.0.1:62018/api/v1/status
-//! curl -v http://127.0.0.1:62018/api/v2/status
+//! open http://127.0.0.1:12018
+//! curl -v -X POST http://127.0.0.1:12018/greet/world
+//! curl -v http://127.0.0.1:12018/lang/fr
+//! curl -v -L 'http://127.0.0.1:12018/greet?lang=fr'
+//! curl -v -L http://127.0.0.1:12018/api/v1/status
+//! curl -v http://127.0.0.1:12018/api/v2/status
 //! ```
 //!
 //! You should see the homepage in your browser with the title "Rama Web Router".
@@ -62,7 +62,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 
-const ADDRESS: &str = "127.0.0.1:62018";
+const ADDRESS: &str = "127.0.0.1:12018";
 
 #[tokio::main]
 async fn main() {

@@ -11,11 +11,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62008`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12008`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62008/limit
-//! curl -v http://127.0.0.1:62008/limit/slow
+//! curl -v http://127.0.0.1:12008/limit
+//! curl -v http://127.0.0.1:12008/limit/slow
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the method and path of the request.
@@ -23,13 +23,13 @@
 //! You can trigger a Rate Limit by opening 3 concurrent requests to `/limit/slow`:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62008/limit/slow
+//! curl -v http://127.0.0.1:12008/limit/slow
 //! ```
 //!
 //! Or easier by running:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62008/api/slow
+//! curl -v http://127.0.0.1:12008/api/slow
 //! ```
 //!
 //! Next to those concurrency limits this example also rate limits
@@ -37,13 +37,13 @@
 //!
 //! ```sh
 //! # more than 2 requests per second get a 429 with a Retry-After header
-//! for i in $(seq 1 6); do curl -so /dev/null -w "%{http_code}\n" http://127.0.0.1:62008/rate; done
+//! for i in $(seq 1 6); do curl -so /dev/null -w "%{http_code}\n" http://127.0.0.1:12008/rate; done
 //!
 //! # more than 2 requests per second just wait their turn, they never fail
-//! for i in $(seq 1 6); do curl -so /dev/null -w "%{http_code} %{time_total}\n" http://127.0.0.1:62008/paced; done
+//! for i in $(seq 1 6); do curl -so /dev/null -w "%{http_code} %{time_total}\n" http://127.0.0.1:12008/paced; done
 //!
 //! # the same, but with a bucket per client IP (fair between clients)
-//! for i in $(seq 1 6); do curl -so /dev/null -w "%{http_code}\n" http://127.0.0.1:62008/rate/ip; done
+//! for i in $(seq 1 6); do curl -so /dev/null -w "%{http_code}\n" http://127.0.0.1:12008/rate/ip; done
 //! ```
 //!
 //! And the whole service is capped at 100 requests per second by a second
@@ -86,7 +86,7 @@ use serde_json::json;
 async fn main() {
     HttpServer::default()
         .listen(
-            "0.0.0.0:62008",
+            "0.0.0.0:12008",
             (
                 MapResultLayer::new(|result: Result<Response, BoxError>| match result {
                     Ok(response) => Ok(response),

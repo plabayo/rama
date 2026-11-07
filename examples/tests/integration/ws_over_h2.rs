@@ -20,7 +20,7 @@ async fn test_ws_over_h2() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner.get("https://127.0.0.1:62035").send().await.unwrap();
+    let index_response = runner.get("https://127.0.0.1:12035").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -35,7 +35,7 @@ async fn test_ws_over_h2() {
     // test the actual ws content
 
     let mut ws = runner
-        .websocket_h2("wss://127.0.0.1:62035/echo")
+        .websocket_h2("wss://127.0.0.1:12035/echo")
         .handshake(Extensions::default())
         .await
         .unwrap();
@@ -55,7 +55,7 @@ async fn test_ws_over_h2() {
     let blocking_client = BlockingHttpClient::try_new(runner.client.clone()).unwrap();
     std::thread::spawn(move || {
         let mut ws = blocking_client
-            .websocket_h2("wss://127.0.0.1:62035/echo")
+            .websocket_h2("wss://127.0.0.1:12035/echo")
             .try_handshake()
             .unwrap();
         ws.send_message("hello blocking h2 world".into()).unwrap();

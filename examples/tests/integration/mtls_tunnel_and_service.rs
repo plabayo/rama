@@ -10,7 +10,7 @@ async fn test_mtls_tunnel_and_service() {
     let runner = utils::ExampleRunner::interactive(utils::example!("mtls_tunnel_and_service"));
 
     let res_str = runner
-        .get("http://127.0.0.1:62014/hello")
+        .get("http://127.0.0.1:12014/hello")
         .send()
         .await
         .unwrap()
@@ -21,10 +21,10 @@ async fn test_mtls_tunnel_and_service() {
     assert_eq!(res_str, "<h1>Hello, authorized client!</h1>");
 
     let err = runner
-        .get("https://127.0.0.1:63014/hello")
+        .get("https://127.0.0.1:13014/hello")
         .extension(DoNotRetry::default())
         .send()
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("https://127.0.0.1:63014/hello"));
+    assert!(err.to_string().contains("https://127.0.0.1:13014/hello"));
 }

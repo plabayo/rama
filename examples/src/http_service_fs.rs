@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62009`. You can use your browser to interact with the service:
+//! The server will start and listen on `:12009`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62009/test-files/index.html
+//! curl -v http://127.0.0.1:12009/test-files/index.html
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and the content of the `index.html` file.
@@ -45,7 +45,7 @@ async fn main() {
         )
         .init();
 
-    let listener = TcpListener::bind_address("127.0.0.1:62009", Executor::default())
+    let listener = TcpListener::bind_address("127.0.0.1:12009", Executor::default())
         .await
         .expect("bind TCP Listener");
 
@@ -56,7 +56,7 @@ async fn main() {
 
     // Serve the HTTP server over TCP,
     // ...once running you can go in browser for example to:
-    tracing::info!("open: http://127.0.0.1:62009/test-files/index.html");
+    tracing::info!("open: http://127.0.0.1:12009/test-files/index.html");
     listener
         .serve(TraceErrLayer::new().into_layer(http_fs_server))
         .await;

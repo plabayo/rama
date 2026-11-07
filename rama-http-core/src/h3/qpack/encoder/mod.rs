@@ -104,6 +104,8 @@ pub struct EncoderConfig {
     pub huffman: bool,
     /// Start with a static/literal section, then permit ordinary dynamic compression.
     pub defer_dynamic_first_section: bool,
+    /// Client requests not sent early wait for peer SETTINGS; peer limits and budgets still apply.
+    pub capacity_before_first_section: bool,
     /// Coordinate system for dynamic references; table contents remain independent.
     pub field_section_base: FieldSectionBase,
     /// Maximum uncompressed section size, including 32 bytes per field.
@@ -129,6 +131,9 @@ impl EncoderConfig {
         if let Some(defer) = preferences.defer_dynamic_first_section {
             self.defer_dynamic_first_section = defer;
         }
+        if let Some(capacity_first) = preferences.capacity_before_first_section {
+            self.capacity_before_first_section = capacity_first;
+        }
         if let Some(base) = preferences.field_section_base {
             self.field_section_base = base;
         }
@@ -143,6 +148,7 @@ impl Default for EncoderConfig {
             target_capacity: kib_u64(4),
             huffman: true,
             defer_dynamic_first_section: false,
+            capacity_before_first_section: false,
             field_section_base: FieldSectionBase::default(),
             max_field_section_size: kib(64),
             max_encoder_stream_bytes: kib(64),

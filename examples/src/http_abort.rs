@@ -7,16 +7,16 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62047`. You can use your curl to interact with the service:
+//! The server will start and listen on `:12047`. You can use your curl to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62047
+//! curl -v http://127.0.0.1:12047
 //! ```
 //!
 //! abort will drop connection before response received:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62047/abort
+//! curl -v http://127.0.0.1:12047/abort
 //! ```
 
 // rama provides everything out of the box to build a complete web service.
@@ -53,7 +53,7 @@ use rama::{
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use std::{sync::Arc, time::Duration};
 
-const ADDRESS: &str = "127.0.0.1:62047";
+const ADDRESS: &str = "127.0.0.1:12047";
 
 #[tokio::main]
 async fn main() {

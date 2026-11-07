@@ -23,6 +23,17 @@ pub enum ClientSessionPolicy {
     Fresh,
 }
 
+/// Server TLS session policy: whether clients may resume earlier connections.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ServerSessionPolicy {
+    /// Issue session tickets and resume the sessions they carry.
+    #[default]
+    Resume,
+    /// Issue, keep and accept no sessions: every handshake is full, so no server early data.
+    Fresh,
+}
+
 /// QUIC requirements applied to the common Rama TLS configuration.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TlsOptions {
@@ -30,6 +41,7 @@ pub struct TlsOptions {
     pub(crate) early_data: bool,
     pub(crate) early_data_context: Option<[u8; 32]>,
     pub(crate) client_sessions: ClientSessionPolicy,
+    pub(crate) server_sessions: ServerSessionPolicy,
 }
 
 impl TlsOptions {
@@ -56,6 +68,9 @@ impl TlsOptions {
         if self.early_data && self.early_data_context.is_none() {
             return Err(TlsConfigError::EarlyDataContextRequired);
         }
+        if self.early_data && self.server_sessions == ServerSessionPolicy::Fresh {
+            return Err(TlsConfigError::EarlyDataWithoutResumption);
+        }
         Ok(())
     }
 
@@ -64,6 +79,14 @@ impl TlsOptions {
         /// Connection pooling remains an independent application decision.
         pub fn client_sessions(mut self, policy: ClientSessionPolicy) -> Self {
             self.client_sessions = policy;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Server session policy. Clients ignore this server-only option.
+        pub fn server_sessions(mut self, policy: ServerSessionPolicy) -> Self {
+            self.server_sessions = policy;
             self
         }
     }
@@ -98,6 +121,7 @@ pub enum TlsConfigError {
     UnsupportedDynamicConfig,
     EarlyDataNotEnabled,
     EarlyDataContextRequired,
+    EarlyDataWithoutResumption,
     NoInitialCipherSuite(NoInitialCipherSuite),
     InvalidConfiguration(BoxError),
 }
@@ -124,6 +148,9 @@ impl fmt::Display for TlsConfigError {
             }
             Self::EarlyDataContextRequired => {
                 f.write_str("server early data requires an application compatibility context")
+            }
+            Self::EarlyDataWithoutResumption => {
+                f.write_str("server early data requires session resumption")
             }
             Self::NoInitialCipherSuite(error) => error.fmt(f),
             Self::InvalidConfiguration(error) => {

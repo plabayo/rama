@@ -302,6 +302,16 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
+        /// Offer Encrypted ClientHello (ECH). Without an ECH configuration
+        /// published by the target, the offer is ECH GREASE. Backends without
+        /// ECH support (rustls) ignore it.
+        pub fn encrypted_client_hello(mut self, enabled: bool) -> Self {
+            self.0.insert(TlsEncryptedClientHello(enabled));
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Layer request-specific TLS extensions over this configuration.
         /// Parent scopes are preserved and subsequent setters remain local to the result.
         pub fn overrides(mut self, overrides: &Extensions) -> Self {
@@ -822,6 +832,11 @@ pub struct TlsStoreServerCertChain(pub bool);
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsStoreServerHello(pub bool);
+
+/// Whether to offer Encrypted ClientHello (ECH).
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsEncryptedClientHello(pub bool);
 
 #[derive(Debug, Clone)]
 /// The kind of client auth to be used.

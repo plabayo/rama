@@ -90,7 +90,7 @@ for ((attempt = 0; attempt < 60; attempt++)); do
     fi
 
     if curl --silent --output /dev/null --max-time 1 \
-        http://127.0.0.1:62050/test; then
+        http://127.0.0.1:12050/test; then
         server_ready=true
         break
     fi
@@ -107,13 +107,13 @@ test_version="${DATASTAR_SDK_TEST_VERSION:-latest}"
 
 if [ "$RUNNER" = native ]; then
     go run "$test_package@$test_version" \
-        -server http://127.0.0.1:62050
+        -server http://127.0.0.1:12050
 elif [ "$(uname -s)" = Linux ]; then
     docker run --rm --network host "${DATASTAR_GO_IMAGE:-golang:1.25}" \
         go run "$test_package@$test_version" \
-        -server http://127.0.0.1:62050
+        -server http://127.0.0.1:12050
 else
     docker run --rm "${DATASTAR_GO_IMAGE:-golang:1.25}" \
         go run "$test_package@$test_version" \
-        -server http://host.docker.internal:62050
+        -server http://host.docker.internal:12050
 fi

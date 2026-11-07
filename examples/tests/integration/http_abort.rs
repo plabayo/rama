@@ -12,7 +12,7 @@ async fn test_http_abort() {
     assert_eq!(
         StatusCode::OK,
         runner
-            .get("http://127.0.0.1:62047")
+            .get("http://127.0.0.1:12047")
             .send()
             .await
             .unwrap()
@@ -20,7 +20,7 @@ async fn test_http_abort() {
     );
 
     runner
-        .get("http://127.0.0.1:62047/abort")
+        .get("http://127.0.0.1:12047/abort")
         .extension(DoNotRetry::default())
         .send()
         .await

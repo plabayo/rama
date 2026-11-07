@@ -8,6 +8,12 @@ flow with the profile's exact User-Agent and the request-owned inputs the browse
 cookies, connection options, origin and referer, and TLS trust anchor IDs.
 
 Echo must report the planned User-Agent: it judges against the profile it received.
+Selection needs every component the connection may negotiate: the browser ALPN offer of an
+HTTP/1.1 flow requires HTTP/1.1, HTTP/2 and TLS, `--http2` requires HTTP/2 and TLS, and
+HTTP/3 requires QUIC and its TLS. A profile
+captured only against an HTTP/1.1 origin, or one whose TLS captures on a transport were
+all resumed handshakes (analysis drops those), cannot be selected for such a flow;
+selection would fall back to another profile, so those flows are skipped.
 A profile whose recorded QUIC ClientHellos all carry pre_shared_key holds only resumed
 handshakes. A fresh `rama send` has no ticket for the origin, so its first QUIC
 ClientHello is a full handshake; for such profiles HTTP/3 checks JA4H and reports TLS
@@ -43,6 +49,9 @@ EMULATED_SITE = {"navigate": "none", "form": "same-origin", "fetch": "same-origi
                  "xhr": "same-origin"}
 # `CanonicalDomain::LegacyField`: imported one-row-per-browser fields.
 LEGACY_FIELD_DOMAIN = 23
+# Analyzed components `rama send --emulate` requires for a flow of each HTTP version.
+REQUIRED_COMPONENTS = {"HTTP/1.1": ("h1", "h2", "tls_tcp"), "HTTP/2.0": ("h2", "tls_tcp"),
+                       "HTTP/3.0": ("h3", "tls_quic", "quic")}
 # Supplied by the destination or transport rather than by request headers.
 TRANSPORT_FIELDS = {"host", ":authority", ":path", ":scheme", ":method", "content-length"}
 
@@ -113,12 +122,15 @@ def profile_plans(rama):
                     key = (flow["version"], flow["initiator"])
                     if fetch is not None or key not in requests:
                         requests[key] = owned
-        flows = {}
+        flows, unselectable = {}, []
         for version in sorted(VERSIONS):
             initiator = next((i for i in GET_INITIATORS if (version, i) in requests), None)
             if initiator is None:
                 continue
             kind = "QuicTls" if version == "HTTP/3.0" else "TcpTls"
+            if not all(profile["components"].get(name) for name in REQUIRED_COMPONENTS[version]):
+                unselectable.append(version)
+                continue
             flows[version] = {
                 "initiator": initiator,
                 "request_fields": requests[(version, initiator)],
@@ -128,10 +140,10 @@ def profile_plans(rama):
             }
         # Imported legacy rows keep their fields outside joint captures; selection only
         # draws joint captures, so such a profile cannot be emulated as itself.
-        legacy = not flows and any(scope["domain"] == LEGACY_FIELD_DOMAIN
-                                   for scope in profile["scopes"])
+        legacy = not flows and not unselectable and any(
+            scope["domain"] == LEGACY_FIELD_DOMAIN for scope in profile["scopes"])
         plans.append({"user_agent": profile["key"]["user_agent"], "key": profile["key"],
-                      "flows": flows, "legacy_only": legacy})
+                      "flows": flows, "legacy_only": legacy, "unselectable": unselectable})
     return plans
 
 
@@ -229,8 +241,13 @@ def main(argv=None):
     passed = failed = skipped = 0
     for index, report in enumerate(reports):
         if not report["results"]:
-            reason = ("legacy-only capture: not selectable for emulation"
-                      if report["legacy_only"] else "no GET request flow")
+            if report["legacy_only"]:
+                reason = "legacy-only capture: not selectable for emulation"
+            elif report["unselectable"]:
+                reason = "lacks components its GET flows need: " + ", ".join(
+                    report["unselectable"])
+            else:
+                reason = "no GET request flow"
             report["status"] = "skipped"
             report["reason"] = reason
             skipped += 1
@@ -244,6 +261,8 @@ def main(argv=None):
             f"{version[5:]}:{'ok' if result['passed'] else 'FAIL'}"
             f"(ja4={result.get('tls')},ja4h={(result.get('ja4h') or [None])[0]})"
             for version, result in report["results"].items())
+        if report["unselectable"]:
+            summary += " not-selectable:" + ",".join(v[5:] for v in report["unselectable"])
         print("PASSED" if ok else "FAILED", f"{index:03d}", summary, report["user_agent"],
               flush=True)
     (args.output / "summary.json").write_text(json.dumps(reports, indent=2) + "\n")

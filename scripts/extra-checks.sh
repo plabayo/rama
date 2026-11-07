@@ -25,16 +25,14 @@ for example in $(cd $SCRIPT_DIR/.. && find examples/src -maxdepth 2 -type f -nam
     fi
 done
 
-# Make sure every example reserves its own unique port. By convention each
-# example binds to a port in the 6xxxx range (referenced both in its doc
-# comment and its bind call); two examples sharing one would collide when run
-# together (CI, docs tests, local experimentation).
+# Each example reserves a unique port in 12000-14999, below the default dynamic port ranges.
+# 14000 is Pebble's ACME directory, an external service the ACME examples share.
 echo "Checking example port uniqueness..."
 port_clash=0
 ports_file=$(mktemp)
 trap 'rm -f "$ports_file"' EXIT
 for example in $(cd $SCRIPT_DIR/.. && find examples/src -mindepth 1 -maxdepth 1 \( -type d -o -name '*.rs' \) -not -name 'mod.rs'); do
-    for port in $(cd $SCRIPT_DIR/.. && grep -rhoE '6[0-9]{4}' "$example" | sort -u); do
+    for port in $(cd $SCRIPT_DIR/.. && grep -rhoE '\b1[2-4][0-9]{3}\b' "$example" | grep -vx 14000 | sort -u); do
         printf '%s %s\n' "$port" "$example" >> "$ports_file"
     done
 done

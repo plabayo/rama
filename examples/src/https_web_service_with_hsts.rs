@@ -9,12 +9,12 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62043` (http) and `:62044` (https).
+//! The server will start and listen on `:12043` (http) and `:12044` (https).
 //! You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -k -v -L http://127.0.0.1:62043
-//! curl -k -v https://127.0.0.1:62044
+//! curl -k -v -L http://127.0.0.1:12043
+//! curl -k -v https://127.0.0.1:12044
 //! ```
 //!
 //! The Http server should redirect to the https server,
@@ -88,16 +88,16 @@ async fn main() {
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard);
         let tcp_service = TcpListener::build(exec.clone())
-            .bind_address("127.0.0.1:62043")
+            .bind_address("127.0.0.1:12043")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62043");
+            .expect("bind tcp proxy to 127.0.0.1:12043");
 
         let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
                 AddRequiredResponseHeadersLayer::default(),
             )
-                .into_layer(RedirectHttpToHttps::new().with_overwrite_port(62044)),
+                .into_layer(RedirectHttpToHttps::new().with_overwrite_port(12044)),
         );
 
         tcp_service.serve(http_service).await;
@@ -107,9 +107,9 @@ async fn main() {
     shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard);
         let tcp_service = TcpListener::build(exec.clone())
-            .bind_address("127.0.0.1:62044")
+            .bind_address("127.0.0.1:12044")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62044");
+            .expect("bind tcp proxy to 127.0.0.1:12044");
 
         let http_service = HttpServer::auto(exec).service(Arc::new(
             (

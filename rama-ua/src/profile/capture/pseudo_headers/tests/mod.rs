@@ -1,6 +1,7 @@
 use super::*;
 use crate::profile::{
     capture::{
+        CAPTURE_REVISION,
         headers::HeaderCapturePolicy,
         joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
         observation::ProfileCapture,
@@ -322,6 +323,7 @@ fn pseudo_decode_checks_digest_tags_trailing_data_and_structural_canonicality() 
 fn pseudo_joint_ownership_and_flow_version_are_enforced() {
     let limits = JointCaptureLimits::default();
     let mut profile = ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: ProfileKey::new("test"),
         flow: Some(FlowKey::Http {
             version: Version::HTTP_3,
@@ -385,6 +387,7 @@ fn pseudo_method_bindings_reject_connect_and_static_value_mismatches() {
             )
             .unwrap();
             let mut profile = ProfileCapture {
+                revision: CAPTURE_REVISION,
                 profile: ProfileKey::new("test"),
                 flow: Some(FlowKey::Http {
                     version: Version::HTTP_3,

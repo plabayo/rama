@@ -20,13 +20,13 @@ async fn test_proxy_connectivity_check() {
     utils::init_tracing();
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("proxy_connectivity_check"));
-    runner.wait_for_tcp(([0, 0, 0, 0], 62030)).await;
+    runner.wait_for_tcp(([0, 0, 0, 0], 12030)).await;
 
     // test regular proxy flow
     let result = runner
         .get("http://example.com")
         .extension(ProxyRoute::Proxy(
-            ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62030").unwrap(),
+            ProxyAddress::try_from("http://tom:clancy@127.0.0.1:12030").unwrap(),
         ))
         .send()
         .await
@@ -41,7 +41,7 @@ async fn test_proxy_connectivity_check() {
 }
 
 async fn test_http_client_over_socks5_proxy_connect(runner: ExampleRunner) {
-    let proxy_socket_addr = SocketAddress::local_ipv4(62030);
+    let proxy_socket_addr = SocketAddress::local_ipv4(12030);
 
     tracing::info!(
         network.local.address = %proxy_socket_addr.ip_addr,

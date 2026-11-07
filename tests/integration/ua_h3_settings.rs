@@ -14,6 +14,7 @@ use rama_tls::{
 };
 use rama_ua::profile::{
     capture::{
+        CAPTURE_REVISION,
         completeness::ProfileCaptureCompleteness,
         joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
         order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
@@ -117,6 +118,7 @@ fn selection(key: u8) -> ConnectionSelection {
                 flow: None,
                 connection: ConnectionContext::default(),
                 structure: ValueId([3; 32]),
+                revision: CAPTURE_REVISION,
             },
         },
     }

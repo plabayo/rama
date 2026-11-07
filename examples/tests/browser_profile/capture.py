@@ -30,7 +30,7 @@ from tcp_evidence import account_tcp, write_tcp_evidence
 from capture_fields import compare_capture_fields
 from fixture_process import running, wait_ready
 from fixture_tls import fixture_certificate, prepare_nss_trust
-from replay import check_missing_tls_bindings, connection_variants, current_trust_ids, replay_environment, run_replay, verify_tls_replay
+from replay import check_missing_tls_bindings, connection_variants, replay_environment, run_replay, verify_tls_replay
 from tls_wire import PRE_SHARED_KEY_EXTENSION, client_hellos
 
 HERE = Path(__file__).resolve().parent
@@ -151,13 +151,15 @@ def capture_tls(args):
             from safari import fixture_environment
             discovery = list(server_command)
             discovery[discovery.index("--http-version") + 1] = "h3"
-            discovery += ["--h3-bootstrap-bind", f"127.0.0.1:{port}"]
+            # Safari may still reach discovery over QUIC: give it no ticket to resume later.
+            discovery += [
+                "--h3-bootstrap-bind", f"127.0.0.1:{port}", "--h3-no-session-resumption",
+            ]
             # No discovery requests or key material enter the measured database/capture.
             with running(discovery, root / "discovery.log",
                          fixture_environment(os.environ, key, server_certificate)) as warmup:
                 wait_ready(warmup, root / "discovery.log", lambda text: "service ready" in text)
-                # The retry marker suppresses the timed reload. Learn Alt-Svc on
-                # TCP without opening an unmeasured QUIC session or obtaining tickets.
+                # The retry marker suppresses the timed reload while Safari learns Alt-Svc.
                 browser.get(f"https://localhost:{port}/?h3-bootstrap=1")
                 require(browser.title == "ラマ | HTTP/3", "missing Safari discovery response")
                 browser.delete_all_cookies()
@@ -609,14 +611,12 @@ def capture_http1(args):
                 True,
                 keylog=reference_keylog(args) if secure else None,
             )
-            trust_ids = None
-            origin = f"http://127.0.0.1:{replay_port}"
-            if secure:
-                trust_ids = current_trust_ids(
-                    client_hellos((root / "headers.pdml").read_bytes(), "Tcp")
-                )
-                origin = f"https://localhost:{replay_port}"
-            target = flows.ReplayTarget("h1", origin, certificate, trust_ids)
+            origin = (
+                f"https://localhost:{replay_port}"
+                if secure
+                else f"http://127.0.0.1:{replay_port}"
+            )
+            target = flows.ReplayTarget("h1", origin, certificate)
             if secure:
                 probe = flows.replay_args(
                     rama,

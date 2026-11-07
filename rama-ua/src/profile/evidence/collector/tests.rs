@@ -2,6 +2,7 @@ use super::*;
 use crate::profile::{
     analysis::profile::analyze_profile_evidence,
     capture::{
+        CAPTURE_REVISION,
         completeness::ProfileCaptureCompleteness,
         joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
         order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
@@ -13,6 +14,7 @@ use crate::profile::{
 fn capture(value: u8) -> ProfileCapture {
     let limits = OrderCaptureLimits::default();
     ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: ProfileKey::new("offline-library"),
         flow: None,
         connection: ConnectionContext::default(),
@@ -98,7 +100,8 @@ fn offline_evidence_rejects_identity_scope_byte_and_time_errors_atomically() {
     wrong.profile.client = "different-library".into();
     collector.observe(100, &wrong).unwrap_err();
     assert_eq!(state(&collector), before);
-    for day in [0, 86, 101, u32::MAX] {
+    let expired = 100 - limits.window.retention.days;
+    for day in [0, expired, 101, u32::MAX] {
         collector.observe(day, &capture(1)).unwrap_err();
         assert_eq!(state(&collector), before);
     }

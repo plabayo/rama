@@ -2,6 +2,7 @@ use super::*;
 use crate::profile::{
     analysis::order::AnalyzedOrderWeight,
     capture::{
+        CAPTURE_REVISION,
         headers::{HeaderCapturePolicy, HeaderValueSource},
         http2::{H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting},
     },
@@ -33,11 +34,16 @@ fn evidence() -> ProfileEvidence {
 
 /// One connection capture per slot list, each observed 40 times.
 fn evidence_of(connections: Vec<Vec<CapturedSlot>>) -> ProfileEvidence {
+    evidence_of_revision(connections, CAPTURE_REVISION)
+}
+
+fn evidence_of_revision(connections: Vec<Vec<CapturedSlot>>, revision: u16) -> ProfileEvidence {
     let key = ProfileKey::new("synthetic-library");
     let mut profile = None;
     let mut buckets = BTreeMap::new();
     for slots in connections {
         let captured = ProfileCapture {
+            revision,
             profile: key.clone(),
             flow: None,
             connection: ConnectionContext::default(),
@@ -130,6 +136,149 @@ fn tls_slot(transport: TlsCaptureTransport, resumed: bool) -> CapturedSlot {
         .canonical(TlsCaptureLimits::default())
         .unwrap(),
     }
+}
+
+#[test]
+fn evidence_of_every_capture_revision_analyzes_under_its_own_revision() {
+    for revision in [0, CAPTURE_REVISION] {
+        let evidence = evidence_of_revision(
+            vec![vec![CapturedSlot {
+                kind: CapturedSlotKind::Http3Settings,
+                value: setting(1024),
+            }]],
+            revision,
+        );
+        let analyzed = analyze_profile_evidence(
+            &evidence,
+            false,
+            [3; 32],
+            100,
+            14,
+            ProfileAnalysisLimits::default(),
+        )
+        .unwrap();
+        assert!(!analyzed.scopes.is_empty());
+        assert!(
+            analyzed
+                .scopes
+                .iter()
+                .all(|scope| scope.context.revision == revision)
+        );
+    }
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn connections_differing_only_in_grease_values_read_as_one_variant() {
+    let slot = |grease: u16| {
+        let mut slot = tls_slot(TlsCaptureTransport::Tcp, false);
+        let mut capture =
+            TlsCapture::from_canonical(&slot.value, TlsCaptureLimits::default()).unwrap();
+        capture.ciphers = vec![grease, 0x1301].into();
+        slot.value = capture.canonical(TlsCaptureLimits::default()).unwrap();
+        slot
+    };
+    let key = ProfileKey::new("synthetic-library");
+    let prepared: Vec<_> = [0x3a3a, 0xbaba]
+        .map(|grease| {
+            ProfileCapture {
+                revision: CAPTURE_REVISION,
+                profile: key.clone(),
+                flow: None,
+                connection: ConnectionContext::default(),
+                joint: JointCapture {
+                    completeness: ProfileCaptureCompleteness::Complete,
+                    level: CaptureLevel::Connection,
+                    slots: vec![slot(grease)].into(),
+                },
+            }
+            .prepare(false, JointCaptureLimits::default())
+            .unwrap()
+        })
+        .into();
+    // Both connections share each scope; only their stored values differ.
+    let scopes = prepared[0]
+        .buckets
+        .iter()
+        .zip(prepared[1].buckets.iter())
+        .map(|(first, second)| {
+            assert_eq!(first.scope.id, second.scope.id);
+            assert_ne!(first.value.id, second.value.id);
+            let mut window = RetainedBucketWindow::new(
+                first.value.validated_domain(kib(64)).unwrap(),
+                first.scope.id,
+                [3; 32],
+                ProfileWindowLimits::default(),
+            )
+            .unwrap();
+            for sequence in 1..=40 {
+                let value = if sequence % 2 == 0 {
+                    &first.value
+                } else {
+                    &second.value
+                };
+                window
+                    .observe(
+                        100,
+                        100,
+                        ObservationId {
+                            run: [1; 16],
+                            sequence,
+                        },
+                        value,
+                    )
+                    .unwrap();
+            }
+            ProfileScopeEvidence {
+                scope: first.scope.clone(),
+                flow: None,
+                structure: first.structure.clone(),
+                window: window.snapshot(),
+            }
+        })
+        .collect();
+    let evidence = ProfileEvidence {
+        format_version: 1,
+        profile: prepared[0].profile.clone(),
+        scopes,
+    };
+    let analyzed = analyze_profile_evidence(
+        &evidence,
+        false,
+        [3; 32],
+        100,
+        14,
+        ProfileAnalysisLimits::default(),
+    )
+    .unwrap();
+    for scope in analyzed.scopes.iter() {
+        assert_eq!(scope.observations.variants.len(), 1);
+        assert_eq!(scope.observations.counts.total, 40);
+    }
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn read_normalization_honours_a_raised_tls_element_limit() {
+    let limits = TlsCaptureLimits {
+        elements: 1024,
+        ..TlsCaptureLimits::default()
+    };
+    let mut slot = tls_slot(TlsCaptureTransport::Tcp, false);
+    let mut capture = TlsCapture::from_canonical(&slot.value, limits).unwrap();
+    capture.ciphers = (0x0100..0x0100 + 300).collect();
+    slot.value = capture.canonical(limits).unwrap();
+    let mut analysis_limits = ProfileAnalysisLimits::default();
+    analysis_limits.order.maximum_elements = 1024;
+    analyze_profile_evidence(
+        &evidence_of(vec![vec![slot]]),
+        false,
+        [3; 32],
+        100,
+        14,
+        analysis_limits,
+    )
+    .unwrap();
 }
 
 #[cfg(feature = "tls")]
@@ -425,6 +574,7 @@ fn multi_day_literals_retain_counts_beyond_one_day_capacity() {
             .canonical(&policy)
             .unwrap();
         let prepared = ProfileCapture {
+            revision: CAPTURE_REVISION,
             profile: ProfileKey::new("multi-day"),
             flow: Some(FlowKey::Http {
                 version: Version::HTTP_11,
@@ -548,6 +698,7 @@ fn h2_history_evidence(historical: bool, structural_setting: u32) -> ProfileEvid
     .canonical(H2CaptureLimits::default())
     .unwrap();
     let prepared = ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: ProfileKey::new("historical-h2-client"),
         flow: None,
         connection: ConnectionContext::default(),
@@ -728,6 +879,7 @@ fn polluted_header_evidence(shapes: &[(&str, u32)]) -> ProfileEvidence {
             captured.fields[2].value = HeaderValueSource::Profile(marker.as_bytes().into());
             let leaf = captured.legacy_structural(&policy).unwrap();
             let prepared = ProfileCapture {
+                revision: CAPTURE_REVISION,
                 profile: profile.clone(),
                 flow: Some(flow.clone()),
                 connection: ConnectionContext::default(),
@@ -922,3 +1074,6 @@ fn scope_bound_keeps_the_first_listed_scopes_and_reports_the_rest() {
         assert_ne!(id, scope.scope.id);
     }
 }
+
+#[cfg(feature = "embed-profiles")]
+mod bootstrap;

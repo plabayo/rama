@@ -15,8 +15,12 @@ async fn incoming_early_handle_publishes_alpn_before_driver_runs() {
         let outgoing = endpoint
             .connect(endpoint.local_addr().unwrap(), "localhost")
             .unwrap();
-        let incoming = endpoint.accept().await.unwrap().accept().unwrap();
+        let mut incoming = endpoint.accept().await.unwrap();
+        // A post-quantum key share spreads the ClientHello over two Initials.
+        incoming.client_hello().await.unwrap();
         let (connection, established) = incoming
+            .accept()
+            .unwrap()
             .into_0rtt()
             .expect("server connections permit early handles");
 
@@ -81,8 +85,13 @@ async fn early_metadata_defers_client_identity_until_authenticated() {
             let outgoing = endpoint
                 .connect(endpoint.local_addr().unwrap(), "localhost")
                 .unwrap();
-            let incoming = endpoint.accept().await.unwrap().accept().unwrap();
-            let (server, established) = incoming.into_0rtt().expect("server early handle");
+            let mut incoming = endpoint.accept().await.unwrap();
+            incoming.client_hello().await.unwrap();
+            let (server, established) = incoming
+                .accept()
+                .unwrap()
+                .into_0rtt()
+                .expect("server early handle");
             let provisional = server
                 .extensions()
                 .get_arc::<NegotiatedTlsParameters>()

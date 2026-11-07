@@ -12,11 +12,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62030`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12030`. You can use `curl` to interact with the service:
 //!
 //! ```
-//! curl -v -x http://127.0.0.1:62030 --proxy-user 'tom:clancy' http://example.com/
-//! curl -v -x socks5://127.0.0.1:62030 --proxy-user 'john:secret' http://example.com/
+//! curl -v -x http://127.0.0.1:12030 --proxy-user 'tom:clancy' http://example.com/
+//! curl -v -x socks5://127.0.0.1:12030 --proxy-user 'john:secret' http://example.com/
 //! ```
 //!
 //! You should see in all the above examples the hijacked page by rama
@@ -147,7 +147,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let tcp_service = TcpListener::bind_address(SocketAddress::default_ipv4(62030), exec.clone())
+    let tcp_service = TcpListener::bind_address(SocketAddress::default_ipv4(12030), exec.clone())
         .await
         .expect("bind tcp interface for connectivity example");
 

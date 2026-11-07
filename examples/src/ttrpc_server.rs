@@ -15,7 +15,7 @@
 //! cargo run -p rama-examples --bin ttrpc_server --features=ttrpc,tcp
 //! ```
 //!
-//! The server listens on `127.0.0.1:62070`.
+//! The server listens on `127.0.0.1:12070`.
 //!
 //! # Call it from the shell
 //!
@@ -27,7 +27,7 @@
 //!
 //! ```sh
 //! printf '\x00\x00\x00\x3a\x00\x00\x00\x01\x01\x00\x0a\x20rama.examples.greeter.v1.Greeter\x12\x08SayHello\x1a\x0c\x0a\x0ahelloworld' \
-//!   | { cat; sleep 1; } | nc 127.0.0.1 62070 | xxd
+//!   | { cat; sleep 1; } | nc 127.0.0.1 12070 | xxd
 //! ```
 //!
 //! The reply is a `HelloReply` frame ending in the ASCII text `Hello helloworld!`.
@@ -71,7 +71,7 @@ mod greeter {
 
 use greeter::{HelloReply, HelloRequest};
 
-const ADDR: SocketAddress = SocketAddress::local_ipv4(62070);
+const ADDR: SocketAddress = SocketAddress::local_ipv4(12070);
 
 #[tokio::main]
 async fn main() {

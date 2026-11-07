@@ -165,6 +165,7 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
     let encoding = native.get_ref::<EncoderPreferences>().unwrap();
     assert_eq!(encoding.target_capacity, None);
     assert_eq!(encoding.defer_dynamic_first_section, Some(true));
+    assert_eq!(encoding.capacity_before_first_section, None);
     let extensions = Extensions::new();
     h3_startup::prepare(
         &extensions,
@@ -188,6 +189,8 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
     let encoding = extensions.get_ref::<EncoderPreferences>().unwrap();
     assert_eq!(encoding.target_capacity, Some(4096));
     assert_eq!(encoding.defer_dynamic_first_section, Some(true));
+    // Required insertions already make the first request wait for SETTINGS.
+    assert_eq!(encoding.capacity_before_first_section, None);
     assert_eq!(
         extensions
             .get_ref::<ClientControlPreferences>()
@@ -308,6 +311,46 @@ fn dynamic_startup_preserves_encoder_allocation_and_capacity() {
 }
 
 #[test]
+fn capacity_only_prefix_announces_its_capacity_before_the_first_section() {
+    let mut sequence = priority_prefix(0, 4);
+    let mut events = sequence.events.into_vec();
+    events.push(H3CapturedEvent::Stream {
+        stream_id: 6,
+        stream_type: 2,
+    });
+    sequence.events = events.into();
+    sequence.encoder_instructions =
+        vec![ObservedEncoderInstruction::Capacity { capacity: 4096 }].into();
+    let extensions = Extensions::new();
+    h3_startup::prepare(
+        &extensions,
+        Some(&sequence),
+        None,
+        false,
+        &mut ProfilePreservationReport::default(),
+    )
+    .unwrap()
+    .unwrap()
+    .apply(&extensions);
+    let encoding = extensions.get_ref::<EncoderPreferences>().unwrap();
+    assert_eq!(encoding.target_capacity, Some(4096));
+    assert_eq!(encoding.defer_dynamic_first_section, Some(false));
+    assert_eq!(encoding.capacity_before_first_section, Some(true));
+
+    for (caller, expected) in [
+        (Some(true), &[][..]),
+        (Some(false), &[LoweredProfileItem::CallerQpackEncoding][..]),
+    ] {
+        let extensions = Extensions::new();
+        extensions.insert(EncoderPreferences {
+            capacity_before_first_section: caller,
+            ..EncoderPreferences::default()
+        });
+        assert_eq!(lowered(&extensions, &sequence, None, false), expected);
+    }
+}
+
+#[test]
 fn empty_instruction_startup_uses_observed_types_without_initial_bindings() {
     for (order, streams) in [
         (Order::EncoderFirst, vec![(6, 2), (10, 3)]),
@@ -343,13 +386,9 @@ fn empty_instruction_startup_uses_observed_types_without_initial_bindings() {
                 ordered_startup: true
             })
         );
-        assert!(
-            extensions
-                .get_ref::<EncoderPreferences>()
-                .unwrap()
-                .defer_dynamic_first_section
-                .unwrap()
-        );
+        let encoding = extensions.get_ref::<EncoderPreferences>().unwrap();
+        assert!(encoding.defer_dynamic_first_section.unwrap());
+        assert_eq!(encoding.capacity_before_first_section, None);
         let mut invalid = sequence;
         invalid.events.swap(3, 4);
         assert_eq!(

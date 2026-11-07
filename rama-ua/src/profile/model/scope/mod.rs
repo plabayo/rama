@@ -19,6 +19,9 @@ pub struct ProfileObservationScope {
     pub flow: Option<ValueId>,
     pub connection: ConnectionContext,
     pub structure: ValueId,
+    /// Capture revision of the observations; revision 0 adds no bytes, so its
+    /// identities predate revisions.
+    pub revision: u16,
 }
 
 impl ProfileObservationScope {
@@ -35,6 +38,9 @@ impl ProfileObservationScope {
         }
         self.connection.encode(&mut writer)?;
         writer.bytes(&self.structure.0)?;
+        if self.revision != 0 {
+            writer.u16(self.revision)?;
+        }
         Ok(writer.finish())
     }
 
@@ -57,6 +63,14 @@ impl ProfileObservationScope {
         };
         let connection = ConnectionContext::decode(&mut reader)?;
         let structure = read_id(&mut reader)?;
+        let revision = if reader.is_finished() {
+            0
+        } else {
+            match reader.u16()? {
+                0 => return Err(ProfileDataError::Invalid("explicit scope revision 0")),
+                revision => revision,
+            }
+        };
         reader.finish()?;
         Ok(Self {
             authorized,
@@ -64,6 +78,7 @@ impl ProfileObservationScope {
             flow,
             connection,
             structure,
+            revision,
         })
     }
 }

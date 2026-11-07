@@ -8,6 +8,7 @@ from native_h3_response import native_view, response_data
 from operations import DISCOVERIES
 from page_info import request_info, response_object
 from pdml import identity, one, pdml_packets, values
+from quic_stream_wire import quic_exclusions
 from urllib.parse import urlsplit
 from wire import parse_h1_pdml
 
@@ -152,12 +153,21 @@ def admit(data, frames, page, origin, *, operations=None, independent_connection
     captured = captured_connections(data, destination.port)
     both = request_connections & independent_connections
     if both or captured != known:
-        # Name the connections: a CI failure keeps no pcap to inspect.
+        # Name the connections and why QUIC ones were not requestless: a CI failure keeps no pcap.
+        _, excluded = quic_exclusions(data, destination.port)
+        reasons = {
+            connection: "unattributable client packet"
+            if excluded is None
+            else sorted(excluded.get(connection, ()))
+            for transport, connection in captured - known
+            if transport == "udp"
+        }
         raise ValueError(
             "unattributed requestless or undecoded source connection: "
             f"unexplained={sorted(map(str, captured - known))} "
             f"unseen={sorted(map(str, known - captured))} "
-            f"both={sorted(map(str, both))}"
+            f"both={sorted(map(str, both))} "
+            f"quic={dict(sorted(reasons.items()))}"
         )
     peers = packet_peers(data, destination.port)
     html_pages = {

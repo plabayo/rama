@@ -18,7 +18,7 @@
 //! ```sh
 //! cargo run -p rama-examples --bin http_version_proxy --features http-full,boring -- ingress --cert cert.pem --key key.pem --upstream http://127.0.0.1:8080
 //! cargo run -p rama-examples --bin http_version_proxy --features http-full,boring -- mitm --upstream-ca cert.pem
-//! curl -k --proxy http://127.0.0.1:62065 --proxy-user john-h3:secret https://localhost:62064/
+//! curl -k --proxy http://127.0.0.1:12065 --proxy-user john-h3:secret https://localhost:12064/
 //! ```
 //! The demo MITM uses an ephemeral CA; `-k` is for this local example only.
 //! Both listeners bind loopback by default. Bodies remain streaming; only
@@ -108,7 +108,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Mode {
     Ingress {
-        #[arg(long, default_value = "127.0.0.1:62064")]
+        #[arg(long, default_value = "127.0.0.1:12064")]
         listen: SocketAddress,
         #[arg(long)]
         cert: PathBuf,
@@ -118,7 +118,7 @@ enum Mode {
         upstream: Uri,
     },
     Mitm {
-        #[arg(long, default_value = "127.0.0.1:62065")]
+        #[arg(long, default_value = "127.0.0.1:12065")]
         listen: SocketAddress,
         #[arg(long)]
         upstream_ca: Option<PathBuf>,

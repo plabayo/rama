@@ -559,8 +559,14 @@ where
                 ":protocol requires CONNECT",
             ));
         }
-        if !self.sends_early(&request) {
+        let early = self.sends_early(&request);
+        if !early {
             self.ready().await?;
+        }
+        if !early && self.shared.config.encoder.capacity_before_first_section {
+            // Encoding before SETTINGS cannot announce the capacity ahead of this section.
+            self.shared.peer_settings().await?;
+            self.shared.encoder_ready().await?;
         }
         if extended {
             // RFC 8441 §3: :protocol requires the server's SETTINGS_ENABLE_CONNECT_PROTOCOL.

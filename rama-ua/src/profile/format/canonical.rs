@@ -504,8 +504,12 @@ impl<'a> CanonicalReader<'a> {
         self.raw(length)
     }
 
+    pub(in crate::profile) fn is_finished(&self) -> bool {
+        self.position == self.bytes.len()
+    }
+
     pub(in crate::profile) fn finish(self) -> Result<(), ProfileDataError> {
-        if self.position != self.bytes.len() {
+        if !self.is_finished() {
             return Err(ProfileDataError::Invalid("trailing canonical bytes"));
         }
         Ok(())

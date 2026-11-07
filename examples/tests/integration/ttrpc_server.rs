@@ -32,7 +32,7 @@ async fn test_ttrpc_server() {
     let mut client = None;
     for i in 0..10u64 {
         match connector
-            .connect(ConnectRequest::new(HostWithPort::local_ipv4(62070)))
+            .connect(ConnectRequest::new(HostWithPort::local_ipv4(12070)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {

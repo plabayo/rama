@@ -17,7 +17,7 @@ async fn test_tcp_listener_fd_passing() {
     let runner = utils::ExampleRunner::interactive(utils::example!("tcp_listener_fd_passing"));
 
     let response = runner
-        .get("http://127.0.0.1:62046")
+        .get("http://127.0.0.1:12046")
         .send()
         .await
         .unwrap()

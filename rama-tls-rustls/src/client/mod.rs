@@ -1,4 +1,8 @@
 //! TLS client support for Rama.
+//!
+//! rustls ignores [`TlsEncryptedClientHello`]: it sends neither ECH nor ECH GREASE.
+//!
+//! [`TlsEncryptedClientHello`]: rama_tls::client::TlsEncryptedClientHello
 
 mod connector;
 #[doc(inline)]

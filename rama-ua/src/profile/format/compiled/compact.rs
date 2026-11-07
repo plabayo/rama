@@ -122,6 +122,14 @@ impl CompiledProfile {
 /// Compact the request and header captures of `profile` and prove each rebuilds exactly.
 pub(super) fn compile_profile(profile: &AnalyzedProfile) -> Result<CompiledProfile, BoxError> {
     let mut analysis = profile.clone();
+    // Selection reads only totals and losses, and replay reads samples only for HTTP/3 SETTINGS.
+    for scope in analysis.scopes.iter_mut() {
+        if scope.observations.domain != CanonicalDomain::Order {
+            scope.observations.sample_values = Box::default();
+        }
+        scope.observations.counts.values = Box::default();
+        scope.observations.counts.untracked_distinct = Default::default();
+    }
     let mut builder = FieldTableBuilder::default();
     let mut pending = Vec::new();
     for (scope_index, scope) in analysis.scopes.iter_mut().enumerate() {

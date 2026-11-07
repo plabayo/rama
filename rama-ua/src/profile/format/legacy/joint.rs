@@ -62,6 +62,7 @@ impl LegacyFieldCapture {
             collector.observe(
                 LEGACY_DAY,
                 &ProfileCapture {
+                    revision: 0,
                     profile: profile.clone(),
                     flow: None,
                     connection: ConnectionContext::default(),
@@ -160,6 +161,7 @@ fn joint_captures(
             });
         }
         let capture = ProfileCapture {
+            revision: 0,
             profile: profile.clone(),
             flow: Some(FlowKey::Http {
                 version,
@@ -219,6 +221,7 @@ fn joint_captures(
 
 fn connection_capture(profile: &ProfileKey, slots: Vec<CapturedSlot>) -> ProfileCapture {
     ProfileCapture {
+        revision: 0,
         profile: profile.clone(),
         flow: None,
         connection: ConnectionContext::default(),
