@@ -5,12 +5,13 @@
 
 use rama::{
     Layer, Service, ServiceInput,
+    cli::connection_scope,
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext},
     futures::TryStreamExt,
     graceful::WeakScope,
     layer::{
-        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        ConsumeErrLayer, LimitLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -28,7 +29,9 @@ use rama::{
 use clap::{Args, ValueEnum};
 use std::{fmt, time::Duration};
 
-use crate::utils::{rate::opt_per_sec, tls::try_new_server_config};
+use crate::utils::{
+    connection::ConnectionGraceArgs, rate::opt_per_sec, tls::try_new_server_config,
+};
 
 #[derive(Debug, Args)]
 /// rama discard (rfc863) service
@@ -48,10 +51,13 @@ pub struct CliCommandDiscard {
     mode: Mode,
 
     #[arg(short = 't', long, default_value_t = 300)]
-    /// the timeout in seconds for each TCP/TLS connection
+    /// the age in seconds at which each TCP/TLS connection starts draining, give or take a tenth
     ///
-    /// (0 = no timeout)
+    /// It is dropped `--timeout-grace` later. (0 = no limit)
     timeout: u64,
+
+    #[command(flatten)]
+    connection_grace: ConnectionGraceArgs,
 
     #[arg(long, default_value_t = 0)]
     /// rate limit the service in new connections per second (tcp/tls)
@@ -113,11 +119,11 @@ pub async fn run(scope: WeakScope, cfg: CliCommandDiscard) -> Result<(), BoxErro
                 } else {
                     Either::B(UnlimitedPolicy::new())
                 }),
-                if cfg.timeout > 0 {
-                    TimeoutLayer::new(Duration::from_secs(cfg.timeout))
-                } else {
-                    TimeoutLayer::never()
-                },
+                connection_scope(
+                    &scope,
+                    Duration::from_secs(cfg.timeout),
+                    cfg.connection_grace.grace(),
+                ),
                 opt_per_sec(Some(cfg.throttle))
                     .map(|rate| ThrottleLayer::read_only(ThrottleMode::per_conn(rate))),
                 maybe_tls_cfg.map(TlsAcceptorLayer::new),

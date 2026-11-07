@@ -5,6 +5,7 @@ use std::{path::PathBuf, time::Duration};
 use clap::Args;
 use rama::{
     Layer as _,
+    cli::connection_scope,
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     graceful::WeakScope,
@@ -16,7 +17,7 @@ use rama::{
         server::{IncomingRequest, OptionsResponse, OutgoingResponse, Server, ServerError},
     },
     layer::{
-        ConsumeErrLayer, LimitLayer, MapErrLayer, TimeoutLayer,
+        ConsumeErrLayer, LimitLayer, MapErrLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -29,7 +30,9 @@ use rama::{
     tls::boring::server::TlsAcceptorLayer,
 };
 
-use crate::utils::{rate::opt_per_sec, tls::try_new_server_config_with_auth_files};
+use crate::utils::{
+    connection::ConnectionGraceArgs, rate::opt_per_sec, tls::try_new_server_config_with_auth_files,
+};
 
 const SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-echo");
 
@@ -44,9 +47,13 @@ pub struct CliCommandIcap {
     #[arg(short = 'c', long, default_value_t = 0)]
     concurrent: usize,
 
-    /// timeout in seconds for each connection (0 = no timeout)
+    /// the age in seconds at which each connection starts draining, give or take a tenth;
+    /// it is dropped `--timeout-grace` later (0 = no limit)
     #[arg(short = 't', long, default_value_t = 300)]
     timeout: u64,
+
+    #[command(flatten)]
+    connection_grace: ConnectionGraceArgs,
 
     /// rate limit new connections per second (0 = no limit)
     #[arg(long, default_value_t = 0)]
@@ -123,11 +130,11 @@ pub async fn run(scope: WeakScope, cfg: CliCommandIcap) -> Result<(), BoxError> 
         } else {
             Either::B(UnlimitedPolicy::new())
         }),
-        if cfg.timeout > 0 {
-            TimeoutLayer::new(Duration::from_secs(cfg.timeout))
-        } else {
-            TimeoutLayer::never()
-        },
+        connection_scope(
+            &scope,
+            Duration::from_secs(cfg.timeout),
+            cfg.connection_grace.grace(),
+        ),
         opt_per_sec(Some(cfg.throttle))
             .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
         tls.map(TlsAcceptorLayer::new),

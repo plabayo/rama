@@ -43,8 +43,7 @@ use rama::{
         server::HttpServer,
         service::web::{IntoEndpointService, response::Html},
     },
-    layer::ArcLayer,
-    layer::{TimeoutLayer, TraceErrLayer},
+    layer::{ArcLayer, ScopeLayer, TraceErrLayer},
     net::stream::{
         SocketInfo,
         layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
@@ -140,7 +139,10 @@ async fn main() {
             .serve(
                 (
                     TraceErrLayer::new(),
-                    TimeoutLayer::new(Duration::from_secs(8)),
+                    // Cancel each connection after 6s so HTTP drains it, and abort it 2s later.
+                    ScopeLayer::new()
+                        .with_max_age(Duration::from_secs(6))
+                        .with_grace(Duration::from_secs(2)),
                     IncomingBytesTrackerLayer::new(),
                 )
                     .into_layer(tcp_http_service),

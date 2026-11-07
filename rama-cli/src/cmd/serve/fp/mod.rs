@@ -6,7 +6,7 @@ use clap::Args;
 use itertools::Itertools;
 use rama::{
     Service,
-    cli::ForwardKind,
+    cli::{ForwardKind, connection_scope},
     combinators::{Either, Either7},
     error::{BoxError, ErrorContext},
     extensions::{Extension, ExtensionsRef},
@@ -35,7 +35,7 @@ use rama::{
         ws::handshake::server::{ServerWebSocket, WebSocketAcceptor},
     },
     layer::{
-        ConsumeErrLayer, Layer, LimitLayer, ScopeLayer,
+        ConsumeErrLayer, Layer, LimitLayer,
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -70,6 +70,7 @@ pub(crate) use storage::{CountedProfileSource, compact_profile_archive, export_c
 use state::State;
 
 use crate::utils::{
+    connection::ConnectionGraceArgs,
     http::{HttpVersions, TcpHttpVersion},
     http3::{
         Http3Args, Http3BootstrapCleanupLayer, Http3Endpoints, HttpListeners, OBSERVATION_LIMITS,
@@ -103,10 +104,13 @@ pub struct CliCommandFingerprint {
     concurrent: usize,
 
     #[arg(short = 't', long, default_value_t = 60.)]
-    /// the timeout in seconds for each connection; it drains from three quarters on
+    /// the age in seconds at which each connection starts draining, give or take a tenth
     ///
-    /// (<= 0.0 = no timeout)
+    /// It is dropped `--timeout-grace` later. (<= 0.0 = no limit)
     timeout: f64,
+
+    #[command(flatten)]
+    connection_grace: ConnectionGraceArgs,
 
     #[arg(long, default_value_t = 0)]
     /// rate limit the service in requests per second
@@ -383,17 +387,11 @@ where
     Response: IntoResponse + Send + 'static,
 {
     let (maybe_ha_proxy_layer, collection_layer) = connection_layers;
-    // Drain at three quarters of the connection timeout; drop what is left at the timeout.
-    let connection_scope = ScopeLayer::new().with_parent(scope.clone());
-    let connection_timeout = if cfg.timeout > 0. {
-        let timeout = Duration::from_secs_f64(cfg.timeout);
-        let grace = timeout / 4;
-        connection_scope
-            .with_max_age(timeout.saturating_sub(grace))
-            .with_grace(grace)
-    } else {
-        connection_scope
-    };
+    let connection_timeout = connection_scope(
+        scope,
+        Duration::try_from_secs_f64(cfg.timeout).unwrap_or_default(),
+        cfg.connection_grace.grace(),
+    );
     let connection_limit = LimitLayer::new(if cfg.concurrent > 0 {
         Either::A(ConcurrentPolicy::max_with_backoff(
             cfg.concurrent,
@@ -630,6 +628,7 @@ mod tests {
                 bind: SocketAddress::local_ipv4(0),
                 concurrent: 0,
                 timeout: 2.,
+                connection_grace: ConnectionGraceArgs::default(),
                 rate: 0,
                 throttle: 0,
                 forward: None,

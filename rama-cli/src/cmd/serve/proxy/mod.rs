@@ -35,6 +35,7 @@ use mitm_policy::MitmPolicy;
 use portal::PortalService;
 use rama::{
     Layer, Service,
+    cli::connection_scope,
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext, error_chain},
     extensions::ExtensionsRef,
@@ -159,6 +160,7 @@ use tokio::{
 use upstream::UpstreamProxyConfig;
 
 use crate::utils::{
+    connection::ConnectionGraceArgs,
     http3::{Http3Endpoints, bind_http3_with_transport},
     rate::opt_per_sec,
 };
@@ -1198,11 +1200,14 @@ pub struct CliCommandProxy {
     #[arg(long, default_value_t = 0)]
     inspect_export_concurrency: usize,
 
-    /// Maximum lifetime in seconds for each proxy connection (0 = no timeout).
-    /// Disabled by default so long-lived WebSocket and inspector streams remain
-    /// persistent.
+    /// Age in seconds at which each proxy connection starts draining, give or take a
+    /// tenth; it is dropped `--timeout-grace` later (0 = no limit). Disabled by default so
+    /// long-lived WebSocket and inspector streams remain persistent.
     #[arg(long, short = 't', default_value_t = 0)]
     timeout: u64,
+
+    #[command(flatten)]
+    connection_grace: ConnectionGraceArgs,
 
     /// Timeout in seconds for establishing an egress connection (0 = no
     /// timeout).
@@ -1985,11 +1990,11 @@ async fn run_with_dashboard_token(
             } else {
                 Either::B(UnlimitedPolicy::new())
             }),
-            if cfg.timeout > 0 {
-                TimeoutLayer::new(Duration::from_secs(cfg.timeout))
-            } else {
-                TimeoutLayer::never()
-            },
+            connection_scope(
+                &scope,
+                Duration::from_secs(cfg.timeout),
+                cfg.connection_grace.grace(),
+            ),
             opt_per_sec(Some(cfg.throttle))
                 .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
             capture.clone().map(|capture| {

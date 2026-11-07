@@ -2275,6 +2275,71 @@ fn a_panic_while_holding_a_part_again_lets_go_of_the_parts_held() {
     });
 }
 
+// ---- a waiter whose wake was lost to a panic sees the phase on its next poll ----
+
+#[test]
+fn a_waiter_sees_an_abort_whose_signal_cleanup_panicked() {
+    let scope = Scope::new().with_signal(PanicOnDrop);
+    let mut aborted = scope.aborted();
+    let (flag, waker) = Flag::waker();
+    assert!(poll(&mut aborted, &waker).is_pending());
+    assert!(poll(&mut aborted, &waker).is_pending());
+    assert!(catch_unwind(AssertUnwindSafe(|| scope.abort(Cause::Owner))).is_err());
+    assert!(!flag.woken());
+    assert!(poll(&mut aborted, &waker).is_ready());
+}
+
+#[test]
+fn a_child_sees_an_ancestor_abort_whose_sibling_waker_panicked() {
+    let root = Scope::new();
+    let a = root.child();
+    let b = root.child();
+    let mut bad = a.aborted();
+    let mut aborted = b.aborted();
+    let (flag, waker) = Flag::waker();
+    assert!(poll(&mut bad, &Waker::from(Arc::new(PanicWake))).is_pending());
+    assert!(poll(&mut aborted, &waker).is_pending());
+    assert!(poll(&mut aborted, &waker).is_pending());
+    assert!(catch_unwind(AssertUnwindSafe(|| root.abort(Cause::Owner))).is_err());
+    assert!(!flag.woken());
+    assert!(poll(&mut aborted, &waker).is_ready());
+}
+
+#[test]
+fn a_child_sees_its_drain_whose_ancestor_waker_panicked() {
+    let root = Scope::new();
+    let child = root.child();
+    let mut bad = root.cancelled();
+    assert!(poll(&mut bad, &Waker::from(Arc::new(PanicWake))).is_pending());
+    let weak = child.clone_weak();
+    let mut drained = weak.drained();
+    let (flag, waker) = Flag::waker();
+    assert!(poll(&mut drained, &waker).is_pending());
+    assert!(poll(&mut drained, &waker).is_pending());
+    drop(root);
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(child))).is_err());
+    assert!(!flag.woken());
+    assert!(poll(&mut drained, &waker).is_ready());
+}
+
+#[test]
+fn a_composite_sees_a_part_abort_whose_sibling_waker_panicked() {
+    let root = Scope::new();
+    let a = root.child();
+    let b = root.child();
+    let open = Scope::new();
+    let work = Scope::child_of([&b, &open]);
+    let mut bad = a.aborted();
+    let mut aborted = work.aborted();
+    let (flag, waker) = Flag::waker();
+    assert!(poll(&mut bad, &Waker::from(Arc::new(PanicWake))).is_pending());
+    assert!(poll(&mut aborted, &waker).is_pending());
+    assert!(poll(&mut aborted, &waker).is_pending());
+    assert!(catch_unwind(AssertUnwindSafe(|| root.abort(Cause::Owner))).is_err());
+    assert!(!flag.woken());
+    assert!(poll(&mut aborted, &waker).is_ready());
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "a deep tree is slow under Miri")]
 fn a_deep_chain_of_composites_fixes_and_tears_down_on_a_small_stack() {

@@ -17,6 +17,7 @@ use rama::{
 };
 
 use crate::utils::{
+    connection::ConnectionGraceArgs,
     http::{HttpVersions, TcpHttpVersion},
     http3::{Http3Args, Http3Endpoints, HttpListeners},
     rate::opt_per_sec,
@@ -37,8 +38,12 @@ pub struct CliCommandIp {
     concurrent: usize,
 
     #[arg(long, short = 't', default_value = "300")]
-    /// the timeout in seconds for each connection
+    /// the age in seconds at which each connection starts draining, give or take a tenth;
+    /// it is dropped `--timeout-grace` later (0 = no limit)
     timeout: u64,
+
+    #[command(flatten)]
+    connection_grace: ConnectionGraceArgs,
 
     #[arg(long, default_value_t = 0)]
     /// rate limit the service, in requests per second (http mode)
@@ -133,6 +138,7 @@ pub async fn run(
         .maybe_with_rate_limit(opt_per_sec(Some(cfg.rate)))
         .maybe_with_throttle(opt_per_sec(Some(cfg.throttle)))
         .with_timeout(Duration::from_secs(cfg.timeout))
+        .with_timeout_grace(cfg.connection_grace.grace())
         .maybe_with_forward(cfg.forward)
         .maybe_with_geo_db(geo_db)
         .maybe_with_tls_server_config(maybe_tls_server_config)
@@ -171,10 +177,11 @@ async fn run_transport(
         .maybe_with_rate_limit(opt_per_sec(Some(cfg.rate)))
         .maybe_with_throttle(opt_per_sec(Some(cfg.throttle)))
         .with_timeout(Duration::from_secs(cfg.timeout))
+        .with_timeout_grace(cfg.connection_grace.grace())
         .maybe_with_forward(cfg.forward)
         .maybe_with_geo_db(geo_db)
         .maybe_with_tls_server_config(maybe_tls_server_config)
-        .build()
+        .build(scope.clone())
         .context("build ip TCP service")?;
 
     tracing::info!("starting ip service: bind interface = {}", cfg.bind);

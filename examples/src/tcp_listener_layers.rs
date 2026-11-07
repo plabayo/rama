@@ -16,7 +16,8 @@
 //!
 //! Within the telnet session, you can type anything and it will be echoed back to you.
 //! After 8 seconds the connection will be closed by the server.
-//! This is because of the `TimeoutLayer` that was added to the server.
+//! This is because of the `ScopeLayer` that was added to the server: it cancels the
+//! connection's scope after 6 seconds and aborts it 2 seconds later.
 //!
 //! Echoed output is also paced at 8 KiB/s per connection by the
 //! `ThrottleLayer`: bulk data comes back visibly rate-shaped.
@@ -29,7 +30,7 @@
 use rama::{
     Layer,
     graceful::Scope,
-    layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
+    layer::{HijackLayer, ScopeLayer, TraceErrLayer},
     net::stream::{
         Socket,
         layer::{ThrottleLayer, ThrottleMode},
@@ -88,7 +89,10 @@ async fn main() {
             }),
         ),
         TraceErrLayer::new(),
-        TimeoutLayer::new(Duration::from_secs(8)),
+        // Cancel each connection after 6s so it can wind down, and abort it 2s later.
+        ScopeLayer::new()
+            .with_max_age(Duration::from_secs(6))
+            .with_grace(Duration::from_secs(2)),
         // pace what we echo back at 8 KiB/s per connection
         ThrottleLayer::write_only(ThrottleMode::per_conn(Rate::per_sec(kib_u64(8)))),
     )

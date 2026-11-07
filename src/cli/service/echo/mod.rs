@@ -19,7 +19,7 @@ use serde_json::json;
 use self::quic_view::{EchoH3, EchoQuic, EchoQuicConnection};
 use crate::{
     Layer, Service,
-    cli::ForwardKind,
+    cli::{DEFAULT_CONNECTION_GRACE, ForwardKind, connection_scope},
     combinators::{Either, Either3},
     error::{BoxError, BoxErrorExt, ErrorContext},
     extensions::ExtensionsRef,
@@ -45,7 +45,7 @@ use crate::{
         },
     },
     layer::{
-        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        ConsumeErrLayer, LimitLayer,
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -103,6 +103,7 @@ pub struct EchoServiceBuilder<H> {
     throttle: Option<Rate>,
     body_limit: usize,
     timeout: Duration,
+    timeout_grace: Duration,
     forward: Option<ForwardKind>,
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -132,6 +133,7 @@ impl Default for EchoServiceBuilder<()> {
             throttle: None,
             body_limit: mib(1),
             timeout: Duration::ZERO,
+            timeout_grace: DEFAULT_CONNECTION_GRACE,
             forward: None,
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -201,11 +203,23 @@ impl<H> EchoServiceBuilder<H> {
     }
 
     crate::utils::macros::generate_set_and_with! {
-        /// set the timeout in seconds for each connection
+        /// set the age at which each connection starts draining, give or take a tenth; it is
+        /// dropped [`with_timeout_grace`](Self::with_timeout_grace) later
         ///
-        /// (0 = no timeout)
+        /// (0 = no limit)
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// set at most how long a draining connection may still run before it is dropped
+        ///
+        /// Also bounds the drain when the server shuts down; the server's own scope can end it
+        /// sooner. Default: 5 seconds.
+        pub fn timeout_grace(mut self, timeout_grace: Duration) -> Self {
+            self.timeout_grace = timeout_grace;
             self
         }
     }
@@ -279,6 +293,7 @@ impl<H> EchoServiceBuilder<H> {
             throttle: self.throttle,
             body_limit: self.body_limit,
             timeout: self.timeout,
+            timeout_grace: self.timeout_grace,
             forward: self.forward,
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -391,11 +406,7 @@ where
         } else {
             Either::B(UnlimitedPolicy::new())
         });
-        let connection_timeout = if !self.timeout.is_zero() {
-            TimeoutLayer::new(self.timeout)
-        } else {
-            TimeoutLayer::never()
-        };
+        let connection_timeout = connection_scope(&scope, self.timeout, self.timeout_grace);
 
         // One layer for both: QUIC paces all streams of a connection against one budget.
         let throttle = self

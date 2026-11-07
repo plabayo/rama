@@ -2,9 +2,9 @@
 //!
 //! The child is made in the scope the input runs in, merged with the layer's parent if it has
 //! one (a new root without either, see [`enter_scope_with`]), and is the scope the inner service
-//! sees. It is cancelled after `max_age` and aborted
-//! `grace` later or at `hard_max_age`. The inner service decides what the graceful phase
-//! means for it; at the hard phase its future is dropped.
+//! sees. It is cancelled after `max_age`, spread by `max_age_jitter`, and aborted `grace` later
+//! or at `hard_max_age`. The inner service decides what the graceful phase means for it; at
+//! the hard phase its future is dropped.
 
 use std::{error, fmt, time::Duration};
 
@@ -22,6 +22,7 @@ use crate::{
 pub struct ScopeLayer {
     parent: Option<WeakScope>,
     max_age: Option<Duration>,
+    max_age_jitter: f64,
     grace: Option<Duration>,
     hard_max_age: Option<Duration>,
 }
@@ -33,6 +34,7 @@ impl ScopeLayer {
         Self {
             parent: None,
             max_age: None,
+            max_age_jitter: 0.0,
             grace: None,
             hard_max_age: None,
         }
@@ -57,6 +59,16 @@ impl ScopeLayer {
     }
 
     generate_set_and_with! {
+        /// Spread the max age of each input uniformly within ± this fraction of it, so
+        /// inputs that started together do not all drain at once. Clamped to `0.0..=1.0`;
+        /// zero, the default, keeps every max age exact.
+        pub fn max_age_jitter(mut self, jitter: f64) -> Self {
+            self.max_age_jitter = if jitter.is_nan() { 0.0 } else { jitter.clamp(0.0, 1.0) };
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Abort the scope of an input this long after it is cancelled, for any cause.
         pub fn grace(mut self, grace: Option<Duration>) -> Self {
             self.grace = grace;
@@ -72,6 +84,16 @@ impl ScopeLayer {
         }
     }
 
+    /// `max_age` moved by a uniform share of ± the jitter; unchanged where that cannot be
+    /// represented.
+    fn jittered(&self, max_age: Duration) -> Duration {
+        if self.max_age_jitter == 0.0 {
+            return max_age;
+        }
+        let factor = 1.0 + rand::random_range(-self.max_age_jitter..=self.max_age_jitter);
+        Duration::try_from_secs_f64(max_age.as_secs_f64() * factor).unwrap_or(max_age)
+    }
+
     /// The scope of an input: a new one in the scope it runs in.
     fn scope_for(&self, input: &impl ExtensionsRef) -> Result<Scope, ScopeClosed> {
         let scope = match &self.parent {
@@ -79,7 +101,7 @@ impl ScopeLayer {
             None => enter_scope(input.extensions())?,
         };
         Ok(scope
-            .maybe_with_timeout(self.max_age)
+            .maybe_with_timeout(self.max_age.map(|max_age| self.jittered(max_age)))
             .maybe_with_grace(self.grace)
             .maybe_with_hard_timeout(self.hard_max_age))
     }
@@ -209,6 +231,45 @@ mod tests {
         let scope = service.serve(Extensions::new()).await.unwrap().unwrap();
         assert!(!scope.is_detached());
         assert!(!scope.is_cancelled());
+    }
+
+    /// Serves `inputs` at once and returns, per input, how long after the start its scope was
+    /// cancelled.
+    async fn cancel_ages(layer: ScopeLayer, inputs: usize) -> Vec<Duration> {
+        let start = tokio::time::Instant::now();
+        let service = layer.into_layer(service_fn(move |input: Extensions| async move {
+            let scope = scope_context(&input)
+                .and_then(WeakScope::into_scope)
+                .unwrap();
+            scope.cancelled().await;
+            Ok::<_, Infallible>(start.elapsed())
+        }));
+        futures::future::join_all((0..inputs).map(|_| service.serve(Extensions::new())))
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn max_age_jitter_spreads_cancels_within_its_share() {
+        let layer = ScopeLayer::new()
+            .with_max_age(100 * SEC)
+            .with_max_age_jitter(0.5);
+        let ages = cancel_ages(layer, 64).await;
+        assert!(
+            ages.iter().all(|age| (50 * SEC..=150 * SEC).contains(age)),
+            "{ages:?}"
+        );
+        assert!(ages.iter().any(|age| *age != ages[0]), "{ages:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_nan_max_age_jitter_keeps_the_max_age_exact() {
+        let layer = ScopeLayer::new()
+            .with_max_age(3 * SEC)
+            .with_max_age_jitter(f64::NAN);
+        assert_eq!(cancel_ages(layer, 8).await, [3 * SEC; 8]);
     }
 
     #[tokio::test(start_paused = true)]

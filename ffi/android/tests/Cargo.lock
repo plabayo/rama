@@ -1336,6 +1336,7 @@ dependencies = [
  "rama-error",
  "rama-macros",
  "rama-utils",
+ "rand",
  "serde",
  "serde_json",
  "slab",

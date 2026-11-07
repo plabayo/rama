@@ -5,6 +5,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use clap::Args;
 use rama::{
     Service,
+    cli::connection_scope,
     combinators::Either,
     error::{BoxError, ErrorContext},
     graceful::WeakScope,
@@ -21,7 +22,7 @@ use rama::{
         service::web::{Router, response::IntoResponse},
     },
     layer::{
-        ConsumeErrLayer, Layer, LimitLayer, TimeoutLayer,
+        ConsumeErrLayer, Layer, LimitLayer,
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -35,6 +36,7 @@ use rama::{
 };
 
 use crate::utils::{
+    connection::ConnectionGraceArgs,
     http::{HttpVersions, TcpHttpVersion},
     http3::{Http3Args, Http3Endpoints, HttpListeners},
     rate::opt_per_sec,
@@ -66,10 +68,13 @@ pub struct CliCommandHttpTest {
     http3: Http3Args,
 
     #[arg(short = 't', long, default_value_t = 60.)]
-    /// the timeout in seconds for each connection
+    /// the age in seconds at which each connection starts draining, give or take a tenth
     ///
-    /// (<= 0.0 = no timeout)
+    /// It is dropped `--timeout-grace` later. (<= 0.0 = no limit)
     timeout: f64,
+
+    #[command(flatten)]
+    connection_grace: ConnectionGraceArgs,
 
     #[arg(long, default_value_t = 0)]
     /// rate limit the service in requests per second
@@ -216,11 +221,11 @@ fn serve_http<Response>(
 where
     Response: IntoResponse + Send + 'static,
 {
-    let connection_timeout = if cfg.timeout > 0. {
-        TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
-    } else {
-        TimeoutLayer::never()
-    };
+    let connection_timeout = connection_scope(
+        scope,
+        Duration::try_from_secs_f64(cfg.timeout).unwrap_or_default(),
+        cfg.connection_grace.grace(),
+    );
     let connection_limit = LimitLayer::new(if cfg.concurrent > 0 {
         Either::A(ConcurrentPolicy::max_with_backoff(
             cfg.concurrent,

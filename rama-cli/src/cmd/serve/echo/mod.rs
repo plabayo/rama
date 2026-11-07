@@ -7,12 +7,12 @@ use std::{fmt, sync::Arc, time::Duration};
 use clap::{Args, ValueEnum};
 use rama::{
     Layer as _,
-    cli::{ForwardKind, service::echo::EchoServiceBuilder},
+    cli::{ForwardKind, connection_scope, service::echo::EchoServiceBuilder},
     combinators::Either,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt as _},
     graceful::WeakScope,
     layer::{
-        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        ConsumeErrLayer, LimitLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -33,6 +33,7 @@ use rama::{
 use tokio::sync::mpsc::Sender;
 
 use crate::utils::{
+    connection::ConnectionGraceArgs,
     http::{HttpVersions, TcpHttpVersion},
     http3::{Http3Args, Http3Endpoints, HttpListeners, OBSERVATION_LIMITS},
     rate::opt_per_sec,
@@ -54,11 +55,14 @@ pub struct CliCommandEcho {
     concurrent: Option<usize>,
 
     #[arg(short = 't', long)]
-    /// the timeout in seconds for each connection
+    /// the age in seconds at which each connection starts draining, give or take a tenth
     ///
-    /// (0 = no timeout)
+    /// It is dropped `--timeout-grace` later. (0 = no limit)
     /// Default is 300s, unless in UDP mode, there no timeout is supported.
     timeout: Option<u64>,
+
+    #[command(flatten)]
+    connection_grace: ConnectionGraceArgs,
 
     #[arg(long)]
     /// rate limit the service, in requests per second for http(s) mode
@@ -223,6 +227,7 @@ async fn bind_echo_http_service(
         .maybe_with_rate_limit(opt_per_sec(cfg.rate))
         .maybe_with_throttle(opt_per_sec(cfg.throttle))
         .with_timeout(Duration::from_secs(cfg.timeout.unwrap_or(300)))
+        .with_timeout_grace(cfg.connection_grace.grace())
         .with_ws_support(cfg.ws)
         .maybe_with_http_version(cfg.http_version.tcp().and_then(Into::into))
         .maybe_with_forward(cfg.forward)
@@ -308,11 +313,11 @@ async fn bind_echo_tcp_service(
         } else {
             Either::B(UnlimitedPolicy::new())
         }),
-        if timeout > 0 {
-            TimeoutLayer::new(Duration::from_secs(timeout))
-        } else {
-            TimeoutLayer::never()
-        },
+        connection_scope(
+            &scope,
+            Duration::from_secs(timeout),
+            cfg.connection_grace.grace(),
+        ),
         opt_per_sec(cfg.throttle)
             .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
         with_ha_proxy.then(|| HaProxyLayer::new().with_peek(true)),

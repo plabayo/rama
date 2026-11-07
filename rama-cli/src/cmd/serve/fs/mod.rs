@@ -13,7 +13,9 @@ use rama::{
 use clap::Args;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use crate::utils::{rate::opt_per_sec, tls::try_new_server_config};
+use crate::utils::{
+    connection::ConnectionGraceArgs, rate::opt_per_sec, tls::try_new_server_config,
+};
 
 #[derive(Debug, Args)]
 /// rama serve service (serves a file, directory or placeholder page)
@@ -35,10 +37,13 @@ pub struct CliCommandFs {
     concurrent: usize,
 
     #[arg(short = 't', long, default_value_t = 8)]
-    /// the timeout in seconds for each connection
+    /// the age in seconds at which each connection starts draining, give or take a tenth
     ///
-    /// (0 = no timeout)
+    /// It is dropped `--timeout-grace` later. (0 = no limit)
     timeout: u64,
+
+    #[command(flatten)]
+    connection_grace: ConnectionGraceArgs,
 
     #[arg(long, default_value_t = 0)]
     /// rate limit the service in requests per second
@@ -120,6 +125,7 @@ pub async fn run(scope: WeakScope, cfg: CliCommandFs) -> Result<(), BoxError> {
         .maybe_with_rate_limit(opt_per_sec(Some(cfg.rate)))
         .maybe_with_throttle(opt_per_sec(Some(cfg.throttle)))
         .with_timeout(Duration::from_secs(cfg.timeout))
+        .with_timeout_grace(cfg.connection_grace.grace())
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_server_config)
         .maybe_with_content_path(cfg.path)
