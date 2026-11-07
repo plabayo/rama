@@ -4484,7 +4484,7 @@ mod tests {
         assert!(!telemetry_sample(0));
         assert!(telemetry_sample(1_u64 << 63));
         let capture = super::super::tests::common::Capture::default();
-        tracing::subscriber::with_default(capture.clone(), || {
+        capture.record(|| {
             let budget = UdpIngressBudget::new(2);
             for (reason, state) in [
                 (UdpIngressDropReason::Count, INGRESS_PAUSED_COUNT),

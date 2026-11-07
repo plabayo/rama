@@ -68,7 +68,7 @@ impl RefusalLog {
 
 // These tests use Tokio's current-thread runtime, so spawned resolver work uses
 // the same thread-local subscriber throughout the awaited test.
-fn capture_refusals() -> (RefusalLog, tracing::subscriber::DefaultGuard) {
+fn capture_refusals() -> (RefusalLog, Captured) {
     let log = RefusalLog::default();
     let writer = log.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -76,7 +76,18 @@ fn capture_refusals() -> (RefusalLog, tracing::subscriber::DefaultGuard) {
         .with_ansi(false)
         .with_writer(move || writer.clone())
         .finish();
-    (log, tracing::subscriber::set_default(subscriber))
+    let captured = Captured {
+        // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
+        _registered: tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()),
+        _guard: tracing::subscriber::set_default(subscriber),
+    };
+    (log, captured)
+}
+
+/// Keeps the refusal capture as this thread's default while it lives.
+struct Captured {
+    _registered: tracing::Dispatch,
+    _guard: tracing::subscriber::DefaultGuard,
 }
 
 const ALPN: &[u8] = b"rama-quic-test";

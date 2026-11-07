@@ -394,6 +394,15 @@ pub(in crate::tproxy::engine) struct Capture(
     pub(in crate::tproxy::engine) Arc<parking_lot::Mutex<Vec<Fields>>>,
 );
 
+impl Capture {
+    /// Runs `f` with this capture as the thread's default subscriber.
+    pub(in crate::tproxy::engine) fn record<R>(&self, f: impl FnOnce() -> R) -> R {
+        // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
+        let _registered = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        tracing::subscriber::with_default(self.clone(), f)
+    }
+}
+
 #[derive(Default)]
 struct Visitor(Fields);
 impl tracing::field::Visit for Visitor {

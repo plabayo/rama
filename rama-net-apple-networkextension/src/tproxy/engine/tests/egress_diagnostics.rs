@@ -47,7 +47,7 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
         error_utf8_len: 0,
     };
     let capture = Capture::default();
-    tracing::subscriber::with_default(capture.clone(), || {
+    capture.record(|| {
         assert!(tcp_egress_reporting_enabled());
         // The exact decoder and session entry used by the exported C function.
         // SAFETY: `to_rust_type` needs each non-null string pointer readable for its
@@ -122,7 +122,7 @@ fn promoted_close_names_handoff_counters_and_preserves_ordinary_close_fields() {
     let meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
     for promoted in [false, true] {
         let capture = Capture::default();
-        tracing::subscriber::with_default(capture.clone(), || {
+        capture.record(|| {
             emit_tcp_bridge_close_event(
                 BridgeDirection::Egress,
                 BridgeCloseReason::PeerEofLeft,

@@ -543,32 +543,39 @@ mod tests {
         );
     }
 
+    /// What `f` returns, and the `pac.directive` fields it logs on this thread.
+    fn logged_directives<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+        // A second live dispatcher keeps another thread's first hit from caching these callsites as never.
+        let _registered = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        let (sender, received) = std::sync::mpsc::channel();
+        let output = tracing::subscriber::with_default(CaptureDirectives(sender), f);
+        (output, received.try_iter().collect())
+    }
+
     #[test]
     fn a_skipped_token_cannot_forge_a_log_record() {
-        let (sender, received) = std::sync::mpsc::channel();
-        let guard = tracing::subscriber::set_default(CaptureDirectives(sender));
-
         let forged = "SOCKS4 x\nERROR rama: shutting down, all traffic now DIRECT";
-        let directives: PacDirectives = format!("{forged}; DIRECT").parse().unwrap();
-        drop(guard);
+        let (directives, logged) = logged_directives(|| {
+            format!("{forged}; DIRECT")
+                .parse::<PacDirectives>()
+                .unwrap()
+        });
         assert_eq!(directives.as_slice(), [PacDirective::Direct]);
 
-        let logged = received.try_recv().expect("skipped token is logged");
+        let logged = logged.first().expect("skipped token is logged");
         assert!(!logged.contains('\n'), "forged log record: {logged}");
         assert!(logged.contains(r"\nERROR rama"), "not escaped: {logged}");
     }
 
     #[test]
     fn a_logged_token_is_length_capped() {
-        let (sender, received) = std::sync::mpsc::channel();
-        let guard = tracing::subscriber::set_default(CaptureDirectives(sender));
+        let (_directives, logged) = logged_directives(|| {
+            format!("SOCKS4 {}; DIRECT", "a".repeat(mib(1)))
+                .parse::<PacDirectives>()
+                .unwrap()
+        });
 
-        let _directives: PacDirectives = format!("SOCKS4 {}; DIRECT", "a".repeat(mib(1)))
-            .parse()
-            .unwrap();
-        drop(guard);
-
-        let logged = received.try_recv().expect("skipped token is logged");
+        let logged = logged.first().expect("skipped token is logged");
         // a script picks the token, never how much of it rama writes
         assert!(logged.len() < kib(1), "logged {} bytes", logged.len());
     }

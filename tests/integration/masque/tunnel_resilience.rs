@@ -712,9 +712,9 @@ async fn measure(
 }
 
 /// The measured round trips are all answered on a reliable carrier without a flood, and beside
-/// one at most a rare few go unanswered: the proxy reaches both targets over loopback UDP, which
-/// a flood can overflow. Native datagrams may lose more, as every connection reaches the proxy
-/// through its one UDP socket.
+/// one at most a rare few go unanswered in time: the flood shares loopback UDP with them (toward
+/// the targets, and over HTTP/3 the proxy's one socket), which it can overflow. Native datagrams
+/// may lose more, as every connection reaches the proxy through that one socket unreliably.
 fn assert_live(carrier: Carrier, scenario: Flood, measured: &Measured, count: usize) {
     assert_eq!(
         measured.trips.sent(),
