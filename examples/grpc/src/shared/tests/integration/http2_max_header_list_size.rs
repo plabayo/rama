@@ -62,7 +62,6 @@ async fn test_http_max_header_list_size_and_long_errors() {
         http_server.h2_mut().set_max_pending_accept_reset_streams(0);
 
         let tcp_service = MapInputLayer::new(|stream: TcpStream| {
-            stream.stream.set_nodelay(true).unwrap();
             let sock_ref = SockRef::from(&stream.stream);
             let keep_alive = TcpKeepalive::new().with_time(Duration::from_secs(1));
             sock_ref.set_tcp_keepalive(&keep_alive).unwrap();

@@ -194,7 +194,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let base = SocketOptions {
         reuse_address: Some(true),
         reuse_port: Some(true),
-        tcp_no_delay: Some(true),
         tcp_keep_alive: Some(tcp_keep_alive()),
         ..SocketOptions::default_tcp()
     };

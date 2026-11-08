@@ -9153,8 +9153,8 @@
 "input":"<?\u000B",
 "output":[["Comment", "?\u000B"]],
 "errors":[
-    { "code": "invalid-first-character-of-processing-instruction-target", "line": 1, "col": 3 },
-    { "code": "control-character-in-input-stream", "line": 1, "col": 3 }
+    { "code": "control-character-in-input-stream", "line": 1, "col": 3 },
+    { "code": "invalid-first-character-of-processing-instruction-target", "line": 1, "col": 3 }
 ]},
 
 {"description":"<?\\u000C",

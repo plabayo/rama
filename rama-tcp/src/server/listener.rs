@@ -6,6 +6,7 @@ use rama_core::graceful::WeakScope;
 use rama_core::graceful::attach_scope;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
+use rama_net::socket::core::SockRef;
 use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
 use std::pin::pin;
@@ -54,6 +55,10 @@ impl TcpListenerBuilder {
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
+    ///
+    /// Accepted connections have `TCP_NODELAY` on. Bind a socket built with your
+    /// own [`SocketOptions`](rama_net::socket::SocketOptions) via `bind_socket`, or
+    /// apply `TcpStreamOptions` per accepted stream, to choose otherwise.
     pub async fn bind_address<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
         self,
         addr: A,
@@ -63,6 +68,10 @@ impl TcpListenerBuilder {
         let inner = TokioTcpListener::bind(tokio_socket_addr)
             .await
             .map_err(Into::<BoxError>::into)?;
+        // Accepted sockets inherit it, matching `SocketOptions::default_tcp`.
+        SockRef::from(&inner)
+            .set_tcp_nodelay(true)
+            .context("set TCP_NODELAY on tcp listener")?;
 
         if let Some(ttl) = self.ttl {
             inner.set_ttl(ttl).context("set ttl on tcp listener")?;
@@ -139,6 +148,10 @@ impl TcpListener {
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
+    ///
+    /// Accepted connections have `TCP_NODELAY` on. Bind a socket built with your
+    /// own [`SocketOptions`](rama_net::socket::SocketOptions) via `bind_socket`, or
+    /// apply `TcpStreamOptions` per accepted stream, to choose otherwise.
     pub async fn bind_address<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
         addr: A,
         scope: WeakScope,
@@ -410,6 +423,10 @@ mod tests {
         graceful::{Cause, Scope},
         service::service_fn,
     };
+    use rama_net::{
+        socket::{AsSocketRef as _, SocketOptions, opts::Domain},
+        stream::layer::TcpStreamOptions,
+    };
     use tokio::{sync::mpsc, time::timeout};
 
     use super::*;
@@ -449,5 +466,59 @@ mod tests {
         timeout(LIMIT, weak.drained())
             .await
             .expect("the served task ends at the hard phase");
+    }
+
+    /// Whether `TCP_NODELAY` is on for the next connection `listener` accepts.
+    async fn accepted_nodelay(listener: &TcpListener, options: Option<&TcpStreamOptions>) -> bool {
+        let addr = listener.local_addr().unwrap();
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
+        if let Some(options) = options {
+            options.try_apply(&stream).unwrap();
+        }
+        stream.as_socket_ref().tcp_nodelay().unwrap()
+    }
+
+    #[tokio::test]
+    async fn bound_address_accepts_with_nodelay() {
+        let scope = Scope::new();
+        let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone_weak())
+            .await
+            .unwrap();
+        assert!(accepted_nodelay(&listener, None).await);
+    }
+
+    #[tokio::test]
+    async fn stream_options_override_the_nodelay_default() {
+        let scope = Scope::new();
+        let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone_weak())
+            .await
+            .unwrap();
+        let options = TcpStreamOptions {
+            tcp_no_delay: Some(false),
+            ..Default::default()
+        };
+        assert!(!accepted_nodelay(&listener, Some(&options)).await);
+    }
+
+    #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[tokio::test]
+    async fn a_bound_socket_keeps_its_own_nodelay() {
+        let scope = Scope::new();
+        for no_delay in [false, true] {
+            let socket = SocketOptions {
+                address: Some(SocketAddress::local_ipv4(0)),
+                tcp_no_delay: Some(no_delay),
+                ..SocketOptions::default_tcp()
+            }
+            .try_build_socket(Domain::IPv4)
+            .unwrap();
+            socket.listen(16).unwrap();
+            let listener = TcpListener::build(scope.clone_weak())
+                .bind_socket(socket)
+                .await
+                .unwrap();
+            assert_eq!(accepted_nodelay(&listener, None).await, no_delay);
+        }
     }
 }
