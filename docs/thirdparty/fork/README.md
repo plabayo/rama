@@ -334,13 +334,13 @@ of the rama ecosystem.
 Third-party test data vendored verbatim and used only by the test suite
 (not shipped in any published crate).
 
-- <https://github.com/html5lib/html5lib-tests/tree/c777c408b61078ea2eb4acefc2535f54dbc8b28a>
+- <https://github.com/html5lib/html5lib-tests/tree/c5495c539ca8a79c3c5107f5f14010bcff9a35d5>
   - The `tokenizer/*.test` data, vendored under
     [`rama-http/tests/html5lib-tokenizer`](https://github.com/plabayo/rama/tree/main/rama-http/tests/html5lib-tokenizer)
     and used to exercise the HTML tokenizer's identity property over a large
     real-world corpus.
   - License:
-    - Original: <https://github.com/html5lib/html5lib-tests/blob/c777c408b61078ea2eb4acefc2535f54dbc8b28a/LICENSE>
+    - Original: <https://github.com/html5lib/html5lib-tests/blob/c5495c539ca8a79c3c5107f5f14010bcff9a35d5/LICENSE>
     - Type: MIT
     - Copy: [./licenses/html5lib-tests](./licenses/html5lib-tests)
 
