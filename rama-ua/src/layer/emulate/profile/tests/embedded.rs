@@ -346,7 +346,7 @@ fn replacing_the_capture_replays_it_instead_of_the_cached_plan() {
         })
         .unwrap();
     assert!(first.effective.plan.is_some());
-    let mut swapped = first.clone();
+    let mut swapped = first;
     swapped
         .effective
         .set_capture(other.effective.capture().clone());
