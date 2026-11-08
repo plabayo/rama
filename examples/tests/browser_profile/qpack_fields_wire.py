@@ -16,7 +16,7 @@ from pdml import identity, one, pdml_packets
 from qpack_bootstrap_wire import bootstrap_request
 from qpack_decode_wire import resolve_blocked_headers
 from qpack_wire import prefixed_integer
-from quic_stream_wire import varint_field
+from quic_stream_wire import retransmitted_streams, varint_field
 from tls_wire import Reader, byte_span
 
 
@@ -97,6 +97,7 @@ def sections_from_wire(data, server_port):
     result = {}
     packets = pdml_packets(data)
     resolved = resolve_blocked_headers(packets, server_port)
+    seen_stream_data = set()
     for packet in packets:
         frames = [
             node
@@ -114,7 +115,11 @@ def sections_from_wire(data, server_port):
             continue
         connection = identity(packet, "quic.connection.number")
         number = int(one(packet, "frame.number"))
+        # A retransmitted copy is never recovered, so a blocked one has no header count.
+        repeated = retransmitted_streams(packet, seen_stream_data)
         for frame in frames:
+            if int(one(frame, "http3.frame_streamid")) in repeated:
+                continue
             payloads = [
                 node
                 for node in frame.iter("field")

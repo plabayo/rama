@@ -8,6 +8,7 @@ witness supports separate bootstrap checks and must never enter a report.
 
 from collections import defaultdict
 from pdml import field, identity, one, pdml_packets
+from quic_stream_wire import retransmitted_streams
 from tls_wire import Reader
 
 ENCODER_STREAM = 2
@@ -99,6 +100,14 @@ def encoder_instruction_evidence(data, server_port, streams):
     """Require decoded opcodes to cover each client encoder stream exactly once."""
     encoded, decoded = defaultdict(bytearray), defaultdict(list)
     instruction_bytes = defaultdict(list)
+    encoder_streams = {
+        connection: stream.stream_id
+        for (connection, from_server), prefixes in streams.items()
+        if not from_server
+        for stream in prefixes
+        if stream.stream_type == ENCODER_STREAM
+    }
+    seen_stream_data = set()
     for packet in pdml_packets(data):
         nodes = [node for node in packet.iter("field") if node.get("name") in OPCODES]
         if not nodes:
@@ -111,6 +120,9 @@ def encoder_instruction_evidence(data, server_port, streams):
         if source == server_port:
             continue
         connection = identity(packet, "quic.connection.number")
+        # Tshark decodes encoder bytes again in a QUIC retransmission; count them once.
+        if encoder_streams.get(connection) in retransmitted_streams(packet, seen_stream_data):
+            continue
         for node in nodes:
             raw, instruction = decode_instruction(node)
             encoded[connection].extend(raw)

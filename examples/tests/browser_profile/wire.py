@@ -23,6 +23,7 @@ from flows import FLOWS, compare_requests, flow_counts, flow_name, operation_flo
 from pathlib import Path
 from pdml import MAX_CAPTURE_BYTES, MAX_PDML_BYTES, one, pdml_packets, values
 from qpack_decode_wire import resolve_blocked_headers
+from quic_stream_wire import retransmitted_streams
 
 
 # TCP accounting reads relative sequence numbers; never inherit a user preference.
@@ -120,7 +121,12 @@ def parse_pdml(
     } if protocol == "h3" else {}
     qpack = None
     blocks = []
+    seen_stream_data = set()
     for packet in packets:
+        # Tshark decodes HTTP/3 frames again in a QUIC retransmission; count them once.
+        repeated = (
+            retransmitted_streams(packet, seen_stream_data) if protocol == "h3" else set()
+        )
         containers = [
             field
             for field in packet.iter("field")
@@ -195,6 +201,8 @@ def parse_pdml(
             )
             if len(connections) != 1:
                 raise ValueError("ambiguous connection identity")
+            if stream in repeated:
+                continue
             pairs = []
             for header in headers:
                 name = one(

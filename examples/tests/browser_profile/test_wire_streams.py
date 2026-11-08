@@ -3,6 +3,7 @@
 import unittest
 import xml.etree.ElementTree as ET
 from pdml import pdml_packets
+from quic_stream_wire import retransmitted_streams
 from unittest.mock import patch
 from wire import parse_pdml
 from wire_fixtures import computed as field, wire_streams_packet as packet
@@ -244,6 +245,60 @@ class MultiplexedTests(unittest.TestCase):
             data = data.replace(b'show="50000"', b'show="443"', 1)
             data = data.replace(b'dstport" show="443"', b'dstport" show="50000"', 1)
             self.assertTrue(parse_pdml(data, protocol, 443)[0].from_server)
+
+
+class RetransmissionTests(unittest.TestCase):
+    @staticmethod
+    def document(*packets):
+        """HTTP/3 headers on stream 0, each packet carrying these QUIC STREAM bytes."""
+        rendered = []
+        for number, payloads, *options in packets:
+            connection, offset, server = (options + [None])[0] or ("2", "0", False)
+            root = ET.fromstring(packet("h3", [(0, [(":method", "GET"), (":path", "/")])]))
+            node = root.find("packet")
+            node.find("field[@name='frame.number']").set("show", str(number))
+            node.find("field[@name='quic.connection.number']").set("show", connection)
+            if server:
+                node.find("field[@name='udp.srcport']").set("show", "443")
+                node.find("field[@name='udp.dstport']").set("show", "50000")
+            for value in payloads:
+                frame = ET.SubElement(node, "field", name="quic.frame")
+                ET.SubElement(frame, "field", name="quic.stream.stream_id", show="0")
+                ET.SubElement(frame, "field", name="quic.stream.offset", show=offset)
+                ET.SubElement(frame, "field", name="quic.stream_data", show="", value=value)
+            rendered.append(ET.tostring(node).decode())
+        return ("<pdml>" + "".join(rendered) + "</pdml>").encode()
+
+    def test_a_retransmitted_stream_frame_yields_its_headers_once(self):
+        blocks = parse_pdml(self.document((7, ["aabb"]), (8, ["aabb"])), "h3", 443)
+        self.assertEqual([block.packet for block in blocks], [7])
+
+    def test_different_stream_bytes_are_not_a_retransmission(self):
+        blocks = parse_pdml(self.document((7, ["aabb"]), (8, ["ccdd"])), "h3", 443)
+        self.assertEqual([block.packet for block in blocks], [7, 8])
+
+    def test_same_bytes_on_another_connection_offset_or_direction_are_new(self):
+        for other in (("3", "0", False), ("2", "9", False), ("2", "0", True)):
+            data = self.document((7, ["aabb"]), (8, ["aabb"], other))
+            with self.subTest(other=other):
+                self.assertEqual([block.packet for block in parse_pdml(data, "h3", 443)], [7, 8])
+
+    def test_partly_repeated_data_on_a_stream_without_http3_frames_is_tolerated(self):
+        def control(payloads):
+            node = ET.fromstring(packet("h3", [(0, [(":method", "GET")])])).find("packet")
+            for value in payloads:
+                frame = ET.SubElement(node, "field", name="quic.frame")
+                ET.SubElement(frame, "field", name="quic.stream.stream_id", show="2")
+                ET.SubElement(frame, "field", name="quic.stream_data", show="", value=value)
+            return node
+
+        seen = set()
+        retransmitted_streams(control(["aabb"]), seen)
+        self.assertEqual(retransmitted_streams(control(["aabb", "ccdd"]), seen), set())
+
+    def test_partly_repeated_stream_data_in_one_packet_is_ambiguous(self):
+        with self.assertRaisesRegex(ValueError, "partly retransmitted"):
+            parse_pdml(self.document((7, ["aabb"]), (8, ["aabb", "ccdd"])), "h3", 443)
 
 
 if __name__ == "__main__":

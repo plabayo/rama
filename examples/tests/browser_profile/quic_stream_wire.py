@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from dataclasses import dataclass, field as data_field
-from pdml import field, identity, one, pdml_packets, values
+from pdml import field, fields, identity, one, pdml_packets, values
 from tls_wire import Reader, byte_span
 
 
@@ -170,6 +170,29 @@ def close_problem(frame, kind, handshake):
     if code in CLEAN_CLOSE_CODES[kind] or (handshake and kind == 0x1C and code == APPLICATION_ERROR):
         return None
     return f"close 0x{kind:x} code 0x{code:x}"
+
+
+def retransmitted_streams(packet, seen):
+    """Streams whose QUIC data in this packet repeats bytes an earlier packet carried."""
+    connection = tuple(sorted(set(values(packet, "quic.connection.number"))))
+    direction = tuple(values(packet, "udp.srcport"))
+    framed = {int(stream) for stream in values(packet, "http3.frame_streamid")}
+    repeats = defaultdict(set)
+    for frame in packet.iter("field"):
+        if frame.get("name") != "quic.frame":
+            continue
+        stream_ids = values(frame, "quic.stream.stream_id")
+        payload = fields(frame, "quic.stream_data")
+        if len(stream_ids) != 1 or len(payload) != 1:
+            continue
+        stream = int(stream_ids[0])
+        offset = int((values(frame, "quic.stream.offset") or ["0"])[0])
+        key = (direction, connection, stream, offset, payload[0].get("value", ""))
+        repeats[stream].add(key in seen)
+        seen.add(key)
+    if any(len(kinds) == 2 and stream in framed for stream, kinds in repeats.items()):
+        raise ValueError("partly retransmitted QUIC stream data in one packet")
+    return {stream for stream, kinds in repeats.items() if kinds == {True}}
 
 
 def requestless_connections(data, server_port):
