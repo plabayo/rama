@@ -153,10 +153,8 @@ mod test {
 
     #[tokio::test]
     async fn terminal_extractor_keeps_request_parts_alive_while_reading_body() {
-        #[derive(Debug)]
+        #[derive(Debug, Extension)]
         struct PartsGuard(Arc<AtomicBool>);
-
-        impl Extension for PartsGuard {}
 
         impl Drop for PartsGuard {
             fn drop(&mut self) {

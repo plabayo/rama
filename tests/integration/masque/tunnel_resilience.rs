@@ -10,7 +10,7 @@ use rama::proxy::masque::limits::TunnelLimits;
 use rama::{
     Service as _,
     futures::future::join_all,
-    graceful::Shutdown,
+    graceful::{Scope, WeakScope},
     net::{
         address::{HostWithPort, ProxyAddress, SocketAddress},
         client::{ConnectRequest, EstablishedClientConnection, ProxyRoute},
@@ -20,7 +20,6 @@ use rama::{
         ConnectUdpConnector, ConnectUdpSocket, DestinationScopePolicy, MaybeTunneledSocket,
         TunnelBudget,
     },
-    rt::Executor,
     udp::{
         DatagramSenderExt as _, DatagramSocket as _, DatagramSocketExt as _, SendDatagram,
         proxy::UdpConnector,
@@ -112,7 +111,7 @@ async fn proxy_for(
 
 /// A tunnel for `carrier`, on a client connection of its own.
 async fn tunnel(proxy: &ProxyAddress, target: SocketAddress, carrier: Carrier) -> ConnectUdpSocket {
-    let socket = open_tunnel(Executor::new(), proxy, target, carrier.version())
+    let socket = open_tunnel(WeakScope::detached(), proxy, target, carrier.version())
         .await
         .unwrap_or_else(|error| panic!("{carrier:?}: {error}"));
     assert_carrier(&socket, carrier);
@@ -309,12 +308,12 @@ async fn a_graceful_proxy_shutdown_ends_every_tunnel_on_every_carrier() {
         let (target, _echo) = udp_echo().await;
         for carrier in Carrier::ALL {
             let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-            let shutdown = Shutdown::new(async move {
+            let shutdown = Scope::new().with_signal(async move {
                 _ = stopped.await;
             });
             let limits = TunnelLimits::new();
             let (proxy, fixture) = masque_proxy_on(
-                Executor::graceful(shutdown.guard()),
+                shutdown.clone_weak(),
                 None,
                 DestinationScopePolicy::allow_private(),
                 carrier != Carrier::Http3Capsule,
@@ -330,9 +329,10 @@ async fn a_graceful_proxy_shutdown_ends_every_tunnel_on_every_carrier() {
             assert_eq!(limits.live_tunnels(), 1, "{carrier:?}");
 
             stop.send(()).unwrap();
-            timeout(Duration::from_secs(10), shutdown.shutdown())
+            timeout(Duration::from_secs(10), shutdown.join())
                 .await
-                .unwrap_or_else(|_| panic!("{carrier:?}: shutdown within 10s"));
+                .unwrap_or_else(|_| panic!("{carrier:?}: shutdown within 10s"))
+                .expect("not aborted");
             assert_eq!(limits.live_tunnels(), 0, "{carrier:?}");
             assert_eq!(egress.active(), 0, "{carrier:?}");
             let mut buffer = [0; 64];
@@ -616,9 +616,9 @@ async fn measure(
     let anonymous = proxy_address("masque://", address);
     let john = ProxyAddress::try_from(format!("masque://john:secret@{address}").as_str()).unwrap();
     let (mut measured, flooding) = if scenario == Flood::SameConnection {
-        let exec = Executor::new();
+        let scope = WeakScope::detached();
         let connector =
-            ConnectUdpConnector::new(UdpConnector::new(), http_client(exec.clone()), exec)
+            ConnectUdpConnector::new(UdpConnector::new(), http_client(scope.clone()), scope)
                 .with_version(carrier.version());
         let mut sockets = Vec::new();
         for target in [echo_target, sink] {
@@ -670,9 +670,14 @@ async fn measure(
     if scenario != Flood::SameConnection {
         // The cap is live: a second anonymous tunnel is refused, so john's tunnel counts
         // against john alone.
-        let error = open_tunnel(Executor::new(), &anonymous, echo_target, carrier.version())
-            .await
-            .expect_err("one tunnel per principal");
+        let error = open_tunnel(
+            WeakScope::detached(),
+            &anonymous,
+            echo_target,
+            carrier.version(),
+        )
+        .await
+        .expect_err("one tunnel per principal");
         assert!(
             format!("{error:?}").contains("503"),
             "{carrier:?}: {error:?}"
@@ -706,24 +711,27 @@ async fn measure(
     }
 }
 
-/// The measured round trips beside a flood are all answered on a reliable carrier; native
-/// datagrams may lose a few, as every connection reaches the proxy through its one UDP socket.
+/// The measured round trips are all answered on a reliable carrier without a flood, and beside
+/// one at most a rare few go unanswered in time: the flood shares loopback UDP with them (toward
+/// the targets, and over HTTP/3 the proxy's one socket), which it can overflow. Native datagrams
+/// may lose more, as every connection reaches the proxy through that one socket unreliably.
 fn assert_live(carrier: Carrier, scenario: Flood, measured: &Measured, count: usize) {
     assert_eq!(
         measured.trips.sent(),
         count as u64,
         "{carrier:?} {scenario:?}"
     );
-    if carrier == Carrier::Http3Datagram {
-        assert!(
-            measured.trips.lost * 10 <= measured.trips.sent(),
-            "{carrier:?} {scenario:?}: lost {} of {}",
-            measured.trips.lost,
-            measured.trips.sent(),
-        );
-    } else {
-        assert_eq!(measured.trips.lost, 0, "{carrier:?} {scenario:?}");
-    }
+    let tolerated = match (carrier, scenario) {
+        (Carrier::Http3Datagram, _) => measured.trips.sent() / 10,
+        (_, Flood::None) => 0,
+        _ => measured.trips.sent() / 50,
+    };
+    assert!(
+        measured.trips.lost <= tolerated,
+        "{carrier:?} {scenario:?}: lost {} of {}",
+        measured.trips.lost,
+        measured.trips.sent(),
+    );
 }
 
 fn report(carrier: Carrier, scenario: Flood, measured: &Measured) {

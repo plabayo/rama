@@ -1656,13 +1656,13 @@ mod conn {
     use tokio::net::{TcpListener as TkTcpListener, TcpStream};
 
     use rama::error::BoxError;
+    use rama::graceful::WeakScope;
     use rama::http::body::util::{BodyExt, Empty, StreamBody};
     use rama::http::core::body::Frame;
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
     use rama::http::{Method, Request, Response, StatusCode};
     use rama::net::uri::Uri;
-    use rama::rt::Executor;
 
     use super::{FutureExpectMsgExt, concat, s, support, tcp_connect};
 
@@ -2532,7 +2532,7 @@ mod conn {
 
                         let mut shdn_rx = shdn_rx.clone();
                         tokio::task::spawn(async move {
-                            let mut conn = http2::Builder::new(Executor::new())
+                            let mut conn = http2::Builder::new(WeakScope::detached())
                                 .serve_connection(stream, service);
 
                             tokio::select! {
@@ -2555,7 +2555,7 @@ mod conn {
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
         let io = ServiceInput::new(io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2619,7 +2619,8 @@ mod conn {
 
             tokio::task::spawn(async move {
                 let stream = ServiceInput::new(stream);
-                let conn = http2::Builder::new(Executor::new()).serve_connection(stream, service);
+                let conn =
+                    http2::Builder::new(WeakScope::detached()).serve_connection(stream, service);
                 _ = conn.await;
                 tx.send(()).unwrap();
             });
@@ -2627,7 +2628,7 @@ mod conn {
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
         let io = ServiceInput::new(io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2688,7 +2689,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(client_io);
-        let (_client, conn) = conn::http2::Builder::new(Executor::new())
+        let (_client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .with_keep_alive_interval(Duration::from_secs(1))
             .with_keep_alive_timeout(Duration::from_secs(1))
             // enable while idle since we aren't sending requests
@@ -2714,7 +2715,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .with_keep_alive_interval(Duration::from_secs(1))
             .with_keep_alive_timeout(Duration::from_secs(1))
             .handshake::<_, rama::http::core::body::Incoming>(io)
@@ -2743,7 +2744,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .with_keep_alive_interval(Duration::from_secs(1))
             .with_keep_alive_timeout(Duration::from_secs(1))
             .handshake(io)
@@ -2782,7 +2783,7 @@ mod conn {
         // Spawn an HTTP2 server that reads the whole body and responds
         tokio::spawn(async move {
             let sock = ServiceInput::new(server_io);
-            rama::http::core::server::conn::http2::Builder::new(Executor::new())
+            rama::http::core::server::conn::http2::Builder::new(WeakScope::detached())
                 .serve_connection(
                     sock,
                     RamaHttpService::new(service_fn(async |req: Request| {
@@ -2797,7 +2798,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .with_keep_alive_interval(Duration::from_secs(1))
             .with_keep_alive_timeout(Duration::from_secs(1))
             .handshake(io)
@@ -2835,7 +2836,7 @@ mod conn {
         tokio::spawn(async move {
             let sock = listener.accept().await.unwrap().0;
             let sock = ServiceInput::new(sock);
-            rama::http::core::server::conn::http2::Builder::new(Executor::new())
+            rama::http::core::server::conn::http2::Builder::new(WeakScope::detached())
                 .serve_connection(
                     sock,
                     RamaHttpService::new(service_fn(async |_req| {
@@ -2850,7 +2851,7 @@ mod conn {
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
         let io = ServiceInput::new(io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2889,7 +2890,7 @@ mod conn {
         let (listener, addr) = setup_tk_test_server().await;
         tokio::spawn(async move {
             let sock = ServiceInput::new(listener.accept().await.unwrap().0);
-            rama::http::core::server::conn::http2::Builder::new(Executor::new())
+            rama::http::core::server::conn::http2::Builder::new(WeakScope::detached())
                 .serve_connection(
                     sock,
                     RamaHttpService::new(service_fn(async |req: Request| {
@@ -2903,7 +2904,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(tcp_connect(&addr).await.expect("tcp connect"));
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2965,7 +2966,7 @@ mod conn {
         // It's normal case to decline the request due to headers or size of the body.
         tokio::spawn(async move {
             let sock = ServiceInput::new(listener.accept().await.unwrap().0);
-            rama::http::core::server::conn::http2::Builder::new(Executor::default())
+            rama::http::core::server::conn::http2::Builder::new(WeakScope::detached())
                 .serve_connection(
                     sock,
                     RamaHttpService::new(service_fn(|_req| async move {
@@ -2980,7 +2981,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(tcp_connect(&addr).await.expect("tcp connect"));
-        let (mut client, conn) = conn::http2::Builder::new(Executor::default())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -3060,7 +3061,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -3113,7 +3114,7 @@ mod conn {
             });
 
             let io = ServiceInput::new(client_io);
-            let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+            let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
                 .handshake::<_, Empty<Bytes>>(io)
                 .await
                 .unwrap();
@@ -3180,7 +3181,7 @@ mod conn {
             });
 
             let io = ServiceInput::new(client_io);
-            let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+            let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
                 .handshake::<_, Empty<Bytes>>(io)
                 .await
                 .unwrap();
@@ -3241,7 +3242,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake::<_, Empty<Bytes>>(io)
             .await
             .expect("http handshake");
@@ -3302,7 +3303,7 @@ mod conn {
             });
 
             let io = ServiceInput::new(client_io);
-            let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+            let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
                 .handshake::<_, Empty<Bytes>>(io)
                 .await
                 .expect("http handshake");
@@ -3581,7 +3582,7 @@ mod conn {
             _ = rst_tx.send(got_rst);
         });
 
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake(ServiceInput::new(client_io))
             .await
             .expect("http handshake");
@@ -3691,7 +3692,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::default())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake::<_, BoxBody<Bytes, BoxError>>(io)
             .await
             .expect("http handshake");
@@ -3821,7 +3822,7 @@ mod conn {
         });
 
         let io = ServiceInput::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::default())
+        let (mut client, conn) = conn::http2::Builder::new(WeakScope::detached())
             .handshake::<_, Full<Bytes>>(io)
             .await
             .expect("http handshake");

@@ -38,6 +38,7 @@ use rama::{
     conversion::FromRef,
     error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt},
     extensions::{Extensions, ExtensionsRef},
+    graceful::Scope,
     http::{
         InfiniteReader,
         headers::ContentType,
@@ -57,7 +58,6 @@ use rama::{
     },
     layer::{ArcLayer, ConsumeErrLayer},
     net::{address::SocketAddress, stream::SocketInfo},
-    rt::Executor,
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -84,7 +84,9 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(8));
 
     let state = AppState::default();
 
@@ -93,8 +95,8 @@ async fn main() {
         .with_get("/robots.txt", robots_txt())
         .with_get("/internal/clients.csv", infinite_resource);
 
-    let exec = Executor::graceful(graceful.guard());
-    let app = HttpServer::auto(exec).service(
+    let weak_scope = scope.clone_weak();
+    let app = HttpServer::auto(weak_scope).service(
         (
             ArcLayer::new(),
             TraceLayer::new_for_http(),
@@ -113,18 +115,15 @@ async fn main() {
     let address = SocketAddress::local_ipv4(62039);
     tracing::info!("running service at: {address}");
 
-    let exec = Executor::graceful(graceful.guard());
-    let tcp_server = TcpListener::build(exec)
+    let weak_scope = scope.clone_weak();
+    let tcp_server = TcpListener::build(weak_scope)
         .bind_address(address)
         .await
         .expect("bind tcp server");
 
-    graceful.spawn_task(tcp_server.serve(tcp_svc));
+    scope.spawn_task(tcp_server.serve(tcp_svc));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(8))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Clone, Default, FromRef)]

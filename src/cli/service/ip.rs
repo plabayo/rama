@@ -13,10 +13,11 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{
     Layer, Service,
-    cli::ForwardKind,
+    cli::{DEFAULT_CONNECTION_GRACE, ForwardKind, connection_scope},
     combinators::{Either, Either3, Either7},
     error::{BoxError, BoxErrorExt, ErrorExt as _},
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         BodyLimitLayer, Request, Response, StatusCode, Version,
         headers::{
@@ -34,7 +35,7 @@ use crate::{
     },
     io::Io,
     layer::{
-        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        ConsumeErrLayer, LimitLayer, ScopeLayer,
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -42,7 +43,6 @@ use crate::{
         stream::layer::{ThrottleLayer, ThrottleMode},
     },
     proxy::haproxy::server::HaProxyLayer,
-    rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
     utils::{octets::mib, rate::Rate},
@@ -74,6 +74,7 @@ pub struct IpServiceBuilder<M> {
     rate_limit: Option<Rate>,
     throttle: Option<Rate>,
     timeout: Duration,
+    timeout_grace: Duration,
     forward: Option<ForwardKind>,
     geo_db: Option<Arc<IpGeoDb>>,
     http_version: Option<Version>,
@@ -92,6 +93,7 @@ impl IpServiceBuilder<mode::Http> {
             rate_limit: None,
             throttle: None,
             timeout: Duration::ZERO,
+            timeout_grace: DEFAULT_CONNECTION_GRACE,
             forward: None,
             geo_db: None,
             http_version: None,
@@ -112,6 +114,7 @@ impl IpServiceBuilder<mode::Transport> {
             rate_limit: None,
             throttle: None,
             timeout: Duration::ZERO,
+            timeout_grace: DEFAULT_CONNECTION_GRACE,
             forward: None,
             geo_db: None,
             http_version: None,
@@ -153,10 +156,24 @@ impl<M> IpServiceBuilder<M> {
     }
 
     crate::utils::macros::generate_set_and_with! {
-        /// set the timeout in seconds for each connection
+        /// set the age at which each connection starts draining, give or take a tenth; it is
+        /// dropped [`with_timeout_grace`](Self::with_timeout_grace) later
+        ///
+        /// (0 = no limit)
         #[must_use]
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// set at most how long a draining connection may still run before it is dropped
+        ///
+        /// Also bounds the drain when the server shuts down; the server's own scope can end it
+        /// sooner. Default: 5 seconds.
+        pub fn timeout_grace(mut self, timeout_grace: Duration) -> Self {
+            self.timeout_grace = timeout_grace;
             self
         }
     }
@@ -224,9 +241,10 @@ impl IpServiceBuilder<mode::Http> {
     /// build a tcp service ready to echo the client IP back
     pub fn build(
         self,
-        executor: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
-        self.build_services(executor).map(|(tcp, _)| tcp)
+        let scope = scope.into();
+        self.build_services(scope).map(|(tcp, _)| tcp)
     }
 
     /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
@@ -239,7 +257,7 @@ impl IpServiceBuilder<mode::Http> {
     #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
     pub fn build_with_http3(
         self,
-        executor: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<
         (
             impl Service<TcpStream, Output = (), Error = Infallible>,
@@ -247,12 +265,13 @@ impl IpServiceBuilder<mode::Http> {
         ),
         BoxError,
     > {
-        self.build_services(executor)
+        let scope = scope.into();
+        self.build_services(scope)
     }
 
     fn build_services(
         self,
-        executor: Executor,
+        scope: WeakScope,
     ) -> Result<
         (
             impl Service<TcpStream, Output = (), Error = Infallible>,
@@ -304,7 +323,7 @@ impl IpServiceBuilder<mode::Http> {
 
         let connection_limit = (self.concurrent_limit > 0)
             .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit)));
-        let connection_timeout = (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout));
+        let connection_timeout = connection_scope(&scope, self.timeout, self.timeout_grace);
         // One layer for both: QUIC paces all streams of a connection against one budget.
         let throttle = self
             .throttle
@@ -381,12 +400,12 @@ impl IpServiceBuilder<mode::Http> {
         // can hand a copy to each connection's task.
         let http_service = Arc::new(http_service);
         let http_transport_service = match self.http_version {
-            None => Either3::A(HttpServer::auto(executor.clone()).service(http_service.clone())),
+            None => Either3::A(HttpServer::auto(scope.clone()).service(http_service.clone())),
             Some(Version::HTTP_2) => {
-                Either3::B(HttpServer::new_h2(executor.clone()).service(http_service.clone()))
+                Either3::B(HttpServer::new_h2(scope.clone()).service(http_service.clone()))
             }
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
-                Either3::C(HttpServer::new_http1(executor.clone()).service(http_service.clone()))
+                Either3::C(HttpServer::new_http1(scope.clone()).service(http_service.clone()))
             }
             Some(version) => {
                 return Err(BoxError::from_static_str("unsupported http version")
@@ -401,14 +420,14 @@ impl IpServiceBuilder<mode::Http> {
             throttle,
             BodyLimitLayer::request_only(mib(1)),
         )
-            .into_layer(HttpServer::new_http3(executor).service(http_service));
+            .into_layer(HttpServer::new_http3(scope).service(http_service));
         #[cfg(not(feature = "quic"))]
         let http3_service = (
             connection_limit,
             connection_timeout,
             throttle,
             http_service,
-            executor,
+            scope,
         );
 
         Ok((
@@ -552,21 +571,24 @@ impl IpServiceBuilder<mode::Transport> {
     /// build a tcp service ready to echo client IP back
     pub fn build(
         mut self,
+        scope: impl Into<WeakScope>,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
+        let connection_scope = connection_scope(&scope.into(), self.timeout, self.timeout_grace);
         #[cfg(any(feature = "rustls", feature = "boring"))]
         {
             let maybe_tls_acceptor_layer = self.tls_server_config.take().map(TlsAcceptorLayer::new);
-            self.build_tcp(maybe_tls_acceptor_layer)
+            self.build_tcp(connection_scope, maybe_tls_acceptor_layer)
         }
 
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        self.build_tcp()
+        self.build_tcp(connection_scope)
     }
 }
 
 impl<M> IpServiceBuilder<M> {
     fn build_tcp<S: Io + ExtensionsRef + Unpin + Sync>(
         self,
+        connection_scope: ScopeLayer,
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
             TlsAcceptorLayer,
         >,
@@ -591,11 +613,7 @@ impl<M> IpServiceBuilder<M> {
             } else {
                 Either::B(UnlimitedPolicy::new())
             }),
-            if !self.timeout.is_zero() {
-                TimeoutLayer::new(self.timeout)
-            } else {
-                TimeoutLayer::never()
-            },
+            connection_scope,
             self.throttle
                 .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
             tcp_forwarded_layer,

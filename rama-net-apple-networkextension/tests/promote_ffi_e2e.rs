@@ -49,8 +49,8 @@ use std::assert_matches;
 use parking_lot::Mutex;
 use rama_core::{
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     io::BridgeIo,
-    rt::Executor,
     service::{Service, service_fn},
 };
 use std::{
@@ -123,7 +123,7 @@ impl TransparentProxyHandler for PromoteTestHandler {
 
     fn match_tcp_flow(
         &self,
-        _exec: Executor,
+        _scope: WeakScope,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
         Output = FlowAction<

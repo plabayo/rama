@@ -34,6 +34,7 @@ use rama::{
     Layer as _,
     error::BoxError,
     futures::{Stream, stream},
+    graceful::WeakScope,
     http::{
         StatusCode,
         grpc::{
@@ -50,7 +51,6 @@ use rama::{
         },
     },
     net::address::SocketAddress,
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -113,7 +113,7 @@ async fn main() -> Result<(), BoxError> {
         "HTTP and gRPC job service listening",
     );
 
-    HttpServer::auto(Executor::default())
+    HttpServer::auto(WeakScope::detached())
         .listen(ADDR, Arc::new(ErrorHandlerLayer::new().into_layer(router)))
         .await?;
 

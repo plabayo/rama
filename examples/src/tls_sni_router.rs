@@ -51,7 +51,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, BoxErrorExt},
     extensions::ExtensionsRef,
-    graceful::{Shutdown, ShutdownGuard},
+    graceful::{Scope, WeakScope},
     http::{
         layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         server::HttpServer,
@@ -63,7 +63,6 @@ use rama::{
         address::{Domain, SocketAddress},
         proxy::IoForwardService,
     },
-    rt::Executor,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self, Instrument as _,
@@ -89,32 +88,32 @@ async fn main() {
         )
         .init();
 
-    let shutdown = Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
-    spawn_https_server(shutdown.guard(), NAME_FOO, INTERFACE_FOO);
-    spawn_https_server(shutdown.guard(), NAME_BAR, INTERFACE_BAR);
-    spawn_https_server(shutdown.guard(), NAME_BAZ, INTERFACE_BAZ);
+    spawn_https_server(&scope, NAME_FOO, INTERFACE_FOO);
+    spawn_https_server(&scope, NAME_BAR, INTERFACE_BAR);
+    spawn_https_server(&scope, NAME_BAZ, INTERFACE_BAZ);
 
-    shutdown.spawn_task_fn(async move |guard| {
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
         let socket_address = SocketAddress::default_ipv4(62026);
         tracing::info!(
             network.local.address = %socket_address.ip_addr,
             network.local.port = %socket_address.port,
             "[tcp] spawn sni router: bind and go",
         );
-        TcpListener::bind_address(socket_address, Executor::graceful(guard.clone()))
+        TcpListener::bind_address(socket_address, weak_scope.clone())
             .await
             .expect("bind TCP Listener for SNI router")
             .serve(SniRouter::new(SniRouterSvc {
-                exec: Executor::graceful(guard.clone()),
+                scope: weak_scope.clone(),
             }))
             .await;
     });
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 const NAME_FOO: &str = "foo";
@@ -130,7 +129,7 @@ const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(63806);
 
 #[derive(Debug, Clone)]
 struct SniRouterSvc {
-    exec: Executor,
+    scope: WeakScope,
 }
 
 impl<S> Service<SniRequest<S>> for SniRouterSvc
@@ -171,14 +170,15 @@ where
         );
 
         IoToProxyBridgeIoLayer::new(fwd_interface)
-            .into_layer(IoForwardService::new(self.exec.clone()))
+            .into_layer(IoForwardService::new(self.scope.clone()))
             .serve(stream)
             .await
             .map(drop)
     }
 }
 
-fn spawn_https_server(guard: ShutdownGuard, name: &'static str, socket_address: SocketAddress) {
+fn spawn_https_server(scope: &Scope, name: &'static str, socket_address: SocketAddress) {
+    let weak_scope = scope.clone_weak();
     let tls_server_config = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::generated_ca_for(
             format!("{name}.local")
@@ -187,19 +187,19 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, socket_address: 
         ))
         .expect("generated server auth");
 
-    guard.into_spawn_task_fn(async move |guard| {
+    scope.spawn_task(async move {
         tracing::info!(
             host.name = %name,
             network.local.address = %socket_address.ip_addr,
             network.local.port = %socket_address.port,
             "[tcp] spawn https server: bind and go",
         );
-        TcpListener::bind_address(socket_address, Executor::graceful(guard.clone()))
+        TcpListener::bind_address(socket_address, weak_scope.clone())
             .await
             .expect("bind TCP Listener for web server")
             .serve(
                 TlsAcceptorLayer::new(tls_server_config).into_layer(
-                    HttpServer::auto(Executor::graceful(guard)).service(
+                    HttpServer::auto(weak_scope).service(
                         (
                             ArcLayer::new(),
                             TraceLayer::new_for_http(),

@@ -11,7 +11,9 @@
 )]
 
 use divan::counter::BytesCount;
-use rama::{Service as _, ServiceInput, io::BridgeIo, net::proxy::IoForwardService, rt::Executor};
+use rama::{
+    Service as _, ServiceInput, graceful::WeakScope, io::BridgeIo, net::proxy::IoForwardService,
+};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, duplex};
 
@@ -31,7 +33,7 @@ fn relay(runtime: &tokio::runtime::Runtime) -> (DuplexStream, DuplexStream) {
     let (client, client_side) = duplex(64 * 1024);
     let (origin, origin_side) = duplex(64 * 1024);
     runtime.spawn(async move {
-        _ = IoForwardService::new(Executor::new())
+        _ = IoForwardService::new(WeakScope::detached())
             .serve(BridgeIo(
                 ServiceInput::new(client_side),
                 ServiceInput::new(origin_side),

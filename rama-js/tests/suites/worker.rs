@@ -10,6 +10,7 @@ use std::{
 };
 
 use parking_lot::{Condvar, Mutex};
+use rama_core::graceful::{Cause, Scope};
 use rama_js::{JsErrorKind, JsValue, JsWorker};
 
 const TEST_WATCHDOG: Duration = Duration::from_secs(30);
@@ -312,17 +313,12 @@ async fn panicking_host_fn_kills_the_worker_loudly() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worker_exits_on_graceful_shutdown() {
-    use rama_core::graceful::Shutdown;
-
-    let (trigger, signal) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async {
-        let _triggered = signal.await;
-    });
+async fn worker_exits_once_its_scope_is_cancelled() {
+    let scope = Scope::new();
 
     let gate = WorkerGate::default();
     let worker = JsWorker::builder()
-        .with_graceful(shutdown.guard())
+        .with_scope(scope.clone())
         .spawn(crate::runtime_builder().with_fn("block", {
             let gate = gate.clone();
             move || gate.block()
@@ -334,9 +330,9 @@ async fn worker_exits_on_graceful_shutdown() {
     let mut pending = Box::pin(worker.eval("block(); x + 1"));
     poll_pending(pending.as_mut());
     gate.wait_until_entered();
-    trigger.send(()).unwrap();
+    scope.cancel(Cause::Owner);
     gate.release();
-    shutdown.shutdown().await;
+    scope.join().await.expect("the worker drains");
 
     assert_eq!(pending.await.unwrap(), JsValue::Number(42.0));
     let err = worker.eval("1").await.unwrap_err();
@@ -361,18 +357,13 @@ async fn poisoned_runtime_kills_the_worker_loudly() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn graceful_shutdown_is_bounded_under_sustained_backlog() {
-    use rama_core::graceful::Shutdown;
-
-    let (trigger, signal) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async {
-        let _triggered = signal.await;
-    });
+async fn scope_drain_is_bounded_under_sustained_backlog() {
+    let scope = Scope::new();
 
     let gate = WorkerGate::default();
     let worker = JsWorker::builder()
         .with_queue_capacity(1)
-        .with_graceful(shutdown.guard())
+        .with_scope(scope.clone())
         .spawn(crate::runtime_builder().with_fn("block", {
             let gate = gate.clone();
             move || gate.block()
@@ -391,14 +382,15 @@ async fn graceful_shutdown_is_bounded_under_sustained_backlog() {
     for job in &mut jobs[1..] {
         poll_pending(job.as_mut());
     }
-    trigger.send(()).unwrap();
+    scope.cancel(Cause::Owner);
     gate.release();
 
     // only jobs accepted by the cutoff may still run: the backlog
-    // must not extend the shutdown beyond the queue capacity
-    tokio::time::timeout(TEST_WATCHDOG, shutdown.shutdown())
+    // must not extend the drain beyond the queue capacity
+    tokio::time::timeout(TEST_WATCHDOG, scope.join())
         .await
-        .expect("graceful shutdown extended by jobs sent after the cutoff");
+        .expect("the drain was extended by jobs sent after the cutoff")
+        .expect("not aborted");
 
     for job in jobs {
         let _result = job.await;
@@ -406,14 +398,11 @@ async fn graceful_shutdown_is_bounded_under_sustained_backlog() {
 }
 
 #[tokio::test]
-async fn graceful_worker_requires_tokio_runtime() {
-    use rama_core::graceful::Shutdown;
-
-    let shutdown = Shutdown::new(async {});
-    let guard = shutdown.guard();
+async fn scoped_worker_requires_tokio_runtime() {
+    let scope = Scope::new();
     let err = std::thread::spawn(move || {
         JsWorker::builder()
-            .with_graceful(guard)
+            .with_scope(scope)
             .spawn(crate::runtime_builder())
             .unwrap_err()
     })

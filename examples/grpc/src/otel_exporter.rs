@@ -44,6 +44,7 @@
 use rama::{
     Layer,
     extensions::{Extension, Extensions},
+    graceful::Scope,
     http::{
         client::EasyHttpWebClient,
         grpc,
@@ -53,7 +54,6 @@ use rama::{
     },
     layer::AddInputExtensionLayer,
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::{
         opentelemetry::{
@@ -138,13 +138,15 @@ async fn main() {
     // state for our custom app metrics
     let state = Arc::new(Metrics::new());
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     // http web service
-    graceful.spawn_task_fn(async |guard| {
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
         // http service
-        let exec = Executor::graceful(guard);
-        let http_service = HttpServer::auto(exec.clone()).service(
+        let http_service = HttpServer::auto(weak_scope.clone()).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
                 WebService::default().with_get("/", async |ext: Extensions| {
                     ext.get_ref::<Metrics>().unwrap().counter.add(1, &[]);
@@ -154,7 +156,7 @@ async fn main() {
         );
 
         // service setup & go
-        TcpListener::build(exec)
+        TcpListener::build(weak_scope)
             .bind_address("127.0.0.1:62113")
             .await
             .unwrap()
@@ -169,8 +171,5 @@ async fn main() {
     });
 
     // wait for graceful shutdown
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .unwrap();
+    scope.join().await.unwrap();
 }

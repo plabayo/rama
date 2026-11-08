@@ -12,7 +12,7 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::ExtensionsRef,
-    rt::Executor,
+    graceful::WeakScope,
     telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn},
 };
 use rama_http::{
@@ -120,7 +120,7 @@ pin_project! {
     where
         S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>
     {
-        exec: Executor,
+        scope: WeakScope,
         service: S,
         state: State<T>,
         options: ResponseOptions,
@@ -169,7 +169,7 @@ where
         io: T,
         service: S,
         config: &Config,
-        exec: Executor,
+        scope: WeakScope,
         mut timer: ConnTimer,
     ) -> Self {
         let mut builder = crate::h2::server::Builder::default()
@@ -219,7 +219,7 @@ where
         timer.reconfigure(config.idle_timeout, config.header_read_timeout);
 
         Self {
-            exec,
+            scope,
             state: State::Handshaking {
                 ping_config,
                 hs: handshake,
@@ -306,7 +306,7 @@ where
                     if me.close_pending {
                         srv.conn.graceful_shutdown();
                     }
-                    ready!(srv.poll_server(cx, &mut me.service, &me.exec, &mut me.timer))?;
+                    ready!(srv.poll_server(cx, &mut me.service, &me.scope, &mut me.timer))?;
                     return Poll::Ready(Ok(Dispatched::Shutdown));
                 }
             };
@@ -324,7 +324,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
         service: &mut S,
-        exec: &Executor,
+        weak_scope: &WeakScope,
         timer: &mut ConnTimer,
     ) -> Poll<crate::Result<()>>
     where
@@ -444,10 +444,18 @@ where
                 respond,
                 self.options,
                 is_head,
-                exec.clone(),
+                weak_scope.clone(),
             );
 
-            exec.spawn_task(fut.instrument(serve_span));
+            // Refused, the dropped stream is reset.
+            match weak_scope.try_hold() {
+                Ok(scope) => {
+                    scope.into_spawn_task(fut.instrument(serve_span));
+                }
+                Err(refused) => {
+                    debug!(%refused, "h2 stream not served");
+                }
+            }
         }
     }
 
@@ -542,7 +550,7 @@ pin_project! {
         state: H2StreamState<F, B>,
         options: ResponseOptions,
         is_head: bool,
-        exec: Executor,
+        scope: WeakScope,
     }
 }
 
@@ -587,14 +595,14 @@ where
         respond: SendResponse<SendBuf<B::Data>>,
         options: ResponseOptions,
         is_head: bool,
-        exec: Executor,
+        scope: WeakScope,
     ) -> Self {
         Self {
             reply: respond,
             state: H2StreamState::Service { fut, connect_parts },
             options,
             is_head,
-            exec,
+            scope,
         }
     }
 }

@@ -25,8 +25,8 @@ use std::{
 };
 
 use rama_core::{
-    graceful::Shutdown,
-    rt::{Executor, spawn},
+    graceful::{Scope, WeakScope},
+    rt::spawn,
 };
 use rama_quic::{Endpoint, EndpointBuilder, EndpointConfig, ShutdownOutcome};
 use rama_udp::UdpSocketConfig;
@@ -45,9 +45,9 @@ fn localhost() -> SocketAddr {
 }
 
 /// A shutdown that fires when the returned sender is used, and nothing else fires it.
-fn application() -> (Shutdown, tokio::sync::oneshot::Sender<()>) {
+fn application() -> (Scope, tokio::sync::oneshot::Sender<()>) {
     let (tell, told) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         drop(told.await);
     });
     (shutdown, tell)
@@ -60,13 +60,13 @@ fn application() -> (Shutdown, tokio::sync::oneshot::Sender<()>) {
 async fn an_application_shutdown_joins_while_it_still_holds_an_endpoint() {
     let identities = Identities::new();
     let (shutdown, tell) = application();
-    let server = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let server = Endpoint::build(shutdown.clone_weak())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
         .expect("the server binds on the application's runtime");
     let addr = server.local_addr().unwrap();
-    let client = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let client = Endpoint::build(shutdown.clone_weak())
         .bind_address(localhost())
         .await
         .expect("the client binds on the same runtime");
@@ -84,9 +84,10 @@ async fn an_application_shutdown_joins_while_it_still_holds_an_endpoint() {
         .expect("the serving task did not panic");
 
     tell.send(()).unwrap();
-    tokio::time::timeout(LIMIT, shutdown.shutdown())
+    tokio::time::timeout(LIMIT, shutdown.join())
         .await
-        .expect("the application's shutdown joined while an endpoint was still held");
+        .expect("the application's shutdown joined while an endpoint was still held")
+        .expect("not aborted");
     // Held across the join on purpose, and still here afterwards.
     drop((server, client));
 }
@@ -97,7 +98,7 @@ async fn an_application_shutdown_joins_while_it_still_holds_an_endpoint() {
 async fn a_pending_accept_ends_with_the_application() {
     let identities = Identities::new();
     let (shutdown, tell) = application();
-    let server = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let server = Endpoint::build(shutdown.clone_weak())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
@@ -113,9 +114,10 @@ async fn a_pending_accept_ends_with_the_application() {
     );
 
     tell.send(()).unwrap();
-    tokio::time::timeout(LIMIT, shutdown.shutdown())
+    tokio::time::timeout(LIMIT, shutdown.join())
         .await
-        .expect("the shutdown joined");
+        .expect("the shutdown joined")
+        .expect("not aborted");
     assert!(
         tokio::time::timeout(LIMIT, accepting)
             .await
@@ -131,14 +133,14 @@ async fn a_pending_accept_ends_with_the_application() {
 #[tokio::test]
 async fn a_zero_budget_joins_a_live_endpoint_at_once() {
     let identities = Identities::new();
-    let server = Endpoint::build(Executor::new())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .with_shutdown_budget(Duration::ZERO)
         .bind_address(localhost())
         .await
         .expect("the server binds");
     let addr = server.local_addr().unwrap();
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds");
@@ -177,7 +179,7 @@ async fn a_zero_budget_joins_a_live_endpoint_at_once() {
 #[tokio::test]
 async fn a_zero_budget_on_an_idle_endpoint_may_drain() {
     let identities = Identities::new();
-    let server = Endpoint::build(Executor::new())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .with_shutdown_budget(Duration::ZERO)
         .bind_address(localhost())
@@ -199,13 +201,13 @@ async fn a_zero_budget_on_an_idle_endpoint_may_drain() {
 async fn an_active_connection_ends_with_the_application_that_holds_it() {
     let identities = Identities::new();
     let (shutdown, tell) = application();
-    let server = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let server = Endpoint::build(shutdown.clone_weak())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
         .expect("the server binds");
     let addr = server.local_addr().unwrap();
-    let client = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let client = Endpoint::build(shutdown.clone_weak())
         .bind_address(localhost())
         .await
         .expect("the client binds");
@@ -245,9 +247,10 @@ async fn an_active_connection_ends_with_the_application_that_holds_it() {
     assert!(first.is_pending(), "the read is waiting on an answer");
 
     tell.send(()).unwrap();
-    tokio::time::timeout(LIMIT, shutdown.shutdown())
+    tokio::time::timeout(LIMIT, shutdown.join())
         .await
-        .expect("the application's shutdown joined with a live connection held");
+        .expect("the application's shutdown joined with a live connection held")
+        .expect("not aborted");
     assert!(
         tokio::time::timeout(LIMIT, reading)
             .await
@@ -268,7 +271,7 @@ async fn an_active_connection_ends_with_the_application_that_holds_it() {
 #[tokio::test]
 async fn an_unreachable_budget_is_refused_and_releases_the_guard() {
     let (shutdown, tell) = application();
-    let refused = EndpointBuilder::new(Executor::graceful(shutdown.guard()))
+    let refused = EndpointBuilder::new(shutdown.clone_weak())
         .with_config(EndpointConfig::new(
             rama_crypto::hmac::HmacSha2::try_rand_256().expect("random reset key"),
         ))
@@ -282,9 +285,10 @@ async fn an_unreachable_budget_is_refused_and_releases_the_guard() {
     );
 
     tell.send(()).unwrap();
-    tokio::time::timeout(LIMIT, shutdown.shutdown())
+    tokio::time::timeout(LIMIT, shutdown.join())
         .await
-        .expect("the refused construction released the guard it was given");
+        .expect("the refused construction released the guard it was given")
+        .expect("not aborted");
 }
 
 /// The same for a socket that cannot be bound: nothing was built, so nothing is held.
@@ -303,7 +307,7 @@ async fn a_failed_bind_releases_the_guard() {
         options.reuse_port = Some(false);
     }
     options.reuse_address = Some(false);
-    let refused = Endpoint::build(Executor::graceful(shutdown.guard()))
+    let refused = Endpoint::build(shutdown.clone_weak())
         .bind_address_with_socket_config(
             occupied,
             UdpSocketConfig::default().with_socket_options(options),
@@ -312,9 +316,10 @@ async fn a_failed_bind_releases_the_guard() {
     assert!(refused.is_err(), "the address is already in use");
 
     tell.send(()).unwrap();
-    tokio::time::timeout(LIMIT, shutdown.shutdown())
+    tokio::time::timeout(LIMIT, shutdown.join())
         .await
-        .expect("the failed bind released the guard it was given");
+        .expect("the failed bind released the guard it was given")
+        .expect("not aborted");
 }
 
 /// Without a graceful runtime there is no application shutdown to join, and the endpoint's own
@@ -322,13 +327,13 @@ async fn a_failed_bind_releases_the_guard() {
 #[tokio::test]
 async fn an_endpoint_without_a_graceful_runtime_shuts_itself_down() {
     let identities = Identities::new();
-    let server = Endpoint::build(Executor::new())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .bind_address(localhost())
         .await
         .expect("the server binds");
     let addr = server.local_addr().unwrap();
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds");
@@ -375,7 +380,7 @@ async fn a_prepared_socket_keeps_what_the_caller_gave_it() {
         .wrap_std(bound)
         .expect("the socket is wrapped");
 
-    let server = Endpoint::build(Executor::new())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(identities.server_config())
         .with_packet_socket(prepared)
         .expect("the server takes the prepared socket");
@@ -395,7 +400,7 @@ async fn a_prepared_socket_keeps_what_the_caller_gave_it() {
         "taking the socket over left the caller's own setting alone"
     );
 
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::detached())
         .bind_address(localhost())
         .await
         .expect("the client binds");

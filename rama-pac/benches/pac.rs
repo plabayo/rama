@@ -52,11 +52,11 @@ fn main() {
         blueprint.warm_up().unwrap();
     }
     let engine_ms = started.elapsed().as_secs_f64() * 1_000.0;
-    let executor = tokio::runtime::Builder::new_current_thread()
+    let scope = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    executor.block_on(async {
+    scope.block_on(async {
         let started = Instant::now();
         let resolver = PacResolver::builder()
             .with_backend(backend)

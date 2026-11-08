@@ -88,7 +88,7 @@ async fn assert_eager_connector_metadata(
     });
 
     let connector = Connector::new(connector, service).with_hide_local_address(hide_local_address);
-    let server = Socks5Acceptor::new(Executor::default()).with_connector(connector);
+    let server = Socks5Acceptor::new(WeakScope::detached()).with_connector(connector);
 
     server
         .accept(ServiceInput::new(stream.build()))
@@ -184,7 +184,7 @@ async fn connector_reports_egress_failure_during_handshake() {
             )))
         }
     });
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_connector(Connector::new(connector, IoForwardService::default()));
 
     server.accept(ServiceInput::new(stream)).await.unwrap_err();
@@ -211,7 +211,7 @@ async fn connector_timeout_layer_reports_ttl_expired_during_handshake() {
         .await
     });
     let connector = TimeoutLayer::new(Duration::ZERO).into_layer(connector);
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_connector(Connector::new(connector, IoForwardService::default()));
 
     server.accept(ServiceInput::new(stream)).await.unwrap_err();
@@ -242,7 +242,7 @@ async fn lazy_connector_remains_an_explicit_opt_in() {
             std::future::ready(Ok::<_, BoxError>(()))
         }
     }));
-    let server = Socks5Acceptor::new(Executor::default()).with_connector(lazy);
+    let server = Socks5Acceptor::new(WeakScope::detached()).with_connector(lazy);
 
     server.accept(ServiceInput::new(stream)).await.unwrap();
     assert!(delegated.load(Ordering::SeqCst));
@@ -263,7 +263,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_failure_method_not_supporte
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default());
+    let server = Socks5Acceptor::new(WeakScope::detached());
     let result = server.accept(stream).await;
     result.unwrap_err();
 }
@@ -283,7 +283,7 @@ async fn test_socks5_acceptor_auth_flow_declined_connect_failure_method_not_supp
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default());
+    let server = Socks5Acceptor::new(WeakScope::detached());
     let result = server.accept(stream).await;
     result.unwrap_err();
 }
@@ -307,7 +307,7 @@ async fn test_socks5_acceptor_auth_flow_used_connect_failure_method_not_supporte
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
     result.unwrap_err();
@@ -332,7 +332,7 @@ async fn test_socks5_acceptor_auth_flow_username_only_connect_failure_method_not
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_authorizer(user::Basic::new_insecure(non_empty_str!("john")).into_authorizer());
     let result = server.accept(stream).await;
     result.unwrap_err();
@@ -353,7 +353,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_failure() {
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_connector(MockConnector::new_err(ReplyKind::ConnectionRefused));
     let result = server.accept(stream).await;
     result.unwrap_err();
@@ -374,7 +374,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_no_data() {
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_connector(MockConnector::new(HostWithPort::local_ipv4(42)));
     let result = server.accept(stream).await;
     result.unwrap();
@@ -399,7 +399,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_with_data() {
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default()).with_connector(
+    let server = Socks5Acceptor::new(WeakScope::detached()).with_connector(
         MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(
             tokio_test::io::Builder::new()
                 // client data
@@ -436,7 +436,7 @@ async fn test_socks5_acceptor_with_auth_flow_client_connect_mock_success_with_da
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(
             MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(
@@ -475,7 +475,7 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_connect_mock_s
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_authorizer(user::Basic::new_insecure(non_empty_str!("john")).into_authorizer())
         .with_connector(
             MockConnector::new(HostWithPort::local_ipv4(42)).with_proxy_data(

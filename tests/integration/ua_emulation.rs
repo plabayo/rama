@@ -1,4 +1,5 @@
 use rama::extensions::{Egress, Extension, Extensions, ExtensionsRef};
+use rama::graceful::WeakScope;
 use rama::http::Request;
 use rama::http::client::HttpConnectorLayer;
 use rama::http::fingerprint::Ja4H;
@@ -6,7 +7,6 @@ use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
 use rama::http::{HeaderMap, HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
-use rama::rt::Executor;
 use rama::service::service_fn;
 use rama::tls::boring::client::TlsConnector;
 use rama::tls::boring::client::profile::compiler::ConnectionProfileCompiler;
@@ -435,7 +435,7 @@ where
         tokio::spawn(async move {
             let server = TlsAcceptorLayer::new(TlsServerConfig::default_http().unwrap())
                 .with_store_client_hello(true)
-                .into_layer(HttpServer::auto(Executor::default()).service(svc));
+                .into_layer(HttpServer::auto(WeakScope::detached()).service(svc));
             server.serve(server_socket).await.unwrap();
         });
 

@@ -18,7 +18,7 @@ use std::{
     task::{Context, Waker},
 };
 
-use rama_core::rt::Executor;
+use rama_core::graceful::WeakScope;
 use rama_quic::Endpoint;
 use runtime::Identities;
 
@@ -32,7 +32,7 @@ async fn waiting_for_handshake_data_survives_cancellation() {
     let black_hole = tokio::net::UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
         .await
         .unwrap();
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::detached())
         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
         .await
         .expect("the client binds");

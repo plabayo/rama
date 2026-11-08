@@ -9,7 +9,9 @@ use parking_lot::Mutex;
 use rama_core::{
     error::{ArcError, ErrorContext as _, ErrorExt as _},
     error_sink::ErrorSink,
+    extensions::Extension,
     futures::FutureExt as _,
+    graceful::Scope,
 };
 use rama_quic_proto::ConnectionId;
 use serde::Serialize;
@@ -273,12 +275,15 @@ impl QlogRecorder {
             done,
             stop: Notify::new(),
         });
+        // The recording task holds the scope until it ends: a closed one starts no recording.
+        let scope = config.scope.try_hold().map_err(io::Error::other)?;
         output.spawn(Worker {
             receiver,
             shared: shared.clone(),
             info: config.info,
             history: config.history,
-            executor: config.executor,
+            weak_scope: config.scope,
+            scope,
         });
         Ok(Self { sender, shared })
     }
@@ -631,7 +636,7 @@ struct Gate {
 /// Recording controls obtained from [`crate::Connection::qlog_control`].
 /// Clones share this connection's gate and retain its sink, never the QUIC connection.
 /// Implements Rama's extension trait for propagation through request context.
-#[derive(Clone)]
+#[derive(Clone, Extension)]
 pub struct ConnectionQlogControl {
     destination: Destination,
     group: ConnectionId,
@@ -646,8 +651,6 @@ impl std::fmt::Debug for ConnectionQlogControl {
             .finish()
     }
 }
-
-impl rama_core::extensions::Extension for ConnectionQlogControl {}
 
 impl ConnectionQlogControl {
     /// Stable event group identifier, matching the connection's `trace_id()`.
@@ -1107,13 +1110,15 @@ pub(super) struct Worker {
     shared: Arc<Shared>,
     info: TraceInfo,
     history: Option<HistoryConfig>,
-    executor: rama_core::rt::Executor,
+    weak_scope: rama_core::graceful::WeakScope,
+    scope: Scope,
 }
 
 impl<O: QlogOutput> OutputFactory for O {
     fn spawn(self: Box<Self>, mut worker: Worker) {
-        let executor = std::mem::take(&mut worker.executor);
-        let graceful = executor.guard().cloned();
+        let weak_scope = std::mem::take(&mut worker.weak_scope);
+        let scope = std::mem::take(&mut worker.scope);
+        let cancelled = weak_scope.cancelled();
         let shared = worker.shared.clone();
         let future = async move {
             let mut output = self;
@@ -1127,16 +1132,12 @@ impl<O: QlogOutput> OutputFactory for O {
                 ))
                 .catch_unwind();
                 let mut operation = std::pin::pin!(operation);
-                if let Some(guard) = graceful {
-                    tokio::select! {
-                        result = &mut operation => result,
-                        _ = guard.cancelled() => {
-                            worker.shared.drain();
-                            operation.await
-                        },
-                    }
-                } else {
-                    operation.await
+                tokio::select! {
+                    result = &mut operation => result,
+                    () = cancelled => {
+                        worker.shared.drain();
+                        operation.await
+                    },
                 }
             };
             let result =
@@ -1165,7 +1166,7 @@ impl<O: QlogOutput> OutputFactory for O {
             }
             worker.shared.done.send_replace(Some(result));
         };
-        executor.spawn_task(RecordingTask { future, shared });
+        scope.into_spawn_task_to_completion(RecordingTask { future, shared });
     }
 }
 

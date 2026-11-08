@@ -517,7 +517,7 @@ fn notify_system_sleep_with_default_handler_is_safe() {
     engine.stop(0);
 }
 
-/// A task that holds an engine shutdown guard and never drops it
+/// A task that holds the engine scope and never drops it
 /// (a stand-in for a handler hook stuck on un-timed I/O across a
 /// suspend) must not hang `engine.stop()`: the wait on guards is
 /// bounded by the configured `stop_drain_max_wait`, after which stop
@@ -529,9 +529,9 @@ fn stop_is_bounded_when_a_guard_is_held_past_shutdown() {
     let budget = Duration::from_millis(250);
     let engine = build_engine_with_stop_drain_max_wait(TestHandler::passthrough(), budget);
     let guard = engine
-        .shutdown_guard()
-        .expect("a fresh engine has a live shutdown pair");
-    // Park a task that holds the guard forever on the engine runtime.
+        .engine_scope()
+        .expect("a fresh engine has a live scope");
+    // Park a task that holds the scope forever on the engine runtime.
     engine.rt.as_ref().unwrap().spawn(async move {
         let _held = guard;
         std::future::pending::<()>().await;

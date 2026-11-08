@@ -406,7 +406,7 @@ fn foreign_thread_decision_deadlines_record_tcp_and_udp_events() {
 
         fn match_tcp_flow(
             &self,
-            _: rama_core::rt::Executor,
+            _: rama_core::graceful::WeakScope,
             _: TransparentProxyFlowMeta,
         ) -> impl Future<
             Output = FlowAction<
@@ -423,7 +423,7 @@ fn foreign_thread_decision_deadlines_record_tcp_and_udp_events() {
 
         fn match_udp_flow(
             &self,
-            _: rama_core::rt::Executor,
+            _: rama_core::graceful::WeakScope,
             _: TransparentProxyFlowMeta,
         ) -> impl Future<
             Output = FlowAction<impl Service<crate::UdpFlow, Output = (), Error = Infallible>>,

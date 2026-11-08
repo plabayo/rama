@@ -25,6 +25,7 @@ And of course as a reminder, if you want to use Rama but are still learning Rust
 - [🍔 Middlewares and ☘️ Leaf Services](./intro/terminology.md)
 - [Network Layers](./intro/network_layers.md)
 - [🚦 Limits: concurrency, rate & bandwidth](./intro/limits.md)
+- [Graceful scopes](./intro/graceful.md)
 - [⛌ Service Branches](./intro/service_branches.md)
 - [☀️ State](./intro/state.md)
 - [🧱 Modular](./intro/modular.md)

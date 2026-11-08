@@ -6,7 +6,7 @@ use rama_core::{
     Service,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
-    rt::Executor,
+    graceful::WeakScope,
 };
 
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
@@ -17,7 +17,7 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 pub struct MockConnectorService<S> {
     create_server: S,
     max_buffer_size: usize,
-    executor: Option<Executor>,
+    scope: Option<WeakScope>,
 }
 
 impl<S> MockConnectorService<S> {
@@ -25,7 +25,7 @@ impl<S> MockConnectorService<S> {
         Self {
             create_server,
             max_buffer_size: 1024,
-            executor: None,
+            scope: None,
         }
     }
 
@@ -38,9 +38,9 @@ impl<S> MockConnectorService<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set `Executor` used for child tasks.
-        pub fn executor(mut self, executor: Option<Executor>) -> Self {
-            self.executor = executor;
+        /// Set `WeakScope` used for child tasks.
+        pub fn scope(mut self, scope: Option<WeakScope>) -> Self {
+            self.scope = scope;
             self
         }
     }
@@ -62,18 +62,23 @@ where
 
         let server = (self.create_server)();
 
-        self.executor
-            .clone()
-            .unwrap_or_default()
-            .into_spawn_task(async move {
-                #[expect(
-                    clippy::panic,
-                    reason = "test helper: failures must surface loudly to invalidate the test run"
-                )]
-                if let Err(err) = server.serve(server_socket).await {
-                    panic!("created mock server failed: {}", err.into())
-                }
-            });
+        let held = self.scope.clone().unwrap_or_default().try_hold();
+        #[expect(
+            clippy::panic,
+            reason = "test helper: failures must surface loudly to invalidate the test run"
+        )]
+        let Ok(held) = held else {
+            panic!("mock server not spawned: scope closed")
+        };
+        held.into_spawn_task(async move {
+            #[expect(
+                clippy::panic,
+                reason = "test helper: failures must surface loudly to invalidate the test run"
+            )]
+            if let Err(err) = server.serve(server_socket).await {
+                panic!("created mock server failed: {}", err.into())
+            }
+        });
 
         Ok(EstablishedClientConnection {
             input,

@@ -872,6 +872,7 @@ impl TransportLimits {
 /// deserialization, so a `QuicProfile` is valid by construction: there is no separate check to
 /// remember, and none to forget.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "std", derive(Extension))]
 pub struct QuicProfile {
     versions: ClientVersionPolicy,
     transport_parameters: TransportParameterProfile,
@@ -974,9 +975,6 @@ impl QuicProfile {
         }
     }
 }
-
-#[cfg(feature = "std")]
-impl Extension for QuicProfile {}
 
 /// The integer value of a sent transport parameter, which must fill its value exactly.
 fn sent_integer(id: TransportParameterId, value: &[u8]) -> Result<u64, ProfileError> {

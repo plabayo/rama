@@ -3,6 +3,7 @@ use super::utils;
 use rama::{
     bytes::Bytes,
     extensions::Extension,
+    graceful::WeakScope,
     http::{
         BodyExtractExt, Request, StatusCode,
         body::util::BodyExt,
@@ -18,7 +19,6 @@ use rama::{
         server::HttpServer,
         service::web::{WebService, extract::State},
     },
-    rt::Executor,
     tcp::server::TcpListener,
 };
 
@@ -150,7 +150,7 @@ fn find_string_attr<'a>(attrs: &'a [KeyValue], key: &str) -> Option<&'a str> {
 }
 
 async fn spawn_fake_otlp_collector(state: Arc<CollectorState>) {
-    let exec = Executor::default();
+    let scope = WeakScope::detached();
     let web = WebService::new_with_state(state)
         .with_post(
             "/v1/metrics",
@@ -170,9 +170,9 @@ async fn spawn_fake_otlp_collector(state: Arc<CollectorState>) {
                 StatusCode::OK
             },
         );
-    let http_service = HttpServer::auto(exec.clone()).service(web);
+    let http_service = HttpServer::auto(scope.clone()).service(web);
 
-    let listener = TcpListener::build(exec)
+    let listener = TcpListener::build(scope)
         .bind_address("127.0.0.1:4318")
         .await
         .expect("bind fake OTLP collector on 127.0.0.1:4318 (port already in use?)");

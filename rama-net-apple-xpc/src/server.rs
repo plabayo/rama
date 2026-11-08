@@ -1,7 +1,10 @@
 use std::{future::Future, sync::Arc};
 
 use rama_core::{
-    Service, error::BoxError, graceful::WeakShutdownGuard, rt::Executor, telemetry::tracing,
+    Service,
+    error::BoxError,
+    graceful::{Scope, WeakScope},
+    telemetry::tracing,
 };
 
 use crate::{
@@ -68,21 +71,22 @@ where
     pub async fn serve_listener(
         self,
         mut listener: XpcListener,
-        executor: Executor,
+        weak_scope: WeakScope,
     ) -> Result<(), BoxError> {
-        let weak_guard = executor.guard().map(|guard| guard.clone_weak());
-
         tracing::info!("xpc server listener loop started");
+        // Serving holds the scope, so every peer accepted until the cancel is admitted.
+        let Ok(scope) = weak_scope.try_hold() else {
+            tracing::debug!("scope closed: not serving");
+            return Ok(());
+        };
 
-        while let Some(peer) =
-            recv_with_optional_shutdown(weak_guard.clone(), listener.accept()).await
-        {
+        while let Some(peer) = recv_until(weak_scope.cancelled(), listener.accept()).await {
             tracing::info!(
                 pid = peer.pid(),
                 asid = peer.asid(),
                 "xpc server accepted peer connection"
             );
-            self.spawn_peer_task(peer, &executor);
+            self.spawn_peer_task(peer, &scope, &weak_scope);
         }
 
         if let Some(error) = listener.termination_reason() {
@@ -107,12 +111,15 @@ where
     pub async fn serve_connection(
         self,
         mut connection: XpcConnection,
-        executor: Executor,
+        weak_scope: WeakScope,
     ) -> Result<(), BoxError> {
-        let weak_guard = executor.guard().map(|guard| guard.clone_weak());
-
+        // Serving holds the scope, so every peer accepted until the cancel is admitted.
+        let Ok(scope) = weak_scope.try_hold() else {
+            tracing::debug!("scope closed: not serving");
+            return Ok(());
+        };
         loop {
-            match recv_with_optional_shutdown(weak_guard.clone(), connection.recv()).await {
+            match recv_until(weak_scope.cancelled(), connection.recv()).await {
                 None => break,
                 Some(XpcEvent::Connection(peer)) => {
                     tracing::info!(
@@ -120,7 +127,7 @@ where
                         asid = peer.asid(),
                         "xpc server accepted peer connection from event stream"
                     );
-                    self.spawn_peer_task(peer, &executor);
+                    self.spawn_peer_task(peer, &scope, &weak_scope);
                 }
                 Some(XpcEvent::Message(message)) => {
                     handle_message(self.service.as_ref(), message, None).await;
@@ -135,16 +142,16 @@ where
         Ok(())
     }
 
-    fn spawn_peer_task(&self, peer: XpcConnection, executor: &Executor) {
+    fn spawn_peer_task(&self, peer: XpcConnection, scope: &Scope, weak_scope: &WeakScope) {
         let service = self.service.clone();
-        let weak_guard = executor.guard().map(|guard| guard.clone_weak());
+        let stop = weak_scope.clone();
         let pid = peer.pid();
         let asid = peer.asid();
 
         tracing::info!(pid, asid, "xpc server spawning peer task");
 
-        executor.spawn_cancellable_task(async move {
-            if let Err(err) = serve_peer(service, peer, weak_guard, pid, asid).await {
+        scope.spawn_cancellable_task(async move {
+            if let Err(err) = serve_peer(service, peer, &stop, pid, asid).await {
                 tracing::error!(%err, "xpc peer task failed");
             }
         });
@@ -154,7 +161,7 @@ where
 async fn serve_peer<S>(
     service: Arc<S>,
     mut peer: XpcConnection,
-    weak_guard: Option<WeakShutdownGuard>,
+    scope: &WeakScope,
     pid: i32,
     asid: i32,
 ) -> Result<(), BoxError>
@@ -163,7 +170,7 @@ where
 {
     tracing::info!(pid, asid, "xpc server peer task started");
     loop {
-        match recv_with_optional_shutdown(weak_guard.clone(), peer.recv()).await {
+        match recv_until(scope.cancelled(), peer.recv()).await {
             None => {
                 tracing::info!(pid, asid, "xpc server peer task stopped");
                 return Ok(());
@@ -253,18 +260,12 @@ fn log_connection_close(err: &XpcConnectionError, message: &'static str) {
     }
 }
 
-async fn recv_with_optional_shutdown<T>(
-    weak_guard: Option<WeakShutdownGuard>,
+async fn recv_until<T>(
+    cancelled: impl Future<Output = ()>,
     future: impl Future<Output = Option<T>>,
 ) -> Option<T> {
-    match weak_guard {
-        Some(weak_guard) => {
-            let mut cancelled = std::pin::pin!(weak_guard.into_cancelled());
-            tokio::select! {
-                _ = cancelled.as_mut() => None,
-                output = future => output,
-            }
-        }
-        None => future.await,
+    tokio::select! {
+        () = cancelled => None,
+        output = future => output,
     }
 }

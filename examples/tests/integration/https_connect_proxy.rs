@@ -1,10 +1,10 @@
 use super::utils;
 use rama::{
     Layer,
+    graceful::WeakScope,
     http::service::web::response::{IntoResponse, Json},
     http::{BodyExtractExt, Request, headers::Accept, server::HttpServer},
     net::{address::ProxyAddress, client::ProxyRoute},
-    rt::Executor,
     service::service_fn,
     telemetry::tracing,
 };
@@ -19,7 +19,7 @@ async fn test_https_connect_proxy() {
     utils::init_tracing();
 
     tokio::spawn(async {
-        HttpServer::auto(Executor::default())
+        HttpServer::auto(WeakScope::detached())
             .listen(
                 "127.0.0.1:63002",
                 (

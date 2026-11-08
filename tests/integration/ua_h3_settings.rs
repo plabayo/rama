@@ -4,7 +4,7 @@ use rama::http::{
     Body,
     proto::h3::{SettingId, Settings},
 };
-use rama::rt::{Executor, spawn};
+use rama::{graceful::WeakScope, rt::spawn};
 use rama_http_core::h3::{client, connection::Config, server};
 use rama_net::address::SocketAddress;
 use rama_quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions};
@@ -167,11 +167,11 @@ async fn selected_chrome_h3_settings_reach_peer_with_evidenced_generation() {
                 SocketAddress::local_ipv4(444),
                 NonZeroUsize::MIN,
             );
-            let server_endpoint = Endpoint::build(Executor::new())
+            let server_endpoint = Endpoint::build(WeakScope::detached())
                 .with_server_config(server_config.clone())
                 .with_datagram_socket(server_socket)
                 .unwrap();
-            let client_endpoint = Endpoint::build(Executor::new())
+            let client_endpoint = Endpoint::build(WeakScope::detached())
                 .with_datagram_socket(client_socket)
                 .unwrap();
             let (client_connection, server_connection) = tokio::join!(
@@ -184,9 +184,12 @@ async fn selected_chrome_h3_settings_reach_peer_with_evidenced_generation() {
                     .unwrap(),
                 async { server_endpoint.accept().await.unwrap().await },
             );
-            let (client, client_driver) =
-                client::handshake::<Body, _>(client_connection.unwrap(), config, Executor::new())
-                    .unwrap();
+            let (client, client_driver) = client::handshake::<Body, _>(
+                client_connection.unwrap(),
+                config,
+                WeakScope::detached(),
+            )
+            .unwrap();
             let (server, server_driver) =
                 server::handshake(server_connection.unwrap(), Config::default()).unwrap();
             let client_driver = spawn(client_driver.run());

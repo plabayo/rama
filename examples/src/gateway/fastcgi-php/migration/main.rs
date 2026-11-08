@@ -45,7 +45,7 @@ mod unix_impl {
         Service,
         error::BoxError,
         gateway::fastcgi::{FastCgiClientRequest, FastCgiHttpClient, FastCgiUnixConnector},
-        graceful::Shutdown,
+        graceful::Scope,
         http::{
             Request, Response, StatusCode,
             layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
@@ -57,7 +57,6 @@ mod unix_impl {
         },
         layer::{ArcLayer, Layer},
         net::{address::SocketAddress, client::EstablishedClientConnection},
-        rt::Executor,
         tcp::server::TcpListener,
         telemetry::tracing::{
             self,
@@ -99,8 +98,10 @@ mod unix_impl {
                 .to_owned()
         });
 
-        let shutdown = Shutdown::default();
-        let exec = Executor::graceful(shutdown.guard());
+        let scope = Scope::new()
+            .with_default_signal()
+            .with_grace(Duration::from_secs(30));
+        let weak_scope = scope.clone_weak();
 
         // ── FastCGI fallback service: anything we don't yet serve in Rust ────
         // `FastCgiUnixConnector::php_fpm` opens a Unix-socket connection to
@@ -120,7 +121,7 @@ mod unix_impl {
             })
             .with_not_found(php_fallback_service(fastcgi_fallback));
 
-        let http_server = HttpServer::auto(exec.clone()).service(
+        let http_server = HttpServer::auto(weak_scope.clone()).service(
             (
                 ArcLayer::new(),
                 TraceLayer::new_for_http(),
@@ -129,17 +130,14 @@ mod unix_impl {
                 .into_layer(router),
         );
 
-        let tcp = TcpListener::bind_address(listen, exec.clone())
+        let tcp = TcpListener::bind_address(listen, weak_scope.clone())
             .await
             .expect("bind http listener");
         tracing::info!("rama-fastcgi-php migration listening on http://{listen}");
 
-        shutdown.spawn_task(tcp.serve(http_server));
+        scope.spawn_task(tcp.serve(http_server));
 
-        shutdown
-            .shutdown_with_limit(Duration::from_secs(30))
-            .await
-            .expect("graceful shutdown");
+        scope.join().await.expect("graceful shutdown");
     }
 
     /// Wrap a `FastCgiHttpClient` in a service that surfaces backend errors as

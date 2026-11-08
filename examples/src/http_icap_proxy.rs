@@ -75,6 +75,7 @@ use clap::Parser;
 use rama::{
     Layer as _,
     error::{BoxError, ErrorContext as _},
+    graceful::Scope,
     http::{
         HeaderValue,
         client::EasyHttpWebClient,
@@ -105,7 +106,6 @@ use rama::{
         AuthorityInputExt as _, address::Host, http::server::HttpPeekRouter,
         proxy::IoForwardService,
     },
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     tls::{
@@ -141,17 +141,19 @@ async fn main() -> Result<(), BoxError> {
     let icap_uri = icap_uri.unwrap_or_else(|| DEFAULT_ICAP_URI.to_owned());
     let target_host = Arc::new(target_host.parse::<Host>()?);
 
-    let graceful = rama::graceful::Shutdown::default();
-    let executor = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
     if embedded {
-        let listener = TcpListener::bind_address(ICAP_ADDRESS, executor.clone()).await?;
+        let listener = TcpListener::bind_address(ICAP_ADDRESS, weak_scope.clone()).await?;
         let service_target = Arc::clone(&target_host);
         let service = HttpService::new(service_fn(move |request| {
             adapt_response(request, Arc::clone(&service_target))
         }));
         let server = IcapServer::new(service, SERVICE_TAG)?;
-        graceful.spawn_task(listener.serve(server));
+        scope.spawn_task(listener.serve(server));
     }
 
     let connector = TlsConnector::auto(rama::dns::client::DnsConnector::new(
@@ -178,13 +180,13 @@ async fn main() -> Result<(), BoxError> {
         RemoveResponseHeaderLayer::hop_by_hop(),
     )
         .into_layer(
-            EasyHttpWebClient::default_with_executor(executor.clone())
+            EasyHttpWebClient::default_with_scope(weak_scope.clone())
                 .with_isolate_forward_proxy_auth_error(true),
         );
 
     // CONNECT already owns its egress socket. Peek/Relay preserves that
     // socket while applying the same ICAP layer to intercepted HTTP.
-    let http_relay = HttpMitmRelay::new(executor.clone()).with_http_middleware((
+    let http_relay = HttpMitmRelay::new(weak_scope.clone()).with_http_middleware((
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         adaptation,
         ArcLayer::new(),
@@ -192,7 +194,7 @@ async fn main() -> Result<(), BoxError> {
     let maybe_http = HttpPeekRouter::new(http_relay)
         .with_known_non_http_protocol_methods()
         .with_fallback(
-            MapOutputLayer::new(drop).into_layer(IoForwardService::new(executor.clone())),
+            MapOutputLayer::new(drop).into_layer(IoForwardService::new(weak_scope.clone())),
         );
     let tls_relay = TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {
         subject: CertificateSubject {
@@ -207,12 +209,12 @@ async fn main() -> Result<(), BoxError> {
     let connect = EagerHttpProxyConnector::new(connector, tunnel);
     let proxy = (
         ConsumeErrLayer::default(),
-        UpgradeLayer::new(executor.clone(), MethodMatcher::CONNECT, connect),
+        UpgradeLayer::new(weak_scope.clone(), MethodMatcher::CONNECT, connect),
     )
         .into_layer(direct);
-    let listener = TcpListener::bind_address(PROXY_ADDRESS, executor.clone()).await?;
-    let server = HttpServer::auto(executor).service(proxy);
-    graceful.spawn_task(listener.serve(server));
+    let listener = TcpListener::bind_address(PROXY_ADDRESS, weak_scope.clone()).await?;
+    let server = HttpServer::auto(weak_scope.clone()).service(proxy);
+    scope.spawn_task(listener.serve(server));
 
     println!("HTTP proxy listening on http://{PROXY_ADDRESS}");
     if embedded {
@@ -223,9 +225,7 @@ async fn main() -> Result<(), BoxError> {
     }
     println!("try: curl -v -x http://{PROXY_ADDRESS} http://{TARGET_HOST}/");
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await?;
+    scope.join().await?;
     Ok(())
 }
 

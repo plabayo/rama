@@ -511,7 +511,7 @@ mod tests {
     use rama_core::bytes::Bytes;
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
-    use rama_core::telemetry::tracing::{self, Span};
+    use rama_core::telemetry::tracing::{self, Span, test_utils::prepare_for_captures};
     use rama_core::{Layer, Service};
     use std::sync::OnceLock;
     use std::{
@@ -968,6 +968,7 @@ mod tests {
 
         // Use with_default to guarantee cleanup even on panic, avoiding
         // cross-test subscriber pollution.
+        prepare_for_captures();
         with_default(subscriber, || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

@@ -6,6 +6,7 @@ use rama::{
     error::BoxError,
     extensions::ExtensionsRef as _,
     futures::stream,
+    graceful::WeakScope,
     http::{
         Body, HeaderMap, Request, Response, Version,
         body::{Frame, util::BodyExt as _},
@@ -13,7 +14,6 @@ use rama::{
     },
     net::tls::ApplicationProtocol,
     quic::{Endpoint, TransportConfig},
-    rt::Executor,
     service::service_fn,
     tls::server::TlsServerConfig,
     utils::fs::tempdir,
@@ -44,11 +44,11 @@ async fn aioquic_uploads_and_trailers_against_rama() -> Result<(), BoxError> {
                 .map(|c| c.to_pem())
                 .collect::<String>(),
         )?;
-        let executor = Executor::new();
+        let scope = WeakScope::detached();
         let tls = TlsServerConfig::new()
             .with_server_auth(auth)
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-        let endpoint = Endpoint::build(executor.clone())
+        let endpoint = Endpoint::build(scope.clone())
             .with_server_config(
                 backend::server_tls_provider()
                     .server_config(&tls, backend::options())?
@@ -117,7 +117,7 @@ async fn aioquic_uploads_and_trailers_against_rama() -> Result<(), BoxError> {
                     .application_layer_protocol,
                 Some(ApplicationProtocol::HTTP_3)
             );
-            HttpServer::new_http3(executor)
+            HttpServer::new_http3(scope)
                 .serve(connection, service)
                 .await?;
             Ok::<_, BoxError>(())

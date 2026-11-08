@@ -14,7 +14,7 @@ use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
-    rt::Executor,
+    graceful::WeakScope,
     telemetry::tracing,
 };
 use rama_http_core::h3::{connection::Config, transport::BoxedConnection};
@@ -86,7 +86,7 @@ impl<E: std::fmt::Debug> std::fmt::Debug for Http3Connector<E> {
 
 /// Configure an HTTP/3 connector and the QUIC connector below it.
 ///
-/// The supplied executor owns endpoint and connection tasks. Pass an executor tied to the
+/// Endpoint and connection tasks run in the supplied scope. Pass a scope tied to the
 /// application's graceful shutdown when those tasks should drain with the application.
 #[derive(Debug)]
 pub struct Http3ConnectorBuilder<E = SharedQuicEndpoint> {
@@ -95,21 +95,22 @@ pub struct Http3ConnectorBuilder<E = SharedQuicEndpoint> {
     provider: Option<Arc<dyn QuicClientConfigProvider>>,
     config: Config,
     transport: Option<TransportConfig>,
-    executor: Executor,
+    scope: WeakScope,
 }
 
 impl Http3Connector {
     /// Configure a connector with default TLS verification and HTTP/3 limits, sharing one
     /// managed QUIC endpoint.
     #[must_use]
-    pub fn builder(executor: Executor) -> Http3ConnectorBuilder {
+    pub fn builder(scope: impl Into<WeakScope>) -> Http3ConnectorBuilder {
+        let scope = scope.into();
         Http3ConnectorBuilder {
-            endpoints: SharedQuicEndpoint::managed(executor.clone()),
+            endpoints: SharedQuicEndpoint::managed(scope.clone()),
             tls: TlsClientConfig::default_http(),
             provider: None,
             config: Config::default(),
             transport: None,
-            executor,
+            scope,
         }
     }
 }
@@ -162,7 +163,7 @@ impl Http3ConnectorBuilder {
     rama_utils::macros::generate_set_and_with! {
         /// Share an application-managed endpoint instead of binding a new socket.
         pub fn endpoint(mut self, endpoint: Endpoint) -> Self {
-            self.endpoints = SharedQuicEndpoint::supplied(endpoint, self.executor.clone());
+            self.endpoints = SharedQuicEndpoint::supplied(endpoint, self.scope.clone());
             self
         }
     }
@@ -176,10 +177,10 @@ impl Http3ConnectorBuilder {
 }
 
 impl<E> Http3ConnectorBuilder<E> {
-    /// The executor of endpoint and connection tasks.
+    /// The scope of endpoint and connection tasks.
     #[must_use]
-    pub fn executor(&self) -> &Executor {
-        &self.executor
+    pub fn scope(&self) -> &WeakScope {
+        &self.scope
     }
 
     /// Take the QUIC endpoints from `endpoints`, such as a
@@ -192,7 +193,7 @@ impl<E> Http3ConnectorBuilder<E> {
             provider: self.provider,
             config: self.config,
             transport: self.transport,
-            executor: self.executor,
+            scope: self.scope,
         }
     }
 
@@ -563,7 +564,7 @@ mod concrete_transport_tests {
                 .with_server_auth(identity)
                 .with_alpn([other.clone()].into_iter().collect());
             let server = Endpoint::bind_server(
-                Executor::new(),
+                WeakScope::detached(),
                 ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
                 SocketAddress::local_ipv4(0),
             )
@@ -577,7 +578,7 @@ mod concrete_transport_tests {
                 let _connection = connecting.await;
                 pending::<()>().await;
             });
-            let connector = Http3Connector::builder(Executor::new())
+            let connector = Http3Connector::builder(WeakScope::detached())
                 .with_tls_config(
                     TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
                 )
@@ -609,7 +610,7 @@ mod concrete_transport_tests {
                     .with_server_auth(identity)
                     .with_alpn([served.clone()].into_iter().collect());
                 let server = Endpoint::bind_server(
-                    Executor::new(),
+                    WeakScope::detached(),
                     ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
                     SocketAddress::local_ipv4(0),
                 )
@@ -622,7 +623,7 @@ mod concrete_transport_tests {
                     let _connection = connecting.await;
                     pending::<()>().await;
                 });
-                let connector = Http3Connector::builder(Executor::new())
+                let connector = Http3Connector::builder(WeakScope::detached())
                     .with_tls_config(
                         TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
                     )
@@ -680,7 +681,7 @@ mod concrete_transport_tests {
                     .with_server_auth(identity)
                     .with_alpn(Default::default());
                 let server = Endpoint::bind_server(
-                    Executor::new(),
+                    WeakScope::detached(),
                     ServerConfig::try_from_rama_tls(
                         &server_tls,
                         TlsOptions::default().with_alpn(AlpnPolicy::OutOfBandAgreement),
@@ -738,7 +739,7 @@ mod concrete_transport_tests {
                 if let Some(policy) = base_policy {
                     tls.set_alpn_policy(policy);
                 }
-                let connector = Http3Connector::builder(Executor::new())
+                let connector = Http3Connector::builder(WeakScope::detached())
                     .with_tls_config(tls)
                     .build_lazy()
                     .unwrap();
@@ -762,7 +763,7 @@ mod concrete_transport_tests {
                     let established = crate::client::http_connect::<_, _, Body>(
                         established.conn,
                         established.input,
-                        Executor::new(),
+                        WeakScope::detached(),
                     )
                     .await
                     .unwrap();
@@ -773,7 +774,7 @@ mod concrete_transport_tests {
                         crate::client::http_connect::<_, _, Body>(
                             second_transport,
                             strict,
-                            Executor::new(),
+                            WeakScope::detached(),
                         )
                         .await
                         .is_err()
@@ -811,7 +812,7 @@ mod concrete_transport_tests {
     #[cfg(feature = "boring")]
     #[tokio::test]
     async fn boring_rejects_unsupported_alpnless_http3_configuration() {
-        let connector = Http3Connector::builder(Executor::new())
+        let connector = Http3Connector::builder(WeakScope::detached())
             .with_tls_provider(Arc::new(rama_quic::tls::BoringTlsProvider))
             .with_tls_config(
                 TlsClientConfig::new()
@@ -835,7 +836,7 @@ mod concrete_transport_tests {
     async fn explicit_alpn_conflicts_are_lowered_to_http3() {
         for offer in [TlsAlpn::empty(), TlsAlpn::http_auto()] {
             let provider = Arc::new(CustomProvider::default());
-            let connector = Http3Connector::builder(Executor::new())
+            let connector = Http3Connector::builder(WeakScope::detached())
                 .with_tls_provider(provider.clone())
                 .build_lazy()
                 .unwrap();
@@ -853,7 +854,7 @@ mod concrete_transport_tests {
 
     #[tokio::test]
     async fn captured_settings_raise_qpack_limits_without_connector_config() {
-        let connector = Http3Connector::builder(Executor::new())
+        let connector = Http3Connector::builder(WeakScope::detached())
             .build_lazy()
             .unwrap();
         let input = ConnectRequest::new(HostWithPort::local_ipv4(443))
@@ -895,7 +896,7 @@ mod concrete_transport_tests {
                         .try_with_client_settings(settings.clone())
                         .unwrap()
                 };
-                let connector = Http3Connector::builder(Executor::new())
+                let connector = Http3Connector::builder(WeakScope::detached())
                     .with_config(config)
                     .build_lazy()
                     .unwrap();
@@ -933,7 +934,7 @@ mod concrete_transport_tests {
     #[tokio::test]
     async fn captured_h3_without_datagrams_allows_quic_reception_disabled() {
         let provider = Arc::new(CustomProvider::default());
-        let connector = Http3Connector::builder(Executor::new())
+        let connector = Http3Connector::builder(WeakScope::detached())
             .with_tls_provider(provider.clone())
             .build_lazy()
             .unwrap();
@@ -963,7 +964,7 @@ mod concrete_transport_tests {
     #[test]
     fn lazy_connector_construction_needs_no_runtime() {
         // No runtime exists here: construction must neither bind nor spawn.
-        let connector = Http3Connector::builder(Executor::new())
+        let connector = Http3Connector::builder(WeakScope::detached())
             .with_tls_provider(Arc::new(CustomProvider::default()))
             .build_lazy()
             .unwrap();
@@ -972,7 +973,7 @@ mod concrete_transport_tests {
 
     #[tokio::test]
     async fn built_connector_clones_share_the_prepared_endpoint() {
-        let connector = Http3Connector::builder(Executor::new())
+        let connector = Http3Connector::builder(WeakScope::detached())
             .with_tls_provider(Arc::new(CustomProvider::default()))
             .build()
             .await
@@ -999,7 +1000,7 @@ mod concrete_transport_tests {
     #[tokio::test]
     async fn custom_factory_uses_public_builder_without_builtin_provider() {
         let provider = Arc::new(CustomProvider::default());
-        let connector = Http3Connector::builder(Executor::default())
+        let connector = Http3Connector::builder(WeakScope::detached())
             .with_tls_provider(provider.clone())
             .with_tls_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Auto))
             .build()
@@ -1033,11 +1034,11 @@ mod concrete_transport_tests {
 
     #[tokio::test]
     async fn proxy_only_route_never_implicitly_dials_direct_quic() {
-        let executor = Executor::default();
-        let endpoint = Endpoint::bind_client(executor.clone(), SocketAddress::local_ipv4(0))
+        let scope = WeakScope::detached();
+        let endpoint = Endpoint::bind_client(scope.clone(), SocketAddress::local_ipv4(0))
             .await
             .unwrap();
-        let http3 = Http3Connector::builder(executor)
+        let http3 = Http3Connector::builder(scope)
             .with_endpoint(endpoint.clone())
             .build_lazy()
             .unwrap();
@@ -1087,10 +1088,13 @@ mod concrete_transport_tests {
             let mut server_config =
                 ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap();
             server_config.set_capture(CaptureLimits::default());
-            let server =
-                Endpoint::bind_server(Executor::new(), server_config, SocketAddress::local_ipv4(0))
-                    .await
-                    .unwrap();
+            let server = Endpoint::bind_server(
+                WeakScope::detached(),
+                server_config,
+                SocketAddress::local_ipv4(0),
+            )
+            .await
+            .unwrap();
             let address = server.local_addr().unwrap();
             let count = if supplied { 1 } else { 2 };
             let accept = server.clone();
@@ -1185,12 +1189,12 @@ mod concrete_transport_tests {
                     ..TransportLimits::standard()
                 })
                 .unwrap();
-            let mut builder = Http3Connector::builder(Executor::new()).with_tls_config(tls);
+            let mut builder = Http3Connector::builder(WeakScope::detached()).with_tls_config(tls);
             if supplied {
                 let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
                 endpoint.apply_quic_profile(&profile).unwrap();
                 builder = builder.with_endpoint(
-                    Endpoint::build(Executor::new())
+                    Endpoint::build(WeakScope::detached())
                         .with_config(endpoint)
                         .bind_client_address(SocketAddress::local_ipv4(0))
                         .await
@@ -1227,7 +1231,7 @@ mod concrete_transport_tests {
                 let (mut sender, driver) = h3_client::handshake::<Body, _>(
                     transport.connection,
                     Arc::unwrap_or_clone(transport.config),
-                    Executor::new(),
+                    WeakScope::detached(),
                 )
                 .unwrap();
                 spawn(driver.run());

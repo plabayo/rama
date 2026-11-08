@@ -161,7 +161,7 @@ async fn rama_datagrams_larger_than_quiche_send_budget_arrive_intact() {
     let client = deadline
         .wait(
             "the Rama client binds",
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the client binds");

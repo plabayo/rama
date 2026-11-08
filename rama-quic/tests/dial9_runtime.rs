@@ -30,7 +30,8 @@ use std::{
 use dial9::{analysis::analysis_events::Dial9Event, format::Decoder};
 
 use rama_core::{
-    rt::{Executor, OwnedRuntime},
+    graceful::WeakScope,
+    rt::OwnedRuntime,
     telemetry::dial9::{
         Dial9Handle, Dial9HandleTokioExt as _, DiskBuffer, TokioAttachOptions, recorder_or_disabled,
     },
@@ -68,13 +69,13 @@ fn an_endpoint_built_on_a_recorded_runtime_is_traced() {
         );
         let identities = Identities::new();
         let localhost = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0);
-        let server = Endpoint::build(Executor::new())
+        let server = Endpoint::build(WeakScope::detached())
             .with_server_config(identities.server_config())
             .bind_address(localhost)
             .await
             .expect("the server binds");
         let addr = server.local_addr().unwrap();
-        let client = Endpoint::build(Executor::new())
+        let client = Endpoint::build(WeakScope::detached())
             .bind_address(localhost)
             .await
             .expect("the client binds");

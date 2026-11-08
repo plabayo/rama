@@ -506,7 +506,7 @@ mod tests {
     use rama_core::error::{BoxError, BoxErrorExt as _};
     use rama_core::extensions::{Extensions, ExtensionsRef};
     use rama_core::futures::stream;
-    use rama_core::rt::Executor;
+    use rama_core::graceful::WeakScope;
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
@@ -1214,7 +1214,7 @@ mod tests {
         HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
             let conn_id = conns.fetch_add(1, Ordering::Relaxed);
             let resps = Arc::new(AtomicUsize::new(0));
-            HttpServer::auto(Executor::default()).service(service_fn(move |_req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
                 let resps = resps.clone();
                 async move {
                     let resp_id = resps.fetch_add(1, Ordering::Relaxed);
@@ -1307,7 +1307,7 @@ mod tests {
         let inner =
             HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
-                HttpServer::auto(Executor::default()).service(service_fn(
+                HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
                         let mut resp = Response::new(Body::from("ok"));
                         let headers = resp.headers_mut();
@@ -1352,7 +1352,7 @@ mod tests {
         let inner =
             HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
-                HttpServer::auto(Executor::default()).service(service_fn(
+                HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |req: Request| async move {
                         let is_upgrade = req.uri().path().is_some_and(|path| path == "/upgrade");
                         if is_upgrade {
@@ -1432,7 +1432,7 @@ mod tests {
         let inner =
             HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
-                HttpServer::auto(Executor::default()).service(service_fn(
+                HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
                         let mut resp = Response::new(Body::from(vec![0u8; kib(2048)]));
                         resp.headers_mut()
@@ -1491,7 +1491,7 @@ mod tests {
         let inner =
             HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
-                HttpServer::auto(Executor::default()).service(service_fn(
+                HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
                         // infinite SSE-like stream: never reaches end-of-stream
                         let stream = stream::repeat_with(|| {
@@ -1547,7 +1547,7 @@ mod tests {
         let inner =
             HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
-                HttpServer::auto(Executor::default()).service(service_fn(
+                HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
                         sleep(Duration::from_secs(60)).await;
                         let mut resp = Response::new(Body::from("ok"));
@@ -1599,7 +1599,7 @@ mod tests {
             move || {
                 let tunnels = tunnels.clone();
                 // CONNECT proxy: reply 200 and serve the "origin" server over the tunnel
-                HttpServer::auto(Executor::default()).service(service_fn(move |req: Request| {
+                HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
                     let tunnels = tunnels.clone();
                     async move {
                         assert_eq!(req.method(), Method::CONNECT);
@@ -1607,14 +1607,14 @@ mod tests {
                         let conn_id = tunnels.fetch_add(1, Ordering::Relaxed);
                         _ = tokio::spawn(async move {
                             let tunnel = on_upgrade.await.unwrap();
-                            let origin = HttpServer::auto(Executor::default()).service(service_fn(
-                                move |_req: Request| async move {
+                            let origin = HttpServer::auto(WeakScope::detached()).service(
+                                service_fn(move |_req: Request| async move {
                                     let mut resp = Response::new(Body::from("ok"));
                                     resp.headers_mut()
                                         .insert("x-conn-id", HeaderValue::from(conn_id as u64));
                                     Ok::<_, Infallible>(resp)
-                                },
-                            ));
+                                }),
+                            );
                             _ = origin.serve(tunnel).await;
                         });
                         Ok::<_, Infallible>(Response::new(Body::empty()))
@@ -1683,7 +1683,7 @@ mod tests {
         let inner =
             HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
-                HttpServer::auto(Executor::default()).service(service_fn(
+                HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
                         let mut trailers = rama_http_types::HeaderMap::new();
                         trailers.insert("x-trailer", HeaderValue::from_static("yes"));
@@ -1909,7 +1909,7 @@ mod tests {
         let conns = Arc::new(AtomicUsize::new(0));
         HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
             let conn_id = conns.fetch_add(1, Ordering::Relaxed);
-            HttpServer::auto(Executor::default()).service(service_fn(
+            HttpServer::auto(WeakScope::detached()).service(service_fn(
                 move |_req: Request| async move {
                     let mut resp = Response::new(Body::from(vec![0u8; kib(1024)]));
                     resp.headers_mut()

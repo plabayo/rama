@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef},
-    rt::Executor,
+    graceful::Scope,
     telemetry::tracing,
 };
 use rama_http::{
@@ -354,14 +354,14 @@ where
     /// client side, the client's or a documented placeholder on the proxy side.
     /// IPv4-mapped IPv6 addresses are reported as IPv4.
     pub fn new(
-        exec: &Executor,
+        scope: &Scope,
         session: HttpDatagramSession<T>,
         local: SocketAddress,
         peer: SocketAddress,
         config: ConnectUdpSocketConfig,
     ) -> Self {
         Self::with_accounting(
-            exec,
+            scope,
             session,
             local,
             peer,
@@ -373,7 +373,7 @@ where
     /// As [`ConnectUdpSocket::new`], charging what the tunnel moves to its principal's
     /// budget and then to its own, and recording its end.
     pub(crate) fn with_accounting(
-        exec: &Executor,
+        scope: &Scope,
         session: HttpDatagramSession<T>,
         local: SocketAddress,
         peer: SocketAddress,
@@ -407,7 +407,15 @@ where
             }),
         });
         let (tx, rx) = mpsc::channel(config.queue.get());
-        exec.spawn_task(pump(sender, rx, shared.clone(), config.idle_timeout));
+        // The pump observes the hard phase itself, so its close and wakeups always run.
+        let aborted = scope.clone_weak().aborted();
+        scope.spawn_task_to_completion(pump(
+            sender,
+            rx,
+            shared.clone(),
+            config.idle_timeout,
+            aborted,
+        ));
         Self {
             receiver,
             shared,
@@ -729,8 +737,14 @@ async fn pump<T: AsyncWrite + Send>(
     mut rx: mpsc::Receiver<Bytes>,
     shared: Arc<Shared>,
     idle_timeout: Duration,
+    aborted: impl Future<Output = ()>,
 ) {
-    let end = forward(&mut sender, &mut rx, &shared, idle_timeout).await;
+    let mut aborted = pin!(aborted);
+    let (end, mut hard) = tokio::select! {
+        biased;
+        () = &mut aborted => (PumpEnd::Tunnel(ConnectUdpClose::Closed), true),
+        end = forward(&mut sender, &mut rx, &shared, idle_timeout) => (end, false),
+    };
     // Stop admitting output immediately, without hiding input already received or
     // still being filed by the carrier's driver. No outbound payload survives this point.
     shared.send_closed.store(true, Ordering::Release);
@@ -747,6 +761,10 @@ async fn pump<T: AsyncWrite + Send>(
             let drain = async {
                 loop {
                     tokio::select! {
+                        () = &mut aborted => {
+                            hard = true;
+                            break ConnectUdpClose::Closed;
+                        }
                         () = shared.wait_receive_end() => break ConnectUdpClose::Closed,
                         () = tokio::time::sleep_until(shared.idle_deadline(idle_timeout)) => {
                             if shared.idle_deadline(idle_timeout) <= Instant::now() {
@@ -764,11 +782,14 @@ async fn pump<T: AsyncWrite + Send>(
         PumpEnd::Tunnel(reason) => shared.close(reason),
     }
     // A graceful end of our direction within a short grace, else the carrier is dropped:
-    // a peer that stopped reading must not hold the stream.
-    if !matches!(
-        tokio::time::timeout(CLOSE_GRACE, sender.close()).await,
-        Ok(Ok(()))
-    ) {
+    // a peer that stopped reading must not hold the stream, nor may the hard phase wait on it.
+    let closed = !hard
+        && tokio::select! {
+            biased;
+            () = &mut aborted => false,
+            closed = tokio::time::timeout(CLOSE_GRACE, sender.close()) => matches!(closed, Ok(Ok(()))),
+        };
+    if !closed {
         sender.abort();
     }
 }

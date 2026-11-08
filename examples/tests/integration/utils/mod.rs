@@ -130,7 +130,7 @@ use rama::{
         feature = "boring"
     )
 ))]
-use rama::rt::Executor;
+use rama::graceful::WeakScope;
 
 #[cfg(all(feature = "http-full", feature = "rustls", not(feature = "boring")))]
 use rama::tls::client::TlsClientConfig;
@@ -243,26 +243,22 @@ impl ExampleRunner {
 
     /// Ask the example to stop the way a person would, and wait for it within `limit`.
     ///
-    /// Ctrl-C on both platforms: `SIGINT` on unix, and on Windows a `CTRL_C_EVENT` raised by a
-    /// helper inside the console the child was given. The helper is a child of this process
-    /// too, so it is awaited inside the same deadline and reaped rather than left running.
-    /// `Drop` kills and reaps the example either way.
+    /// `SIGINT` on unix; on Windows `CTRL_BREAK_EVENT`, sent to the example's own process
+    /// group, which `default_signal` honours. `Drop` kills and reaps the example either way.
     pub(super) async fn interrupt_within(&mut self, limit: Duration) -> ExitStatus {
         let deadline = std::time::Instant::now() + limit;
-        let mut asking = Asking(self.ask_to_stop());
+        self.ask_to_stop();
         loop {
-            let raised = asking.raised();
             if let Some(status) = self
                 .server_process
                 .try_wait()
                 .expect("its status is readable")
-                && raised
             {
                 return status;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "the example did not stop within {limit:?} of being asked (ctrl-c raised: {raised})"
+                "the example did not stop within {limit:?} of being asked"
             );
             // Shares a runtime with the test's own peers; blocking it would stop them making
             // the progress the example is waiting for.
@@ -271,7 +267,7 @@ impl ExampleRunner {
     }
 
     #[cfg(unix)]
-    fn ask_to_stop(&self) -> Option<Child> {
+    fn ask_to_stop(&self) {
         let pid = self.server_process.id();
         let pid_t = libc::pid_t::try_from(pid).expect("a positive pid");
         #[expect(
@@ -283,29 +279,33 @@ impl ExampleRunner {
         // status), so the pid still names this child.
         let sent = unsafe { libc::kill(pid_t, libc::SIGINT) };
         assert_eq!(sent, 0, "SIGINT reached the example (pid {pid})");
-        None
     }
 
-    /// Raising the event has to happen in a process of its own: it needs `AttachConsole` to
-    /// the child's console, which this runner must not do to itself. That process is this same
-    /// test binary, re-run with one ignored test selected and the pid in the environment, so
-    /// there is no extra binary to build or ship.
-    ///
-    /// Once `tokio-graceful` honours `CTRL_BREAK`, this collapses to one targeted
-    /// `GenerateConsoleCtrlEvent` and no helper at all.
     #[cfg(windows)]
-    fn ask_to_stop(&self) -> Option<Child> {
+    #[expect(
+        unsafe_code,
+        reason = "raising a console control event for a child process group requires Windows FFI"
+    )]
+    fn ask_to_stop(&self) {
+        // The signature matches its kernel32 prototype (`wincon.h`): `BOOL` is `i32` and
+        // `DWORD` is `u32`.
+        unsafe extern "system" {
+            fn GenerateConsoleCtrlEvent(event: u32, process_group_id: u32) -> i32;
+        }
+        const CTRL_BREAK_EVENT: u32 = 1;
         let pid = self.server_process.id();
-        Some(
-            std::process::Command::new(
-                std::env::current_exe().expect("this test binary's own path"),
-            )
-            .args(["--ignored", "--exact", CTRL_C_HELPER])
-            .stdin(std::process::Stdio::null())
-            .env(CTRL_C_PID, pid.to_string())
-            .spawn()
-            .expect("the ctrl-c helper starts"),
-        )
+        // SAFETY: both arguments are plain integers and no pointer crosses the call. Spawned
+        // with `CREATE_NEW_PROCESS_GROUP`, the example's pid is the id of the process group it
+        // roots: the event reaches the members of that group attached to this console, the
+        // example and any descendant that stayed in its group. The example is not reaped yet
+        // (no `try_wait` has returned a status), so the id still names that group.
+        let raised = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
+        assert_ne!(
+            raised,
+            0,
+            "ctrl-break reached the example (pid {pid}): {}",
+            std::io::Error::last_os_error()
+        );
     }
 }
 
@@ -395,68 +395,6 @@ fn check_child_running(child: &mut Child) -> Result<(), String> {
             "cannot inspect child {} status: {error}",
             child.id()
         )),
-    }
-}
-
-/// A child inherits whether ctrl-c is ignored: a runner started from a shell that ignores
-/// it would otherwise spawn examples the raised event can never stop.
-#[cfg(windows)]
-#[expect(
-    unsafe_code,
-    reason = "restoring default ctrl-c processing requires Windows FFI"
-)]
-fn process_ctrl_c_in_children() {
-    // Declaration matches the kernel32 prototype
-    // `BOOL SetConsoleCtrlHandler(PHANDLER_ROUTINE, BOOL)` (`consoleapi.h`).
-    unsafe extern "system" {
-        fn SetConsoleCtrlHandler(
-            handler: Option<unsafe extern "system" fn(u32) -> i32>,
-            add: i32,
-        ) -> i32;
-    }
-    static RESTORED: Once = Once::new();
-    RESTORED.call_once(|| {
-        // SAFETY: a null handler with add=0 requests the documented default ctrl-c processing.
-        // Best effort: without a console of its own there is nothing to restore.
-        _ = unsafe { SetConsoleCtrlHandler(None, 0) };
-    });
-}
-
-/// Owns the ctrl-c helper while the interrupt is in flight. It is a child of this process, so
-/// every way out of the wait — its own exit, a panic, or the waiting test being dropped — has
-/// to end it.
-struct Asking(Option<Child>);
-
-impl Asking {
-    /// Whether the event has been raised: true at once where no helper is needed, and once the
-    /// helper has exited otherwise. Its status is checked here, so a helper that could not raise
-    /// the event fails the test rather than passing as a silent absence of ctrl-c.
-    fn raised(&mut self) -> bool {
-        let Some(helper) = self.0.as_mut() else {
-            return true;
-        };
-        let Some(status) = helper.try_wait().expect("the helper's status is readable") else {
-            return false;
-        };
-        self.0 = None;
-        assert!(
-            status.success(),
-            "ctrl-c was raised in the example's console: {status}"
-        );
-        true
-    }
-}
-
-impl Drop for Asking {
-    fn drop(&mut self) {
-        if let Some(mut helper) = self.0.take() {
-            // Both run: a kill that fails because it has already exited still leaves it to reap.
-            let killed = helper.kill();
-            let reaped = helper.wait();
-            if let (Err(killing), Err(reaping)) = (&killed, &reaped) {
-                tracing::warn!("the ctrl-c helper outlived its test: {killing}, {reaping}");
-            }
-        }
     }
 }
 
@@ -581,9 +519,9 @@ impl ExampleRunner {
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt as _;
-                const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-                command.creation_flags(CREATE_NEW_CONSOLE);
-                process_ctrl_c_in_children();
+                // Its own group, so ctrl-break can be sent to the example alone.
+                const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+                command.creation_flags(CREATE_NEW_PROCESS_GROUP);
             }
         }
         let mut child = command.spawn().unwrap();
@@ -617,7 +555,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls_config)
-                    .with_default_http_connector(Executor::default())
+                    .with_default_http_connector(WeakScope::detached())
                     .without_connection_pool()
                     .build_client()
             };
@@ -642,7 +580,7 @@ impl ExampleRunner {
                     .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls_config)
-                    .with_default_http_connector(Executor::default())
+                    .with_default_http_connector(WeakScope::detached())
                     .without_connection_pool()
                     .build_client()
             };
@@ -853,66 +791,4 @@ where
         Ok(response) => Ok(response.map(rama::http::Body::new)),
         Err(err) => Err(err.into()),
     }
-}
-
-/// The ignored test that acts as the Ctrl-C helper, and the variable carrying the pid to it.
-#[cfg(windows)]
-const CTRL_C_HELPER: &str = "utils::raise_ctrl_c_for_a_child";
-#[cfg(windows)]
-const CTRL_C_PID: &str = "RAMA_E2E_CTRL_C_PID";
-
-/// Not a test. `ExampleRunner::interrupt_within` re-runs this binary with this one selected to
-/// get a process of its own, which is what `AttachConsole` needs. Without the pid in the
-/// environment it does nothing, so an ordinary ignored-test run passes straight over it.
-#[cfg(windows)]
-#[test]
-#[ignore = "the ctrl-c helper `ExampleRunner::interrupt_within` starts"]
-#[expect(
-    unsafe_code,
-    reason = "joining another process console and raising an event requires Windows FFI"
-)]
-fn raise_ctrl_c_for_a_child() {
-    let Ok(pid) = std::env::var(CTRL_C_PID) else {
-        return;
-    };
-    let pid: u32 = pid.parse().expect("a process id");
-
-    // Each signature matches its kernel32 prototype (`consoleapi.h`,
-    // `wincon.h`, `errhandlingapi.h`): `BOOL` is `i32`, `DWORD` is `u32`, and
-    // `PHANDLER_ROUTINE` is a nullable `BOOL WINAPI (*)(DWORD)`.
-    unsafe extern "system" {
-        fn FreeConsole() -> i32;
-        fn AttachConsole(process_id: u32) -> i32;
-        fn SetConsoleCtrlHandler(
-            handler: Option<unsafe extern "system" fn(u32) -> i32>,
-            add: i32,
-        ) -> i32;
-        fn GenerateConsoleCtrlEvent(event: u32, process_group_id: u32) -> i32;
-        fn GetLastError() -> u32;
-    }
-    const CTRL_C_EVENT: u32 = 0;
-    /// Everything attached to the console this process has joined.
-    const WHOLE_GROUP: u32 = 0;
-
-    // SAFETY: Detaching this helper requires no pointers or additional preconditions.
-    unsafe { FreeConsole() };
-    // SAFETY: Windows validates the process ID; this helper has detached its console.
-    let attached = unsafe { AttachConsole(pid) };
-    assert_ne!(attached, 0, "attached to the console of {pid}: {}", {
-        // SAFETY: Reading this thread's last error requires no preconditions.
-        unsafe { GetLastError() }
-    });
-    // The event reaches this process too; ignoring it keeps it alive to report.
-    // SAFETY: A null handler with add=1 requests the documented ignore-Ctrl-C behavior.
-    let ignored = unsafe { SetConsoleCtrlHandler(None, 1) };
-    assert_ne!(ignored, 0, "ignored ctrl-c here: {}", {
-        // SAFETY: Reading this thread's last error requires no preconditions.
-        unsafe { GetLastError() }
-    });
-    // SAFETY: Both values are documented constants targeting our attached console.
-    let raised = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, WHOLE_GROUP) };
-    assert_ne!(raised, 0, "raised ctrl-c for {pid}: {}", {
-        // SAFETY: Reading this thread's last error requires no preconditions.
-        unsafe { GetLastError() }
-    });
 }

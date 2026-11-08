@@ -5,7 +5,9 @@
     reason = "integration fixture setup and protocol assertions"
 )]
 
-use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _, rt::Executor, service::service_fn};
+use rama_core::{
+    bytes::Bytes, extensions::ExtensionsRef as _, graceful::WeakScope, service::service_fn,
+};
 use rama_http::{
     Body, Method, Request, Response,
     datagram::{DatagramTransport, HttpDatagramSession, SessionEvent},
@@ -34,7 +36,7 @@ async fn clean_close_does_not_cancel_the_servers_datagram_drain() {
         // Exceed the driver's cooperative quantum so even selecting the driver first
         // leaves accept() ready while its clean-close drain is still pending.
         let count = 64;
-        let mut http = HttpServer::new_http3(Executor::new());
+        let mut http = HttpServer::new_http3(WeakScope::detached());
         http.http3_mut().extended_connect = true;
         http.http3_mut().datagrams = Some(DatagramConfig {
             limits: DatagramLimits {
@@ -63,7 +65,7 @@ async fn clean_close_does_not_cancel_the_servers_datagram_drain() {
         let (mut client, driver) = client::handshake::<Body, _>(
             client_connection.clone(),
             Config::default(),
-            Executor::new(),
+            WeakScope::detached(),
         )
         .unwrap();
         let client_driver = tokio::spawn(driver.run());
@@ -154,11 +156,11 @@ async fn connection_pair() -> (
         SocketAddress::local_ipv4(444),
         NonZeroUsize::MIN,
     );
-    let server_endpoint = Endpoint::build(Executor::new())
+    let server_endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .unwrap();
-    let client_endpoint = Endpoint::build(Executor::new())
+    let client_endpoint = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .unwrap();
     let (client_connection, server_connection) = tokio::join!(
@@ -194,7 +196,7 @@ async fn clean_close_drives_accepted_service_work_within_a_fixed_bound() {
             let release = Arc::new(Notify::new());
             let completed = Arc::new(AtomicBool::new(false));
             let dropped = Arc::new(AtomicBool::new(false));
-            let mut http = HttpServer::new_http3(Executor::new());
+            let mut http = HttpServer::new_http3(WeakScope::detached());
             http.http3_mut().close_drain_timeout = Duration::from_millis(50);
             let service = service_fn({
                 let entered = entered.clone();
@@ -221,7 +223,7 @@ async fn clean_close_drives_accepted_service_work_within_a_fixed_bound() {
             let (mut client, driver) = client::handshake::<Body, _>(
                 client_connection.clone(),
                 Config::default(),
-                Executor::new(),
+                WeakScope::detached(),
             )
             .unwrap();
             let driver = tokio::spawn(driver.run());

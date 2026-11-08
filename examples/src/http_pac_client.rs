@@ -40,6 +40,7 @@ use std::time::Duration;
 use rama::{
     Layer, Service,
     error::BoxError,
+    graceful::WeakScope,
     http::{
         Body, BodyExtractExt, Request, Response, client::EasyHttpWebClient, server::HttpServer,
     },
@@ -51,7 +52,6 @@ use rama::{
         address::{Domain, SocketAddress},
         uri::Uri,
     },
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -169,7 +169,7 @@ async fn serve<S>(address: SocketAddress, service: S)
 where
     S: Service<Request, Output = Response, Error = std::convert::Infallible> + Clone,
 {
-    TcpListener::build(Executor::default())
+    TcpListener::build(WeakScope::detached())
         .bind_address(address)
         .await
         .expect("bind TCP listener")

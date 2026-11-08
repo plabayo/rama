@@ -24,6 +24,8 @@ mod admission;
 #[doc(inline)]
 pub use admission::{ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy};
 
+mod drain;
+
 mod exclusive;
 #[doc(inline)]
 pub use exclusive::{LeasedConnection, LruDropPool, ReuseStrategy};
@@ -210,6 +212,14 @@ where
     }
 }
 
+/// A connector that checks connections out of a [`Pool`] and dials through its inner
+/// connector when the pool has none to reuse.
+///
+/// The pools of this crate drain a pooled connection in the graceful phase of the scope it runs
+/// in, the [`scope_context`] of its extensions: it is no longer reused and closes once released,
+/// while checkouts go on to dial new connections.
+///
+/// [`scope_context`]: rama_core::graceful::scope_context
 #[derive(ExtensionsRef)]
 pub struct PooledConnector<S, P, R> {
     inner: S,

@@ -4,9 +4,9 @@ use rama::{
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     },
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    graceful::WeakScope,
     http::tls::CertIssuerHttpClient,
     net::{address::Host, tls::ApplicationProtocol},
-    rt::Executor,
     telemetry::tracing,
     tls::boring::{
         core::x509::X509,
@@ -25,10 +25,11 @@ use std::path::Path;
 
 pub fn try_new_server_config(
     alpn: Option<Vec<ApplicationProtocol>>,
-    exec: Executor,
+    scope: impl Into<WeakScope>,
 ) -> Result<TlsServerConfig, BoxError> {
+    let scope = scope.into();
     let mut config = TlsServerConfig::new();
-    match CertIssuerHttpClient::try_from_env(exec) {
+    match CertIssuerHttpClient::try_from_env(scope) {
         Ok(issuer) => {
             config.set_cert_issuer(ServerCertIssuerData::new(issuer));
         }
@@ -47,8 +48,9 @@ pub fn try_new_server_config_with_auth_files(
     cert_path: Option<&Path>,
     key_path: Option<&Path>,
     alpn: Option<Vec<ApplicationProtocol>>,
-    exec: Executor,
+    scope: impl Into<WeakScope>,
 ) -> Result<TlsServerConfig, BoxError> {
+    let scope = scope.into();
     match (cert_path, key_path) {
         (Some(cert), Some(key)) => {
             tracing::info!(
@@ -73,7 +75,7 @@ pub fn try_new_server_config_with_auth_files(
             }
             Ok(config)
         }
-        (None, None) => try_new_server_config(alpn, exec),
+        (None, None) => try_new_server_config(alpn, scope),
         _ => Err(BoxError::from_static_str(
             "both certificate and key must be provided together, or neither",
         )),

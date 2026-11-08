@@ -5,6 +5,7 @@ use rama::{
     crypto::pem::PemEncode as _,
     error::BoxError,
     futures::stream,
+    graceful::WeakScope,
     http::{
         Body, HeaderMap, Request, Response, Version,
         body::{Frame, util::BodyExt as _},
@@ -13,7 +14,6 @@ use rama::{
     },
     net::tls::ApplicationProtocol,
     quic::{Endpoint, TransportConfig},
-    rt::Executor,
     service::service_fn,
     tls::{client::TlsClientConfig, server::TlsServerConfig},
     utils::{fs::tempdir, octets},
@@ -95,8 +95,8 @@ async fn rama_client_against_quic_go() -> Result<(), BoxError> {
             .parse()?;
         let logs =
             tokio::spawn(async move { while lines.next_line().await.ok().flatten().is_some() {} });
-        let executor = Executor::new();
-        let endpoint = Endpoint::build(executor.clone())
+        let scope = WeakScope::detached();
+        let endpoint = Endpoint::build(scope.clone())
             .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
             .await?;
         let tls = TlsClientConfig::new()
@@ -111,7 +111,7 @@ async fn rama_client_against_quic_go() -> Result<(), BoxError> {
             ));
         let connection = endpoint.connect_with(config, address, "localhost")?.await?;
         let (sender, driver) =
-            client::handshake::<Body, _>(connection.clone(), Config::default(), executor)?;
+            client::handshake::<Body, _>(connection.clone(), Config::default(), scope)?;
         let drive = tokio::spawn(driver.run());
         let mut jobs = JoinSet::new();
         for i in 0..9 {
@@ -195,11 +195,11 @@ async fn quic_go_client_against_rama() -> Result<(), BoxError> {
                 .map(|c| c.to_pem())
                 .collect::<String>(),
         )?;
-        let executor = Executor::new();
+        let scope = WeakScope::detached();
         let tls = TlsServerConfig::new()
             .with_server_auth(auth)
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-        let endpoint = Endpoint::build(executor.clone())
+        let endpoint = Endpoint::build(scope.clone())
             .with_server_config(
                 backend::server_tls_provider()
                     .server_config(&tls, backend::options())?
@@ -286,10 +286,10 @@ async fn quic_go_client_against_rama() -> Result<(), BoxError> {
                 while let Some(incoming) = endpoint.accept().await {
                     accepted.fetch_add(1, Ordering::SeqCst);
                     let handler = handler.clone();
-                    let executor = executor.clone();
+                    let scope = scope.clone();
                     connections.spawn(async move {
                         let connection = incoming.await.unwrap();
-                        HttpServer::new_http3(executor)
+                        HttpServer::new_http3(scope)
                             .serve(connection.clone(), handler)
                             .await
                             .unwrap();

@@ -11,7 +11,8 @@ use rama_core::{
         StreamExt as _,
         stream::{self, BoxStream},
     },
-    rt::{Executor, spawn},
+    graceful::WeakScope,
+    rt::spawn,
 };
 use rama_net::{
     address::{Domain, HostWithPort, ProxyAddress, SocketAddress},
@@ -68,7 +69,7 @@ async fn supplied_zero_cid_endpoint_retries_after_peer_refusal() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let identity = identity();
         let server = Endpoint::bind_server(
-            Executor::new(),
+            WeakScope::detached(),
             server(&identity),
             SocketAddress::local_ipv4(0),
         )
@@ -107,13 +108,13 @@ async fn supplied_zero_cid_endpoint_retries_after_peer_refusal() {
             );
         let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
         endpoint_config.apply_quic_profile(&profile).unwrap();
-        let endpoint = Endpoint::build(Executor::new())
+        let endpoint = Endpoint::build(WeakScope::detached())
             .with_config(endpoint_config)
             .bind_client_address(SocketAddress::local_ipv4(0))
             .await
             .unwrap();
         let quic = connector(
-            SharedQuicEndpoint::supplied(endpoint.clone(), Executor::new()),
+            SharedQuicEndpoint::supplied(endpoint.clone(), WeakScope::detached()),
             &identity,
         );
         let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()));
@@ -175,7 +176,7 @@ impl Service<ConnectRequest> for PathEndpoints {
 #[tokio::test]
 async fn proxy_route_its_endpoints_do_not_establish_is_refused() {
     let identity = identity();
-    let endpoint = Endpoint::bind_client(Executor::new(), SocketAddress::local_ipv4(0))
+    let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let proxy: ProxyAddress = "masque://proxy.example:443".parse().unwrap();
@@ -190,7 +191,7 @@ async fn proxy_route_its_endpoints_do_not_establish_is_refused() {
         let direct_attempts = Arc::new(Mutex::new(Vec::new()));
         let quic = connector(
             PathEndpoints {
-                shared: SharedQuicEndpoint::supplied(endpoint.clone(), Executor::new()),
+                shared: SharedQuicEndpoint::supplied(endpoint.clone(), WeakScope::detached()),
                 route,
                 peer,
                 direct_attempts: direct_attempts.clone(),
@@ -232,7 +233,7 @@ mod out_of_band {
                     .with_alpn(Default::default())
                     .with_server_auth(identity.clone());
                 let server = Endpoint::bind_server(
-                    Executor::new(),
+                    WeakScope::detached(),
                     ServerConfig::try_from_rama_tls(
                         &tls,
                         TlsOptions::default().with_alpn(AlpnPolicy::OutOfBandAgreement),
@@ -252,7 +253,10 @@ mod out_of_band {
                         pending::<()>().await;
                     }
                 });
-                let quic = connector(SharedQuicEndpoint::managed(Executor::new()), &identity);
+                let quic = connector(
+                    SharedQuicEndpoint::managed(WeakScope::detached()),
+                    &identity,
+                );
                 let input =
                     ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()));
                 input

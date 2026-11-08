@@ -12,6 +12,7 @@ use std::task::{Context, Poll};
 use pin_project_lite::pin_project;
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::graceful::WeakScope;
 use rama_http::{Request, Response};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
@@ -20,7 +21,6 @@ use tokio::io::ReadBuf;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::io::rewind::Rewind;
-use rama_core::rt::Executor;
 
 use crate::body::Incoming;
 
@@ -42,10 +42,11 @@ pub struct Builder {
 impl Builder {
     /// Create a new auto connection builder.
     #[must_use]
-    pub fn new(executor: Executor) -> Self {
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             http1: http1::Builder::new(),
-            http2: http2::Builder::new(executor),
+            http2: http2::Builder::new(scope),
             version: None,
         }
     }
@@ -610,7 +611,7 @@ mod tests {
     use crate::{body::Bytes, client};
     use rama_core::ServiceInput;
     use rama_core::error::BoxError;
-    use rama_core::rt::Executor;
+    use rama_core::graceful::WeakScope;
     use rama_core::service::service_fn;
     use rama_http::StreamingBody;
     use rama_http_types::body::util::{BodyExt, Empty};
@@ -626,7 +627,7 @@ mod tests {
     #[test]
     fn configuration() {
         // Using variable.
-        let mut builder = auto::Builder::new(Executor::new());
+        let mut builder = auto::Builder::new(WeakScope::detached());
 
         builder.http1_mut().set_keep_alive(true);
         builder.h2_mut().maybe_set_keep_alive_interval(None);
@@ -742,7 +743,7 @@ mod tests {
         let (stream, _) = listen_task.await.unwrap();
         let stream = ServiceInput::new(stream);
 
-        let builder = auto::Builder::new(Executor::new());
+        let builder = auto::Builder::new(WeakScope::detached());
         let connection = builder.serve_connection(stream, RamaHttpService::new(service_fn(hello)));
 
         pin!(connection);
@@ -779,7 +780,7 @@ mod tests {
     {
         let stream = TcpStream::connect(addr).await.unwrap();
         let stream = ServiceInput::new(stream);
-        let (sender, connection) = client::conn::http2::Builder::new(Executor::new())
+        let (sender, connection) = client::conn::http2::Builder::new(WeakScope::detached())
             .handshake(stream)
             .await
             .unwrap();
@@ -800,7 +801,7 @@ mod tests {
                 let (stream, _) = listener.accept().await.unwrap();
                 let stream = ServiceInput::new(stream);
                 tokio::spawn(async move {
-                    let mut builder = auto::Builder::new(Executor::new());
+                    let mut builder = auto::Builder::new(WeakScope::detached());
                     if h1_only {
                         builder = builder.http1_only();
                         builder
@@ -837,7 +838,7 @@ mod timeout_tests {
         server::conn::{HeaderReadTimeout, IdleTimeout, timeout::ConnTimer},
         service::RamaHttpService,
     };
-    use rama_core::{ServiceInput, error::BoxError, rt::Executor, service::service_fn};
+    use rama_core::{ServiceInput, error::BoxError, graceful::WeakScope, service::service_fn};
     use rama_http_types::{Body, Request, Response};
     use std::{convert::Infallible, future::poll_fn, task::Poll, time::Duration};
     use tokio::{
@@ -938,7 +939,7 @@ mod timeout_tests {
 
     #[tokio::test(start_paused = true)]
     async fn idle_before_any_byte_closes_cleanly() {
-        let (mut client, task) = serve(Builder::new(Executor::new()));
+        let (mut client, task) = serve(Builder::new(WeakScope::detached()));
         let started = Instant::now();
         task.await.unwrap().unwrap();
         assert_eq!(started.elapsed(), SECOND * 10);
@@ -949,7 +950,7 @@ mod timeout_tests {
 
     #[tokio::test(start_paused = true)]
     async fn stalled_preface_is_a_head_timeout() {
-        let (mut client, task) = serve(Builder::new(Executor::new()));
+        let (mut client, task) = serve(Builder::new(WeakScope::detached()));
         client.write_all(b"PRI * HTTP/2.0").await.unwrap();
         let started = Instant::now();
         let error = task.await.unwrap().unwrap_err();
@@ -959,7 +960,7 @@ mod timeout_tests {
 
     #[tokio::test(start_paused = true)]
     async fn http1_detected_late_keeps_the_head_start() {
-        let (mut client, task) = serve(Builder::new(Executor::new()));
+        let (mut client, task) = serve(Builder::new(WeakScope::detached()));
         let started = Instant::now();
         // Matches the HTTP/2 preface, so detection waits for the next byte.
         client.write_all(b"P").await.unwrap();
@@ -979,7 +980,7 @@ mod timeout_tests {
 
     #[tokio::test(start_paused = true)]
     async fn http2_detected_late_keeps_the_first_request_window() {
-        let (mut client, task) = serve(Builder::new(Executor::new()));
+        let (mut client, task) = serve(Builder::new(WeakScope::detached()));
         let started = Instant::now();
         settle().await;
         advance(SECOND * 5).await;
@@ -1000,7 +1001,7 @@ mod timeout_tests {
 
     #[tokio::test(start_paused = true)]
     async fn http1_request_over_auto_earns_the_idle_budget() {
-        let (mut client, task) = serve(Builder::new(Executor::new()));
+        let (mut client, task) = serve(Builder::new(WeakScope::detached()));
         client
             .write_all(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
             .await

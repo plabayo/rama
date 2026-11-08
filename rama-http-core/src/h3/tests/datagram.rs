@@ -11,8 +11,9 @@ use rama_core::{
     bytes::{Buf as _, Bytes, BytesMut},
     extensions::ExtensionsRef as _,
     futures::{FutureExt as _, poll},
+    graceful::WeakScope,
     io::AbortIo,
-    rt::{Executor, spawn},
+    rt::spawn,
 };
 use rama_http::{
     datagram::{
@@ -169,7 +170,7 @@ async fn start_both(
     ServerConnection<QuicConnection>,
 ) {
     let (client, client_driver) =
-        client::handshake::<Body, _>(pair.client.clone(), client, Executor::new()).unwrap();
+        client::handshake::<Body, _>(pair.client.clone(), client, WeakScope::detached()).unwrap();
     let (server, server_driver) = server::handshake(pair.server.clone(), server).unwrap();
     spawn(client_driver.run());
     spawn(server_driver.run());
@@ -2067,9 +2068,12 @@ async fn clean_connection_close_drains_native_datagrams(
             },
             violations: ViolationPolicy::Reject,
         };
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         spawn(client_driver.run());
         let (mut server, driver) =
             server::handshake(pair.server.clone(), server_config(Some(config))).unwrap();
@@ -2850,7 +2854,7 @@ async fn datagram_violation_racing_clean_close_is_reported_consistently() {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                Executor::new(),
+                WeakScope::detached(),
             )
             .unwrap();
             spawn(client_driver.run());
@@ -2893,9 +2897,12 @@ async fn error_close_after_observed_fin_reports_undrained_datagrams() {
             },
             violations: ViolationPolicy::Reject,
         };
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         spawn(client_driver.run());
         let (mut server, driver) =
             server::handshake(pair.server.clone(), server_config(Some(config))).unwrap();
@@ -2969,9 +2976,12 @@ async fn tunnel_fin_is_transmitted_after_earlier_queued_datagrams() {
             },
             ..Default::default()
         };
-        let (mut client, client_driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let client_driver = spawn(client_driver.run());
         let (mut server, driver) =
             server::handshake(pair.server.clone(), server_config(Some(config))).unwrap();
@@ -3219,7 +3229,7 @@ mod metrics {
             let (mut client, client_driver) = client::handshake::<Body, _>(
                 pair.client.clone(),
                 Config::default(),
-                Executor::new(),
+                WeakScope::detached(),
             )
             .unwrap();
             let (mut server, server_driver) =

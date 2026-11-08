@@ -7,7 +7,7 @@ use std::{
 use pin_project_lite::pin_project;
 use rama_core::{
     extensions::{Extensions, ExtensionsRef},
-    rt::Executor,
+    graceful::WeakScope,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -28,25 +28,25 @@ pin_project! {
         #[pin]
         inner: FfiBridgeStream,
         extensions: Extensions,
-        executor: Option<Executor>,
+        scope: Option<WeakScope>,
     }
 }
 
 impl TcpFlow {
     #[must_use]
-    pub(crate) fn new(inner: FfiBridgeStream, executor: Option<Executor>) -> Self {
+    pub(crate) fn new(inner: FfiBridgeStream, scope: Option<WeakScope>) -> Self {
         let extensions = Extensions::new();
         extensions.insert(inner.abort_io());
         Self {
             inner,
             extensions,
-            executor,
+            scope,
         }
     }
 
     #[must_use]
-    pub fn executor(&self) -> Option<&Executor> {
-        self.executor.as_ref()
+    pub fn scope(&self) -> Option<&WeakScope> {
+        self.scope.as_ref()
     }
 }
 

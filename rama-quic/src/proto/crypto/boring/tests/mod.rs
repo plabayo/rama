@@ -983,7 +983,7 @@ fn both_directions_interoperate_with_rustls() {
 async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
     use std::{net::UdpSocket, time::Duration};
 
-    use rama_core::{bytes::Bytes, rt::Executor};
+    use rama_core::{bytes::Bytes, graceful::WeakScope};
     use rama_quic_proto::VarInt;
 
     use crate::{ClientConfig, Endpoint, ServerConfig};
@@ -1017,12 +1017,12 @@ async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
                 ServerConfig::try_from_rama_tls_with_provider(&server_tls, options, server_backend)
                     .unwrap();
             let client = Endpoint::new_client_with_std_socket(
-                Executor::new(),
+                WeakScope::detached(),
                 UdpSocket::bind("127.0.0.1:0").unwrap(),
             )
             .unwrap();
             let server = Endpoint::new_server_with_std_socket(
-                Executor::new(),
+                WeakScope::detached(),
                 server_config,
                 UdpSocket::bind("127.0.0.1:0").unwrap(),
             )

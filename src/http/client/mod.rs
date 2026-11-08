@@ -9,9 +9,9 @@ use crate::{
     Layer, Service,
     error::BoxError,
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{Body as ResponseBody, Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
-    rt::Executor,
     service::BoxService,
     telemetry::tracing,
 };
@@ -179,7 +179,7 @@ where
 {
     #[inline(always)]
     fn default() -> Self {
-        Self::default_with_executor(Executor::default())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 
@@ -189,12 +189,13 @@ where
 {
     core::cfg_select! {
         all(feature = "boring", feature = "quic") => {
-            pub fn default_with_executor(exec: Executor) -> Self {
+            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+                let scope = scope.into();
                 #[expect(
                     clippy::expect_used,
                     reason = "fixed default H3 limits and BoringSSL TLS configuration are valid"
                 )]
-                Self::boringssl_default(exec, TlsClientConfig::default_http(), None)
+                Self::boringssl_default(scope, TlsClientConfig::default_http(), None)
                     .expect("default BoringSSL HTTP/3 configuration is valid")
             }
 
@@ -203,13 +204,14 @@ where
             /// A client to MASQUE proxies, for the tunnels another client's HTTP/3 runs in:
             /// the default client, with room in its own HTTP/3 connections for the tunneled
             /// QUIC packets ([`masque_quic_transport`]).
-            pub fn default_masque_proxy_client_with_executor(exec: Executor) -> Self {
+            pub fn default_masque_proxy_client_with_scope(scope: impl Into<WeakScope>) -> Self {
+                let scope = scope.into();
                 #[expect(
                     clippy::expect_used,
                     reason = "fixed default H3 limits and BoringSSL TLS configuration are valid"
                 )]
                 Self::try_default_masque_proxy_client_using_boringssl(
-                    exec,
+                    scope,
                     TlsClientConfig::default_http(),
                 )
                 .expect("default BoringSSL HTTP/3 configuration is valid")
@@ -217,32 +219,34 @@ where
 
             #[cfg(feature = "masque")]
             #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// [`Self::default_masque_proxy_client_with_executor`], with `proxy_tls` towards the
+            /// [`Self::default_masque_proxy_client_with_scope`], with `proxy_tls` towards the
             /// proxies, such as [`TlsClientConfig::default_http`] with a server verification of
             /// its own.
             pub fn try_default_masque_proxy_client_using_boringssl(
-                exec: Executor,
+                scope: impl Into<WeakScope>,
                 proxy_tls: TlsClientConfig,
             ) -> Result<Self, BoxError> {
-                Self::boringssl_default(exec, proxy_tls, Some(masque_quic_transport()))
+                let scope = scope.into();
+                Self::boringssl_default(scope, proxy_tls, Some(masque_quic_transport()))
             }
 
             #[cfg(feature = "masque")]
             #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
             /// The default client, with its HTTP/3 also through MASQUE proxies: in
             /// CONNECT-UDP tunnels ([RFC 9298]) opened by a
-            /// [`Self::default_masque_proxy_client_with_executor`] client.
+            /// [`Self::default_masque_proxy_client_with_scope`] client.
             ///
             /// Each HTTP/3 connection has a UDP socket or tunnel of its own.
             ///
             /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
-            pub fn default_masque_with_executor(exec: Executor) -> Self {
+            pub fn default_masque_with_scope(scope: impl Into<WeakScope>) -> Self {
+                let scope = scope.into();
                 #[expect(
                     clippy::expect_used,
                     reason = "fixed default H3 limits and BoringSSL TLS configuration are valid"
                 )]
                 Self::try_default_masque_using_boringssl(
-                    exec,
+                    scope,
                     TlsClientConfig::default_http(),
                     TlsClientConfig::default_http(),
                 )
@@ -251,19 +255,20 @@ where
 
             #[cfg(feature = "masque")]
             #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// [`Self::default_masque_with_executor`], with `tls` towards origins and
+            /// [`Self::default_masque_with_scope`], with `tls` towards origins and
             /// `proxy_tls` towards proxies, MASQUE and HTTPS proxies alike.
             pub fn try_default_masque_using_boringssl(
-                exec: Executor,
+                scope: impl Into<WeakScope>,
                 tls: TlsClientConfig,
                 proxy_tls: TlsClientConfig,
             ) -> Result<Self, BoxError> {
-                let h3 = Http3Connector::builder(exec.clone())
+                let scope = scope.into();
+                let h3 = Http3Connector::builder(scope.clone())
                     .with_tls_provider(Arc::new(BoringTlsProvider))
                     .with_tls_config(tls.clone());
                 let proxy_client =
                     DefaultHttpWebClient::<crate::http::Body>::try_default_masque_proxy_client_using_boringssl(
-                        exec.clone(),
+                        scope.clone(),
                         proxy_tls.clone(),
                     )?;
                 Ok(EasyHttpConnectorBuilder::new()
@@ -273,18 +278,18 @@ where
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls)
                     .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
-                    .with_default_http_connector(exec)
+                    .with_default_http_connector(scope)
                     .with_http3_masque_support(h3, proxy_client)?
                     .with_default_connection_pool()
                     .build_client())
             }
 
             fn boringssl_default(
-                exec: Executor,
+                scope: WeakScope,
                 tls: TlsClientConfig,
                 transport: Option<TransportConfig>,
             ) -> Result<Self, BoxError> {
-                let h3 = Http3Connector::builder(exec.clone())
+                let h3 = Http3Connector::builder(scope.clone())
                     .with_tls_provider(Arc::new(BoringTlsProvider))
                     .with_tls_config(tls.clone())
                     .maybe_with_transport(transport)
@@ -296,19 +301,20 @@ where
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls)
                     .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
-                    .with_default_http_connector(exec)
+                    .with_default_http_connector(scope)
                     .with_http3_support(h3)
                     .with_default_connection_pool()
                     .build_client())
             }
         }
         all(feature = "rustls", any(feature = "ring", feature = "aws-lc"), feature = "quic") => {
-            pub fn default_with_executor(exec: Executor) -> Self {
+            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+                let scope = scope.into();
                 #[expect(
                     clippy::expect_used,
                     reason = "fixed default H3 limits and Rustls TLS configuration are valid"
                 )]
-                Self::rustls_default(exec, TlsClientConfig::default_http(), None)
+                Self::rustls_default(scope, TlsClientConfig::default_http(), None)
                     .expect("default Rustls HTTP/3 configuration is valid")
             }
 
@@ -317,13 +323,14 @@ where
             /// A client to MASQUE proxies, for the tunnels another client's HTTP/3 runs in:
             /// the default client, with room in its own HTTP/3 connections for the tunneled
             /// QUIC packets ([`masque_quic_transport`]).
-            pub fn default_masque_proxy_client_with_executor(exec: Executor) -> Self {
+            pub fn default_masque_proxy_client_with_scope(scope: impl Into<WeakScope>) -> Self {
+                let scope = scope.into();
                 #[expect(
                     clippy::expect_used,
                     reason = "fixed default H3 limits and Rustls TLS configuration are valid"
                 )]
                 Self::try_default_masque_proxy_client_using_rustls(
-                    exec,
+                    scope,
                     TlsClientConfig::default_http(),
                 )
                 .expect("default Rustls HTTP/3 configuration is valid")
@@ -331,32 +338,34 @@ where
 
             #[cfg(feature = "masque")]
             #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// [`Self::default_masque_proxy_client_with_executor`], with `proxy_tls` towards the
+            /// [`Self::default_masque_proxy_client_with_scope`], with `proxy_tls` towards the
             /// proxies, such as [`TlsClientConfig::default_http`] with a server verification of
             /// its own.
             pub fn try_default_masque_proxy_client_using_rustls(
-                exec: Executor,
+                scope: impl Into<WeakScope>,
                 proxy_tls: TlsClientConfig,
             ) -> Result<Self, BoxError> {
-                Self::rustls_default(exec, proxy_tls, Some(masque_quic_transport()))
+                let scope = scope.into();
+                Self::rustls_default(scope, proxy_tls, Some(masque_quic_transport()))
             }
 
             #[cfg(feature = "masque")]
             #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
             /// The default client, with its HTTP/3 also through MASQUE proxies: in
             /// CONNECT-UDP tunnels ([RFC 9298]) opened by a
-            /// [`Self::default_masque_proxy_client_with_executor`] client.
+            /// [`Self::default_masque_proxy_client_with_scope`] client.
             ///
             /// Each HTTP/3 connection has a UDP socket or tunnel of its own.
             ///
             /// [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
-            pub fn default_masque_with_executor(exec: Executor) -> Self {
+            pub fn default_masque_with_scope(scope: impl Into<WeakScope>) -> Self {
+                let scope = scope.into();
                 #[expect(
                     clippy::expect_used,
                     reason = "fixed default H3 limits and Rustls TLS configuration are valid"
                 )]
                 Self::try_default_masque_using_rustls(
-                    exec,
+                    scope,
                     TlsClientConfig::default_http(),
                     TlsClientConfig::default_http(),
                 )
@@ -365,18 +374,19 @@ where
 
             #[cfg(feature = "masque")]
             #[cfg_attr(docsrs, doc(cfg(feature = "masque")))]
-            /// [`Self::default_masque_with_executor`], with `tls` towards origins and
+            /// [`Self::default_masque_with_scope`], with `tls` towards origins and
             /// `proxy_tls` towards proxies, MASQUE and HTTPS proxies alike.
             pub fn try_default_masque_using_rustls(
-                exec: Executor,
+                scope: impl Into<WeakScope>,
                 tls: TlsClientConfig,
                 proxy_tls: TlsClientConfig,
             ) -> Result<Self, BoxError> {
-                let h3 = Http3Connector::builder(exec.clone())
+                let scope = scope.into();
+                let h3 = Http3Connector::builder(scope.clone())
                     .with_tls_config(tls.clone());
                 let proxy_client =
                     DefaultHttpWebClient::<crate::http::Body>::try_default_masque_proxy_client_using_rustls(
-                        exec.clone(),
+                        scope.clone(),
                         proxy_tls.clone(),
                     )?;
                 Ok(EasyHttpConnectorBuilder::new()
@@ -385,18 +395,18 @@ where
                     .with_tls_proxy_support_using_rustls_config(proxy_tls)
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls)
-                    .with_default_http_connector(exec)
+                    .with_default_http_connector(scope)
                     .with_http3_masque_support(h3, proxy_client)?
                     .with_default_connection_pool()
                     .build_client())
             }
 
             fn rustls_default(
-                exec: Executor,
+                scope: WeakScope,
                 tls: TlsClientConfig,
                 transport: Option<TransportConfig>,
             ) -> Result<Self, BoxError> {
-                let h3 = Http3Connector::builder(exec.clone())
+                let h3 = Http3Connector::builder(scope.clone())
                     .with_tls_config(tls.clone())
                     .maybe_with_transport(transport)
                     .build_lazy()?;
@@ -406,14 +416,15 @@ where
                     .with_tls_proxy_support_using_rustls()
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls)
-                    .with_default_http_connector(exec)
+                    .with_default_http_connector(scope)
                     .with_http3_support(h3)
                     .with_default_connection_pool()
                     .build_client())
             }
         }
         feature = "boring" => {
-            pub fn default_with_executor(exec: Executor) -> Self {
+            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+                let scope = scope.into();
                 EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
                     .with_default_dns_connector()
@@ -421,33 +432,35 @@ where
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(TlsClientConfig::default_http())
                     .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
-                    .with_default_http_connector(exec)
+                    .with_default_http_connector(scope)
                     .with_default_connection_pool()
                     .build_client()
             }
         }
         feature = "rustls" => {
-            pub fn default_with_executor(exec: Executor) -> Self {
+            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+                let scope = scope.into();
                 EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
                     .with_default_dns_connector()
                     .with_tls_proxy_support_using_rustls()
                     .with_proxy_support()
                     .with_tls_support_using_rustls(TlsClientConfig::default_http())
-                    .with_default_http_connector(exec)
+                    .with_default_http_connector(scope)
                     .with_default_connection_pool()
                     .build_client()
             }
         }
         _ => {
-            pub fn default_with_executor(exec: Executor) -> Self {
+            pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+                let scope = scope.into();
                 EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
                     .with_default_dns_connector()
                     .without_tls_proxy_support()
                     .with_proxy_support()
                     .without_tls_support()
-                    .with_default_http_connector(exec)
+                    .with_default_http_connector(scope)
                     .with_default_connection_pool()
                     .build_client()
             }
@@ -794,7 +807,7 @@ mod tests {
             // count responses created on this specific connection
             let created_response = Arc::new(AtomicUsize::new(0));
 
-            HttpServer::auto(Executor::default()).service(service_fn(move |_req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |_req: Request| {
                 let created_response = created_response.clone();
                 let resp = created_response.fetch_add(1, Ordering::Relaxed);
                 async move {
@@ -1001,7 +1014,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client()
             .try_into_blocking()
@@ -1074,7 +1087,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_custom_proxy_connector(())
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
@@ -1111,7 +1124,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let request = Request::builder()
@@ -1168,7 +1181,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .with_default_connection_pool()
             .build_client();
 
@@ -1225,7 +1238,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let request = Request::builder()
@@ -1282,7 +1295,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_custom_proxy_connector(())
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .with_default_connection_pool()
             .build_client();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
@@ -1336,7 +1349,7 @@ mod tests {
             .without_tls_proxy_support()
             .with_custom_proxy_connector(())
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .without_proxy_route_failure_cache()
             .without_connection_pool()
             .build_client();
@@ -1388,7 +1401,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap());
@@ -1442,7 +1455,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .with_proxy_route_failure_cache(failure_cache)
             .without_connection_pool()
             .build_client();
@@ -1509,7 +1522,7 @@ mod tests {
         let connect_version = Arc::new(parking_lot::Mutex::new(None));
         let observed_version = connect_version.clone();
         let proxy_http =
-            HttpServer::auto(Executor::default()).service(service_fn(move |req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
                 let origin_server = origin_server.clone();
                 let origin_done_tx = origin_done_tx.clone();
                 let observed_version = observed_version.clone();
@@ -1649,7 +1662,7 @@ mod tests {
         let connect_version = Arc::new(parking_lot::Mutex::new(None));
         let observed_version = connect_version.clone();
         let proxy_http =
-            HttpServer::auto(Executor::default()).service(service_fn(move |req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(move |req: Request| {
                 let origin_server = origin_server.clone();
                 let origin_done_tx = origin_done_tx.clone();
                 let observed_version = observed_version.clone();
@@ -1746,7 +1759,7 @@ mod tests {
     #[cfg(feature = "boring")]
     #[tokio::test]
     async fn default_client_resumes_tls_sessions() {
-        let exec = Executor::default();
+        let scope = WeakScope::detached();
         let resumed = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let record = resumed.clone();
         let server = TlsAcceptorLayer::new(
@@ -1763,7 +1776,7 @@ mod tests {
                 record.lock().push(params.and_then(|params| params.resumed));
                 stream
             })
-            .into_layer(HttpServer::new_http1(exec.clone()).service(service_fn(
+            .into_layer(HttpServer::new_http1(scope.clone()).service(service_fn(
                 async |_: Request| {
                     // A fresh connection per request, so each one handshakes.
                     Ok::<_, Infallible>(
@@ -1775,7 +1788,7 @@ mod tests {
                 },
             ))),
         );
-        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec)
+        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), scope)
             .await
             .unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1812,7 +1825,7 @@ mod tests {
                 crate::tls::client::TlsClientConfig::default_http(),
                 Version::HTTP_11,
             )
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client();
         let request = Request::builder()
@@ -1837,7 +1850,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_streams_per_connection: NonZeroUsize::new(1),
                 max_connections_total: NonZeroUsize::new(4),
@@ -1883,7 +1896,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .with_default_connection_pool()
             .build_client();
 
@@ -1916,7 +1929,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .with_default_connection_pool()
             .build_client();
 
@@ -1950,7 +1963,7 @@ mod tests {
             .without_tls_proxy_support()
             .without_proxy_support()
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .with_connection_pool(HttpPooledConnectorConfig {
                 max_streams_per_connection: NonZeroUsize::new(2),
                 ..Default::default()

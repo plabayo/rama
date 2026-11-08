@@ -1262,12 +1262,12 @@ async fn graceful_executor_stops_admission_while_output_waits_and_drains_before_
         let mut output = Probe::new(&log);
         output.block = Some((phase, gate));
         let (signal, cancelled) = oneshot::channel();
-        let shutdown = rama_core::graceful::Shutdown::new(async move {
+        let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
             cancelled.await.unwrap_or_default();
         });
         let recorder = QlogConfig::default()
             .with_output(DefaultFinish(output))
-            .with_executor(rama_core::rt::Executor::graceful(shutdown.guard()))
+            .with_scope(rama_core::graceful::WeakScope::from(shutdown.clone()))
             .start()
             .unwrap();
         if phase == Phase::Event {
@@ -1278,7 +1278,7 @@ async fn graceful_executor_stops_admission_while_output_waits_and_drains_before_
             emit(&recorder, 0);
         }
         emit(&recorder, 1);
-        let finished = tokio::spawn(shutdown.shutdown());
+        let finished = tokio::spawn(shutdown.join());
         signal.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while recorder.state() != RecorderState::Draining {
@@ -1306,7 +1306,8 @@ async fn graceful_executor_stops_admission_while_output_waits_and_drains_before_
             tokio::time::timeout(Duration::from_secs(5), finished)
                 .await
                 .unwrap()
-                .unwrap();
+                .unwrap()
+                .expect("not aborted");
         }
         assert_eq!(recorder.state(), RecorderState::Closed);
         assert_eq!(
@@ -1515,11 +1516,11 @@ async fn graceful_shutdown_reports_final_flush_and_finish_failures_without_recor
         let mut output = Probe::new(&log);
         output.fail = phase;
         let (signal, cancelled) = oneshot::channel();
-        let shutdown = rama_core::graceful::Shutdown::new(async move {
+        let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
             cancelled.await.unwrap_or_default();
         });
         let config = QlogConfig::default()
-            .with_executor(rama_core::rt::Executor::graceful(shutdown.guard()))
+            .with_scope(rama_core::graceful::WeakScope::from(shutdown.clone()))
             .with_error_sink(reports.clone());
         let config = if phase == Some(Phase::Flush) {
             config.with_output(DefaultFinish(output))
@@ -1528,12 +1529,13 @@ async fn graceful_shutdown_reports_final_flush_and_finish_failures_without_recor
         };
         let recorder = config.start().unwrap();
         emit(&recorder, 1);
-        let finished = tokio::spawn(shutdown.shutdown());
+        let finished = tokio::spawn(shutdown.join());
         signal.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(5), finished)
             .await
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .expect("not aborted");
         // The shared graceful shutdown is all the application needs to await: no recorder
         // flush, completion poll or shutdown call was used to obtain this report.
         assert_eq!(log.lock().events.len(), 1);

@@ -30,6 +30,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         StatusCode,
         body::ZipBomb,
@@ -47,7 +48,6 @@ use rama::{
     },
     layer::ArcLayer,
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -72,14 +72,16 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(8));
 
     let router = Router::new()
         .with_get("/", Html(r##"<h1>Rates Catalogue</h1><ul><li><a href="/api/rates/2024.csv">rates for 2024</a></li></ul>"##.to_owned()))
         .with_get("/api/rates/{year}.csv", api_rates_csv);
 
-    let exec = Executor::graceful(graceful.guard());
-    let app = HttpServer::auto(exec).service(
+    let weak_scope = scope.clone_weak();
+    let app = HttpServer::auto(weak_scope).service(
         (
             ArcLayer::new(),
             TraceLayer::new_for_http(),
@@ -91,17 +93,14 @@ async fn main() {
 
     let address = SocketAddress::local_ipv4(62036);
     tracing::info!("running service at: {address}");
-    let exec = Executor::graceful(graceful.guard());
-    let tcp_server = TcpListener::bind_address(address, exec)
+    let weak_scope = scope.clone_weak();
+    let tcp_server = TcpListener::bind_address(address, weak_scope)
         .await
         .expect("bind tcp server");
 
-    graceful.spawn_task(tcp_server.serve(app));
+    scope.spawn_task(tcp_server.serve(app));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(8))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Deserialize)]

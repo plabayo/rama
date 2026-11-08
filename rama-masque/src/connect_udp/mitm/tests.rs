@@ -139,7 +139,7 @@ async fn custom_templates_and_each_carrier_are_selected_only_after_acceptance() 
         let response = service.serve(request(version)).await.unwrap();
         assert!(response.extensions().contains::<HttpDatagrams>());
         if version != Version::HTTP_3 {
-            let selected = ConnectUdpRelayRequestMatcher::default_with_exec(Executor::new())
+            let selected = ConnectUdpRelayRequestMatcher::default_with_scope(WeakScope::detached())
                 .match_service(request(version))
                 .await
                 .unwrap();
@@ -232,7 +232,7 @@ async fn refusals_are_not_marked_and_invalid_successes_fail() {
 
 #[tokio::test]
 async fn ordinary_requests_are_untouched_and_request_errors_belong_to_the_proxy() {
-    let matcher = ConnectUdpRelayRequestMatcher::default_with_exec(Executor::new());
+    let matcher = ConnectUdpRelayRequestMatcher::default_with_scope(WeakScope::detached());
     assert!(
         matcher
             .match_service(Request::new(Body::empty()))
@@ -290,7 +290,7 @@ async fn selected_h1_and_h2_relays_forward_capsules_and_abort_malformed_streams(
     };
     use tokio::io::{AsyncWriteExt as _, duplex};
     for version in [Version::HTTP_11, Version::HTTP_2] {
-        let selected = ConnectUdpRelayRequestMatcher::default_with_exec(Executor::new())
+        let selected = ConnectUdpRelayRequestMatcher::default_with_scope(WeakScope::detached())
             .match_service(request(version))
             .await
             .unwrap();

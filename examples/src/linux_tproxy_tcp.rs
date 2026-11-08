@@ -126,6 +126,7 @@ fn main() -> Result<(), BoxError> {
 use ::{
     rama::{
         Layer, Service,
+        graceful::WeakScope,
         net::{
             address::SocketAddress,
             proxy::IoForwardService,
@@ -136,7 +137,6 @@ use ::{
             },
             stream::Socket,
         },
-        rt::Executor,
         service::service_fn,
         tcp::{TcpStream, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
         telemetry::tracing::{
@@ -186,7 +186,7 @@ async fn main() {
 
 #[cfg(target_os = "linux")]
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let exec = Executor::default();
+    let scope = WeakScope::detached();
 
     // Socket tuning shared by both address families. The transparent + freebind
     // options are per-family (set below): `IP_TRANSPARENT` / `IP_FREEBIND` apply
@@ -208,7 +208,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     .try_build_socket(Domain::IPv4)?;
     socket_v4.listen(32_768)?;
-    let listener_v4 = TcpListener::bind_socket(socket_v4, exec.clone()).await?;
+    let listener_v4 = TcpListener::bind_socket(socket_v4, scope.clone()).await?;
 
     // IPv6 transparent listener (`IPV6_TRANSPARENT`).
     let socket_v6 = SocketOptions {
@@ -219,7 +219,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     .try_build_socket(Domain::IPv6)?;
     socket_v6.listen(32_768)?;
-    let listener_v6 = TcpListener::bind_socket(socket_v6, exec.clone()).await?;
+    let listener_v6 = TcpListener::bind_socket(socket_v6, scope.clone()).await?;
 
     tracing::info!(
         listen.v4 = %LISTEN_ADDR_V4,
@@ -232,7 +232,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let service = ConnectorTargetFromGetSocketnameLayer::new().into_layer(service_fn({
         let forward = IoToProxyBridgeIoLayer::extension_connector_target()
-            .into_layer(IoForwardService::new(exec));
+            .into_layer(IoForwardService::new(scope));
         move |stream: TcpStream| {
             let forward = forward.clone();
             async move {

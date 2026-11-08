@@ -6,6 +6,7 @@ use rama::{
     Service,
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef as _,
+    graceful::WeakScope,
     http::client::Http3Connector,
     net::{
         Protocol,
@@ -18,7 +19,6 @@ use rama::{
         proto::capture::CaptureLimits,
         tls::{QuicClientConfigProvider, TlsOptions},
     },
-    rt::Executor,
     tls::{
         SecureTransport,
         client::TlsClientConfig,
@@ -50,7 +50,7 @@ async fn peer_offers() -> Result<(), BoxError> {
     let mut config = ServerConfig::try_from_rama_tls(&server_settings, TlsOptions::default())?;
     config.set_capture(CaptureLimits::default());
     let server =
-        Endpoint::bind_server(Executor::new(), config, SocketAddress::local_ipv4(0)).await?;
+        Endpoint::bind_server(WeakScope::detached(), config, SocketAddress::local_ipv4(0)).await?;
     let address = server.local_addr()?;
     let accepted = server.clone();
     let count = 3 * providers.len();
@@ -89,7 +89,7 @@ async fn peer_offers() -> Result<(), BoxError> {
     let mut expected = Vec::new();
     let mut transports = Vec::new();
     for provider in providers {
-        let connector = Http3Connector::builder(Executor::new())
+        let connector = Http3Connector::builder(WeakScope::detached())
             .with_tls_provider(provider)
             .with_tls_config(client_settings.clone())
             .build_lazy()?;

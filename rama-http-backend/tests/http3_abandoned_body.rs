@@ -5,7 +5,7 @@
 use rama_core::{
     Service,
     extensions::{Extensions, ExtensionsRef as _},
-    rt::Executor,
+    graceful::WeakScope,
     service::service_fn,
 };
 use rama_http::{Body, Request, Response, Version, body::util::BodyExt as _};
@@ -87,11 +87,11 @@ async fn pooled_http3_connection_survives_unread_response_bodies() {
         SocketAddress::local_ipv4(444),
         NonZeroUsize::MIN,
     );
-    let server_endpoint = Endpoint::build(Executor::new())
+    let server_endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .expect("server endpoint");
-    let client_endpoint = Endpoint::build(Executor::new())
+    let client_endpoint = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .expect("client endpoint");
     let address = server_endpoint.local_addr().expect("server address");
@@ -104,7 +104,7 @@ async fn pooled_http3_connection_survives_unread_response_bodies() {
                 let connection = incoming.await.expect("accepted QUIC connection");
                 accepted.fetch_add(1, Ordering::SeqCst);
                 tokio::spawn(async move {
-                    _ = HttpServer::new_http3(Executor::new())
+                    _ = HttpServer::new_http3(WeakScope::detached())
                         .serve(
                             connection,
                             service_fn(async |request: Request| {
@@ -149,10 +149,10 @@ async fn pooled_http3_connection_survives_unread_response_bodies() {
             }
         }
     });
-    let client = HttpConnectRequestAdapter::new(
-        HttpPooledConnectorConfig::default()
-            .build_connector(HttpConnector::<_, Body>::new(connector, Executor::new())),
-    );
+    let client =
+        HttpConnectRequestAdapter::new(HttpPooledConnectorConfig::default().build_connector(
+            HttpConnector::<_, Body>::new(connector, WeakScope::detached()),
+        ));
     for path in ["/large", "/large", "/small"] {
         let request = Request::builder()
             .version(Version::HTTP_3)

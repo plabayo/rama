@@ -183,7 +183,7 @@ pub async fn rama_client_refuses_the_identity(run: &CaseRun<Mismatch>, peer_addr
     let client = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the rama client binds");
@@ -255,7 +255,7 @@ pub async fn rama_client_accepts_the_identity(run: &CaseRun<Mismatch>, peer_addr
     let client = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the rama client binds");
@@ -391,7 +391,7 @@ pub async fn rama_client_side(run: &CaseRun<NameScenario>, peer_addr: SocketAddr
     let client = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::rt::Executor::new(), bound_like(peer_addr)),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), bound_like(peer_addr)),
         )
         .await
         .expect("the rama client binds");
@@ -422,7 +422,7 @@ pub async fn rama_server_side(run: &CaseRun<NameScenario>) -> (Endpoint, SocketA
         .wait(
             what,
             Endpoint::bind_server(
-                rama::rt::Executor::new(),
+                rama::graceful::WeakScope::detached(),
                 rama_server_config(&run.identity),
                 run.scenario.bind,
             ),

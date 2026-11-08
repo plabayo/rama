@@ -6,6 +6,7 @@ use rama::{
     error::{BoxError, CauseExt as _, error_chain, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
+    graceful::WeakScope,
     http::{
         Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
@@ -62,7 +63,6 @@ use rama::{
         Endpoint, ServerConfig, TransportConfig,
         tls::{BoringTlsProvider, TlsOptions},
     },
-    rt::Executor,
     service::{BoxService, StaticOutput, service_fn},
     tcp::{client::service::TcpConnector, server::TcpListener},
     tls::{
@@ -103,8 +103,8 @@ fn tcp_socket_options() -> SocketOptions {
     }
 }
 
-fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxError> {
-    let h3 = Http3Connector::builder(exec.clone())
+fn client(scope: WeakScope, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxError> {
+    let h3 = Http3Connector::builder(scope.clone())
         .with_tls_config(tls.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .build_lazy()?;
@@ -118,7 +118,7 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
-        .with_default_http_connector(exec.clone())
+        .with_default_http_connector(scope.clone())
         .with_http3_support(h3)
         .with_default_connection_pool()
         // Version policy comes from the tunnel or label, not advertised alternatives.
@@ -143,8 +143,8 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
     // Correlate upgrade headers only after translating the response back to ingress.
     let web = RemoveResponseHeaderLayer::hop_by_hop().into_layer(ResponseVersionAdapter::new(web));
     let web = HttpUpgradeMitmRelayLayer::new(
-        exec.clone(),
-        HttpWebSocketRelayServiceRequestMatcher::default_with_exec(exec),
+        scope.clone(),
+        HttpWebSocketRelayServiceRequestMatcher::default_with_scope(scope),
     )
     .into_layer(web);
 
@@ -215,7 +215,7 @@ fn forwarding_service(
 }
 
 fn mitm(
-    exec: Executor,
+    scope: WeakScope,
     web: Web,
     preflight: Preflight,
     selected: Option<Version>,
@@ -226,7 +226,7 @@ fn mitm(
             .with_cert_issuer(ServerCertIssuerData::default())
             .with_alpn_http_auto(),
     );
-    let mut http = HttpServer::auto(exec.clone());
+    let mut http = HttpServer::auto(scope.clone());
     http.h2_mut().set_enable_connect_protocol();
     let connect = service_fn(move |req: Request| {
         let tls = tls.clone();
@@ -270,7 +270,7 @@ fn mitm(
             )
         }
     });
-    UpgradeLayer::new(exec, MethodMatcher::CONNECT, connect).into_layer(service_fn(
+    UpgradeLayer::new(scope, MethodMatcher::CONNECT, connect).into_layer(service_fn(
         async |_: Request| {
             Ok::<_, Infallible>(error_response(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -283,7 +283,7 @@ fn mitm(
 // TCP and UDP have their own reserved ranges (Windows), so neither allocator's pick is known
 // to suit the other: port 0 tries random dynamic ports (49152+) until one is free for both.
 async fn bind_tcp_and_quic(
-    exec: Executor,
+    scope: WeakScope,
     address: SocketAddress,
     config: ServerConfig,
 ) -> Result<(TcpListener, Endpoint), BoxError> {
@@ -307,7 +307,7 @@ async fn bind_tcp_and_quic(
                     ErrorKind::AddrInUse | ErrorKind::PermissionDenied
                 )
         };
-        let tcp = match TcpListener::bind_address(candidate, exec.clone()).await {
+        let tcp = match TcpListener::bind_address(candidate, scope.clone()).await {
             Ok(tcp) => tcp,
             Err(error)
                 if error
@@ -323,7 +323,7 @@ async fn bind_tcp_and_quic(
             Err(DatagramError::Io(error)) if retryable(&error) => continue,
             Err(error) => return Err(error.into()),
         };
-        let quic = Endpoint::build(exec)
+        let quic = Endpoint::build(scope)
             .with_server_config(config)
             .with_packet_socket(udp)?;
         return Ok((tcp, quic));
@@ -357,11 +357,11 @@ async fn origin() -> Fixture {
 }
 
 async fn origin_with_upload_wait(wait_for_upload: bool) -> Fixture {
-    let listener = TcpListener::bind_address("127.0.0.1:0", Executor::new())
+    let listener = TcpListener::bind_address("127.0.0.1:0", WeakScope::detached())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap().to_string();
-    let service = HttpServer::new_http1(Executor::new()).service(service_fn(
+    let service = HttpServer::new_http1(WeakScope::detached()).service(service_fn(
         move |req: Request| async move {
             assert_eq!(req.version(), Version::HTTP_11);
             if is_http_req_websocket_handshake(&req) {
@@ -431,10 +431,10 @@ async fn endpoint_with_connect_support(
     bind: &str,
     extended_connect: bool,
 ) -> Fixture {
-    let exec = Executor::new();
+    let scope = WeakScope::detached();
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let (web, _) = client(
-        exec.clone(),
+        scope.clone(),
         TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
     )
     .unwrap();
@@ -606,13 +606,13 @@ async fn endpoint_with_connect_support(
         .with_server_auth(auth.clone())
         .with_alpn(versions.iter().cloned().collect());
     let http = if versions.contains(&ApplicationProtocol::HTTP_2) {
-        let mut http = HttpServer::auto(exec.clone());
+        let mut http = HttpServer::auto(scope.clone());
         if extended_connect {
             http.h2_mut().set_enable_connect_protocol();
         }
         http.service(service.clone()).boxed()
     } else {
-        HttpServer::new_http1(exec.clone())
+        HttpServer::new_http1(scope.clone())
             .service(service.clone())
             .boxed()
     };
@@ -620,7 +620,7 @@ async fn endpoint_with_connect_support(
         .into_layer(TlsAcceptorLayer::new(tls).into_layer(http));
     let connections = Arc::new(AtomicUsize::new(0));
     let count = connections.clone();
-    let mut http = HttpServer::new_http3(exec.clone());
+    let mut http = HttpServer::new_http3(scope.clone());
     http.http3_mut().extended_connect = extended_connect;
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
@@ -634,7 +634,7 @@ async fn endpoint_with_connect_support(
     )
     .unwrap();
     config.set_transport_config(Arc::new(transport));
-    let (listener, endpoint) = bind_tcp_and_quic(exec, bind.parse().unwrap(), config)
+    let (listener, endpoint) = bind_tcp_and_quic(scope, bind.parse().unwrap(), config)
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
@@ -656,7 +656,7 @@ async fn endpoint_with_connect_support(
         connection
     })
     .into_layer(service);
-    let quic_task = tokio::spawn(endpoint.clone().serve(Executor::new(), service));
+    let quic_task = tokio::spawn(endpoint.clone().serve(WeakScope::detached(), service));
     Fixture {
         address: address.to_string(),
         tasks: vec![tcp_task, quic_task],
@@ -670,17 +670,17 @@ async fn endpoint_with_connect_support(
 }
 
 async fn proxy(selected: Option<Version>) -> Fixture {
-    let exec = Executor::new();
+    let scope = WeakScope::detached();
     let (web, preflight) = client(
-        exec.clone(),
+        scope.clone(),
         TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
     )
     .unwrap();
-    let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+    let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap().to_string();
-    let service = HttpServer::auto(exec.clone()).service(mitm(exec, web, preflight, selected));
+    let service = HttpServer::auto(scope.clone()).service(mitm(scope, web, preflight, selected));
     let task = tokio::spawn(async move {
         listener.serve(service).await;
     });
@@ -704,7 +704,7 @@ async fn connect(proxy: &str, target: &str, outer: Version) -> Response {
         .body(Body::empty())
         .unwrap();
     let client: HttpClientService<Body> =
-        http_connect(ServiceInput::new(io), handshake, Executor::new())
+        http_connect(ServiceInput::new(io), handshake, WeakScope::detached())
             .await
             .unwrap()
             .conn;
@@ -759,7 +759,7 @@ async fn tunnel_with_alpn(
         .uri(format!("https://{target}/echo?test=1"))
         .body(Body::empty())
         .unwrap();
-    http_connect(io, request, Executor::new())
+    http_connect(io, request, WeakScope::detached())
         .await
         .unwrap()
         .conn
@@ -790,9 +790,9 @@ async fn exchange(
 }
 
 fn websocket_client(outer: Version) -> BoxService<Request, Response, OpaqueError> {
-    let exec = Executor::new();
+    let scope = WeakScope::detached();
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
-    let h3 = Http3Connector::builder(exec.clone())
+    let h3 = Http3Connector::builder(scope.clone())
         .with_tls_config(tls.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .build_lazy()
@@ -807,7 +807,7 @@ fn websocket_client(outer: Version) -> BoxService<Request, Response, OpaqueError
                 .with_tls_proxy_support(false),
         )
         .with_tls_support_using_boringssl(tls)
-        .with_default_http_connector(exec)
+        .with_default_http_connector(scope)
         .with_http3_support(h3)
         .with_default_connection_pool()
         .build_client()
@@ -1061,7 +1061,7 @@ async fn ingress_and_mitm_version_matrix() {
         .await;
         // Each direct ingress protocol, independently of CONNECT.
         let (web, _) = client(
-            Executor::new(),
+            WeakScope::detached(),
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
         .unwrap();
@@ -1319,7 +1319,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
         )
         .await;
         let (web, _) = client(
-            Executor::new(),
+            WeakScope::detached(),
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
         .unwrap();
@@ -1699,7 +1699,7 @@ async fn connection_timeout_returns_gateway_timeout() {
         )
         .await;
         let (web, _) = client(
-            Executor::new(),
+            WeakScope::detached(),
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
         .unwrap();
@@ -1883,7 +1883,7 @@ async fn rewritten_https_origin_omits_default_port_on_the_wire() {
         )
         .await;
         let (web, _) = client(
-            Executor::new(),
+            WeakScope::detached(),
             TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
         )
         .unwrap();
@@ -1916,8 +1916,8 @@ async fn rewritten_https_origin_omits_default_port_on_the_wire() {
 #[tokio::test]
 async fn http2_without_alpn_respects_policy_and_pool_reuse() {
     timeout(Duration::from_secs(30), async {
-        let exec = Executor::new();
-        let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+        let scope = WeakScope::detached();
+        let listener = TcpListener::bind_address("127.0.0.1:0", scope.clone())
             .await
             .unwrap();
         let address = listener.local_addr().unwrap();
@@ -1927,7 +1927,7 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
             )
             .with_alpn(Default::default());
         let service = TlsAcceptorLayer::new(tls).into_layer(
-            HttpServer::new_h2(exec.clone()).service(service_fn(|req: Request| async move {
+            HttpServer::new_h2(scope.clone()).service(service_fn(|req: Request| async move {
                 assert_eq!(req.version(), Version::HTTP_2);
                 Ok::<_, Infallible>(Response::new(Body::from("h2 without ALPN")))
             })),
@@ -1977,7 +1977,7 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                                         tls,
                                         Version::HTTP_11,
                                     )
-                                    .with_default_http_connector(exec.clone())
+                                    .with_default_http_connector(scope.clone())
                                     .with_default_connection_pool()
                                     .without_alt_svc()
                                     .build_connector(),
@@ -1992,7 +1992,7 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                                         tls,
                                         Version::HTTP_11,
                                     )
-                                    .with_default_http_connector(exec.clone())
+                                    .with_default_http_connector(scope.clone())
                                     .with_default_connection_pool()
                                     .without_alt_svc()
                                     .build_connector(),
@@ -2008,7 +2008,7 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
                                     tls,
                                     Version::HTTP_11,
                                 )
-                                .with_default_http_connector(exec.clone())
+                                .with_default_http_connector(scope.clone())
                                 .with_default_connection_pool()
                                 .without_alt_svc()
                                 .build_connector(),
@@ -2083,8 +2083,8 @@ async fn http2_without_alpn_respects_policy_and_pool_reuse() {
 #[tokio::test]
 async fn missing_alpn_preflight_waits_for_http2_settings_with_a_deadline() {
     timeout(Duration::from_secs(10), async {
-        let exec = Executor::new();
-        let listener = TcpListener::bind_address("127.0.0.1:0", exec)
+        let scope = WeakScope::detached();
+        let listener = TcpListener::bind_address("127.0.0.1:0", scope)
             .await
             .unwrap();
         let target = listener.local_addr().unwrap().to_string();

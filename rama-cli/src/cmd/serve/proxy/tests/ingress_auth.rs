@@ -17,10 +17,10 @@ async fn every_ingress_requires_the_proxy_credential_and_never_forwards_it() {
         "john:secret",
     ]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (proxy, _inspector) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (proxy, _inspector) = start_proxy(&shutdown, cli.proxy).await;
 
     for (scheme, tunnel) in [
         ("http", false),

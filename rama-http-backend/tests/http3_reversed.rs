@@ -3,11 +3,7 @@
 #![cfg(feature = "quic")]
 #![expect(clippy::expect_used, reason = "test assertions identify failed stages")]
 
-use rama_core::{
-    Service,
-    rt::{Executor, spawn},
-    service::service_fn,
-};
+use rama_core::{Service, graceful::WeakScope, rt::spawn, service::service_fn};
 use rama_http::{Body, Request, Response, Version, body::util::BodyExt as _};
 use rama_http_backend::{
     client::{Http3Transport, http_connect},
@@ -33,7 +29,7 @@ const LIMIT: Duration = Duration::from_secs(20);
 async fn http_server_and_client_run_over_reversed_quic_roles() {
     timeout(LIMIT, async {
         let quic = QuicPair::new(Reversed::application_protocol()).await;
-        let mut server = HttpServer::new_http3(Executor::new());
+        let mut server = HttpServer::new_http3(WeakScope::detached());
         server.http3_mut().application_protocol = Reversed::application_protocol();
         let service = server.service(service_fn(echo));
         let served_by_quic_client = Reversed::new(quic.client.clone());
@@ -43,7 +39,7 @@ async fn http_server_and_client_run_over_reversed_quic_roles() {
             connection: BoxedConnection::new(Reversed::new(quic.server.clone())),
             config: Arc::new(reversed_config()),
         };
-        let client = http_connect::<_, _, Body>(transport, request("/", ""), Executor::new())
+        let client = http_connect::<_, _, Body>(transport, request("/", ""), WeakScope::detached())
             .await
             .expect("HTTP/3 client")
             .conn;
@@ -66,7 +62,7 @@ async fn http_server_and_client_run_over_reversed_quic_roles() {
 async fn reversed_ends_refuse_a_plain_h3_peer_right_away() {
     timeout(LIMIT, async {
         let quic = QuicPair::new(ApplicationProtocol::HTTP_3).await;
-        let mut server = HttpServer::new_http3(Executor::new());
+        let mut server = HttpServer::new_http3(WeakScope::detached());
         server.http3_mut().application_protocol = Reversed::application_protocol();
         let served = server
             .service(service_fn(echo))
@@ -79,7 +75,7 @@ async fn reversed_ends_refuse_a_plain_h3_peer_right_away() {
             config: Arc::new(reversed_config()),
         };
         let connected =
-            http_connect::<_, _, Body>(transport, request("/", ""), Executor::new()).await;
+            http_connect::<_, _, Body>(transport, request("/", ""), WeakScope::detached()).await;
         assert!(connected.is_err(), "the reversed client accepted plain h3");
         quic.close().await;
     })
@@ -152,11 +148,11 @@ impl QuicPair {
             SocketAddress::local_ipv4(444),
             NonZeroUsize::MIN,
         );
-        let server_endpoint = Endpoint::build(Executor::new())
+        let server_endpoint = Endpoint::build(WeakScope::detached())
             .with_server_config(server_config)
             .with_datagram_socket(server_socket)
             .expect("server endpoint");
-        let client_endpoint = Endpoint::build(Executor::new())
+        let client_endpoint = Endpoint::build(WeakScope::detached())
             .with_datagram_socket(client_socket)
             .expect("client endpoint");
         let accept = spawn({

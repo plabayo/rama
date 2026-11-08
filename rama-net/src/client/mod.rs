@@ -23,9 +23,9 @@ pub use connector::{
     race_connect,
 };
 
-mod graceful;
+mod abortable;
 #[doc(inline)]
-pub use graceful::GracefulConnectorService;
+pub use abortable::AbortableConnectorService;
 
 pub mod pool;
 

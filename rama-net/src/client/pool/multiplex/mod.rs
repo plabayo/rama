@@ -64,6 +64,7 @@ pub use self::policy::{MultiplexSlot, SaturationPolicy};
 use self::reaper::{Reaped, Reaper, SAMPLE, SCAN_UP_TO, Sample, UNLINKED};
 use self::waiting::{Blocked, IdSlotWait, Look, SlotWait, Waiting, maybe, maybe_pinned};
 
+use super::drain::ConnScope;
 use super::reuse::{KeyedLane, LaneKey, ReuseClass};
 use super::{
     ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionResult, ConnectionReuse, Pool,
@@ -220,6 +221,13 @@ pub type StreamsHint<ID> = fn(&ID, &Extensions) -> Option<NonZeroUsize>;
 
 /// Connection pool that multiplexes concurrent users over shared
 /// connections.
+///
+/// A pooled connection follows the scope it runs in, the [`scope_context`] of
+/// its extensions: in its graceful phase it admits no new stream, closing at
+/// once if idle and else with its last handout, while checkouts go on to dial
+/// new connections.
+///
+/// [`scope_context`]: rama_core::graceful::scope_context
 pub struct MultiplexPool<C, ID> {
     storage: Arc<Mutex<Storage<C, ID>>>,
     max_connections_total: Option<NonZeroUsize>,
@@ -562,11 +570,11 @@ where
 {
     /// Whether a stored connection may still be handed out: not marked broken
     /// (in-flight streams keep a broken connection alive via the outstanding
-    /// handles, but it is no longer handed out) and not idle past the idle
-    /// timeout, which retires it. Asks its admission: call without the storage
-    /// lock.
+    /// handles, but it is no longer handed out), not drained by its scope and
+    /// not idle past the idle timeout, which retires it. Asks its admission:
+    /// call without the storage lock.
     fn is_eligible(&self, conn: &StoredConnection<C, ID>, now: u64) -> bool {
-        if Self::is_broken(conn) {
+        if Self::is_broken(conn) || conn.observe_drain() {
             return false;
         }
         !(self.expiry(conn).is_some_and(|at| at <= now)
@@ -638,13 +646,14 @@ where
         swept.expiring.extend(expiring);
     }
 
-    /// Move broken connections, and idle ones past the idle timeout without an
-    /// admission to ask, out of `bucket` into `swept`. Idle ones past it with
-    /// an admission stay: their admission is asked once the lock is released.
+    /// Move broken and drained connections, and idle ones past the idle timeout
+    /// without an admission to ask, out of `bucket` into `swept`. Idle ones past
+    /// it with an admission stay: their admission is asked once the lock is
+    /// released.
     fn sweep_bucket(&self, bucket: &mut IdBucket<C, ID>, swept: &mut Swept<C, ID>) {
         let now = now_monotonic_nanos();
         bucket.retain(|conn| {
-            let gone = if Self::is_broken(conn) {
+            let gone = if Self::is_broken(conn) || conn.is_drained() {
                 conn.retire();
                 true
             } else {
@@ -2128,9 +2137,13 @@ where
             },
             None => None,
         };
+        // Its scope is read once too. Made in a cancelled scope it serves its
+        // own checkout and is never stored.
+        let (scope, watcher) = ConnScope::of(conn.extensions()).unzip();
+        let drained = scope.as_ref().is_some_and(ConnScope::observe);
         // Reuse requirements are read once: the connection keeps its lane.
         let reuse = conn.extensions().get_ref::<ConnectionReuse>();
-        let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable());
+        let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable() && !drained);
         let id_evictors = slot.id.as_ref().map(|id| id.limit.evictors.clone());
         let id_idle = self
             .idle_limits
@@ -2169,7 +2182,7 @@ where
             reaper: self.reaper.clone(),
             pool_slot: Mutex::new(ConnectionSlot {
                 slots: slot,
-                retired: false,
+                retired: drained,
             }),
             listed: AtomicBool::new(false),
             storage: Arc::downgrade(&self.storage),
@@ -2178,6 +2191,7 @@ where
             idle_count: AtomicU8::new(GONE),
             id_idle,
             ask_trim_fn: ask_trim,
+            scope,
         });
 
         // The connection is its sources' listener: a change wakes its lane's
@@ -2229,6 +2243,15 @@ where
             }
             new_lane
         });
+        // Watched once stored, so the drain on a cancel finds it there.
+        if let Some(watcher) = watcher.filter(|_| !drained) {
+            let conn = Arc::downgrade(&conn);
+            watcher.spawn(move || {
+                if let Some(conn) = conn.upgrade() {
+                    conn.drain();
+                }
+            });
+        }
 
         // Its spare streams are for the checkouts waiting for its connect and
         // in its lane; a lane it opens has none queued, those waiting for it

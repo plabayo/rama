@@ -19,8 +19,8 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
     layer::IntoErr,
-    rt::Executor,
     service::BoxService,
     telemetry::tracing,
 };
@@ -267,9 +267,13 @@ impl<S: DatagramSocket> DatagramDemux<S> {
         self
     }
 
-    /// Serve every new association with `service`, spawned on `exec`, until the listening
-    /// socket fails or `exec`'s graceful shutdown begins.
-    pub async fn serve<Svc>(mut self, exec: Executor, service: Svc) -> Result<(), DatagramError>
+    /// Serve every new association with `service`, spawned on `scope`, until the listening
+    /// socket fails or `scope`'s graceful shutdown begins.
+    pub async fn serve<Svc>(
+        mut self,
+        weak_scope: WeakScope,
+        service: Svc,
+    ) -> Result<(), DatagramError>
     where
         S: Send + 'static,
         S::Sender: Clone,
@@ -290,12 +294,12 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             };
             ReplySockets::new(bind, reader)
         });
-        let cancelled = async {
-            match exec.guard() {
-                Some(guard) => guard.cancelled().await,
-                None => std::future::pending().await,
-            }
+        // Serving holds the scope, so every association opened until the cancel is admitted.
+        let Ok(scope) = weak_scope.try_hold() else {
+            tracing::debug!("scope closed: not serving");
+            return Ok(());
         };
+        let cancelled = weak_scope.cancelled();
         let mut cancelled = std::pin::pin!(cancelled);
         loop {
             let (mut datagram, local, via_reply_socket) = tokio::select! {
@@ -401,7 +405,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 }
             }
             let (sender, reply_lease) = match &reply {
-                Some(reply) if via_reply_socket => match reply.lease(local, &exec).await {
+                Some(reply) if via_reply_socket => match reply.lease(local, &scope).await {
                     Ok((sender, lease)) => (sender, Some(lease)),
                     Err(error) => {
                         tracing::debug!(%error, %local, "no datagram reply socket at destination");
@@ -458,7 +462,8 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 }
             }
             let service = service.clone();
-            exec.spawn_task(async move {
+            // Ended at the hard phase, whatever the service does by then.
+            scope.spawn_task(async move {
                 if let Err(error) = service.serve(socket).await {
                     let error: BoxError = error.into();
                     tracing::debug!(%error, "datagram association ended with an error");

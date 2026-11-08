@@ -25,22 +25,16 @@ fn main() {
 }
 
 /// Stand-in for the many small extension types connectors and layers insert.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Extension)]
 struct Marker<const N: usize>;
 
-impl<const N: usize> Extension for Marker<N> {}
-
 /// Types nothing ever inserts: the miss case.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Extension)]
 struct Absent<const N: usize>;
 
-impl<const N: usize> Extension for Absent<N> {}
-
 /// Types only the oldest entries of the wrapped ingress connection hold.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Extension)]
 struct Deep<const N: usize>;
-
-impl<const N: usize> Extension for Deep<N> {}
 
 macro_rules! insert_all {
     ($ext:expr, $ty:ident, $offset:literal; $($n:literal)+) => {

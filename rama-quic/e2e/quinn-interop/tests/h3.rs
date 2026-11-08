@@ -17,6 +17,7 @@ use rama::{
     error::BoxError,
     extensions::{Extensions, ExtensionsRef as _},
     futures::{future::join_all, stream},
+    graceful::WeakScope,
     http::{
         Body, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt,
@@ -48,7 +49,7 @@ use rama::{
         uri::Uri,
     },
     quic::{self as rq, proto::VarInt},
-    rt::{Executor, spawn},
+    rt::spawn,
     service::service_fn,
     utils::reactive::{Change, ChangeListener},
 };
@@ -78,14 +79,14 @@ struct Pair<S, C> {
 async fn rama_and_rama() -> Pair<rq::Connection, rq::Connection> {
     let identity = identity();
     let server = rq::Endpoint::bind_server(
-        Executor::new(),
+        WeakScope::detached(),
         h3_rama_server_config(&identity),
         localhost(),
     )
     .await
     .expect("the rama server binds");
     let address = server.local_addr().expect("a local address");
-    let client = rq::Endpoint::bind_client(Executor::new(), localhost())
+    let client = rq::Endpoint::bind_client(WeakScope::detached(), localhost())
         .await
         .expect("the rama client binds");
     let (served, sending) = step("connect", async {
@@ -129,7 +130,7 @@ async fn rama_server_quinn_client_with(
 ) -> (rq::Connection, quinn::Connection, Box<dyn Any + Send>) {
     let identity = identity();
     let server = rq::Endpoint::bind_server(
-        Executor::new(),
+        WeakScope::detached(),
         configure(h3_rama_server_config(&identity)),
         localhost(),
     )
@@ -179,7 +180,7 @@ async fn quinn_server_rama_client() -> (quinn::Connection, rq::Connection, Box<d
     let server = quinn::Endpoint::server(h3_quinn_server_config(&identity), localhost())
         .expect("the quinn server binds");
     let address = server.local_addr().expect("a local address");
-    let client = rq::Endpoint::bind_client(Executor::new(), localhost())
+    let client = rq::Endpoint::bind_client(WeakScope::detached(), localhost())
         .await
         .expect("the rama client binds");
     let (quinn, rama) = step("connect", async {
@@ -326,7 +327,7 @@ fn start<S: Connection, C: Connection>(
         server::handshake(served, server_config).expect("the server handshake starts");
     spawn(driver.run());
     let (client, driver) =
-        client::handshake::<Body, _>(sending, Config::default(), Executor::new())
+        client::handshake::<Body, _>(sending, Config::default(), WeakScope::detached())
             .expect("the client handshake starts");
     spawn(driver.run());
     (client, server)
@@ -643,7 +644,7 @@ async fn backend_client(served: impl Connection, sending: impl ReserveBiStreams)
         .expect("a request");
     let client = step(
         "connect",
-        http_connect::<_, _, Body>(transport, handshake, Executor::new()),
+        http_connect::<_, _, Body>(transport, handshake, WeakScope::detached()),
     )
     .await
     .expect("an HTTP/3 client service")
@@ -691,10 +692,10 @@ async fn pooled_backend_client(served: impl Connection, sending: impl ReserveBiS
             })
         }
     });
-    let client = HttpConnectRequestAdapter::new(
-        HttpPooledConnectorConfig::default()
-            .build_connector(HttpConnector::<_, Body>::new(connector, Executor::new())),
-    );
+    let client =
+        HttpConnectRequestAdapter::new(HttpPooledConnectorConfig::default().build_connector(
+            HttpConnector::<_, Body>::new(connector, WeakScope::detached()),
+        ));
     let requests = (0..REQUESTS).map(|index| {
         let client = &client;
         async move {

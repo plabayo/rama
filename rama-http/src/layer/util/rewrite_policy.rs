@@ -65,6 +65,7 @@ impl BodyRewritePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::extensions::Extension;
 
     /// A request is rewritten when the extractors would read its type, a response when a
     /// browser would.
@@ -113,10 +114,8 @@ mod tests {
 
     #[test]
     fn custom_policy_can_inspect_extensions() {
-        #[derive(Debug)]
+        #[derive(Debug, Extension)]
         struct RewriteEnabled;
-
-        impl rama_core::extensions::Extension for RewriteEnabled {}
 
         let policy = BodyRewritePolicy::custom(|_headers, extensions| {
             extensions.get_ref::<RewriteEnabled>().is_some()

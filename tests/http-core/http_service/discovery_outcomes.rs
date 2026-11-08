@@ -12,7 +12,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef as _,
     futures::{StreamExt as _, stream},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Body, Method, Request, Response, StatusCode, Version,
         body::{Frame, util::BodyExt as _},
@@ -32,7 +32,6 @@ use rama::{
         proxy::IoForwardService,
         tls::ApplicationProtocol,
     },
-    rt::Executor,
     service::service_fn,
     tcp::{client::service::TcpConnector, server::TcpListener},
 };
@@ -61,21 +60,21 @@ fn failing_body() -> Body {
 async fn connect_proxy() -> (
     SocketAddr,
     Arc<Mutex<Vec<String>>>,
-    Shutdown,
+    Scope,
     CancellationToken,
     JoinHandle<()>,
 ) {
     let cancel = CancellationToken::new();
-    let shutdown = Shutdown::new(cancel.clone().cancelled_owned());
-    let executor = Executor::graceful(shutdown.guard());
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), executor.clone())
+    let shutdown = Scope::new().with_signal(cancel.clone().cancelled_owned());
+    let scope = shutdown.clone_weak();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), scope.clone())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
     let targets = Arc::new(Mutex::new(Vec::new()));
     let connect = EagerHttpProxyConnector::new(
         DnsConnector::new(TcpConnector::new()),
-        IoForwardService::new(executor.clone()),
+        IoForwardService::new(scope.clone()),
     );
     let service = (
         MapInputLayer::new({
@@ -86,7 +85,7 @@ async fn connect_proxy() -> (
                 request
             }
         }),
-        UpgradeLayer::new(executor.clone(), MethodMatcher::CONNECT, connect),
+        UpgradeLayer::new(scope.clone(), MethodMatcher::CONNECT, connect),
     )
         .into_layer(service_fn(async |_request: Request| {
             Ok::<_, Infallible>(
@@ -96,7 +95,7 @@ async fn connect_proxy() -> (
                     .unwrap(),
             )
         }));
-    let task = spawn(listener.serve(HttpServer::auto(executor).service(service)));
+    let task = spawn(listener.serve(HttpServer::auto(scope).service(service)));
     (address, targets, shutdown, cancel, task)
 }
 
@@ -161,7 +160,10 @@ async fn proxied_response_failure_suppresses_alternative_for_route_plan() {
         );
     }
     cancel.cancel();
-    shutdown.shutdown_with_limit(TEST_TIMEOUT).await.unwrap();
+    tokio::time::timeout(TEST_TIMEOUT, shutdown.join())
+        .await
+        .unwrap()
+        .unwrap();
     task.await.unwrap();
     origin.close().await;
     alternative.close().await;

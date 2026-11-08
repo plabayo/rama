@@ -9,6 +9,7 @@ use rama::{
     crypto::pem::PemEncode as _,
     error::BoxError,
     extensions::ExtensionsRef as _,
+    graceful::WeakScope,
     http::{
         Version,
         client::{Http3Transport, http_connect},
@@ -21,7 +22,6 @@ use rama::{
         tls::ApplicationProtocol,
     },
     quic::{Endpoint, TransportConfig},
-    rt::Executor,
     service::service_fn,
     tls::{SecureTransport, client::TlsClientConfig, server::TlsServerConfig},
     utils::fs::tempdir,
@@ -221,7 +221,7 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
             (Version::HTTP_3, false),
             (Version::HTTP_3, true),
         ] {
-            let exec = Executor::new();
+            let scope = WeakScope::detached();
             let template = ConnectIpTemplate::try_new("https://localhost/vpn")?;
             let (finished, mut completion) = tokio::sync::mpsc::unbounded_channel();
             let service = ConnectIpService::new(
@@ -236,7 +236,7 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                         Ok::<_, Infallible>(())
                     }
                 }),
-                exec.clone(),
+                scope.clone(),
             );
             let request = template.request(&ConnectIpScope::default(), version)?;
             if version == Version::HTTP_3 {
@@ -258,11 +258,11 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                     backend::options(),
                 )?;
                 client_config.set_transport_config(transport);
-                let server = Endpoint::build(exec.clone())
+                let server = Endpoint::build(scope.clone())
                     .with_server_config(server_config)
                     .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
                     .await?;
-                let client = Endpoint::build(exec.clone())
+                let client = Endpoint::build(scope.clone())
                     .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
                     .await?;
                 let (connection, accepted) = tokio::join!(
@@ -271,7 +271,7 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                 );
                 let connection = connection?;
                 let accepted = accepted?;
-                let mut http = HttpServer::new_http3(exec.clone());
+                let mut http = HttpServer::new_http3(scope.clone());
                 http.http3_mut().extended_connect = true;
                 http.http3_mut().datagrams = native.then(Default::default);
                 let serving = tokio::spawn(async move { http.serve(accepted, service).await });
@@ -282,7 +282,7 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                         ..Config::default()
                     }),
                 };
-                let established = http_connect(transport, request, exec.clone()).await?;
+                let established = http_connect(transport, request, scope.clone()).await?;
                 let client_http = established.conn;
                 let request = established.input;
                 let mut session_config = config();
@@ -311,19 +311,19 @@ async fn h1_h2_h3_carriers_exchange_control_and_dual_stack_packets() -> Result<(
                 // supplied by the fixture. Separate unit tests reject its absence.
                 let server_io = ServiceInput::new(b);
                 server_io.extensions().insert(SecureTransport::default());
-                let exec_server = exec.clone();
+                let server_scope = scope.clone();
                 let serving = tokio::spawn(async move {
                     if version == Version::HTTP_2 {
-                        let mut http = HttpServer::new_h2(exec_server);
+                        let mut http = HttpServer::new_h2(server_scope);
                         http.h2_mut().set_enable_connect_protocol();
                         http.serve(server_io, service).await
                     } else {
-                        HttpServer::new_http1(exec_server)
+                        HttpServer::new_http1(server_scope)
                             .serve(server_io, service)
                             .await
                     }
                 });
-                let established = http_connect(ServiceInput::new(a), request, exec).await?;
+                let established = http_connect(ServiceInput::new(a), request, scope).await?;
                 let client_http = established.conn;
                 let request = established.input;
                 exercise(
@@ -440,8 +440,8 @@ async fn rama_ip_client_against_connect_ip_go() -> Result<(), BoxError> {
             .as_str()
             .ok_or("missing address")?
             .parse()?;
-        let exec = Executor::new();
-        let endpoint = Endpoint::build(exec.clone())
+        let scope = WeakScope::detached();
+        let endpoint = Endpoint::build(scope.clone())
             .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
             .await?;
         let tls = TlsClientConfig::new()
@@ -466,7 +466,7 @@ async fn rama_ip_client_against_connect_ip_go() -> Result<(), BoxError> {
                 }),
             },
             request,
-            exec,
+            scope,
         )
         .await?;
         let mut session =
@@ -605,7 +605,7 @@ async fn rama_ip_server_against_connect_ip_go() -> Result<(), BoxError> {
             .map(|p| p.iter().map(|b| format!("{b:02x}")).collect())
             .collect();
         std::fs::write(&packet_file, serde_json::to_vec(&values)?)?;
-        let exec = Executor::new();
+        let scope = WeakScope::detached();
         let tls = TlsServerConfig::new()
             .with_server_auth(auth)
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
@@ -613,7 +613,7 @@ async fn rama_ip_server_against_connect_ip_go() -> Result<(), BoxError> {
         let server_config = backend::server_tls_provider()
             .server_config(&tls, backend::options())?
             .with_transport_config(Arc::new(TransportConfig::default().with_initial_mtu(1400)));
-        let endpoint = Endpoint::build(exec.clone())
+        let endpoint = Endpoint::build(scope.clone())
             .with_server_config(server_config)
             .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
             .await?;
@@ -632,7 +632,7 @@ async fn rama_ip_server_against_connect_ip_go() -> Result<(), BoxError> {
                     Ok::<_, Infallible>(())
                 }
             }),
-            exec.clone(),
+            scope.clone(),
         );
         let child = ip_peer()
             .args(["-mode", "client", "-cert"])
@@ -645,7 +645,7 @@ async fn rama_ip_server_against_connect_ip_go() -> Result<(), BoxError> {
             .stderr(Stdio::inherit())
             .spawn()?;
         let connection = endpoint.accept().await.ok_or("missing connection")?.await?;
-        let mut http = HttpServer::new_http3(exec);
+        let mut http = HttpServer::new_http3(scope);
         http.http3_mut().extended_connect = true;
         http.http3_mut().datagrams = Some(Default::default());
         let serving = tokio::spawn(async move { http.serve(connection, service).await });

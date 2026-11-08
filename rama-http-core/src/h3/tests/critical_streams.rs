@@ -8,11 +8,7 @@ use crate::h3::{
     observation::{H3Observer, SettingsObservation},
     server,
 };
-use rama_core::{
-    bytes::Bytes,
-    extensions::ExtensionsRef as _,
-    rt::{Executor, spawn},
-};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _, graceful::WeakScope, rt::spawn};
 use rama_http_types::{
     Body, Request, Response,
     body::util::BodyExt as _,
@@ -57,7 +53,7 @@ async fn idle_prefixes_follow_startup_policy_and_reserved_stream_order() {
                             },
                             ..Config::default()
                         },
-                        Executor::new(),
+                        WeakScope::detached(),
                     )
                     .unwrap();
                     let driver = spawn(driver.run());
@@ -145,7 +141,8 @@ async fn deferred_encoder_and_decoder_prefixes_follow_real_compression_work() {
                 server::handshake(pair.server.clone(), config.clone()).unwrap();
             let server_driver = spawn(driver.run());
             let (mut client, driver) =
-                client::handshake::<Body, _>(pair.client.clone(), config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::detached())
+                    .unwrap();
             let client_driver = spawn(driver.run());
             client.peer_settings().await.unwrap();
             let serve = spawn(async move {
@@ -262,7 +259,8 @@ async fn startup_priority_targets_respect_cumulative_peer_credit() {
                 })),
                 ..Config::default()
             };
-            let result = client::handshake::<Body, _>(pair.client.clone(), config, Executor::new());
+            let result =
+                client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::detached());
             if limit == 1 {
                 let error = result.unwrap_err();
                 assert_eq!(error.code(), Code::H3_ID_ERROR);
@@ -290,9 +288,12 @@ async fn request_base_preferences_reach_the_peer_without_changing_connection_def
         )
         .unwrap();
         let server_driver = spawn(driver.run());
-        let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let client_driver = spawn(driver.run());
         client.peer_settings().await.unwrap();
         let serve = spawn(async move {
@@ -360,9 +361,12 @@ async fn field_preferences_reach_the_peer_and_do_not_leak_into_later_requests() 
         };
         let (mut server, driver) = server::handshake(pair.server.clone(), config).unwrap();
         let server_driver = spawn(driver.run());
-        let (mut client, driver) =
-            client::handshake::<Body, _>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
+        let (mut client, driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
         let client_driver = spawn(driver.run());
         client.peer_settings().await.unwrap();
         let plain = FieldPreferences {
@@ -505,7 +509,7 @@ async fn ordered_startup_records_control_then_immediate_prefixes_for_initial_fie
                     })),
                     ..Config::default()
                 },
-                Executor::new(),
+                WeakScope::detached(),
             )
             .unwrap();
             let client_driver = spawn(driver.run());
@@ -613,7 +617,7 @@ async fn ordered_startup_keeps_peer_settings_live_and_cancellation_before_reques
                     })),
                     ..Config::default()
                 },
-                Executor::new(),
+                WeakScope::detached(),
             ).unwrap();
             let driver = spawn(driver.run());
             // Leave our CONTROL unread: its 32-byte transport credit holds

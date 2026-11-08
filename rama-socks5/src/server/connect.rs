@@ -1,6 +1,6 @@
 use rama_core::extensions::ExtensionsRef;
+use rama_core::graceful::WeakScope;
 use rama_core::io::BridgeIo;
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{
     Layer, Service,
@@ -171,9 +171,10 @@ impl<C, S> Connector<C, S> {
 
 impl DefaultConnector {
     /// Create a [`DefaultConnector`] whose forward bridge observes graceful
-    /// shutdown via the given [`Executor`].
+    /// shutdown via the given [`WeakScope`].
     #[must_use]
-    pub fn default_with_exec(exec: Executor) -> Self {
+    pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         #[cfg(feature = "dns")]
         let connector = DnsConnector::new(TcpConnector::default());
         #[cfg(not(feature = "dns"))]
@@ -182,7 +183,7 @@ impl DefaultConnector {
 
         Self {
             connector,
-            service: IoForwardService::new(exec),
+            service: IoForwardService::new(scope),
             hide_local_address: false,
         }
     }
@@ -190,7 +191,7 @@ impl DefaultConnector {
 
 impl Default for DefaultConnector {
     fn default() -> Self {
-        Self::default_with_exec(Executor::default())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 
@@ -318,11 +319,12 @@ impl<S> LazyConnector<S> {
 
 impl LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
     /// Create a [`LazyConnector`] whose forward bridge observes graceful
-    /// shutdown via the given [`Executor`].
+    /// shutdown via the given [`WeakScope`].
     #[must_use]
-    pub fn default_with_exec(exec: Executor) -> Self {
+    pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            service: IoToProxyBridgeIo::extension_connector_target(IoForwardService::new(exec)),
+            service: IoToProxyBridgeIo::extension_connector_target(IoForwardService::new(scope)),
         }
     }
 }
@@ -330,7 +332,7 @@ impl LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
 impl Default for LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
     #[inline(always)]
     fn default() -> Self {
-        Self::default_with_exec(Executor::default())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 

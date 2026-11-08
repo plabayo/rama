@@ -19,10 +19,11 @@ use serde_json::json;
 use self::quic_view::{EchoH3, EchoQuic, EchoQuicConnection};
 use crate::{
     Layer, Service,
-    cli::ForwardKind,
+    cli::{DEFAULT_CONNECTION_GRACE, ForwardKind, connection_scope},
     combinators::{Either, Either3},
     error::{BoxError, BoxErrorExt, ErrorContext},
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         BodyLimitLayer, Request, Response, Version,
         body::util::BodyExt,
@@ -44,7 +45,7 @@ use crate::{
         },
     },
     layer::{
-        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        ConsumeErrLayer, LimitLayer,
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -57,7 +58,6 @@ use crate::{
         },
     },
     proxy::haproxy::server::HaProxyLayer,
-    rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
     ua::{
@@ -103,6 +103,7 @@ pub struct EchoServiceBuilder<H> {
     throttle: Option<Rate>,
     body_limit: usize,
     timeout: Duration,
+    timeout_grace: Duration,
     forward: Option<ForwardKind>,
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -132,6 +133,7 @@ impl Default for EchoServiceBuilder<()> {
             throttle: None,
             body_limit: mib(1),
             timeout: Duration::ZERO,
+            timeout_grace: DEFAULT_CONNECTION_GRACE,
             forward: None,
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -201,11 +203,23 @@ impl<H> EchoServiceBuilder<H> {
     }
 
     crate::utils::macros::generate_set_and_with! {
-        /// set the timeout in seconds for each connection
+        /// set the age at which each connection starts draining, give or take a tenth; it is
+        /// dropped [`with_timeout_grace`](Self::with_timeout_grace) later
         ///
-        /// (0 = no timeout)
+        /// (0 = no limit)
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// set at most how long a draining connection may still run before it is dropped
+        ///
+        /// Also bounds the drain when the server shuts down; the server's own scope can end it
+        /// sooner. Default: 5 seconds.
+        pub fn timeout_grace(mut self, timeout_grace: Duration) -> Self {
+            self.timeout_grace = timeout_grace;
             self
         }
     }
@@ -279,6 +293,7 @@ impl<H> EchoServiceBuilder<H> {
             throttle: self.throttle,
             body_limit: self.body_limit,
             timeout: self.timeout,
+            timeout_grace: self.timeout_grace,
             forward: self.forward,
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -341,9 +356,10 @@ where
     /// build a tcp service ready to echo http traffic back
     pub fn build(
         self,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
-        self.build_services(exec).map(|(tcp, _)| tcp)
+        let scope = scope.into();
+        self.build_services(scope).map(|(tcp, _)| tcp)
     }
 
     /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
@@ -356,7 +372,7 @@ where
     #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
     pub fn build_with_http3(
         self,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<
         (
             impl Service<TcpStream, Output = (), Error = Infallible>,
@@ -364,12 +380,13 @@ where
         ),
         BoxError,
     > {
-        self.build_services(exec)
+        let scope = scope.into();
+        self.build_services(scope)
     }
 
     fn build_services(
         self,
-        exec: Executor,
+        scope: WeakScope,
     ) -> Result<
         (
             impl Service<TcpStream, Output = (), Error = Infallible>,
@@ -382,18 +399,14 @@ where
             _ => None,
         };
 
-        let http_service = Arc::new(self.build_http(exec.clone()));
+        let http_service = Arc::new(self.build_http(scope.clone()));
 
         let connection_limit = LimitLayer::new(if self.concurrent_limit > 0 {
             Either::A(ConcurrentPolicy::max(self.concurrent_limit))
         } else {
             Either::B(UnlimitedPolicy::new())
         });
-        let connection_timeout = if !self.timeout.is_zero() {
-            TimeoutLayer::new(self.timeout)
-        } else {
-            TimeoutLayer::never()
-        };
+        let connection_timeout = connection_scope(&scope, self.timeout, self.timeout_grace);
 
         // One layer for both: QUIC paces all streams of a connection against one budget.
         let throttle = self
@@ -413,7 +426,7 @@ where
 
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A({
-                let mut http = HttpServer::new_h2(exec.clone());
+                let mut http = HttpServer::new_h2(scope.clone());
                 http.h2_mut()
                     .set_observe_early_frames(self.http2_observation);
                 if self.ws_support {
@@ -422,14 +435,14 @@ where
                 http.service(http_service.clone())
             }),
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
-                Either3::B(HttpServer::new_http1(exec.clone()).service(http_service.clone()))
+                Either3::B(HttpServer::new_http1(scope.clone()).service(http_service.clone()))
             }
             Some(version) => {
                 return Err(BoxError::from_static_str("unsupported http version")
                     .context_debug_field("version", version));
             }
             None => Either3::C({
-                let mut http = HttpServer::auto(exec.clone());
+                let mut http = HttpServer::auto(scope.clone());
                 http.h2_mut()
                     .set_observe_early_frames(self.http2_observation);
                 if self.ws_support {
@@ -441,7 +454,7 @@ where
 
         #[cfg(feature = "quic")]
         let http3_service = {
-            let mut http3 = HttpServer::new_http3(exec);
+            let mut http3 = HttpServer::new_http3(scope);
             // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT.
             http3.http3_mut().observation = self.http3_observation.map(Box::new);
             http3.http3_mut().extended_connect = self.ws_support;
@@ -460,7 +473,7 @@ where
             connection_timeout,
             throttle,
             http_service,
-            exec,
+            scope,
         );
 
         Ok((
@@ -472,7 +485,7 @@ where
     /// build an http service ready to echo http traffic back
     pub fn build_http(
         &self,
-        exec: Executor,
+        scope: WeakScope,
     ) -> impl Service<Request, Output: IntoResponse, Error = Infallible> + use<H> {
         let http_forwarded_layer = super::http_forwarded_layer(self.forward.as_ref());
 
@@ -500,7 +513,7 @@ where
             http_forwarded_layer,
             self.ws_support.then(|| {
                 UpgradeLayer::new_with_services(
-                    exec,
+                    scope,
                     WebSocketMatcher::default(),
                     {
                         let acceptor = WebSocketAcceptor::default()

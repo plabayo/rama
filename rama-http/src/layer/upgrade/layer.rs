@@ -5,7 +5,7 @@ use super::{UpgradeOutput, UpgradeResponse};
 use super::{UpgradeService, service::UpgradeHandler};
 use rama_core::error::BoxError;
 use rama_core::error_sink::{DropErrorSink, ErrorSink, TracingErrorSink};
-use rama_core::{Layer, Service, matcher::Matcher, rt::Executor};
+use rama_core::{Layer, Service, graceful::WeakScope, matcher::Matcher};
 use rama_http_types::Request;
 use std::{fmt, sync::Arc};
 
@@ -16,7 +16,7 @@ use std::{fmt, sync::Arc};
 /// [`UpgradeService`]: crate::layer::upgrade::UpgradeService
 pub struct UpgradeLayer<O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
-    exec: Executor,
+    scope: WeakScope,
     error_sink: Arc<dyn ErrorSink>,
 }
 
@@ -27,17 +27,18 @@ impl<O: Send + 'static> UpgradeLayer<O> {
     /// containing the response-local handler for the upgraded connection. This
     /// lets that handler directly own resources established before the response.
     /// Use [`Self::new_with_services`] when the responder and handler are separate.
-    pub fn new<M, R>(exec: Executor, matcher: M, service: R) -> Self
+    pub fn new<M, R>(scope: impl Into<WeakScope>, matcher: M, service: R) -> Self
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
     {
-        Self::new_with_error_sink(exec, matcher, service, TracingErrorSink::default())
+        let scope = scope.into();
+        Self::new_with_error_sink(scope, matcher, service, TracingErrorSink::default())
     }
 
     /// Create a single-service upgrade layer with a custom handler error sink.
     pub fn new_with_error_sink<M, R, Sink>(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         matcher: M,
         service: R,
         sink: Sink,
@@ -47,34 +48,42 @@ impl<O: Send + 'static> UpgradeLayer<O> {
         R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
         Sink: ErrorSink,
     {
+        let scope = scope.into();
         Self {
             handlers: vec![Arc::new(UpgradeHandler::new(matcher, service, sink))],
-            exec,
+            scope,
             error_sink: Arc::new(TracingErrorSink::default()),
         }
     }
 
     /// Create a single-service upgrade layer which silently drops handler errors.
-    pub fn new_dropping_errors<M, R>(exec: Executor, matcher: M, service: R) -> Self
+    pub fn new_dropping_errors<M, R>(scope: impl Into<WeakScope>, matcher: M, service: R) -> Self
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeOutput<Request, O>, Error = O> + Clone,
     {
-        Self::new_with_error_sink(exec, matcher, service, DropErrorSink::new())
+        let scope = scope.into();
+        Self::new_with_error_sink(scope, matcher, service, DropErrorSink::new())
     }
 
     /// Create an upgrade layer with separate responder and handler services.
     ///
     /// This is useful when the handshake can be acknowledged independently and
     /// the upgraded-connection service performs any deferred setup itself.
-    pub fn new_with_services<M, R, H>(exec: Executor, matcher: M, responder: R, handler: H) -> Self
+    pub fn new_with_services<M, R, H>(
+        scope: impl Into<WeakScope>,
+        matcher: M,
+        responder: R,
+        handler: H,
+    ) -> Self
     where
         M: Matcher<Request>,
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
         H: Service<Upgraded, Error: Into<BoxError>> + Clone,
     {
+        let scope = scope.into();
         Self::new_with_services_and_error_sink(
-            exec,
+            scope,
             matcher,
             responder,
             handler,
@@ -84,7 +93,7 @@ impl<O: Send + 'static> UpgradeLayer<O> {
 
     /// Create a separate-services upgrade layer with a custom handler error sink.
     pub fn new_with_services_and_error_sink<M, R, H, Sink>(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         matcher: M,
         responder: R,
         handler: H,
@@ -96,18 +105,19 @@ impl<O: Send + 'static> UpgradeLayer<O> {
         H: Service<Upgraded> + Clone,
         Sink: ErrorSink<H::Error>,
     {
+        let scope = scope.into();
         Self {
             handlers: vec![Arc::new(UpgradeHandler::new_with_services(
                 matcher, responder, handler, sink,
             ))],
-            exec,
+            scope,
             error_sink: Arc::new(TracingErrorSink::default()),
         }
     }
 
     /// Create a separate-services upgrade layer which silently drops handler errors.
     pub fn new_with_services_dropping_errors<M, R, H>(
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         matcher: M,
         responder: R,
         handler: H,
@@ -117,8 +127,9 @@ impl<O: Send + 'static> UpgradeLayer<O> {
         R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
         H: Service<Upgraded> + Clone,
     {
+        let scope = scope.into();
         Self::new_with_services_and_error_sink(
-            exec,
+            scope,
             matcher,
             responder,
             handler,
@@ -239,7 +250,7 @@ impl<O> Clone for UpgradeLayer<O> {
     fn clone(&self) -> Self {
         Self {
             handlers: self.handlers.clone(),
-            exec: self.exec.clone(),
+            scope: self.scope.clone(),
             error_sink: self.error_sink.clone(),
         }
     }
@@ -252,12 +263,12 @@ impl<S, O> Layer<S> for UpgradeLayer<O> {
         UpgradeService::new(
             self.handlers.clone(),
             inner,
-            self.exec.clone(),
+            self.scope.clone(),
             self.error_sink.clone(),
         )
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        UpgradeService::new(self.handlers, inner, self.exec, self.error_sink)
+        UpgradeService::new(self.handlers, inner, self.scope, self.error_sink)
     }
 }

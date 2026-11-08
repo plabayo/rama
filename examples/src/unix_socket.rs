@@ -33,9 +33,8 @@ mod unix_example {
         Service,
         error::BoxError,
         extensions::ExtensionsRef,
-        graceful::ShutdownGuard,
+        graceful::{Scope, WeakScope},
         io::Io,
-        rt::Executor,
         telemetry::tracing::{
             self,
             level_filters::LevelFilter,
@@ -56,34 +55,34 @@ mod unix_example {
             )
             .init();
 
-        let graceful = rama::graceful::Shutdown::default();
-        let exec = Executor::graceful(graceful.guard());
+        let scope = Scope::new().with_default_signal();
+        let weak_scope = scope.clone_weak();
 
         const PATH: &str = "/tmp/rama_example_unix.socket";
 
-        let listener = UnixListener::build(exec.clone())
+        let listener = UnixListener::build(weak_scope.clone())
             .bind_path(PATH)
             .await
             .expect("bind Unix socket");
 
-        graceful.spawn_task_fn(async |guard| {
+        scope.spawn_task(async move {
             tracing::info!(
                 file.path = %PATH,
                 "ready to unix-serve",
             );
-            let svc = GracefulUnixService(guard);
+            let svc = GracefulUnixService(weak_scope);
             listener.serve(svc).await;
         });
 
-        let duration = graceful.shutdown().await;
+        let joined = scope.join().await.expect("graceful shutdown");
         tracing::info!(
-            shutdown.duration_ms = %duration.as_millis(),
+            shutdown.duration_ms = %joined.elapsed().as_millis(),
             "bye!",
         );
     }
 
     #[derive(Debug, Clone)]
-    struct GracefulUnixService(ShutdownGuard);
+    struct GracefulUnixService(WeakScope);
 
     impl<Stream> Service<Stream> for GracefulUnixService
     where
@@ -95,7 +94,7 @@ mod unix_example {
         async fn serve(&self, mut stream: Stream) -> Result<Self::Output, Self::Error> {
             let mut buf = [0u8; 1024];
 
-            let mut cancelled = std::pin::pin!(self.0.clone_weak().into_cancelled());
+            let mut cancelled = std::pin::pin!(self.0.cancelled());
 
             loop {
                 let n = tokio::select! {

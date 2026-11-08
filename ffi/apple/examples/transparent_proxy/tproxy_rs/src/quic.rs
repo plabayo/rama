@@ -10,6 +10,7 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use rama::{
     Layer as _, Service,
     extensions::ExtensionsRef as _,
+    graceful::WeakScope,
     http::{
         HeaderName, HeaderValue,
         layer::set_header::SetResponseHeaderLayer,
@@ -32,7 +33,6 @@ use rama::{
         },
         tls::BoringTlsProvider,
     },
-    rt::Executor,
     service::service_fn,
     telemetry::tracing,
     tls::alpn::AlpnRouter,
@@ -76,7 +76,7 @@ fn demux_config(flow_bytes: NonZeroUsize) -> DemuxConfig {
 type Association = PrefixedDatagramSocket<DemuxedSocket<UdpFlowSender>>;
 
 /// Serve one UDP flow until it ends.
-pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
+pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
     let QuicPath {
         state,
         limiter,
@@ -93,12 +93,12 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
     ));
 
     let route = {
-        let exec = exec.clone();
+        let scope = scope.clone();
         let forward = forward.clone();
         service_fn(move |input: InputWithQuicClientHello<Association>| {
             let settings = state.load_full();
             let exclusions = DomainExclusionList::new(settings.exclude_domains.iter());
-            let exec = exec.clone();
+            let scope = scope.clone();
             let forward = forward.clone();
             let name = input.peeked.client_hello.ext_server_name().cloned();
             // As TCP does: an intercept the limiter refuses passes through untouched.
@@ -133,9 +133,9 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
                     rama::http::core::h3::connection::Config::default()
                         .configure_transport(&mut transport)?;
                     let transport = Arc::new(transport);
-                    let h3 = Http3MitmRelay::new(exec.clone())
+                    let h3 = Http3MitmRelay::new(scope.clone())
                         .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(
-                            exec.clone(),
+                            scope.clone(),
                         ))
                         .with_http_middleware((
                             ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
@@ -149,7 +149,7 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
                     let terminate = DatagramToProxyBridge::extension_connector_target(
                         QuicMitmRelay::new(
                             settings.tls_mitm_relay.issuer().clone(),
-                            exec.clone(),
+                            scope.clone(),
                             egress_tls,
                             VarInt::from_u32(FAILURE),
                         )
@@ -177,7 +177,7 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
         }));
     let demux = DatagramDemux::new(UdpFlowSocket::new(flow), demux_config(flow_bytes))
         .with_shared_budget(budget);
-    if let Err(error) = demux.serve(exec, inspect).await {
+    if let Err(error) = demux.serve(scope, inspect).await {
         tracing::debug!(%error, "tproxy quic flow ended");
     }
 }

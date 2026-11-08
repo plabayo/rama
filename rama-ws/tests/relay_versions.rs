@@ -15,7 +15,7 @@
 use parking_lot::Mutex;
 use rama_core::{
     Layer, Service, ServiceInput, bytes::Bytes, error::BoxError, extensions::ExtensionsRef as _,
-    rt::Executor, service::service_fn,
+    graceful::WeakScope, service::service_fn,
 };
 use rama_http::{
     Body, Method, Request, Response, StatusCode, Version,
@@ -131,7 +131,7 @@ async fn assert_relay(ingress: Version, egress: Version) {
     let relay =
         WebSocketRelayIoService::new(WebSocketRelayService::new(service_fn(tag_relay_message)));
     let service = HttpUpgradeMitmRelayLayer::new(
-        Executor::default(),
+        WeakScope::detached(),
         HttpWebSocketRelayServiceRequestMatcher::new(relay),
     )
     .into_layer(ResponseVersionAdapter::new(upstream));

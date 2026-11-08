@@ -167,7 +167,7 @@ pub async fn rama_client_connects(
     let client = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the rama client binds");
@@ -242,7 +242,7 @@ pub async fn rama_server_side(
         .wait(
             &what,
             Endpoint::bind_server(
-                rama::rt::Executor::new(),
+                rama::graceful::WeakScope::detached(),
                 rama_server_config(&run.identity),
                 localhost(),
             ),
@@ -430,17 +430,20 @@ async fn answer_until_the_last(
 mod tests {
     use super::*;
     use crate::identity::server_identity;
-    use rama::{bytes::Bytes, rt::Executor};
+    use rama::{bytes::Bytes, graceful::WeakScope};
 
     async fn warmup_after_peer_update(answering: bool) {
         let what = "warmup after peer key update";
         let deadline = Deadline::new();
         let identity = server_identity();
-        let server =
-            Endpoint::bind_server(Executor::new(), rama_server_config(&identity), localhost())
-                .await
-                .unwrap();
-        let client = Endpoint::bind_client(Executor::new(), localhost())
+        let server = Endpoint::bind_server(
+            WeakScope::detached(),
+            rama_server_config(&identity),
+            localhost(),
+        )
+        .await
+        .unwrap();
+        let client = Endpoint::bind_client(WeakScope::detached(), localhost())
             .await
             .unwrap();
         let connecting = client

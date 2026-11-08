@@ -91,7 +91,7 @@ async fn custom_datagram_relay_filters_using_request_local_policy() {
             Ok::<_, BoxError>(())
         });
         let relay = spawn(async move {
-            Http3MitmRelay::new(Executor::new())
+            Http3MitmRelay::new(WeakScope::detached())
                 .with_datagram_relay(custom)
                 .with_http_middleware((
                     MapInputLayer::new(|request: Request| {
@@ -109,7 +109,7 @@ async fn custom_datagram_relay_filters_using_request_local_policy() {
                 ))
                 .serve(BridgeIo(ingress, egress)).await
         });
-        let (mut browser, browser_driver) = client::handshake::<Body, _>(browser, config, Executor::new()).unwrap();
+        let (mut browser, browser_driver) = client::handshake::<Body, _>(browser, config, WeakScope::detached()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         // Both requests share a connection. A previous request's policy must not leak.
         for filtered in [true, false] {
@@ -161,7 +161,7 @@ async fn a_request_marker_alone_does_not_select_a_datagram_relay() {
         let (mut origin, origin_driver) = server::handshake(origin, config.clone()).unwrap();
         let origin_driver = spawn(origin_driver.run());
         let relay = spawn(async move {
-            Http3MitmRelay::new(Executor::new())
+            Http3MitmRelay::new(WeakScope::detached())
                 .with_datagram_relay(service_fn(|_: BridgeIo<Upgraded, Upgraded>| async {
                     panic!("an inherited request marker selected the datagram relay");
                     #[expect(unreachable_code, reason = "fix the service result type")]
@@ -181,7 +181,7 @@ async fn a_request_marker_alone_does_not_select_a_datagram_relay() {
                 ))
                 .serve(BridgeIo(ingress, egress)).await
         });
-        let (mut browser, browser_driver) = client::handshake::<Body, _>(browser, config, Executor::new()).unwrap();
+        let (mut browser, browser_driver) = client::handshake::<Body, _>(browser, config, WeakScope::detached()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         let request = Request::builder().method(Method::CONNECT).version(Version::HTTP_3)
             .uri("https://localhost/any-template").body(Body::empty()).unwrap();
@@ -250,11 +250,11 @@ async fn hop_with_transports(
         SocketAddress::local_ipv4(444),
         NonZeroUsize::MIN,
     );
-    let server_endpoint = Endpoint::build(Executor::new())
+    let server_endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .unwrap();
-    let mut client_endpoint = Endpoint::build(Executor::new())
+    let mut client_endpoint = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .unwrap();
     client_endpoint.set_default_client_config(client_config.clone());
@@ -339,7 +339,7 @@ async fn native_h3_mitm_streams_bodies_trailers_and_drains_on_upstream_goaway() 
         let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
         let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
         let origin_driver = spawn(origin_driver.run());
-        let relay = Http3MitmRelay::new(Executor::new());
+        let relay = Http3MitmRelay::new(WeakScope::detached());
         let relay = spawn(async move {
             relay
                 .with_ingress_config(ordinary_config())
@@ -348,7 +348,8 @@ async fn native_h3_mitm_streams_bodies_trailers_and_drains_on_upstream_goaway() 
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                .unwrap();
         let browser_driver = spawn(browser_driver.run());
         let request = Request::builder()
             .method(Method::POST)
@@ -409,7 +410,7 @@ async fn native_h3_mitm_cancellation_before_first_poll_closes_both_hops() {
         let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
         // Handles the producer keeps must not keep either hop open.
         let _retained = (ingress.clone(), egress.clone());
-        let relay = Http3MitmRelay::new(Executor::new());
+        let relay = Http3MitmRelay::new(WeakScope::detached());
         drop(
             relay
                 .with_ingress_config(ordinary_config())
@@ -456,7 +457,7 @@ async fn native_h3_mitm_binds_authority_before_and_after_middleware() {
                     .unwrap();
             }
         });
-        let relay = Http3MitmRelay::new(Executor::new())
+        let relay = Http3MitmRelay::new(WeakScope::detached())
             .with_bound_authority(BoundAuthority::https(
                 "localhost:443".parse().unwrap(),
                 true,
@@ -488,7 +489,8 @@ async fn native_h3_mitm_binds_authority_before_and_after_middleware() {
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                .unwrap();
         let browser_driver = spawn(browser_driver.run());
         for (host, action, status) in [
             ("other.example", "repair", StatusCode::MISDIRECTED_REQUEST),
@@ -537,7 +539,7 @@ async fn native_h3_mitm_rejects_only_proven_unprocessed_post() {
             let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
             let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
             let origin_driver = spawn(origin_driver.run());
-            let relay = Http3MitmRelay::new(Executor::new());
+            let relay = Http3MitmRelay::new(WeakScope::detached());
             let relay = spawn(async move {
                 relay
                     .with_ingress_config(ordinary_config())
@@ -546,7 +548,8 @@ async fn native_h3_mitm_rejects_only_proven_unprocessed_post() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                    .unwrap();
             let browser_driver = spawn(browser_driver.run());
             let request = Request::builder()
                 .method(Method::POST)
@@ -592,8 +595,8 @@ async fn native_h3_mitm_waits_past_the_deadline_for_client_settings_without_cont
     timeout(LIMIT, async {
         let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
         let (_egress_endpoint, _origin_endpoint, egress, origin) = hop().await;
-        let relay =
-            Http3MitmRelay::new(Executor::new()).with_settings_timeout(Duration::from_secs(1));
+        let relay = Http3MitmRelay::new(WeakScope::detached())
+            .with_settings_timeout(Duration::from_secs(1));
         // Neither peer ever sends H3 SETTINGS.
         let relay = relay
             .with_ingress_config(ordinary_config())
@@ -626,7 +629,7 @@ async fn native_h3_mitm_forwards_priority_before_headers_and_during_body() {
         let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
         let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
         let origin_driver = spawn(origin_driver.run());
-        let relay = Http3MitmRelay::new(Executor::new());
+        let relay = Http3MitmRelay::new(WeakScope::detached());
         let relay = spawn(async move {
             relay
                 .with_ingress_config(ordinary_config())
@@ -635,7 +638,8 @@ async fn native_h3_mitm_forwards_priority_before_headers_and_during_body() {
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                .unwrap();
         let browser_driver = spawn(browser_driver.run());
         let (opened, opened_stream) = oneshot::channel();
         let browser_request = spawn(async move {
@@ -711,14 +715,15 @@ async fn native_h3_mitm_tunnels_keep_bytes_half_closes_and_goaway() {
             let origin_driver = spawn(origin_driver.run());
             let relay_config = config();
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::detached())
                     .with_ingress_config(relay_config)
                     .with_egress_config(ordinary_config())
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                    .unwrap();
             let browser_driver = spawn(browser_driver.run());
             let request = Request::builder()
                 .method(Method::CONNECT)
@@ -810,7 +815,7 @@ async fn native_h3_mitm_advertises_only_upstream_extended_connect_support() {
             .unwrap();
             let origin_driver = spawn(origin_driver.run());
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::detached())
                     .with_ingress_config(Config {
                         extended_connect: true,
                         ..ordinary_config()
@@ -820,7 +825,8 @@ async fn native_h3_mitm_advertises_only_upstream_extended_connect_support() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                    .unwrap();
             let browser_driver = spawn(browser_driver.run());
             assert_eq!(
                 browser
@@ -940,14 +946,15 @@ async fn native_h3_mitm_websocket_deflate_crosses_both_quic_hops() {
         let origin_driver = spawn(origin_driver.run());
         let relay_config = config();
         let relay = spawn(async move {
-            Http3MitmRelay::new(Executor::new())
+            Http3MitmRelay::new(WeakScope::detached())
                 .with_ingress_config(relay_config)
                 .with_egress_config(ordinary_config())
                 .serve(BridgeIo(ingress, egress))
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                .unwrap();
         let browser_driver = spawn(browser_driver.run());
         let request = Request::builder()
             .method(Method::CONNECT)
@@ -1070,10 +1077,10 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
             let relay_ingress = config(true);
             let relay_egress = config(true);
             let (trigger, signal) = oneshot::channel();
-            let shutdown = rama_core::graceful::Shutdown::new(async move { _ = signal.await; });
-            let exec = Executor::graceful(shutdown.guard());
+            let shutdown = rama_core::graceful::Scope::new().with_signal(async move { _ = signal.await; });
+            let scope = shutdown.clone_weak();
             let relay = spawn(async move {
-                Http3MitmRelay::new(exec).with_http_middleware((
+                Http3MitmRelay::new(scope).with_http_middleware((
                     MapInputLayer::new(|request: Request| {
                         if request.extensions().get_ref::<Protocol>() == Some(&Protocol::from_static("x-datagram-test")) {
                             request.extensions().insert(HttpDatagrams);
@@ -1090,7 +1097,7 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
             });
             let browser_connection = browser.clone();
             let (mut browser, browser_driver) =
-                client::handshake::<Body, _>(browser, config(ingress_native), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, config(ingress_native), WeakScope::detached()).unwrap();
             let browser_driver = spawn(browser_driver.run());
             let request = Request::builder().method(Method::CONNECT)
                 .version(Version::HTTP_3).uri("https://localhost/datagrams")
@@ -1140,7 +1147,7 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
             }
             assert_eq!(value, b"opaque control");
             trigger.send(()).unwrap();
-            let shutdown = spawn(shutdown.shutdown_with_limit(LIMIT));
+            let shutdown = spawn(async move { tokio::time::timeout(LIMIT, shutdown.join()).await.expect("drained in time").expect("not aborted") });
             browser.closed_or_draining().await;
             assert!(!relay.is_finished(), "the default relay must drain an open tunnel on shutdown");
             origin_session.send_capsule(CapsuleType::DATAGRAM, Bytes::from_static(b"after GOAWAY")).await.unwrap();
@@ -1165,7 +1172,7 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_hops() {
             for endpoint in [&browser_endpoint, &ingress_endpoint, &egress_endpoint, &origin_endpoint] { endpoint.close(0u32, b"complete"); }
             tokio::join!(browser_endpoint.shutdown(), ingress_endpoint.shutdown(), egress_endpoint.shutdown(), origin_endpoint.shutdown());
             let _drivers = tokio::join!(browser_driver, origin_driver);
-            shutdown.await.unwrap().unwrap();
+            shutdown.await.unwrap();
         }
     }).await.unwrap();
 }
@@ -1187,14 +1194,15 @@ async fn native_h3_mitm_ignores_origin_settings_it_does_not_understand() {
         let (mut origin, origin_driver) = server::handshake(origin, origin_config).unwrap();
         let origin_driver = spawn(origin_driver.run());
         let relay = spawn(async move {
-            Http3MitmRelay::new(Executor::new())
+            Http3MitmRelay::new(WeakScope::detached())
                 .with_ingress_config(ordinary_config())
                 .with_egress_config(ordinary_config())
                 .serve(BridgeIo(ingress, egress))
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                .unwrap();
         let browser_driver = spawn(browser_driver.run());
         let seen = browser.peer_settings().await.unwrap();
         for unknown in [SettingId::new(0x2b60_3742), SettingId::new(0xff_d277)] {
@@ -1287,14 +1295,15 @@ async fn native_h3_mitm_lowers_early_data_and_push_instead_of_refusing() {
             let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
             let origin_driver = spawn(origin_driver.run());
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::detached())
                     .with_ingress_config(ingress_config)
                     .with_egress_config(egress_config)
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                    .unwrap();
             let browser_driver = spawn(browser_driver.run());
             let (sent, received) = tokio::join!(
                 browser.send_request(
@@ -1333,7 +1342,7 @@ async fn native_h3_mitm_refuses_swapped_sides_before_any_control_output() {
     timeout(LIMIT, async {
         let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
         let (_egress_endpoint, _origin_endpoint, egress, _origin) = hop().await;
-        let error = Http3MitmRelay::new(Executor::new())
+        let error = Http3MitmRelay::new(WeakScope::detached())
             .with_ingress_config(ordinary_config())
             .with_egress_config(ordinary_config())
             .serve(BridgeIo(egress, ingress))
@@ -1357,14 +1366,15 @@ async fn native_h3_mitm_bounds_ingress_field_sections_by_the_origin() {
         let (mut origin, origin_driver) = server::handshake(origin, origin_config).unwrap();
         let origin_driver = spawn(origin_driver.run());
         let relay = spawn(async move {
-            Http3MitmRelay::new(Executor::new())
+            Http3MitmRelay::new(WeakScope::detached())
                 .with_ingress_config(ordinary_config())
                 .with_egress_config(ordinary_config())
                 .serve(BridgeIo(ingress, egress))
                 .await
         });
         let (mut browser, browser_driver) =
-            client::handshake::<Body, _>(browser, ordinary_config(), Executor::new()).unwrap();
+            client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached())
+                .unwrap();
         let browser_driver = spawn(browser_driver.run());
         let advertised = browser
             .peer_settings()
@@ -1432,16 +1442,19 @@ async fn native_h3_mitm_failure_and_cancellation_end_both_hops_as_internal_error
                 ingress_config.decoder.max_table_capacity = u64::MAX;
             }
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::detached())
                     .with_ingress_config(ingress_config)
                     .with_egress_config(ordinary_config())
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
             // The browser's client lives until the assertion, so it cannot close its own hop.
-            let (sender, driver) =
-                client::handshake::<Body, _>(browser.clone(), ordinary_config(), Executor::new())
-                    .unwrap();
+            let (sender, driver) = client::handshake::<Body, _>(
+                browser.clone(),
+                ordinary_config(),
+                WeakScope::detached(),
+            )
+            .unwrap();
             let _driver = spawn(driver.run());
             if cancel {
                 sender.peer_settings().await.unwrap();
@@ -1483,14 +1496,15 @@ async fn native_h3_mitm_mirrors_initial_client_settings() {
                 .try_with_client_settings(Arc::new(literal.clone()))
                 .unwrap();
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::detached())
                     .with_ingress_config(Config::default())
                     .with_egress_config(ceiling)
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body, _>(browser, browser_config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, browser_config, WeakScope::detached())
+                    .unwrap();
             let browser_driver = spawn(browser_driver.run());
             let actual = origin.peer_settings().await.unwrap();
             assert_eq!(
@@ -1613,14 +1627,15 @@ async fn native_h3_mitm_fits_client_settings_to_egress_budgets_and_capabilities(
                 .try_with_client_settings(Arc::new(literal))
                 .unwrap();
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::detached())
                     .with_ingress_config(ordinary_config())
                     .with_egress_config(egress_config)
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
             let (sender, driver) =
-                client::handshake::<Body, _>(browser, client_config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, client_config, WeakScope::detached())
+                    .unwrap();
             let _driver = spawn(driver.run());
             assert_eq!(
                 origin.peer_settings().await.unwrap(),
@@ -1673,7 +1688,7 @@ async fn native_h3_mitm_late_settings_leave_the_other_hop_on_its_own() {
                 .try_with_client_settings(Arc::new(literal))
                 .unwrap();
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::detached())
                     .with_ingress_config(extended)
                     .with_egress_config(ordinary_config())
                     .with_settings_timeout(Duration::from_secs(1))
@@ -1681,7 +1696,8 @@ async fn native_h3_mitm_late_settings_leave_the_other_hop_on_its_own() {
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body, _>(browser, browser_config, Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, browser_config, WeakScope::detached())
+                    .unwrap();
             let browser_driver = spawn(async move {
                 tokio::time::sleep(browser_delay).await;
                 browser_driver.run().await
@@ -1801,14 +1817,15 @@ async fn native_h3_mitm_mirrors_known_origin_settings() {
             let (mut origin, origin_driver) = server::handshake(origin, origin_config).unwrap();
             let origin_driver = spawn(origin_driver.run());
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::detached())
                     .with_ingress_config(ceiling)
                     .with_egress_config(Config::default())
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
             let (mut browser, browser_driver) =
-                client::handshake::<Body, _>(browser, Config::default(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, Config::default(), WeakScope::detached())
+                    .unwrap();
             let browser_driver = spawn(browser_driver.run());
             if case == "unknown" {
                 // Inert GREASE is kept in place, as in the client direction.
@@ -1959,14 +1976,15 @@ async fn native_h3_mitm_fits_origin_settings_to_ingress_and_both_hop_capabilitie
                 ingress_config.datagrams = None;
             }
             let relay = spawn(async move {
-                Http3MitmRelay::new(Executor::new())
+                Http3MitmRelay::new(WeakScope::detached())
                     .with_ingress_config(ingress_config)
                     .with_egress_config(egress_config)
                     .serve(BridgeIo(ingress, egress))
                     .await
             });
             let (sender, driver) =
-                client::handshake::<Body, _>(browser, Config::default(), Executor::new()).unwrap();
+                client::handshake::<Body, _>(browser, Config::default(), WeakScope::detached())
+                    .unwrap();
             let _driver = spawn(driver.run());
             // Emit the origin's native SETTINGS directly so a missing QUIC DATAGRAM
             // capability can be tested without our server builder rejecting it first.
@@ -2021,7 +2039,7 @@ async fn clean_carrier_close_drains_datagrams_through_the_mitm() {
         let origin_driver = spawn(origin_driver.run());
         let browser_connection = browser.clone();
         let ingress_connection = ingress.clone();
-        let relay = Http3MitmRelay::new(Executor::new())
+        let relay = Http3MitmRelay::new(WeakScope::detached())
             .with_ingress_config(config.clone()).with_egress_config(config.clone())
             .with_http_middleware((
                 MapInputLayer::new(|request: Request| { request.extensions().insert(HttpDatagrams); request }),
@@ -2029,7 +2047,7 @@ async fn clean_carrier_close_drains_datagrams_through_the_mitm() {
                 ArcLayer::new(),
             ));
         let mut forwarding = pin!(relay.serve(BridgeIo(ingress, egress)));
-        let (mut browser_http, browser_driver) = client::handshake::<Body, _>(browser, config, Executor::new()).unwrap();
+        let (mut browser_http, browser_driver) = client::handshake::<Body, _>(browser, config, WeakScope::detached()).unwrap();
         let browser_driver = spawn(browser_driver.run());
         let request = Request::builder().method(Method::CONNECT).uri("https://localhost/datagrams").body(Body::empty()).unwrap();
         request.extensions().insert(HttpDatagrams);

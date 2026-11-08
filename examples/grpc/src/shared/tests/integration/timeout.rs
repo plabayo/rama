@@ -4,6 +4,7 @@ use rama::net::Protocol;
 use rama::net::uri::Uri;
 use rama::{
     Layer as _,
+    graceful::WeakScope,
     http::{
         client::EasyHttpWebClient,
         grpc::{
@@ -14,7 +15,6 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
 };
@@ -99,7 +99,7 @@ async fn run_service_in_background(latency: Duration, server_timeout: Duration) 
 
     let svc = test_server::TestServer::new(Svc { latency });
 
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
@@ -113,7 +113,7 @@ async fn run_service_in_background(latency: Duration, server_timeout: Duration) 
 
     tokio::spawn(async move {
         listener
-            .serve(HttpServer::new_h2(Executor::default()).service(grpc_svc))
+            .serve(HttpServer::new_h2(WeakScope::detached()).service(grpc_svc))
             .await;
     });
 

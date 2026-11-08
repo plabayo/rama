@@ -40,7 +40,7 @@ async fn a_close_is_counted_where_it_is_written() {
             .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
             .with_server_auth(identity);
         let mut endpoint = Endpoint::bind_server(
-            rama_core::rt::Executor::new(),
+            rama_core::graceful::WeakScope::detached(),
             ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
                 .expect("the server config is built"),
             crate::driver::tests::localhost(),

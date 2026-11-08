@@ -7,8 +7,8 @@ use rama_core::{
     Service as _, ServiceInput,
     bytes::Bytes,
     extensions::ExtensionsRef as _,
+    graceful::WeakScope,
     io::{AbortIo, BridgeIo},
-    rt::Executor,
 };
 use rama_http::{
     Body, Method, Request,
@@ -58,7 +58,7 @@ async fn reset_tunnel(reason: Reason) -> Upgraded {
         );
         stream.send_reset(reason);
     });
-    let (mut client, conn) = http2::handshake(Executor::new(), ServiceInput::new(client_io))
+    let (mut client, conn) = http2::handshake(WeakScope::detached(), ServiceInput::new(client_io))
         .await
         .unwrap();
     tokio::spawn(conn);

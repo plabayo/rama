@@ -26,7 +26,7 @@ use crate::connect_udp::{ConnectUdpAction, ConnectUdpRule, ConnectUdpRules, conn
 const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
 
 fn service() -> ConnectUdpService {
-    ConnectUdpService::try_new(Executor::default(), None).unwrap()
+    ConnectUdpService::try_new(WeakScope::detached(), None).unwrap()
 }
 
 fn request(version: Version) -> Request {
@@ -819,8 +819,8 @@ mod metrics {
         .unwrap_or_else(|_| panic!("no {count} tunnel(s) ended with {reason}"));
     }
 
-    fn proxy(collector: &Collector, exec: Executor) -> ConnectUdpService {
-        ConnectUdpService::try_new(exec, None)
+    fn proxy(collector: &Collector, scope: WeakScope) -> ConnectUdpService {
+        ConnectUdpService::try_new(scope, None)
             .unwrap()
             .with_policy(DestinationScopePolicy::allow_private())
             .with_limits(
@@ -833,7 +833,7 @@ mod metrics {
     #[tokio::test]
     async fn a_tunnel_is_recorded_from_its_opening_to_its_end() {
         let collector = Collector::new();
-        let service = proxy(&collector, Executor::default());
+        let service = proxy(&collector, WeakScope::detached());
         let (target, address) = target().await;
         let mut client = open(&service, address).await;
         let user = kv("principal.kind", "user");
@@ -895,14 +895,14 @@ mod metrics {
     async fn a_failed_upgrade_and_a_failed_relay_are_recorded_as_such() {
         let collector = Collector::new();
         // Accepted, but never served by a connection that can upgrade.
-        let response = proxy(&collector, Executor::default())
+        let response = proxy(&collector, WeakScope::detached())
             .serve(request(Version::HTTP_2))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         ended(&collector, "upgrade_failed", 1).await;
 
-        let failing = proxy(&collector, Executor::default()).with_relay(service_fn(
+        let failing = proxy(&collector, WeakScope::detached()).with_relay(service_fn(
             |_: BridgeIo<ConnectUdpSocket, UdpPacketSocket>| async {
                 Err::<(), BoxError>(BoxError::from("relay failed"))
             },
@@ -918,19 +918,20 @@ mod metrics {
     async fn a_tunnel_cut_by_graceful_shutdown_is_cancelled() {
         let collector = Collector::new();
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let shutdown = rama_core::graceful::Shutdown::new(async move {
+        let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
             _ = stopped.await;
         });
-        let service = proxy(&collector, Executor::graceful(shutdown.guard()));
+        let service = proxy(&collector, shutdown.clone_weak());
         let (_target, address) = target().await;
         let _client = open(&service, address).await;
         assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 1);
-        // The service's executor holds a guard of its own.
+        // The service only observes the scope, so the join waits on the tunnel alone.
         drop(service);
         stop.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(10), shutdown.shutdown())
+        tokio::time::timeout(Duration::from_secs(10), shutdown.join())
             .await
-            .expect("the tunnel lets the shutdown finish");
+            .expect("the tunnel lets the shutdown finish")
+            .expect("not aborted");
         ended(&collector, "cancelled", 1).await;
         assert_eq!(collector.value("connect_udp.tunnel.closed", &[]), 1);
         assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
@@ -941,7 +942,7 @@ mod metrics {
     async fn a_cancelled_tunnel_is_recorded_while_its_relay_keeps_a_sender() {
         let collector = Collector::new();
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let shutdown = rama_core::graceful::Shutdown::new(async move {
+        let shutdown = rama_core::graceful::Scope::new().with_signal(async move {
             _ = stopped.await;
         });
         let kept = Arc::new(Mutex::new(None));
@@ -952,7 +953,7 @@ mod metrics {
                 std::future::pending::<Result<(), BoxError>>()
             }
         });
-        let service = proxy(&collector, Executor::graceful(shutdown.guard())).with_relay(relay);
+        let service = proxy(&collector, shutdown.clone_weak()).with_relay(relay);
         let (_target, address) = target().await;
         let _client = open(&service, address).await;
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -969,9 +970,10 @@ mod metrics {
         assert!(kept.lock().is_some(), "the sender lives on");
         assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
         drop(kept.lock().take());
-        tokio::time::timeout(Duration::from_secs(10), shutdown.shutdown())
+        tokio::time::timeout(Duration::from_secs(10), shutdown.join())
             .await
-            .expect("the tunnel's pump ends once its last sender goes");
+            .expect("the tunnel's pump ends once its last sender goes")
+            .expect("not aborted");
         assert_eq!(collector.value("connect_udp.tunnel.closed", &[]), 1, "once");
         assert_eq!(collector.value("connect_udp.tunnels.active", &[]), 0);
     }

@@ -4,8 +4,7 @@ use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
-    futures::FutureExt as _,
-    rt::Executor,
+    graceful::WeakScope,
     telemetry::tracing,
 };
 use rama_net::{
@@ -92,7 +91,7 @@ impl ClientEndpoint {
 #[derive(Debug, Clone)]
 pub struct SharedQuicEndpoint {
     source: Arc<Source>,
-    executor: Executor,
+    scope: WeakScope,
 }
 
 #[derive(Debug)]
@@ -130,26 +129,28 @@ impl EndpointProfileKey {
 }
 
 impl SharedQuicEndpoint {
-    /// Bind and manage the endpoints on first use; `executor` runs their drivers.
+    /// Bind and manage the endpoints on first use; their drivers run in `scope`.
     #[must_use]
-    pub fn managed(executor: Executor) -> Self {
+    pub fn managed(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             source: Arc::new(Source::Managed(
                 AsyncMutex::new(ManagedEndpoints::default()),
             )),
-            executor,
+            scope,
         }
     }
 
     /// Share an application-managed endpoint.
     #[must_use]
-    pub fn supplied(endpoint: Endpoint, executor: Executor) -> Self {
+    pub fn supplied(endpoint: Endpoint, scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             source: Arc::new(Source::Supplied {
                 endpoint,
                 exclusive: Arc::new(Semaphore::new(1)),
             }),
-            executor,
+            scope,
         }
     }
 
@@ -176,11 +177,7 @@ impl SharedQuicEndpoint {
             }
             Source::Managed(managed) => managed,
         };
-        if self
-            .executor
-            .guard()
-            .is_some_and(|guard| guard.cancelled().now_or_never().is_some())
-        {
+        if self.scope.is_cancelled() {
             return Err(BoxError::from_static_str("QUIC connector is shutting down"));
         }
         let Some(profile) = profile else {
@@ -189,7 +186,7 @@ impl SharedQuicEndpoint {
                 return Ok(ClientEndpoint::new(endpoint.clone()));
             }
             // A driver lost with its runtime is recreated in the requesting runtime;
-            // the configured graceful executor still controls its shutdown lifetime.
+            // the configured graceful scope still controls its shutdown lifetime.
             let endpoint = self.bind(None).await?;
             managed.default = Some(endpoint.clone());
             return Ok(ClientEndpoint::new(endpoint));
@@ -225,7 +222,7 @@ impl SharedQuicEndpoint {
         if let Some(profile) = profile {
             config.apply_quic_profile(profile)?;
         }
-        match EndpointBuilder::new(self.executor.clone())
+        match EndpointBuilder::new(self.scope.clone())
             .with_config(config.clone())
             .bind_client_address(SocketAddress::default_ipv6(0))
             .await
@@ -233,7 +230,7 @@ impl SharedQuicEndpoint {
             Ok(endpoint) => Ok(endpoint),
             Err(error) => {
                 tracing::debug!(%error, "binding IPv4 QUIC endpoint after IPv6 bind failed");
-                Ok(EndpointBuilder::new(self.executor.clone())
+                Ok(EndpointBuilder::new(self.scope.clone())
                     .with_config(config)
                     .bind_client_address(SocketAddress::default_ipv4(0))
                     .await?)
@@ -289,13 +286,14 @@ impl Service<ConnectRequest> for SharedQuicEndpoint {
 #[derive(Debug, Clone, ExtensionsRef)]
 pub struct QuicEndpointConnector<C> {
     inner: C,
-    executor: Executor,
+    scope: WeakScope,
 }
 
 impl<C> QuicEndpointConnector<C> {
-    /// Endpoints on the sockets `inner` establishes; `executor` runs their drivers.
-    pub fn new(inner: C, executor: Executor) -> Self {
-        Self { inner, executor }
+    /// Endpoints on the sockets `inner` establishes; their drivers run in `scope`.
+    pub fn new(inner: C, scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
+        Self { inner, scope }
     }
 }
 
@@ -320,7 +318,7 @@ where
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
             })?;
         }
-        let endpoint = EndpointBuilder::new(self.executor.clone())
+        let endpoint = EndpointBuilder::new(self.scope.clone())
             .with_config(config)
             .with_datagram_socket(socket)
             .map_err(|error| {

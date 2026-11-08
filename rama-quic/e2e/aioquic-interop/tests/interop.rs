@@ -38,7 +38,7 @@ async fn an_aioquic_client_refuses_a_rama_server_it_does_not_trust() {
         .wait(
             "the rama server binds",
             Endpoint::bind_server(
-                rama::rt::Executor::new(),
+                rama::graceful::WeakScope::detached(),
                 rama_server_config(&identity),
                 localhost(),
             ),
@@ -180,7 +180,7 @@ async fn a_rama_client_refuses_an_aioquic_server_it_does_not_trust() {
     let client = deadline
         .wait(
             "rama binds",
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the client binds");
@@ -285,7 +285,7 @@ async fn a_peer_that_never_finishes_is_stopped() {
     let client = deadline
         .wait(
             "rama binds",
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the client binds");
@@ -517,7 +517,7 @@ async fn a_close_right_after_the_handshake_reaches_the_peer() {
     let client = deadline
         .wait(
             "rama binds",
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the client binds");

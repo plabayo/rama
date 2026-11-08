@@ -1,6 +1,8 @@
 use std::io::Result as IoResult;
 
 use ahash::HashMap;
+use rama_core::extensions::ExtensionsRef;
+use rama_core::graceful::{Scope, enter_scope};
 use rama_core::io::Io;
 use std::sync::Arc;
 
@@ -132,13 +134,19 @@ impl TtrpcServer {
 
 impl<IO> rama_core::Service<IO> for TtrpcServer
 where
-    IO: rama_core::io::Io,
+    IO: rama_core::io::Io + ExtensionsRef,
 {
     type Output = ();
     type Error = std::io::Error;
 
+    /// Serves `stream` in a child of the scope it runs in (a new root without one), which its
+    /// handlers see; refused while that scope is closing.
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
+        let Ok(scope) = enter_scope(stream.extensions()) else {
+            return Err(std::io::Error::other("the connection's scope is closed"));
+        };
         ServerConnection::new_with_methods(stream, self.methods.clone())
+            .with_scope(scope)
             .with_max_concurrent_streams(self.max_concurrent_streams)
             .with_close_connection_on_oversized_frame(self.close_connection_on_oversized_frame)
             .start()
@@ -151,7 +159,7 @@ pub struct ServerConnection {
     methods: Arc<MethodMap>,
     tasks: JoinSet<IoResult<()>>,
     io_tasks: JoinSet<IoResult<()>>,
-    controller: ServerController,
+    scope: Scope,
     max_concurrent_streams: usize,
     reader_start: Option<oneshot::Sender<()>>,
     last_stream_id: u32,
@@ -181,7 +189,6 @@ impl ServerConnection {
             connection,
             crate::io::DEFAULT_MAX_BUFFERED_FRAMES,
         );
-        let controller = ServerController::default();
         let tasks = JoinSet::<IoResult<()>>::new();
 
         Self {
@@ -189,10 +196,19 @@ impl ServerConnection {
             methods,
             tasks,
             io_tasks,
-            controller,
+            scope: Scope::new(),
             max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
             reader_start: Some(reader_start),
             last_stream_id: 0,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Run this connection in `scope` (a new root by default): its graceful phase drains the
+        /// connection and its hard phase drops the in-flight handlers.
+        pub fn scope(mut self, scope: Scope) -> Self {
+            self.scope = scope;
+            self
         }
     }
 
@@ -226,13 +242,13 @@ impl ServerConnection {
         if let Some(start) = self.reader_start.take() {
             _ = start.send(());
         }
-        let shutdown = self.controller.token.clone();
-        let shutdown = shutdown.cancelled();
-        pin_mut!(shutdown);
+        let shutdown = self.scope.cancelled();
+        let aborted = self.scope.aborted();
+        pin_mut!(shutdown, aborted);
         loop {
             // Once a shutdown is requested we drain: stop dispatching new requests and finish as
             // soon as the in-flight tasks are done.
-            if self.controller.token.is_cancelled() && self.tasks.is_empty() {
+            if self.scope.is_cancelled() && self.tasks.is_empty() {
                 break;
             }
             tokio::select! {
@@ -247,13 +263,31 @@ impl ServerConnection {
                     // brand-new request. While draining we no longer dispatch it; reject it with
                     // `UNAVAILABLE` so the client gets an explicit signal instead of only seeing the
                     // imminent connection close.
-                    if self.controller.token.is_cancelled() {
-                        _ = self.io.tx.send(id, Status::unavailable("server is shutting down")).await;
-                    } else {
-                        self.handle_message(id, &frame).await;
+                    let draining = self.scope.is_cancelled();
+                    let dispatch = async {
+                        if draining {
+                            _ = self.io.tx.send(id, Status::unavailable("server is shutting down")).await;
+                        } else {
+                            self.handle_message(id, &frame).await;
+                        }
+                    };
+                    // A rejection can wait on a peer that stopped reading: the hard phase must
+                    // not wait with it.
+                    let aborted_while_dispatching = tokio::select! {
+                        biased;
+                        () = &mut aborted => true,
+                        () = dispatch => false,
+                    };
+                    if aborted_while_dispatching {
+                        self.abort_tasks();
+                        break;
                     }
                 },
                 () = &mut shutdown, if self.tasks.is_empty() => break,
+                () = &mut aborted => {
+                    self.abort_tasks();
+                    break;
+                },
                 else => {
                     // no more messages to read, and no more tasks to process; we are done
                     break;
@@ -261,6 +295,11 @@ impl ServerConnection {
             }
         }
         Ok(())
+    }
+
+    fn abort_tasks(&mut self) {
+        tracing::debug!(cause = ?self.scope.abort_cause(), "hard phase: dropping the in-flight ttRPC handlers");
+        self.tasks.abort_all();
     }
 
     // Rejections await their `SendResult` (which resolves once the writer has flushed the
@@ -384,7 +423,12 @@ impl ServerConnection {
                 }
                 Ok(())
             }
-            .with_context(ctx, self.controller.clone()),
+            .with_context(
+                ctx,
+                ServerController {
+                    scope: self.scope.clone_weak(),
+                },
+            ),
         );
     }
 }
@@ -843,7 +887,7 @@ mod tests {
         let server = TtrpcServer::new().register(Echo);
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move {
-            _ = rama_core::Service::serve(&server, server_io).await;
+            _ = rama_core::Service::serve(&server, rama_core::ServiceInput::new(server_io)).await;
         });
 
         let client = crate::Client::new(client_io);

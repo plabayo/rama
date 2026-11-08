@@ -60,7 +60,7 @@ all three HTTP versions. Proxies can also be chained through a MASQUE upstream.
 Start with [`rama::proxy::masque::connect_udp`][connect-udp]:
 `ConnectUdpConnector` opens a tunnel as a UDP socket, and `ConnectUdpService`
 serves tunnels with configurable destination policy and forwarding. For web
-requests, `DefaultHttpWebClient::default_masque_with_executor` provides the
+requests, `DefaultHttpWebClient::default_masque_with_scope` provides the
 integrated client.
 
 ## CONNECT-IP

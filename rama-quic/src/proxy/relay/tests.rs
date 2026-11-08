@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use rama_core::{Service, bytes::Bytes, error::BoxError, io::BridgeIo, rt::Executor};
+use rama_core::{Service, bytes::Bytes, error::BoxError, graceful::WeakScope, io::BridgeIo};
 use rama_quic_proto::{Dir, VarInt};
 use rama_tls::{client::TlsClientConfig, server::TlsServerConfig};
 use rama_udp::test_utils::MemoryDatagramSocket;
@@ -82,10 +82,10 @@ async fn hop_with_early_data(
         server_address,
         NonZeroUsize::new(64).unwrap(),
     );
-    let mut client = Endpoint::build(Executor::new())
+    let mut client = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .unwrap();
-    let server = Endpoint::build(Executor::new())
+    let server = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .unwrap();

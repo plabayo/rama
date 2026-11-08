@@ -48,6 +48,194 @@ pub mod appender {
 #[doc(inline)]
 pub use tracing_opentelemetry::*;
 
+/// Tracing setup for test binaries that capture logs per thread.
+#[cfg(feature = "test-utils")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test-utils")))]
+pub mod test_utils {
+    use std::sync::OnceLock;
+    use tracing::{Dispatch, Event, Metadata, Subscriber, span, subscriber::Interest};
+
+    /// Keep every log line visible to captures installed per thread; call it before a capture.
+    ///
+    /// Tracing caches for the whole process whether a log line is wanted. While at most one
+    /// dispatcher is registered, the first registration of a line asks only the default of the
+    /// thread that reaches it: reached first on a thread without a subscriber, the line is cached
+    /// as unwanted, and a capture installed with
+    /// [`with_default`](tracing::subscriber::with_default) on another thread never sees it.
+    ///
+    /// The first call registers two dispatchers for the whole process that want nothing and leave
+    /// every line undecided. Every later first registration is then decided under tracing's lock,
+    /// across all registered dispatchers, so no line is cached as unwanted and each event is
+    /// checked against the subscriber of the thread that emits it. Later calls do nothing, and no
+    /// global default is set.
+    ///
+    /// A registration already under way on another thread during the first call can still cache
+    /// its line as unwanted, so call it before the test starts any thread that logs. A runner that
+    /// gives each test its own process, such as nextest, leaves no such thread.
+    pub fn prepare_for_captures() {
+        static REGISTERED: OnceLock<[Dispatch; 2]> = OnceLock::new();
+        REGISTERED.get_or_init(|| [Dispatch::new(Undecided), Dispatch::new(Undecided)]);
+    }
+
+    /// Wants no event, and leaves every log line for the current thread's subscriber to decide.
+    struct Undecided;
+
+    impl Subscriber for Undecided {
+        fn register_callsite(&self, _metadata: &'static Metadata<'static>) -> Interest {
+            Interest::sometimes()
+        }
+
+        fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+            false
+        }
+
+        fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+            span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+        fn event(&self, _event: &Event<'_>) {}
+
+        fn enter(&self, _span: &span::Id) {}
+
+        fn exit(&self, _span: &span::Id) {}
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use parking_lot::Mutex;
+        use std::{
+            sync::{
+                atomic::{AtomicU8, Ordering},
+                mpsc,
+            },
+            thread::{self, ThreadId},
+            time::Duration,
+        };
+        use tracing::{dispatcher, subscriber::with_default};
+        use tracing_core::{
+            Kind, Level,
+            callsite::{self, Callsite},
+            metadata,
+        };
+
+        const UNSET: u8 = 0;
+        const NEVER: u8 = 1;
+        const SOMETIMES: u8 = 2;
+        const ALWAYS: u8 = 3;
+
+        /// Pauses the first registration on one thread inside [`Callsite::metadata`], after
+        /// tracing chose how to decide the callsite's interest.
+        struct PausingCallsite {
+            interest: AtomicU8,
+            pause: Mutex<Option<Pause>>,
+        }
+
+        struct Pause {
+            thread: ThreadId,
+            started: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+        }
+
+        impl Callsite for PausingCallsite {
+            fn set_interest(&self, interest: Interest) {
+                let interest = if interest.is_never() {
+                    NEVER
+                } else if interest.is_always() {
+                    ALWAYS
+                } else {
+                    SOMETIMES
+                };
+                self.interest.store(interest, Ordering::SeqCst);
+            }
+
+            fn metadata(&self) -> &Metadata<'_> {
+                let pause = self
+                    .pause
+                    .lock()
+                    .take_if(|pause| pause.thread == thread::current().id());
+                if let Some(pause) = pause {
+                    _ = pause.started.send(());
+                    // Bounded, so a regression fails the test instead of hanging it.
+                    _ = pause.release.recv_timeout(Duration::from_secs(10));
+                }
+                &PROBE_METADATA
+            }
+        }
+
+        static PROBE: PausingCallsite = PausingCallsite {
+            interest: AtomicU8::new(UNSET),
+            pause: Mutex::new(None),
+        };
+
+        static PROBE_METADATA: Metadata<'static> = metadata! {
+            name: "registration probe",
+            target: module_path!(),
+            level: Level::DEBUG,
+            fields: &[],
+            callsite: &PROBE,
+            kind: Kind::EVENT,
+        };
+
+        /// Wants every event, as a capture does.
+        struct Wanting;
+
+        impl Subscriber for Wanting {
+            fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+                true
+            }
+
+            fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+                span::Id::from_u64(1)
+            }
+
+            fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+            fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+            fn event(&self, _event: &Event<'_>) {}
+
+            fn enter(&self, _span: &span::Id) {}
+
+            fn exit(&self, _span: &span::Id) {}
+        }
+
+        #[test]
+        fn a_registration_in_flight_under_a_no_op_default_cannot_hide_a_line() {
+            prepare_for_captures();
+
+            let (started, on_started) = mpsc::channel();
+            let (release, on_release) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                *PROBE.pause.lock() = Some(Pause {
+                    thread: thread::current().id(),
+                    started,
+                    release: on_release,
+                });
+                // A default no dispatcher registry knows of, which wants nothing.
+                dispatcher::with_default(&Dispatch::none(), || {
+                    callsite::register(&PROBE);
+                });
+            });
+            on_started
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the probe registers on the worker");
+            // Released from elsewhere: the capture below may wait for the paused registration.
+            let releaser = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                _ = release.send(());
+            });
+            with_default(Wanting, || worker.join().unwrap());
+            releaser.join().unwrap();
+            assert_eq!(PROBE.interest.load(Ordering::SeqCst), SOMETIMES);
+        }
+    }
+}
+
 // NOTE: once <https://github.com/tokio-rs/tracing/issues/3310>
 // is resolved (if ever) we should be able to remove these utility macros again
 

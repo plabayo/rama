@@ -269,7 +269,6 @@ sync_wrapper = "1.0"
 terminal-prompt = "0.2"
 time = "0.3.55"
 tokio = "1.54.1"
-tokio-graceful = "0.2"
 tokio-postgres = "0.7"
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] }
 tokio-stream = "0.1"
@@ -279,6 +278,7 @@ tower-layer = "0.3"
 tower-service = "0.3"
 tracing = { version = "0.1", default-features = false }
 tracing-appender = "0.2"
+tracing-core = "0.1"
 tracing-opentelemetry = "0.34"
 tracing-subscriber = "0.3"
 tracing-test = "0.2"
@@ -305,7 +305,7 @@ zstd = "0.14.3"
 [workspace.lints.rust]
 unreachable_pub = "deny"
 unused_imports = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)', 'cfg(rama_loom)'] }
 # Each unsafe op in an `unsafe fn` needs its own `unsafe {}` block and proof.
 unsafe_op_in_unsafe_fn = "warn"
 
@@ -603,7 +603,7 @@ opentelemetry = [
 #
 # `--cfg tokio_unstable` is optional. Without it dial9 takes poll
 # events from its own spawn helpers, so coverage is the tasks rama
-# routes through `rama_core::rt::Executor` and `rama_core::rt::spawn`.
+# routes through `rama_core::graceful::Scope` spawns and `rama_core::rt::spawn`.
 # Set it (per-build via `RUSTFLAGS`, or in your `.cargo/config.toml`)
 # to also get every other task on the runtime, task spawn/terminate
 # events and per-worker queue depth.

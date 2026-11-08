@@ -113,15 +113,15 @@ pub(super) async fn try_new_service(
     Ok(service_fn(move |flow: UdpFlow| {
         let path = path.clone();
         let quic_ports = ports.clone();
-        // The flow's own executor: one held by this long-lived service would stall shutdown.
-        let exec = flow.executor().cloned().unwrap_or_default();
+        // The flow's own scope: one held by this long-lived service would stall shutdown.
+        let weak_scope = flow.scope().cloned().unwrap_or_default();
         async move {
             let port = flow
                 .extensions()
                 .get_ref::<ConnectorTarget>()
                 .map(|ConnectorTarget(target)| target.port);
             if crate::quic::serves_port(&quic_ports, port) {
-                crate::quic::serve(flow, path, exec).await;
+                crate::quic::serve(flow, path, weak_scope).await;
                 Ok(())
             } else {
                 service(flow, udp_policy_scope).await
@@ -458,11 +458,11 @@ async fn recv_from_slot(
 mod tests {
     use super::*;
     use rama::{
+        graceful::WeakScope,
         net::apple::networkextension::tproxy::{
             FlowAction, SessionFlowAction, TransparentProxyConfig, TransparentProxyEngineBuilder,
             TransparentProxyFlowProtocol, TransparentProxyHandler,
         },
-        rt::Executor,
     };
     use std::sync::{Arc, mpsc};
 
@@ -731,7 +731,7 @@ mod tests {
 
         async fn match_udp_flow(
             &self,
-            _exec: Executor,
+            _scope: WeakScope,
             meta: TransparentProxyFlowMeta,
         ) -> FlowAction<impl Service<UdpFlow, Output = (), Error = Infallible>> {
             let result = self.result.clone();

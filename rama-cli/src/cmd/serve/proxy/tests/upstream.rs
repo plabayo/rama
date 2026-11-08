@@ -16,12 +16,12 @@ fn upstream_forward_proxy_options_are_explicit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_client_isolates_upstream_proxy_407() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
     let proxy_task = tokio::spawn(
-        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+        listener.serve(HttpServer::auto(WeakScope::detached()).service(service_fn(
             |request: Request| async move {
                 assert_eq!(
                     request.uri().to_string(),
@@ -39,7 +39,7 @@ async fn forward_client_isolates_upstream_proxy_407() {
         ))),
     );
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -80,12 +80,12 @@ async fn forward_client_isolates_upstream_proxy_407() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_client_can_disable_automatic_upstream_proxy_auth() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
     let proxy_task = tokio::spawn(
-        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+        listener.serve(HttpServer::auto(WeakScope::detached()).service(service_fn(
             |request: Request| async move {
                 assert_eq!(
                     request.uri().to_string(),
@@ -108,7 +108,7 @@ async fn forward_client_can_disable_automatic_upstream_proxy_auth() {
         .unwrap()
         .with_forward_proxy_auth(false);
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -135,12 +135,12 @@ async fn forward_client_can_disable_automatic_upstream_proxy_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_client_authenticates_plaintext_upstream_proxy_by_default() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
     let proxy_task = tokio::spawn(
-        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+        listener.serve(HttpServer::auto(WeakScope::detached()).service(service_fn(
             |request: Request| async move {
                 assert_eq!(
                     request.uri().to_string(),
@@ -159,7 +159,7 @@ async fn forward_client_authenticates_plaintext_upstream_proxy_by_default() {
         rama::net::user::Basic::try_from("pu:pp").unwrap(),
     ));
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -218,7 +218,7 @@ async fn forward_client_can_tunnel_plaintext_without_leaking_proxy_auth() {
         .unwrap()
         .with_tunnel_plaintext_http(true);
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),
@@ -263,7 +263,7 @@ async fn forward_http_client_applies_connect_timeout_to_tls_handshake() {
     });
     let connect_timeout = Duration::from_secs(30);
     let client = new_proxy_client(ProxyClientConfig {
-        exec: Executor::default(),
+        scope: WeakScope::detached(),
         capture: None,
         inspection: InspectionState::default(),
         har: HarController::default(),

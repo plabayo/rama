@@ -1,15 +1,15 @@
-//! Building an endpoint on an application's own executor.
+//! Building an endpoint in an application's own scope.
 //!
-//! Tasks are spawned through that executor onto the caller's Tokio runtime. An executor
-//! carrying a graceful guard ties the endpoint to the application's shutdown.
+//! Tasks are spawned in that scope onto the caller's Tokio runtime. A scope with a
+//! shutdown signal ties the endpoint to the application's shutdown.
 //!
-//! The supervisor takes the executor, and with it the strong guard. Endpoint handles hold only
+//! The supervisor holds the scope while the endpoint runs. Endpoint handles hold only
 //! a weak cancellation reference, so a handle the application keeps does not hold the shutdown
 //! open.
 
 use std::{io, time::Duration};
 
-use rama_core::rt::Executor;
+use rama_core::graceful::WeakScope;
 use rama_net::address::SocketAddress;
 use rama_udp::{DatagramError, DatagramSocket, UdpPacketSocket, UdpSocketConfig, UdpSocketFactory};
 
@@ -28,7 +28,7 @@ pub const DEFAULT_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
 /// socket it will bind.
 #[derive(Debug, Clone)]
 pub struct EndpointBuilder {
-    exec: Executor,
+    scope: WeakScope,
     config: Option<EndpointConfig>,
     server_config: Option<ServerConfig>,
     shutdown_budget: Duration,
@@ -37,14 +37,15 @@ pub struct EndpointBuilder {
 }
 
 impl EndpointBuilder {
-    /// Build a client endpoint whose tasks run through `exec`.
+    /// Build a client endpoint whose tasks run through `scope`.
     ///
     /// Unless configured otherwise, construction generates a fresh secret reset key.
     /// A random-source failure is returned when binding or attaching a socket.
     #[must_use]
-    pub fn new(exec: Executor) -> Self {
+    pub fn new(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            exec,
+            scope,
             config: None,
             server_config: None,
             shutdown_budget: DEFAULT_SHUTDOWN_BUDGET,
@@ -82,7 +83,7 @@ impl EndpointBuilder {
 
     rama_utils::macros::generate_set_and_with! {
         /// How long a shutdown gives the drivers before it stops waiting and forces them. Zero
-        /// forces immediately.
+        /// forces immediately, as an abort of the scope does.
         pub fn shutdown_budget(mut self, value: Duration) -> Self {
             self.shutdown_budget = value;
             self
@@ -125,7 +126,7 @@ impl EndpointBuilder {
         socket_config: UdpSocketConfig,
     ) -> Result<Endpoint, DatagramError> {
         let Self {
-            exec,
+            scope,
             config,
             server_config,
             shutdown_budget,
@@ -150,7 +151,7 @@ impl EndpointBuilder {
             server_config,
             Socket::new(listener)?,
             advertised,
-            exec,
+            scope,
             shutdown_budget,
         )?;
         #[cfg(feature = "opentelemetry")]
@@ -174,7 +175,7 @@ impl EndpointBuilder {
     /// wakeable send handles, as required by [`DatagramSocket`]. It must preserve
     /// datagram boundaries, provide accurate packet metadata and advertise only
     /// the capabilities it supports. The endpoint and connection drivers run on
-    /// this builder's executor; an operating-system socket is not required.
+    /// this builder's scope; an operating-system socket is not required.
     ///
     /// Like [`Self::with_packet_socket`], this does not configure the transport
     /// or bind preferred-address sockets. The supplied socket's local address
@@ -197,7 +198,7 @@ impl EndpointBuilder {
     /// Where a prepared socket becomes an endpoint.
     fn on_socket(self, socket: Socket) -> Result<Endpoint, DatagramError> {
         let Self {
-            exec,
+            scope,
             config,
             server_config,
             shutdown_budget,
@@ -215,7 +216,7 @@ impl EndpointBuilder {
             server_config,
             socket,
             Vec::new(),
-            exec,
+            scope,
             shutdown_budget,
         )?;
         #[cfg(feature = "opentelemetry")]
