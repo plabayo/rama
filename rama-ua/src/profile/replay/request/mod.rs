@@ -6,7 +6,7 @@ use std::{collections::VecDeque, error::Error, fmt};
 use rama_core::{extensions::Extension, telemetry::tracing};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Version,
-    header::{COOKIE, Entry},
+    header::{COOKIE, Entry, TE},
     proto::{
         h2::PseudoHeaderOrder,
         h3::qpack::{
@@ -80,6 +80,11 @@ pub enum ProfilePreservationDifference {
         binding: RequestBinding,
     },
     AppendedCallerField {
+        name: HeaderName,
+        occurrence: u32,
+    },
+    /// The capture has no such field occurrence and the profile decides its presence.
+    DroppedCallerField {
         name: HeaderName,
         occurrence: u32,
     },
@@ -555,6 +560,8 @@ fn replay_headers(
     } else {
         0
     };
+    // RFC 9113 §8.2.2 and RFC 9114 §4.2 allow only `te: trailers`, so the capture decides it.
+    let profile_te = matches!(captured.version, Version::HTTP_2 | Version::HTTP_3);
     let mut cookies = replay_cookie_values(&mut original, cookie_slots, cookie_layout, report)?;
     let mut cookie_slot = 0;
     let mut output = HeaderMap::try_with_capacity(captured.fields.len().max(original.len()))
@@ -625,6 +632,16 @@ fn replay_headers(
                 profile.set_sensitive(table.get(*field).sensitive);
                 profile
             }
+            PlannedValue::Request(_) if profile_te && table.get(*field).name == TE => {
+                let profile = HeaderValue::from_static("trailers");
+                if original_value.is_some_and(|caller| caller != profile) {
+                    report.push(ProfilePreservationDifference::CallerValueReplaced {
+                        name: TE,
+                        occurrence: field.occurrence,
+                    });
+                }
+                profile
+            }
             PlannedValue::Request(binding) => {
                 let Some(value) = original_value else {
                     report.push(ProfilePreservationDifference::MissingRequestBinding {
@@ -657,6 +674,13 @@ fn replay_headers(
         let current = *occurrence;
         *occurrence += 1;
         if field.used {
+            continue;
+        }
+        if profile_te && field.name == TE {
+            report.push(ProfilePreservationDifference::DroppedCallerField {
+                name: field.name,
+                occurrence: current,
+            });
             continue;
         }
         report.push(ProfilePreservationDifference::AppendedCallerField {

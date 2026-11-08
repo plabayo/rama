@@ -217,9 +217,58 @@ fn caller_fields_beyond_capture_policy_never_fail_replay() {
             .unwrap()
             .headers
             .unwrap();
-        assert_eq!(headers.len(), 304);
-        assert_eq!(headers["te"], "gzip");
+        assert_eq!(headers.len(), 303);
+        assert!(!headers.contains_key("te"));
     }
+}
+
+#[test]
+fn multiplexed_replay_takes_te_from_the_capture() {
+    let te = || {
+        field(
+            "te",
+            0,
+            HeaderValueSource::Request(RequestBinding::Connection),
+        )
+    };
+    for version in [Version::HTTP_2, Version::HTTP_3] {
+        let with_te =
+            selection_for_version(vec![te(), field("accept", 0, profile(b"*/*"))], version);
+        let replayed = with_te.replay_request(&HeaderMap::new()).unwrap();
+        assert!(replayed.report.is_exact());
+        assert_eq!(replayed.headers.unwrap()["te"], "trailers");
+
+        let mut original = HeaderMap::new();
+        original.insert("te", HeaderValue::from_static("gzip"));
+        let replayed = with_te.replay_request(&original).unwrap();
+        assert_eq!(replayed.headers.unwrap()["te"], "trailers");
+        assert!(matches!(
+            replayed.report.differences.as_ref(),
+            [ProfilePreservationDifference::CallerValueReplaced { name, occurrence: 0 }] if name == TE
+        ));
+
+        let without_te = selection_for_version(vec![field("accept", 0, profile(b"*/*"))], version);
+        original.insert("te", HeaderValue::from_static("trailers"));
+        let replayed = without_te.replay_request(&original).unwrap();
+        assert!(!replayed.headers.unwrap().contains_key("te"));
+        assert!(matches!(
+            replayed.report.differences.as_ref(),
+            [ProfilePreservationDifference::DroppedCallerField { name, occurrence: 0 }] if name == TE
+        ));
+    }
+
+    // HTTP/1.1 transfer codings stay with the caller.
+    let replayed = selection(vec![te()])
+        .replay_request(&HeaderMap::new())
+        .unwrap();
+    assert!(replayed.headers.unwrap().is_empty());
+    assert!(matches!(
+        replayed.report.differences.as_ref(),
+        [ProfilePreservationDifference::MissingRequestBinding {
+            binding: RequestBinding::Connection,
+            ..
+        }]
+    ));
 }
 
 #[test]

@@ -14,6 +14,9 @@
 //! - `john-ua_chrome-ua_macos`: a Chrome profile on macOS;
 //! - `john-ua_mobile`: any mobile profile.
 //!
+//! Each response carries the selected profile's User-Agent in `x-emulated-user-agent`,
+//! so a client can check the fingerprint it was given against that profile.
+//!
 //! Egress certificate verification is disabled, as in the other MITM examples.
 //! This example is not production ready: load a persistent, client-trusted MITM
 //! CA and verify egress certificates in a real deployment.
@@ -45,7 +48,7 @@ use rama::{
     extensions::{Extension, ExtensionsRef},
     graceful::{Scope, WeakScope},
     http::{
-        Body, BodyLimitLayer, Request, Response, StatusCode,
+        Body, BodyLimitLayer, HeaderName, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
@@ -76,6 +79,7 @@ use rama::{
         layer::emulate::{
             ProfileEmulateHttpConnectModifier, ProfileEmulateHttpRequestModifierLayer,
             ProfileEmulateLayer, ProfileSelectFallback, ProfileSelectorUsernameParser,
+            SelectedUserAgentProfile,
         },
         profile::selection::database::UserAgentDatabase,
     },
@@ -85,6 +89,34 @@ use rama::{
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 type EmulatingClient = BoxService<Request, Response, BoxError>;
+
+/// The response header naming the User-Agent of the profile the proxy emulated.
+const EMULATED_USER_AGENT: HeaderName = HeaderName::from_static("x-emulated-user-agent");
+
+/// Reports the profile [`ProfileEmulateLayer`] selected on each response.
+#[derive(Debug, Clone)]
+struct ReportSelectedProfile<S>(S);
+
+impl<S> Service<Request> for ReportSelectedProfile<S>
+where
+    S: Service<Request, Output = Response>,
+{
+    type Output = Response;
+    type Error = S::Error;
+
+    async fn serve(&self, req: Request) -> Result<Response, Self::Error> {
+        let selected = req
+            .extensions()
+            .get_ref::<SelectedUserAgentProfile>()
+            .and_then(|selected| selected.user_agent_header.as_deref())
+            .and_then(|ua| HeaderValue::from_str(ua).ok());
+        let mut resp = self.0.serve(req).await?;
+        if let Some(ua) = selected {
+            resp.headers_mut().insert(EMULATED_USER_AGENT, ua);
+        }
+        Ok(resp)
+    }
+}
 
 #[derive(Debug, Clone, Extension)]
 struct State {
@@ -240,6 +272,6 @@ fn new_emulating_client(database: Arc<UserAgentDatabase>, scope: WeakScope) -> E
     // The client's own User-Agent is not used: labels alone choose the profile.
     ProfileEmulateLayer::new(database)
         .with_select_fallback(ProfileSelectFallback::SameClient)
-        .into_layer(client)
+        .into_layer(ReportSelectedProfile(client))
         .boxed()
 }
