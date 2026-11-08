@@ -27,9 +27,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/hyper/blob/cf563e8a97cc389fd8800a9f178e847dc3203d1f/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
-- hyper-util: <https://github.com/hyperium/hyper-util/tree/64855f6c6cac998255ae7776bd22a6eb7bb5f1bb>
+- hyper-util: <https://github.com/hyperium/hyper-util/tree/885c965642d3531856bba936e3ea463acddb3d4b>
   - License:
-    - Original: <https://github.com/hyperium/hyper-util/blob/64855f6c6cac998255ae7776bd22a6eb7bb5f1bb/LICENSE>
+    - Original: <https://github.com/hyperium/hyper-util/blob/885c965642d3531856bba936e3ea463acddb3d4b/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
 - headers: <https://github.com/hyperium/headers/tree/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5>
@@ -37,12 +37,12 @@ as a distant relative.
     - Original: <https://github.com/hyperium/headers/blob/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
-- tonic: <https://github.com/grpc/grpc-rust/tree/864d4d11f563c79fe2d51bd15867d1ec6d2e16dc>
+- tonic: <https://github.com/grpc/grpc-rust/tree/d140e69f75e0285fa0ff34ea2e5b43ddbc5a531c>
   - developed upstream as `grpc/grpc-rust` (formerly `hyperium/tonic`); rama tracks the `tonic`,
     `tonic-prost`, `tonic-types`, `tonic-web`, `tonic-health` and build crates, not the new
     `grpc` crates
   - License:
-    - Original: <https://github.com/grpc/grpc-rust/blob/864d4d11f563c79fe2d51bd15867d1ec6d2e16dc/LICENSE>
+    - Original: <https://github.com/grpc/grpc-rust/blob/d140e69f75e0285fa0ff34ea2e5b43ddbc5a531c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
 - http: <https://github.com/hyperium/http/tree/4a0885cf32746d37ab0d0e570e14a4ad75bb3ce7>
@@ -210,23 +210,23 @@ not be kept in sync with upstream — they are now part of `rama`.
 
 ## Relative Forks
 
-- <https://github.com/quinn-rs/quinn/tree/2c5750139fa09aab588bf0f939c83f521d658baf/quinn-udp>
+- <https://github.com/quinn-rs/quinn/tree/765abecf7b5e18e5eeb8aa46e30e2174c54547d7/quinn-udp>
   - Generic UDP socket code adapted for Rama.
-  - reviewed against upstream `main` (`2c57501`, 2026-11-02): not carried over are the opt-in
+  - reviewed against upstream `main` (`765abec`, 2026-11-08): not carried over are the opt-in
     Linux transport-error queue (`IP_RECVERR` stays off), the WASI backend, and building the
     Windows socket state before `bind`; truncated control data marks the datagram truncated
     (so it is dropped) instead of failing the socket.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/2c5750139fa09aab588bf0f939c83f521d658baf/LICENSE-MIT>
+    - Original: <https://github.com/quinn-rs/quinn/blob/765abecf7b5e18e5eeb8aa46e30e2174c54547d7/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/quinn-udp](./licenses/quinn-udp)
-- <https://github.com/tokio-rs/axum/tree/40d061fdacd468217c7a609bede16357276b6c40>
+- <https://github.com/tokio-rs/axum/tree/4cc51a96df444592ec8276738d4ccd1202e6150d>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code
   - License:
-    - Original: <https://github.com/tokio-rs/axum/blob/40d061fdacd468217c7a609bede16357276b6c40/LICENSE>
+    - Original: <https://github.com/tokio-rs/axum/blob/4cc51a96df444592ec8276738d4ccd1202e6150d/LICENSE>
     - Type: MIT
     - Copy: [./licenses/axum](./licenses/axum)
 - <https://github.com/dtolnay/paste/tree/6a302522990cbfd9de4e0c61d91854622f7b2999>
