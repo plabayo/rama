@@ -31,7 +31,7 @@
 //!
 //! ```sh
 //! curl -v -k \
-//!     --connect-to '::127.0.0.1:62045' \
+//!     --connect-to '::127.0.0.1:12045' \
 //!     https://example.com
 //! ```
 //!
@@ -43,7 +43,7 @@
 //!
 //! ```sh
 //! curl -v -k \
-//!     --connect-to '::127.0.0.1:62045' \
+//!     --connect-to '::127.0.0.1:12045' \
 //!     https://echo.ramaproxy.org
 //! ```
 //!
@@ -59,7 +59,7 @@
 //!
 //! ```sh
 //! curl -v -k \
-//!     --connect-to '::127.0.0.1:62045' \
+//!     --connect-to '::127.0.0.1:12045' \
 //!     https://plabayo.tech
 //! ```
 //!
@@ -77,7 +77,7 @@
 //!
 //! ```sh
 //! curl -v -k \
-//!     --connect-to '::127.0.0.1:62045' \
+//!     --connect-to '::127.0.0.1:12045' \
 //!     http://example.com
 //! ```
 //!
@@ -156,7 +156,7 @@ async fn main() -> Result<(), BoxError> {
             .with_alpn_http_auto()
     };
 
-    const INTERFACE: SocketAddress = SocketAddress::local_ipv4(62045);
+    const INTERFACE: SocketAddress = SocketAddress::local_ipv4(12045);
 
     tracing::info!("bind SNI MITM proxy to {INTERFACE}");
     let tcp_listener = TcpListener::bind_address(INTERFACE, weak_scope.clone())

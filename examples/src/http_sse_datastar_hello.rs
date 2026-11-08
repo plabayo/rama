@@ -31,10 +31,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62051`. You open the url in your browser to easily interact:
+//! The server will start and listen on `:12051`. You open the url in your browser to easily interact:
 //!
 //! ```sh
-//! open http://127.0.0.1:62051
+//! open http://127.0.0.1:12051
 //! ```
 //!
 //! This will open a web page which will be a simple hello world data app.
@@ -101,7 +101,7 @@ async fn main() {
     let weak_scope = scope.clone_weak();
 
     let listener =
-        TcpListener::bind_address(SocketAddress::default_ipv4(62051), weak_scope.clone())
+        TcpListener::bind_address(SocketAddress::default_ipv4(12051), weak_scope.clone())
             .await
             .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");

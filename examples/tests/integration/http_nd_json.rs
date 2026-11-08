@@ -29,7 +29,7 @@ async fn test_http_nd_json() {
     let mut unique_events = HashSet::new();
     let mut event_count = 0;
     let response = runner
-        .get("http://127.0.0.1:62041/orders")
+        .get("http://127.0.0.1:12041/orders")
         .send()
         .await
         .unwrap();

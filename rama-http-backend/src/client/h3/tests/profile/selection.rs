@@ -6,6 +6,7 @@ use rama_quic_proto::{
 use rama_ua::profile::capture::order::ProtocolValue;
 use rama_ua::profile::{
     capture::{
+        CAPTURE_REVISION,
         headers::{HeaderCapture, HeaderCapturePolicy},
         joint::{CaptureLevel, CapturedSlot, JointCapture, JointCaptureLimits},
         observation::ProfileCapture,
@@ -48,6 +49,7 @@ pub(super) fn selected(
     let mut scopes = Vec::new();
     for level in [CaptureLevel::Connection, CaptureLevel::Request] {
         let observation = ProfileCapture {
+            revision: CAPTURE_REVISION,
             profile: ProfileKey::new(client),
             flow: (level == CaptureLevel::Request).then(|| flow.clone()),
             connection: ConnectionContext::default(),

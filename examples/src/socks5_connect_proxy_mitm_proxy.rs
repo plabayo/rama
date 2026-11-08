@@ -14,13 +14,13 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62022`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12022`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v -x socks5://127.0.0.1:62022 --proxy-user 'john:secret' http://www.example.com/
-//! curl -v -x socks5h://127.0.0.1:62022 --proxy-user 'john:secret' http://www.example.com/
-//! curl -k -v -x socks5://127.0.0.1:62022 --proxy-user 'john:secret' https://www.example.com/
-//! curl -k -v -x socks5h://127.0.0.1:62022 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x socks5://127.0.0.1:12022 --proxy-user 'john:secret' http://www.example.com/
+//! curl -v -x socks5h://127.0.0.1:12022 --proxy-user 'john:secret' http://www.example.com/
+//! curl -k -v -x socks5://127.0.0.1:12022 --proxy-user 'john:secret' https://www.example.com/
+//! curl -k -v -x socks5h://127.0.0.1:12022 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 
 use rama::{
@@ -74,9 +74,9 @@ async fn main() -> Result<(), BoxError> {
     let weak_scope = scope.clone_weak();
     let mitm_svc = new_mitm_svc(&weak_scope).context("build MITM relay service")?;
 
-    let tcp_service = TcpListener::bind_address("127.0.0.1:62022", weak_scope.clone())
+    let tcp_service = TcpListener::bind_address("127.0.0.1:12022", weak_scope.clone())
         .await
-        .context("bind proxy to 127.0.0.1:62022")?;
+        .context("bind proxy to 127.0.0.1:12022")?;
     let socks5_acceptor = Socks5Acceptor::new(weak_scope.clone())
         .with_authorizer(basic!("john", "secret").into_authorizer())
         .with_connector(Connector::new(

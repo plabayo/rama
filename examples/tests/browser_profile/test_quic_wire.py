@@ -227,6 +227,18 @@ class QuicWireTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "variant/flow matrix"):
                 compare(changed)
 
+    def test_a_request_connection_needs_its_sequence_evidence(self):
+        archive, observed, hello, request = comparison_fixture()
+        with self.assertRaisesRegex(ValueError, "missing or ambiguous QUIC connection evidence"):
+            compare_quic_captures(
+                archive,
+                [observed],
+                [hello],
+                client_settings(settings_document(), 443),
+                [request],
+                {},
+            )
+
     def test_transport_and_tls_components_cannot_be_stitched_between_joints(self):
         archive, observed, hello, request = comparison_fixture()
         report = compare_quic_captures(
@@ -246,7 +258,7 @@ class QuicWireTests(unittest.TestCase):
             compare_quic_captures(
                 archive,
                 [observed],
-                [replace(hello, capture={"transport": "Quic", "ciphers": [4866]})],
+                [replace(hello, capture={"transport": "Quic", "ciphers": [4866], "extensions": []})],
                 client_settings(settings_document(), 443),
                 [request],
                 sequence_fixture(),

@@ -50,6 +50,7 @@ sha2 = { workspace = true }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
+rama-proxy = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

@@ -16,7 +16,7 @@ async fn test_http_connect_proxy() {
     tokio::spawn(async {
         HttpServer::auto(WeakScope::detached())
             .listen(
-                "127.0.0.1:63001",
+                "127.0.0.1:13001",
                 service_fn(async |req: Request| {
                     Ok(Json(json!({
                         "method": req.method().as_str(),
@@ -29,13 +29,13 @@ async fn test_http_connect_proxy() {
     });
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("http_connect_proxy"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62001)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12001)).await;
 
     // test regular proxy flow
     let result = runner
-        .get("http://127.0.0.1:63001/foo/bar")
+        .get("http://127.0.0.1:13001/foo/bar")
         .extension(ProxyRoute::Proxy(
-            ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap(),
+            ProxyAddress::try_from("http://john:secret@127.0.0.1:12001").unwrap(),
         ))
         .send()
         .await
@@ -50,7 +50,7 @@ async fn test_http_connect_proxy() {
     let result = runner
         .post("http://echo.example.internal/lucky/42")
         .extension(ProxyRoute::Proxy(
-            ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap(),
+            ProxyAddress::try_from("http://john:secret@127.0.0.1:12001").unwrap(),
         ))
         .send()
         .await
@@ -61,5 +61,5 @@ async fn test_http_connect_proxy() {
     let expected_value = json!({"lucky_number": 42});
     assert_eq!(expected_value, result);
 
-    utils::reset_response::through_connect("127.0.0.1:62001").await;
+    utils::reset_response::through_connect("127.0.0.1:12001").await;
 }

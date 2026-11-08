@@ -122,6 +122,11 @@ async fn read<S: DatagramSocket>(
         };
         let mut metadata = match received {
             Ok(metadata) => metadata,
+            // An earlier reply's unreachable peer, reported on this shared socket (Winsock).
+            Err(error) if error.is_destination_unreachable() => {
+                tracing::trace!(%error, %local, "ignored unreachable peer of an earlier reply");
+                continue;
+            }
             Err(error) => {
                 tracing::debug!(%error, %local, "datagram reply socket stopped reading");
                 return;

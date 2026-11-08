@@ -50,7 +50,7 @@ async fn test_http_mitm_proxy() {
     tokio::spawn(async {
         HttpServer::auto(WeakScope::detached())
             .listen(
-                "127.0.0.1:63003",
+                "127.0.0.1:13003",
                 (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
                     Router::new()
                         .with_match_route(
@@ -74,7 +74,7 @@ async fn test_http_mitm_proxy() {
     tokio::spawn(async {
         HttpServer::new_http1(WeakScope::detached())
             .listen(
-                "127.0.0.1:63013",
+                "127.0.0.1:13013",
                 Arc::new((
                     ConsumeErrLayer::default(),
                     CompressionLayer::new().with_compress_predicate(Always::new()),
@@ -159,7 +159,7 @@ async fn test_http_mitm_proxy() {
     );
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63004", WeakScope::detached())
+        TcpListener::bind_address("127.0.0.1:13004", WeakScope::detached())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)
@@ -180,7 +180,7 @@ async fn test_http_mitm_proxy() {
     );
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63008", WeakScope::detached())
+        TcpListener::bind_address("127.0.0.1:13008", WeakScope::detached())
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener: secure web service (for h1 traffic): {e}")
@@ -190,13 +190,13 @@ async fn test_http_mitm_proxy() {
     });
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("http_mitm_proxy_boring"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62017)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12017)).await;
 
-    let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62017").unwrap();
+    let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:12017").unwrap();
 
     // test http request proxy flow
     let result = runner
-        .get("http://127.0.0.1:63003/foo/bar")
+        .get("http://127.0.0.1:13003/foo/bar")
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
@@ -224,7 +224,7 @@ async fn test_http_mitm_proxy() {
             ),
         )
         .into_layer(EasyHttpWebClient::default())
-        .get("http://127.0.0.1:63013/response-stream")
+        .get("http://127.0.0.1:13013/response-stream")
         .version(http_version)
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
@@ -243,7 +243,7 @@ async fn test_http_mitm_proxy() {
 
     // test ws proxy flow
     let mut ws = runner
-        .websocket("ws://127.0.0.1:63003/echo")
+        .websocket("ws://127.0.0.1:13003/echo")
         .handshake(extensions.clone())
         .await
         .expect("ws handshake to receive");
@@ -262,7 +262,7 @@ async fn test_http_mitm_proxy() {
 
     // test ws proxy flow w/ deflate ext
     let mut ws = runner
-        .websocket("ws://127.0.0.1:63003/echo")
+        .websocket("ws://127.0.0.1:13003/echo")
         .with_per_message_deflate_overwrite_extensions()
         .handshake(extensions.clone())
         .await
@@ -282,7 +282,7 @@ async fn test_http_mitm_proxy() {
 
     // test https request proxy flow
     let result = runner
-        .get("https://127.0.0.1:63004/foo/bar")
+        .get("https://127.0.0.1:13004/foo/bar")
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
@@ -295,7 +295,7 @@ async fn test_http_mitm_proxy() {
 
     // test wss proxy flow
     let mut ws = runner
-        .websocket_h2("wss://127.0.0.1:63004/echo")
+        .websocket_h2("wss://127.0.0.1:13004/echo")
         .handshake(extensions.clone())
         .await
         .expect("ws handshake to receive");
@@ -314,7 +314,7 @@ async fn test_http_mitm_proxy() {
 
     // test wss proxy flow w/ deflate ext
     let mut ws = runner
-        .websocket_h2("wss://127.0.0.1:63004/echo")
+        .websocket_h2("wss://127.0.0.1:13004/echo")
         .with_per_message_deflate_overwrite_extensions()
         .handshake(extensions.clone())
         .await
@@ -340,7 +340,7 @@ async fn test_http_mitm_proxy() {
         Some(ApplicationProtocol::HTTP_2),
     ] {
         let builder = runner
-            .get("https://127.0.0.1:63008/ping")
+            .get("https://127.0.0.1:13008/ping")
             .extension(ProxyRoute::Proxy(proxy_address.clone()));
 
         let builder = if let Some(app_protocol) = desired_app_protocol {
@@ -359,5 +359,5 @@ async fn test_http_mitm_proxy() {
         assert_eq!("pong", pong);
     }
 
-    utils::reset_response::through_mitm("http://john:secret@127.0.0.1:62017").await;
+    utils::reset_response::through_mitm("http://john:secret@127.0.0.1:12017").await;
 }

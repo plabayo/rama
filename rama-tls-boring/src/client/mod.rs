@@ -22,12 +22,12 @@ pub(crate) use config::{AlpsCoupling, set_alpn_with_coupled_alps};
 #[doc(inline)]
 pub use config::{
     BoringAlps, BoringCertCompression, BoringCipherSuites, BoringClientConfigExt,
-    BoringClientHelloPadding, BoringDelegatedCredentials, BoringEncryptedClientHello,
-    BoringExtensionOrder, BoringExtensionPresence, BoringGrease, BoringGreaseSignatureSchemes,
-    BoringKeyShares, BoringMaxVersion, BoringMinVersion, BoringOcspStapling,
-    BoringPermuteExtensions, BoringRecordSizeLimit, BoringServerPaddingRequest,
-    BoringServerVerifyCertStore, BoringSignatureSchemes, BoringSignedCertTimestamps,
-    BoringSupportedGroups, BoringTls12SessionTickets, BoringTlsConnectorConfig,
+    BoringClientHelloPadding, BoringDelegatedCredentials, BoringExtensionOrder,
+    BoringExtensionPresence, BoringGrease, BoringGreaseSignatureSchemes, BoringKeyShares,
+    BoringMaxVersion, BoringMinVersion, BoringOcspStapling, BoringPermuteExtensions,
+    BoringRecordSizeLimit, BoringServerPaddingRequest, BoringServerVerifyCertStore,
+    BoringSignatureSchemes, BoringSignedCertTimestamps, BoringSupportedGroups,
+    BoringTls12SessionTickets, BoringTlsConnectorConfig,
 };
 
 mod trust_anchors;

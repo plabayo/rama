@@ -312,20 +312,28 @@ async fn round_trip(client: &Connection, server: &Connection) -> Bytes {
 async fn resumed_safe_request_is_sent_early_and_dispatched_after_finished() {
     for provider in Provider::enabled() {
         for version in [Version::V1, Version::V2] {
-            timeout(LIMIT, safe_request_is_sent_early(provider, version))
+            for capacity_first in [false, true] {
+                timeout(
+                    LIMIT,
+                    safe_request_is_sent_early(provider, version, capacity_first),
+                )
                 .await
                 .unwrap();
+            }
         }
     }
 }
 
-async fn safe_request_is_sent_early(provider: Provider, version: Version) {
+async fn safe_request_is_sent_early(provider: Provider, version: Version, capacity_first: bool) {
     let fixture = Fixture::new(provider, version).await;
     fixture.warm().await;
 
     fixture.gate.hold();
     let (client, server) = fixture.early_pair().await;
-    let response = send(client.clone(), early_config(), request(Method::GET, ""));
+    let mut config = early_config();
+    // Waiting for peer SETTINGS would forfeit early data, so early requests never do.
+    config.encoder.capacity_before_first_section = capacity_first;
+    let response = send(client.clone(), config, request(Method::GET, ""));
     let (mut h3, driver) = server::handshake(server.clone(), Config::default()).unwrap();
     let _driver = Task::spawn(driver.run());
     let stream = timeout(PROBE, h3.accept())

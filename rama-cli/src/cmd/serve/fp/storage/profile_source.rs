@@ -23,6 +23,7 @@ pub(crate) struct CountedProfileSource {
     skipped: usize,
     truncated: usize,
     dropped_scopes: usize,
+    superseded_scopes: usize,
     limited: bool,
     remaining_work: usize,
 }
@@ -55,6 +56,7 @@ impl CountedProfileSource {
             skipped: 0,
             truncated: 0,
             dropped_scopes: 0,
+            superseded_scopes: 0,
             limited: false,
             remaining_work: ProfileArchiveLimits::default().maximum_work,
         })
@@ -76,6 +78,11 @@ impl CountedProfileSource {
     /// Stored scopes left out of truncated profiles.
     pub(crate) fn dropped_scopes(&self) -> usize {
         self.dropped_scopes
+    }
+
+    /// Stored scopes left out for a newer capture revision of their profile.
+    pub(crate) fn superseded_scopes(&self) -> usize {
+        self.superseded_scopes
     }
 
     pub(crate) fn limited(&self) -> bool {
@@ -142,6 +149,7 @@ impl CountedProfileSource {
             match analysis {
                 Ok(analysis) => {
                     self.remaining_work -= analysis.work_units;
+                    self.superseded_scopes += truncation.superseded_scopes;
                     if truncation.is_truncated() {
                         self.truncated += 1;
                         self.dropped_scopes += truncation.dropped_stored_scopes;

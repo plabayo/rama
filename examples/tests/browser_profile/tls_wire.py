@@ -9,6 +9,7 @@ from capture_fields import connection_user_agents
 from copy import copy
 from dataclasses import dataclass
 from pdml import MAX_PACKETS, MAX_PDML_BYTES, identity, pdml_packets
+from read_form import tls_read_form
 
 PRE_SHARED_KEY_EXTENSION = 41
 TRUST_ANCHORS_EXTENSION = 51764
@@ -45,7 +46,6 @@ CONNECTION_BOUND = {
     56,  # external_session_id
     57,  # quic_transport_parameters
     59,  # dnssec_chain
-    TRUST_ANCHORS_EXTENSION,  # trust_anchors
     65281,  # renegotiation_info
     0xFFCE,  # historical encrypted_server_name
     0xFFA5,  # historical QUIC transport parameters
@@ -250,6 +250,16 @@ def extension_value(identifier, data):
             }
         else:
             raise ValueError("invalid ECH ClientHello type")
+    elif identifier == TRUST_ANCHORS_EXTENSION:
+        # Retained as advertised, as rama_tls::client::trust_anchors_identifier_list reads it.
+        body = source.take(source.remaining())
+        identifiers = Reader(body)
+        listed = Reader(identifiers.vector(2))
+        identifiers.finish()
+        while listed.remaining():
+            if not listed.vector(1):
+                raise ValueError("empty trust anchor ID")
+        value = {"Literal": list(body)}
     elif identifier == 21:
         if any(source.take(source.remaining())):
             raise ValueError("nonzero TLS padding")
@@ -353,19 +363,24 @@ def compare_tls_captures(archive, hellos, requests):
         if identity not in user_agents:
             ignored += 1  # Browser preconnections need not produce a request.
             continue
-        candidates = [
-            slot["capture"]
-            for profile in archive["profiles"]
-            if profile["key"]["user_agent"] == user_agents[identity]
-            for scope in profile["scopes"]
-            for variant in scope["variants"]
-            for slot in variant["capture"].get("slots", [])
-            if slot["kind"] in ("TcpTls", "QuicTls")
-        ]
-        if hello.capture not in candidates:
+        # Each scope reads the hello in its own form: numbered GREASE, merged shuffles.
+        retained = next(
+            (
+                slot["capture"]
+                for profile in archive["profiles"]
+                if profile["key"]["user_agent"] == user_agents[identity]
+                for scope in profile["scopes"]
+                for variant in scope["variants"]
+                for slot in variant["capture"].get("slots", [])
+                if slot["kind"] in ("TcpTls", "QuicTls")
+                and slot["capture"] == tls_read_form(hello.capture, scope)
+            ),
+            None,
+        )
+        if retained is None:
             raise ValueError("no matching TLS capture for request connection")
         agent = user_agents[identity]
-        matched.append((agent, hello.capture))
+        matched.append((agent, retained))
         checked.add(identity)
     if checked != set(user_agents):
         raise ValueError("incomplete request-bearing TLS connection coverage")

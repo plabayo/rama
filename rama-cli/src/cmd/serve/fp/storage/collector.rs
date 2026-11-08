@@ -17,6 +17,7 @@ use rama::{
         UserAgent,
         profile::{
             capture::{
+                CAPTURE_REVISION,
                 completeness::ProfileCaptureCompleteness,
                 headers::HeaderCapturePolicy,
                 http2::{H2Capture, H2CaptureLimits},
@@ -157,6 +158,7 @@ pub(super) fn request_capture(
         connection: connection.clone(),
     };
     Ok(ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile,
         flow: Some(flow),
         connection,
@@ -332,6 +334,7 @@ pub(super) fn connection_capture(
     }
     slots.sort_unstable_by_key(|slot| slot.kind);
     Ok(Some(ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile,
         flow: None,
         connection,

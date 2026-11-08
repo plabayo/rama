@@ -7,7 +7,7 @@
 //! cargo run -p rama-examples --bin http_sse_datastar_svg --features=http-full
 //! ```
 //!
-//! Open <http://127.0.0.1:62059> and use the button to cycle through
+//! Open <http://127.0.0.1:12059> and use the button to cycle through
 //! server-rendered SVG shapes.
 
 #![expect(
@@ -64,7 +64,7 @@ async fn main() {
     let weak_scope = scope.clone_weak();
 
     let listener =
-        TcpListener::bind_address(SocketAddress::default_ipv4(62059), weak_scope.clone())
+        TcpListener::bind_address(SocketAddress::default_ipv4(12059), weak_scope.clone())
             .await
             .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");

@@ -6,7 +6,7 @@ use std::{collections::VecDeque, error::Error, fmt};
 use rama_core::{extensions::Extension, telemetry::tracing};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Version,
-    header::{COOKIE, Entry},
+    header::{COOKIE, Entry, TE},
     proto::{
         h2::PseudoHeaderOrder,
         h3::qpack::{
@@ -80,6 +80,11 @@ pub enum ProfilePreservationDifference {
         binding: RequestBinding,
     },
     AppendedCallerField {
+        name: HeaderName,
+        occurrence: u32,
+    },
+    /// The capture has no such field occurrence and the profile decides its presence.
+    DroppedCallerField {
         name: HeaderName,
         occurrence: u32,
     },
@@ -410,6 +415,7 @@ impl RequestSelection {
                         table,
                         original,
                         self.effective.cookie_layout,
+                        &self.effective.network_hints,
                         &mut report,
                         qpack_headers.as_mut().map(|choices| &mut choices.headers),
                     )?);
@@ -527,6 +533,7 @@ fn replay_headers(
     table: &FieldTable,
     original: &HeaderMap,
     cookie_layout: CookieLayoutEvidence,
+    network_hints: &[(Box<str>, Box<[u8]>)],
     report: &mut ProfilePreservationReport,
     mut encoding: Option<&mut HeaderMap<FieldPreferences>>,
 ) -> Result<HeaderMap, ProfileReplayError> {
@@ -553,6 +560,8 @@ fn replay_headers(
     } else {
         0
     };
+    // RFC 9113 §8.2.2 and RFC 9114 §4.2 allow only `te: trailers`, so the capture decides it.
+    let profile_te = matches!(captured.version, Version::HTTP_2 | Version::HTTP_3);
     let mut cookies = replay_cookie_values(&mut original, cookie_slots, cookie_layout, report)?;
     let mut cookie_slot = 0;
     let mut output = HeaderMap::try_with_capacity(captured.fields.len().max(original.len()))
@@ -605,7 +614,15 @@ fn replay_headers(
         });
         let value = match &table.get(*field).value {
             PlannedValue::Profile(value) => {
-                let mut profile = value.clone();
+                let name = table.get(*field).name.as_str();
+                // An empty network hint is a placeholder for the value drawn for this request.
+                let drawn = network_hints
+                    .iter()
+                    .find(|(hint, _)| value.is_empty() && hint.as_ref() == name)
+                    .map(|(_, drawn)| HeaderValue::from_bytes(drawn))
+                    .transpose()
+                    .map_err(|_error| ProfileDataError::Invalid("drawn network hint value"))?;
+                let mut profile = drawn.unwrap_or_else(|| value.clone());
                 if original_value.is_some_and(|caller| caller.as_bytes() != profile.as_bytes()) {
                     report.push(ProfilePreservationDifference::CallerValueReplaced {
                         name: table.get(*field).name.clone(),
@@ -613,6 +630,16 @@ fn replay_headers(
                     });
                 }
                 profile.set_sensitive(table.get(*field).sensitive);
+                profile
+            }
+            PlannedValue::Request(_) if profile_te && table.get(*field).name == TE => {
+                let profile = HeaderValue::from_static("trailers");
+                if original_value.is_some_and(|caller| caller != profile) {
+                    report.push(ProfilePreservationDifference::CallerValueReplaced {
+                        name: TE,
+                        occurrence: field.occurrence,
+                    });
+                }
                 profile
             }
             PlannedValue::Request(binding) => {
@@ -647,6 +674,13 @@ fn replay_headers(
         let current = *occurrence;
         *occurrence += 1;
         if field.used {
+            continue;
+        }
+        if profile_te && field.name == TE {
+            report.push(ProfilePreservationDifference::DroppedCallerField {
+                name: field.name,
+                occurrence: current,
+            });
             continue;
         }
         report.push(ProfilePreservationDifference::AppendedCallerField {

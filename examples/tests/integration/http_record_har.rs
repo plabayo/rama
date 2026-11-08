@@ -18,7 +18,7 @@ async fn test_http_record_har() {
     tokio::spawn(async {
         HttpServer::auto(WeakScope::detached())
             .listen(
-                "127.0.0.1:63007",
+                "127.0.0.1:13007",
                 service_fn(async |req: Request| {
                     Ok(Json(json!({
                         "method": req.method().as_str(),
@@ -31,13 +31,13 @@ async fn test_http_record_har() {
     });
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("http_record_har"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62040)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12040)).await;
 
-    let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62040").unwrap();
+    let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:12040").unwrap();
 
     // test regular proxy flow w/o har recording enabled
     let response = runner
-        .get("http://127.0.0.1:63007/fetch/1")
+        .get("http://127.0.0.1:13007/fetch/1")
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
@@ -62,7 +62,7 @@ async fn test_http_record_har() {
     // test regular proxy flow w har recording enabled
 
     let response = runner
-        .get("http://127.0.0.1:63007/fetch/2")
+        .get("http://127.0.0.1:13007/fetch/2")
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
@@ -82,7 +82,7 @@ async fn test_http_record_har() {
     assert_eq!(expected_value, result);
 
     let response = runner
-        .get("http://127.0.0.1:63007/fetch/3")
+        .get("http://127.0.0.1:13007/fetch/3")
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
@@ -112,7 +112,7 @@ async fn test_http_record_har() {
 
     // test regular proxy flow once again w/o har recording enabled
     let response = runner
-        .get("http://127.0.0.1:63007/fetch/4")
+        .get("http://127.0.0.1:13007/fetch/4")
         .extension(ProxyRoute::Proxy(proxy_address.clone()))
         .send()
         .await
@@ -151,7 +151,7 @@ async fn test_http_record_har() {
     // ...... request
     assert!(log.entries[0].request.comment.is_none());
     assert_eq!("GET", log.entries[0].request.method);
-    assert_eq!("http://127.0.0.1:63007/fetch/2", log.entries[0].request.url);
+    assert_eq!("http://127.0.0.1:13007/fetch/2", log.entries[0].request.url);
     // ...... response
     assert_eq!(200, log.entries[0].response.status);
     // ... test entry #2
@@ -163,7 +163,7 @@ async fn test_http_record_har() {
     // ...... request
     assert!(log.entries[0].request.comment.is_none());
     assert_eq!("GET", log.entries[1].request.method);
-    assert_eq!("http://127.0.0.1:63007/fetch/3", log.entries[1].request.url);
+    assert_eq!("http://127.0.0.1:13007/fetch/3", log.entries[1].request.url);
     // ...... response
     assert_eq!(200, log.entries[1].response.status);
 }

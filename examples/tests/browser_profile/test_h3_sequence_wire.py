@@ -177,6 +177,9 @@ class H3SequenceWireTests(unittest.TestCase):
         retained["encoder_instructions"] = [{"Capacity": {"capacity": 4096}}]
         self.assertFalse(sequence.sequence_matches(retained, evidence()))
 
+    def test_connections_without_server_settings_yield_no_sequence_evidence(self):
+        self.assertEqual(sequence.sequence_evidence(settings_document(), 443), {})
+
     def test_server_settings_supply_decoder_context_without_role_capabilities(self):
         # The browser's own capacity is 100; the receiving server's is 4096.
         # Confusing their directions would incorrectly accept a different QPACK

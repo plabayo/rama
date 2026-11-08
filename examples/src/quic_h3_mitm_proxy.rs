@@ -32,7 +32,7 @@
 //!     --intercept localhost --ca-out mitm-ca.pem
 //! ```
 //!
-//! - `--listen <addr>`: where clients send. Default `127.0.0.1:62063`.
+//! - `--listen <addr>`: where clients send. Default `127.0.0.1:12063`.
 //! - `--upstream <addr>`: the upstream every association goes to. Required.
 //! - `--upstream-ca <pem>`: the certificate the upstream presents. Required.
 //! - `--intercept <name>`: a server name to terminate, in any case; repeat it for more. Default
@@ -43,7 +43,7 @@
 //! # Expected output
 //!
 //! ```text
-//! INFO quic_h3_mitm_proxy: QUIC MITM proxy listening on 127.0.0.1:62063
+//! INFO quic_h3_mitm_proxy: QUIC MITM proxy listening on 127.0.0.1:12063
 //! ```
 //!
 //! An `http3_client_server` client pointed at the proxy, trusting `mitm-ca.pem`, gets the
@@ -149,7 +149,7 @@ use rama::{
 
 #[derive(Parser)]
 struct Args {
-    #[arg(long, default_value = "127.0.0.1:62063")]
+    #[arg(long, default_value = "127.0.0.1:12063")]
     listen: SocketAddress,
     #[arg(long)]
     upstream: SocketAddress,

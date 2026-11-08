@@ -19,14 +19,14 @@ async fn test_tls_sni_proxy_mitm() {
 
     let runner = utils::ExampleRunner::interactive_with_envs(
         utils::example!("tls_sni_proxy_mitm"),
-        [("EXAMPLE_EGRESS_SERVER_ADDR", "127.0.0.1:63019")],
+        [("EXAMPLE_EGRESS_SERVER_ADDR", "127.0.0.1:13019")],
     );
 
     // -- test example.com: hijacked completely (MITM)
 
     let resp_example_com = runner
         .get("https://example.com")
-        .extension(ConnectorTarget(HostWithPort::local_ipv4(62045)))
+        .extension(ConnectorTarget(HostWithPort::local_ipv4(12045)))
         .send()
         .await
         .unwrap();
@@ -48,7 +48,7 @@ async fn test_tls_sni_proxy_mitm() {
     ] {
         let resp_ramaproxy_org = runner
             .get(uri)
-            .extension(ConnectorTarget(HostWithPort::local_ipv4(62045)))
+            .extension(ConnectorTarget(HostWithPort::local_ipv4(12045)))
             .send()
             .await
             .unwrap();
@@ -63,7 +63,7 @@ async fn test_tls_sni_proxy_mitm() {
 
     let resp_plabayo_tech = runner
         .get("https://plabayo.tech")
-        .extension(ConnectorTarget(HostWithPort::local_ipv4(62045)))
+        .extension(ConnectorTarget(HostWithPort::local_ipv4(12045)))
         .send()
         .await
         .unwrap();
@@ -81,7 +81,7 @@ async fn spawn_test_egres_server() {
         HttpServer::default().service("tls-sni-proxy-mitm-example".into_endpoint_service()),
     );
 
-    let listener = TcpListener::bind_address("127.0.0.1:63019", WeakScope::detached())
+    let listener = TcpListener::bind_address("127.0.0.1:13019", WeakScope::detached())
         .await
         .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"));
 

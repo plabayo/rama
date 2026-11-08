@@ -5,7 +5,7 @@ mod verification;
 use std::{
     assert_matches,
     collections::VecDeque,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     num::NonZeroUsize,
     sync::atomic::AtomicBool,
     task::Wake,
@@ -127,6 +127,13 @@ pub(super) fn endpoint_with(
 
 fn loopback_socket() -> Socket {
     Socket::from_std(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()).unwrap()
+}
+
+/// A loopback socket that receives only from `peer`, keeping out parallel tests' Initials.
+fn loopback_socket_from(peer: SocketAddr) -> Socket {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    socket.connect(peer).unwrap();
+    Socket::from_std(socket).unwrap()
 }
 
 /// The receive budget of the endpoint's only connection.
@@ -4136,6 +4143,7 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
         .unwrap()
         .unwrap();
     let before_close = server.stats().received_datagrams;
+    let client_addr = client.local_addr().unwrap();
     drop(connecting);
     client.shutdown().await;
     // The client's close went to A on its way out; it belongs to the pending attempt, and a
@@ -4146,7 +4154,9 @@ async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_e
         || server.stats().received_datagrams > before_close,
     )
     .await;
-    server.rebind_abstract(loopback_socket()).unwrap();
+    server
+        .rebind_abstract(loopback_socket_from(client_addr))
+        .unwrap();
     let addr_b = server.local_addr().unwrap();
     let retried_at = Instant::now();
     incoming.retry().unwrap();
@@ -4670,7 +4680,9 @@ async fn attempts_queued_on_a_socket_that_fails_are_released_and_a_held_one_is_r
         .connect_with(client_config, addr_a, "localhost")
         .unwrap();
     wait_until(|| queued_attempts(&server) == 1).await;
-    server.rebind_abstract(loopback_socket()).unwrap();
+    server
+        .rebind_abstract(loopback_socket_from(held_client.local_addr().unwrap()))
+        .unwrap();
     assert_eq!(server.stats().retained_sockets, 2);
     assert_eq!(server.inner.state.lock().inner.pending_incoming(), 2);
 
@@ -4759,7 +4771,9 @@ async fn an_attempt_admitted_before_a_receive_fault_in_the_same_pass_is_released
     server.inner.state.lock().recv_state.forced_recv_allowance = Some(usize::MAX);
     let addr_a = server.local_addr().unwrap();
     let pin = pin_active_socket(&server);
-    server.rebind_abstract(loopback_socket()).unwrap();
+    server
+        .rebind_abstract(loopback_socket_from(client.local_addr().unwrap()))
+        .unwrap();
     *fault.lock() = Some(RecvFault::AfterNextBatch);
     let connecting = client
         .connect_with(client_config, addr_a, "localhost")

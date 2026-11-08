@@ -61,11 +61,11 @@ use rama::{
     },
 };
 
-const PAC_ADDRESS: SocketAddress = SocketAddress::local_ipv4(63030);
-const PROXY_ADDRESS: SocketAddress = SocketAddress::local_ipv4(63031);
-const ORIGIN_ADDRESS: SocketAddress = SocketAddress::local_ipv4(63032);
+const PAC_ADDRESS: SocketAddress = SocketAddress::local_ipv4(13030);
+const PROXY_ADDRESS: SocketAddress = SocketAddress::local_ipv4(13031);
+const ORIGIN_ADDRESS: SocketAddress = SocketAddress::local_ipv4(13032);
 /// nothing listens here, so the first choice has to fail over
-const DEAD_ADDRESS: SocketAddress = SocketAddress::local_ipv4(63033);
+const DEAD_ADDRESS: SocketAddress = SocketAddress::local_ipv4(13033);
 
 const FROM_PROXY: &str = "from the proxy";
 const FROM_ORIGIN: &str = "from the origin";

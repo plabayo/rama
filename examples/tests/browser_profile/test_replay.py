@@ -11,7 +11,6 @@ from replay import (
     check_missing_tls_bindings,
     check_tls_hostname,
     connection_warmups,
-    current_trust_ids,
     replay_environment,
     requests_from_wire,
     run_replay,
@@ -397,28 +396,6 @@ class ReplayTests(unittest.TestCase):
             replayed["fetch"] = [altered]
             result = {row["flow"]: row for row in compare_requests(reference, replayed)}
             self.assertFalse(result["fetch"]["match"])
-
-    def test_current_ids_have_the_retained_shape_and_use_new_bytes(self):
-        for length in (2, 4, 186, 257, 258, 259, 65535):
-            hello = SimpleNamespace(
-                capture={
-                    "extensions": [
-                        {"id": 51764, "value": {"ConnectionLength": length}},
-                    ]
-                }
-            )
-            with patch(
-                "replay.secrets.token_bytes", side_effect=lambda size: b"x" * size
-            ):
-                value = current_trust_ids([hello])
-            ids = [bytes.fromhex(item) for item in value.split(",")] if value else []
-            self.assertTrue(all(1 <= len(item) <= 255 for item in ids))
-            self.assertTrue(all(set(item) == {ord("x")} for item in ids))
-            self.assertEqual(2 + sum(1 + len(item) for item in ids), length)
-        for length in (0, 1, 3, 65536, 1 << 63):
-            hello.capture["extensions"][0]["value"]["ConnectionLength"] = length
-            with self.assertRaisesRegex(ValueError, "length"):
-                current_trust_ids([hello])
 
     def test_replay_database_cannot_mix_with_reference_or_parent_storage(self):
         dsn = "host=127.0.0.1 port=1234 dbname=rama_fp_capture"

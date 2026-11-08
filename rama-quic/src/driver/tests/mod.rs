@@ -44,6 +44,7 @@ mod early_data;
 mod owned;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 mod resumption;
+mod server_sessions;
 
 /// A loopback address to bind on, for a fixture that lets the endpoint make its own socket.
 fn localhost() -> SocketAddr {

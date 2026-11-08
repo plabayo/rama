@@ -10,10 +10,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62010`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12010`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62010
+//! curl -v http://127.0.0.1:12010
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a HTML body containing
@@ -133,7 +133,7 @@ async fn main() {
 
         let tcp_http_service = HttpServer::auto(weak_scope.clone()).service(http_service);
 
-        TcpListener::bind_address("127.0.0.1:62010", weak_scope)
+        TcpListener::bind_address("127.0.0.1:12010", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(

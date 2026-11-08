@@ -57,6 +57,7 @@ mod tests {
     use super::*;
     use crate::profile::{
         capture::{
+            CAPTURE_REVISION,
             headers::{HeaderCapture, HeaderCapturePolicy},
             joint::{
                 CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
@@ -198,6 +199,7 @@ mod tests {
         let value = with_status(joint.slots[0].value.clone(), 0);
         joint.slots[0].value = value.clone();
         let profile = ProfileCapture {
+            revision: CAPTURE_REVISION,
             profile: ProfileKey::new("test"),
             flow: None,
             connection: ConnectionContext::default(),

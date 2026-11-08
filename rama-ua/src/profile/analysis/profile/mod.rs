@@ -1,6 +1,7 @@
 //! Reanalysis from retained counts, without new traffic or mandatory components.
 
 mod normalize;
+mod read_form;
 
 use std::collections::BTreeSet;
 
@@ -13,7 +14,7 @@ use rama_utils::octets::{kib, mib};
 use serde::{Deserialize, Serialize};
 
 use crate::profile::analysis::{
-    capture::{CountedCaptureAnalysis, analyze_capture_bucket},
+    capture::{CountedCaptureAnalysis, analyze_capture_bucket_preserving},
     order::OrderAnalysisConfig,
 };
 #[cfg(feature = "tls")]
@@ -90,7 +91,7 @@ pub struct AnalyzedProfileScope {
 }
 
 /// Revision of the classifiers that derive [`AnalyzedProfile`]s from evidence.
-pub const PROFILE_CLASSIFIER_REVISION: u16 = 3;
+pub const PROFILE_CLASSIFIER_REVISION: u16 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyzedProfile {
@@ -223,6 +224,9 @@ pub fn analyze_profile_evidence(
         return Err(ProfileDataError::LimitExceeded("profile analysis scopes"));
     }
     let input = &normalized.evidence;
+    // Bootstrap recipes name their first request exactly, so it is never normalized.
+    let preserved =
+        read_form::bootstrap_requests(input, read_form::ReadLimits::for_analysis(&limits))?;
     limits.window.retention.first_day(current_day, horizon)?;
     let order = OrderAnalysisConfig {
         maximum_literals: limits
@@ -309,6 +313,7 @@ pub fn analyze_profile_evidence(
         for value in &retained.values {
             let joint = joint(value, retained.domain, capture_limits)?;
             let prepared = ProfileCapture {
+                revision: context.revision,
                 profile: key.clone(),
                 flow: flow.clone(),
                 connection: context.connection.clone(),
@@ -384,12 +389,13 @@ pub fn analyze_profile_evidence(
                 }
             }
         }
-        let observations = analyze_capture_bucket(
+        let observations = analyze_capture_bucket_preserving(
             &bucket,
             OrderAnalysisConfig {
                 maximum_work: order.maximum_work.min(remaining_work),
                 ..order
             },
+            &preserved,
         )?;
         remaining_work = remaining_work
             .checked_sub(observations.order_work)

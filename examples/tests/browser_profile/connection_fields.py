@@ -10,6 +10,7 @@ from capture_fields import connection_user_agents
 from collections import Counter, defaultdict
 from flows import FLOWS, operation_flow
 from pdml import field, one, pdml_packets, values
+from read_form import tls_read_form
 
 H2_HEADERS = 1
 H2_PRIORITY = 2
@@ -244,7 +245,7 @@ def compare_connection_fields(
                 ):
                     raise ValueError("invalid retained connection variant ID")
                 candidates.append(
-                    (profile["key"]["user_agent"], bytes(raw_id).hex(), slots)
+                    (profile["key"]["user_agent"], bytes(raw_id).hex(), slots, scope)
                 )
     checked = set()
     connections = {}
@@ -267,8 +268,13 @@ def compare_connection_fields(
             projections.append(with_window)
         matches = [
             index
-            for index, (identity, _variant, slots) in enumerate(candidates)
-            if identity == agent and slots in projections
+            for index, (identity, _variant, slots, scope) in enumerate(candidates)
+            if identity == agent
+            and slots
+            in [
+                {**projection, "TcpTls": tls_read_form(projection["TcpTls"], scope)}
+                for projection in projections
+            ]
         ]
         if not matches:
             raise ValueError("TLS and HTTP/2 prefix have no matching retained joint")
@@ -284,7 +290,7 @@ def compare_connection_fields(
         if not request.from_server
         and (flow := operation_flow(request, operations)) is not None
     )
-    variants = {variant for _identity, variant, _slots in candidates}
+    variants = {variant for _identity, variant, _slots, _scope in candidates}
     if expected_per_variant_flow is not None:
         check_variant_flow_matrix(
             matrix, variants, expected_per_variant_flow, flows=expected_flows
@@ -363,6 +369,7 @@ def compare_h1_connections(
                         profile["key"]["user_agent"],
                         bytes(raw_id).hex(),
                         slots[0]["capture"],
+                        scope,
                     )
                 )
     checked, connections = set(), {}
@@ -371,8 +378,9 @@ def compare_h1_connections(
             raise ValueError("incomplete or ambiguous H1 TLS evidence")
         matches = [
             index
-            for index, (identity, _variant, capture) in enumerate(candidates)
-            if identity == agent and capture == observed[connection][0]
+            for index, (identity, _variant, capture, scope) in enumerate(candidates)
+            if identity == agent
+            and capture == tls_read_form(observed[connection][0], scope)
         ]
         if len(matches) != 1:
             raise ValueError("H1 TLS has no unique retained connection joint")
@@ -386,7 +394,7 @@ def compare_h1_connections(
         if not request.from_server
         and (flow := operation_flow(request, operations)) is not None
     )
-    variants = {variant for _identity, variant, _capture in candidates}
+    variants = {variant for _identity, variant, _capture, _scope in candidates}
     if expected_per_variant_flow is not None:
         check_variant_flow_matrix(
             matrix, variants, expected_per_variant_flow, flows=expected_flows

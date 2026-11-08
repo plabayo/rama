@@ -43,7 +43,7 @@ async fn test_http_telemetry() {
     let runner = utils::ExampleRunner::interactive(utils::example!("http_telemetry"));
 
     let homepage = runner
-        .get("http://127.0.0.1:62012")
+        .get("http://127.0.0.1:12012")
         .send()
         .await
         .unwrap()

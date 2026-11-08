@@ -11,7 +11,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-PORT="${PORT:-62052}"
+PORT="${PORT:-12052}"
 INTERCEPT_PORT="${INTERCEPT_PORT:-80}"
 FWMARK="${FWMARK:-1}"
 ROUTE_TABLE="${ROUTE_TABLE:-100}"

@@ -4,7 +4,10 @@ use clap::Args;
 use rama::{
     error::{BoxError, BoxErrorExt as _},
     ua::profile::{
-        analysis::profile::{AnalyzedProfile, AnalyzedProfileScope},
+        analysis::{
+            order::OrderAnalysisConfig,
+            profile::{AnalyzedProfile, AnalyzedProfileScope},
+        },
         compare::{
             CaptureComparisonLimits, RetainedCaptureComparison, compare_retained_captures,
             mode::ComparisonMode,
@@ -223,15 +226,13 @@ fn compare_with_coverage(
             if scope.observations.variants.is_empty() {
                 return Err(BoxError::from_static_str("empty observed scope"));
             }
-            let candidates = reference
+            let references = reference
                 .iter()
                 .filter(|p| p.id == profile.id)
                 .flat_map(|p| p.scopes.iter())
                 .filter(|candidate| equivalent_context(candidate, scope))
-                .flat_map(|candidate| candidate.observations.variants.iter())
-                .map(|v| v.value.canonical().map(Cow::into_owned))
-                .collect::<Result<Vec<_>, _>>()?;
-            if candidates.is_empty() {
+                .collect::<Vec<_>>();
+            if references.is_empty() {
                 if report.unrecognized_observed_scopes.len() == MAX_COMPARISONS {
                     return Err(BoxError::from_static_str("comparison scope limit"));
                 }
@@ -239,22 +240,51 @@ fn compare_with_coverage(
                 report.matched = false;
                 continue;
             }
+            let groups = references
+                .iter()
+                .map(|candidate| {
+                    candidate
+                        .observations
+                        .variants
+                        .iter()
+                        .map(|v| v.value.canonical().map(Cow::into_owned))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|values| (*candidate, values))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             for variant in &scope.observations.variants {
                 if report.comparisons.len() == MAX_COMPARISONS {
                     return Err(BoxError::from_static_str("comparison variant limit"));
                 }
-                let comparison = compare_retained_captures(
-                    &candidates,
-                    &*variant.value.canonical()?,
-                    mode,
-                    CaptureComparisonLimits {
-                        work: budget,
-                        ..Default::default()
-                    },
-                )?;
-                budget = budget
-                    .checked_sub(comparison.work_units)
-                    .ok_or_else(|| BoxError::from_static_str("comparison work limit"))?;
+                let observed = variant.value.canonical()?;
+                let mut result: Option<RetainedCaptureComparison> = None;
+                // A short replay cannot show the shuffle its reference scope merged.
+                for (reference, candidates) in &groups {
+                    let read = reference
+                        .observations
+                        .read_extension_order(&observed, OrderAnalysisConfig::default())?;
+                    let comparison = compare_retained_captures(
+                        candidates,
+                        &read,
+                        mode,
+                        CaptureComparisonLimits {
+                            work: budget,
+                            ..Default::default()
+                        },
+                    )?;
+                    budget = budget
+                        .checked_sub(comparison.work_units)
+                        .ok_or_else(|| BoxError::from_static_str("comparison work limit"))?;
+                    let matched = comparison.matched;
+                    if matched || result.is_none() {
+                        result = Some(comparison);
+                    }
+                    if matched {
+                        break;
+                    }
+                }
+                let comparison =
+                    result.ok_or_else(|| BoxError::from_static_str("comparison reference"))?;
                 report.matched &= comparison.matched;
                 report.comparisons.push(Comparison {
                     profile: profile.id,
@@ -299,15 +329,22 @@ fn compare_with_coverage(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use rama::ua::profile::{
         capture::{
+            CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
             joint::{
                 CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
             },
             observation::ProfileCapture,
             order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+            tls::{
+                TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtension,
+                TlsCapturedExtensionValue,
+            },
         },
         evidence::{
             ProfileEvidence, ProfileScopeEvidence,
@@ -395,7 +432,7 @@ mod tests {
                 }]
                 .into(),
             };
-            analyzed(&archive_joint(joint, ConnectionContext::default()))
+            analyzed(&archive_joints(vec![joint], &ConnectionContext::default()))
         };
         let reference = archive(true);
         let observed = archive(false);
@@ -412,9 +449,9 @@ mod tests {
     }
 
     fn archive(value: u64) -> Vec<u8> {
-        archive_for_connection(value, ConnectionContext::default())
+        archive_for_connection(value, &ConnectionContext::default())
     }
-    fn archive_for_connection(value: u64, connection: ConnectionContext) -> Vec<u8> {
+    fn archive_for_connection(value: u64, connection: &ConnectionContext) -> Vec<u8> {
         let settings = OrderedProtocolCapture::capture(
             ProfileCaptureCompleteness::Complete,
             OrderNamespace::Http3Setting,
@@ -424,8 +461,8 @@ mod tests {
         .unwrap()
         .canonical(OrderCaptureLimits::default())
         .unwrap();
-        archive_joint(
-            JointCapture {
+        archive_joints(
+            vec![JointCapture {
                 completeness: ProfileCaptureCompleteness::Complete,
                 level: CaptureLevel::Connection,
                 slots: vec![CapturedSlot {
@@ -433,50 +470,59 @@ mod tests {
                     value: settings,
                 }]
                 .into(),
-            },
+            }],
             connection,
         )
     }
 
-    fn archive_joint(joint: JointCapture, connection: ConnectionContext) -> Vec<u8> {
+    /// Every joint observed once, in order, as connections of one profile.
+    fn archive_joints(joints: Vec<JointCapture>, connection: &ConnectionContext) -> Vec<u8> {
         let profile = ProfileKey::new("comparison-test");
-        let capture = ProfileCapture {
-            profile: profile.clone(),
-            flow: None,
-            connection,
-            joint,
-        };
-        let prepared = capture
-            .prepare(false, JointCaptureLimits::default())
-            .unwrap();
-        let mut scopes = Vec::new();
-        for input in prepared.buckets {
-            let mut window = RetainedBucketWindow::new(
-                input.value.validated_domain(65536).unwrap(),
-                input.scope.id,
-                [3; 32],
-                ProfileWindowLimits::default(),
-            )
-            .unwrap();
-            window
-                .observe(
-                    100,
-                    100,
-                    ObservationId {
-                        run: [1; 16],
-                        sequence: 1,
-                    },
-                    &input.value,
-                )
+        let mut scopes = BTreeMap::new();
+        for (sequence, joint) in joints.into_iter().enumerate() {
+            let capture = ProfileCapture {
+                revision: CAPTURE_REVISION,
+                profile: profile.clone(),
+                flow: None,
+                connection: connection.clone(),
+                joint,
+            };
+            let prepared = capture
+                .prepare(false, JointCaptureLimits::default())
                 .unwrap();
-            scopes.push(ProfileScopeEvidence {
-                scope: input.scope,
-                flow: prepared.flow.clone(),
-                structure: input.structure,
-                window: window.snapshot(),
-            });
+            for input in prepared.buckets {
+                let (_, _, window) = scopes.entry(input.scope.id).or_insert_with(|| {
+                    let window = RetainedBucketWindow::new(
+                        input.value.validated_domain(65536).unwrap(),
+                        input.scope.id,
+                        [3; 32],
+                        ProfileWindowLimits::default(),
+                    )
+                    .unwrap();
+                    (input.scope.clone(), input.structure.clone(), window)
+                });
+                window
+                    .observe(
+                        100,
+                        100,
+                        ObservationId {
+                            run: [1; 16],
+                            sequence: sequence as u64 + 1,
+                        },
+                        &input.value,
+                    )
+                    .unwrap();
+            }
         }
-        scopes.sort_unstable_by_key(|scope| scope.scope.id);
+        let scopes: Vec<_> = scopes
+            .into_values()
+            .map(|(scope, structure, window)| ProfileScopeEvidence {
+                scope,
+                flow: None,
+                structure,
+                window: window.snapshot(),
+            })
+            .collect();
         ProfileArchiveWriter::new(Vec::new(), false, 100, 14, ProfileArchiveLimits::default())
             .unwrap()
             .write_profile(ProfileArchiveEntry {
@@ -549,7 +595,7 @@ mod tests {
         let mut observed = loaded(17);
         let unknown = analyzed(&archive_for_connection(
             17,
-            ConnectionContext {
+            &ConnectionContext {
                 token_present: Some(true),
                 ..Default::default()
             },
@@ -626,5 +672,94 @@ mod tests {
         .map(|entry| entry.analysis)
         .collect();
         assert!(!compare(&loaded(17), &observed).unwrap().matched);
+    }
+
+    const FLOATING: [u16; 5] = [1000, 2000, 3000, 4000, 5000];
+
+    fn tls_joint(cipher: u16, order: &[u16]) -> JointCapture {
+        JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Connection,
+            slots: vec![CapturedSlot {
+                kind: CapturedSlotKind::TcpTls,
+                value: TlsCapture {
+                    completeness: ProfileCaptureCompleteness::Complete,
+                    transport: TlsCaptureTransport::Tcp,
+                    protocol_version: 0x0303,
+                    ciphers: vec![cipher].into(),
+                    compression: vec![0].into(),
+                    extensions: order
+                        .iter()
+                        .map(|&id| TlsCapturedExtension {
+                            id,
+                            value: TlsCapturedExtensionValue::Literal(Box::default()),
+                        })
+                        .collect(),
+                }
+                .canonical(TlsCaptureLimits::default())
+                .unwrap(),
+            }]
+            .into(),
+        }
+    }
+
+    fn permutations(items: &[u16]) -> Vec<Vec<u16>> {
+        if items.len() <= 1 {
+            return vec![items.to_vec()];
+        }
+        let mut all = Vec::new();
+        for index in 0..items.len() {
+            let mut rest = items.to_vec();
+            let first = rest.remove(index);
+            for mut tail in permutations(&rest) {
+                tail.insert(0, first);
+                all.push(tail);
+            }
+        }
+        all
+    }
+
+    /// One client shuffling its extensions (cipher 0x1301) and one keeping a fixed reversed order (0x1302).
+    fn tls_archive(shuffled: bool, fixed: &[&[u16]]) -> Box<[AnalyzedProfile]> {
+        let mut joints = Vec::new();
+        if shuffled {
+            joints.extend(
+                permutations(&FLOATING)
+                    .iter()
+                    .map(|order| tls_joint(0x1301, order)),
+            );
+        }
+        joints.extend(fixed.iter().map(|order| tls_joint(0x1302, order)));
+        analyzed(&archive_joints(joints, &ConnectionContext::default()))
+    }
+
+    #[test]
+    fn each_reference_scope_reads_observations_in_its_own_extension_order() {
+        let reversed: Vec<u16> = FLOATING.iter().rev().copied().collect();
+        let fixed: &[&[u16]] = &[&reversed, &reversed];
+        let mixed = tls_archive(true, fixed);
+        assert!(
+            mixed[0]
+                .scopes
+                .iter()
+                .any(|scope| scope.observations.shuffles_tls_extensions())
+        );
+        for mode in [ComparisonMode::Literal, ComparisonMode::Replay] {
+            let matched = |observed: &[AnalyzedProfile]| {
+                compare_with_coverage(&mixed, observed, false, mode)
+                    .unwrap()
+                    .matched
+            };
+            assert!(matched(&mixed), "{mode:?}");
+            assert!(matched(&tls_archive(false, fixed)), "{mode:?}");
+            // A shuffled reference reads a replay that drew another order as its variant.
+            let replay = analyzed(&archive_joints(
+                vec![tls_joint(0x1301, &[3000, 1000, 5000, 2000, 4000])],
+                &ConnectionContext::default(),
+            ));
+            assert!(matched(&replay), "{mode:?}");
+            // A fixed-order scope still rejects another order beside a shuffled scope.
+            assert!(!matched(&tls_archive(false, &[&FLOATING])), "{mode:?}");
+        }
     }
 }

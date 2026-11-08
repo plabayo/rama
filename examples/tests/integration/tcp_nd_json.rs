@@ -23,7 +23,7 @@ async fn test_tcp_nd_json() {
         .with_signal(exit_rx);
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("tcp_nd_json"));
-    runner.wait_for_tcp(([0, 0, 0, 0], 62042)).await;
+    runner.wait_for_tcp(([0, 0, 0, 0], 12042)).await;
 
     let weak_scope = scope.clone_weak();
     let cancelled = weak_scope.cancelled();
@@ -34,7 +34,7 @@ async fn test_tcp_nd_json() {
         tracing::info!("runner dropped");
     });
 
-    let (stream, _) = default_tcp_connect(&Extensions::default(), HostWithPort::local_ipv4(62042))
+    let (stream, _) = default_tcp_connect(&Extensions::default(), HostWithPort::local_ipv4(12042))
         .await
         .unwrap();
 

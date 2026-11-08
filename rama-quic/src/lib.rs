@@ -103,7 +103,8 @@ pub mod tls {
     }
 
     pub use crate::proto::crypto::config::{
-        ClientHandshake, ClientSessionPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
+        ClientHandshake, ClientSessionPolicy, NoInitialCipherSuite, ServerSessionPolicy,
+        TlsConfigError, TlsOptions,
     };
 }
 

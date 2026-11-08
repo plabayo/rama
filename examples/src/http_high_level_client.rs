@@ -52,7 +52,7 @@ use rama::{
 use serde_json::json;
 use std::time::Duration;
 
-const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62004);
+const ADDRESS: SocketAddress = SocketAddress::local_ipv4(12004);
 
 #[tokio::main]
 async fn main() {

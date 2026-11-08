@@ -8,7 +8,7 @@
 //! [`opentelemetry`]: https://opentelemetry.io/
 //! [`tracing`]: https://tracing.rs/
 //!
-//! This example will create a server that listens on `127.0.0.1:62012.
+//! This example will create a server that listens on `127.0.0.1:12012.
 //!
 //! It also expects you to run the OT collector, e.g.:
 //!
@@ -26,10 +26,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62012`. You can use `curl`:
+//! The server will start and listen on `:12012`. You can use `curl`:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62012
+//! curl -v http://127.0.0.1:12012
 //! ```
 //!
 //! With the seecoresponse you should see a response with `HTTP/1.1 200` and a greeting.
@@ -172,7 +172,7 @@ async fn main() {
 
         // service setup & go
         TcpListener::build(weak_scope)
-            .bind_address("127.0.0.1:62012")
+            .bind_address("127.0.0.1:12012")
             .await
             .unwrap()
             .serve(

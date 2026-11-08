@@ -9,14 +9,14 @@ async fn test_http_web_service_dir_and_api() {
     let runner = utils::ExampleRunner::interactive(utils::example!("http_web_service_dir_and_api"));
 
     // test index.html via directory service
-    let response = runner.get("http://127.0.0.1:62013").send().await.unwrap();
+    let response = runner.get("http://127.0.0.1:12013").send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let homepage = response.try_into_string().await.unwrap();
     assert!(homepage.contains("<h1>Coin Clicker</h1>"));
 
     // test redirect
     let response = runner
-        .get("http://127.0.0.1:62013/foo/bar")
+        .get("http://127.0.0.1:12013/foo/bar")
         .send()
         .await
         .unwrap();
@@ -26,7 +26,7 @@ async fn test_http_web_service_dir_and_api() {
 
     // test coin fetching
     let response = runner
-        .get("http://127.0.0.1:62013/coin")
+        .get("http://127.0.0.1:12013/coin")
         .send()
         .await
         .unwrap();
@@ -36,7 +36,7 @@ async fn test_http_web_service_dir_and_api() {
 
     // test coin post
     let response = runner
-        .post("http://127.0.0.1:62013/coin")
+        .post("http://127.0.0.1:12013/coin")
         .send()
         .await
         .unwrap();
@@ -46,7 +46,7 @@ async fn test_http_web_service_dir_and_api() {
 
     // test coin fetching (again)
     let response = runner
-        .get("http://127.0.0.1:62013/coin")
+        .get("http://127.0.0.1:12013/coin")
         .send()
         .await
         .unwrap();

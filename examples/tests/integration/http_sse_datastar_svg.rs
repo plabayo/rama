@@ -17,7 +17,7 @@ async fn test_http_sse_datastar_svg() {
 
     let runner = utils::ExampleRunner::interactive(utils::example!("http_sse_datastar_svg"));
 
-    let index_response = runner.get("http://127.0.0.1:62059").send().await.unwrap();
+    let index_response = runner.get("http://127.0.0.1:12059").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -37,7 +37,7 @@ async fn test_http_sse_datastar_svg() {
         r##"<circle id="shape""##,
     ] {
         let mut stream = runner
-            .get("http://127.0.0.1:62059/shape")
+            .get("http://127.0.0.1:12059/shape")
             .send()
             .await
             .unwrap()

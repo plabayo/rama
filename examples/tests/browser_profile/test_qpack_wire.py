@@ -6,6 +6,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from dataclasses import replace
 from h3_sequence_wire import sequence_matches
+from quic_stream_wire import stream_prefixes
 from wire_fixtures import (
     QPACK_WIRE_CAPACITY as CAPACITY,
     QPACK_WIRE_DUPLICATE as DUPLICATE,
@@ -119,6 +120,15 @@ class QpackWireTests(unittest.TestCase):
         )
         data, streams = fixture(instruction(CAPACITY, b"\x20"), server=True)
         self.assertEqual(qpack.encoder_instructions(data, 443, streams), {})
+
+    def test_a_retransmitted_encoder_packet_counts_once(self):
+        data, streams = fixture(instruction(CAPACITY, b"\x20"))
+        start, end = data.index(b"<packet>"), data.index(b"</packet>") + len(b"</packet>")
+        resent = data[:end] + data[start:end] + data[end:]
+        self.assertEqual(
+            qpack.encoder_instructions(resent, 443, stream_prefixes(resent, 443)),
+            qpack.encoder_instructions(data, 443, streams),
+        )
 
     def test_missing_reordered_or_duplicate_dissection_cannot_prove_coverage(self):
         for nodes in [

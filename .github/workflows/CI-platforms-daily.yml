@@ -930,12 +930,23 @@ jobs:
             ${{ runner.temp }}/browser-evidence/headers.diagnostics.json
             ${{ runner.temp }}/browser-evidence/replay.diagnostics.json
             ${{ runner.temp }}/browser-evidence/comparison.json
+            ${{ runner.temp }}/browser-evidence/archive-comparison.json
             ${{ runner.temp }}/browser-evidence/summary.json
             ${{ runner.temp }}/browser-evidence/tls-comparison.json
             ${{ runner.temp }}/browser-evidence/capture-fields.json
             ${{ runner.temp }}/browser-evidence/replay-fields.json
             ${{ runner.temp }}/browser-evidence/wire-comparison.json
             ${{ runner.temp }}/browser-evidence/websocket-comparison.json
+      # A failed admission names packets only; the localhost fixture capture shows them.
+      - name: Preserve the failed capture
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-capture-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/browser-evidence/headers.pdml
+            ${{ runner.temp }}/browser-evidence/reference.pcapng
 
   test-safari-desktop:
     needs: precheck-rust

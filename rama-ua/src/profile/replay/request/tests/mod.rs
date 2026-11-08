@@ -52,6 +52,7 @@ fn selection_for_version(fields: Vec<HeaderOccurrence>, version: Version) -> Req
         analysis_revision: 2,
         effective: PreparedRequestProfile {
             cookie_layout: CookieLayoutEvidence::Unknown,
+            network_hints: Box::default(),
             scope: ValueId([4; 32]),
             capture: capture.into(),
             flow: FlowKey::Http {
@@ -216,9 +217,58 @@ fn caller_fields_beyond_capture_policy_never_fail_replay() {
             .unwrap()
             .headers
             .unwrap();
-        assert_eq!(headers.len(), 304);
-        assert_eq!(headers["te"], "gzip");
+        assert_eq!(headers.len(), 303);
+        assert!(!headers.contains_key("te"));
     }
+}
+
+#[test]
+fn multiplexed_replay_takes_te_from_the_capture() {
+    let te = || {
+        field(
+            "te",
+            0,
+            HeaderValueSource::Request(RequestBinding::Connection),
+        )
+    };
+    for version in [Version::HTTP_2, Version::HTTP_3] {
+        let with_te =
+            selection_for_version(vec![te(), field("accept", 0, profile(b"*/*"))], version);
+        let replayed = with_te.replay_request(&HeaderMap::new()).unwrap();
+        assert!(replayed.report.is_exact());
+        assert_eq!(replayed.headers.unwrap()["te"], "trailers");
+
+        let mut original = HeaderMap::new();
+        original.insert("te", HeaderValue::from_static("gzip"));
+        let replayed = with_te.replay_request(&original).unwrap();
+        assert_eq!(replayed.headers.unwrap()["te"], "trailers");
+        assert!(matches!(
+            replayed.report.differences.as_ref(),
+            [ProfilePreservationDifference::CallerValueReplaced { name, occurrence: 0 }] if name == TE
+        ));
+
+        let without_te = selection_for_version(vec![field("accept", 0, profile(b"*/*"))], version);
+        original.insert("te", HeaderValue::from_static("trailers"));
+        let replayed = without_te.replay_request(&original).unwrap();
+        assert!(!replayed.headers.unwrap().contains_key("te"));
+        assert!(matches!(
+            replayed.report.differences.as_ref(),
+            [ProfilePreservationDifference::DroppedCallerField { name, occurrence: 0 }] if name == TE
+        ));
+    }
+
+    // HTTP/1.1 transfer codings stay with the caller.
+    let replayed = selection(vec![te()])
+        .replay_request(&HeaderMap::new())
+        .unwrap();
+    assert!(replayed.headers.unwrap().is_empty());
+    assert!(matches!(
+        replayed.report.differences.as_ref(),
+        [ProfilePreservationDifference::MissingRequestBinding {
+            binding: RequestBinding::Connection,
+            ..
+        }]
+    ));
 }
 
 #[test]
@@ -495,4 +545,26 @@ fn mixed_qpack_families_select_native_current_field_boundary_preferences() {
         assert_eq!(preferences.headers[name].representation, expected);
         assert_eq!(replayed.headers.as_ref().unwrap()[name], "current");
     }
+}
+
+#[test]
+fn network_hint_placeholders_replay_the_values_drawn_for_the_request() {
+    let mut selection = selection(vec![
+        field("rtt", 0, profile(b"")),
+        field("downlink", 0, profile(b"")),
+        field("ect", 0, profile(b"4g")),
+    ]);
+    selection.effective.network_hints = vec![
+        (Box::from("rtt"), Box::from(&b"100"[..])),
+        (Box::from("downlink"), Box::from(&b"10"[..])),
+        (Box::from("ect"), Box::from(&b"3g"[..])),
+    ]
+    .into();
+
+    let replayed = selection.replay_request(&HeaderMap::new()).unwrap();
+    let headers = replayed.headers.unwrap();
+    assert_eq!(headers["rtt"], "100");
+    assert_eq!(headers["downlink"], "10");
+    // Only placeholders take drawn values; a captured value stays as captured.
+    assert_eq!(headers["ect"], "4g");
 }

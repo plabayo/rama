@@ -17,7 +17,7 @@ async fn test_http_sse_datastar_test_suite() {
     // get test
 
     let mut stream = runner
-        .get("http://127.0.0.1:62050/test?datastar=%7b%0a++%22events%22%3a+%5b%0a++++%7b%0a++++++%22type%22%3a+%22executeScript%22%2c%0a++++++%22script%22%3a+%22console.log%28%27hello%27%29%3b%22%2c%0a++++++%22eventId%22%3a+%22event1%22%2c%0a++++++%22retryDuration%22%3a+2000%2c%0a++++++%22attributes%22%3a+%7b%0a++++++++%22type%22%3a+%22text%2fjavascript%22%2c%0a++++++++%22blocking%22%3a+false%0a++++++%7d%2c%0a++++++%22autoRemove%22%3a+false%0a++++%7d%0a++%5d%0a%7d")
+        .get("http://127.0.0.1:12050/test?datastar=%7b%0a++%22events%22%3a+%5b%0a++++%7b%0a++++++%22type%22%3a+%22executeScript%22%2c%0a++++++%22script%22%3a+%22console.log%28%27hello%27%29%3b%22%2c%0a++++++%22eventId%22%3a+%22event1%22%2c%0a++++++%22retryDuration%22%3a+2000%2c%0a++++++%22attributes%22%3a+%7b%0a++++++++%22type%22%3a+%22text%2fjavascript%22%2c%0a++++++++%22blocking%22%3a+false%0a++++++%7d%2c%0a++++++%22autoRemove%22%3a+false%0a++++%7d%0a++%5d%0a%7d")
         .send()
         .await
         .unwrap()
@@ -41,7 +41,7 @@ async fn test_http_sse_datastar_test_suite() {
     // post test
 
     let mut stream = runner
-        .post("http://127.0.0.1:62050/test")
+        .post("http://127.0.0.1:12050/test")
         .json(&json!({
           "events": [
             {
@@ -84,7 +84,7 @@ async fn test_http_sse_datastar_test_suite() {
     // query test (datastar `@query()` sends signals as a JSON body)
 
     let mut stream = runner
-        .query("http://127.0.0.1:62050/test")
+        .query("http://127.0.0.1:12050/test")
         .typed_header(DatastarRequest::new())
         .json(&json!({
           "events": [

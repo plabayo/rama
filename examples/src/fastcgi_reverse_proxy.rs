@@ -3,11 +3,11 @@
 //!
 //! The example spawns two services:
 //!
-//! 1. A FastCGI application server on `127.0.0.1:62054` that wraps a plain HTTP echo
+//! 1. A FastCGI application server on `127.0.0.1:12054` that wraps a plain HTTP echo
 //!    handler via [`FastCgiHttpService`] — demonstrating that any HTTP service can be
 //!    deployed as a FastCGI backend without modification.
 //!
-//! 2. An HTTP server on `127.0.0.1:62053` that accepts ordinary HTTP requests,
+//! 2. An HTTP server on `127.0.0.1:12053` that accepts ordinary HTTP requests,
 //!    translates them into FastCGI requests via [`FastCgiHttpClient`], and proxies
 //!    them to the FastCGI backend.
 //!
@@ -23,11 +23,11 @@
 //!
 //! # Expected output
 //!
-//! The proxy will start and listen on `:62053`. You can use `curl` to interact:
+//! The proxy will start and listen on `:12053`. You can use `curl` to interact:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62053/hello?foo=bar
-//! curl -v -X POST http://127.0.0.1:62053/submit -d 'name=rama'
+//! curl -v http://127.0.0.1:12053/hello?foo=bar
+//! curl -v -X POST http://127.0.0.1:12053/submit -d 'name=rama'
 //! ```
 //!
 //! Each response is the HTTP request echoed back by the backend handler.
@@ -63,8 +63,8 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-const PROXY_ADDR: SocketAddress = SocketAddress::local_ipv4(62053);
-const BACKEND_ADDR: SocketAddress = SocketAddress::local_ipv4(62054);
+const PROXY_ADDR: SocketAddress = SocketAddress::local_ipv4(12053);
+const BACKEND_ADDR: SocketAddress = SocketAddress::local_ipv4(12054);
 
 #[tokio::main]
 async fn main() {

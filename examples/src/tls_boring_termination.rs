@@ -12,10 +12,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:63801`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:13801`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v https://127.0.0.1:62801
+//! curl -v https://127.0.0.1:12801
 //! ```
 //!
 //! The above will fail, due to not being haproxy encoded, but also because it is not a tls service...
@@ -23,7 +23,7 @@
 //! This one will work however:
 //!
 //! ```sh
-//! curl -k -v https://127.0.0.1:63801
+//! curl -k -v https://127.0.0.1:13801
 //! ```
 //!
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
@@ -97,14 +97,14 @@ async fn main() {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
-            IoToProxyBridgeIoLayer::new(HostWithPort::local_ipv4(62801)).with_connector(
+            IoToProxyBridgeIoLayer::new(HostWithPort::local_ipv4(12801)).with_connector(
                 // ha proxy protocol used to forwarded the client original IP
                 HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
             ),
         )
             .into_layer(IoForwardService::new(weak_scope.clone()));
 
-        TcpListener::bind_address("127.0.0.1:63801", weak_scope)
+        TcpListener::bind_address("127.0.0.1:13801", weak_scope)
             .await
             .expect("bind TCP Listener: tls")
             .serve(tcp_service)
@@ -119,7 +119,7 @@ async fn main() {
         let tcp_service =
             (ConsumeErrLayer::default(), HaProxyServerLayer::new()).into_layer(http_service);
 
-        TcpListener::bind_address("127.0.0.1:62801", weak_scope)
+        TcpListener::bind_address("127.0.0.1:12801", weak_scope)
             .await
             .expect("bind TCP Listener: http")
             .serve(tcp_service)

@@ -87,7 +87,7 @@ mod tests {
         );
         profile_utc_day(UNIX_EPOCH - Duration::from_millis(1)).unwrap_err();
         let received = midnight - Duration::from_millis(1);
-        let retention = RetentionWindow::default();
+        let retention = RetentionWindow { days: 14 };
         let accepted =
             ProfileObservationTime::new(received, midnight, Duration::from_millis(1), retention)
                 .unwrap();

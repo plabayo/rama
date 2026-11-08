@@ -637,6 +637,7 @@ mod tests {
                     h3_bind: None,
                     h3_mtu_upper_bound: None,
                     h3_bootstrap_bind: None,
+                    h3_no_session_resumption: false,
                 },
                 secure: false,
             };

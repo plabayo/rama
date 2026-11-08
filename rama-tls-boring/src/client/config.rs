@@ -17,9 +17,9 @@ use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     ClientHandshake, ClientHello, ClientHelloExtension, DynTlsServerCertChainPolicy,
     ECHClientHello, ServerTrustSource, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
-    TlsClientConfigProvider, TlsComponentIdentity, TlsPoolComponent, TlsPoolId,
-    TlsServerCertPinCheck, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-    TlsSessionProfileScope, TlsStoreServerCertChain, TlsStoreServerHello,
+    TlsClientConfigProvider, TlsComponentIdentity, TlsEncryptedClientHello, TlsPoolComponent,
+    TlsPoolId, TlsServerCertPinCheck, TlsServerCertPins, TlsServerName, TlsServerTrust,
+    TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain, TlsStoreServerHello,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -72,7 +72,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub delegated_credentials: Option<&'a BoringDelegatedCredentials>,
     pub record_size_limit: Option<&'a BoringRecordSizeLimit>,
     pub server_padding_request: Option<&'a BoringServerPaddingRequest>,
-    pub encrypted_client_hello: Option<&'a BoringEncryptedClientHello>,
+    pub encrypted_client_hello: Option<&'a TlsEncryptedClientHello>,
     pub ech_grease: Option<&'a EchGrease>,
     pub ocsp_stapling: Option<&'a BoringOcspStapling>,
     pub signed_cert_timestamps: Option<&'a BoringSignedCertTimestamps>,
@@ -557,12 +557,9 @@ pub trait BoringClientConfigExt: Sized {
         fn server_padding_request(self, bytes: impl Into<Option<u16>>) -> Self;
     }
     generate_set_and_with! {
-        /// Enable/disable Encrypted ClientHello (ECH) GREASE.
-        fn encrypted_client_hello(self, enabled: bool) -> Self;
-    }
-    generate_set_and_with! {
         /// Select the algorithms and lengths of ECH GREASE. Enable emission with
-        /// `encrypted_client_hello`; invalid shapes fail when building a connector.
+        /// [`TlsClientConfig::with_encrypted_client_hello`]; invalid shapes fail
+        /// when building a connector.
         fn ech_grease(self, shape: EchGrease) -> Self;
     }
     generate_set_and_with! {
@@ -730,12 +727,6 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn server_padding_request(mut self, bytes: impl Into<Option<u16>>) -> Self {
             self.insert(BoringServerPaddingRequest(bytes.into()));
-            self
-        }
-    }
-    generate_set_and_with! {
-        fn encrypted_client_hello(mut self, enabled: bool) -> Self {
-            self.insert(BoringEncryptedClientHello(enabled));
             self
         }
     }
@@ -1021,11 +1012,6 @@ impl TlsPoolComponent for BoringServerPaddingRequest {
         *self
     }
 }
-
-/// Whether to GREASE the Encrypted ClientHello (ECH) extension.
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
-pub struct BoringEncryptedClientHello(pub bool);
 
 /// Whether to request OCSP stapling (`status_request`).
 #[derive(Debug, Clone, Extension)]
@@ -1525,7 +1511,7 @@ mod pool_tests {
                 ext.insert(BoringRecordSizeLimit(u16::from(value)));
             }),
             ("encrypted_client_hello", |ext, value| {
-                ext.insert(BoringEncryptedClientHello(value != 0));
+                ext.insert(TlsEncryptedClientHello(value != 0));
             }),
             ("ech_grease", |ext, value| {
                 ext.insert(EchGrease::Shape {
@@ -1658,7 +1644,7 @@ mod pool_tests {
             input.insert(BoringCertCompression(compression.to_vec()));
             input.insert(BoringDelegatedCredentials(delegated.to_vec()));
             input.insert(BoringRecordSizeLimit(4096));
-            input.insert(BoringEncryptedClientHello(ech));
+            input.insert(TlsEncryptedClientHello(ech));
             input.insert(BoringOcspStapling(ocsp));
             input.insert(BoringSignedCertTimestamps(timestamps));
             input.insert(BoringMinVersion(ProtocolVersion::TLSv1_2));

@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from dataclasses import dataclass, field as data_field
-from pdml import field, identity, one, pdml_packets, values
+from pdml import field, fields, identity, one, pdml_packets, values
 from tls_wire import Reader, byte_span
 
 
@@ -143,6 +143,9 @@ CONNECTION_CLOSE = {
 }
 # HTTP/3 closes idle or requestless connections with H3_NO_ERROR (0x100).
 CLEAN_CLOSE_CODES = {0x1C: {0}, 0x1D: {0, 0x100}}
+# RFC 9000 §10.2.3: Initial/Handshake packets carry an application close as APPLICATION_ERROR.
+HANDSHAKE_PACKET_TYPES = (["0"], ["2"])
+APPLICATION_ERROR = 0x0C
 
 
 def bidirectional_stream(frame, kind):
@@ -155,12 +158,41 @@ def bidirectional_stream(frame, kind):
     return not varint_field(frame, name)[0] & 2
 
 
-def closed_with_error(frame, kind):
+def close_problem(frame, kind, handshake):
+    """Why a CONNECTION_CLOSE is not clean, or None for any other or a clean frame."""
     if kind not in CONNECTION_CLOSE:
-        return False
+        return None
     names = [name for name in CONNECTION_CLOSE[kind] if values(frame, name)]
     # An unreadable error code cannot prove a clean close.
-    return not names or varint_field(frame, names[0])[0] not in CLEAN_CLOSE_CODES[kind]
+    if not names:
+        return f"close 0x{kind:x} without an error code"
+    code = varint_field(frame, names[0])[0]
+    if code in CLEAN_CLOSE_CODES[kind] or (handshake and kind == 0x1C and code == APPLICATION_ERROR):
+        return None
+    return f"close 0x{kind:x} code 0x{code:x}"
+
+
+def retransmitted_streams(packet, seen):
+    """Streams whose QUIC data in this packet repeats bytes an earlier packet carried."""
+    connection = tuple(sorted(set(values(packet, "quic.connection.number"))))
+    direction = tuple(values(packet, "udp.srcport"))
+    framed = {int(stream) for stream in values(packet, "http3.frame_streamid")}
+    repeats = defaultdict(set)
+    for frame in packet.iter("field"):
+        if frame.get("name") != "quic.frame":
+            continue
+        stream_ids = values(frame, "quic.stream.stream_id")
+        payload = fields(frame, "quic.stream_data")
+        if len(stream_ids) != 1 or len(payload) != 1:
+            continue
+        stream = int(stream_ids[0])
+        offset = int((values(frame, "quic.stream.offset") or ["0"])[0])
+        key = (direction, connection, stream, offset, payload[0].get("value", ""))
+        repeats[stream].add(key in seen)
+        seen.add(key)
+    if any(len(kinds) == 2 and stream in framed for stream, kinds in repeats.items()):
+        raise ValueError("partly retransmitted QUIC stream data in one packet")
+    return {stream for stream, kinds in repeats.items() if kinds == {True}}
 
 
 def requestless_connections(data, server_port):
@@ -169,11 +201,28 @@ def requestless_connections(data, server_port):
     Unanswered Initial attempts and connections carrying only control/QPACK
     streams qualify; they are reported, not attributed to the browser. Any
     undecrypted packet, frame naming a bidirectional stream, or CONNECTION_CLOSE
-    with an error excludes the connection. A client packet without a native QUIC
-    element or connection number cannot be attributed, so it excludes all; such a
-    server packet carries no request and is skipped.
+    with an error excludes the connection. A coalesced packet with the datagram's
+    DCID belongs to its first packet's connection. Any other client packet without
+    a native QUIC element or connection number excludes all; such a server packet
+    carries no request and is skipped.
     """
-    decoded, excluded = set(), set()
+    decoded, excluded, stray = quic_exclusions(data, server_port)
+    return set() if stray else decoded - set(excluded)
+
+
+def stray_client_packet(packet, proto=None):
+    """Name an unattributable client packet, so a CI report shows what it was."""
+    number = (values(packet, "frame.number") or ["?"])[0]
+    if proto is None:
+        payload = (values(packet, "data.data") or [""])[0].replace(":", "")
+        return f"frame {number}: no QUIC element, first byte 0x{payload[:2] or '??'}"
+    fixed = (values(proto, "quic.fixed_bit") or ["?"])[0]
+    return f"frame {number}: QUIC without a connection number, fixed bit {fixed}"
+
+
+def quic_exclusions(data, server_port):
+    """Decoded QUIC connections, why each is not requestless, and any stray client packet."""
+    decoded, excluded = set(), defaultdict(set)
     for packet in pdml_packets(data):
         ports = {
             int(port)
@@ -186,24 +235,36 @@ def requestless_connections(data, server_port):
         if not protos:
             if from_server:
                 continue
-            return set()
+            return decoded, dict(excluded), stray_client_packet(packet)
+        datagram = None
         for proto in protos:
             names = {node.get("name", "") for node in proto.iter("field")}
             if "quic.coalesced_padding_data" in names and names <= DATAGRAM_PADDING:
                 continue  # Bytes appended after the datagram's last QUIC packet.
-            if not values(proto, "quic.connection.number"):
-                if from_server:
-                    continue
-                return set()  # An unattributable client packet could belong to any connection.
-            connection = identity(proto, "quic.connection.number")
+            dcid = values(proto, "quic.dcid")
+            if values(proto, "quic.connection.number"):
+                connection = identity(proto, "quic.connection.number")
+                datagram = (connection, dcid)
+            elif datagram is not None and dcid and dcid == datagram[1]:
+                # Tshark numbers only a datagram's first packet; coalesced ones share its DCID.
+                connection = datagram[0]
+            elif from_server:
+                continue
+            else:
+                # An unattributable client packet could belong to any connection.
+                return decoded, dict(excluded), stray_client_packet(packet, proto)
             decoded.add(connection)
             frames = [
                 node for node in proto.iter("field") if node.get("name") == "quic.frame"
             ]
             if not frames or not values(proto, "quic.packet_number"):
-                excluded.add(connection)
+                excluded[connection].add("undecrypted packet")
+            handshake = values(proto, "quic.long.packet_type") in HANDSHAKE_PACKET_TYPES
             for frame in frames:
                 kind, _ = varint_field(frame, "quic.frame_type")
-                if bidirectional_stream(frame, kind) or closed_with_error(frame, kind):
-                    excluded.add(connection)
-    return decoded - excluded
+                if bidirectional_stream(frame, kind):
+                    excluded[connection].add(f"frame 0x{kind:x} on a request stream")
+                problem = close_problem(frame, kind, handshake)
+                if problem:
+                    excluded[connection].add(problem)
+    return decoded, dict(excluded), None

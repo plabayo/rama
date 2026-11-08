@@ -113,7 +113,7 @@ async fn main() {
 
 async fn spawn_socks5_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(63010), WeakScope::detached())
+        TcpListener::bind_address(SocketAddress::local_ipv4(13010), WeakScope::detached())
             .await
             .expect("bind socks5 BIND proxy on open port");
 

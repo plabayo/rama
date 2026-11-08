@@ -32,7 +32,7 @@ async fn test_socks5_connect_proxy() {
     utils::init_tracing();
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("socks5_connect_proxy"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62021)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12021)).await;
 
     let http_socket_addr = spawn_http_server().await;
 
@@ -43,7 +43,7 @@ async fn test_http_client_over_socks5_proxy_connect(
     http_socket_addr: SocketAddress,
     runner: ExampleRunner,
 ) {
-    let proxy_socket_addr = SocketAddress::local_ipv4(62021);
+    let proxy_socket_addr = SocketAddress::local_ipv4(12021);
 
     tracing::info!(
         "local servers up and running (proxy = {}; http = {})",
@@ -86,7 +86,7 @@ async fn test_http_client_over_socks5_proxy_connect(
 
 async fn spawn_http_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(63020), WeakScope::detached())
+        TcpListener::bind_address(SocketAddress::local_ipv4(13020), WeakScope::detached())
             .await
             .expect("bind HTTP server on open port");
 

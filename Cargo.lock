@@ -5735,6 +5735,7 @@ dependencies = [
  "rama-http",
  "rama-inspect",
  "rama-net",
+ "rama-proxy",
  "rama-quic-proto",
  "rama-tls",
  "rama-utils",

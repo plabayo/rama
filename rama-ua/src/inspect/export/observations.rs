@@ -10,6 +10,7 @@ use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTrans
 use crate::profile::{
     analysis::profile::ProfileAnalysisLimits,
     capture::{
+        CAPTURE_REVISION,
         completeness::ProfileCaptureCompleteness,
         headers::HeaderCapturePolicy,
         http2::{H2Capture, H2CaptureLimits},
@@ -169,6 +170,7 @@ impl ProfileExport {
                         .to_vec();
                 }
                 let request = ProfileCapture {
+                    revision: CAPTURE_REVISION,
                     profile: profile.clone(),
                     flow: Some(FlowKey::Http {
                         version,
@@ -245,6 +247,7 @@ impl ProfileExport {
                     collected.observe(
                         observed_day,
                         &ProfileCapture {
+                            revision: CAPTURE_REVISION,
                             profile: profile.clone(),
                             flow: None,
                             connection,

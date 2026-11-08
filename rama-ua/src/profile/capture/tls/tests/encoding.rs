@@ -359,3 +359,46 @@ fn canonical_tls_budgets_charge_retained_shapes_not_discarded_payloads() {
             .unwrap_err();
     }
 }
+
+#[test]
+fn trust_anchor_lists_are_retained_and_length_only_entries_still_decode() {
+    let limits = TlsCaptureLimits::default();
+    for body in [vec![0, 0], vec![0, 7, 2, 0xd6, 0x79, 3, 0x82, 0xdf, 0x13]] {
+        let captured = capture(&hello(vec![opaque(51764, body.clone())]));
+        assert!(matches!(
+            &captured.extensions[0].value,
+            TlsCapturedExtensionValue::Literal(value) if value.as_ref() == body.as_slice()
+        ));
+        let canonical = captured.canonical(limits).unwrap();
+        assert_eq!(
+            TlsCapture::from_canonical(&canonical, limits).unwrap(),
+            captured
+        );
+    }
+    for body in [
+        vec![],
+        vec![0],
+        vec![0, 1, 0],
+        vec![0, 2, 2, 1],
+        vec![0, 3, 1, 1],
+    ] {
+        TlsCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            TlsCaptureTransport::Tcp,
+            &hello(vec![opaque(51764, body)]),
+            limits,
+        )
+        .unwrap_err();
+    }
+    let mut length_only = capture(&hello(vec![]));
+    length_only.extensions = vec![TlsCapturedExtension {
+        id: 51764,
+        value: TlsCapturedExtensionValue::ConnectionLength(186),
+    }]
+    .into();
+    let canonical = length_only.canonical(limits).unwrap();
+    assert_eq!(
+        TlsCapture::from_canonical(&canonical, limits).unwrap(),
+        length_only
+    );
+}

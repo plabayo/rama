@@ -9,14 +9,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62000`. You can use `curl` to check if the server is running:
-//!
-//! ```sh
-//! curl -v http://127.0.0.1:62000
-//! ```
-//!
-//! You should see an HTTP Status 200 OK with a HTML payload containing the
-//! connection index and count of requests within that connection.
+//! One h2 `GET https://example.com/` over TLS, logging the response body chunks it receives.
 
 #![expect(
     clippy::unwrap_used,

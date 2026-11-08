@@ -1,7 +1,7 @@
 use super::*;
 use crate::profile::capture::completeness::ProfileCaptureCompleteness;
 use crate::profile::{
-    capture::joint::CapturedSlot,
+    capture::{CAPTURE_REVISION, joint::CapturedSlot},
     model::{
         identity::{FetchContext, ResumptionContext},
         scope::ProfileObservationScope,
@@ -15,6 +15,7 @@ fn capture() -> ProfileCapture {
     headers.insert("cookie", HeaderValue::from_static("never-retained-secret"));
     let policy = HeaderCapturePolicy::default();
     ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: ProfileKey::new("application"),
         flow: Some(FlowKey::Http {
             version: Version::HTTP_3,

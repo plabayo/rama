@@ -193,6 +193,21 @@ pub struct CountedCaptureAnalysis {
     pub variants: Box<[AnalyzedCaptureVariant]>,
     pub orders: Box<[CaptureOrderAnalysis]>,
     pub numeric: Box<[CaptureNumericDistribution]>,
+    /// Per-request network quality hints, drawn apart from the variants that hold
+    /// their placeholders.
+    #[serde(default)]
+    pub network_hints: Box<[NetworkHintVariant]>,
+}
+
+/// The Network Information client hints (`Downlink`, `RTT`, `ECT`), which change per request.
+pub(crate) const NETWORK_HINT_NAMES: [&str; 3] = ["downlink", "rtt", "ect"];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One observed combination of network quality hint values.
+pub struct NetworkHintVariant {
+    /// Header names with their values, in captured order.
+    pub fields: Box<[(Box<str>, Box<[u8]>)]>,
+    pub weight: AnalyzedOrderWeight,
 }
 
 type Sequences = BTreeMap<CaptureOrderPath, Vec<CaptureOrderElement>>;
@@ -330,6 +345,22 @@ fn sequences(
                 }
             }
         }
+        #[cfg(feature = "tls")]
+        CanonicalDomain::Joint => {
+            // Request and connection tuples expose their TLS extension order, so a
+            // shuffling client is recognised wherever its ClientHello is retained.
+            if let Some(capture) = shuffle::joint_tls(value, config)? {
+                output.insert(
+                    CaptureOrderPath::TlsExtensions,
+                    numbers(
+                        capture
+                            .extensions
+                            .iter()
+                            .map(|extension| u64::from(extension.id)),
+                    ),
+                );
+            }
+        }
         _ => (),
     }
     if output.len() > config.maximum_elements
@@ -349,6 +380,15 @@ fn sequences(
 pub fn analyze_capture_bucket(
     bucket: &CountedObservationBucket,
     config: OrderAnalysisConfig,
+) -> Result<CountedCaptureAnalysis, ProfileDataError> {
+    analyze_capture_bucket_preserving(bucket, config, &BTreeSet::new())
+}
+
+/// [`analyze_capture_bucket`] that keeps `preserved` values exact, as other scopes name them.
+pub(in crate::profile) fn analyze_capture_bucket_preserving(
+    bucket: &CountedObservationBucket,
+    config: OrderAnalysisConfig,
+    preserved: &BTreeSet<ValueId>,
 ) -> Result<CountedCaptureAnalysis, ProfileDataError> {
     config.validate()?;
     if bucket.retained_bytes() > config.maximum_bytes {
@@ -503,9 +543,8 @@ pub fn analyze_capture_bucket(
             evidence,
         });
     }
-    let numeric = analyze_numeric_variants(&variants, snapshot.domain, config)?;
-    Ok(CountedCaptureAnalysis {
-        numeric,
+    let mut analysis = CountedCaptureAnalysis {
+        numeric: Box::default(),
         classifier_revision: 2,
         order_work: budget.used(),
         domain: snapshot.domain,
@@ -515,8 +554,18 @@ pub fn analyze_capture_bucket(
         sample_values: snapshot.samples.iter().map(|sample| sample.value).collect(),
         variants: variants.into(),
         orders: orders.into(),
-    })
+        network_hints: Box::default(),
+    };
+    #[cfg(feature = "tls")]
+    shuffle::merge_shuffled_extension_orders(&mut analysis, config, preserved)?;
+    hints::separate_network_hints(&mut analysis, config, preserved)?;
+    analysis.numeric = analyze_numeric_variants(&analysis.variants, analysis.domain, config)?;
+    Ok(analysis)
 }
 
+mod hints;
+mod merge;
+#[cfg(feature = "tls")]
+mod shuffle;
 #[cfg(test)]
 mod tests;

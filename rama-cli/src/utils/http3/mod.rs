@@ -18,7 +18,7 @@ use rama::{
     quic::{
         Connection, Endpoint, MtuDiscoveryConfig, ServerConfig, TransportConfig,
         proto::capture::CaptureLimits,
-        tls::{BoringTlsProvider, TlsOptions},
+        tls::{BoringTlsProvider, ServerSessionPolicy, TlsOptions},
     },
     tcp::server::TcpListener,
     telemetry::tracing,
@@ -58,6 +58,10 @@ pub struct Http3Args {
     /// For HTTP/3-only serving (`--http-version h3`): browsers always start over TCP, so
     /// this answers every request there with `Alt-Svc` and a reload, serving nothing else.
     pub h3_bootstrap_bind: Option<SocketAddress>,
+
+    #[arg(long)]
+    /// issue no TLS session tickets over HTTP/3, so no client can resume a QUIC session
+    pub h3_no_session_resumption: bool,
 }
 
 impl Http3Args {
@@ -66,6 +70,15 @@ impl Http3Args {
         self.h3_bind.is_some()
             || self.h3_mtu_upper_bound.is_some()
             || self.h3_bootstrap_bind.is_some()
+            || self.h3_no_session_resumption
+    }
+
+    fn server_sessions(&self) -> ServerSessionPolicy {
+        if self.h3_no_session_resumption {
+            ServerSessionPolicy::Fresh
+        } else {
+            ServerSessionPolicy::Resume
+        }
     }
 }
 
@@ -120,7 +133,7 @@ impl HttpListeners {
         let serve_http3 = versions.http3(tls.is_some())?;
         if http3.requested() && !serve_http3 {
             return Err(BoxError::from_static_str(
-                "--h3-bind, --h3-mtu-upper-bound and --h3-bootstrap-bind require HTTP/3: enable TLS and serve h3 (see --http-version)",
+                "--h3-bind, --h3-mtu-upper-bound, --h3-bootstrap-bind and --h3-no-session-resumption require HTTP/3: enable TLS and serve h3 (see --http-version)",
             ));
         }
         if http3.h3_bootstrap_bind.is_some() && versions.tcp().is_some() {
@@ -169,8 +182,15 @@ impl HttpListeners {
             Some(tls) => {
                 // Port 0 gives HTTP/3 its own port, which `Alt-Svc` advertises.
                 let addr = http3.h3_bind.unwrap_or(bind);
-                match bind_http3_with_capture(addr, tls, http3.h3_mtu_upper_bound, None, capture)
-                    .await
+                match bind_http3_with_capture(
+                    addr,
+                    tls,
+                    http3.h3_mtu_upper_bound,
+                    None,
+                    http3.server_sessions(),
+                    capture,
+                )
+                .await
                 {
                     Ok(endpoint) => Some(endpoint),
                     // HTTP/3 that `auto` only implied must not take h1 and h2 down with it.
@@ -217,7 +237,7 @@ impl HttpListeners {
 /// The endpoint stays outside graceful shutdown, so HTTP/3 can drain its connections first;
 /// serve it with [`Http3Endpoints::serve`].
 pub async fn bind_http3(addr: SocketAddress, tls: &TlsServerConfig) -> Result<Endpoint, BoxError> {
-    bind_http3_with_capture(addr, tls, None, None, false).await
+    bind_http3_with_capture(addr, tls, None, None, ServerSessionPolicy::Resume, false).await
 }
 
 /// [`bind_http3`] with connections starting from `transport`, such as the room and idle
@@ -227,7 +247,15 @@ pub async fn bind_http3_with_transport(
     tls: &TlsServerConfig,
     transport: TransportConfig,
 ) -> Result<Endpoint, BoxError> {
-    bind_http3_with_capture(addr, tls, None, Some(transport), false).await
+    bind_http3_with_capture(
+        addr,
+        tls,
+        None,
+        Some(transport),
+        ServerSessionPolicy::Resume,
+        false,
+    )
+    .await
 }
 
 async fn bind_http3_with_capture(
@@ -235,6 +263,7 @@ async fn bind_http3_with_capture(
     tls: &TlsServerConfig,
     mtu_upper_bound: Option<u16>,
     transport: Option<TransportConfig>,
+    sessions: ServerSessionPolicy,
     capture: bool,
 ) -> Result<Endpoint, BoxError> {
     let tls = tls
@@ -250,7 +279,7 @@ async fn bind_http3_with_capture(
     }
     let mut config = ServerConfig::try_from_rama_tls_with_provider(
         &tls,
-        TlsOptions::default(),
+        TlsOptions::default().with_server_sessions(sessions),
         &BoringTlsProvider,
     )
     .context("QUIC TLS server config")?;
@@ -343,7 +372,7 @@ mod tests {
         quic::{ClientConfig, ConnectionError, proto::capture::QuicObservation},
         service::service_fn,
         tls::{
-            client::{ServerVerifyMode, TlsClientConfig},
+            client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
             server::{GeneratedServerAuthConfig, ServerAuthData},
         },
     };
@@ -390,6 +419,7 @@ mod tests {
                 h3_bind: None,
                 h3_mtu_upper_bound: None,
                 h3_bootstrap_bind: None,
+                h3_no_session_resumption: false,
             },
         )
         .await
@@ -412,6 +442,7 @@ mod tests {
                 h3_bind: None,
                 h3_mtu_upper_bound: None,
                 h3_bootstrap_bind: None,
+                h3_no_session_resumption: false,
             };
             let listeners = if capture {
                 HttpListeners::bind_observed(
@@ -485,6 +516,7 @@ mod tests {
                     h3_bind: None,
                     h3_mtu_upper_bound: None,
                     h3_bootstrap_bind: None,
+                    h3_no_session_resumption: false,
                 },
             )
             .await
@@ -506,6 +538,7 @@ mod tests {
                 h3_bind: Some(localhost()),
                 h3_mtu_upper_bound: None,
                 h3_bootstrap_bind: None,
+                h3_no_session_resumption: false,
             },
         )
         .await
@@ -519,6 +552,7 @@ mod tests {
             h3_bind: None,
             h3_mtu_upper_bound: None,
             h3_bootstrap_bind: Some(localhost()),
+            h3_no_session_resumption: false,
         };
         let error = HttpListeners::bind(
             WeakScope::detached(),
@@ -540,6 +574,71 @@ mod tests {
         .await
         .unwrap();
         assert!(listeners.tcp.is_none() && listeners.http3.is_some());
+    }
+
+    #[tokio::test]
+    async fn no_session_resumption_makes_every_http3_handshake_full() {
+        for (no_session_resumption, resumes) in [(false, true), (true, false)] {
+            let http3 = Http3Args {
+                h3_bind: None,
+                h3_mtu_upper_bound: None,
+                h3_bootstrap_bind: None,
+                h3_no_session_resumption: no_session_resumption,
+            };
+            let listeners = HttpListeners::bind(
+                WeakScope::detached(),
+                localhost(),
+                "h3".parse().unwrap(),
+                Some(&tls()),
+                &http3,
+            )
+            .await
+            .unwrap();
+            let server = listeners.http3.as_ref().unwrap();
+            let client = Endpoint::build(WeakScope::detached())
+                .bind_address(localhost())
+                .await
+                .unwrap();
+            let config = ClientConfig::try_from_rama_tls_with_provider(
+                &TlsClientConfig::new()
+                    .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+                    .with_server_verify(ServerVerifyMode::Disable),
+                TlsOptions::default(),
+                &BoringTlsProvider,
+            )
+            .unwrap();
+            let mut resumed = Vec::new();
+            for _ in 0..2 {
+                let connecting = client
+                    .connect_with(config.clone(), server.local_addr().unwrap(), "localhost")
+                    .unwrap();
+                let (client_connection, server_connection) =
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        tokio::join!(connecting, async { server.accept().await.unwrap().await })
+                    })
+                    .await
+                    .unwrap();
+                let client_connection = client_connection.unwrap();
+                let server_connection = server_connection.unwrap();
+                // Receipt of server application data also delivers any preceding session ticket.
+                let mut send = server_connection.open_uni().await.unwrap();
+                send.write_all(b"ticket").await.unwrap();
+                send.finish().unwrap();
+                let mut receive = client_connection.accept_uni().await.unwrap();
+                assert_eq!(receive.read_to_end(64).await.unwrap(), b"ticket");
+                resumed.push(
+                    client_connection
+                        .extensions()
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .unwrap()
+                        .resumed,
+                );
+                client_connection.close(0u8, b"done");
+                server_connection.close(0u8, b"done");
+            }
+            assert_eq!(resumed, [Some(false), Some(resumes)]);
+            tokio::join!(client.shutdown(), server.shutdown());
+        }
     }
 
     /// A TCP listener, and a UDP address held so that binding HTTP/3 on it fails.
@@ -568,6 +667,7 @@ mod tests {
                 h3_bind: None,
                 h3_mtu_upper_bound: None,
                 h3_bootstrap_bind: None,
+                h3_no_session_resumption: false,
             },
             false,
         )
@@ -597,6 +697,7 @@ mod tests {
                     h3_bind,
                     h3_mtu_upper_bound: None,
                     h3_bootstrap_bind: None,
+                    h3_no_session_resumption: false,
                 },
                 false,
             )
@@ -619,6 +720,7 @@ mod tests {
                 h3_bind: None,
                 h3_mtu_upper_bound: None,
                 h3_bootstrap_bind: None,
+                h3_no_session_resumption: false,
             },
         )
         .await

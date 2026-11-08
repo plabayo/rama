@@ -31,7 +31,7 @@ async fn test_haproxy_client_ip() {
 
     // try direct
     let resp = runner
-        .get("http://127.0.0.1:62025")
+        .get("http://127.0.0.1:12025")
         .send()
         .await
         .expect("make http request")
@@ -50,7 +50,7 @@ async fn test_server_with_haproxy_v1() {
         HttpConnectorLayer::default().into_layer(HaProxyService::tcp(TcpConnector::new()).v1());
 
     let request = Request::builder()
-        .uri("http://127.0.0.1:62025")
+        .uri("http://127.0.0.1:12025")
         .method("GET")
         .header("Connection", "close")
         .body(Body::empty())
@@ -89,7 +89,7 @@ async fn test_server_with_haproxy_v2() {
     let client = HttpConnectorLayer::default().into_layer(HaProxyService::tcp(TcpConnector::new()));
 
     let request = Request::builder()
-        .uri("http://127.0.0.1:62025")
+        .uri("http://127.0.0.1:12025")
         .method("GET")
         .header("Connection", "close")
         .body(Body::empty())

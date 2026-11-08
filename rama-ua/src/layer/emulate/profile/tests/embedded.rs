@@ -326,6 +326,12 @@ fn replacing_the_capture_replays_it_instead_of_the_cached_plan() {
     let headers = caller_headers();
     let draws = embedded_request_draws(16);
     let replay = |selection: &RequestSelection| format!("{:?}", selection.replay_request(&headers));
+    // Replay also uses each draw's network hints; share them so only the capture differs.
+    let with_hints_of = |selection: &RequestSelection, hints: &RequestSelection| {
+        let mut selection = selection.clone();
+        selection.effective.network_hints = hints.effective.network_hints.clone();
+        selection
+    };
     let (first, other) = draws
         .iter()
         .enumerate()
@@ -334,13 +340,13 @@ fn replacing_the_capture_replays_it_instead_of_the_cached_plan() {
                 .iter()
                 .find(|other| {
                     format!("{:?}", other.effective.flow) == format!("{:?}", first.effective.flow)
-                        && replay(other) != replay(first)
+                        && replay(other) != replay(&with_hints_of(first, other))
                 })
-                .map(|other| (first, other))
+                .map(|other| (with_hints_of(first, other), other))
         })
         .unwrap();
     assert!(first.effective.plan.is_some());
-    let mut swapped = first.clone();
+    let mut swapped = first;
     swapped
         .effective
         .set_capture(other.effective.capture().clone());

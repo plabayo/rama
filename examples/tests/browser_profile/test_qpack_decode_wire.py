@@ -229,6 +229,30 @@ class BlockedQpackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "precede their native witness"):
             resolve(root)
 
+    def test_retransmitted_heads_and_encoder_bytes_count_once(self):
+        root = fixture()
+        packets = root.findall("packet")
+        frame = b"\x01" + bytes([len(DYNAMIC)]) + DYNAMIC
+        native_encoder(packets[1], frame, stream=0)
+        for ordinal, source in ((5, packets[1]), (6, packets[2])):
+            # A QUIC retransmission repeats the STREAM bytes; tshark decodes them again.
+            again = deepcopy(source)
+            again.find("field[@name='frame.number']").set("show", str(ordinal))
+            root.append(again)
+        result = resolve(root)
+        self.assertEqual(result.recovered, {(2, 7, 0)})
+        self.assertEqual(result.headers[(2, 7, 0)], (("a", "b"),))
+
+    def test_retransmitted_blocked_head_is_one_section(self):
+        root = fixture()
+        packets = root.findall("packet")
+        native_encoder(packets[1], b"\x01" + bytes([len(DYNAMIC)]) + DYNAMIC, stream=0)
+        again = deepcopy(packets[1])
+        again.find("field[@name='frame.number']").set("show", "5")
+        root.append(again)
+        sections = sections_from_wire(ET.tostring(root), 443)
+        self.assertEqual(sorted(key[0] for key in sections), [2, 4])
+
     def test_duplicate_head_identity_and_packet_reordering_fail(self):
         root = fixture()
         original = root.findall("packet")[1].find("field[@name='http3.frame']")

@@ -1,4 +1,5 @@
 use std::{
+    mem,
     net::{IpAddr, Ipv4Addr},
     sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
     task::Waker,
@@ -15,13 +16,13 @@ use tokio::{
 };
 
 use super::*;
-use rama_net::{address::HostWithPort, client::ConnectorTarget};
+use rama_net::{address::HostWithPort, client::ConnectorTarget, stream::Socket};
 use rama_utils::octets::kib;
 
 use crate::{
     DatagramSenderExt as _, UdpPacketSender, UdpPacketSocket,
     proxy::{DatagramForwardService, DatagramToProxyBridge, EcnPolicy},
-    test_utils::MemoryDatagramSocket,
+    test_utils::{MemoryDatagramSender, MemoryDatagramSocket},
 };
 
 #[cfg(target_os = "linux")]
@@ -64,7 +65,7 @@ fn inject(listener: &MemoryDatagramSocket, from: SocketAddress, payload: &[u8]) 
         .unwrap();
 }
 
-type Sockets = UnboundedReceiver<DemuxedSocket<crate::test_utils::MemoryDatagramSender>>;
+type Sockets = UnboundedReceiver<DemuxedSocket<MemoryDatagramSender>>;
 
 /// Serve `listener`, handing every association to the test.
 fn serve(listener: MemoryDatagramSocket, config: DemuxConfig) -> Sockets {
@@ -93,7 +94,7 @@ fn gauge() -> SharedQueueBudget {
 }
 
 /// The datagram `socket` holds queued right now, without waiting for one.
-fn queued(socket: &mut DemuxedSocket<crate::test_utils::MemoryDatagramSender>) -> Option<Vec<u8>> {
+fn queued(socket: &mut DemuxedSocket<MemoryDatagramSender>) -> Option<Vec<u8>> {
     let mut buffer = [0; 2048];
     let mut metadata = [DatagramMetadata::empty()];
     let mut cx = Context::from_waker(Waker::noop());
@@ -106,7 +107,7 @@ fn queued(socket: &mut DemuxedSocket<crate::test_utils::MemoryDatagramSender>) -
     }
 }
 
-async fn next(socket: &mut DemuxedSocket<crate::test_utils::MemoryDatagramSender>) -> Vec<u8> {
+async fn next(socket: &mut DemuxedSocket<MemoryDatagramSender>) -> Vec<u8> {
     let mut buffer = [0; 2048];
     let metadata = socket.recv(&mut buffer).await.unwrap();
     buffer[..metadata.len].to_vec()
@@ -133,6 +134,82 @@ async fn each_peer_gets_its_own_association_in_order() {
             (next(&mut second).await, next(&mut second).await),
             (b"b1".to_vec(), b"b2".to_vec())
         );
+    })
+    .await
+    .unwrap();
+}
+
+/// A listener whose first receive reports an earlier reply's unreachable peer, as Winsock does.
+#[derive(Debug)]
+struct ReportsUnreachable {
+    socket: MemoryDatagramSocket,
+    reported: bool,
+}
+
+impl Socket for ReportsUnreachable {
+    fn local_addr(&self) -> io::Result<SocketAddress> {
+        self.socket.local_addr()
+    }
+
+    fn peer_addr(&self) -> io::Result<SocketAddress> {
+        self.socket.peer_addr()
+    }
+}
+
+impl DatagramSocket for ReportsUnreachable {
+    type Sender = MemoryDatagramSender;
+
+    fn create_sender(&self) -> Self::Sender {
+        self.socket.create_sender()
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+        buffers: &mut [IoSliceMut<'_>],
+        metadata: &mut [DatagramMetadata],
+    ) -> Poll<Result<usize, DatagramError>> {
+        if !mem::replace(&mut self.reported, true) {
+            return Poll::Ready(Err(DatagramError::Io(
+                io::ErrorKind::ConnectionReset.into(),
+            )));
+        }
+        self.socket.poll_recv(cx, buffers, metadata)
+    }
+
+    fn capabilities(&self) -> DatagramCapabilities {
+        self.socket.capabilities()
+    }
+}
+
+#[tokio::test]
+async fn an_unreachable_peer_report_does_not_end_the_listener() {
+    timeout(LIMIT, async {
+        let (_client, listener) = listener();
+        inject(&listener, peer(1), b"after");
+        let (sockets, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let demux = DatagramDemux::new(
+            ReportsUnreachable {
+                socket: listener,
+                reported: false,
+            },
+            config(),
+        );
+        tokio::spawn(demux.serve(
+            WeakScope::detached(),
+            service_fn(move |socket| {
+                let sockets = sockets.clone();
+                async move {
+                    sockets.send(socket).unwrap();
+                    Ok::<_, BoxError>(())
+                }
+            }),
+        ));
+        let mut socket = received.recv().await.expect("the listener kept serving");
+        assert_eq!(socket.peer_addr().unwrap(), peer(1));
+        let mut buffer = [0; 2048];
+        let metadata = socket.recv(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..metadata.len], b"after");
     })
     .await
     .unwrap();

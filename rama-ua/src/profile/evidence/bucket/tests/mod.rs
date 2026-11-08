@@ -374,6 +374,7 @@ fn restored_bucket_requires_the_expected_domain_and_authorization_scope() {
         flow: None,
         connection: ConnectionContext::default(),
         structure: ValueId([2; 32]),
+        revision: 0,
     };
     let public = scope.canonical(limits.input_bytes).unwrap().id;
     scope.authorized = true;

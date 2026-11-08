@@ -74,7 +74,7 @@ async fn main() {
     let weak_scope = scope.clone_weak();
 
     let listener =
-        TcpListener::bind_address(SocketAddress::default_ipv4(62050), weak_scope.clone())
+        TcpListener::bind_address(SocketAddress::default_ipv4(12050), weak_scope.clone())
             .await
             .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");

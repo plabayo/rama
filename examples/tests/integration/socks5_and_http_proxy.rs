@@ -27,7 +27,7 @@ async fn test_socks5_and_http_proxy() {
     utils::init_tracing();
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("socks5_and_http_proxy"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62023)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12023)).await;
 
     let http_socket_addr = spawn_http_server().await;
 
@@ -36,7 +36,7 @@ async fn test_socks5_and_http_proxy() {
     let result = runner
         .get(uri)
         .extension(ProxyRoute::Proxy(
-            ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62023").unwrap(),
+            ProxyAddress::try_from("http://tom:clancy@127.0.0.1:12023").unwrap(),
         ))
         .send()
         .await
@@ -55,7 +55,7 @@ async fn test_http_client_over_socks5_proxy_connect(
     http_socket_addr: SocketAddress,
     runner: ExampleRunner,
 ) {
-    let proxy_socket_addr = SocketAddress::local_ipv4(62023);
+    let proxy_socket_addr = SocketAddress::local_ipv4(12023);
 
     tracing::info!(
         "local servers up and running (proxy = {} ; http = {})",

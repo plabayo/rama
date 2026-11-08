@@ -302,11 +302,8 @@ async fn established_with_store(
         )
         .unwrap();
         assert_eq!(
-            actual.canonical(TlsCaptureLimits::default()).unwrap().bytes,
-            expected
-                .canonical(TlsCaptureLimits::default())
-                .unwrap()
-                .bytes,
+            replay_form(&actual),
+            replay_form(&expected),
             "the consuming connector must emit the admitted capture"
         );
         let mut stream = rama_boring_tokio::accept(&server, peek).await.unwrap();

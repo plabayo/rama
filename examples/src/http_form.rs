@@ -4,7 +4,7 @@
 //! [`HttpServer`]: rama::http::server::HttpServer
 //! [`WeakScope`]: rama::graceful::WeakScope
 //!
-//! This example will create a server that listens on `127.0.0.1:62002`.
+//! This example will create a server that listens on `127.0.0.1:12002`.
 //!
 //! It also showcases the type-safe HTML templating macros provided by
 //! [`rama::http::protocols::html`] (gated behind the `html` feature, included in
@@ -18,14 +18,14 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62002`. You can use `curl` to check if the server is running:
+//! The server will start and listen on `:12002`. You can use `curl` to check if the server is running:
 //!
 //! ```sh
-//! curl -X POST http://127.0.0.1:62002/form \
+//! curl -X POST http://127.0.0.1:12002/form \
 //!   -H "Content-Type: application/x-www-form-urlencoded" \
 //!   -d "name=John&age=32"
 //!
-//! curl -v 'http://127.0.0.1:62002/form?name=John&age=32'
+//! curl -v 'http://127.0.0.1:12002/form?name=John&age=32'
 //! ```
 //!
 //! You should see in both cases a response with `HTTP/1.1 200 OK` and `John is 32 years old.`.
@@ -33,7 +33,7 @@
 //! Alternatively you can
 //!
 //! ```sh
-//! open http://127.0.0.1:62002
+//! open http://127.0.0.1:12002
 //! ```
 //!
 //! and fill the form in the browser, you should see a response page after submitting the form,
@@ -86,7 +86,7 @@ async fn main() {
     scope.spawn_task(async move {
         HttpServer::auto(weak_scope)
             .listen(
-                "127.0.0.1:62002",
+                "127.0.0.1:12002",
                 TraceLayer::new_for_http().layer(
                     WebService::default()
                         .with_get("/", index_form)

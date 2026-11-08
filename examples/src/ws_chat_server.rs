@@ -9,7 +9,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62033`.
+//! The server will start and listen on `:12033`.
 //! Open it in the browser to see it in action or use `rama` cli client to test it.
 //!
 //! Try it with some friends over a local network,
@@ -132,11 +132,11 @@ async fn main() {
 
         let server = HttpServer::new_http1(weak_scope.clone())
             .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(router));
-        info!("open mini web chat @ http://127.0.0.1:62033");
-        info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama')");
+        info!("open mini web chat @ http://127.0.0.1:12033");
+        info!("or connect directly to ws://127.0.0.1:12033/chat (via 'rama')");
 
 
-        TcpListener::bind_address("127.0.0.1:62033", weak_scope)
+        TcpListener::bind_address("127.0.0.1:12033", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(AddInputExtensionLayer::new(State::default()).into_layer(server))

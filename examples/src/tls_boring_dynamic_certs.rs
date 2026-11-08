@@ -11,7 +11,7 @@
 //!
 //! Example certificate:
 //! ```sh
-//! curl -vik --resolve example:64801:127.0.0.1 https://example:64801
+//! curl -vik --resolve example:14801:127.0.0.1 https://example:14801
 //! ```
 //! Output
 //! ```
@@ -25,7 +25,7 @@
 //!
 //! Second example certificate:
 //! ```sh
-//! curl -vik --resolve second.example:64801:127.0.0.1 https://second.example:64801
+//! curl -vik --resolve second.example:14801:127.0.0.1 https://second.example:14801
 //! ```
 //! Output
 //! ```
@@ -39,7 +39,7 @@
 //!
 //! Fallback to to default (example certificate) if no matches are found:
 //! ```sh
-//! curl -vik https://127.0.0.1:64801
+//! curl -vik https://127.0.0.1:14801
 //! ```
 //! Output
 //! ```
@@ -94,7 +94,7 @@ async fn main() {
 
     let issuer = DynamicIssuer::new();
     let bind_address = env::var("RAMA_TLS_BORING_DYNAMIC_CERTS_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:64801".to_owned());
+        .unwrap_or_else(|_| "127.0.0.1:14801".to_owned());
 
     let tls_server_config = TlsServerConfig::new()
         .with_cert_issuer(ServerCertIssuerData::new(issuer).with_cache_kind(CacheKind::Disabled));

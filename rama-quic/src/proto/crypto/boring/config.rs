@@ -12,7 +12,9 @@ use rama_core::{
 use rama_crypto::dep::boring::{
     error::ErrorStack,
     ex_data::Index,
-    ssl::{Ssl, SslAcceptorBuilder, SslContext, SslRef, SslVersion},
+    ssl::{
+        Ssl, SslAcceptorBuilder, SslContext, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
+    },
 };
 use rama_net::{
     address::Host,
@@ -45,7 +47,7 @@ use crate::proto::{
     ConnectError, ServerCrypto,
     crypto::{
         self,
-        config::{ClientSessionPolicy, TlsConfigError, TlsOptions},
+        config::{ClientSessionPolicy, ServerSessionPolicy, TlsConfigError, TlsOptions},
     },
 };
 
@@ -460,7 +462,7 @@ pub(crate) fn server_config_from_rama(
         .cloned();
     Ok(if data.issues_certificates() {
         ServerCrypto::Resolver(Arc::new(QuicServerCertIssuer {
-            contexts: contexts(|| data.acceptor_builder_without_identity())?,
+            contexts: contexts(|| data.acceptor_builder_without_identity(), options)?,
             data,
             early_data: options.early_data,
             early_data_context: options.early_data_context,
@@ -507,7 +509,7 @@ impl QuicServerConfig {
     ) -> Result<Self, TlsConfigError> {
         Ok(Self {
             issued: None,
-            contexts: contexts(|| data.clone().into_static_acceptor_builder())?,
+            contexts: contexts(|| data.clone().into_static_acceptor_builder(), options)?,
             early_data: options.early_data,
             early_data_context: options.early_data_context,
             store_peer_chain: data.stores_client_certificate_chain(),
@@ -518,9 +520,14 @@ impl QuicServerConfig {
 
 fn contexts(
     builder: impl Fn() -> Result<SslAcceptorBuilder, BoxError>,
+    options: TlsOptions,
 ) -> Result<[SslContext; 2], TlsConfigError> {
     let context = |version: Version| -> Result<SslContext, TlsConfigError> {
         let mut builder = builder()?;
+        if options.server_sessions == ServerSessionPolicy::Fresh {
+            builder.set_session_cache_mode(SslSessionCacheMode::OFF);
+            builder.set_options(SslOptions::NO_TICKET);
+        }
         let invalid = |error: ErrorStack| TlsConfigError::InvalidConfiguration(error.into());
         builder
             .set_min_proto_version(Some(SslVersion::TLS1_3))

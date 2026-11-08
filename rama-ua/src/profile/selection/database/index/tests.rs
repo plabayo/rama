@@ -2,6 +2,7 @@ use super::*;
 use crate::profile::{
     analysis::profile::ProfileAnalysisLimits,
     capture::{
+        CAPTURE_REVISION,
         completeness::ProfileCaptureCompleteness,
         joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
         observation::ProfileCapture,
@@ -121,6 +122,7 @@ fn h3_only_archives_keep_joint_weights_and_no_synthetic_layers() {
     .canonical(OrderCaptureLimits::default())
     .unwrap();
     let prepared = ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: ProfileKey::new("h3-library"),
         flow: None,
         connection: ConnectionContext::default(),

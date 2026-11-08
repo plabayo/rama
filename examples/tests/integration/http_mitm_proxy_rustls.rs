@@ -21,7 +21,7 @@ async fn test_http_mitm_proxy() {
     tokio::spawn(async {
         HttpServer::auto(WeakScope::detached())
             .listen(
-                "127.0.0.1:63005",
+                "127.0.0.1:13005",
                 service_fn(async |req: Request| {
                     Ok(Json(json!({
                         "method": req.method().as_str(),
@@ -51,7 +51,7 @@ async fn test_http_mitm_proxy() {
     ));
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:63006", WeakScope::detached())
+        TcpListener::bind_address("127.0.0.1:13006", WeakScope::detached())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)
@@ -59,13 +59,13 @@ async fn test_http_mitm_proxy() {
     });
 
     let mut runner = utils::ExampleRunner::interactive(utils::example!("http_mitm_proxy_rustls"));
-    runner.wait_for_tcp(([127, 0, 0, 1], 62019)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12019)).await;
 
     // test http request proxy flow
     let result = runner
-        .get("http://127.0.0.1:63005/foo/bar")
+        .get("http://127.0.0.1:13005/foo/bar")
         .extension(ProxyRoute::Proxy(
-            ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap(),
+            ProxyAddress::try_from("http://john:secret@127.0.0.1:12019").unwrap(),
         ))
         .send()
         .await
@@ -78,9 +78,9 @@ async fn test_http_mitm_proxy() {
 
     // test https request proxy flow
     let result = runner
-        .get("https://127.0.0.1:63006/foo/bar")
+        .get("https://127.0.0.1:13006/foo/bar")
         .extension(ProxyRoute::Proxy(
-            ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap(),
+            ProxyAddress::try_from("http://john:secret@127.0.0.1:12019").unwrap(),
         ))
         .send()
         .await

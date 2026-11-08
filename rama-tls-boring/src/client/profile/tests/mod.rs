@@ -42,6 +42,18 @@ mod quic;
 #[cfg(feature = "http")]
 mod reuse;
 
+/// Canonical bytes with GREASE values as numbered slots; replay draws fresh values for them.
+fn replay_form(capture: &TlsCapture) -> Vec<u8> {
+    capture
+        .clone()
+        .with_grease_placeholders()
+        .unwrap()
+        .canonical(TlsCaptureLimits::default())
+        .unwrap()
+        .bytes
+        .to_vec()
+}
+
 fn capture() -> TlsCapture {
     // Large enough to avoid destination-dependent native TCP padding. The
     // retained ECH lengths are intentional; native keys and ciphertext are fresh.

@@ -1,9 +1,9 @@
 //! End-to-end test for the `fastcgi_reverse_proxy` example.
 //!
 //! The example spawns two services in one binary:
-//!   - a FastCGI application server on `127.0.0.1:62054` wrapping an HTTP echo
+//!   - a FastCGI application server on `127.0.0.1:12054` wrapping an HTTP echo
 //!     handler via `FastCgiHttpService` + `FastCgiServer`;
-//!   - an HTTP reverse proxy on `127.0.0.1:62053` that forwards via
+//!   - an HTTP reverse proxy on `127.0.0.1:12053` that forwards via
 //!     `FastCgiHttpClient` to the backend.
 //!
 //! These tests drive the public HTTP entry point (the proxy) and assert that
@@ -16,7 +16,7 @@ use rama::http::BodyExtractExt;
 use rama::http::headers::ContentType;
 use rama::net::address::HostWithPort;
 
-const PROXY_ADDR: HostWithPort = HostWithPort::local_ipv4(62053);
+const PROXY_ADDR: HostWithPort = HostWithPort::local_ipv4(12053);
 
 #[tokio::test]
 #[ignore = "spawns example processes"]

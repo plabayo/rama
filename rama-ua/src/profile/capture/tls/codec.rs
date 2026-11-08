@@ -2,7 +2,10 @@ use super::*;
 use crate::profile::format::canonical::{
     CanonicalDomain, CanonicalReader, CanonicalValue, CanonicalWriter,
 };
-use rama_tls::{ExtensionId, client::client_hello_extension_is_connection_bound};
+use rama_tls::{
+    ExtensionId,
+    client::{client_hello_extension_is_connection_bound, trust_anchors_identifier_list},
+};
 
 impl TlsCapturedExtension {
     fn wire_length(&self) -> Result<usize, ProfileDataError> {
@@ -78,6 +81,11 @@ impl TlsCapturedExtension {
                 }
                 if id == ExtensionId::SERVER_PADDING_REQUEST && bytes.len() != size_of::<u16>() {
                     return Err(ProfileDataError::Invalid("server padding request length"));
+                }
+                if id == ExtensionId::TRUST_ANCHORS
+                    && trust_anchors_identifier_list(bytes).is_none()
+                {
+                    return Err(ProfileDataError::Invalid("TLS trust anchors body"));
                 }
                 !client_hello_extension_is_connection_bound(id)
                     && !matches!(
@@ -211,7 +219,8 @@ impl TlsCapturedExtension {
             TlsCapturedExtensionValue::ConnectionLength(size) => {
                 budget.take(0, 2)?;
                 let id = ExtensionId::from(self.id);
-                client_hello_extension_is_connection_bound(id)
+                // Length-only trust anchors stay decodable without synthesizing identifiers.
+                (client_hello_extension_is_connection_bound(id) || id == ExtensionId::TRUST_ANCHORS)
                     && (id != ExtensionId::PADDING || *size == 0)
             }
         };

@@ -19,7 +19,7 @@ async fn test_http_sse() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner.get("http://127.0.0.1:62027").send().await.unwrap();
+    let index_response = runner.get("http://127.0.0.1:12027").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -36,7 +36,7 @@ async fn test_http_sse() {
     let mut unique_events = HashSet::new();
     let mut event_count = 0;
     let mut stream = runner
-        .get("http://127.0.0.1:62027/api/events")
+        .get("http://127.0.0.1:12027/api/events")
         .send()
         .await
         .unwrap()

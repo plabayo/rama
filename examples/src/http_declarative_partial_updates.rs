@@ -11,10 +11,10 @@
 //!
 //! # Expected output
 //!
-//! Server listens on `:64805`. Open in a browser:
+//! Server listens on `:14805`. Open in a browser:
 //!
 //! ```sh
-//! open http://127.0.0.1:64805
+//! open http://127.0.0.1:14805
 //! ```
 //!
 //! The 🦙 dashboard shell appears immediately with a "loading…" banner and
@@ -190,7 +190,7 @@ async fn main() {
         .with_grace(Duration::from_secs(30));
     let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(64805), weak_scope.clone())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(14805), weak_scope.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");

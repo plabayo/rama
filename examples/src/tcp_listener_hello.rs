@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62500`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12500`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62500
+//! curl -v http://127.0.0.1:12500
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with the source code of this example.
@@ -41,8 +41,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const SRC: &str = include_str!("./tcp_listener_hello.rs");
 const MAX_HTTP_REQUEST_HEAD_SIZE: usize = kib(16);
 // The below &str type will also work!
-// const ADDR: &str = "127.0.0.1:62500";
-const ADDR: SocketAddress = SocketAddress::local_ipv4(62500);
+// const ADDR: &str = "127.0.0.1:12500";
+const ADDR: SocketAddress = SocketAddress::local_ipv4(12500);
 
 #[tokio::main]
 async fn main() {

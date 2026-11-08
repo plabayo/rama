@@ -1,6 +1,8 @@
 //! Select correlated connection and request variants within a profile.
 
 pub mod bootstrap;
+#[cfg(feature = "tls")]
+mod extension_order;
 pub(crate) mod shapes;
 
 use std::{error::Error, fmt, ptr, sync::Arc};
@@ -180,6 +182,8 @@ pub struct PreparedRequestProfile {
     pub flow: FlowKey,
     /// Cookie layout evidence from this profile for the negotiated HTTP version.
     pub cookie_layout: CookieLayoutEvidence,
+    /// Network quality hint values drawn for this request; they fill the capture's placeholders.
+    pub network_hints: Box<[(Box<str>, Box<[u8]>)]>,
     /// The capture decoded once for its profile; replay decodes `capture` without it.
     #[serde(skip)]
     pub(crate) plan: Option<RequestPlanRef>,
@@ -556,18 +560,35 @@ impl SelectedProfile {
         })?;
         // Connection captures are never held compact, so this borrows.
         let capture = variant.value.canonical()?.into_owned();
+        let h3_settings_evidence =
+            H3SettingsReplayEvidence::for_profile(analysis, scope, &capture)?;
+        let variant = capture.id;
+        #[cfg(feature = "tls")]
+        let capture = extension_order::draw_extension_order(
+            scope,
+            capture,
+            &mut ProfileDraw::new(
+                seed,
+                ProfileDrawContext {
+                    profile: analysis.id,
+                    analysis_revision: analysis.classifier_revision,
+                    scope: scope.id,
+                    key,
+                    domain: DrawDomain::TlsExtensions,
+                    slot: 0,
+                },
+            ),
+        )?;
         Ok(ConnectionSelection {
             profile: analysis.id,
-            variant: capture.id,
+            variant,
             draw: key,
             analysis_revision: analysis.classifier_revision,
             effective: PreparedConnectionProfile {
                 scope: scope.id,
-                capture: capture.clone(),
+                capture,
                 context: scope.context.clone(),
-                h3_settings_evidence: H3SettingsReplayEvidence::for_profile(
-                    analysis, scope, &capture,
-                )?,
+                h3_settings_evidence,
             },
         })
     }
@@ -741,6 +762,30 @@ impl SelectedProfile {
             .iter()
             .position(|candidate| ptr::eq(candidate, variant))
             .and_then(|position| self.request_shapes.plan(analysis, *index, position));
+        let hints = &scope.observations.network_hints;
+        let network_hints = if hints.is_empty() {
+            Box::default()
+        } else {
+            let weights = hints
+                .iter()
+                .map(|hint| analyzed_weight(&hint.weight))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut hint_draw = ProfileDraw::new(
+                seed,
+                ProfileDrawContext {
+                    profile: analysis.id,
+                    analysis_revision: analysis.classifier_revision,
+                    scope: scope.id,
+                    key,
+                    domain: DrawDomain::NetworkHints,
+                    slot: 0,
+                },
+            );
+            hints
+                .get(hint_draw.weighted_index(&weights)?)
+                .map(|hint| hint.fields.clone())
+                .unwrap_or_default()
+        };
         Ok(RequestSelection {
             profile: analysis.id,
             connection_variant: connection.variant,
@@ -752,6 +797,7 @@ impl SelectedProfile {
                 capture: variant.value.clone(),
                 flow: flow.clone(),
                 cookie_layout: self.request_shapes.cookie_layout(analysis, protocol),
+                network_hints,
                 plan,
             },
         })

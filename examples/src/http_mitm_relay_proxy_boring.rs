@@ -2,9 +2,9 @@
 //! request shaping and inspection. CONNECT establishes egress before returning
 //! success and hands the resulting ingress/egress pair to the protocol relays.
 //!
-//! The TLS relay mirrors the ingress ClientHello and target certificate, while
-//! HTTP middleware auto-detects the user-agent profile, emulates its outgoing
-//! request headers, and prints the final egress headers.
+//! The TLS relay mirrors the ingress ClientHello and target certificate, and the
+//! HTTP relay forwards each request as the client sent it. HTTP middleware marks
+//! the request and prints the final egress headers.
 //!
 //! Note that this proxy is not production ready, and is only meant
 //! to show you how one might start.
@@ -12,16 +12,16 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run -p rama-examples --bin http_mitm_relay_proxy_boring --features=http-full,boring,ua-embed-profiles
+//! cargo run -p rama-examples --bin http_mitm_relay_proxy_boring --features=http-full,boring
 //! ```
 //!
 //! ## Expected output
 //!
-//! The server will start and listen on `:62049`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12049`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62049 --proxy-user 'john:secret' http://www.example.com/
-//! curl -k -v -x http://127.0.0.1:62049 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x http://127.0.0.1:12049 --proxy-user 'john:secret' http://www.example.com/
+//! curl -k -v -x http://127.0.0.1:12049 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 
 #![expect(
@@ -63,10 +63,6 @@ use rama::{
         boring::proxy::TlsMitmRelay,
         server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
     },
-    ua::{
-        layer::emulate::{ProfileEmulateLayer, ProfileEmulateRelayRequestModifierLayer},
-        profile::selection::database::UserAgentDatabase,
-    },
     utils::octets::mib,
 };
 
@@ -88,15 +84,13 @@ async fn main() -> Result<(), BoxError> {
         .with_grace(Duration::from_secs(30));
     let weak_scope = scope.clone_weak();
 
-    let ua_db =
-        Arc::new(UserAgentDatabase::try_embedded().context("load embedded user-agent database")?);
-    let mitm_svc = new_mitm_svc(&scope, ua_db).context("build MITM service")?;
+    let mitm_svc = new_mitm_svc(&scope).context("build MITM service")?;
 
     scope.spawn_task(async move {
         let tcp_service = TcpListener::build(weak_scope.clone())
-            .bind_address("127.0.0.1:62049")
+            .bind_address("127.0.0.1:12049")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62049");
+            .expect("bind tcp proxy to 127.0.0.1:12049");
 
         let connect = EagerHttpProxyConnector::new(
             TimeoutLayer::new(Duration::from_secs(30)).into_layer(
@@ -149,7 +143,6 @@ async fn main() -> Result<(), BoxError> {
 
 fn new_mitm_svc<Ingress, Egress>(
     scope: &Scope,
-    ua_db: Arc<UserAgentDatabase>,
 ) -> Result<
     impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone,
     BoxError,
@@ -163,14 +156,10 @@ where
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         TraceLayer::new_for_http(),
-        ProfileEmulateLayer::new(ua_db)
-            .with_try_auto_detect_user_agent(true)
-            .with_is_optional(true),
         SetRequestHeaderLayer::overriding(
             HeaderName::from_static("x-observed"),
             HeaderValue::from_static("1"),
         ),
-        ProfileEmulateRelayRequestModifierLayer,
         RequestWriterLayer::stdout_unbounded(scope, Some(traffic_writer::WriterMode::Headers)),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-proxy"),

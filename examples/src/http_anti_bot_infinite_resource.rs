@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62039`. You can use your browser to interact with the service:
+//! The server will start and listen on `:12039`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://127.0.0.1:62039
+//! open http://127.0.0.1:12039
 //! ```
 //!
 //! Will return a greeting for humans.
@@ -19,9 +19,9 @@
 //! Here are the other resources:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62039/robots.txt  # robots.txt
-//! curl -v http://127.0.0.1:62039/internal/clients.csv  # honeypot file
-//! curl -v http://127.0.0.1:62039/internal/clients.csv?_test_limit=42  # make it finite (42 bytes, not a hard limit)
+//! curl -v http://127.0.0.1:12039/robots.txt  # robots.txt
+//! curl -v http://127.0.0.1:12039/internal/clients.csv  # honeypot file
+//! curl -v http://127.0.0.1:12039/internal/clients.csv?_test_limit=42  # make it finite (42 bytes, not a hard limit)
 //! ```
 //!
 //! Once you hit the file once you will also be blocked (IP wise).
@@ -112,7 +112,7 @@ async fn main() {
     )
         .into_layer(app);
 
-    let address = SocketAddress::local_ipv4(62039);
+    let address = SocketAddress::local_ipv4(12039);
     tracing::info!("running service at: {address}");
 
     let weak_scope = scope.clone_weak();

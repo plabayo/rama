@@ -29,7 +29,7 @@ use rama::{
 
 use super::utils::{self, ExampleRunner};
 
-const PROXY_URI: &str = "http://127.0.0.1:62061";
+const PROXY_URI: &str = "http://127.0.0.1:12061";
 
 #[tokio::test]
 #[ignore = "spawns example processes"]
@@ -41,8 +41,8 @@ async fn test_http_icap_proxy() {
         utils::example!("http_icap_proxy"),
         ["--target-host", "localhost"],
     );
-    runner.wait_for_tcp(([127, 0, 0, 1], 62061)).await;
-    runner.wait_for_tcp(([127, 0, 0, 1], 62062)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12061)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 12062)).await;
     let proxy = ProxyAddress::try_from(PROXY_URI).unwrap();
 
     for version in [Version::HTTP_11, Version::HTTP_2] {

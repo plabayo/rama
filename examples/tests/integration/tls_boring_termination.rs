@@ -12,7 +12,7 @@ async fn test_tls_boring_termination() {
     // but mostly because otherwise we need to fake the Forwarding stuff (HaProxy) as well.
 
     let reply = runner
-        .get("https://127.0.0.1:63801")
+        .get("https://127.0.0.1:13801")
         .send()
         .await
         .unwrap()

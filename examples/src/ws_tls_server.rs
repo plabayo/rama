@@ -10,7 +10,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62034`.
+//! The server will start and listen on `:12034`.
 //! Open it in the browser to see it in action or use `rama` cli client to test it.
 
 #![expect(
@@ -76,9 +76,9 @@ async fn main() {
             .with_session_resumption(true)
             .into_layer(server);
 
-        info!("open web echo chat @ https://127.0.0.1:62034");
-        info!("or connect directly to wss://127.0.0.1:62034/echo (via 'rama')");
-        TcpListener::bind_address("127.0.0.1:62034", weak_scope)
+        info!("open web echo chat @ https://127.0.0.1:12034");
+        info!("or connect directly to wss://127.0.0.1:12034/echo (via 'rama')");
+        TcpListener::bind_address("127.0.0.1:12034", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(tls_server)

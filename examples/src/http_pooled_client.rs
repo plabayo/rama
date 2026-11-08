@@ -53,7 +53,7 @@ use std::{
 };
 use tokio::{sync::oneshot::Sender, sync::oneshot::channel};
 
-const ADDRESS: &str = "127.0.0.1:62024";
+const ADDRESS: &str = "127.0.0.1:12024";
 
 #[tokio::main]
 async fn main() {

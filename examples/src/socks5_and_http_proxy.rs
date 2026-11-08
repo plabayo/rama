@@ -8,15 +8,15 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62023`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12023`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62023 --proxy-user 'tom:clancy' http://www.example.com/
-//! curl -v -x http://127.0.0.1:62023 --proxy-user 'tom:clancy' https://www.example.com/
-//! curl -v -x socks5://127.0.0.1:62023 --proxy-user 'john:secret' http://www.example.com/
-//! curl -v -x socks5h://127.0.0.1:62023 --proxy-user 'john:secret' http://www.example.com/
-//! curl -v -x socks5://127.0.0.1:62023 --proxy-user 'john:secret' https://www.example.com/
-//! curl -v -x socks5h://127.0.0.1:62023 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x http://127.0.0.1:12023 --proxy-user 'tom:clancy' http://www.example.com/
+//! curl -v -x http://127.0.0.1:12023 --proxy-user 'tom:clancy' https://www.example.com/
+//! curl -v -x socks5://127.0.0.1:12023 --proxy-user 'john:secret' http://www.example.com/
+//! curl -v -x socks5h://127.0.0.1:12023 --proxy-user 'john:secret' http://www.example.com/
+//! curl -v -x socks5://127.0.0.1:12023 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x socks5h://127.0.0.1:12023 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 //!
 //! You should see in all the above examples the responses from the server.
@@ -73,9 +73,9 @@ async fn main() {
         .with_grace(Duration::from_secs(30));
     let weak_scope = scope.clone_weak();
 
-    let tcp_service = TcpListener::bind_address("127.0.0.1:62023", weak_scope.clone())
+    let tcp_service = TcpListener::bind_address("127.0.0.1:12023", weak_scope.clone())
         .await
-        .expect("bind socks5+http proxy to 127.0.0.1:62023");
+        .expect("bind socks5+http proxy to 127.0.0.1:12023");
 
     let socks5_acceptor =
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());

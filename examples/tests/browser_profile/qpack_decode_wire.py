@@ -9,6 +9,7 @@ cached blocked-header result, not missing packets, keys or native observations.
 import pylsqpack
 from dataclasses import dataclass, field
 from pdml import MAX_PDML_BYTES, field as single, fields as nodes
+from quic_stream_wire import retransmitted_streams
 
 MAX_BLOCKED = 64
 MAX_CAPACITY = 65536
@@ -125,6 +126,7 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
     decoders, witnesses, encoder_streams = {}, {}, {}
     sections, pending, resolved, recovered = {}, {}, {}, set()
     previous_packet = 0
+    seen_stream_data = set()
 
     def decoder(connection):
         if connection not in decoders:
@@ -168,6 +170,8 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
                 continue
             connection = number(packet, "quic.connection.number")
             current = decoder(connection)
+            # Tshark decodes HEADERS and encoder bytes again in a QUIC retransmission.
+            repeated = retransmitted_streams(packet, seen_stream_data)
 
             # Retain original STREAM offsets as a second witness for encoder bytes.
             for frame in nodes(packet, "quic.frame"):
@@ -222,6 +226,8 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
                     if len(stream_keys) != 1:
                         raise ValueError("ambiguous native QPACK encoder stream")
                     stream_key = stream_keys[0]
+                    if stream_key[1] in repeated:
+                        continue
                     encoder_streams[connection] = stream_key
                     witness = witnesses[stream_key]
                     witness.decoded.extend(payload)
@@ -254,6 +260,8 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
                     stream = number(event, "http3.frame_streamid")
                     if stream & 3:
                         raise ValueError("QPACK bidirectional stream role")
+                    if stream in repeated:
+                        continue
                     key = packet_number, connection, stream
                     if key in sections or any(
                         existing[1:] == key[1:] for existing in sections

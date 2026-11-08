@@ -51,7 +51,7 @@ pub(crate) struct ExportProfilesCommand {
     #[arg(long)]
     pub output: PathBuf,
     /// Number of UTC day buckets, including the current partial day.
-    #[arg(long, default_value_t = 14)]
+    #[arg(long, default_value_t = 30)]
     pub days: u32,
     /// Export the authorized partition instead of public observations.
     #[arg(long)]

@@ -18,11 +18,11 @@ async fn test_tls_sni_router() {
     let overwrite_dns = DnsAddresssResolverOverwrite::new(overwrite_dns_trie);
 
     for (uri, expected_response) in [
-        ("https://127.0.0.1:63804", "foo"),
-        ("https://127.0.0.1:63805", "bar"),
-        ("https://foo.local:62026", "foo"),
-        ("https://bar.local:62026", "bar"),
-        ("https://127.0.0.1:62026", "baz"),
+        ("https://127.0.0.1:13804", "foo"),
+        ("https://127.0.0.1:13805", "bar"),
+        ("https://foo.local:12026", "foo"),
+        ("https://bar.local:12026", "bar"),
+        ("https://127.0.0.1:12026", "baz"),
     ] {
         let response = runner
             .get(uri)

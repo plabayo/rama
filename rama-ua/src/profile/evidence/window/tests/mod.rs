@@ -5,6 +5,14 @@ use rama_utils::octets::kib;
 use super::*;
 use crate::profile::{capture::headers::HeaderCapturePolicy, evidence::counts::ObservationWeight};
 
+/// The day arithmetic below is written for a 14-day window.
+fn fourteen_days() -> ProfileWindowLimits {
+    ProfileWindowLimits {
+        retention: RetentionWindow { days: 14 },
+        ..ProfileWindowLimits::default()
+    }
+}
+
 fn value(value: &'static str) -> CanonicalValue {
     let mut headers = HeaderMap::new();
     headers.insert("x-mode", HeaderValue::from_static(value));
@@ -32,7 +40,7 @@ fn encoded(window: &RetainedBucketWindow) -> Vec<u8> {
 
 #[test]
 fn fourteen_day_window_expires_weights_and_samples_together() {
-    let limits = ProfileWindowLimits::default();
+    let limits = fourteen_days();
     let mut window =
         RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
             .unwrap();
@@ -94,7 +102,7 @@ fn selection_preserves_exact_literals_across_disjoint_days() {
             samples: 0,
             ..ProfileBucketLimits::default()
         },
-        ..ProfileWindowLimits::default()
+        ..fourteen_days()
     };
     let mut window =
         RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
@@ -142,7 +150,7 @@ fn window_byte_limit_counts_losses_and_expiration_frees_capacity() {
     let a = value("A");
     let limits = ProfileWindowLimits {
         retained_bytes: a.bytes.len(),
-        ..ProfileWindowLimits::default()
+        ..fourteen_days()
     };
     let mut window =
         RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
@@ -197,7 +205,7 @@ fn merging_near_budget_scopes_trims_old_samples_and_keeps_counts() {
             literal_values: 1,
             ..ProfileBucketLimits::default()
         },
-        ..ProfileWindowLimits::default()
+        ..fourteen_days()
     };
     let window = |day: u32, run: u8| {
         let mut window =
@@ -225,7 +233,7 @@ fn merging_near_budget_scopes_trims_old_samples_and_keeps_counts() {
 
 #[test]
 fn window_restore_rejects_scope_aliases_duplicate_days_and_future_data() {
-    let limits = ProfileWindowLimits::default();
+    let limits = fourteen_days();
     let mut window =
         RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
             .unwrap();
@@ -295,7 +303,7 @@ fn window_restore_rejects_scope_aliases_duplicate_days_and_future_data() {
 
 #[test]
 fn default_window_saturation_counts_the_next_observation_and_drop() {
-    let limits = ProfileWindowLimits::default();
+    let limits = fourteen_days();
     let policy = HeaderCapturePolicy::default();
     let mut window =
         RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
@@ -351,7 +359,7 @@ fn default_window_saturation_counts_the_next_observation_and_drop() {
 
 #[test]
 fn window_restoration_requires_expected_identity_even_without_day_buckets() {
-    let limits = ProfileWindowLimits::default();
+    let limits = fourteen_days();
     let scope = ValueId([2; 32]);
     let mut window =
         RetainedBucketWindow::new(CanonicalDomain::Headers, scope, [3; 32], limits).unwrap();
@@ -392,7 +400,7 @@ fn window_restoration_requires_expected_identity_even_without_day_buckets() {
 
 #[test]
 fn version_one_snapshot_layouts_keep_numeric_domains_and_explicit_coverage() {
-    let limits = ProfileWindowLimits::default();
+    let limits = fourteen_days();
     let scope = ValueId([2; 32]);
     let window =
         RetainedBucketWindow::new(CanonicalDomain::Headers, scope, [3; 32], limits).unwrap();

@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::profile::{
-    analysis::profile::ProfileAnalysisLimits,
+    analysis::profile::{
+        ProfileAnalysisLimits,
+        read_form::{ReadLimits, bootstrap_requests, read_window},
+    },
     capture::joint::normalize_stored_structure,
     evidence::{ProfileEvidence, ProfileScopeEvidence, window::RetainedBucketWindow},
     format::canonical::{CanonicalValue, ProfileDataError, ValueId},
@@ -53,6 +56,8 @@ pub fn normalize_profile_evidence(
             "profile analysis stored scopes",
         ));
     }
+    let read_limits = ReadLimits::for_analysis(&limits);
+    let preserved = bootstrap_requests(input, read_limits)?;
     let mut merged: Vec<MergedScope> = Vec::new();
     let mut index = BTreeMap::<ValueId, usize>::new();
     let mut dropped = BTreeMap::<ValueId, usize>::new();
@@ -88,8 +93,9 @@ pub fn normalize_profile_evidence(
                 charge(value.bytes.len())?;
             }
         }
+        let read = read_window(&evidence.window, read_limits, &preserved)?;
         let mut window = RetainedBucketWindow::from_snapshot(
-            &evidence.window,
+            &read,
             evidence.window.domain,
             evidence.scope.id,
             seed,

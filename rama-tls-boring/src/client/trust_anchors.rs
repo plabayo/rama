@@ -2,6 +2,7 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::Extension,
 };
+use rama_tls::client::trust_anchors_identifier_list;
 
 /// Requested trust anchor identifiers for the `trust_anchors` ClientHello extension.
 ///
@@ -75,30 +76,9 @@ impl BoringRequestedTrustAnchors {
         let Some(body) = self.0.as_deref() else {
             return Ok(None);
         };
-        let Some((length, ids)) = body
-            .split_first_chunk::<2>()
-            .filter(|_| body.len() <= usize::from(u16::MAX))
-        else {
-            return Err(BoxError::from_static_str(
-                "invalid trust anchor extension body size",
-            ));
-        };
-        if usize::from(u16::from_be_bytes(*length)) != ids.len() {
-            return Err(BoxError::from_static_str(
-                "trust anchor list length does not match body",
-            ));
-        }
-        let mut rest = ids;
-        while let Some((&length, tail)) = rest.split_first() {
-            let length = usize::from(length);
-            if length == 0 || tail.len() < length {
-                return Err(BoxError::from_static_str(
-                    "empty or truncated trust anchor identifier",
-                ));
-            }
-            rest = &tail[length..];
-        }
-        Ok(Some(ids))
+        trust_anchors_identifier_list(body)
+            .map(Some)
+            .ok_or_else(|| BoxError::from_static_str("invalid trust anchor extension body"))
     }
 }
 

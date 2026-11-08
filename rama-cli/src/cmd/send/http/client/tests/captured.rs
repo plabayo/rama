@@ -6,6 +6,7 @@ use rama::{
         UserAgent,
         profile::{
             capture::{
+                CAPTURE_REVISION,
                 completeness::ProfileCaptureCompleteness,
                 headers::HeaderCapturePolicy,
                 joint::{
@@ -82,6 +83,7 @@ pub(super) fn captured_archive_for_slots(
     headers.insert("accept-language", HeaderValue::from_static("en-GB"));
     let policy = HeaderCapturePolicy::default();
     let request = ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: profile.clone(),
         flow: Some(FlowKey::Http {
             version: Version::HTTP_11,
@@ -111,6 +113,7 @@ pub(super) fn captured_archive_for_slots(
         },
     };
     let connection = ProfileCapture {
+        revision: CAPTURE_REVISION,
         profile: profile.clone(),
         flow: None,
         connection: ConnectionContext::default(),

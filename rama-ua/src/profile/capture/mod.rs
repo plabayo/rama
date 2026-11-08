@@ -28,3 +28,8 @@ pub mod runtime;
 pub mod joint;
 
 pub mod observation;
+
+/// Revision of what captures retain. Bump it when a capture keeps data that
+/// earlier captures dropped, so exports never mix the two within a profile.
+/// Revision 1 keeps TLS trust anchor identifiers.
+pub const CAPTURE_REVISION: u16 = 1;

@@ -18,11 +18,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62057`. You can fetch the feeds with:
+//! The server will start and listen on `:12057`. You can fetch the feeds with:
 //!
 //! ```sh
-//! curl http://127.0.0.1:62057/podcast.rss
-//! curl http://127.0.0.1:62057/podcast-stream.rss
+//! curl http://127.0.0.1:12057/podcast.rss
+//! curl http://127.0.0.1:12057/podcast-stream.rss
 //! ```
 
 #![expect(
@@ -215,7 +215,7 @@ async fn main() {
     let weak_scope = scope.clone_weak();
 
     let listener =
-        TcpListener::bind_address(SocketAddress::default_ipv4(62057), weak_scope.clone())
+        TcpListener::bind_address(SocketAddress::default_ipv4(12057), weak_scope.clone())
             .await
             .expect("bind address");
     let bind_address = listener.local_addr().expect("local addr");

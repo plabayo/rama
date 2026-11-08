@@ -11,10 +11,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62025`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:12025`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62025
+//! curl -v http://127.0.0.1:12025
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and the client IP as the body payload.
@@ -87,7 +87,7 @@ async fn main() {
                 )),
         );
 
-        TcpListener::bind_address("127.0.0.1:62025", weak_scope)
+        TcpListener::bind_address("127.0.0.1:12025", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(
