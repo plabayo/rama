@@ -1334,11 +1334,6 @@ pub struct CliCommandProxy {
     #[arg(long, requires = "mitm")]
     intercept: bool,
 
-    /// Disable Nagle on ingress and egress sockets. Use
-    /// --tcp-no-delay=false to opt back into Nagle coalescing.
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    tcp_no_delay: bool,
-
     /// Enable TCP keepalive on ingress and egress sockets.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     tcp_keepalive: bool,
@@ -2562,7 +2557,6 @@ fn tcp_socket_options(cfg: &CliCommandProxy) -> Arc<SocketOptions> {
     Arc::new(SocketOptions {
         keep_alive: Some(cfg.tcp_keepalive),
         tcp_keep_alive: cfg.tcp_keepalive.then_some(keep_alive),
-        tcp_no_delay: Some(cfg.tcp_no_delay),
         recv_buffer_size: (cfg.tcp_recv_buffer > 0).then_some(cfg.tcp_recv_buffer),
         send_buffer_size: (cfg.tcp_send_buffer > 0).then_some(cfg.tcp_send_buffer),
         ..SocketOptions::default_tcp()

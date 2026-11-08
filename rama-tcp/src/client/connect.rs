@@ -7,6 +7,7 @@ use rama_net::mode::ConnectIpMode;
 use rama_net::{address::SocketAddress, socket::SocketOptions};
 use rama_utils::macros::error::static_str_error;
 use std::{net::SocketAddr, sync::Arc};
+use tokio::net::TcpSocket;
 
 use crate::TcpStream;
 
@@ -29,7 +30,15 @@ impl TcpStreamConnector for () {
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         // v4-mapped IPv6 is IPv4 wire traffic: dial it as such
         // (see `IntoCanonicalIpAddr`; RFC 4291, Section 2.5.5.2)
-        let stream = tokio::net::TcpStream::connect(addr.into_canonical_ip_addr()).await?;
+        let addr = addr.into_canonical_ip_addr();
+        let socket = if addr.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        // Same default as `SocketOptions::default_tcp`, set before the first segment is sent.
+        socket.set_nodelay(true)?;
+        let stream = socket.connect(addr).await?;
         Ok(stream.into())
     }
 }
@@ -461,5 +470,54 @@ mod unix_windows_tests {
             SocketOptions::default_tcp(),
         ))
         .await;
+    }
+
+    /// Whether `TCP_NODELAY` is on for a stream `connector` dials to a local listener.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test helper: cfg(test) module, but clippy's allow-*-in-tests detection doesn't propagate through this generic test fn"
+    )]
+    async fn connected_nodelay<C>(connector: C) -> bool
+    where
+        C: TcpStreamConnector<Error: std::fmt::Debug>,
+    {
+        use rama_net::socket::AsSocketRef as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = connector
+            .connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        stream.as_socket_ref().tcp_nodelay().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_unit_connector_sets_nodelay() {
+        assert!(connected_nodelay(()).await);
+    }
+
+    #[tokio::test]
+    async fn test_default_tcp_socket_options_set_nodelay() {
+        assert!(connected_nodelay(Arc::new(SocketOptions::default_tcp())).await);
+        assert!(connected_nodelay(SocketAddress::local_ipv4(0)).await);
+    }
+
+    #[tokio::test]
+    async fn test_explicit_nodelay_socket_options_are_respected() {
+        let with = |tcp_no_delay| {
+            Arc::new(SocketOptions {
+                tcp_no_delay,
+                ..SocketOptions::default_tcp()
+            })
+        };
+        assert!(!connected_nodelay(with(Some(false))).await);
+
+        // `None` leaves the operating system default, which a plain dial reports.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let os_default = std::net::TcpStream::connect(listener.local_addr().unwrap())
+            .unwrap()
+            .nodelay()
+            .unwrap();
+        assert_eq!(connected_nodelay(with(None)).await, os_default);
     }
 }

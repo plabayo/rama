@@ -393,11 +393,18 @@ impl From<TcpKeepAlive> for SocketTcpKeepAlive {
 }
 
 impl SocketOptions {
-    /// Create a default TCP  [`SocketOptions`].
+    /// Create a default TCP [`SocketOptions`], with `TCP_NODELAY` on.
+    ///
+    /// Set [`Self::tcp_no_delay`] to `Some(false)` to keep Nagle's algorithm,
+    /// or to `None` to leave the operating system default.
     #[inline]
     #[must_use]
     pub fn default_tcp() -> Self {
-        Default::default()
+        Self {
+            // Request/response traffic otherwise waits on the peer's delayed ACK.
+            tcp_no_delay: Some(true),
+            ..Default::default()
+        }
     }
 
     /// Create a default UDP [`SocketOptions`].

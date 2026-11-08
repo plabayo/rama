@@ -459,9 +459,9 @@ fn l4_socket_defaults_match_the_terminating_proxy_policy() {
     assert_eq!(options.recv_buffer_size, None);
     assert_eq!(options.send_buffer_size, None);
 
-    let opted_out = TestCli::parse_from(["test", "--tcp-no-delay=false", "--tcp-keepalive=false"]);
+    let opted_out = TestCli::parse_from(["test", "--tcp-keepalive=false"]);
     let options = tcp_socket_options(&opted_out.proxy);
-    assert_eq!(options.tcp_no_delay, Some(false));
+    assert_eq!(options.tcp_no_delay, Some(true));
     assert_eq!(options.keep_alive, Some(false));
     assert!(options.tcp_keep_alive.is_none());
 
