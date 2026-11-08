@@ -29,6 +29,7 @@ use rama::{
     Layer,
     bytes::Bytes,
     extensions::ExtensionsRef,
+    graceful::Scope,
     http::{
         Request, header,
         layer::{
@@ -42,13 +43,11 @@ use rama::{
         server::HttpServer,
         service::web::{IntoEndpointService, response::Html},
     },
-    layer::ArcLayer,
-    layer::{TimeoutLayer, TraceErrLayer},
+    layer::{ArcLayer, ScopeLayer, TraceErrLayer},
     net::stream::{
         SocketInfo,
         layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
     },
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -71,13 +70,14 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     let sensitive_headers: Arc<[_]> = vec![header::AUTHORIZATION, header::COOKIE].into();
 
-    graceful.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard.clone());
-
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
         let http_service = (
             ArcLayer::new(),
             CompressionLayer::new(),
@@ -131,15 +131,18 @@ async fn main() {
                 .into_endpoint_service(),
             );
 
-        let tcp_http_service = HttpServer::auto(exec.clone()).service(http_service);
+        let tcp_http_service = HttpServer::auto(weak_scope.clone()).service(http_service);
 
-        TcpListener::bind_address("127.0.0.1:12010", exec)
+        TcpListener::bind_address("127.0.0.1:12010", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(
                 (
                     TraceErrLayer::new(),
-                    TimeoutLayer::new(Duration::from_secs(8)),
+                    // Cancel each connection after 6s so HTTP drains it, and abort it 2s later.
+                    ScopeLayer::new()
+                        .with_max_age(Duration::from_secs(6))
+                        .with_grace(Duration::from_secs(2)),
                     IncomingBytesTrackerLayer::new(),
                 )
                     .into_layer(tcp_http_service),
@@ -147,8 +150,5 @@ async fn main() {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

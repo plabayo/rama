@@ -8,6 +8,7 @@ use rama::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     futures::future::join_all,
+    graceful::WeakScope,
     http::{
         core::h3::connection::Config,
         headers::{AltSvc, AlternativeService},
@@ -19,7 +20,6 @@ use rama::{
         proto::capture::CaptureLimits,
         tls::{BoringTlsProvider, ServerSessionPolicy, TlsOptions},
     },
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
     tls::server::TlsServerConfig,
@@ -102,28 +102,28 @@ pub struct HttpListeners {
 impl HttpListeners {
     /// Bind the listeners `versions` asks for, given the TLS configuration if any.
     pub async fn bind(
-        exec: Executor,
+        scope: WeakScope,
         bind: SocketAddress,
         versions: HttpVersions,
         tls: Option<&TlsServerConfig>,
         http3: &Http3Args,
     ) -> Result<Self, BoxError> {
-        Self::bind_with_capture(exec, bind, versions, tls, http3, false).await
+        Self::bind_with_capture(scope, bind, versions, tls, http3, false).await
     }
 
     /// Bind echo/fingerprint listeners with bounded QUIC observation enabled.
     pub async fn bind_observed(
-        exec: Executor,
+        scope: WeakScope,
         bind: SocketAddress,
         versions: HttpVersions,
         tls: Option<&TlsServerConfig>,
         http3: &Http3Args,
     ) -> Result<Self, BoxError> {
-        Self::bind_with_capture(exec, bind, versions, tls, http3, true).await
+        Self::bind_with_capture(scope, bind, versions, tls, http3, true).await
     }
 
     async fn bind_with_capture(
-        exec: Executor,
+        scope: WeakScope,
         bind: SocketAddress,
         versions: HttpVersions,
         tls: Option<&TlsServerConfig>,
@@ -141,10 +141,10 @@ impl HttpListeners {
                 "--h3-bootstrap-bind is for HTTP/3-only serving (--http-version h3)",
             ));
         }
-        let bootstrap_exec = exec.clone();
+        let bootstrap_scope = scope.clone();
         let tcp = match versions.tcp() {
             Some(_) => Some(
-                TcpListener::build(exec)
+                TcpListener::build(scope)
                     .bind_address(bind)
                     .await
                     .context("bind TCP listener")?,
@@ -164,7 +164,7 @@ impl HttpListeners {
         if let (Some(addr), Some(tls), Some(alt_svc)) =
             (http3.h3_bootstrap_bind, tls, listeners.alt_svc()?)
         {
-            bootstrap::serve(bootstrap_exec, addr, tls.clone(), alt_svc).await?;
+            bootstrap::serve(bootstrap_scope, addr, tls.clone(), alt_svc).await?;
         }
         Ok(listeners)
     }
@@ -287,7 +287,7 @@ async fn bind_http3_with_capture(
     if capture {
         config.set_capture(CaptureLimits::default());
     }
-    let builder = Endpoint::build(Executor::new()).with_server_config(config);
+    let builder = Endpoint::build(WeakScope::detached()).with_server_config(config);
     #[cfg(target_os = "windows")]
     let endpoint = builder
         .bind_address_with_socket_config(addr, exclusive_socket_config())
@@ -317,8 +317,18 @@ fn exclusive_socket_config() -> UdpSocketConfig {
 pub struct Http3Endpoints(Arc<Mutex<Vec<Endpoint>>>);
 
 impl Http3Endpoints {
-    /// Serve the HTTP/3 connections of `endpoint` with `service` on the graceful `exec`.
-    pub fn serve<S>(&self, exec: &Executor, name: &str, endpoint: Endpoint, service: S)
+    /// Serve the HTTP/3 connections of `endpoint` with `service` on the graceful `scope`.
+    ///
+    /// # Errors
+    ///
+    /// When `scope` is closed.
+    pub fn serve<S>(
+        &self,
+        scope: &WeakScope,
+        name: &str,
+        endpoint: Endpoint,
+        service: S,
+    ) -> Result<(), BoxError>
     where
         S: Service<Connection> + Clone,
     {
@@ -331,7 +341,10 @@ impl Http3Endpoints {
             Err(error) => tracing::warn!(%error, "{name} HTTP/3 service ready: unknown address"),
         }
         self.0.lock().push(endpoint.clone());
-        exec.spawn_task(endpoint.serve(exec.clone(), service));
+        scope
+            .try_hold()?
+            .into_spawn_task_to_completion(endpoint.serve(scope.clone(), service));
+        Ok(())
     }
 
     /// Close every endpoint served, waiting at most `within` for their peers to be told.
@@ -398,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn ephemeral_http3_is_advertised_on_its_own_port() {
         let listeners = HttpListeners::bind(
-            Executor::new(),
+            WeakScope::detached(),
             localhost(),
             HttpVersions::AUTO,
             Some(&tls()),
@@ -433,7 +446,7 @@ mod tests {
             };
             let listeners = if capture {
                 HttpListeners::bind_observed(
-                    Executor::new(),
+                    WeakScope::detached(),
                     localhost(),
                     versions,
                     Some(&tls),
@@ -441,12 +454,18 @@ mod tests {
                 )
                 .await
             } else {
-                HttpListeners::bind(Executor::new(), localhost(), versions, Some(&tls), &http3)
-                    .await
+                HttpListeners::bind(
+                    WeakScope::detached(),
+                    localhost(),
+                    versions,
+                    Some(&tls),
+                    &http3,
+                )
+                .await
             }
             .unwrap();
             let server = listeners.http3.as_ref().unwrap();
-            let client = Endpoint::build(Executor::new())
+            let client = Endpoint::build(WeakScope::detached())
                 .bind_address(localhost())
                 .await
                 .unwrap();
@@ -489,7 +508,7 @@ mod tests {
             ("h1,h2".parse().unwrap(), Some(tls())),
         ] {
             let listeners = HttpListeners::bind(
-                Executor::new(),
+                WeakScope::detached(),
                 localhost(),
                 versions,
                 tls.as_ref(),
@@ -511,7 +530,7 @@ mod tests {
     #[tokio::test]
     async fn h3_bind_requires_http3() {
         let error = HttpListeners::bind(
-            Executor::new(),
+            WeakScope::detached(),
             localhost(),
             "h1,h2".parse().unwrap(),
             Some(&tls()),
@@ -536,7 +555,7 @@ mod tests {
             h3_no_session_resumption: false,
         };
         let error = HttpListeners::bind(
-            Executor::new(),
+            WeakScope::detached(),
             localhost(),
             HttpVersions::AUTO,
             Some(&tls()),
@@ -546,7 +565,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("--h3-bootstrap-bind"), "{error}");
         let listeners = HttpListeners::bind(
-            Executor::new(),
+            WeakScope::detached(),
             localhost(),
             "h3".parse().unwrap(),
             Some(&tls()),
@@ -567,7 +586,7 @@ mod tests {
                 h3_no_session_resumption: no_session_resumption,
             };
             let listeners = HttpListeners::bind(
-                Executor::new(),
+                WeakScope::detached(),
                 localhost(),
                 "h3".parse().unwrap(),
                 Some(&tls()),
@@ -576,7 +595,7 @@ mod tests {
             .await
             .unwrap();
             let server = listeners.http3.as_ref().unwrap();
-            let client = Endpoint::build(Executor::new())
+            let client = Endpoint::build(WeakScope::detached())
                 .bind_address(localhost())
                 .await
                 .unwrap();
@@ -624,10 +643,10 @@ mod tests {
 
     /// A TCP listener, and a UDP address held so that binding HTTP/3 on it fails.
     async fn occupied_udp_port() -> (TcpListener, Endpoint, SocketAddress) {
-        let tcp = TcpListener::bind_address(localhost(), Executor::new())
+        let tcp = TcpListener::bind_address(localhost(), WeakScope::detached())
             .await
             .unwrap();
-        let held = Endpoint::build(Executor::new())
+        let held = Endpoint::build(WeakScope::detached())
             .bind_address(localhost())
             .await
             .unwrap();
@@ -693,7 +712,7 @@ mod tests {
     #[tokio::test]
     async fn http3_alone_binds_no_tcp_listener() {
         let listeners = HttpListeners::bind(
-            Executor::new(),
+            WeakScope::detached(),
             localhost(),
             "h3".parse().unwrap(),
             Some(&tls()),
@@ -721,17 +740,19 @@ mod tests {
         let endpoint = bind_http3(localhost(), &tls()).await.unwrap();
         let addr = endpoint.local_addr().unwrap();
         let served = Http3Endpoints::default();
-        served.serve(
-            &Executor::new(),
-            "test",
-            endpoint,
-            service_fn(async |connection: Connection| {
-                _ = connection.closed().await;
-                Ok::<_, Infallible>(())
-            }),
-        );
+        served
+            .serve(
+                &WeakScope::detached(),
+                "test",
+                endpoint,
+                service_fn(async |connection: Connection| {
+                    _ = connection.closed().await;
+                    Ok::<_, Infallible>(())
+                }),
+            )
+            .unwrap();
 
-        let client = Endpoint::build(Executor::new())
+        let client = Endpoint::build(WeakScope::detached())
             .bind_address(localhost())
             .await
             .unwrap();

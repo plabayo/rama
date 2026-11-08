@@ -28,6 +28,7 @@
 use rama::{
     Layer as _, Service,
     extensions::{Egress, ExtensionsRef},
+    graceful::WeakScope,
     http::{
         Body, BodyExtractExt, Request, client::HttpConnectorLayer,
         layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
@@ -40,7 +41,6 @@ use rama::{
         user::{ProxyCredential, credentials::basic},
     },
     proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
-    rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -129,7 +129,7 @@ async fn main() {
 
 async fn spawn_socks5_over_tls_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(13011), Executor::default())
+        TcpListener::bind_address(SocketAddress::local_ipv4(13011), WeakScope::detached())
             .await
             .expect("bind socks5-over-tls CONNECT proxy on open port");
 
@@ -154,7 +154,7 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
 
 async fn spawn_http_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(13012), Executor::default())
+        TcpListener::bind_address(SocketAddress::local_ipv4(13012), WeakScope::detached())
             .await
             .expect("bind HTTP server on open port");
 

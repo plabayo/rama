@@ -136,7 +136,7 @@ pub async fn rama_client_closes<Ready, Waiting>(
     let client = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the rama client binds");
@@ -168,7 +168,7 @@ pub async fn rama_server_side(
         .wait(
             &what,
             Endpoint::bind_server(
-                rama::rt::Executor::new(),
+                rama::graceful::WeakScope::detached(),
                 rama_server_config(&run.identity),
                 localhost(),
             ),

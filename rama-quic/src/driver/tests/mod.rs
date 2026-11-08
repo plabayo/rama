@@ -57,7 +57,7 @@ fn handshake_timeout() {
     let runtime = rt_threaded();
     let client = runtime
         .block_on(Endpoint::bind_client(
-            rama_core::rt::Executor::new(),
+            rama_core::graceful::WeakScope::detached(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         ))
         .unwrap();
@@ -99,7 +99,7 @@ async fn close_endpoint() {
     let identity = test_helpers::identity();
 
     let mut endpoint = Endpoint::bind_client(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::detached(),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
     )
     .await
@@ -140,7 +140,7 @@ fn local_addr() {
     let runtime = rt_basic();
     let ep = {
         let _guard = runtime.enter();
-        Endpoint::build(rama_core::rt::Executor::new())
+        Endpoint::build(rama_core::graceful::WeakScope::detached())
             .with_std_socket(socket)
             .unwrap()
     };
@@ -390,7 +390,7 @@ impl EndpointFactory {
         let mut server_config = test_helpers::server(&self.identity);
         server_config.set_transport_config(transport_config.clone());
 
-        let mut endpoint = Endpoint::build(rama_core::rt::Executor::new())
+        let mut endpoint = Endpoint::build(rama_core::graceful::WeakScope::detached())
             .with_config(self.endpoint_config.clone())
             .maybe_with_server_config(Some(server_config))
             .with_std_socket(
@@ -603,7 +603,7 @@ fn run_echo(args: &EchoArgs) {
         let server = {
             let _guard = runtime.enter();
             let _guard = error_span!("server").entered();
-            Endpoint::build(rama_core::rt::Executor::new())
+            Endpoint::build(rama_core::graceful::WeakScope::detached())
                 .maybe_with_server_config(Some(server_config))
                 .with_std_socket(server_sock)
                 .unwrap()
@@ -613,7 +613,7 @@ fn run_echo(args: &EchoArgs) {
             let _guard = error_span!("client").entered();
             runtime
                 .block_on(Endpoint::bind_client(
-                    rama_core::rt::Executor::new(),
+                    rama_core::graceful::WeakScope::detached(),
                     args.client_addr,
                 ))
                 .unwrap()
@@ -809,7 +809,7 @@ async fn rebind_recv() {
     let identity = test_helpers::identity();
 
     let mut client = Endpoint::bind_client(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::detached(),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
     )
     .await
@@ -826,7 +826,7 @@ async fn rebind_recv() {
     let server = {
         let _guard = rama_core::telemetry::tracing::error_span!("server").entered();
         Endpoint::bind_server(
-            rama_core::rt::Executor::new(),
+            rama_core::graceful::WeakScope::detached(),
             server_config,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         )
@@ -880,12 +880,12 @@ async fn socket_info_follows_a_rebind() {
     let _guard = subscribe();
     let identity = test_helpers::identity();
     let localhost = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-    let mut client = Endpoint::bind_client(rama_core::rt::Executor::new(), localhost)
+    let mut client = Endpoint::bind_client(rama_core::graceful::WeakScope::detached(), localhost)
         .await
         .unwrap();
     client.set_default_client_config(test_helpers::client(&identity));
     let server = Endpoint::bind_server(
-        rama_core::rt::Executor::new(),
+        rama_core::graceful::WeakScope::detached(),
         test_helpers::server(&identity),
         localhost,
     )

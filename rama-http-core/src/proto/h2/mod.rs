@@ -202,11 +202,9 @@ where
             // single byte) pins that capacity on the connection-level window,
             // which can deadlock a second stream when talking to peers that
             // only emit WINDOW_UPDATE once their receive window is fully
-            // exhausted. See hyper#4003.
+            // exhausted.
             match ready!(me.stream.as_mut().poll_frame(cx)) {
                 Some(Ok(frame)) => {
-                    // NOTE: should we ever fork http crate we can make a more convenient API here,
-                    // or perhaps we can try to first fix it upstream...
                     match frame.into_data() {
                         Ok(chunk) => {
                             let is_eos = me.stream.is_end_stream();
@@ -230,8 +228,8 @@ where
                             // Reserve a minimal claim on the connection-level
                             // flow-control window rather than the whole chunk. The
                             // chunk is already in hand, so this still cannot pin
-                            // capacity against a body that never produces data
-                            // (hyper#4003), and h2 raises the request to the buffered
+                            // capacity against a body that never produces data,
+                            // and h2 raises the request to the buffered
                             // length inside `send_data`, so the demand eventually
                             // signalled to the peer is unchanged. Claiming the full
                             // length up front instead makes every in-flight stream a

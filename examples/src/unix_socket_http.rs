@@ -32,11 +32,11 @@
 mod unix_example {
     use rama::{
         Layer,
+        graceful::Scope,
         http::{
             layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
         },
         layer::ArcLayer,
-        rt::Executor,
         telemetry::tracing::{
             self,
             level_filters::LevelFilter,
@@ -55,23 +55,23 @@ mod unix_example {
             )
             .init();
 
-        let graceful = rama::graceful::Shutdown::default();
-        let exec = Executor::graceful(graceful.guard());
+        let scope = Scope::new().with_default_signal();
+        let weak_scope = scope.clone_weak();
 
         const PATH: &str = "/tmp/rama_example_unix_http.socket";
 
-        let listener = UnixListener::bind_path(PATH, exec.clone())
+        let listener = UnixListener::bind_path(PATH, weak_scope.clone())
             .await
             .expect("bind Unix socket");
 
-        graceful.spawn_task(async move {
+        scope.spawn_task(async move {
             tracing::info!(
                 file.path = %PATH,
                 "ready to unix-serve",
             );
             listener
                 .serve(
-                    HttpServer::new_http1(exec).service(
+                    HttpServer::new_http1(weak_scope).service(
                         (ArcLayer::new(), ErrorHandlerLayer::new())
                             .into_layer(Router::new().with_get("/ping", "pong")),
                     ),
@@ -79,9 +79,9 @@ mod unix_example {
                 .await;
         });
 
-        let duration = graceful.shutdown().await;
+        let joined = scope.join().await.expect("graceful shutdown");
         tracing::info!(
-           shutdown.duration_ms = %duration.as_millis(),
+           shutdown.duration_ms = %joined.elapsed().as_millis(),
            "bye!",
         );
     }

@@ -44,7 +44,7 @@ async fn a_rama_client_refuses_a_server_it_does_not_trust() {
 
     let client = step(
         "rama binds",
-        Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+        Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
     )
     .await
     .expect("the client binds");
@@ -111,7 +111,7 @@ async fn a_quinn_client_refuses_a_rama_server_it_does_not_trust() {
     let server = step(
         "the rama server binds",
         Endpoint::bind_server(
-            rama::rt::Executor::new(),
+            rama::graceful::WeakScope::detached(),
             rama_server_config(&auth),
             localhost(),
         ),

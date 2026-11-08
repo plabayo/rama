@@ -20,6 +20,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
@@ -27,7 +28,6 @@ use rama::{
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::{ArcLayer, ConsumeErrLayer},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self, info,
@@ -51,15 +51,18 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     let tls_server_config = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .expect("self-signed")
         .with_alpn_http_1();
 
-    graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
+        let server = HttpServer::new_http1(weak_scope.clone()).service(
             (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
                 Router::new().with_get("/", Html(INDEX)).with_get(
                     "/echo",
@@ -75,17 +78,14 @@ async fn main() {
 
         info!("open web echo chat @ https://127.0.0.1:12034");
         info!("or connect directly to wss://127.0.0.1:12034/echo (via 'rama')");
-        TcpListener::bind_address("127.0.0.1:12034", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:12034", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(tls_server)
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 const INDEX: &str = r##"<!DOCTYPE html>

@@ -5,12 +5,12 @@ use super::utils;
 use rama::{
     Layer,
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         BodyExtractExt, Request, header::USER_AGENT, server::HttpServer,
         service::web::response::Json,
     },
     net::{address::ProxyAddress, client::ProxyRoute},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     tls::{
@@ -34,7 +34,7 @@ async fn test_http_mitm_proxy_emulate() {
         .with_alpn_http_auto();
     let origin = TlsAcceptorLayer::new(tls)
         .with_store_client_hello(true)
-        .into_layer(HttpServer::auto(Executor::default()).service(service_fn(
+        .into_layer(HttpServer::auto(WeakScope::detached()).service(service_fn(
             async |req: Request| {
                 Ok(Json(json!({
                     "user_agent": req
@@ -48,7 +48,7 @@ async fn test_http_mitm_proxy_emulate() {
             },
         )));
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:13048", Executor::default())
+        TcpListener::bind_address("127.0.0.1:13048", WeakScope::detached())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: emulation origin: {e}"))
             .serve(origin)

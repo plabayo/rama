@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use rama_core::{
     error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef, Ingress},
-    rt::Executor,
+    graceful::WeakScope,
 };
 use rama_http::io::upgrade as http_upgrade;
 use rama_http_types::{
@@ -57,7 +57,7 @@ pub struct SendRequest<B, C: transport::Connection> {
     connection: C,
     shared: Arc<Shared>,
     lifetime: Arc<ConnectionLifetime<C>>,
-    executor: Executor,
+    scope: WeakScope,
     _body: PhantomData<fn(B)>,
 }
 
@@ -90,7 +90,7 @@ impl<B, C: transport::Connection> Clone for SendRequest<B, C> {
             connection: self.connection.clone(),
             shared: self.shared.clone(),
             lifetime: self.lifetime.clone(),
-            executor: self.executor.clone(),
+            scope: self.scope.clone(),
             _body: PhantomData,
         }
     }
@@ -113,8 +113,9 @@ impl<B, C: transport::Connection> std::fmt::Debug for SendRequest<B, C> {
 pub fn handshake<B, C: transport::Connection>(
     connection: C,
     config: Config,
-    executor: Executor,
+    scope: impl Into<WeakScope>,
 ) -> Result<(SendRequest<B, C>, Driver<C>), Error> {
+    let scope = scope.into();
     if connection.side() != Side::Client {
         return Err(Error::connection(
             Code::H3_INTERNAL_ERROR,
@@ -156,7 +157,7 @@ pub fn handshake<B, C: transport::Connection>(
             }),
             connection,
             shared,
-            executor,
+            scope,
             _body: PhantomData,
         },
         driver,
@@ -760,7 +761,11 @@ where
         let upload_lifetime = self.lifetime.clone();
         let allowed_trailers = request.extensions().get_arc::<ForbiddenTrailers>();
         let (_, request_body) = request.into_parts();
-        let task = self.executor.spawn_task(async move {
+        let Ok(scope) = self.scope.try_hold() else {
+            // Dropping the refused upload drops Writer, resetting the request stream.
+            return Err(Error::stream(Code::H3_REQUEST_CANCELLED, "scope closed"));
+        };
+        let task = scope.into_spawn_task_to_completion(async move {
             let _permit = upload_permit;
             let _lifetime = upload_lifetime;
             let result = body::send(

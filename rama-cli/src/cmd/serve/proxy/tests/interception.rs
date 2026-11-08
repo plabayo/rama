@@ -14,10 +14,10 @@ async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_fram
         "--intercept",
     ]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown = rama::graceful::Shutdown::new(async move {
+    let shutdown = Scope::new().with_signal(async move {
         _ = shutdown_rx.await;
     });
-    let (address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let (address, inspector_address) = start_proxy(&shutdown, cli.proxy).await;
     assert_eq!(
         inspector_address,
         Some(address),
@@ -226,7 +226,8 @@ async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_fram
     drop(socket);
     _ = shutdown_tx.send(());
     shutdown
-        .shutdown_with_limit(Duration::from_secs(2))
+        .with_grace(Duration::from_secs(2))
+        .join()
         .await
         .unwrap();
     origin_task.abort();

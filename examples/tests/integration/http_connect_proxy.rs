@@ -1,9 +1,9 @@
 use super::utils;
 use rama::{
+    graceful::WeakScope,
     http::service::web::response::Json,
     http::{BodyExtractExt, Request, server::HttpServer},
     net::{address::ProxyAddress, client::ProxyRoute},
-    rt::Executor,
     service::service_fn,
 };
 use serde_json::{Value, json};
@@ -14,7 +14,7 @@ async fn test_http_connect_proxy() {
     utils::init_tracing();
 
     tokio::spawn(async {
-        HttpServer::auto(Executor::default())
+        HttpServer::auto(WeakScope::detached())
             .listen(
                 "127.0.0.1:13001",
                 service_fn(async |req: Request| {

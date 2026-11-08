@@ -69,7 +69,7 @@ async fn early_metadata_defers_client_identity_until_authenticated() {
                 cert_chain,
                 private_key,
             }));
-        let mut endpoint = Endpoint::build(rama_core::rt::Executor::new())
+        let mut endpoint = Endpoint::build(rama_core::graceful::WeakScope::detached())
             .with_server_config(
                 ServerConfig::try_from_rama_tls(&server_tls, test_helpers::options()).unwrap(),
             )

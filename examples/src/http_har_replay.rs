@@ -22,7 +22,7 @@
 use rama::{
     Layer, Service,
     extensions::ExtensionsRef,
-    graceful::Shutdown,
+    graceful::{Scope, WeakScope},
     http::{
         Request, Response,
         body::util::BodyExt,
@@ -34,13 +34,12 @@ use rama::{
             required_header::AddRequiredResponseHeadersLayer,
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
-            traffic_writer::{BidirectionalWriter, RequestWriterLayer, ResponseWriterLayer},
+            traffic_writer::BidirectionalWriter,
         },
         server::HttpServer,
     },
     layer::{Abortable, abort::AbortController},
     net::{Protocol, address::Authority, address::SocketAddress},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -63,7 +62,9 @@ async fn main() {
 
     let (shutdown_txt, shutdown_rx) = oneshot::channel();
 
-    let graceful = Shutdown::new(shutdown_rx);
+    let scope = Scope::new()
+        .with_grace(Duration::from_secs(1))
+        .with_signal(shutdown_rx);
 
     let har_json = std::env::args()
         .nth(1)
@@ -84,17 +85,16 @@ async fn main() {
 
     tokio::spawn(run_server(ADDRESS, log_file.clone()));
 
-    let exec = Executor::graceful(graceful.guard());
     let traffic_writer = BidirectionalWriter::stdout_unbounded(
-        &exec,
+        &scope,
         Some(rama::http::layer::traffic_writer::WriterMode::All),
         Some(rama::http::layer::traffic_writer::WriterMode::All),
     );
 
     let client = (
         TraceLayer::new_for_http(),
-        RequestWriterLayer::new(traffic_writer.clone()),
-        ResponseWriterLayer::new(traffic_writer),
+        traffic_writer.request_layer(),
+        traffic_writer.response_layer(),
         DecompressionLayer::new(),
         RetryLayer::new(
             ManagedPolicy::default().with_backoff(
@@ -108,7 +108,9 @@ async fn main() {
             ),
         ),
     )
-        .into_layer(EasyHttpWebClient::default_with_executor(exec));
+        .into_layer(EasyHttpWebClient::default_with_scope(WeakScope::from(
+            scope.clone(),
+        )));
 
     let req_start_instant = tokio::time::Instant::now();
     for (idx, entry) in log_file.log.entries.iter().enumerate() {
@@ -141,10 +143,7 @@ async fn main() {
     drop(client);
     shutdown_txt.send(()).unwrap();
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(1))
-        .await
-        .unwrap();
+    scope.join().await.unwrap();
 }
 
 fn rewrite_request_uri_to_local_server(req: &mut Request, addr: SocketAddress) {
@@ -172,8 +171,8 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
         "running server",
     );
 
-    let exec = Executor::default();
-    let http_svc = HttpServer::auto(exec.clone()).service(
+    let scope = WeakScope::detached();
+    let http_svc = HttpServer::auto(scope.clone()).service(
         (
             AddRequiredResponseHeadersLayer::new(),
             CompressionLayer::new()
@@ -218,7 +217,7 @@ async fn run_server(addr: SocketAddress, log_file: Arc<LogFile>) {
             })),
     );
 
-    TcpListener::bind_address(ADDRESS, exec)
+    TcpListener::bind_address(ADDRESS, scope)
         .await
         .unwrap()
         .serve(Abortable::new(http_svc))

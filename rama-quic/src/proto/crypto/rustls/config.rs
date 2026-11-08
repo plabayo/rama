@@ -201,7 +201,7 @@ mod tests {
         client::{ClientSessionStore, Tls12ClientSessionValue, Tls13ClientSessionValue},
         pki_types::ServerName,
     };
-    use rama_core::{error::BoxError, rt::Executor};
+    use rama_core::{error::BoxError, graceful::WeakScope};
     use rama_net::tls::{ApplicationProtocol, TlsAlpn};
     use rama_quic_proto::{Side, VarInt, Version, transport_parameters::TransportParameters};
     use rama_tls::{
@@ -909,14 +909,14 @@ mod tests {
                 .unwrap(),
             ));
             let server = Endpoint::bind_server(
-                Executor::new(),
+                WeakScope::detached(),
                 server_config,
                 "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
             .unwrap();
             let client = Endpoint::bind_client(
-                Executor::new(),
+                WeakScope::detached(),
                 "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
@@ -998,14 +998,14 @@ mod tests {
                 .unwrap(),
             ));
             let server = Endpoint::bind_server(
-                Executor::new(),
+                WeakScope::detached(),
                 server_config,
                 "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
             .unwrap();
             let client = Endpoint::bind_client(
-                Executor::new(),
+                WeakScope::detached(),
                 "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             )
             .await
@@ -1105,14 +1105,14 @@ mod tests {
                         .unwrap(),
                 ));
                 let server = Endpoint::bind_server(
-                    Executor::new(),
+                    WeakScope::detached(),
                     server_config,
                     "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
                 )
                 .await
                 .unwrap();
                 let client = Endpoint::bind_client(
-                    Executor::new(),
+                    WeakScope::detached(),
                     "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
                 )
                 .await

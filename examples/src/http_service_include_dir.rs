@@ -24,12 +24,12 @@
 
 use rama::{
     Layer,
+    graceful::WeakScope,
     http::{
         server::HttpServer,
         service::{fs::DirectoryServeMode, web::WebService},
     },
     layer::TraceErrLayer,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -52,7 +52,7 @@ async fn main() {
         )
         .init();
 
-    let listener = TcpListener::bind_address("127.0.0.1:12037", Executor::default())
+    let listener = TcpListener::bind_address("127.0.0.1:12037", WeakScope::detached())
         .await
         .expect("bind TCP Listener");
 

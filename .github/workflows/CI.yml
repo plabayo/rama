@@ -1445,6 +1445,10 @@ jobs:
         run: |
           RUSTFLAGS="--cfg loom -Dwarnings" \
             cargo nextest run --profile ci --all-features -p rama-utils
+      - name: Run Loom tests (rama-core graceful)
+        run: |
+          LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg rama_loom -Dwarnings" \
+            cargo nextest run --profile ci --release --all-features -p rama-core -E 'test(loom_tests)'
 
   test-miri-collections:
     permissions:

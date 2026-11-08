@@ -4,7 +4,7 @@ use rama::net::Protocol;
 use rama::net::uri::Uri;
 use rama::{
     Layer as _,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         HeaderName, HeaderValue,
         client::EasyHttpWebClient,
@@ -13,7 +13,6 @@ use rama::{
         server::HttpServer,
     },
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
 };
@@ -38,17 +37,17 @@ async fn connect_supports_standard_rama_http_layers() {
     let (tx, rx) = oneshot::channel();
     let svc = test_server::TestServer::new(Svc);
 
-    let graceful = Shutdown::new(async { drop(rx.await) });
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new().with_signal(async { drop(rx.await) });
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec)
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), weak_scope.clone())
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let jh = graceful.spawn_task_fn(async move |guard| {
+    let jh = scope.spawn_task(async move {
         listener
-            .serve(HttpServer::new_h2(Executor::graceful(guard)).service(svc))
+            .serve(HttpServer::new_h2(weak_scope).service(svc))
             .await;
     });
 

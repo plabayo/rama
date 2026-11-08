@@ -3,11 +3,7 @@
 
 use super::*;
 use crate::client::{Http3Connector, Http3Transport, h3::tests::prepare as prepare_h3};
-use rama_core::{
-    Service,
-    extensions::Extensions,
-    rt::{Executor, spawn},
-};
+use rama_core::{Service, extensions::Extensions, graceful::WeakScope, rt::spawn};
 use rama_http_core::h3::{
     client as h3_client, connection::Config, server as h3_server, transport::Connection as _,
 };
@@ -182,7 +178,7 @@ async fn request(transport: Http3Transport) {
     let (mut sender, driver) = h3_client::handshake::<Body, _>(
         transport.connection,
         Arc::unwrap_or_clone(transport.config),
-        Executor::new(),
+        WeakScope::detached(),
     )
     .unwrap();
     spawn(driver.run());
@@ -236,7 +232,7 @@ async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
         .with_server_auth(identity.clone());
     let mut config = ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap();
     config.set_capture(CaptureLimits::default());
-    let server = Endpoint::bind_server(Executor::new(), config, SocketAddress::local_ipv4(0))
+    let server = Endpoint::bind_server(WeakScope::detached(), config, SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let port = server.local_addr().unwrap().port();
@@ -296,7 +292,7 @@ async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
     let tls = TlsClientConfig::new()
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
         .unwrap();
-    let connector = Http3Connector::builder(Executor::new())
+    let connector = Http3Connector::builder(WeakScope::detached())
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .with_tls_config(tls)
         .build_lazy()

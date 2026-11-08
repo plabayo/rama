@@ -145,7 +145,7 @@ pub async fn rama_client_fills_and_cancels<E: Ears>(
     let endpoint = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the rama client binds");
@@ -170,7 +170,7 @@ pub async fn bind_backpressure_server(run: &CaseRun<BackpressureScenario>) -> En
     run.deadline
         .wait(
             &run.what,
-            Endpoint::bind_server(rama::rt::Executor::new(), config, localhost()),
+            Endpoint::bind_server(rama::graceful::WeakScope::detached(), config, localhost()),
         )
         .await
         .expect("the Rama server binds")

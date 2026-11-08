@@ -78,6 +78,9 @@ pub(super) struct StoredConnection<C, ID> {
     /// The idle count of its id, if the pool limits connections per id.
     pub(super) id_idle: Option<Arc<AtomicIsize>>,
     pub(super) ask_trim_fn: AskTrim<C, ID>,
+    /// The scope it runs in, if any: once cancelled it admits no stream and
+    /// leaves storage, closing with its last handout.
+    pub(super) scope: Option<ConnScope>,
 }
 
 /// [`StoredConnection::idle_count`]: stored, not counted idle.
@@ -445,6 +448,11 @@ impl<C, ID> StoredConnection<C, ID> {
             },
             None => None,
         };
+        // Read outside the slot lock: reading a scope may run user code. A cancel the watcher
+        // reports meanwhile is caught by the flag checked under the lock.
+        if self.observe_drain() {
+            return None;
+        }
         let slot = self.pool_slot.lock();
         // A close can be reported while the connector's compatibility policy
         // runs outside the storage lock. Do not hand out a known-broken
@@ -455,7 +463,8 @@ impl<C, ID> StoredConnection<C, ID> {
             .get_ref::<ConnectionHealthWatcher>()
             .is_some_and(|health| health.health() == ConnectionHealth::Broken);
         let rekeyed = self.lane_gen.load(Ordering::Acquire) != lane_gen;
-        if slot.retired || rekeyed || broken || !self.has_capacity(cap) {
+        // Nor one whose scope was cancelled before its watcher took it out.
+        if slot.retired || rekeyed || broken || self.is_drained() || !self.has_capacity(cap) {
             return None;
         }
         // Admission is serialized with retirement. Concurrent lease drops only
@@ -520,6 +529,38 @@ impl<C, ID> StoredConnection<C, ID> {
     /// Whether the health watcher it was created with marks it broken.
     pub(super) fn is_broken(&self) -> bool {
         self.health.health() == ConnectionHealth::Broken
+    }
+
+    /// Whether the scope it runs in is cancelled: it admits no stream any more. Reads the
+    /// scope, so call it outside every pool lock.
+    pub(super) fn observe_drain(&self) -> bool {
+        self.scope.as_ref().is_some_and(ConnScope::observe)
+    }
+
+    /// Whether the scope it runs in was seen cancelled: safe under a pool lock.
+    pub(super) fn is_drained(&self) -> bool {
+        self.scope.as_ref().is_some_and(ConnScope::is_drained)
+    }
+}
+
+impl<C, ID: ConnID> StoredConnection<C, ID> {
+    /// Its scope was cancelled: retire it and take it out of storage, so it
+    /// closes now if idle, else with its last handout.
+    pub(super) fn drain(&self) {
+        let Some(storage) = self.storage.upgrade() else {
+            return;
+        };
+        let stored = {
+            let mut storage = storage.lock();
+            let stored = unstore(&mut storage, self);
+            // Under the storage lock, as a rekey's filing: it is never filed again.
+            self.retire();
+            stored
+        };
+        trace!(id = ?self.id, "multiplex pool: draining a connection of a cancelled scope");
+        // Its waiters look again and dial instead.
+        self.tell_unusable();
+        drop(stored);
     }
 }
 

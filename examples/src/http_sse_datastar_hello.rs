@@ -48,7 +48,7 @@
 use rama::{
     Layer, Service,
     futures::async_stream::stream_fn,
-    graceful::ShutdownGuard,
+    graceful::Scope,
     http::{
         Request, Response, StatusCode,
         layer::{error_handling::ErrorHandler, trace::TraceLayer},
@@ -65,7 +65,6 @@ use rama::{
         },
     },
     net::address::SocketAddress,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -96,12 +95,15 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(12051), exec.clone())
-        .await
-        .expect("tcp port to be bound");
+    let listener =
+        TcpListener::bind_address(SocketAddress::default_ipv4(12051), weak_scope.clone())
+            .await
+            .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
 
     tracing::info!(
@@ -111,9 +113,9 @@ async fn main() {
     );
     tracing::info!("open http://{bind_address} in your browser to see the service in action");
 
-    let controller = Controller::new(graceful.guard());
+    let controller = Controller::new(&scope);
 
-    graceful.spawn_task(async {
+    scope.spawn_task(async move {
         let app = Router::new_with_state(controller.clone())
             .with_get("/", handlers::index)
             .with_post("/start", handlers::start)
@@ -128,13 +130,12 @@ async fn main() {
         let graceful_router = GracefulRouter { router, controller };
 
         let app = TraceLayer::new_for_http().into_layer(graceful_router);
-        listener.serve(HttpServer::auto(exec).service(app)).await;
+        listener
+            .serve(HttpServer::auto(weak_scope).service(app))
+            .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Clone)]
@@ -279,16 +280,16 @@ pub mod controller {
     impl Controller {
         const MESSAGE: &str = "Hello, Datastar!";
 
-        pub fn new(guard: ShutdownGuard) -> Self {
+        pub fn new(scope: &Scope) -> Self {
             let (cmd_tx, cmd_rx) = mpsc::channel(8);
             let (msg_tx, msg_rx) = broadcast::channel(8);
 
             let exit_cmd_tx = cmd_tx.clone();
-            let weak_guard = guard.clone_weak();
+            let cancelled = scope.clone_weak().cancelled();
             tokio::spawn(
                 async move {
                     tracing::debug!("exit worker up and running awaiting cancellation");
-                    weak_guard.into_cancelled().await;
+                    cancelled.await;
                     tracing::trace!("shutdown initiated, send exit command to controller runtime");
                     if let Err(err) = exit_cmd_tx.send(Command::Exit).await {
                         tracing::error!("failed to send exit cmd: {err:?}")
@@ -311,7 +312,7 @@ pub mod controller {
                 msg_tx,
             };
 
-            guard.into_spawn_task(
+            scope.spawn_task(
                 controller
                     .clone()
                     .into_runtime(msg_rx, cmd_rx)

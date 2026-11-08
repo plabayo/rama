@@ -672,7 +672,7 @@ where
         if !T::should_read_first() {
             self.state.busy();
             // A client request carrying `Connection: close` must not be pooled or
-            // reused. hyper otherwise derives connection reuse from the response
+            // reused. Connection reuse is otherwise derived from the response
             // alone, so a backend that ignores the request-side close (omits
             // `Connection: close` in its response) would leave the connection in
             // the pool. Disable keep-alive up front so the connection is evicted

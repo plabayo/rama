@@ -81,7 +81,7 @@ pub async fn rama_client_refuses(
     let client = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the rama client binds");
@@ -140,7 +140,7 @@ pub async fn rama_client_accepts(run: &CaseRun<TrustScenario>, peer_addr: Socket
     let client = deadline
         .wait(
             what,
-            Endpoint::bind_client(rama::rt::Executor::new(), localhost()),
+            Endpoint::bind_client(rama::graceful::WeakScope::detached(), localhost()),
         )
         .await
         .expect("the rama client binds");

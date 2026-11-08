@@ -9,6 +9,7 @@ use rama::{
     dns::client::GlobalDnsResolver,
     error::BoxError,
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::client::DefaultHttpWebClient,
     net::address::Host,
     net::{
@@ -19,7 +20,6 @@ use rama::{
         ConnectUdpConnector, ConnectUdpService, DestinationScopePolicy, MaybeTunneledSocket,
     },
     quic::proxy::InputWithQuicClientHello,
-    rt::Executor,
     tls::client::TlsClientConfig,
     udp::{UdpPacketSocket, proxy::UdpConnector},
 };
@@ -44,7 +44,7 @@ pub(super) fn parse_template(value: &str) -> Result<ProxyPathTemplate, BoxError>
 /// destination policy here; their sockets are direct, or tunnels through a MASQUE
 /// `--upstream-proxy`. Any other upstream proxy refuses them, so it is never bypassed.
 pub(super) fn connect_udp_service(
-    exec: Executor,
+    scope: WeakScope,
     template: Option<&ProxyPathTemplate>,
     allow_private: bool,
     upstream: &UpstreamProxyConfig,
@@ -70,11 +70,11 @@ pub(super) fn connect_udp_service(
             tls.with_alpn_http_auto()
         });
     let upstream_client = DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
-        exec.clone(),
+        scope.clone(),
         proxy_tls,
     )?;
-    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), upstream_client, exec.clone());
-    Ok(ConnectUdpService::try_new(exec, template)?
+    let tunnels = ConnectUdpConnector::new(UdpConnector::new(), upstream_client, scope.clone());
+    Ok(ConnectUdpService::try_new(scope, template)?
         .with_policy(policy)
         .with_connector(upstream.connector_service(tunnels)))
 }

@@ -277,7 +277,7 @@ pub struct H3ObservationSnapshot {
 }
 
 /// Immutable connection and field-representation data at request-head delivery.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Extension)]
 pub struct H3RequestObservation {
     /// The request stream that owns these field representations.
     pub stream_id: u64,
@@ -294,7 +294,6 @@ pub struct H3RequestObservation {
     pub fields_complete: bool,
     pub priority: Option<Box<[u8]>>,
 }
-impl Extension for H3RequestObservation {}
 
 /// SETTINGS availability, separate from the reason a consumer stopped waiting.
 #[derive(Debug, Clone, Copy, Serialize)]

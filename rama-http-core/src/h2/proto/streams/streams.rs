@@ -1,6 +1,6 @@
 #![expect(
     clippy::needless_pass_by_ref_mut,
-    reason = "vendored from upstream `h2`: many `&mut self` methods preserve API symmetry/locking-position semantics that the `&self` form would lose"
+    reason = "many `&mut self` methods keep API symmetry and locking-position semantics that the `&self` form would lose"
 )]
 
 use super::recv::RecvHeaderBlockError;

@@ -5,7 +5,7 @@
 //! Output uses qlog JSON text sequences; [`EncodedWriter`] supports custom encoders.
 //! For direct observation, attach a [`QlogSink`]: events borrow connection data and callbacks must finish promptly.
 //!
-//! Use [`QlogConfig::with_executor`] for graceful draining and flushing, or await
+//! Use [`QlogConfig::with_scope`] for graceful draining and flushing, or await
 //! [`QlogRecorder::shutdown`] explicitly. Dropping handles does not wait for output.
 //! Recording failures go to the configured [`QlogConfig::with_error_sink`]; explicit completion
 //! checks are optional. Keep the runtime alive until recording finishes.

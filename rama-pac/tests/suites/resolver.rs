@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
 use rama_core::error::{BoxError, CauseExt as _, ErrorExt as _, extra::OpaqueError};
+use rama_core::graceful::{Cause, Scope};
 use rama_core::{Layer, Service, service::service_fn};
 use rama_js::{JsError, JsErrorKind, JsRuntimeBuilder};
 use rama_net::uri::Uri;
@@ -134,6 +135,28 @@ async fn static_provider_resolves() {
         .await
         .expect("resolve");
     assert_eq!(directives.as_slice(), [PacDirective::Direct]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resolver_kept_around_does_not_hold_its_scope() {
+    let scope = Scope::new();
+    let resolver = crate::resolver_builder()
+        .with_scope(scope.clone())
+        .build_static(DIRECT_SCRIPT)
+        .expect("build resolver");
+    let directives = resolver
+        .find_proxy(&uri("http://example.com/x"))
+        .await
+        .expect("resolve");
+    assert_eq!(directives.as_slice(), [PacDirective::Direct]);
+
+    // The running worker exits at the cancel, and nothing else holds the scope.
+    scope.cancel(Cause::Owner);
+    tokio::time::timeout(TEST_WATCHDOG, scope.join())
+        .await
+        .expect("the join completes with the resolver alive")
+        .expect("joined");
+    drop(resolver);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

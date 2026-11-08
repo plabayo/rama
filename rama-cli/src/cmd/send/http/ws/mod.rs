@@ -5,7 +5,7 @@ use std::{io::IsTerminal as _, time::Duration};
 use rama::{
     Service,
     error::{BoxError, ErrorContext, extra::OpaqueError},
-    graceful::{self, Shutdown},
+    graceful::Scope,
     http::layer::har::recorder::WebSocketCapture,
     http::ws::{WebSocketIo, layer::har::HARWebSocket, protocol::Role},
     http::{Request, Response},
@@ -55,35 +55,24 @@ fn with_har_capture<S>(
 
 async fn run_app<S: WebSocketIo>(app: tui::App<S>) -> Result<(), BoxError> {
     let (tx, rx) = oneshot::channel();
-    let (tx_final, rx_final) = oneshot::channel();
 
-    let shutdown = Shutdown::new(async move {
-        tokio::select! {
-            _ = graceful::default_signal() => {
-                _ = tx_final.send(Ok(()));
-            }
-            result = rx => {
-                match result {
-                    Ok(result) => {
-                        _ = tx_final.send(result);
-                    }
-                    Err(_) => {
-                        _ = tx_final.send(Ok(()));
-                    }
-                }
-            }
-        }
-    });
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(1));
+    let weak_scope = scope.clone_weak();
+    let signalled = scope.clone_weak();
 
-    shutdown.spawn_task_fn(async move |guard| {
+    scope.spawn_task(async move {
         let mut app = app;
-        let result = app.run(guard).await;
+        let result = app.run(&weak_scope).await;
         _ = tx.send(result);
     });
 
-    _ = shutdown.shutdown_with_limit(Duration::from_secs(1)).await;
-
-    rx_final.await?
+    // A signal ends the app successfully, also when it did not close in time.
+    if scope.join().await.is_err() || signalled.is_cancelled() {
+        return Ok(());
+    }
+    rx.await.unwrap_or(Ok(()))
 }
 
 #[cfg(test)]

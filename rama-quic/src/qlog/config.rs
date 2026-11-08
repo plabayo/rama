@@ -54,7 +54,7 @@ pub struct QlogConfig {
     pub(super) limits: QueueLimits,
     pub(super) history: Option<HistoryConfig>,
     pub(super) enabled: bool,
-    pub(super) executor: rama_core::rt::Executor,
+    pub(super) scope: rama_core::graceful::WeakScope,
     pub(super) error_sink: Arc<dyn ErrorSink>,
 }
 
@@ -141,10 +141,11 @@ impl QlogConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Executor for the recording task. A graceful executor closes admission on shutdown,
+        /// Scope for the recording task. Its graceful phase closes admission,
         /// then waits for accepted events and output finalization, including writer shutdown.
-        pub fn executor(mut self, executor: rama_core::rt::Executor) -> Self {
-            self.executor = executor;
+        pub fn scope(mut self, scope: impl Into<rama_core::graceful::WeakScope>) -> Self {
+            let scope = scope.into();
+            self.scope = scope;
             self
         }
     }
@@ -181,7 +182,7 @@ impl Default for QlogConfig {
             limits: QueueLimits::default(),
             history: None,
             enabled: true,
-            executor: rama_core::rt::Executor::new(),
+            scope: rama_core::graceful::WeakScope::detached(),
             error_sink: Arc::new(TracingErrorSink::default()),
         }
     }

@@ -6,7 +6,7 @@ use rama_core::{
     Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorExt},
-    extensions::{self, Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef},
     futures::{
         Sink, SinkExt as _, Stream, StreamExt as _,
         channel::{mpsc, oneshot},
@@ -35,15 +35,13 @@ const DEFAULT_MAX_INJECTED_MESSAGE_SIZE: usize = 16 << 20;
 /// completes, but ping replies and peer-initiated close are handled immediately.
 /// Exceeding either bound closes both legs with code 1009. Without this extension,
 /// the relay applies ordinary backpressure without reading ahead.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Extension)]
 pub struct WebSocketRelayReadAhead {
     /// Maximum number of messages retained per direction.
     pub max_messages: NonZeroUsize,
     /// Maximum combined payload bytes retained per direction.
     pub max_bytes: NonZeroUsize,
 }
-
-impl extensions::Extension for WebSocketRelayReadAhead {}
 
 /// A pair of established WebSocket message transports joined by a relay.
 ///
@@ -504,7 +502,7 @@ pub enum WebSocketRelayDirection {
 /// message travels: ingress messages are sent to the upstream peer, while
 /// egress messages are sent to the downstream peer. Injected messages bypass
 /// relay middleware because they did not originate from either peer.
-#[derive(Clone)]
+#[derive(Clone, Extension)]
 pub struct WebSocketRelayInjector {
     ingress: tokio_mpsc::Sender<WriterCommand>,
     egress: tokio_mpsc::Sender<WriterCommand>,
@@ -520,8 +518,6 @@ impl std::fmt::Debug for WebSocketRelayInjector {
             .finish()
     }
 }
-
-impl extensions::Extension for WebSocketRelayInjector {}
 
 impl WebSocketRelayInjector {
     /// Returns whether both sides of the relay can still accept injected data.
@@ -618,8 +614,8 @@ fn relay_injector_closed() -> ProtocolError {
 impl<S, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for WebSocketRelayService<S>
 where
     S: Service<WebSocketRelayInput, Output: Into<WebSocketRelayOutput>, Error: Into<BoxError>>,
-    Ingress: Io + Unpin + extensions::ExtensionsRef,
-    Egress: Io + Unpin + extensions::ExtensionsRef,
+    Ingress: Io + Unpin + ExtensionsRef,
+    Egress: Io + Unpin + ExtensionsRef,
 {
     type Output = ();
     type Error = Infallible;
@@ -684,8 +680,8 @@ where
             Output: Into<WebSocketRelayEventOutput>,
             Error: Into<BoxError>,
         >,
-    Ingress: Io + Unpin + extensions::ExtensionsRef,
-    Egress: Io + Unpin + extensions::ExtensionsRef,
+    Ingress: Io + Unpin + ExtensionsRef,
+    Egress: Io + Unpin + ExtensionsRef,
 {
     type Output = ();
     type Error = Infallible;

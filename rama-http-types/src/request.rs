@@ -1127,9 +1127,8 @@ impl Builder {
     /// # use rama_http_types::Request;
     /// # use rama_core::extensions::{Extension, ExtensionsRef};
     ///
-    /// #[derive(Debug, Clone, PartialEq)]
+    /// #[derive(Debug, Clone, PartialEq, Extension)]
     /// struct MyExtension(&'static str);
-    /// impl Extension for MyExtension {}
     ///
     /// let req = Request::builder()
     ///     .extension(MyExtension("My Extension"))
@@ -1158,13 +1157,11 @@ impl Builder {
     /// ```
     /// # use rama_http_types::Request;
     /// # use rama_core::extensions::Extension;
-    /// #[derive(Debug, Clone, PartialEq)]
+    /// #[derive(Debug, Clone, PartialEq, Extension)]
     /// struct MyExtension(&'static str);
-    /// impl Extension for MyExtension {}
     ///
-    /// #[derive(Debug, Clone, PartialEq)]
+    /// #[derive(Debug, Clone, PartialEq, Extension)]
     /// struct MyCount(u32);
-    /// impl Extension for MyCount {}
     ///
     /// let req = Request::builder().extension(MyExtension("My Extension")).extension(MyCount(5));
     /// let extensions = req.extensions().unwrap();

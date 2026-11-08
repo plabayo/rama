@@ -5,11 +5,10 @@
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
-    graceful::Shutdown,
+    graceful::{Scope, WeakScope},
     io::BridgeIo,
     layer::{ArcLayer, MapInputLayer},
     matcher::match_fn,
-    rt::Executor,
     service::service_fn,
 };
 use rama_http::{
@@ -45,14 +44,15 @@ async fn check_relay(version: Version, eager: bool) {
         let (client, ingress) = tokio::io::duplex(kib(64));
         let (egress, upstream) = tokio::io::duplex(kib(64));
         let token = CancellationToken::new();
-        let graceful = Shutdown::new(token.clone().cancelled_owned());
+        let graceful = Scope::new().with_signal(token.clone().cancelled_owned());
         let cancel = token.drop_guard();
         let seen = Arc::new(AtomicUsize::new(0));
         let allowed = Arc::new(AtomicBool::new(true));
 
         let upstream_seen = seen.clone();
-        graceful.spawn_task_fn(async move |guard| {
-            HttpServer::auto(Executor::graceful(guard))
+        let guard = graceful.clone();
+        graceful.spawn_task(async move {
+            HttpServer::auto(WeakScope::from(guard))
                 .serve(
                     MockSocket::new(upstream),
                     service_fn(move |_: Request| {
@@ -66,14 +66,15 @@ async fn check_relay(version: Version, eager: bool) {
 
         let policy_allowed = allowed.clone();
         let middleware_allowed = allowed.clone();
-        graceful.spawn_task_fn(async move |guard| {
+        let guard = graceful.clone();
+        graceful.spawn_task(async move {
             let egress = MockSocket::new(egress);
             if eager {
                 egress
                     .extensions()
                     .insert(TargetHttpVersion(Version::HTTP_2));
             }
-            HttpMitmRelay::new(Executor::graceful(guard))
+            HttpMitmRelay::new(WeakScope::from(guard))
                 .with_bound_authority(BoundAuthority::https(
                     "origin.example:443".parse().unwrap(),
                     match_fn(move |_: &Request| policy_allowed.load(Ordering::SeqCst)),
@@ -112,7 +113,7 @@ async fn check_relay(version: Version, eager: bool) {
         let conn = http_connect(
             MockSocket::new(client),
             request(version, "origin.example", "none"),
-            Executor::graceful(graceful.guard()),
+            graceful.clone_weak(),
         )
         .await
         .unwrap()
@@ -174,7 +175,7 @@ async fn check_relay(version: Version, eager: bool) {
         }
         drop(conn);
         cancel.disarm().cancel();
-        graceful.shutdown().await;
+        graceful.join().await.unwrap();
     })
     .await
     .unwrap();

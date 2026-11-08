@@ -8,8 +8,8 @@ use rama_core::Layer;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::error_sink::ErrorSink;
 use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::graceful::WeakScope;
 use rama_core::layer::{ConsumeErrLayer, MapOutputLayer};
-use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, extensions::Extensions, matcher::Matcher, service::BoxService};
 use rama_http_types::Request;
@@ -22,7 +22,7 @@ use std::{convert::Infallible, fmt, future::Future, pin::Pin, sync::Arc};
 pub struct UpgradeService<S, O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
     inner: S,
-    exec: Executor,
+    scope: WeakScope,
     error_sink: Arc<dyn ErrorSink>,
 }
 
@@ -243,13 +243,14 @@ impl<S, O> UpgradeService<S, O> {
     pub fn new(
         handlers: Vec<Arc<UpgradeHandler<O>>>,
         inner: S,
-        exec: Executor,
+        scope: impl Into<WeakScope>,
         error_sink: Arc<dyn ErrorSink>,
     ) -> Self {
+        let scope = scope.into();
         Self {
             handlers,
             inner,
-            exec,
+            scope,
             error_sink,
         }
     }
@@ -265,7 +266,7 @@ where
         f.debug_struct("UpgradeService")
             .field("handlers", &self.handlers)
             .field("inner", &self.inner)
-            .field("exec", &self.exec)
+            .field("scope", &self.scope)
             .finish()
     }
 }
@@ -278,7 +279,7 @@ where
         Self {
             handlers: self.handlers.clone(),
             inner: self.inner.clone(),
-            exec: self.exec.clone(),
+            scope: self.scope.clone(),
             error_sink: self.error_sink.clone(),
         }
     }
@@ -321,36 +322,44 @@ where
                         network.protocol.version = version_as_protocol_version(request.version()),
                     );
 
-                    self.exec.spawn_task(
-                        async move {
-                            match crate::io::upgrade::handle_upgrade(request).await {
-                                Ok(upgraded) => {
-                                    upgraded.extensions().extend(&extensions);
-                                    match continuation {
-                                        UpgradeContinuation::ResponseLocal {
-                                            handler,
-                                            error_sink,
-                                        } => {
-                                            if let Err(err) = handler(upgraded).await {
-                                                error_sink.sink_error(err);
+                    match self.scope.try_hold() {
+                        Ok(scope) => {
+                            scope.into_spawn_task(
+                                async move {
+                                    match crate::io::upgrade::handle_upgrade(request).await {
+                                        Ok(upgraded) => {
+                                            upgraded.extensions().extend(&extensions);
+                                            match continuation {
+                                                UpgradeContinuation::ResponseLocal {
+                                                    handler,
+                                                    error_sink,
+                                                } => {
+                                                    if let Err(err) = handler(upgraded).await {
+                                                        error_sink.sink_error(err);
+                                                    }
+                                                }
+                                                UpgradeContinuation::Service(handler) => {
+                                                    _ = handler.serve(upgraded).await;
+                                                }
                                             }
                                         }
-                                        UpgradeContinuation::Service(handler) => {
-                                            _ = handler.serve(upgraded).await;
+                                        Err(err) => {
+                                            // The HTTP upgrade itself failed (before the handler
+                                            // ran): route it to the layer's upgrade error sink.
+                                            upgrade_error_sink.sink_error(
+                                                err.context("http upgrade failed before handler"),
+                                            );
                                         }
                                     }
                                 }
-                                Err(err) => {
-                                    // The HTTP upgrade itself failed (before the handler
-                                    // ran): route it to the layer's upgrade error sink.
-                                    upgrade_error_sink.sink_error(
-                                        err.context("http upgrade failed before handler"),
-                                    );
-                                }
-                            }
+                                .instrument(span),
+                            );
                         }
-                        .instrument(span),
-                    );
+                        Err(refused) => {
+                            self.error_sink
+                                .sink_error(refused.context("http upgrade not served"));
+                        }
+                    }
                     Ok(response)
                 }
                 Err(e) => Ok(e),
@@ -383,10 +392,8 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_test::io::Builder;
 
-    #[derive(Debug)]
+    #[derive(Debug, Extension)]
     struct ResponseLocalMarker;
-
-    impl Extension for ResponseLocalMarker {}
 
     #[derive(Clone)]
     struct SendOnlyOutputResponder;
@@ -415,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_and_error_need_not_be_sync() {
-        let service = UpgradeLayer::new(Executor::default(), false, SendOnlyOutputResponder)
+        let service = UpgradeLayer::new(WeakScope::detached(), false, SendOnlyOutputResponder)
             .into_layer(SendOnlyInner);
 
         let error = service
@@ -451,7 +458,7 @@ mod tests {
             service_fn(
                 |_req: Request| async move { Ok::<_, Infallible>(Response::new(Body::empty())) },
             );
-        let svc = UpgradeLayer::new(Executor::default(), true, service).into_layer(inner);
+        let svc = UpgradeLayer::new(WeakScope::detached(), true, service).into_layer(inner);
 
         let _response = svc.serve(req).await.expect("upgrade response");
         assert!(handled_rx.try_recv().is_err());
@@ -487,7 +494,7 @@ mod tests {
                 |_req: Request| async move { Ok::<_, Infallible>(Response::new(Body::empty())) },
             );
         let svc = UpgradeLayer::new_with_error_sink(
-            Executor::default(),
+            WeakScope::detached(),
             true,
             service,
             move |err: BoxError| {
@@ -545,7 +552,7 @@ mod tests {
         // The handler keeps its own error type; its (raw) error is routed to
         // the per-handler sink given here.
         let svc = UpgradeLayer::new_with_services_and_error_sink(
-            Executor::default(),
+            WeakScope::detached(),
             true,
             responder,
             handler,

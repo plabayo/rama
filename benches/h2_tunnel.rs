@@ -17,12 +17,12 @@ use divan::counter::BytesCount;
 use rama::{
     ServiceInput,
     extensions::ExtensionsRef as _,
+    graceful::WeakScope,
     http::{
         Body, Method, Request, Response, StatusCode, Version,
         core::{client::conn, server, service::RamaHttpService},
         io::upgrade::{self, OnUpgrade, Upgraded},
     },
-    rt::Executor,
     service::service_fn,
 };
 use tokio::{
@@ -73,11 +73,11 @@ async fn tunnel() -> Tunnel {
     });
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let server_task = tokio::spawn(async move {
-        _ = server::conn::http2::Builder::new(Executor::new())
+        _ = server::conn::http2::Builder::new(WeakScope::detached())
             .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
             .await;
     });
-    let (mut sender, connection) = conn::http2::Builder::new(Executor::new())
+    let (mut sender, connection) = conn::http2::Builder::new(WeakScope::detached())
         .handshake(ServiceInput::new(client_io))
         .await
         .unwrap();

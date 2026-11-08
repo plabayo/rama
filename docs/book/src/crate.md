@@ -34,10 +34,13 @@ to know how to use rama for your purposes.
 
 ## 💪 | Performance
 
-`rama`'s default http implementation is forked from [`hyper`] and adds very little
-overhead. So `rama`'s performance is comparable to [`hyper`] and frameworks that built on top of that.
+`rama` is built for production network services, whatever the protocol. Hot paths
+avoid copies where they can, memory and other resources are explicitly bounded so
+load cannot grow them without limit, and the composable layers add little overhead
+on top of the protocol stacks they wrap.
 
-[`hyper`]: https://github.com/hyperium/hyper
+Protocol stacks are tracked with benchmarks, such as the
+[QUIC benchmarks](https://github.com/plabayo/rama/tree/main/rama-quic/e2e/bench).
 
 Here's a list of external benchmarks:
 
@@ -45,8 +48,8 @@ Here's a list of external benchmarks:
 - http server + client benchmark @ <https://sharkbench.dev/web>
 
 Please [open an issue](https://github.com/plabayo/rama/issues) or Pull Request (PR) in case
-you are aware of any other benchmarks of interest in regards to http(s) servers,
-http(s) clients or proxies such as Man-In-The-Middle (MITM) proxies.
+you are aware of any other benchmarks of interest for network services built with
+`rama`, such as servers, clients or proxies, including Man-In-The-Middle (MITM) proxies.
 
 ## ⛨ | Safety
 

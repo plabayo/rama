@@ -1,11 +1,11 @@
 use super::utils;
 
 use rama::Layer as _;
+use rama::graceful::WeakScope;
 use rama::http::BodyExtractExt;
 use rama::http::server::HttpServer;
 use rama::http::{StatusCode, service::web::IntoEndpointService, utils::HeaderValueGetter};
 use rama::net::{address::HostWithPort, client::ConnectorTarget};
-use rama::rt::Executor;
 use rama::tcp::server::TcpListener;
 use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::tls::server::TlsServerConfig;
@@ -81,7 +81,7 @@ async fn spawn_test_egres_server() {
         HttpServer::default().service("tls-sni-proxy-mitm-example".into_endpoint_service()),
     );
 
-    let listener = TcpListener::bind_address("127.0.0.1:13019", Executor::default())
+    let listener = TcpListener::bind_address("127.0.0.1:13019", WeakScope::detached())
         .await
         .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"));
 

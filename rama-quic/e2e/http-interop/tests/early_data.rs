@@ -6,6 +6,7 @@ use rama::{
     crypto::pem::PemEncode as _,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef as _},
+    graceful::WeakScope,
     http::{
         Body, Request, Response, StatusCode,
         body::util::BodyExt as _,
@@ -15,7 +16,6 @@ use rama::{
     },
     net::tls::{ApplicationProtocol, EarlyDataPermit, ForbidEarlyData},
     quic::{Endpoint, TransportConfig},
-    rt::Executor,
     service::service_fn,
     tls::{client::TlsClientConfig, server::TlsServerConfig},
     utils::fs::tempdir,
@@ -66,14 +66,14 @@ async fn custom_rama_owner_recovers_quic_go_425_without_retry_layer() -> Result<
         let mut lines = BufReader::new(process.stdout.take().unwrap()).lines();
         let ready: serde_json::Value = serde_json::from_str(&lines.next_line().await?.ok_or("no readiness")?)?;
         let address: SocketAddr = ready["address"].as_str().ok_or("no address")?.parse()?;
-        let executor = Executor::new();
-        let endpoint = Endpoint::build(executor.clone()).bind_address("127.0.0.1:0".parse::<SocketAddr>()?).await?;
+        let scope = WeakScope::detached();
+        let endpoint = Endpoint::build(scope.clone()).bind_address("127.0.0.1:0".parse::<SocketAddr>()?).await?;
         let tls = TlsClientConfig::new().try_with_server_trust_anchors(auth.cert_chain)?
             .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
         let config = backend::tls_provider().client_config(&tls, backend::options().with_early_data(true))?;
         let caller = Extensions::new();
         let warm = endpoint.connect_with(config.clone(), address, "localhost")?.await?;
-        let (mut sender, driver) = client::handshake::<Body, _>(warm.clone(), Config::default(), executor.clone())?;
+        let (mut sender, driver) = client::handshake::<Body, _>(warm.clone(), Config::default(), scope.clone())?;
         let driving = tokio::spawn(driver.run());
         let response = sender.send_request(request(address, "warm", &caller)).await?;
         assert_eq!(response.status(), StatusCode::OK);
@@ -85,7 +85,7 @@ async fn custom_rama_owner_recovers_quic_go_425_without_retry_layer() -> Result<
 
         let (connection, accepted) = endpoint.connect_with(config, address, "localhost")?
             .into_0rtt().map_err(|_| "missing early ticket")?;
-        let (mut sender, driver) = client::handshake::<Body, _>(connection.clone(), Config { early_requests: true, ..Config::default() }, executor)?;
+        let (mut sender, driver) = client::handshake::<Body, _>(connection.clone(), Config { early_requests: true, ..Config::default() }, scope)?;
         let driving = tokio::spawn(driver.run());
         let first = request(address, "operation", &caller);
         first.extensions().insert(EarlyDataPermit::with_recovery_owner());
@@ -132,8 +132,8 @@ async fn quic_go_early_client_recovers_rama_425() -> Result<(), BoxError> {
                 .map(|c| c.to_pem())
                 .collect::<String>(),
         )?;
-        let executor = Executor::new();
-        let mut server = HttpServer::new_http3(executor.clone());
+        let scope = WeakScope::detached();
+        let mut server = HttpServer::new_http3(scope.clone());
         server.http3_mut().early_dispatch = true;
         let tls = TlsServerConfig::new()
             .with_server_auth(auth)
@@ -146,7 +146,7 @@ async fn quic_go_early_client_recovers_rama_425() -> Result<(), BoxError> {
         let config = backend::server_tls_provider()
             .server_config(&tls, options)?
             .with_transport_config(Arc::new(transport));
-        let endpoint = Endpoint::build(executor)
+        let endpoint = Endpoint::build(scope)
             .with_server_config(config)
             .bind_address("127.0.0.1:0".parse::<SocketAddr>()?)
             .await?;

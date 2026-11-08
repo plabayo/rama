@@ -86,5 +86,4 @@ repositories in function of rama that aren't crates:
 
 Other Plabayo crates used by rama:
 
-- [`tokio-graceful`](https://crates.io/crates/tokio-graceful): graceful shutdown utilities for Tokio
 - [`venndb`](https://crates.io/crates/venndb): set and relation matching utilities used by rama proxy components

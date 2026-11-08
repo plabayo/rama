@@ -18,6 +18,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
@@ -26,7 +27,6 @@ use rama::{
     },
     layer::ArcLayer,
     layer::ConsumeErrLayer,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self, info,
@@ -48,10 +48,13 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
-    graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
+        let server = HttpServer::new_http1(weak_scope.clone()).service(
             (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
                 Router::new().with_get("/", Html(INDEX)).with_get(
                     "/echo",
@@ -65,17 +68,14 @@ async fn main() {
         );
         info!("open web echo chat @ http://127.0.0.1:12038");
         info!("or connect directly to ws://127.0.0.1:12038/echo (via 'rama')");
-        TcpListener::bind_address("127.0.0.1:12038", Executor::graceful(guard))
+        TcpListener::bind_address("127.0.0.1:12038", weak_scope)
             .await
             .expect("bind TCP Listener")
             .serve(server)
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 const INDEX: &str = r##"<!DOCTYPE html>

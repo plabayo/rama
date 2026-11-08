@@ -137,14 +137,14 @@ async fn assert_replay_forward_proxy_auth(
 ) {
     let listener = rama::tcp::server::TcpListener::bind_address(
         rama::net::address::SocketAddress::local_ipv4(0),
-        Executor::default(),
+        WeakScope::detached(),
     )
     .await
     .unwrap();
     let proxy_address = listener.local_addr().unwrap();
     let (observed_tx, mut observed_rx) = tokio::sync::mpsc::channel(1);
     let proxy_task = tokio::spawn(listener.serve(
-        rama::http::server::HttpServer::auto(Executor::default()).service(
+        rama::http::server::HttpServer::auto(WeakScope::detached()).service(
             rama::service::service_fn(move |request: Request| {
                 let observed_tx = observed_tx.clone();
                 async move {

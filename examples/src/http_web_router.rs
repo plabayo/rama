@@ -34,6 +34,7 @@
 
 use rama::{
     Layer,
+    graceful::Scope,
     http::{
         Method,
         headers::exotic::XClacksOverhead,
@@ -49,7 +50,6 @@ use rama::{
         },
     },
     net::uri::UriMatchReplaceRule,
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -75,7 +75,9 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     #[derive(Debug, Deserialize)]
     struct PostGreetForPathParams {
@@ -145,17 +147,14 @@ async fn main() {
         ErrorHandlerLayer::new(),
     );
 
-    graceful.spawn_task_fn(async |guard| {
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
         tracing::info!("running service at: {ADDRESS}");
-        let exec = Executor::graceful(guard);
-        HttpServer::auto(exec)
+        HttpServer::auto(weak_scope)
             .listen(ADDRESS, Arc::new(middlewares.into_layer(router)))
             .await
             .unwrap();
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

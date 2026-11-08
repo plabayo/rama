@@ -8,7 +8,7 @@ use crate::h2;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_http_types as http;
 
-/// Result type often returned from methods that can have hyper `Error`s.
+/// Result type often returned from methods that can have this crate's `Error`s.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Represents errors that can occur handling HTTP streams.
@@ -211,7 +211,7 @@ impl Error {
     /// Returns true if the connection closed before a message could complete.
     ///
     /// This means that the supplied IO connection reported EOF (closed) while
-    /// hyper's HTTP state indicates more of the message (either request or
+    /// the HTTP state indicates more of the message (either request or
     /// response) needed to be transmitted.
     ///
     /// Some cases this could happen (not exhaustive):

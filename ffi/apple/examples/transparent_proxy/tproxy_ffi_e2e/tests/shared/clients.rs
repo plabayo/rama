@@ -15,6 +15,7 @@ use rama::{
     Layer, Service,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
     http::{
         BodyExtractExt as _, Request, Response, Version,
         client::EasyHttpWebClient,
@@ -34,7 +35,6 @@ use rama::{
         client::ProxyRoute,
         stream::Socket as NetSocket,
     },
-    rt::Executor,
     service::BoxService,
     tcp::client::default_tcp_connect,
     telemetry::tracing,
@@ -210,13 +210,13 @@ pub(crate) fn build_http_client(
                 .with_server_verify_cert_store(store);
             builder
                 .with_tls_support_using_boringssl_and_default_http_version(config, Version::HTTP_11)
-                .with_default_http_connector(Executor::default())
+                .with_default_http_connector(WeakScope::detached())
                 .without_connection_pool()
                 .build_client()
         }
         None => builder
             .without_tls_support()
-            .with_default_http_connector(Executor::default())
+            .with_default_http_connector(WeakScope::detached())
             .without_connection_pool()
             .build_client(),
     };

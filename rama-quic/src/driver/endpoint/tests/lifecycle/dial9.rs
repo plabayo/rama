@@ -14,8 +14,12 @@ fn observation_slot() -> &'static tokio::sync::Mutex<()> {
 
 async fn handshake_and_shutdown() {
     let (client_config, server_config) = configs();
-    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let server = endpoint(
+        Some(server_config),
+        WeakScope::detached(),
+        Duration::from_secs(1),
+    );
+    let client = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();

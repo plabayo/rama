@@ -22,7 +22,7 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized() {
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());
@@ -43,7 +43,7 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized_missing_passwo
 
     let stream = ServiceInput::new(stream);
 
-    let server = Socks5Acceptor::new(Executor::default())
+    let server = Socks5Acceptor::new(WeakScope::detached())
         .with_authorizer(basic!("john", "secret").into_authorizer());
     let result = server.accept(stream).await;
     assert!(result.is_err());

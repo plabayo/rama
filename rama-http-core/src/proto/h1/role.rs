@@ -413,7 +413,7 @@ impl Http1Transaction for Server {
             msg.keep_alive = false;
         }
 
-        // hyper currently doesn't support returning 1xx status codes as a Response
+        // Returning 1xx status codes as a Response is not supported.
         // This is because Service only allows returning a single Response, and
         // so if you try to reply with a e.g. 100 Continue, you have no way of
         // replying with the latter status code response.
@@ -2193,7 +2193,7 @@ mod tests {
     }
 
     const REQUEST_WITH_MULTIPLE_SPACES_IN_REQUEST_LINE: &str =
-        "GET  /echo  HTTP/1.1\r\nHost: hyper.rs\r\n\r\n";
+        "GET  /echo  HTTP/1.1\r\nHost: example.com\r\n\r\n";
 
     #[test]
     fn test_parse_allow_request_with_multiple_spaces_in_request_line() {
@@ -2216,7 +2216,7 @@ mod tests {
         assert_eq!(msg.head.subject.1.as_str(), "/echo");
         assert_eq!(msg.head.version, Version::HTTP_11);
         assert_eq!(msg.head.headers.len(), 1);
-        assert_eq!(msg.head.headers["Host"], "hyper.rs");
+        assert_eq!(msg.head.headers["Host"], "example.com");
         assert_eq!(method, Some(Method::GET));
     }
 

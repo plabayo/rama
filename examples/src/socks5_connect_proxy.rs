@@ -36,9 +36,9 @@
 )]
 
 use rama::{
+    graceful::Scope,
     net::user::credentials::basic,
     proxy::socks5::Socks5Acceptor,
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -60,18 +60,17 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
-    let tcp_service = TcpListener::bind_address("127.0.0.1:12021", exec)
+    let tcp_service = TcpListener::bind_address("127.0.0.1:12021", weak_scope)
         .await
         .expect("bind proxy to 127.0.0.1:12021");
     let socks5_acceptor =
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
-    graceful.spawn_task(tcp_service.serve(socks5_acceptor));
+    scope.spawn_task(tcp_service.serve(socks5_acceptor));
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

@@ -338,9 +338,11 @@ test-loom:
 
 _test-loom-unix:
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg rama_loom -Dwarnings" cargo nextest run --release --all-features -p rama-core -E 'test(loom_tests)'
 
 _test-loom-windows:
     $env:RUSTFLAGS = "--cfg loom -Dwarnings"; cargo nextest run --all-features -p rama-utils
+    $env:LOOM_MAX_PREEMPTIONS = "3"; $env:RUSTFLAGS = "--cfg rama_loom -Dwarnings"; cargo nextest run --release --all-features -p rama-core -E 'test(loom_tests)'
 
 qq: sort-check fmt-check check check-fuzz check-nostd clippy doc extra-checks
     just rama-quic/qq

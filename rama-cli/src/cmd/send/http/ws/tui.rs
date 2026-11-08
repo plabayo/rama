@@ -1,7 +1,7 @@
 use rama::{
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
     futures::{FutureExt, StreamExt},
-    graceful::ShutdownGuard,
+    graceful::WeakScope,
     http::ws::{
         Message, Utf8Bytes, WebSocketIo, handshake::client::ClientWebSocket, protocol::Role,
     },
@@ -115,17 +115,17 @@ impl<S: WebSocketIo> App<S> {
             .context("send close WS message")
     }
 
-    pub(super) async fn run(&mut self, guard: ShutdownGuard) -> Result<(), BoxError> {
+    pub(super) async fn run(&mut self, scope: &WeakScope) -> Result<(), BoxError> {
         loop {
             self.render()?;
 
-            if guard
+            if scope
                 .cancelled()
                 .now_or_never()
                 .map(|_| true)
                 .unwrap_or_default()
             {
-                tracing::info!("guard cancelled: exit tui");
+                tracing::info!("scope cancelled: exit tui");
                 return self.cleanup().await;
             }
 

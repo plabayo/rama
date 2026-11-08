@@ -1111,8 +1111,9 @@ impl Connection {
     /// lease is dropped or part of the endpoint's shutdown budget has passed.
     ///
     /// For work that must still leave over this connection once shutdown starts, such as a
-    /// tunnel forwarding the close of a connection it carries. Other closes, and an explicit
-    /// [`Endpoint::shutdown`](crate::Endpoint::shutdown), do not wait for it.
+    /// tunnel forwarding the close of a connection it carries. Other closes, an explicit
+    /// [`Endpoint::shutdown`](crate::Endpoint::shutdown), and an abort of the
+    /// endpoint's scope do not wait for it.
     #[must_use]
     pub fn close_lease(&self) -> CloseLease {
         self.0.shared.close_leases.fetch_add(1, Ordering::AcqRel);

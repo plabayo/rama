@@ -5,6 +5,7 @@
 use super::{TEST_TIMEOUT, credentials};
 use rama::{
     Layer, Service, ServiceInput,
+    graceful::WeakScope,
     http::{
         Body, Method, Request, Response, StatusCode,
         core::{client::conn, h2::Reason, h3},
@@ -16,7 +17,6 @@ use rama::{
     io::AbortIo,
     net::{address::SocketAddress, proxy::IoForwardService, tls::ApplicationProtocol, uri::Uri},
     quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
-    rt::Executor,
     service::service_fn,
     tcp::{client::service::TcpConnector, server::TcpListener},
     tls::server::{ServerAuthData, TlsServerConfig},
@@ -49,11 +49,11 @@ enum End {
 
 /// The proxied service: CONNECT establishes egress first, then relays the tunnel.
 fn proxy() -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
-    let executor = Executor::new();
+    let scope = WeakScope::detached();
     UpgradeLayer::new(
-        executor.clone(),
+        scope.clone(),
         MethodMatcher::CONNECT,
-        EagerHttpProxyConnector::new(TcpConnector::new(), IoForwardService::new(executor)),
+        EagerHttpProxyConnector::new(TcpConnector::new(), IoForwardService::new(scope)),
     )
     .into_layer(service_fn(async |_: Request| {
         Ok::<_, Infallible>(
@@ -66,11 +66,11 @@ fn proxy() -> impl Service<Request, Output = Response, Error = Infallible> + Clo
 }
 
 async fn tcp_proxy() -> SocketAddr {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::new())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
-    spawn(listener.serve(HttpServer::auto(Executor::new()).service(proxy())));
+    spawn(listener.serve(HttpServer::auto(WeakScope::detached()).service(proxy())));
     address
 }
 
@@ -78,8 +78,8 @@ async fn quic_proxy(auth: ServerAuthData) -> (SocketAddr, Endpoint) {
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let executor = Executor::new();
-    let endpoint = Endpoint::build(executor.clone())
+    let scope = WeakScope::detached();
+    let endpoint = Endpoint::build(scope.clone())
         .with_server_config(ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
@@ -87,13 +87,13 @@ async fn quic_proxy(auth: ServerAuthData) -> (SocketAddr, Endpoint) {
     let address = endpoint.local_addr().unwrap();
     spawn({
         let endpoint = endpoint.clone();
-        let server = HttpServer::new_http3(executor.clone());
+        let server = HttpServer::new_http3(scope.clone());
         let service = proxy();
         async move {
             while let Some(incoming) = endpoint.accept().await {
                 let server = server.clone();
                 let service = service.clone();
-                executor.spawn_task(async move {
+                scope.try_hold().unwrap().into_spawn_task(async move {
                     if let Ok(connection) = incoming.await {
                         _ = server.serve(connection, service).await;
                     }
@@ -149,7 +149,7 @@ async fn tunnel(version: Wire, origin: SocketAddr) -> (Box<dyn Tunnel>, Option<E
         }
         Wire::H2 => {
             let io = TokioTcpStream::connect(tcp_proxy().await).await.unwrap();
-            let (mut client, connection) = conn::http2::Builder::new(Executor::new())
+            let (mut client, connection) = conn::http2::Builder::new(WeakScope::detached())
                 .handshake::<_, Body>(ServiceInput::new(io))
                 .await
                 .unwrap();
@@ -162,7 +162,7 @@ async fn tunnel(version: Wire, origin: SocketAddr) -> (Box<dyn Tunnel>, Option<E
             let (auth, tls) = credentials();
             let (address, _server) = quic_proxy(auth).await;
             let tls = tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let endpoint = Endpoint::build(Executor::new())
+            let endpoint = Endpoint::build(WeakScope::detached())
                 .bind_address(SocketAddress::local_ipv4(0))
                 .await
                 .unwrap();
@@ -175,7 +175,7 @@ async fn tunnel(version: Wire, origin: SocketAddr) -> (Box<dyn Tunnel>, Option<E
             let (mut client, driver) = h3::client::handshake::<Body, _>(
                 connection,
                 h3::connection::Config::default(),
-                Executor::new(),
+                WeakScope::detached(),
             )
             .unwrap();
             spawn(driver.run());

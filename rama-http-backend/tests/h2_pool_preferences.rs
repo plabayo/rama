@@ -15,7 +15,9 @@ use std::{
     time::Duration,
 };
 
-use rama_core::{Service, extensions::ExtensionsRef as _, rt::Executor, service::service_fn};
+use rama_core::{
+    Service, extensions::ExtensionsRef as _, graceful::WeakScope, service::service_fn,
+};
 use rama_http_backend::client::{
     HttpConnectRequestAdapter, HttpConnector, HttpPooledConnectorConfig,
 };
@@ -176,7 +178,10 @@ async fn native_h2_wire_preferences_partition_actual_pool_connections_by_value()
                 idle_timeout: None,
                 ..Default::default()
             }
-            .build_connector(HttpConnector::<_, Body>::new(transport, Executor::new())),
+            .build_connector(HttpConnector::<_, Body>::new(
+                transport,
+                WeakScope::detached(),
+            )),
         );
 
         let first = vec![(2, 0), (4, 65535), (6, 1048576)];

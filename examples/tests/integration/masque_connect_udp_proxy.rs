@@ -2,10 +2,10 @@
 use super::utils;
 use rama::{
     Service,
+    graceful::WeakScope,
     http::{Body, Request, Response, server::HttpServer},
     net::{address::SocketAddress, tls::ApplicationProtocol, transport::TransportProtocol},
     quic::{Connection, ConnectionError, Endpoint, ServerConfig, tls::TlsOptions},
-    rt::Executor,
     service::service_fn,
     tls::server::{ServerAuthData, TlsServerConfig},
 };
@@ -21,23 +21,24 @@ async fn test_masque_connect_udp_proxy() {
     let tls = TlsServerConfig::new()
         .with_server_auth(auth)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let origin = Endpoint::build(Executor::new())
+    let origin = Endpoint::build(WeakScope::detached())
         .with_server_config(ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap())
         .bind_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
     let origin_port = origin.local_addr().unwrap().port();
-    let h3 =
-        HttpServer::new_http3(Executor::new()).service(service_fn(async |request: Request| {
+    let h3 = HttpServer::new_http3(WeakScope::detached()).service(service_fn(
+        async |request: Request| {
             Ok::<_, Infallible>(Response::new(Body::from(format!(
                 "{:?} origin",
                 request.version()
             ))))
-        }));
+        },
+    ));
     // Every connection's end, to check that the client closed it.
     let (closed_tx, mut closed) = mpsc::unbounded_channel::<ConnectionError>();
     tokio::spawn(origin.clone().serve(
-        Executor::new(),
+        WeakScope::detached(),
         service_fn(move |connection: Connection| {
             let closed_tx = closed_tx.clone();
             let h3 = h3.clone();

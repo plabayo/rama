@@ -259,7 +259,7 @@ pub async fn rama_client_side(
     let endpoint = deadline
         .wait(
             what,
-            Endpoint::build(rama::rt::Executor::new())
+            Endpoint::build(rama::graceful::WeakScope::detached())
                 .with_config(endpoint_config(BOTH))
                 .bind_address(localhost()),
         )
@@ -300,7 +300,7 @@ pub async fn rama_server_side(run: &CaseRun<VersionScenario>) -> (Endpoint, Sock
     let server = deadline
         .wait(
             what,
-            Endpoint::build(rama::rt::Executor::new())
+            Endpoint::build(rama::graceful::WeakScope::detached())
                 .with_config(endpoint_config(run.scenario.rama_server.acceptable))
                 .with_server_config(rama_server_config_for(run))
                 .bind_address(localhost()),

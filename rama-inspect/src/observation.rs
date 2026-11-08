@@ -18,10 +18,8 @@ struct Inner {
 }
 
 /// Keeps observed values apart from extensions of the same type.
-#[derive(Debug)]
+#[derive(Debug, Extension)]
 struct Observation<T>(T);
-
-impl<T: fmt::Debug + Send + Sync + 'static> Extension for Observation<T> {}
 
 impl Observations {
     /// The newest value of this type.

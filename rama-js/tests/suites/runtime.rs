@@ -1,6 +1,7 @@
 use std::assert_matches;
 use std::net::IpAddr;
 
+use rama_core::telemetry::tracing::test_utils::prepare_for_captures;
 use rama_js::{
     Console, IntoJsGlobal, JsArgs, JsArray, JsError, JsErrorKind, JsHostClass, JsHostObject,
     JsNamespace, JsObject, JsRuntime, JsRuntimeBuilder, JsSnapshotLimits, JsStr, JsValue,
@@ -1157,6 +1158,7 @@ fn console_trace_never_throws_and_renders_placeholders() {
         .build()
         .unwrap();
 
+    prepare_for_captures();
     rama_core::telemetry::tracing::subscriber::with_default(subscriber, || {
         runtime
             .eval(
@@ -1217,6 +1219,7 @@ fn console_trace_escapes_control_characters() {
         .build()
         .unwrap();
 
+    prepare_for_captures();
     rama_core::telemetry::tracing::subscriber::with_default(subscriber, || {
         runtime
             .eval(r#" console.log("a\r\n2026-01-01 ERROR forged", "\u001b[31mred") "#)

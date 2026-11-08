@@ -30,6 +30,7 @@
 use rama::{
     Layer,
     extensions::Extensions,
+    graceful::Scope,
     http::{
         StatusCode,
         headers::exotic::XClacksOverhead,
@@ -41,7 +42,6 @@ use rama::{
         service::web::Router,
     },
     layer::{AbortableLayer, abort::AbortController},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -66,7 +66,9 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     let router =
         Router::new()
@@ -83,22 +85,18 @@ async fn main() {
     );
 
     let tcp_svc = AbortableLayer::new().into_layer(
-        HttpServer::auto(Executor::graceful(graceful.guard()))
-            .service(Arc::new(http_middlewares.into_layer(router))),
+        HttpServer::auto(scope.clone_weak()).service(Arc::new(http_middlewares.into_layer(router))),
     );
 
-    graceful.spawn_task_fn(async |guard| {
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
         tracing::info!("running service at: {ADDRESS}");
-        let exec = Executor::graceful(guard);
-        TcpListener::bind_address(ADDRESS, exec)
+        TcpListener::bind_address(ADDRESS, weak_scope)
             .await
             .unwrap()
             .serve(tcp_svc)
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

@@ -10,11 +10,11 @@ use rama_core::{
     Layer, Service,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
     matcher::{
         Matcher,
         service::{ServiceMatch, ServiceMatcher},
     },
-    rt::Executor,
 };
 use rama_http::{
     Request, Response, StatusCode, Version,
@@ -65,8 +65,9 @@ fn accepted<B>(version: Version, response: &Response<B>) -> Result<bool, Capsule
 /// CONNECT-UDP socket. A half-close allows five seconds for the other direction
 /// to drain. Shutdown and errors abort both stream-local transports.
 #[must_use]
-pub fn relay(exec: Executor) -> HttpDatagramRelay {
-    HttpDatagramRelay::new(super::session_config()).with_executor(exec)
+pub fn relay(scope: impl Into<WeakScope>) -> HttpDatagramRelay {
+    let scope = scope.into();
+    HttpDatagramRelay::new(super::session_config()).with_scope(scope)
 }
 
 /// Select CONNECT-UDP upgrades for an HTTP/1.1 or HTTP/2 MITM relay.
@@ -82,15 +83,16 @@ pub struct ConnectUdpRelayRequestMatcher<S = HttpDatagramRelay, M = bool> {
 
 impl Default for ConnectUdpRelayRequestMatcher {
     fn default() -> Self {
-        Self::default_with_exec(Executor::new())
+        Self::default_with_scope(WeakScope::detached())
     }
 }
 
 impl ConnectUdpRelayRequestMatcher {
-    /// Use bounded opaque forwarding with the supplied shutdown executor.
+    /// Use bounded opaque forwarding with the supplied shutdown scope.
     #[must_use]
-    pub fn default_with_exec(exec: Executor) -> Self {
-        Self::new(relay(exec))
+    pub fn default_with_scope(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
+        Self::new(relay(scope))
     }
 }
 

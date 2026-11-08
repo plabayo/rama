@@ -65,6 +65,7 @@
 use rama::{
     Layer, Service,
     extensions::{Extension, Extensions, ExtensionsRef},
+    graceful::Scope,
     http::{
         Body, BodyLimitLayer, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -80,7 +81,6 @@ use rama::{
     },
     layer::{ConsumeErrLayer, HijackLayer, TimeoutLayer},
     net::{proxy::IoForwardService, stream::SocketInfo, user::credentials::basic},
-    rt::Executor,
     service::service_fn,
     tcp::{client::service::TcpConnector, posted_recv::PostedRecvLayer, server::TcpListener},
     telemetry::tracing::{
@@ -109,7 +109,9 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     #[derive(Deserialize)]
     /// API parameters for the lucky number endpoint
@@ -117,11 +119,11 @@ async fn main() {
         number: u32,
     }
 
-    graceful.spawn_task_fn(async move |guard| {
-                let exec = Executor::graceful(guard);
-        let tcp_service = TcpListener::build(exec.clone()).bind_address("127.0.0.1:12001").await.expect("bind tcp proxy to 127.0.0.1:12001");
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
+        let tcp_service = TcpListener::build(weak_scope.clone()).bind_address("127.0.0.1:12001").await.expect("bind tcp proxy to 127.0.0.1:12001");
 
-        let http_service = HttpServer::auto(exec.clone())
+        let http_service = HttpServer::auto(weak_scope.clone())
             .service((
                     TraceLayer::new_for_http(),
                     ConsumeErrLayer::default(),
@@ -161,10 +163,10 @@ async fn main() {
                                     PostedRecvLayer::new().into_layer(TcpConnector::new()),
                                 ),
                             ),
-                            IoForwardService::new(exec.clone()),
+                            IoForwardService::new(weak_scope.clone()),
                         );
                         UpgradeLayer::new(
-                            exec.clone(),
+                            weak_scope.clone(),
                             MethodMatcher::CONNECT,
                             connect,
                         )
@@ -180,10 +182,7 @@ async fn main() {
             ).into_layer(http_service)).await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {

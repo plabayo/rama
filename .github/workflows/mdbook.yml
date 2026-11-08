@@ -202,6 +202,16 @@ jobs:
           cp trademark.html www/trademark.html
           cp sitemap.xml www/sitemap.xml
           cp robots.txt www/robots.txt
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # Preserve the cache pruning policy from setup-uv v6.
+          prune-cache: true
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: just
+      # The README's LoC badge reads this file from the published site.
+      - name: Generate LoC badge
+        run: just scripts/ci/loc-badge docs/www/static/badges/loc.json
       - name: Report Pages payload size
         run: |
           set -eu

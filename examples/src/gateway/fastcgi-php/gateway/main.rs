@@ -38,7 +38,7 @@ use rama::{
     Service,
     error::BoxError,
     gateway::fastcgi::{FastCgiClientRequest, FastCgiHttpClient, FastCgiTcpConnector},
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         Request, Response, StatusCode, layer::trace::TraceLayer, server::HttpServer,
         service::web::response::IntoResponse,
@@ -48,7 +48,6 @@ use rama::{
         address::{HostWithPort, SocketAddress},
         client::EstablishedClientConnection,
     },
-    rt::Executor,
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -90,9 +89,10 @@ async fn main() {
             .to_owned()
     });
 
-    let shutdown = Shutdown::default();
-    let guard = shutdown.guard();
-    let exec = Executor::graceful(guard);
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
     // ── TLS terminator (rustls + self-signed, HTTP/1.1 + HTTP/2) ─────────
     let tls_data = TlsServerConfig::new()
@@ -112,10 +112,10 @@ async fn main() {
         client: fastcgi_client,
     };
 
-    let http_server =
-        HttpServer::auto(exec.clone()).service(TraceLayer::new_for_http().into_layer(app_service));
+    let http_server = HttpServer::auto(weak_scope.clone())
+        .service(TraceLayer::new_for_http().into_layer(app_service));
 
-    let tcp = TcpListener::bind_address(listen, exec.clone())
+    let tcp = TcpListener::bind_address(listen, weak_scope.clone())
         .await
         .expect("bind https listener");
     tracing::info!(
@@ -123,12 +123,9 @@ async fn main() {
         "rama-fastcgi-php gateway listening (HTTPS) on https://{listen}"
     );
 
-    shutdown.spawn_task(tcp.serve(TlsAcceptorLayer::new(tls_data).into_layer(http_server)));
+    scope.spawn_task(tcp.serve(TlsAcceptorLayer::new(tls_data).into_layer(http_server)));
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 /// HTTP service: forward to php-fpm via FastCGI, surfacing protocol-level

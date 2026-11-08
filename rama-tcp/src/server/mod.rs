@@ -7,14 +7,14 @@
 //! ```no_run
 //! use rama_tcp::{TcpStream, server::TcpListener};
 //! use rama_core::service::service_fn;
-//! use rama_core::rt::Executor;
+//! use rama_core::graceful::WeakScope;
 //! use tokio::io::AsyncWriteExt;
 //!
 //! const SRC: &str = include_str!("../../../examples/src/tcp_listener_hello.rs");
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {
-//!     TcpListener::bind_address("127.0.0.1:9000", Executor::default())
+//!     TcpListener::bind_address("127.0.0.1:9000", WeakScope::detached())
 //!         .await
 //!         .expect("bind TCP Listener")
 //!         .serve(service_fn(async |mut stream: TcpStream| {

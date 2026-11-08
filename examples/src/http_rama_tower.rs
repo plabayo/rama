@@ -27,6 +27,7 @@ use rama::{
     Layer as _,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::ExtensionsRef,
+    graceful::Scope,
     http::{
         HeaderValue, Request,
         layer::trace::TraceLayer,
@@ -35,7 +36,6 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     net::address::SocketAddress,
-    rt::Executor,
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -72,7 +72,9 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     let router = Arc::new(Router::new().with_get("/", ServiceAdapter::new(HelloSvc)));
     let app = LayerAdapter::new((
@@ -81,9 +83,10 @@ async fn main() {
     ))
     .into_layer(router);
 
-    graceful.spawn_task_fn(async |guard| {
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
         tracing::info!("running service at: {ADDRESS}");
-        HttpServer::auto(Executor::graceful(guard))
+        HttpServer::auto(weak_scope)
             .listen(
                 ADDRESS,
                 (TraceLayer::new_for_http(), ConsumeErrLayer::default()).into_layer(app),
@@ -92,10 +95,7 @@ async fn main() {
             .unwrap();
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }
 
 #[derive(Debug, Clone, Default)]

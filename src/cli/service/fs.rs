@@ -2,9 +2,10 @@
 
 use crate::{
     Layer, Service,
-    cli::ForwardKind,
+    cli::{DEFAULT_CONNECTION_GRACE, ForwardKind, connection_scope},
     combinators::{Either, Either3},
     error::{BoxError, BoxErrorExt, ErrorExt},
+    graceful::WeakScope,
     http::BodyLimitLayer,
     http::{
         Request, Response, Version,
@@ -22,12 +23,11 @@ use crate::{
     },
     layer::limit::policy::UnlimitedPolicy,
     layer::{
-        ConsumeErrLayer, LimitLayer, TimeoutLayer,
+        ConsumeErrLayer, LimitLayer,
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
     },
     net::stream::layer::{ThrottleLayer, ThrottleMode},
     proxy::haproxy::server::HaProxyLayer,
-    rt::Executor,
     service::StaticOutput,
     tcp::TcpStream,
     telemetry::tracing,
@@ -59,6 +59,7 @@ pub struct FsServiceBuilder<H> {
     throttle: Option<Rate>,
     body_limit: usize,
     timeout: Duration,
+    timeout_grace: Duration,
     forward: Option<ForwardKind>,
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -82,6 +83,7 @@ impl Default for FsServiceBuilder<()> {
             throttle: None,
             body_limit: mib(1),
             timeout: Duration::ZERO,
+            timeout_grace: DEFAULT_CONNECTION_GRACE,
             forward: None,
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -145,11 +147,23 @@ impl<H> FsServiceBuilder<H> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// set the timeout in seconds for each connection
+        /// set the age at which each connection starts draining, give or take a tenth; it is
+        /// dropped [`with_timeout_grace`](Self::with_timeout_grace) later
         ///
-        /// (0 = no timeout)
+        /// (0 = no limit)
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// set at most how long a draining connection may still run before it is dropped
+        ///
+        /// Also bounds the drain when the server shuts down; the server's own scope can end it
+        /// sooner. Default: 5 seconds.
+        pub fn timeout_grace(mut self, timeout_grace: Duration) -> Self {
+            self.timeout_grace = timeout_grace;
             self
         }
     }
@@ -199,6 +213,7 @@ impl<H> FsServiceBuilder<H> {
             throttle: self.throttle,
             body_limit: self.body_limit,
             timeout: self.timeout,
+            timeout_grace: self.timeout_grace,
             forward: self.forward,
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -282,8 +297,9 @@ where
     /// build a tcp service ready to serve files
     pub fn build(
         self,
-        executor: Executor,
+        scope: impl Into<WeakScope>,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
+        let scope = scope.into();
         let tcp_forwarded_layer = match &self.forward {
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             _ => None,
@@ -298,11 +314,7 @@ where
             } else {
                 Either::B(UnlimitedPolicy::new())
             }),
-            if !self.timeout.is_zero() {
-                TimeoutLayer::new(self.timeout)
-            } else {
-                TimeoutLayer::never()
-            },
+            connection_scope(&scope, self.timeout, self.timeout_grace),
             self.throttle
                 .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
             tcp_forwarded_layer,
@@ -313,15 +325,15 @@ where
         );
 
         let http_transport_service = match self.http_version {
-            Some(Version::HTTP_2) => Either3::A(HttpServer::new_h2(executor).service(http_service)),
+            Some(Version::HTTP_2) => Either3::A(HttpServer::new_h2(scope).service(http_service)),
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
-                Either3::B(HttpServer::new_http1(executor).service(http_service))
+                Either3::B(HttpServer::new_http1(scope).service(http_service))
             }
             Some(version) => {
                 return Err(BoxError::from_static_str("unsupported http version")
                     .context_debug_field("version", version));
             }
-            None => Either3::C(HttpServer::auto(executor).service(http_service)),
+            None => Either3::C(HttpServer::auto(scope).service(http_service)),
         };
 
         Ok(tcp_service_builder.into_layer(http_transport_service))

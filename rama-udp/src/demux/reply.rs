@@ -10,7 +10,8 @@ use std::sync::{Arc, atomic::AtomicUsize};
 use ahash::HashMap;
 use parking_lot::Mutex;
 use rama_core::{
-    Service, bytes::Bytes, error::BoxError, rt::Executor, service::BoxService, telemetry::tracing,
+    Service, bytes::Bytes, error::BoxError, graceful::Scope, service::BoxService,
+    telemetry::tracing,
 };
 use rama_net::address::SocketAddress;
 use tokio::sync::{mpsc, oneshot};
@@ -61,7 +62,7 @@ where
     pub(super) async fn lease(
         &self,
         local: SocketAddress,
-        exec: &Executor,
+        scope: &Scope,
     ) -> Result<(S::Sender, ReplyLease<S::Sender>), BoxError> {
         let lease = ReplyLease {
             bound: self.bound.clone(),
@@ -74,7 +75,7 @@ where
         let socket = self.bind.serve(local).await?;
         let sender = socket.create_sender();
         let (stop, stopped) = oneshot::channel();
-        exec.spawn_task(read(socket, local, self.reader.clone(), stopped));
+        scope.spawn_task(read(socket, local, self.reader.clone(), stopped));
         self.bound.lock().insert(
             local,
             Bound {

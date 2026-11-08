@@ -33,6 +33,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
+    graceful::Scope,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue,
         client::EasyHttpWebClient,
@@ -52,7 +53,6 @@ use rama::{
     io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer, MapOutputLayer, TimeoutLayer},
     net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
         self,
@@ -79,13 +79,15 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
-    let mitm_svc = new_mitm_svc(&exec).context("build MITM service")?;
+    let mitm_svc = new_mitm_svc(&scope).context("build MITM service")?;
 
-    graceful.spawn_task_fn(async move |guard| {
-        let tcp_service = TcpListener::build(Executor::graceful(guard.clone()))
+    scope.spawn_task(async move {
+        let tcp_service = TcpListener::build(weak_scope.clone())
             .bind_address("127.0.0.1:12049")
             .await
             .expect("bind tcp proxy to 127.0.0.1:12049");
@@ -98,18 +100,14 @@ async fn main() -> Result<(), BoxError> {
             ),
             mitm_svc,
         );
-        let http_service = HttpServer::auto(exec).service(Arc::new(
+        let http_service = HttpServer::auto(weak_scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
                 ProxyAuthLayer::new(basic!("john", "secret")),
-                UpgradeLayer::new(
-                    Executor::graceful(guard.clone()),
-                    MethodMatcher::CONNECT,
-                    connect,
-                ),
+                UpgradeLayer::new(weak_scope.clone(), MethodMatcher::CONNECT, connect),
                 (
                     RemoveRequestHeaderLayer::hop_by_hop(),
                     SetRequestHeaderLayer::overriding(
@@ -128,7 +126,7 @@ async fn main() -> Result<(), BoxError> {
                 ),
             )
                 .into_layer(
-                    EasyHttpWebClient::default_with_executor(Executor::graceful(guard))
+                    EasyHttpWebClient::default_with_scope(weak_scope)
                         .with_isolate_forward_proxy_auth_error(true),
                 ),
         ));
@@ -138,16 +136,13 @@ async fn main() -> Result<(), BoxError> {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .context("graceful shutdown")?;
+    scope.join().await.context("graceful shutdown")?;
 
     Ok(())
 }
 
 fn new_mitm_svc<Ingress, Egress>(
-    exec: &Executor,
+    scope: &Scope,
 ) -> Result<
     impl Service<BridgeIo<Ingress, Egress>, Output = (), Error = Infallible> + Clone,
     BoxError,
@@ -156,7 +151,8 @@ where
     Ingress: Io + Unpin + ExtensionsRef,
     Egress: Io + Unpin + ExtensionsRef,
 {
-    let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
+    let weak_scope = scope.clone_weak();
+    let http_mitm_relay = HttpMitmRelay::new(weak_scope.clone()).with_http_middleware((
         ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         TraceLayer::new_for_http(),
@@ -164,7 +160,7 @@ where
             HeaderName::from_static("x-observed"),
             HeaderValue::from_static("1"),
         ),
-        RequestWriterLayer::stdout_unbounded(exec, Some(traffic_writer::WriterMode::Headers)),
+        RequestWriterLayer::stdout_unbounded(scope, Some(traffic_writer::WriterMode::Headers)),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-proxy"),
             HeaderValue::from_static(rama::utils::info::NAME),
@@ -177,7 +173,7 @@ where
     ));
     let maybe_http_relay = HttpPeekRouter::new(http_mitm_relay)
         .with_known_non_http_protocol_methods()
-        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
+        .with_fallback(MapOutputLayer::new(drop).into_layer(IoForwardService::new(weak_scope)));
 
     let tls_mitm_relay =
         TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedCaConfig {

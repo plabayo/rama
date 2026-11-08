@@ -36,6 +36,7 @@ use rama::{
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, BoxErrorExt as _, error_chain},
     extensions::{Extensions, ExtensionsRef as _},
+    graceful::{Scope, WeakScope},
     http::{
         Body, Request, Response, StatusCode, Version,
         client::{EasyHttpWebClient, Http3Connector},
@@ -77,7 +78,6 @@ use rama::{
         Endpoint, ServerConfig, TransportConfig,
         tls::{BoringTlsProvider, TlsOptions},
     },
-    rt::Executor,
     service::{BoxService, StaticOutput, service_fn},
     tcp::server::TcpListener,
     tls::{
@@ -125,8 +125,8 @@ enum Mode {
     },
 }
 
-fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxError> {
-    let h3 = Http3Connector::builder(exec.clone())
+fn client(scope: WeakScope, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxError> {
+    let h3 = Http3Connector::builder(scope.clone())
         .with_tls_config(tls.clone())
         .with_tls_provider(Arc::new(BoringTlsProvider))
         .build_lazy()?;
@@ -136,7 +136,7 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
         .without_tls_proxy_support()
         .without_proxy_support()
         .with_tls_support_using_boringssl_and_default_http_version(tls, Version::HTTP_11)
-        .with_default_http_connector(exec.clone())
+        .with_default_http_connector(scope.clone())
         .with_http3_support(h3)
         .with_default_connection_pool()
         // Version policy comes from the tunnel or label, not advertised alternatives.
@@ -166,8 +166,8 @@ fn client(exec: Executor, tls: TlsClientConfig) -> Result<(Web, Preflight), BoxE
     let web = RemoveResponseHeaderLayer::hop_by_hop().into_layer(ResponseVersionAdapter::new(web));
 
     let web = HttpUpgradeMitmRelayLayer::new(
-        exec.clone(),
-        HttpWebSocketRelayServiceRequestMatcher::default_with_exec(exec),
+        scope.clone(),
+        HttpWebSocketRelayServiceRequestMatcher::default_with_scope(scope),
     )
     .into_layer(web);
 
@@ -273,7 +273,7 @@ fn forwarding_service(
 }
 
 fn mitm(
-    exec: Executor,
+    scope: WeakScope,
     web: Web,
     preflight: Preflight,
 ) -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
@@ -283,7 +283,7 @@ fn mitm(
             .with_cert_issuer(ServerCertIssuerData::default())
             .with_alpn_http_auto(),
     );
-    let mut http = HttpServer::auto(exec.clone());
+    let mut http = HttpServer::auto(scope.clone());
     http.h2_mut().set_enable_connect_protocol();
     let connect = service_fn(move |req: Request| {
         let tls = tls.clone();
@@ -360,7 +360,7 @@ fn mitm(
             )
         }
     });
-    UpgradeLayer::new(exec, MethodMatcher::CONNECT, connect).into_layer(service_fn(
+    UpgradeLayer::new(scope, MethodMatcher::CONNECT, connect).into_layer(service_fn(
         async |_: Request| {
             Ok::<_, Infallible>(error_response(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -373,7 +373,7 @@ fn mitm(
 // TCP and UDP have their own reserved ranges (Windows), so neither allocator's pick is known
 // to suit the other: port 0 tries random dynamic ports (49152+) until one is free for both.
 async fn bind_tcp_and_quic(
-    exec: Executor,
+    scope: WeakScope,
     address: SocketAddress,
     config: ServerConfig,
 ) -> Result<(TcpListener, Endpoint), BoxError> {
@@ -397,7 +397,7 @@ async fn bind_tcp_and_quic(
                     ErrorKind::AddrInUse | ErrorKind::PermissionDenied
                 )
         };
-        let tcp = match TcpListener::bind_address(candidate, exec.clone()).await {
+        let tcp = match TcpListener::bind_address(candidate, scope.clone()).await {
             Ok(tcp) => tcp,
             Err(error)
                 if error
@@ -413,7 +413,7 @@ async fn bind_tcp_and_quic(
             Err(DatagramError::Io(error)) if retryable(&error) => continue,
             Err(error) => return Err(error.into()),
         };
-        let quic = Endpoint::build(exec)
+        let quic = Endpoint::build(scope)
             .with_server_config(config)
             .with_packet_socket(udp)?;
         return Ok((tcp, quic));
@@ -428,8 +428,10 @@ async fn main() -> Result<(), BoxError> {
         .with_env_filter(rama::telemetry::tracing::subscriber::EnvFilter::from_default_env())
         .init();
 
-    let shutdown = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(shutdown.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(15));
+    let weak_scope = scope.clone_weak();
 
     match args.mode {
         Mode::Mitm {
@@ -443,14 +445,15 @@ async fn main() -> Result<(), BoxError> {
                 )?;
             }
 
-            let (web, preflight) = client(exec.clone(), tls)?;
-            let listener = TcpListener::bind_address(listen, exec.clone()).await?;
+            let (web, preflight) = client(weak_scope.clone(), tls)?;
+            let listener = TcpListener::bind_address(listen, weak_scope.clone()).await?;
             let listen = SocketAddress::from(listener.local_addr()?);
 
             rama::telemetry::tracing::info!("HTTP version MITM proxy listening on {listen}");
 
-            let service = HttpServer::auto(exec.clone()).service(mitm(exec, web, preflight));
-            shutdown.spawn_task(async move {
+            let service =
+                HttpServer::auto(weak_scope.clone()).service(mitm(weak_scope, web, preflight));
+            scope.spawn_task(async move {
                 listener.serve(service).await;
             });
         }
@@ -476,7 +479,7 @@ async fn main() -> Result<(), BoxError> {
                 ocsp: None,
             };
 
-            let (web, _) = client(exec.clone(), TlsClientConfig::default_http())?;
+            let (web, _) = client(weak_scope.clone(), TlsClientConfig::default_http())?;
             let origin = UriMatchReplaceOrigin::new(
                 Protocol::HTTP,
                 upstream
@@ -492,7 +495,7 @@ async fn main() -> Result<(), BoxError> {
             let tls = TlsServerConfig::new()
                 .with_server_auth(auth.clone())
                 .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-            let mut http3 = HttpServer::new_http3(exec.clone());
+            let mut http3 = HttpServer::new_http3(weak_scope.clone());
             http3.http3_mut().extended_connect = true;
             let mut transport = TransportConfig::default();
             http3.http3().configure_transport(&mut transport)?;
@@ -503,7 +506,8 @@ async fn main() -> Result<(), BoxError> {
             )?;
             config.set_transport_config(Arc::new(transport));
 
-            let (listener, endpoint) = bind_tcp_and_quic(exec.clone(), listen, config).await?;
+            let (listener, endpoint) =
+                bind_tcp_and_quic(weak_scope.clone(), listen, config).await?;
             let listen = SocketAddress::from(listener.local_addr()?);
 
             let forwarder = Arc::new(
@@ -514,10 +518,10 @@ async fn main() -> Result<(), BoxError> {
                 .into_layer(forwarder),
             );
 
-            let mut http = HttpServer::auto(exec.clone());
+            let mut http = HttpServer::auto(weak_scope.clone());
             http.h2_mut().set_enable_connect_protocol();
             let tcp = TlsAcceptorLayer::new(tcp_tls).into_layer(http.service(forwarder.clone()));
-            shutdown.spawn_task(async move {
+            scope.spawn_task(async move {
                 listener.serve(tcp).await;
             });
 
@@ -525,13 +529,11 @@ async fn main() -> Result<(), BoxError> {
                 "HTTP/1, HTTP/2 and HTTP/3 ingress listening on {listen}"
             );
             let service = http3.service(forwarder);
-            shutdown.spawn_task(endpoint.serve(exec, service));
+            scope.spawn_task_to_completion(endpoint.serve(weak_scope, service));
         }
     }
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(15))
-        .await?;
+    scope.join().await?;
 
     Ok(())
 }

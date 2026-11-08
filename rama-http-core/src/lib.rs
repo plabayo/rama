@@ -54,7 +54,7 @@
 #![expect(
     clippy::panic,
     clippy::unreachable,
-    reason = "vendored from upstream `hyper`/`h2`: matches upstream invariant-violation panicking style and macro-internal `#[allow]` attrs"
+    reason = "invariant violations panic by design, and protocol macros expand to internal `#[allow]` attrs"
 )]
 
 pub mod body;

@@ -20,7 +20,7 @@
 [rust-version-url]: https://www.rust-lang.org
 [actions-badge]: https://github.com/plabayo/rama/actions/workflows/CI-status.yml/badge.svg?branch=main
 [actions-url]: https://github.com/plabayo/rama/actions/workflows/CI.yml
-[loc-badge]: https://img.shields.io/endpoint?url=https://ghloc.vercel.app/api/plabayo/rama/badge?filter=.rs,.swift,.c,.h$&style=flat&logoColor=white&label=LoC
+[loc-badge]: https://img.shields.io/endpoint?url=https://ramaproxy.org/static/badges/loc.json
 [loc-url]: https://github.com/plabayo/rama
 
 [discord-badge]: https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white
@@ -104,7 +104,7 @@ inspects, transforms, routes, proxies, or generates network traffic.
 | Application protocols and gateways | [WebSockets](https://ramaproxy.org/book/http/ws.html), [SSE](https://ramaproxy.org/book/http/sse.html), [Datastar](https://ramaproxy.org/docs/rama/http/sse/datastar/index.html), [gRPC](https://ramaproxy.org/book/http/grpc.html), [ttRPC](https://ramaproxy.org/book/http/grpc.html#ttrpc-a-sibling-protocol), [FastCGI](https://ramaproxy.org/book/gateway/fastcgi.html), [RSS and Atom feeds](https://ramaproxy.org/book/http/rss.html) |
 | Proxy routing and discovery | [explicit routes, route plans, and ordered fallback](https://ramaproxy.org/book/intro/service_zen.html), [HTTP(S) and SOCKS5 upstream proxies](https://ramaproxy.org/book/proxies/operate/proxies_and_vpns.html), [MASQUE upstreams for UDP and HTTP/3](https://ramaproxy.org/book/proxies/masque.html), [proxy environment variables and `NO_PROXY`](https://ramaproxy.org/book/proxies/operate/app.html), [system proxy settings on macOS, iOS, Windows and Linux](https://ramaproxy.org/book/proxies/operate/system.html), [PAC fetching, caching, evaluation, generation, and system integration](https://ramaproxy.org/book/proxies/operate/pac.html), [bypass rules](https://ramaproxy.org/docs/rama/net/client/struct.BypassRules.html), [route failure caching](https://ramaproxy.org/docs/rama/net/client/struct.ProxyRouteFailureCache.html) |
 | Content adaptation | [ICAP clients](https://ramaproxy.org/docs/rama/icap/client/index.html), [servers](https://ramaproxy.org/docs/rama/icap/server/index.html), [HTTP adaptation layers](https://ramaproxy.org/docs/rama/icap/http/layer/index.html), and [Preview support](https://ramaproxy.org/docs/rama/icap/proto/struct.Preview.html) |
-| Runtime and interoperability | [async services](https://ramaproxy.org/docs/rama/service/trait.Service.html), optional [blocking adapters](https://ramaproxy.org/docs/rama/rt/blocking/index.html) in front of any async service or client, such as the [HTTP(S) client](https://ramaproxy.org/docs/rama/http/client/type.BlockingHttpWebClient.html) or [WebSocket client](https://ramaproxy.org/docs/rama/http/ws/handshake/client/trait.BlockingHttpClientWebSocketExt.html), [Tower interoperability](https://ramaproxy.org/docs/rama/utils/tower/index.html), [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) |
+| Runtime and interoperability | [async services](https://ramaproxy.org/docs/rama/service/trait.Service.html), optional [blocking adapters](https://ramaproxy.org/docs/rama/rt/blocking/index.html) in front of any async service or client, such as the [HTTP(S) client](https://ramaproxy.org/docs/rama/http/client/type.BlockingHttpWebClient.html) or [WebSocket client](https://ramaproxy.org/docs/rama/http/ws/handshake/client/trait.BlockingHttpClientWebSocketExt.html), [Tower interoperability](https://ramaproxy.org/docs/rama/utils/tower/index.html), [graceful scopes](https://ramaproxy.org/docs/rama/graceful/index.html) |
 | TLS and identity | [Rustls](https://ramaproxy.org/docs/rama/tls/rustls/index.html), [BoringSSL](https://ramaproxy.org/docs/rama/tls/boring/index.html), [TLS termination](https://ramaproxy.org/book/proxies/tls.html), [dynamic certificates](https://ramaproxy.org/book/proxies/reverse.html), [mTLS](https://ramaproxy.org/book/proxies/tls.html), [ACME](https://ramaproxy.org/docs/rama/tls/acme/index.html), [certificate pinning](https://github.com/plabayo/rama/blob/main/examples/src/tls_rustls_cert_pinning.rs) |
 | Traffic inspection | [protocol inspection](https://ramaproxy.org/book/proxies/protocol_inspection.html), [HTTP, WebSocket and TLS capture and interception](https://ramaproxy.org/docs/rama/inspect/index.html), [MITM proxy with a web UI in the `rama` CLI](https://ramaproxy.org/book/deploy/rama-cli.html#mitm-proxy-with-web-ui), [HAR recording and replay](https://ramaproxy.org/book/http/har.html), [curl export](https://ramaproxy.org/docs/rama/http/convert/curl/index.html), [diagnostics](https://ramaproxy.org/docs/rama/telemetry/index.html) |
 | Data processing | [streaming HTML rewriting](https://ramaproxy.org/docs/rama/http/layer/html_rewrite/index.html), [streaming JSON and JSONPath selection and rewriting](https://ramaproxy.org/docs/rama/json/index.html), [JSON-LD responses and extraction](https://ramaproxy.org/docs/rama/http/protocols/json_ld/index.html) |
@@ -186,8 +186,10 @@ Learn how to install and use it in the [`rama` CLI chapter](https://ramaproxy.or
 - **Safety:** Rama avoids unsafe code where possible. Low-level protocol code and
   FFI-backed crates use unsafe where needed.
 - **Supply chain:** dependencies are audited with [`cargo vet`](https://github.com/mozilla/cargo-vet).
-- **Performance:** Rama's default HTTP implementation is based on Hyper internals
-  and is designed for production network services.
+- **Performance:** Rama is built for production network services, whatever the
+  protocol: hot paths avoid copies where they can, memory and other resources are
+  explicitly bounded, and protocol stacks are tracked with benchmarks such as the
+  [QUIC benchmarks](https://github.com/plabayo/rama/tree/main/rama-quic/e2e/bench).
 - **Roadmap:** planned work is tracked in [GitHub milestones](https://github.com/plabayo/rama/milestones).
 
 ## All rama and other crates developed by Plabayo
@@ -254,7 +256,6 @@ Related Plabayo crates and projects:
 - [`rama-boring-sys`](https://crates.io/crates/rama-boring-sys): FFI bindings to BoringSSL for rama
 - [`rama-boring-tokio`](https://crates.io/crates/rama-boring-tokio): Tokio SSL streams backed by BoringSSL
 - [`rama-boringssl`](https://github.com/plabayo/rama-boringssl): BoringSSL fork used by `rama-boring`
-- [`tokio-graceful`](https://crates.io/crates/tokio-graceful): graceful shutdown utilities for Tokio
 - [`venndb`](https://crates.io/crates/venndb): set and relation matching utilities used by Rama proxy components
 - [`homebrew-rama`](https://github.com/plabayo/homebrew-rama): Homebrew formula for the `rama` CLI
 

@@ -54,7 +54,7 @@ async fn requests_without_a_masque_tunnel_go_to_the_inner_connector() {
     let connector = ConnectUdpConnector::new(
         counting_inner(connections.clone()),
         no_client(),
-        Executor::default(),
+        WeakScope::detached(),
     );
     for input in [
         request("127.0.0.1:443", None),
@@ -73,7 +73,7 @@ async fn a_route_to_any_other_proxy_is_refused_never_bypassed() {
     let connector = ConnectUdpConnector::new(
         counting_inner(connections.clone()),
         no_client(),
-        Executor::default(),
+        WeakScope::detached(),
     );
     for proxy in ["http://127.0.0.1:8080", "socks5://127.0.0.1:1080"] {
         let error = connector
@@ -93,7 +93,7 @@ async fn a_tunnel_to_port_zero_is_refused_before_the_proxy_is_asked() {
     let connector = ConnectUdpConnector::new(
         counting_inner(Arc::default()),
         no_client(),
-        Executor::default(),
+        WeakScope::detached(),
     );
     let error = connector
         .serve(request("192.0.2.1:0", Some("masque://127.0.0.1:443")))

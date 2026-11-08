@@ -5,9 +5,10 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use clap::Args;
 use rama::{
     Service,
+    cli::connection_scope,
     combinators::Either,
     error::{BoxError, ErrorContext},
-    graceful::ShutdownGuard,
+    graceful::WeakScope,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue, Request,
         headers::exotic::XClacksOverhead,
@@ -21,7 +22,7 @@ use rama::{
         service::web::{Router, response::IntoResponse},
     },
     layer::{
-        ConsumeErrLayer, Layer, LimitLayer, TimeoutLayer,
+        ConsumeErrLayer, Layer, LimitLayer,
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
     net::{
@@ -29,13 +30,13 @@ use rama::{
         stream::layer::{ThrottleLayer, ThrottleMode},
         tls::ApplicationProtocol,
     },
-    rt::Executor,
     telemetry::tracing,
     tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
     utils::{backoff::ExponentialBackoff, octets::mib},
 };
 
 use crate::utils::{
+    connection::ConnectionGraceArgs,
     http::{HttpVersions, TcpHttpVersion},
     http3::{Http3Args, Http3Endpoints, HttpListeners},
     rate::opt_per_sec,
@@ -67,10 +68,13 @@ pub struct CliCommandHttpTest {
     http3: Http3Args,
 
     #[arg(short = 't', long, default_value_t = 60.)]
-    /// the timeout in seconds for each connection
+    /// the age in seconds at which each connection starts draining, give or take a tenth
     ///
-    /// (<= 0.0 = no timeout)
+    /// It is dropped `--timeout-grace` later. (<= 0.0 = no limit)
     timeout: f64,
+
+    #[command(flatten)]
+    connection_grace: ConnectionGraceArgs,
 
     #[arg(long, default_value_t = 0)]
     /// rate limit the service in requests per second
@@ -92,11 +96,10 @@ pub struct CliCommandHttpTest {
 
 /// run the rama http test service
 pub async fn run(
-    graceful: ShutdownGuard,
+    scope: WeakScope,
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandHttpTest,
 ) -> Result<(), BoxError> {
-    let exec = Executor::graceful(graceful);
     let tcp_version = cfg.http_version.tcp();
     let maybe_tls_server_config = cfg
         .secure
@@ -116,12 +119,12 @@ pub async fn run(
                     ],
                     Some(TcpHttpVersion::H2) => vec![ApplicationProtocol::HTTP_2],
                 }),
-                exec.clone(),
+                scope.clone(),
             )
         })
         .transpose()?;
     let listeners = HttpListeners::bind(
-        exec.clone(),
+        scope.clone(),
         cfg.bind,
         cfg.http_version,
         maybe_tls_server_config.as_ref(),
@@ -198,7 +201,7 @@ pub async fn run(
     let http_service = Arc::new(middlewares.into_layer(router));
 
     serve_http(
-        exec,
+        &scope,
         &http3_endpoints,
         &cfg,
         listeners,
@@ -208,7 +211,7 @@ pub async fn run(
 }
 
 fn serve_http<Response>(
-    exec: Executor,
+    scope: &WeakScope,
     http3_endpoints: &Http3Endpoints,
     cfg: &CliCommandHttpTest,
     listeners: HttpListeners,
@@ -218,11 +221,11 @@ fn serve_http<Response>(
 where
     Response: IntoResponse + Send + 'static,
 {
-    let connection_timeout = if cfg.timeout > 0. {
-        TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
-    } else {
-        TimeoutLayer::never()
-    };
+    let connection_timeout = connection_scope(
+        scope,
+        Duration::try_from_secs_f64(cfg.timeout).unwrap_or_default(),
+        cfg.connection_grace.grace(),
+    );
     let connection_limit = LimitLayer::new(if cfg.concurrent > 0 {
         Either::A(ConcurrentPolicy::max_with_backoff(
             cfg.concurrent,
@@ -247,8 +250,8 @@ where
             throttle.clone(),
             body_limit.clone(),
         )
-            .into_layer(HttpServer::new_http3(exec.clone()).service(http_service.clone()));
-        http3_endpoints.serve(&exec, "HTTP Test", endpoint, Arc::new(http3_service));
+            .into_layer(HttpServer::new_http3(scope.clone()).service(http_service.clone()));
+        http3_endpoints.serve(scope, "HTTP Test", endpoint, Arc::new(http3_service))?;
     }
 
     let Some((tcp_listener, tcp_version)) = listeners.tcp.zip(cfg.http_version.tcp()) else {
@@ -268,46 +271,49 @@ where
     );
 
     let bind = cfg.bind;
-    exec.clone().into_spawn_task(async move {
-        match tcp_version {
-            TcpHttpVersion::Auto => {
-                tracing::info!(
-                    network.local.address = %bind_address.ip(),
-                    network.local.port = %bind_address.port(),
-                    "HTTP Test Service (auto) listening: bind interface = {}", bind,
-                );
-                tcp_listener
-                    .serve(
-                        tcp_service_builder
-                            .into_layer(HttpServer::auto(exec).service(http_service)),
-                    )
-                    .await;
-            }
-            TcpHttpVersion::H1 => {
-                tracing::info!(
-                    network.local.address = %bind_address.ip(),
-                    network.local.port = %bind_address.port(),
-                    "HTTP Test Service (<= HTTP/1.1) listening: bind interface = {}", bind,
-                );
-                tcp_listener
-                    .serve(
-                        tcp_service_builder
-                            .into_layer(HttpServer::new_http1(exec).service(http_service)),
-                    )
-                    .await;
-            }
-            TcpHttpVersion::H2 => {
-                tracing::info!(
-                    network.local.address = %bind_address.ip(),
-                    network.local.port = %bind_address.port(),
-                    "HTTP Test Service (h2) listening: bind interface = {}", bind,
-                );
-                tcp_listener
-                    .serve(
-                        tcp_service_builder
-                            .into_layer(HttpServer::new_h2(exec).service(http_service)),
-                    )
-                    .await;
+    scope.try_hold()?.into_spawn_task({
+        let scope = scope.clone();
+        async move {
+            match tcp_version {
+                TcpHttpVersion::Auto => {
+                    tracing::info!(
+                        network.local.address = %bind_address.ip(),
+                        network.local.port = %bind_address.port(),
+                        "HTTP Test Service (auto) listening: bind interface = {}", bind,
+                    );
+                    tcp_listener
+                        .serve(
+                            tcp_service_builder
+                                .into_layer(HttpServer::auto(scope).service(http_service)),
+                        )
+                        .await;
+                }
+                TcpHttpVersion::H1 => {
+                    tracing::info!(
+                        network.local.address = %bind_address.ip(),
+                        network.local.port = %bind_address.port(),
+                        "HTTP Test Service (<= HTTP/1.1) listening: bind interface = {}", bind,
+                    );
+                    tcp_listener
+                        .serve(
+                            tcp_service_builder
+                                .into_layer(HttpServer::new_http1(scope).service(http_service)),
+                        )
+                        .await;
+                }
+                TcpHttpVersion::H2 => {
+                    tracing::info!(
+                        network.local.address = %bind_address.ip(),
+                        network.local.port = %bind_address.port(),
+                        "HTTP Test Service (h2) listening: bind interface = {}", bind,
+                    );
+                    tcp_listener
+                        .serve(
+                            tcp_service_builder
+                                .into_layer(HttpServer::new_h2(scope).service(http_service)),
+                        )
+                        .await;
+                }
             }
         }
     });

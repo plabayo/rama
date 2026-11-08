@@ -43,6 +43,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::{Extension, ExtensionsRef},
+    graceful::{Scope, WeakScope},
     http::{
         Body, BodyLimitLayer, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -58,7 +59,6 @@ use rama::{
     },
     layer::{AddInputExtensionLayer, ConsumeErrLayer},
     net::user::credentials::basic,
-    rt::Executor,
     service::{BoxService, service_fn},
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -90,7 +90,7 @@ type EmulatingClient = BoxService<Request, Response, BoxError>;
 struct State {
     mitm_tls: TlsServerConfig,
     client: EmulatingClient,
-    exec: Executor,
+    scope: WeakScope,
 }
 
 #[tokio::main]
@@ -104,8 +104,10 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
-    let exec = Executor::graceful(graceful.guard());
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
+    let weak_scope = scope.clone_weak();
 
     let database =
         Arc::new(UserAgentDatabase::try_embedded().context("load embedded user-agent database")?);
@@ -114,17 +116,17 @@ async fn main() -> Result<(), BoxError> {
             .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
             .context("generate MITM server auth")?
             .with_alpn_http_auto(),
-        client: new_emulating_client(database, exec.clone()),
-        exec: exec.clone(),
+        client: new_emulating_client(database, weak_scope.clone()),
+        scope: weak_scope.clone(),
     };
 
-    graceful.spawn_task(async move {
-        let tcp_service = TcpListener::build(exec.clone())
+    scope.spawn_task(async move {
+        let tcp_service = TcpListener::build(weak_scope.clone())
             .bind_address("127.0.0.1:12066")
             .await
             .expect("bind tcp proxy to 127.0.0.1:12066");
 
-        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
+        let http_service = HttpServer::auto(weak_scope.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),
                 ConsumeErrLayer::default(),
@@ -132,7 +134,7 @@ async fn main() -> Result<(), BoxError> {
                     .with_labels::<ProfileSelectorUsernameParser>(),
                 // Defer egress until the decrypted request selects its profile.
                 UpgradeLayer::new_with_services(
-                    exec,
+                    weak_scope,
                     MethodMatcher::CONNECT,
                     service_fn(reply_to_connect),
                     service_fn(serve_tunnel),
@@ -152,10 +154,7 @@ async fn main() -> Result<(), BoxError> {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .context("graceful shutdown")?;
+    scope.join().await.context("graceful shutdown")?;
 
     Ok(())
 }
@@ -177,7 +176,7 @@ async fn serve_tunnel(upgraded: Upgraded) -> Result<(), BoxError> {
         .get_ref::<State>()
         .context("missing proxy state")?
         .clone();
-    let http_service = HttpServer::auto(state.exec.clone()).service(new_mitm_service());
+    let http_service = HttpServer::auto(state.scope.clone()).service(new_mitm_service());
     TlsAcceptorLayer::new(state.mitm_tls)
         .into_layer(http_service)
         .serve(upgraded)
@@ -219,7 +218,7 @@ fn error_response(status: StatusCode) -> Response {
     resp
 }
 
-fn new_emulating_client(database: Arc<UserAgentDatabase>, exec: Executor) -> EmulatingClient {
+fn new_emulating_client(database: Arc<UserAgentDatabase>, scope: WeakScope) -> EmulatingClient {
     // The selected profile supplies ALPN and every other ClientHello field.
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
     let client = EasyHttpWebClient::connector_builder()
@@ -232,7 +231,7 @@ fn new_emulating_client(database: Arc<UserAgentDatabase>, exec: Executor) -> Emu
             ProfileEmulateHttpConnectModifier::new(connector)
                 .with_connection_compiler(ConnectionProfileCompiler::new(tls_config))
         })
-        .with_default_http_connector(exec)
+        .with_default_http_connector(scope)
         // Erase the deep emulating connector type before pooling it.
         .map_connector(|connector| connector.boxed())
         .with_default_connection_pool()

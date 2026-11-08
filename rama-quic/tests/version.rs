@@ -23,7 +23,7 @@ use std::{
     time::Duration,
 };
 
-use rama_core::rt::Executor;
+use rama_core::graceful::WeakScope;
 use rama_quic::Endpoint;
 use rama_quic_proto::{
     Version,
@@ -33,7 +33,7 @@ use rama_quic_proto::{
 use runtime::Identities;
 
 async fn loopback_endpoint(server: Option<rama_quic::ServerConfig>) -> Endpoint {
-    let builder = Endpoint::build(Executor::new());
+    let builder = Endpoint::build(WeakScope::detached());
     let builder = match server {
         Some(config) => builder.with_server_config(config),
         None => builder,
@@ -79,7 +79,7 @@ fn endpoint_config(versions: Vec<Version>) -> rama_quic::EndpointConfig {
 }
 
 async fn server_speaking(versions: Vec<Version>, config: rama_quic::ServerConfig) -> Endpoint {
-    Endpoint::build(Executor::new())
+    Endpoint::build(WeakScope::detached())
         .with_config(endpoint_config(versions))
         .with_server_config(config)
         .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
@@ -252,7 +252,7 @@ async fn zero_cid_profile_restarts_after_version_negotiation() {
             );
         let mut endpoint = endpoint_config(vec![Version::V1, Version::V2]);
         endpoint.apply_quic_profile(&profile).unwrap();
-        let client = Endpoint::build(Executor::new())
+        let client = Endpoint::build(WeakScope::detached())
             .with_config(endpoint)
             .bind_address(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
             .await

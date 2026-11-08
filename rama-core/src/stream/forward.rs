@@ -24,7 +24,7 @@ use rama_error::{BoxError, ErrorExt};
 use rama_utils::macros::generate_set_and_with;
 
 use crate::Service;
-use crate::graceful::ShutdownGuard;
+use crate::graceful::WeakScope;
 use crate::telemetry::tracing;
 
 /// Reason why a rama bridge — byte-oriented (see `IoForwardService` in
@@ -36,7 +36,7 @@ use crate::telemetry::tracing;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BridgeCloseReason {
-    /// Graceful shutdown was requested via the configured shutdown signal.
+    /// The scope of the bridge reached its hard phase.
     Shutdown,
     /// The bridge observed no progress in either direction within the
     /// configured idle window.
@@ -169,20 +169,20 @@ impl<A, B> StreamBridge<A, B> {
 /// A [`Service`] which takes a [`StreamBridge`] and pumps frames between
 /// the two endpoints bidirectionally.
 ///
-/// The service optionally observes a [`ShutdownGuard`] (for graceful
-/// termination) and an idle timeout that closes the bridge when no frame
-/// has been forwarded in either direction within the configured window.
+/// The service optionally observes a [`WeakScope`], whose hard phase ends the bridge, and
+/// an idle timeout that closes the bridge when no frame has been forwarded in either
+/// direction within the configured window.
 ///
 /// Returns a [`BridgeCloseReason`] describing why the bridge ended.
 #[derive(Debug, Clone, Default)]
 pub struct StreamForwardService {
     idle_timeout: Option<Duration>,
-    shutdown_guard: Option<ShutdownGuard>,
+    scope: Option<WeakScope>,
 }
 
 impl StreamForwardService {
     /// Create a new [`StreamForwardService`] with no idle timeout and no
-    /// shutdown guard. Equivalent to [`StreamForwardService::default`].
+    /// scope. Equivalent to [`StreamForwardService::default`].
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -201,13 +201,13 @@ impl StreamForwardService {
     }
 
     generate_set_and_with! {
-        /// [`ShutdownGuard`] used to observe graceful-shutdown signals.
-        /// When the guard fires, the bridge closes with reason
-        /// [`BridgeCloseReason::Shutdown`].
+        /// Scope whose hard phase closes the bridge with reason
+        /// [`BridgeCloseReason::Shutdown`]. A stream of items has no generic way to
+        /// drain, so its graceful phase changes nothing.
         ///
         /// `None` (the default) means no shutdown observation.
-        pub fn shutdown_guard(mut self, guard: Option<ShutdownGuard>) -> Self {
-            self.shutdown_guard = guard;
+        pub fn scope(mut self, scope: Option<WeakScope>) -> Self {
+            self.scope = scope;
             self
         }
     }
@@ -226,7 +226,7 @@ where
 
     async fn serve(&self, bridge: StreamBridge<A, B>) -> Result<Self::Output, Self::Error> {
         let StreamBridge { a, b } = bridge;
-        run_bridge(a, b, self.idle_timeout, self.shutdown_guard.clone()).await
+        run_bridge(a, b, self.idle_timeout, self.scope.clone()).await
     }
 }
 
@@ -234,7 +234,7 @@ async fn run_bridge<A, B, T, EA, EB>(
     a: A,
     b: B,
     idle_timeout: Option<Duration>,
-    guard: Option<ShutdownGuard>,
+    scope: Option<WeakScope>,
 ) -> Result<BridgeCloseReason, BoxError>
 where
     A: Stream<Item = Result<T, EA>> + Sink<T, Error = EA> + Send + Unpin,
@@ -280,8 +280,8 @@ where
         }
 
         let cancelled = async {
-            match guard.as_ref() {
-                Some(g) => g.cancelled().await,
+            match scope.as_ref() {
+                Some(scope) => scope.aborted().await,
                 None => core::future::pending::<()>().await,
             }
         };
@@ -403,6 +403,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graceful::{Cause, Scope};
     use futures::channel::mpsc;
     use std::assert_matches;
     use std::time::Instant;
@@ -538,16 +539,11 @@ mod tests {
     /// futures rather than `select!` arms that await inside their body.
     #[tokio::test]
     async fn backpressured_direction_does_not_stall_the_other() {
-        use crate::graceful::Shutdown;
-
         let (mut a_user, a_proxy) = duplex_pair::<u32>();
         let (mut b_user, b_proxy) = duplex_pair::<u32>();
 
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown = Shutdown::new(async move {
-            _ = rx.await;
-        });
-        let svc = StreamForwardService::new().with_shutdown_guard(shutdown.guard());
+        let scope = Scope::new();
+        let svc = StreamForwardService::new().with_scope(scope.clone_weak());
         let task = tokio::spawn(async move {
             svc.serve(StreamBridge::new(a_proxy, StalledSink(b_proxy)))
                 .await
@@ -568,13 +564,12 @@ mod tests {
         assert_eq!(r, 10);
 
         // ... and shutdown must still be observed.
-        tx.send(()).unwrap();
+        scope.abort(Cause::Owner);
         let reason = tokio::time::timeout(Duration::from_secs(2), task)
             .await
             .expect("shutdown stalled behind the backpressured direction")
             .unwrap();
         assert_eq!(reason, BridgeCloseReason::Shutdown);
-        drop(shutdown);
     }
 
     #[tokio::test]
@@ -672,36 +667,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_guard_terminates_bridge() {
-        use crate::graceful::Shutdown;
-
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown = Shutdown::new(async move {
-            _ = rx.await;
-        });
-        let guard = shutdown.guard();
+    async fn the_hard_phase_terminates_the_bridge_and_the_graceful_one_does_not() {
+        let scope = Scope::new();
 
         let (_a_user, a_proxy) = duplex_pair::<u32>();
         let (_b_user, b_proxy) = duplex_pair::<u32>();
 
-        let svc = StreamForwardService::new().with_shutdown_guard(guard);
+        let svc = StreamForwardService::new().with_scope(scope.clone_weak());
         let task = tokio::spawn(async move {
             svc.serve(StreamBridge::new(a_proxy, b_proxy))
                 .await
                 .unwrap()
         });
 
-        // Bridge is idle but should not return on its own.
+        // Bridge is idle but should not return on its own, nor at the graceful phase.
+        scope.cancel(Cause::Owner);
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(!task.is_finished());
 
-        tx.send(()).unwrap();
+        scope.abort(Cause::Owner);
         let reason = tokio::time::timeout(Duration::from_secs(2), task)
             .await
             .expect("bridge did not unwind on shutdown within 2s")
             .unwrap();
         assert_eq!(reason, BridgeCloseReason::Shutdown);
-        drop(shutdown);
     }
 
     #[tokio::test]

@@ -36,9 +36,10 @@ std = [
     "tracing/std",
     "dep:ahash",
     "dep:parking_lot",
+    "dep:rand",
     "dep:serde_json",
+    "dep:slab",
     "dep:tokio",
-    "dep:tokio-graceful",
     "dep:tokio-stream",
     "dep:tokio-util",
     "dep:tracing-appender",
@@ -54,6 +55,8 @@ opentelemetry = [
 # up wake-event tracking when a recorder is attached. Inert when
 # no traced runtime is present. `--cfg tokio_unstable` widens dial9's task coverage.
 dial9 = ["std", "dep:dial9", "dep:dial9-trace-format", "dep:metrique-writer-core"]
+# Tracing setup for test binaries.
+test-utils = ["std"]
 
 [dependencies]
 ahash = { workspace = true, optional = true }
@@ -71,10 +74,11 @@ pin-project-lite = { workspace = true }
 rama-error = { workspace = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
+rand = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
+slab = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "rt", "rt-multi-thread", "sync", "time"], optional = true }
-tokio-graceful = { workspace = true, optional = true }
 tokio-stream = { workspace = true, features = ["full"], optional = true }
 tokio-util = { workspace = true, features = ["codec", "io", "io-util"], optional = true }
 tracing = { workspace = true, default-features = false, features = ["attributes"] }
@@ -85,12 +89,18 @@ tracing-opentelemetry = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+parking_lot = { workspace = true }
 quickcheck = { workspace = true }
 rand = { workspace = true }
 rustversion = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-test = { workspace = true }
+tracing-core = { workspace = true }
 trybuild = { workspace = true, features = ["diff"] }
+
+# tokio rewrites itself under `cfg(loom)`; rama-core needs its signal and io modules.
+[target.'cfg(rama_loom)'.dev-dependencies]
+loom = { workspace = true, features = ["futures"] }
 
 [lints]
 workspace = true

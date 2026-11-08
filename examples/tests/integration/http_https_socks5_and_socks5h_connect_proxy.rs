@@ -3,6 +3,7 @@ use super::utils;
 use rama::{
     Layer, Service,
     extensions::ExtensionsRef,
+    graceful::WeakScope,
     http::{
         Body, BodyExtractExt, Request, client::EasyHttpWebClient,
         layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
@@ -14,7 +15,6 @@ use rama::{
         client::ProxyRoute,
         user::{Basic, ProxyCredential},
     },
-    rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
     tls::boring::server::TlsAcceptorService,
@@ -104,7 +104,7 @@ async fn test_http_client_over_socks5_proxy_connect(
         .without_tls_proxy_support()
         .with_proxy_support()
         .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(Executor::default())
+        .with_default_http_connector(WeakScope::detached())
         .without_connection_pool()
         .build_client();
 
@@ -154,7 +154,7 @@ async fn test_http_client_over_socks5_proxy_connect(
 
 async fn spawn_http_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(13179), Executor::default())
+        TcpListener::bind_address(SocketAddress::local_ipv4(13179), WeakScope::detached())
             .await
             .expect("bind HTTP server on open port");
 
@@ -164,7 +164,7 @@ async fn spawn_http_server() -> SocketAddress {
         .into();
 
     let app = Router::new().with_get("/ping", "pong");
-    let server = HttpServer::auto(Executor::default())
+    let server = HttpServer::auto(WeakScope::detached())
         .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     tokio::spawn(tcp_service.serve(server));
@@ -174,7 +174,7 @@ async fn spawn_http_server() -> SocketAddress {
 
 async fn spawn_https_server() -> SocketAddress {
     let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(13181), Executor::default())
+        TcpListener::bind_address(SocketAddress::local_ipv4(13181), WeakScope::detached())
             .await
             .expect("bind HTTP server on open port");
 
@@ -184,7 +184,7 @@ async fn spawn_https_server() -> SocketAddress {
         .into();
 
     let app = Router::new().with_get("/ping", "pong");
-    let http_server = HttpServer::auto(Executor::default())
+    let http_server = HttpServer::auto(WeakScope::detached())
         .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     let config = TlsServerConfig::new()

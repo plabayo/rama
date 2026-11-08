@@ -515,12 +515,12 @@ async fn replay_honors_plaintext_proxy_tunnel_without_leaking_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replay_isolates_forward_proxy_auth_challenge() {
-    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let proxy_address = listener.local_addr().unwrap();
     let proxy_task = tokio::spawn(
-        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+        listener.serve(HttpServer::auto(WeakScope::detached()).service(service_fn(
             |_: Request| async move {
                 Ok::<_, Infallible>(
                     Response::builder()
@@ -548,25 +548,27 @@ async fn replay_isolates_forward_proxy_auth_challenge() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replay_sends_captured_body_without_hop_by_hop_or_proxy_credentials() {
-    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let origin_address = origin.local_addr().unwrap();
     let (observed_tx, mut observed_rx) = tokio::sync::mpsc::channel(1);
-    let origin_task = tokio::spawn(origin.serve(HttpServer::auto(Executor::default()).service(
-        service_fn(move |request: Request| {
-            let observed_tx = observed_tx.clone();
-            async move {
-                let leaked_headers = ["connection", "x-remove", "proxy-authorization"]
-                    .into_iter()
-                    .filter(|name| request.headers().contains_key(*name))
-                    .collect::<Vec<_>>();
-                let body = request.into_body().collect().await.unwrap().to_bytes();
-                observed_tx.send((leaked_headers, body)).await.unwrap();
-                Ok::<_, Infallible>(Response::new(Body::from("replayed")))
-            }
-        }),
-    )));
+    let origin_task = tokio::spawn(
+        origin.serve(HttpServer::auto(WeakScope::detached()).service(service_fn(
+            move |request: Request| {
+                let observed_tx = observed_tx.clone();
+                async move {
+                    let leaked_headers = ["connection", "x-remove", "proxy-authorization"]
+                        .into_iter()
+                        .filter(|name| request.headers().contains_key(*name))
+                        .collect::<Vec<_>>();
+                    let body = request.into_body().collect().await.unwrap().to_bytes();
+                    observed_tx.send((leaked_headers, body)).await.unwrap();
+                    Ok::<_, Infallible>(Response::new(Body::from("replayed")))
+                }
+            },
+        ))),
+    );
 
     let state = test_state();
     let capture = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(service_fn(
@@ -627,26 +629,28 @@ async fn replay_sends_captured_body_without_hop_by_hop_or_proxy_credentials() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replay_reuses_connections_only_within_the_same_capture_source() {
-    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
         .await
         .unwrap();
     let address = origin.local_addr().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(3);
-    let origin_task = tokio::spawn(origin.serve(HttpServer::auto(Executor::default()).service(
-        service_fn(move |request: Request| {
-            let tx = tx.clone();
-            async move {
-                let peer = request
-                    .extensions()
-                    .get_ref::<SocketInfo>()
-                    .unwrap()
-                    .peer_addr();
-                request.into_body().collect().await.unwrap();
-                tx.send(peer).await.unwrap();
-                Ok::<_, Infallible>(Response::new(Body::from("replayed")))
-            }
-        }),
-    )));
+    let origin_task = tokio::spawn(
+        origin.serve(HttpServer::auto(WeakScope::detached()).service(service_fn(
+            move |request: Request| {
+                let tx = tx.clone();
+                async move {
+                    let peer = request
+                        .extensions()
+                        .get_ref::<SocketInfo>()
+                        .unwrap()
+                        .peer_addr();
+                    request.into_body().collect().await.unwrap();
+                    tx.send(peer).await.unwrap();
+                    Ok::<_, Infallible>(Response::new(Body::from("replayed")))
+                }
+            },
+        ))),
+    );
     let state = test_state();
     let capture = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(service_fn(
         async |request: Request| {

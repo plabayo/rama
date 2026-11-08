@@ -659,15 +659,11 @@ mod tests {
 
     const TEST_SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-test");
 
-    #[derive(Debug, Eq, PartialEq)]
+    #[derive(Debug, Eq, PartialEq, Extension)]
     struct Marker(u8);
 
-    impl Extension for Marker {}
-
-    #[derive(Debug)]
+    #[derive(Debug, Extension)]
     struct RequestMarker;
-
-    impl Extension for RequestMarker {}
 
     fn request_parts(body_kind: EncapsulatedKind) -> EncapsulatedParts {
         EncapsulatedParts::new(

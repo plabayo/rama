@@ -13,6 +13,7 @@ use rama::{
     Service,
     bytes::Bytes,
     crypto::pki_types::{CertificateDer, pem::PemObject as _},
+    graceful::WeakScope,
     http::{
         Body, Request, Response, StatusCode,
         body::util::BodyExt as _,
@@ -21,7 +22,6 @@ use rama::{
     },
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
-    rt::Executor,
     service::service_fn,
     tls::{
         client::{ServerVerifyMode, TlsClientConfig},
@@ -47,12 +47,12 @@ pub(super) async fn spawn_h3_origin() -> (SocketAddr, JoinHandle<()>) {
     let tls = TlsServerConfig::new()
         .with_server_auth(ServerAuthData::new_self_signed_leaf(Default::default()).unwrap())
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
-    let server = HttpServer::new_http3(Executor::new());
+    let server = HttpServer::new_http3(WeakScope::detached());
     let mut transport = TransportConfig::default();
     server.http3().configure_transport(&mut transport).unwrap();
     let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
     config.set_transport_config(Arc::new(transport));
-    let endpoint = Endpoint::build(Executor::new())
+    let endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(config)
         .bind_address(SocketAddress::local_ipv4(0))
         .await
@@ -92,7 +92,7 @@ async fn h3_get(
     tls: TlsClientConfig,
 ) -> (Option<String>, Bytes) {
     let socket = UdpFfiSession::new(engine, origin).into_datagram_socket(origin);
-    let client = Endpoint::build(Executor::new())
+    let client = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(socket)
         .unwrap();
     let tls = tls.with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
@@ -105,7 +105,8 @@ async fn h3_get(
     .expect("QUIC handshake through the engine")
     .unwrap();
     let (mut h3, driver) =
-        h3_client::handshake::<Body, _>(connection, H3Config::default(), Executor::new()).unwrap();
+        h3_client::handshake::<Body, _>(connection, H3Config::default(), WeakScope::detached())
+            .unwrap();
     let driver = tokio::spawn(driver.run());
     let request = Request::get(format!("https://localhost:{}/", origin.port()))
         .body(Body::empty())
@@ -243,7 +244,7 @@ async fn ffi_contract_quic_of_an_unknown_version_is_forwarded_untouched() {
 }
 
 /// An engine whose UDP flows took the QUIC path stops promptly: no long-lived service holds
-/// its shutdown, as one keeping the engine's own executor would.
+/// its shutdown, as one holding the engine's own scope would.
 #[tokio::test]
 #[serial]
 async fn ffi_contract_an_engine_that_served_quic_stops_promptly() {

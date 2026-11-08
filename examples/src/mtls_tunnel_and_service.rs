@@ -35,7 +35,7 @@
 
 use rama::{
     Layer,
-    graceful::Shutdown,
+    graceful::Scope,
     http::{
         layer::trace::TraceLayer,
         server::HttpServer,
@@ -46,7 +46,6 @@ use rama::{
     },
     layer::TraceErrLayer,
     net::{address::SocketAddress, proxy::IoForwardService},
-    rt::Executor,
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
         self,
@@ -82,7 +81,9 @@ async fn main() {
         )
         .init();
 
-    let shutdown = Shutdown::default();
+    let scope = Scope::new()
+        .with_default_signal()
+        .with_grace(Duration::from_secs(30));
 
     let (tls_client_data, tls_server_data) = {
         let (client_cert_chain, client_priv_key) = self_signed_client_auth().unwrap();
@@ -111,11 +112,10 @@ async fn main() {
     };
 
     // create mtls web server
-    shutdown.spawn_task_fn(async |guard| {
-        let executor = Executor::graceful(guard.clone());
-
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
         let tcp_service = TlsAcceptorLayer::new(tls_server_data).into_layer(
-            HttpServer::auto(executor.clone()).service(
+            HttpServer::auto(weak_scope.clone()).service(
                 TraceLayer::new_for_http().into_layer(
                     WebService::default()
                         .with_get("/", Redirect::temporary("/hello"))
@@ -129,7 +129,7 @@ async fn main() {
             server.port = %SERVER_AUTHORITY.port,
             "start mtls (https) web service",
         );
-        TcpListener::bind_address(SERVER_AUTHORITY.to_string(), executor)
+        TcpListener::bind_address(SERVER_AUTHORITY.to_string(), weak_scope)
             .await
             .unwrap_or_else(|e| {
                 panic!("bind TCP Listener ({SERVER_AUTHORITY}): mtls (https): web service: {e}")
@@ -139,14 +139,14 @@ async fn main() {
     });
 
     // create mtls tunnel proxy
-    shutdown.spawn_task_fn(async |guard| {
+    let weak_scope = scope.clone_weak();
+    scope.spawn_task(async move {
         tracing::info!(
             server.address = %TUNNEL_AUTHORITY.ip_addr,
             server.port = %TUNNEL_AUTHORITY.port,
             "start mTLS TCP Tunnel Proxy",
         );
 
-        let exec = Executor::graceful(guard.clone());
         let forwarder = (
             TraceErrLayer::new(),
             IoToProxyBridgeIoLayer::new(SERVER_AUTHORITY).with_connector(
@@ -155,18 +155,15 @@ async fn main() {
                     .into_layer(TcpConnector::new()),
             ),
         )
-            .into_layer(IoForwardService::new(exec.clone()));
+            .into_layer(IoForwardService::new(weak_scope.clone()));
 
         // L4 Proxy Service
-        TcpListener::bind_address(TUNNEL_AUTHORITY, exec)
+        TcpListener::bind_address(TUNNEL_AUTHORITY, weak_scope)
             .await
             .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
             .serve(forwarder)
             .await;
     });
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    scope.join().await.expect("graceful shutdown");
 }

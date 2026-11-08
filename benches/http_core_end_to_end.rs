@@ -12,9 +12,9 @@ use std::net::SocketAddr;
 
 use rama::ServiceInput;
 use rama::futures::future::join_all;
+use rama::graceful::WeakScope;
 use rama::http::body::util::BodyExt;
 use rama::http::{Method, Request, Response};
-use rama::rt::Executor;
 use rama::utils::octets::mib;
 use tokio::sync::Mutex;
 
@@ -296,7 +296,7 @@ impl Opts {
                 .build()
                 .expect("rt build"),
         );
-        let exec = rt.clone();
+        let scope = rt.clone();
 
         let req_len = self.request_body.map(|b| b.len()).unwrap_or(0) as u64;
         let req_len = if self.request_chunks > 0 {
@@ -318,7 +318,7 @@ impl Opts {
                 let tcp = ServiceInput::new(tcp);
                 let (tx, conn) = {
                     let mut builder =
-                        rama::http::core::client::conn::http2::Builder::new(Executor::new())
+                        rama::http::core::client::conn::http2::Builder::new(WeakScope::detached())
                             .with_adaptive_window(self.http2_adaptive_window);
                     if let Some(http2_stream_window) = self.http2_stream_window {
                         builder.set_initial_stream_window_size(http2_stream_window);
@@ -355,7 +355,7 @@ impl Opts {
                 let chunk = self
                     .request_body
                     .expect("request_chunks means request_body");
-                exec.spawn(async move {
+                scope.spawn(async move {
                     use rama::futures::SinkExt;
                     use rama::http::core::body::Frame;
                     for _ in 0..chunk_cnt {
@@ -433,7 +433,7 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
             if opts.http2 {
                 tokio::spawn({
                     let mut builder =
-                        rama::http::core::server::conn::http2::Builder::new(Executor::new());
+                        rama::http::core::server::conn::http2::Builder::new(WeakScope::detached());
                     if let Some(http2_stream_window) = opts.http2_stream_window {
                         builder.set_initial_stream_window_size(http2_stream_window);
                     }

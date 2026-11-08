@@ -9,7 +9,7 @@ use rama_core::{
     Service,
     error::{BoxError, error_chain},
     extensions::{Extensions, ExtensionsRef as _},
-    rt::Executor,
+    graceful::WeakScope,
     service::service_fn,
 };
 use rama_http::{
@@ -115,11 +115,11 @@ async fn idle_recovery(reserve_before_timeout: bool) {
         SocketAddress::local_ipv4(444),
         NonZeroUsize::MIN,
     );
-    let server_endpoint = Endpoint::build(Executor::new())
+    let server_endpoint = Endpoint::build(WeakScope::detached())
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .expect("server endpoint");
-    let client_endpoint = Endpoint::build(Executor::new())
+    let client_endpoint = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(client_socket)
         .expect("client endpoint");
     let address = server_endpoint.local_addr().expect("server address");
@@ -138,7 +138,7 @@ async fn idle_recovery(reserve_before_timeout: bool) {
                 let finished = finished_tx.clone();
                 let application_requests = application_requests.clone();
                 connections.spawn(async move {
-                    let mut server = HttpServer::new_http3(Executor::new());
+                    let mut server = HttpServer::new_http3(WeakScope::detached());
                     server.http3_mut().idle_timeout = Some(IdleTimeout {
                         first_request: Duration::from_mins(1),
                         idle: IDLE,
@@ -208,7 +208,10 @@ async fn idle_recovery(reserve_before_timeout: bool) {
             idle_timeout: None,
             ..Default::default()
         }
-        .build_connector(HttpConnector::<_, Body>::new(connector, Executor::new())),
+        .build_connector(HttpConnector::<_, Body>::new(
+            connector,
+            WeakScope::detached(),
+        )),
     ));
     let mut first_health = None;
     for (request_index, expected_connection) in [1, 1, 2, 2].into_iter().enumerate() {

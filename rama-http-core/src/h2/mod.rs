@@ -1,8 +1,5 @@
 //! An asynchronous, HTTP/2 server and client implementation.
 //!
-//! Permanent fork of <https://github.com/hyperium/h2>,
-//! but kept in sync and upstream patches where compatible.
-//!
 //! This library implements the [HTTP/2] specification. The implementation is
 //! asynchronous, using [futures] as the basis for the API. The implementation
 //! is also decoupled from TCP or TLS details. The user must handle ALPN and

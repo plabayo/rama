@@ -779,8 +779,8 @@ mod tests {
     use rama_core::{
         Layer,
         futures::{Stream, stream},
+        graceful::WeakScope,
         layer::MapOutputLayer,
-        rt::Executor,
         service::service_fn,
     };
     use rama_http_types::{
@@ -958,7 +958,7 @@ mod tests {
                 PlaintextHttpProxyMode::Forward,
                 PlaintextHttpProxyMode::Tunnel,
             ] {
-                let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+                let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
                     async |req: Request| {
                         assert_eq!(req.method(), Method::CONNECT);
                         Ok::<_, Infallible>(Response::new(Body::empty()))
@@ -1006,7 +1006,7 @@ mod tests {
             };
             let destination = "alternative.example:8443";
             let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
-            let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+            let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
                 move |req: Request| async move {
                     assert_eq!(req.method(), Method::CONNECT);
                     assert_eq!(req.uri().to_string(), destination);
@@ -1075,7 +1075,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_unsupported_proxy_http_version_as_local_input() {
         let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(async |_req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(async |_req: Request| {
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
         let proxy_connector = HttpProxyConnectorLayer::required()
@@ -1155,8 +1155,8 @@ mod tests {
 
     #[tokio::test]
     async fn connect_custom_headers_cannot_override_managed_fields() {
-        let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
+        let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
+            async move |req: Request| {
                 assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.headers()[header::HOST], "example.com:443");
                 assert_eq!(
@@ -1167,7 +1167,8 @@ mod tests {
                 assert!(!req.headers().contains_key(header::TRANSFER_ENCODING));
                 assert_eq!(req.headers()["x-kept"], "yes");
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            }));
+            },
+        ));
         let connector = HttpProxyConnectorLayer::required()
             .with_custom_header(
                 header::HOST,
@@ -1210,7 +1211,7 @@ mod tests {
                 StatusCode::NO_CONTENT,
                 StatusCode::from_u16(299).unwrap(),
             ] {
-                let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+                let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
                     move |_req: Request| async move {
                         Ok::<_, Infallible>(
                             Response::builder()
@@ -1266,7 +1267,7 @@ mod tests {
                 ConnectionErrorKind::Rejected,
             ),
         ] {
-            let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+            let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
                 move |_req: Request| async move {
                     Ok::<_, Infallible>(
                         Response::builder()
@@ -1437,7 +1438,7 @@ mod tests {
     #[tokio::test]
     async fn plaintext_non_http_protocol_uses_connect() {
         for protocol in [Protocol::ICAP, Protocol::from_static("custom")] {
-            let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+            let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
                 async move |req: Request| {
                     assert_eq!(req.method(), Method::CONNECT);
                     assert!(
@@ -1478,12 +1479,13 @@ mod tests {
 
     #[tokio::test]
     async fn plaintext_http_tunnel_restores_origin_version_after_connect() {
-        let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
+        let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
+            async move |req: Request| {
                 assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.version(), Version::HTTP_11);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            }));
+            },
+        ));
         let connector = HttpProxyConnectorLayer::required()
             .into_layer(MockConnectorService::new(move || http_server.clone()));
         let input = ConnectRequest::new(HostWithPort::example_domain_http())
@@ -1522,11 +1524,12 @@ mod tests {
 
     #[tokio::test]
     async fn plaintext_http_tunnel_defaults_missing_origin_version() {
-        let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
+        let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
+            async move |req: Request| {
                 assert_eq!(req.method(), Method::CONNECT);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            }));
+            },
+        ));
         let transport = MockConnectorService::new(move || http_server.clone());
         let transport = service_fn(move |input: ConnectRequest| {
             let transport = transport.clone();
@@ -1563,11 +1566,12 @@ mod tests {
 
     #[tokio::test]
     async fn non_http_tunnel_does_not_inherit_incidental_http_version() {
-        let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
+        let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
+            async move |req: Request| {
                 assert_eq!(req.method(), Method::CONNECT);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            }));
+            },
+        ));
         let connector = HttpProxyConnectorLayer::required()
             .into_layer(MockConnectorService::new(move || http_server.clone()));
         let input = ConnectRequest::new(HostWithPort::example_domain_http())
@@ -1594,7 +1598,7 @@ mod tests {
     #[tokio::test]
     async fn https_proxy_tunnel_declares_http_as_its_tls_protocol() {
         let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(async |req: Request| {
                 assert_eq!(req.method(), Method::CONNECT);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
@@ -1923,7 +1927,7 @@ mod tests {
     #[tokio::test]
     async fn automatic_connect_version_follows_proxy_tls_negotiation() {
         let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(async |req: Request| {
                 assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.version(), Version::HTTP_2);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
@@ -2032,7 +2036,7 @@ mod tests {
     #[tokio::test]
     async fn plaintext_proxy_ignores_unrelated_tls_negotiation_metadata() {
         let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(async |req: Request| {
                 assert_eq!(req.method(), Method::CONNECT);
                 assert_eq!(req.version(), Version::HTTP_11);
                 Ok::<_, Infallible>(Response::new(Body::empty()))
@@ -2073,7 +2077,7 @@ mod tests {
     #[tokio::test]
     async fn connection_extensions_preserved_across_proxy_connect_upgrade() {
         let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(async |_req: Request| {
+            HttpServer::auto(WeakScope::detached()).service(service_fn(async |_req: Request| {
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
 
@@ -2118,7 +2122,7 @@ mod tests {
             "proxy policy cannot classify the origin"
         );
 
-        let established = http_connect::<_, _, Body>(conn, input, Executor::new())
+        let established = http_connect::<_, _, Body>(conn, input, WeakScope::detached())
             .await
             .expect("HTTP connector accepts the custom transport");
         assert!(

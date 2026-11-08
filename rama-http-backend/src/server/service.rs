@@ -5,9 +5,8 @@ use super::core_conn::HttpCoreConnServer;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::graceful::ShutdownGuard;
+use rama_core::graceful::{Cause, Scope, WeakScope, enter_scope_with};
 use rama_core::io::Io;
-use rama_core::rt::Executor;
 use rama_http::service::web::response::IntoResponse;
 #[cfg(feature = "quic")]
 use rama_http_core::h3::transport;
@@ -32,23 +31,24 @@ use ::{rama_unix::server::UnixListener, std::path::Path};
 #[derive(Debug, Clone)]
 pub struct HttpServer<B> {
     builder: B,
-    exec: Executor,
+    scope: WeakScope,
 }
 
 impl Default for HttpServer<AutoConnBuilder> {
     #[inline(always)]
     fn default() -> Self {
-        Self::auto(Executor::default())
+        Self::auto(WeakScope::detached())
     }
 }
 
 impl HttpServer<Http1ConnBuilder> {
     /// Create a new http/1.1 `Builder` with default settings.
     #[must_use]
-    pub fn new_http1(exec: Executor) -> Self {
+    pub fn new_http1(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             builder: Http1ConnBuilder::new(),
-            exec,
+            scope,
         }
     }
 }
@@ -68,10 +68,11 @@ impl HttpServer<Http1ConnBuilder> {
 impl HttpServer<H2ConnBuilder> {
     /// Create a new h2 `Builder` with default settings.
     #[must_use]
-    pub fn new_h2(exec: Executor) -> Self {
+    pub fn new_h2(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            builder: H2ConnBuilder::new(exec.clone()),
-            exec,
+            builder: H2ConnBuilder::new(scope.clone()),
+            scope,
         }
     }
 }
@@ -91,10 +92,11 @@ impl HttpServer<H2ConnBuilder> {
 impl HttpServer<AutoConnBuilder> {
     /// Create a new dual http/1.1 + h2 `Builder` with default settings.
     #[must_use]
-    pub fn auto(exec: Executor) -> Self {
+    pub fn auto(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
-            builder: AutoConnBuilder::new(exec.clone()),
-            exec,
+            builder: AutoConnBuilder::new(scope.clone()),
+            scope,
         }
     }
 }
@@ -133,7 +135,7 @@ where
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
     pub fn service<S: Clone>(self, service: S) -> HttpService<B, S> {
         HttpService {
-            guard: self.exec.guard().cloned(),
+            scope: self.scope.clone(),
             builder: Arc::new(self.builder),
             service,
         }
@@ -146,33 +148,9 @@ where
         Response: IntoResponse + Send + 'static,
         IO: Io + ExtensionsRef,
     {
-        self.serve_with_graceful_shutdown(stream, service, std::future::pending())
-            .await
-    }
-
-    /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP, and
-    /// gracefully shut down this connection once `signal` resolves.
-    ///
-    /// This is in addition to the executor's graceful shutdown. Useful for
-    /// connections that should wind down on their own, e.g. a proxy whose
-    /// upstream went away: h2 sends a `GOAWAY`, h1 closes after the
-    /// in-flight response, in both cases without cutting that response.
-    // TODO: later in rama 0.5 we will replace this with integrated
-    // graceful/cancel support (https://github.com/plabayo/rama/issues/830)
-    pub async fn serve_with_graceful_shutdown<S, Response, IO, F>(
-        &self,
-        stream: IO,
-        service: S,
-        signal: F,
-    ) -> HttpServeResult
-    where
-        S: Service<Request, Output = Response, Error = Infallible> + Clone,
-        Response: IntoResponse + Send + 'static,
-        IO: Io + ExtensionsRef,
-        F: Future<Output = ()> + Send + 'static,
-    {
+        let scope = connection_scope(&stream, &self.scope);
         self.builder
-            .http_core_serve_connection(stream, service, self.exec.guard().cloned(), signal)
+            .http_core_serve_connection(stream, service, scope)
             .await
     }
 
@@ -185,9 +163,9 @@ where
         Response: IntoResponse + Send + 'static,
         A: TryInto<SocketAddress, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind_address(address, self.exec.clone()).await?;
+        let tcp = TcpListener::bind_address(address, self.scope.clone()).await?;
         let service = HttpService {
-            guard: self.exec.guard().cloned(),
+            scope: self.scope.clone(),
             builder: Arc::new(self.builder),
             service,
         };
@@ -206,9 +184,9 @@ where
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
-        let socket = UnixListener::bind_path(path, self.exec.clone()).await?;
+        let socket = UnixListener::bind_path(path, self.scope.clone()).await?;
         let service = HttpService {
-            guard: self.exec.guard().cloned(),
+            scope: self.scope.clone(),
             builder: Arc::new(self.builder),
             service: Arc::new(service),
         };
@@ -217,9 +195,21 @@ where
     }
 }
 
+/// A child of the scope the connection runs in merged with the server's own, which everything
+/// served on the connection sees (a new root without either, so every connection can be
+/// ended on its own). A connection arriving in a closing scope gets an aborted one, which
+/// drops it at once.
+fn connection_scope<IO: ExtensionsRef>(io: &IO, own: &WeakScope) -> Scope {
+    enter_scope_with(io.extensions(), own).unwrap_or_else(|_closed| {
+        let scope = Scope::new();
+        scope.abort(Cause::Reason("the connection's scope is closed"));
+        scope
+    })
+}
+
 /// A [`Service`] that can be used to serve IO Byte streams (e.g. a TCP Stream) as HTTP.
 pub struct HttpService<B, S> {
-    guard: Option<ShutdownGuard>,
+    scope: WeakScope,
     builder: Arc<B>,
     service: S,
 }
@@ -231,7 +221,7 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpService")
-            .field("guard", &self.guard)
+            .field("scope", &self.scope)
             .field("builder", &self.builder)
             .field("service", &self.service)
             .finish()
@@ -241,7 +231,7 @@ where
 impl<B, S: Clone> Clone for HttpService<B, S> {
     fn clone(&self) -> Self {
         Self {
-            guard: self.guard.clone(),
+            scope: self.scope.clone(),
             builder: self.builder.clone(),
             service: self.service.clone(),
         }
@@ -263,12 +253,9 @@ where
         stream: IO,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         let service = self.service.clone();
-        self.builder.http_core_serve_connection(
-            stream,
-            service,
-            self.guard.clone(),
-            std::future::pending(),
-        )
+        let scope = connection_scope(&stream, &self.scope);
+        self.builder
+            .http_core_serve_connection(stream, service, scope)
     }
 }
 
@@ -277,10 +264,11 @@ where
 impl HttpServer<rama_http_core::h3::connection::Config> {
     /// Create an HTTP/3 server for QUIC connections negotiated with the `h3` ALPN.
     #[must_use]
-    pub fn new_http3(exec: Executor) -> Self {
+    pub fn new_http3(scope: impl Into<WeakScope>) -> Self {
+        let scope = scope.into();
         Self {
             builder: rama_http_core::h3::connection::Config::default(),
-            exec,
+            scope,
         }
     }
 
@@ -300,7 +288,7 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
         service: S,
     ) -> HttpService<rama_http_core::h3::connection::Config, S> {
         HttpService {
-            guard: self.exec.guard().cloned(),
+            scope: self.scope.clone(),
             builder: Arc::new(self.builder),
             service,
         }
@@ -313,13 +301,8 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
         S: Service<Request, Output = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
     {
-        crate::server::h3::serve(
-            connection,
-            self.builder.clone(),
-            self.exec.guard().cloned(),
-            service,
-        )
-        .await
+        let scope = connection_scope(&connection, &self.scope);
+        crate::server::h3::serve(connection, self.builder.clone(), scope, service).await
     }
 }
 
@@ -334,10 +317,11 @@ where
     type Error = BoxError;
 
     async fn serve(&self, connection: C) -> HttpServeResult {
+        let scope = connection_scope(&connection, &self.scope);
         crate::server::h3::serve(
             connection,
             self.builder.as_ref().clone(),
-            self.guard.clone(),
+            scope,
             self.service.clone(),
         )
         .await

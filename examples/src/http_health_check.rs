@@ -1,8 +1,8 @@
 //! An example to show how to create a minimal health check server,
-//! using the [`HttpServer`] and [`Executor`] from Rama.
+//! using the [`HttpServer`] and [`WeakScope`] from Rama.
 //!
 //! [`HttpServer`]: rama::http::server::HttpServer
-//! [`Executor`]: rama::rt::Executor
+//! [`WeakScope`]: rama::graceful::WeakScope
 //!
 //! This example will create a server that listens on `127.0.0.1:12003`.
 //!

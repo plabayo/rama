@@ -1,10 +1,10 @@
 use super::utils;
 use rama::{
     Layer,
+    graceful::WeakScope,
     http::service::web::response::Json,
     http::{BodyExtractExt, Request, server::HttpServer},
     net::{address::ProxyAddress, client::ProxyRoute},
-    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     tls::KeyLogIntent,
@@ -19,7 +19,7 @@ async fn test_http_mitm_proxy() {
     utils::init_tracing();
 
     tokio::spawn(async {
-        HttpServer::auto(Executor::default())
+        HttpServer::auto(WeakScope::detached())
             .listen(
                 "127.0.0.1:13005",
                 service_fn(async |req: Request| {
@@ -39,9 +39,9 @@ async fn test_http_mitm_proxy() {
         .with_alpn_http_auto()
         .with_keylog(KeyLogIntent::Environment);
 
-    let executor = Executor::default();
+    let scope = WeakScope::detached();
 
-    let tcp_service = TlsAcceptorLayer::new(data).into_layer(HttpServer::auto(executor).service(
+    let tcp_service = TlsAcceptorLayer::new(data).into_layer(HttpServer::auto(scope).service(
         service_fn(async |req: Request| {
             Ok(Json(json!({
                 "method": req.method().as_str(),
@@ -51,7 +51,7 @@ async fn test_http_mitm_proxy() {
     ));
 
     tokio::spawn(async {
-        TcpListener::bind_address("127.0.0.1:13006", Executor::default())
+        TcpListener::bind_address("127.0.0.1:13006", WeakScope::detached())
             .await
             .unwrap_or_else(|e| panic!("bind TCP Listener: secure web service: {e}"))
             .serve(tcp_service)

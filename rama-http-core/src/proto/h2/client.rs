@@ -19,7 +19,7 @@ use rama_core::{
     error::BoxError,
     extensions::ExtensionsRef,
     futures::{Stream, future::FusedFuture, stream::FusedStream},
-    rt::Executor,
+    graceful::{Cause, WeakScope},
     telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn},
 };
 use rama_http::{
@@ -206,13 +206,13 @@ pub(crate) async fn handshake<T, B>(
     io: T,
     req_rx: ClientRx<B>,
     config: &Config,
-    exec: Executor,
+    scope: WeakScope,
 ) -> crate::Result<ClientTask<B, T>>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
-    handshake_with_builder(new_builder(config), io, req_rx, config, exec).await
+    handshake_with_builder(new_builder(config), io, req_rx, config, scope).await
 }
 
 pub(crate) async fn handshake_with_builder<T, B>(
@@ -220,13 +220,17 @@ pub(crate) async fn handshake_with_builder<T, B>(
     io: T,
     req_rx: ClientRx<B>,
     config: &Config,
-    exec: Executor,
+    weak_scope: WeakScope,
 ) -> crate::Result<ClientTask<B, T>>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     let extensions = io.extensions().clone();
+    let transport_end = extensions
+        .get_ref::<crate::client::conn::http2::TransportEndSignal>()
+        .cloned()
+        .map(|signal| CancelOnDrop(signal.into_inner()));
     let (h2_tx, mut conn) = builder
         .handshake::<_, SendBuf<B::Data>>(io)
         .await
@@ -271,9 +275,15 @@ where
         network.protocol.version = version_as_protocol_version(Version::HTTP_2),
     );
 
-    exec.spawn_task(
+    let scope = match weak_scope.try_hold() {
+        Ok(scope) => scope,
+        Err(refused) => {
+            return Err(crate::Error::new_closed().with(refused));
+        }
+    };
+    scope.into_spawn_task(
         H2ClientFuture::Task {
-            task: ConnTask::new(conn, conn_drop_rx, cancel_tx),
+            task: ConnTask::new(conn, conn_drop_rx, cancel_tx, transport_end),
         }
         .instrument(task_span),
     );
@@ -282,7 +292,7 @@ where
         ping,
         conn_drop_ref,
         conn_eof,
-        executor: exec,
+        scope: weak_scope,
         h2_tx,
         req_rx,
         fut_ctx: None,
@@ -428,6 +438,17 @@ pin_project! {
         cancel_tx: Option<oneshot::Sender<Infallible>>,
         #[pin]
         conn: ConnMapErr<T, B>,
+        // Dropped with the task: the transport has ended.
+        transport_end: Option<CancelOnDrop>,
+    }
+}
+
+/// Cancels its scope when dropped.
+struct CancelOnDrop(WeakScope);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel(Cause::Reason("h2 transport ended"));
     }
 }
 
@@ -440,11 +461,13 @@ where
         conn: ConnMapErr<T, B>,
         drop_rx: Receiver<Infallible>,
         cancel_tx: oneshot::Sender<Infallible>,
+        transport_end: Option<CancelOnDrop>,
     ) -> Self {
         Self {
             drop_rx,
             cancel_tx: Some(cancel_tx),
             conn,
+            transport_end,
         }
     }
 }
@@ -558,7 +581,7 @@ where
     ping: ping::Recorder,
     conn_drop_ref: ConnDropRef,
     conn_eof: ConnEof,
-    executor: Executor,
+    scope: WeakScope,
     h2_tx: SendRequest<SendBuf<B::Data>>,
     req_rx: ClientRx<B>,
     fut_ctx: Option<FutCtx<B>>,
@@ -724,7 +747,15 @@ where
 
                         // Clear send task
                         let fut: H2ClientFuture<_, T> = H2ClientFuture::Pipe { pipe };
-                        self.executor.spawn_task(fut.instrument(pipe_span));
+                        // Refused, the dropped pipe resets the stream.
+                        match self.scope.try_hold() {
+                            Ok(scope) => {
+                                scope.into_spawn_task(fut.instrument(pipe_span));
+                            }
+                            Err(refused) => {
+                                debug!(%refused, "h2 request body not piped");
+                            }
+                        }
                     }
                 }
             }
@@ -748,14 +779,22 @@ where
                     ping: Some(ping),
                     send_stream: Some(send_stream),
                     extended: f.extended,
-                    exec: self.executor.clone(),
+                    scope: self.scope.clone(),
                     cancel_tx: Some(cancel_tx),
                     h2_tx: self.h2_tx.clone(),
                 },
                 call_back: Some(f.cb),
             },
         };
-        self.executor.spawn_task(fut.instrument(send_span));
+        // Refused, the dropped callback fails the request.
+        match self.scope.try_hold() {
+            Ok(scope) => {
+                scope.into_spawn_task(fut.instrument(send_span));
+            }
+            Err(refused) => {
+                debug!(%refused, "h2 request not sent");
+            }
+        }
     }
 }
 
@@ -777,7 +816,7 @@ pin_project! {
         #[pin]
         send_stream: Option<Option<SendStream<SendBuf<<B as StreamingBody>::Data>>>>,
         extended: bool,
-        exec: Executor,
+        scope: WeakScope,
         cancel_tx: Option<oneshot::Sender<()>>,
         // Handle to the underlying h2 connection, kept solely so we can
         // snapshot the peer's initial SETTINGS frame at response-receipt

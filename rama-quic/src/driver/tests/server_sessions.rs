@@ -5,7 +5,7 @@ use crate::{
     ClientConfig, Connection, ServerConfig,
     tls::{ServerSessionPolicy, TlsConfigError, TlsOptions},
 };
-use rama_core::rt::Executor;
+use rama_core::graceful::WeakScope;
 use rama_tls::{
     client::TlsClientConfig,
     server::{ServerAuthData, TlsServerConfig},
@@ -31,7 +31,7 @@ async fn a_fresh_server_completes_every_handshake_in_full() {
     ] {
         timeout(Duration::from_secs(10), async {
             let (server_tls, client_tls) = tls(&test_helpers::identity());
-            let mut endpoint = Endpoint::build(Executor::new())
+            let mut endpoint = Endpoint::build(WeakScope::detached())
                 .with_server_config(
                     ServerConfig::try_from_rama_tls(
                         &server_tls,
