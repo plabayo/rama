@@ -515,23 +515,7 @@ from_integers! {
     from_u32: u32,
     from_i32: i32,
     from_u64: u64,
-    from_i64: i64
-}
-
-#[cfg(target_pointer_width = "16")]
-from_integers! {
-    from_usize: usize,
-    from_isize: isize
-}
-
-#[cfg(target_pointer_width = "32")]
-from_integers! {
-    from_usize: usize,
-    from_isize: isize
-}
-
-#[cfg(target_pointer_width = "64")]
-from_integers! {
+    from_i64: i64,
     from_usize: usize,
     from_isize: isize
 }

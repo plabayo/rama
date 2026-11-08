@@ -45,9 +45,9 @@ as a distant relative.
     - Original: <https://github.com/grpc/grpc-rust/blob/864d4d11f563c79fe2d51bd15867d1ec6d2e16dc/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
-- http: <https://github.com/hyperium/http/tree/3dd9f5e1c3c228c26e6836ee60b36129351bfd3b>
+- http: <https://github.com/hyperium/http/tree/4a0885cf32746d37ab0d0e570e14a4ad75bb3ce7>
   - License:
-    - Original: <https://github.com/hyperium/http/blob/3dd9f5e1c3c228c26e6836ee60b36129351bfd3b/LICENSE-MIT>
+    - Original: <https://github.com/hyperium/http/blob/4a0885cf32746d37ab0d0e570e14a4ad75bb3ce7/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
 - http-body: <https://github.com/hyperium/http-body/tree/c6ca645377a0e7da6ca17e3eeb2ff75e20521e76>
