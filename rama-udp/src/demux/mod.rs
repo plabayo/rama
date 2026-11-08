@@ -304,7 +304,16 @@ impl<S: DatagramSocket> DatagramDemux<S> {
         loop {
             let (mut datagram, local, via_reply_socket) = tokio::select! {
                 received = self.socket.recv(&mut buffer) => {
-                    let metadata = received?;
+                    let metadata = match received {
+                        Ok(metadata) => metadata,
+                        // Winsock reports an earlier reply's unreachable peer on this shared
+                        // listener's next receive: it ends no association, nor the listener.
+                        Err(error) if error.is_destination_unreachable() => {
+                            tracing::trace!(%error, "ignored unreachable peer of an earlier reply");
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     if let Err(error) = metadata.validate(buffer.len()) {
                         tracing::trace!(
                             %error,
