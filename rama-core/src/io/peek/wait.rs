@@ -145,6 +145,34 @@ impl PeekPolicy {
     }
 }
 
+/// Selects the [`PeekPolicy`] a peeker applies to one input.
+///
+/// Configured on a single peeker, so it affects only that peeker. It is
+/// implemented for a static [`PeekPolicy`] and for `Fn(&Input) -> PeekPolicy`
+/// closures; implement it for a type of your own to reuse one selection
+/// across peekers that see different input types.
+pub trait PeekPolicyProvider<Input>: Send + Sync + 'static {
+    /// The [`PeekPolicy`] to apply while peeking `input`.
+    fn peek_policy(&self, input: &Input) -> PeekPolicy;
+}
+
+impl<Input> PeekPolicyProvider<Input> for PeekPolicy {
+    #[inline(always)]
+    fn peek_policy(&self, _input: &Input) -> PeekPolicy {
+        *self
+    }
+}
+
+impl<Input, F> PeekPolicyProvider<Input> for F
+where
+    F: Fn(&Input) -> PeekPolicy + Send + Sync + 'static,
+{
+    #[inline(always)]
+    fn peek_policy(&self, input: &Input) -> PeekPolicy {
+        self(input)
+    }
+}
+
 rama_utils::macros::error::static_str_error! {
     #[doc = "protocol peek timed out before reaching a definitive verdict"]
     pub struct PeekTimeoutError;
@@ -309,6 +337,32 @@ mod tests {
         let interrupt = Arc::new(PeekInterrupt::new());
         interrupt.trigger();
         Some(interrupt)
+    }
+
+    #[test]
+    fn static_policy_ignores_the_input_and_closures_inspect_it() {
+        let policy = PeekPolicy::FAIL_CLOSED;
+        assert_eq!(policy, PeekPolicyProvider::<u16>::peek_policy(&policy, &25));
+
+        let by_port = |port: &u16| {
+            if *port == 443 {
+                PeekPolicy::FAIL_OPEN.with_timeout_partial(PeekAction::Wait)
+            } else {
+                PeekPolicy::FAIL_OPEN
+            }
+        };
+        assert_eq!(
+            PeekAction::Wait,
+            by_port
+                .peek_policy(&443)
+                .action(PeekCutoff::Timeout, PeekProgress::Partial)
+        );
+        assert_eq!(
+            PeekAction::Fallback,
+            by_port
+                .peek_policy(&25)
+                .action(PeekCutoff::Timeout, PeekProgress::Partial)
+        );
     }
 
     #[tokio::test(start_paused = true)]

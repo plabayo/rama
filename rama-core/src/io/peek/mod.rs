@@ -31,8 +31,8 @@ pub use interrupt::{PeekInterrupt, PeekInterruptSource};
 mod wait;
 #[doc(inline)]
 pub use wait::{
-    PeekAction, PeekCutoff, PeekInterruptedError, PeekPolicy, PeekProgress, PeekRead,
-    PeekTimeoutError, PeekWaiter,
+    PeekAction, PeekCutoff, PeekInterruptedError, PeekPolicy, PeekPolicyProvider, PeekProgress,
+    PeekRead, PeekTimeoutError, PeekWaiter,
 };
 
 /// Default maximum number of bytes inspected by [`PeekRouter`].
@@ -77,12 +77,12 @@ impl PeekStopReason {
 /// outcome other than [`PeekVerdict::Match`] dispatches to the fallback, except
 /// a timeout or interrupt for which the [`PeekPolicy`] selects [`PeekAction::Fail`].
 #[derive(Debug, Clone)]
-pub struct PeekRouter<P, T, F = RejectService<(), RejectError>> {
+pub struct PeekRouter<P, T, F = RejectService<(), RejectError>, Pol = PeekPolicy> {
     predicate: P,
     acceptor: T,
     fallback: F,
     peek_timeout: Option<Duration>,
-    peek_policy: PeekPolicy,
+    peek_policy: Pol,
     max_peek_size: usize,
     peek_read_chunk_size: NonZeroUsize,
 }
@@ -102,10 +102,12 @@ impl<P, T> PeekRouter<P, T, RejectService<(), RejectError>> {
                 .unwrap_or(NonZeroUsize::MIN),
         }
     }
+}
 
+impl<P, T, Pol> PeekRouter<P, T, RejectService<(), RejectError>, Pol> {
     /// Attach a fallback [`Service`].
     #[must_use]
-    pub fn with_fallback<F>(self, fallback: F) -> PeekRouter<P, T, F> {
+    pub fn with_fallback<F>(self, fallback: F) -> PeekRouter<P, T, F, Pol> {
         PeekRouter {
             predicate: self.predicate,
             acceptor: self.acceptor,
@@ -118,7 +120,7 @@ impl<P, T> PeekRouter<P, T, RejectService<(), RejectError>> {
     }
 }
 
-impl<P, T, F> PeekRouter<P, T, F> {
+impl<P, T, F, Pol> PeekRouter<P, T, F, Pol> {
     rama_utils::macros::generate_set_and_with! {
         /// Set the maximum time spent peeking into the input.
         ///
@@ -131,14 +133,21 @@ impl<P, T, F> PeekRouter<P, T, F> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set how a peek timeout or [`PeekInterrupt`] is handled.
-        ///
-        /// Defaults to [`PeekPolicy::FAIL_OPEN`]. Definitive predicate
-        /// rejections invoke the fallback under any policy.
-        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
-            self.peek_policy = peek_policy;
-            self
+    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
+    /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    ///
+    /// Defaults to [`PeekPolicy::FAIL_OPEN`]. Definitive predicate
+    /// rejections invoke the fallback under any policy.
+    #[must_use]
+    pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> PeekRouter<P, T, F, Pol2> {
+        PeekRouter {
+            predicate: self.predicate,
+            acceptor: self.acceptor,
+            fallback: self.fallback,
+            peek_timeout: self.peek_timeout,
+            peek_policy,
+            max_peek_size: self.max_peek_size,
+            peek_read_chunk_size: self.peek_read_chunk_size,
         }
     }
 
@@ -182,11 +191,12 @@ impl<T> PeekRouter<(), T> {
     }
 }
 
-impl<PeekableInput, Output, P, T, F> Service<PeekableInput> for PeekRouter<P, T, F>
+impl<PeekableInput, Output, P, T, F, Pol> Service<PeekableInput> for PeekRouter<P, T, F, Pol>
 where
     PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
     P: Fn(&[u8]) -> PeekVerdict<()> + Send + Sync + 'static,
+    Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
             PeekableInput::Mapped<PeekPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
@@ -203,7 +213,7 @@ where
 
     async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let mut waiter = PeekWaiter::new(self.peek_timeout)
-            .with_policy(self.peek_policy)
+            .with_policy(self.peek_policy.peek_policy(&input))
             .maybe_with_interrupt(input.extensions().get_arc());
         let mut peek_buffer = Vec::new();
         let output = peek_input_until_verdict_growing_with_output(
@@ -808,6 +818,42 @@ mod tests {
         let result = router.serve(input).await.unwrap();
         assert_eq!(("fallback", b"MA".to_vec()), result);
         assert_eq!(PeekPolicy::FAIL_OPEN, PeekPolicy::default());
+    }
+
+    #[derive(Debug, Clone, crate::extensions::Extension)]
+    struct Strict;
+
+    #[tokio::test]
+    async fn peek_router_selects_its_policy_per_input() {
+        type Input = ServiceInput<tokio::io::Join<IdleAfterReader, tokio::io::Sink>>;
+        let router = PeekRouter::from_prefix(b"MAGIC", service_fn(collect_accepted))
+            .with_peek_timeout(Duration::from_millis(10))
+            .with_peek_policy(|input: &Input| {
+                if input.extensions().contains::<Strict>() {
+                    PeekPolicy::FAIL_CLOSED
+                } else {
+                    PeekPolicy::FAIL_OPEN
+                }
+            })
+            .with_fallback(service_fn(async |mut stream: PeekPrefixedIo<Input>| {
+                let mut bytes = [0_u8; 2];
+                stream.read_exact(&mut bytes).await?;
+                Ok::<_, io::Error>(("fallback", bytes.to_vec()))
+            }));
+        let partial = || {
+            ServiceInput::new(tokio::io::join(
+                IdleAfterReader::new(b"MA"),
+                tokio::io::sink(),
+            ))
+        };
+
+        let result = router.serve(partial()).await.unwrap();
+        assert_eq!(("fallback", b"MA".to_vec()), result);
+
+        let strict = partial();
+        strict.extensions().insert(Strict);
+        let error = router.serve(strict).await.unwrap_err();
+        assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
     }
 
     #[tokio::test]

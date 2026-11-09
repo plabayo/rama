@@ -7,7 +7,7 @@ use rama_core::{
     io::{
         HeapReader, PeekIoProvider, PrefixedIo,
         peek::{
-            PeekOutput, PeekPolicy, PeekStopReason, PeekVerdict, PeekWaiter,
+            PeekOutput, PeekPolicy, PeekPolicyProvider, PeekStopReason, PeekVerdict, PeekWaiter,
             peek_input_until_verdict_growing_with_output, peek_input_until_verdict_with_options,
         },
     },
@@ -45,12 +45,12 @@ use super::NoTlsRejectError;
 ///
 /// [`SniRouter`]: super::SniRouter
 #[derive(Debug, Clone, ExtensionsRef)]
-pub struct PeekTlsClientHelloService<S, F = RejectService<(), NoTlsRejectError>> {
+pub struct PeekTlsClientHelloService<S, F = RejectService<(), NoTlsRejectError>, Pol = PeekPolicy> {
     #[extensions_ref]
     service: S,
     fallback: F,
     peek_timeout: Option<Duration>,
-    peek_policy: PeekPolicy,
+    peek_policy: Pol,
     reassembly_config: ClientHelloReassemblyConfig,
     malformed_tls_policy: MalformedTlsPolicy,
 }
@@ -67,11 +67,13 @@ impl<S> PeekTlsClientHelloService<S> {
             malformed_tls_policy: MalformedTlsPolicy::default(),
         }
     }
+}
 
+impl<S, Pol> PeekTlsClientHelloService<S, RejectService<(), NoTlsRejectError>, Pol> {
     /// Attach a fallback [`Service`] to this [`PeekTlsClientHelloService`].
     ///
     /// Used for non-TLS traffic and whenever the configured peek policies select fallback.
-    pub fn with_fallback<F>(self, fallback: F) -> PeekTlsClientHelloService<S, F> {
+    pub fn with_fallback<F>(self, fallback: F) -> PeekTlsClientHelloService<S, F, Pol> {
         PeekTlsClientHelloService {
             service: self.service,
             fallback,
@@ -83,7 +85,7 @@ impl<S> PeekTlsClientHelloService<S> {
     }
 }
 
-impl<S, F> PeekTlsClientHelloService<S, F> {
+impl<S, F, Pol> PeekTlsClientHelloService<S, F, Pol> {
     rama_utils::macros::generate_set_and_with! {
         /// Choose whether unparseable, over-limit, or EOF-truncated TLS is
         /// sent to the fallback (the default) or rejected.
@@ -115,16 +117,24 @@ impl<S, F> PeekTlsClientHelloService<S, F> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set how a peek timeout or [`PeekInterrupt`] is handled.
-        ///
-        /// Defaults to [`PeekPolicy::FAIL_OPEN`]. Non-TLS traffic invokes
-        /// the fallback; malformed TLS follows the separate malformed-TLS policy.
-        ///
-        /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
-        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
-            self.peek_policy = peek_policy;
-            self
+    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
+    /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    ///
+    /// Defaults to [`PeekPolicy::FAIL_OPEN`]. Non-TLS traffic invokes
+    /// the fallback; malformed TLS follows the separate malformed-TLS policy.
+    ///
+    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+    pub fn with_peek_policy<Pol2>(
+        self,
+        peek_policy: Pol2,
+    ) -> PeekTlsClientHelloService<S, F, Pol2> {
+        PeekTlsClientHelloService {
+            service: self.service,
+            fallback: self.fallback,
+            peek_timeout: self.peek_timeout,
+            peek_policy,
+            reassembly_config: self.reassembly_config,
+            malformed_tls_policy: self.malformed_tls_policy,
         }
     }
 }
@@ -325,10 +335,12 @@ where
     Ok((peeked_input, output.data, status))
 }
 
-impl<PeekableInput, Output, S, F> Service<PeekableInput> for PeekTlsClientHelloService<S, F>
+impl<PeekableInput, Output, S, F, Pol> Service<PeekableInput>
+    for PeekTlsClientHelloService<S, F, Pol>
 where
     PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
+    Pol: PeekPolicyProvider<PeekableInput>,
     S: Service<
             InputWithClientHello<
                 PeekableInput::Mapped<TlsClientHelloPrefixedIo<PeekableInput::PeekIo>>,
@@ -348,7 +360,7 @@ where
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let extensions = input.extensions().clone();
         let waiter = PeekWaiter::new(self.peek_timeout)
-            .with_policy(self.peek_policy)
+            .with_policy(self.peek_policy.peek_policy(&input))
             .maybe_with_interrupt(extensions.get_arc());
         let (peeked_input, maybe_client_hello, status) =
             peek_client_hello_from_input_with_policies(
@@ -1018,10 +1030,14 @@ mod test {
             Layer as _,
             io::{
                 BridgeIo,
-                peek::{PeekAction, PeekEgressFirstByteLayer},
+                peek::{PeekAction, PeekEgressFirstByteIo, PeekEgressFirstByteLayer},
             },
         };
-        use rama_net::http::server::HttpPeekRouter;
+        use rama_net::{
+            address::{Domain, Host, HostWithPort},
+            client::ConnectorTarget,
+            http::server::HttpPeekRouter,
+        };
         use tokio::io::{DuplexStream, duplex};
 
         use super::*;
@@ -1080,6 +1096,92 @@ mod test {
                 .await
                 .unwrap()
                 .unwrap()
+        }
+
+        /// Never falls back on slow input to the TLS ports, a short fail-open elsewhere.
+        #[derive(Debug, Clone)]
+        struct ByDestinationPort;
+
+        impl<Input: ExtensionsRef> PeekPolicyProvider<Input> for ByDestinationPort {
+            fn peek_policy(&self, input: &Input) -> PeekPolicy {
+                let port = input
+                    .extensions()
+                    .get_ref::<ConnectorTarget>()
+                    .map(|ConnectorTarget(target)| target.port);
+                if matches!(port, Some(443 | 8443)) {
+                    PeekPolicy::FAIL_OPEN
+                        .with_timeout_idle(PeekAction::Wait)
+                        .with_timeout_partial(PeekAction::Wait)
+                } else {
+                    PeekPolicy::FAIL_OPEN
+                }
+            }
+        }
+
+        async fn route_to_port<Pol>(
+            http_policy: Pol,
+            port: u16,
+            first: &'static [u8],
+            rest: &'static [u8],
+        ) -> Result<&'static str, BoxError>
+        where
+            Pol: PeekPolicyProvider<
+                BridgeIo<
+                    TlsClientHelloPrefixedIo<ServiceInput<DuplexStream>>,
+                    PeekEgressFirstByteIo<ServiceInput<DuplexStream>>,
+                >,
+            >,
+        {
+            let http = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>("http")))
+                .with_peek_timeout(PEEK_TIMEOUT)
+                .with_peek_policy(http_policy)
+                .with_fallback(service_fn(async || Ok::<_, Infallible>("passthrough")));
+            let stack = PeekEgressFirstByteLayer::new().into_layer(
+                PeekTlsClientHelloService::new(service_fn(async || Ok::<_, Infallible>("tls")))
+                    .with_peek_timeout(PEEK_TIMEOUT)
+                    .with_peek_policy(ByDestinationPort)
+                    .with_fallback(http),
+            );
+
+            let (client, server, input) = bridge();
+            input.extensions().insert(ConnectorTarget(HostWithPort::new(
+                Host::Name(Domain::from_static("pypi.org")),
+                port,
+            )));
+            let _peers = client_sends(client, server, first, Duration::from_millis(500), rest);
+            tokio::time::timeout(HOUR, stack.serve(input))
+                .await
+                .unwrap()
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn destination_port_selects_the_policy_of_each_router_in_the_chain() {
+            let (head, tail) = CH_ONE_ONE_ONE_ONE.split_at(64);
+            const SLOW_HTTP: (&[u8], &[u8]) =
+                (b"GET /sl", b"ow HTTP/1.1\r\nHost: pypi.org\r\n\r\n");
+
+            for port in [443, 8443] {
+                let tls = route_to_port(ByDestinationPort, port, head, tail).await;
+                assert_eq!("tls", tls.unwrap(), "slow ClientHello on {port}");
+                let tls = route_to_port(ByDestinationPort, port, b"", CH_ONE_ONE_ONE_ONE).await;
+                assert_eq!("tls", tls.unwrap(), "delayed ClientHello on {port}");
+                let http = route_to_port(ByDestinationPort, port, SLOW_HTTP.0, SLOW_HTTP.1).await;
+                assert_eq!("http", http.unwrap(), "slow request line on {port}");
+            }
+
+            let other = route_to_port(ByDestinationPort, 2525, head, tail).await;
+            assert_eq!("passthrough", other.unwrap());
+            let other = route_to_port(ByDestinationPort, 2525, SLOW_HTTP.0, SLOW_HTTP.1).await;
+            assert_eq!("passthrough", other.unwrap());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn policy_provider_applies_only_to_the_router_it_is_configured_on() {
+            // The ClientHello router waits on 443, the HTTP router keeps its own policy.
+            let error = route_to_port(PeekPolicy::FAIL_CLOSED, 443, b"GET /sl", b"")
+                .await
+                .unwrap_err();
+            assert!(error_chain_has_peek_timeout(error.as_ref()));
         }
 
         #[tokio::test(start_paused = true)]

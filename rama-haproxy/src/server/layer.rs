@@ -8,7 +8,7 @@ use rama_core::{
     io::{
         HeapReader, Io, PrefixedIo,
         peek::{
-            PeekPolicy, PeekStopReason, PeekVerdict, PeekWaiter,
+            PeekPolicy, PeekPolicyProvider, PeekStopReason, PeekVerdict, PeekWaiter,
             peek_input_until_verdict_growing_with_output,
         },
     },
@@ -219,12 +219,12 @@ impl From<v2::Command> for HaProxyCommand {
 }
 
 /// Layer to decode the HaProxy Protocol
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct HaProxyLayer {
+pub struct HaProxyLayer<Pol = PeekPolicy> {
     peek: bool,
     peek_timeout: Option<Duration>,
-    peek_policy: PeekPolicy,
+    peek_policy: Pol,
     strictness: HaProxyStrictness,
     selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
     keep_existing_selection_policy: bool,
@@ -243,7 +243,15 @@ impl HaProxyLayer {
             keep_existing_selection_policy: false,
         }
     }
+}
 
+impl Default for HaProxyLayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Pol> HaProxyLayer<Pol> {
     generate_set_and_with!(
         /// Instruct [`HaProxyLayer`] to peek prior to comitting to the `HaProxy` protocol.
         ///
@@ -268,18 +276,24 @@ impl HaProxyLayer {
         }
     );
 
-    generate_set_and_with!(
-        /// Set how a peek timeout or [`PeekInterrupt`] is handled.
-        ///
-        /// Defaults to [`PeekPolicy::FAIL_OPEN`], under which a cutoff
-        /// treats the input as not PROXY.
-        ///
-        /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
-        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
-            self.peek_policy = peek_policy;
-            self
+    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
+    /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    ///
+    /// Defaults to [`PeekPolicy::FAIL_OPEN`], under which a cutoff
+    /// treats the input as not PROXY.
+    ///
+    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+    #[must_use]
+    pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> HaProxyLayer<Pol2> {
+        HaProxyLayer {
+            peek: self.peek,
+            peek_timeout: self.peek_timeout,
+            peek_policy,
+            strictness: self.strictness,
+            selection_policy: self.selection_policy,
+            keep_existing_selection_policy: self.keep_existing_selection_policy,
         }
-    );
+    }
 
     generate_set_and_with!(
         /// Override the strictness configuration applied to incoming PROXY headers.
@@ -307,15 +321,15 @@ impl HaProxyLayer {
     );
 }
 
-impl<S> Layer<S> for HaProxyLayer {
-    type Service = HaProxyService<S>;
+impl<S, Pol: Clone> Layer<S> for HaProxyLayer<Pol> {
+    type Service = HaProxyService<S, Pol>;
 
     fn layer(&self, inner: S) -> Self::Service {
         HaProxyService {
             inner,
             peek: self.peek,
             peek_timeout: self.peek_timeout,
-            peek_policy: self.peek_policy,
+            peek_policy: self.peek_policy.clone(),
             strictness: self.strictness,
             selection_policy: self.selection_policy.clone(),
             keep_existing_selection_policy: self.keep_existing_selection_policy,
@@ -328,19 +342,17 @@ impl<S> Layer<S> for HaProxyLayer {
 /// This service will decode the HaProxy Protocol header and pass the decoded
 /// information to the inner service.
 #[derive(Debug, Clone, ExtensionsRef)]
-pub struct HaProxyService<S> {
+pub struct HaProxyService<S, Pol = PeekPolicy> {
     inner: S,
     peek: bool,
     peek_timeout: Option<Duration>,
-    peek_policy: PeekPolicy,
+    peek_policy: Pol,
     strictness: HaProxyStrictness,
     selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
     keep_existing_selection_policy: bool,
 }
 
 impl<S> HaProxyService<S> {
-    define_inner_service_accessors!();
-
     /// Create a new [`HaProxyService`] with the given inner service.
     pub const fn new(inner: S) -> Self {
         Self {
@@ -353,6 +365,10 @@ impl<S> HaProxyService<S> {
             keep_existing_selection_policy: false,
         }
     }
+}
+
+impl<S, Pol> HaProxyService<S, Pol> {
+    define_inner_service_accessors!();
 
     generate_set_and_with!(
         /// Instruct [`HaProxyService`] to peek prior to comitting to the `HaProxy` protocol.
@@ -378,18 +394,24 @@ impl<S> HaProxyService<S> {
         }
     );
 
-    generate_set_and_with!(
-        /// Set how a peek timeout or [`PeekInterrupt`] is handled.
-        ///
-        /// Defaults to [`PeekPolicy::FAIL_OPEN`], under which a cutoff
-        /// treats the input as not PROXY.
-        ///
-        /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
-        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
-            self.peek_policy = peek_policy;
-            self
+    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
+    /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    ///
+    /// Defaults to [`PeekPolicy::FAIL_OPEN`], under which a cutoff
+    /// treats the input as not PROXY.
+    ///
+    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+    pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> HaProxyService<S, Pol2> {
+        HaProxyService {
+            inner: self.inner,
+            peek: self.peek,
+            peek_timeout: self.peek_timeout,
+            peek_policy,
+            strictness: self.strictness,
+            selection_policy: self.selection_policy,
+            keep_existing_selection_policy: self.keep_existing_selection_policy,
         }
-    );
+    }
 
     generate_set_and_with!(
         /// Override the strictness configuration applied to incoming PROXY headers.
@@ -477,10 +499,11 @@ fn proxy_prefix_verdict(buffer: &[u8]) -> PeekVerdict<PeekOutcome> {
     }
 }
 
-impl<S, IO> Service<IO> for HaProxyService<S>
+impl<S, IO, Pol> Service<IO> for HaProxyService<S, Pol>
 where
     S: Service<PrefixedIo<HeapReader, IO>, Error: Into<BoxError>>,
     IO: Io + Unpin + ExtensionsRef,
+    Pol: PeekPolicyProvider<IO>,
 {
     type Output = S::Output;
     type Error = BoxError;
@@ -500,7 +523,7 @@ where
         if self.peek {
             tracing::trace!("haproxy protocol peeking enabled: start detection");
             let mut waiter = PeekWaiter::new(self.peek_timeout)
-                .with_policy(self.peek_policy)
+                .with_policy(self.peek_policy.peek_policy(&stream))
                 .maybe_with_interrupt(stream.extensions().get_arc());
             match peek_disambiguate(&mut stream, &mut buffer, &mut waiter).await? {
                 PeekOutcome::V1 => {
@@ -578,7 +601,7 @@ where
     }
 }
 
-impl<S> HaProxyService<S> {
+impl<S, Pol> HaProxyService<S, Pol> {
     fn apply_v1<IO: ExtensionsRef>(
         &self,
         stream: &IO,
@@ -820,6 +843,36 @@ mod test {
                     .unwrap()
                     .unwrap();
             assert_eq!(b"foo", &read[..]);
+        }
+
+        #[derive(Debug, Clone, rama_core::extensions::Extension)]
+        struct Strict;
+
+        #[tokio::test(start_paused = true)]
+        async fn peek_policy_is_selected_per_input() {
+            let layer = HaProxyLayer::new()
+                .with_peek(true)
+                .with_peek_timeout(PEEK_TIMEOUT)
+                .with_peek_policy(|input: &ServiceInput<DuplexStream>| {
+                    if input.extensions().contains::<Strict>() {
+                        PeekPolicy::FAIL_CLOSED
+                    } else {
+                        PeekPolicy::FAIL_OPEN
+                    }
+                });
+            let service = layer.into_layer(read_n(3));
+
+            let (mut client, server) = duplex(256);
+            client.write_all(b"PRO").await.unwrap();
+            let read = service.serve(ServiceInput::new(server)).await.unwrap();
+            assert_eq!(b"PRO", &read[..]);
+
+            let (mut client, server) = duplex(256);
+            client.write_all(b"PRO").await.unwrap();
+            let strict = ServiceInput::new(server);
+            strict.extensions().insert(Strict);
+            let error = service.serve(strict).await.unwrap_err();
+            assert!(error.is::<PeekTimeoutError>());
         }
 
         #[tokio::test(start_paused = true)]

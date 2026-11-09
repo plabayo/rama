@@ -7,7 +7,8 @@ use rama_core::{
     io::{
         PeekIoProvider, PrefixedIo, StackReader,
         peek::{
-            PeekOutput, PeekPolicy, PeekVerdict, PeekWaiter, peek_input_until_verdict_with_options,
+            PeekOutput, PeekPolicy, PeekPolicyProvider, PeekVerdict, PeekWaiter,
+            peek_input_until_verdict_with_options,
         },
     },
     service::RejectService,
@@ -23,11 +24,11 @@ use rama_core::{
 /// inconclusive timeout or interrupt is handled by the [`PeekPolicy`], see
 /// [`TlsPeekRouter::with_peek_policy`].
 #[derive(Debug, Clone)]
-pub struct TlsPeekRouter<T, F = RejectService<(), NoTlsRejectError>> {
+pub struct TlsPeekRouter<T, F = RejectService<(), NoTlsRejectError>, Pol = PeekPolicy> {
     tls_acceptor: T,
     fallback: F,
     peek_timeout: Option<Duration>,
-    peek_policy: PeekPolicy,
+    peek_policy: Pol,
 }
 
 rama_utils::macros::error::static_str_error! {
@@ -45,9 +46,11 @@ impl<T> TlsPeekRouter<T> {
             peek_policy: PeekPolicy::FAIL_OPEN,
         }
     }
+}
 
+impl<T, Pol> TlsPeekRouter<T, RejectService<(), NoTlsRejectError>, Pol> {
     /// Attach a fallback [`Service`] tp this [`TlsPeekRouter`].
-    pub fn with_fallback<F>(self, fallback: F) -> TlsPeekRouter<T, F> {
+    pub fn with_fallback<F>(self, fallback: F) -> TlsPeekRouter<T, F, Pol> {
         TlsPeekRouter {
             tls_acceptor: self.tls_acceptor,
             fallback,
@@ -57,7 +60,7 @@ impl<T> TlsPeekRouter<T> {
     }
 }
 
-impl<T, F> TlsPeekRouter<T, F> {
+impl<T, F, Pol> TlsPeekRouter<T, F, Pol> {
     rama_utils::macros::generate_set_and_with! {
         /// Set the maximum time spent peeking for a TLS record header.
         ///
@@ -70,24 +73,28 @@ impl<T, F> TlsPeekRouter<T, F> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set how a peek timeout or [`PeekInterrupt`] is handled.
-        ///
-        /// Defaults to [`PeekPolicy::FAIL_OPEN`]. A definitive non-TLS
-        /// prefix invokes the fallback under any policy.
-        ///
-        /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
-        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
-            self.peek_policy = peek_policy;
-            self
+    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
+    /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    ///
+    /// Defaults to [`PeekPolicy::FAIL_OPEN`]. A definitive non-TLS
+    /// prefix invokes the fallback under any policy.
+    ///
+    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+    pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> TlsPeekRouter<T, F, Pol2> {
+        TlsPeekRouter {
+            tls_acceptor: self.tls_acceptor,
+            fallback: self.fallback,
+            peek_timeout: self.peek_timeout,
+            peek_policy,
         }
     }
 }
 
-impl<PeekableInput, Output, T, F> Service<PeekableInput> for TlsPeekRouter<T, F>
+impl<PeekableInput, Output, T, F, Pol> Service<PeekableInput> for TlsPeekRouter<T, F, Pol>
 where
     PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
+    Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
             PeekableInput::Mapped<TlsPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
@@ -104,7 +111,7 @@ where
 
     async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let mut waiter = PeekWaiter::new(self.peek_timeout)
-            .with_policy(self.peek_policy)
+            .with_policy(self.peek_policy.peek_policy(&input))
             .maybe_with_interrupt(input.extensions().get_arc());
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let peek_reader = input.peek_io_mut();
@@ -361,6 +368,30 @@ mod test {
 
         let response = router.serve(input).await.unwrap();
         assert_eq!("fallback", response);
+    }
+
+    #[derive(Debug, Clone, rama_core::extensions::Extension)]
+    struct Strict;
+
+    #[tokio::test]
+    async fn peek_policy_is_selected_per_input() {
+        let router = TlsPeekRouter::new(service_fn(async || Ok::<_, Infallible>("tls")))
+            .with_peek_timeout(Duration::from_millis(10))
+            .with_peek_policy(|input: &ServiceInput<ScriptedReader>| {
+                if input.extensions().contains::<Strict>() {
+                    PeekPolicy::FAIL_CLOSED
+                } else {
+                    PeekPolicy::FAIL_OPEN
+                }
+            })
+            .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
+        let partial = || ServiceInput::new(ScriptedReader::new([b"\x16\x03".as_slice()], true));
+
+        assert_eq!("fallback", router.serve(partial()).await.unwrap());
+        let strict = partial();
+        strict.extensions().insert(Strict);
+        let error = router.serve(strict).await.unwrap_err();
+        assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     io::{
         HeapReader, PrefixedIo,
-        peek::{PeekPolicy, PeekWaiter},
+        peek::{PeekPolicy, PeekPolicyProvider, PeekWaiter},
     },
     service::RejectService,
 };
@@ -45,11 +45,11 @@ use crate::client::ClientHelloReassemblyConfig;
 ///
 /// [`TlsPeekRouter`]: super::TlsPeekRouter
 #[derive(Debug, Clone)]
-pub struct SniRouter<S, F = RejectService<(), NoTlsRejectError>> {
+pub struct SniRouter<S, F = RejectService<(), NoTlsRejectError>, Pol = PeekPolicy> {
     service: S,
     fallback: F,
     peek_timeout: Option<Duration>,
-    peek_policy: PeekPolicy,
+    peek_policy: Pol,
     reassembly_config: ClientHelloReassemblyConfig,
     malformed_tls_policy: MalformedTlsPolicy,
 }
@@ -66,11 +66,13 @@ impl<S> SniRouter<S> {
             malformed_tls_policy: MalformedTlsPolicy::default(),
         }
     }
+}
 
+impl<S, Pol> SniRouter<S, RejectService<(), NoTlsRejectError>, Pol> {
     /// Attach a fallback [`Service`] to this [`SniRouter`].
     ///
     /// Used for non-TLS traffic and whenever the configured peek policies select fallback.
-    pub fn with_fallback<F>(self, fallback: F) -> SniRouter<S, F> {
+    pub fn with_fallback<F>(self, fallback: F) -> SniRouter<S, F, Pol> {
         SniRouter {
             service: self.service,
             fallback,
@@ -82,7 +84,7 @@ impl<S> SniRouter<S> {
     }
 }
 
-impl<S, F> SniRouter<S, F> {
+impl<S, F, Pol> SniRouter<S, F, Pol> {
     rama_utils::macros::generate_set_and_with! {
         /// Choose whether unparseable, over-limit, or EOF-truncated TLS is
         /// sent to the fallback (the default) or rejected.
@@ -117,24 +119,30 @@ impl<S, F> SniRouter<S, F> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set how a ClientHello peek timeout or [`PeekInterrupt`] is handled.
-        ///
-        /// Defaults to [`PeekPolicy::FAIL_OPEN`]. Non-TLS traffic invokes
-        /// the fallback; malformed TLS follows the separate malformed-TLS policy.
-        ///
-        /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
-        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
-            self.peek_policy = peek_policy;
-            self
+    /// Set how a ClientHello peek timeout or [`PeekInterrupt`] is handled, using
+    /// a static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    ///
+    /// Defaults to [`PeekPolicy::FAIL_OPEN`]. Non-TLS traffic invokes
+    /// the fallback; malformed TLS follows the separate malformed-TLS policy.
+    ///
+    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+    pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> SniRouter<S, F, Pol2> {
+        SniRouter {
+            service: self.service,
+            fallback: self.fallback,
+            peek_timeout: self.peek_timeout,
+            peek_policy,
+            reassembly_config: self.reassembly_config,
+            malformed_tls_policy: self.malformed_tls_policy,
         }
     }
 }
 
-impl<Stream, Output, S, F> Service<Stream> for SniRouter<S, F>
+impl<Stream, Output, S, F, Pol> Service<Stream> for SniRouter<S, F, Pol>
 where
     Stream: rama_core::io::Io + Unpin + ExtensionsRef,
     Output: Send + 'static,
+    Pol: PeekPolicyProvider<Stream>,
     S: Service<SniRequest<Stream>, Output = Output, Error: Into<BoxError>>,
     F: Service<SniPrefixedIo<Stream>, Output = Output, Error: Into<BoxError>>,
 {
@@ -146,7 +154,7 @@ where
         // while preserving all original wire bytes for the selected service.
         let extensions = stream.extensions().clone();
         let waiter = PeekWaiter::new(self.peek_timeout)
-            .with_policy(self.peek_policy)
+            .with_policy(self.peek_policy.peek_policy(&stream))
             .maybe_with_interrupt(extensions.get_arc());
         let (peeked, maybe_client_hello, status) = peek_client_hello_from_input_with_policies(
             stream,
@@ -623,6 +631,40 @@ mod test {
         let stream = ScriptedReader::one_byte_per_read(CH_ONE_ONE_ONE_ONE, false);
         let response = peek_tls_svc.serve(ServiceInput::new(stream)).await.unwrap();
         assert_eq!(Some("one.one.one.one".to_owned()), response);
+    }
+
+    #[derive(Debug, Clone, rama_core::extensions::Extension)]
+    struct Strict;
+
+    #[tokio::test]
+    async fn peek_policy_is_selected_per_input() {
+        let router = SniRouter::new(service_fn(async || {
+            Ok::<_, Infallible>(Some("tls".to_owned()))
+        }))
+        .with_peek_timeout(Duration::from_millis(10))
+        .with_peek_policy(|input: &ServiceInput<ScriptedReader>| {
+            if input.extensions().contains::<Strict>() {
+                PeekPolicy::FAIL_CLOSED
+            } else {
+                PeekPolicy::FAIL_OPEN
+            }
+        })
+        .with_fallback(service_fn(async || {
+            Ok::<_, Infallible>(Some("fallback".to_owned()))
+        }));
+        let partial = || {
+            ServiceInput::new(ScriptedReader::one_byte_per_read(
+                &CH_ONE_ONE_ONE_ONE[..64],
+                true,
+            ))
+        };
+
+        let response = router.serve(partial()).await.unwrap();
+        assert_eq!(Some("fallback".to_owned()), response);
+        let strict = partial();
+        strict.extensions().insert(Strict);
+        let error = router.serve(strict).await.unwrap_err();
+        assert!(error_chain_has_peek_timeout(error.as_ref()));
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@ use rama_core::{
     extensions::ExtensionsRef,
     io::{
         PeekIoProvider, PrefixedIo, ReplayReader,
-        peek::{PeekPolicy, PeekRead, PeekWaiter},
+        peek::{PeekPolicy, PeekPolicyProvider, PeekRead, PeekWaiter},
     },
     service::RejectService,
     telemetry::tracing,
@@ -107,12 +107,12 @@ impl HttpPeekConfig {
 /// inconclusive timeout or interrupt is handled by the [`PeekPolicy`], see
 /// [`HttpPeekRouter::with_peek_policy`].
 #[derive(Debug, Clone)]
-pub struct HttpPeekRouter<T, F = RejectService<(), NoHttpRejectError>> {
+pub struct HttpPeekRouter<T, F = RejectService<(), NoHttpRejectError>, Pol = PeekPolicy> {
     http_acceptor: T,
     fallback: F,
     peek_config: HttpPeekConfig,
     peek_timeout: Option<Duration>,
-    peek_policy: PeekPolicy,
+    peek_policy: Pol,
 }
 
 /// Type wrapper used by [`HttpPeekRouter::new_dual`]
@@ -185,9 +185,9 @@ impl<T> HttpPeekRouter<H2Acceptor<T>> {
     }
 }
 
-impl<T> HttpPeekRouter<T> {
+impl<T, Pol> HttpPeekRouter<T, RejectService<(), NoHttpRejectError>, Pol> {
     /// Attach a fallback [`Service`].
-    pub fn with_fallback<F>(self, fallback: F) -> HttpPeekRouter<T, F> {
+    pub fn with_fallback<F>(self, fallback: F) -> HttpPeekRouter<T, F, Pol> {
         HttpPeekRouter {
             http_acceptor: self.http_acceptor,
             fallback,
@@ -198,7 +198,7 @@ impl<T> HttpPeekRouter<T> {
     }
 }
 
-impl<T, F> HttpPeekRouter<T, F> {
+impl<T, F, Pol> HttpPeekRouter<T, F, Pol> {
     rama_utils::macros::generate_set_and_with! {
         /// Use [`KNOWN_NON_HTTP_PROTOCOL_METHODS`] as the skipped method list.
         pub fn known_non_http_protocol_methods(mut self) -> Self {
@@ -219,16 +219,20 @@ impl<T, F> HttpPeekRouter<T, F> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set how a peek timeout or [`PeekInterrupt`] is handled.
-        ///
-        /// Defaults to [`PeekPolicy::FAIL_OPEN`]. A definitive non-HTTP
-        /// prefix invokes the fallback under any policy.
-        ///
-        /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
-        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
-            self.peek_policy = peek_policy;
-            self
+    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
+    /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    ///
+    /// Defaults to [`PeekPolicy::FAIL_OPEN`]. A definitive non-HTTP
+    /// prefix invokes the fallback under any policy.
+    ///
+    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+    pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> HttpPeekRouter<T, F, Pol2> {
+        HttpPeekRouter {
+            http_acceptor: self.http_acceptor,
+            fallback: self.fallback,
+            peek_config: self.peek_config,
+            peek_timeout: self.peek_timeout,
+            peek_policy,
         }
     }
 
@@ -251,9 +255,13 @@ impl<T, F> HttpPeekRouter<T, F> {
         }
     }
 
-    fn waiter(&self, input: &impl ExtensionsRef) -> PeekWaiter {
+    fn waiter<Input>(&self, input: &Input) -> PeekWaiter
+    where
+        Input: ExtensionsRef,
+        Pol: PeekPolicyProvider<Input>,
+    {
         PeekWaiter::new(self.peek_timeout)
-            .with_policy(self.peek_policy)
+            .with_policy(self.peek_policy.peek_policy(input))
             .maybe_with_interrupt(input.extensions().get_arc())
     }
 }
@@ -275,10 +283,12 @@ impl<T, U> HttpPeekRouter<HttpDualAcceptor<T, U>> {
     }
 }
 
-impl<PeekableInput, Output, T, F> Service<PeekableInput> for HttpPeekRouter<HttpAutoAcceptor<T>, F>
+impl<PeekableInput, Output, T, F, Pol> Service<PeekableInput>
+    for HttpPeekRouter<HttpAutoAcceptor<T>, F, Pol>
 where
     PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
+    Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
             PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
@@ -313,10 +323,12 @@ where
     }
 }
 
-impl<PeekableInput, Output, T, F> Service<PeekableInput> for HttpPeekRouter<Http1Acceptor<T>, F>
+impl<PeekableInput, Output, T, F, Pol> Service<PeekableInput>
+    for HttpPeekRouter<Http1Acceptor<T>, F, Pol>
 where
     PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
+    Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
             PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
@@ -349,10 +361,12 @@ where
     }
 }
 
-impl<PeekableInput, Output, T, F> Service<PeekableInput> for HttpPeekRouter<H2Acceptor<T>, F>
+impl<PeekableInput, Output, T, F, Pol> Service<PeekableInput>
+    for HttpPeekRouter<H2Acceptor<T>, F, Pol>
 where
     PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
+    Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
             PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
@@ -385,11 +399,12 @@ where
     }
 }
 
-impl<PeekableInput, Output, T, U, F> Service<PeekableInput>
-    for HttpPeekRouter<HttpDualAcceptor<T, U>, F>
+impl<PeekableInput, Output, T, U, F, Pol> Service<PeekableInput>
+    for HttpPeekRouter<HttpDualAcceptor<T, U>, F, Pol>
 where
     PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
+    Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
             PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
@@ -1502,6 +1517,36 @@ mod test {
         let result = router.serve(input).await.unwrap();
         assert_eq!("fallback", result);
         assert_eq!(PeekPolicy::FAIL_OPEN, PeekPolicy::default());
+    }
+
+    #[derive(Debug, Clone, rama_core::extensions::Extension)]
+    struct Strict;
+
+    #[tokio::test]
+    async fn test_http_peek_policy_is_selected_per_input() {
+        type Input = ServiceInput<tokio::io::Join<IdleAfterPrefix, tokio::io::Sink>>;
+        let router = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>("http")))
+            .with_peek_timeout(Duration::from_millis(10))
+            .with_peek_policy(|input: &Input| {
+                if input.extensions().contains::<Strict>() {
+                    PeekPolicy::FAIL_CLOSED
+                } else {
+                    PeekPolicy::FAIL_OPEN
+                }
+            })
+            .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
+        let partial = || {
+            ServiceInput::new(tokio::io::join(
+                IdleAfterPrefix::new(b"GET /slow "),
+                tokio::io::sink(),
+            ))
+        };
+
+        assert_eq!("fallback", router.serve(partial()).await.unwrap());
+        let strict = partial();
+        strict.extensions().insert(Strict);
+        let error = router.serve(strict).await.unwrap_err();
+        assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
     }
 
     #[tokio::test]
