@@ -1,15 +1,16 @@
 use crate::StreamingBody;
 use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::{
+    body_limit::AppliedRequestBodyLimit,
     decompression::DecompressionBody,
     decompression::body::BodyInner,
     util::compression::{CompressionLevel, WrapBody},
 };
-use crate::{HeaderValue, Request, Response, StatusCode, header};
+use crate::{BodyLimit, HeaderValue, Request, Response, StatusCode, header};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extensions, ExtensionsRef, Ingress};
 use rama_http_types::Body;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -29,6 +30,7 @@ pub struct RequestDecompression<S> {
     pub(super) inner: S,
     pub(super) accept: AcceptEncoding,
     pub(super) pass_through_unaccepted: bool,
+    pub(super) max_decoded_size: Option<usize>,
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for RequestDecompression<S>
@@ -77,7 +79,8 @@ where
             } else {
                 BodyInner::identity(body)
             };
-        let body = DecompressionBody::new(body);
+        let decoded_limit = decoded_request_limit(self.max_decoded_size, &parts.extensions);
+        let body = DecompressionBody::new(body).with_decoded_limit(decoded_limit);
         let req = Request::from_parts(parts, body);
         self.inner
             .serve(req)
@@ -85,6 +88,22 @@ where
             .map(|res| res.map(Body::new))
             .into_box_error()
     }
+}
+
+/// Limits on the encoded body also bound what it may decode to, so compression cannot bypass them.
+fn decoded_request_limit(configured: Option<usize>, extensions: &Extensions) -> Option<usize> {
+    let transport = extensions
+        .get_ref::<Ingress<Extensions>>()
+        .and_then(|ingress| ingress.get_ref::<BodyLimit>())
+        .and_then(BodyLimit::request);
+    let application = extensions
+        .get_ref::<AppliedRequestBodyLimit>()
+        .map(|limit| limit.0);
+    [configured, transport, application]
+        .into_iter()
+        .flatten()
+        .filter(|limit| *limit > 0)
+        .min()
 }
 
 fn unsupported_encoding(accept: AcceptEncoding) -> Result<Response, BoxError> {
@@ -107,10 +126,22 @@ impl<S> RequestDecompression<S> {
             inner: service,
             accept: AcceptEncoding::default(),
             pass_through_unaccepted: false,
+            max_decoded_size: None,
         }
     }
 
     define_inner_service_accessors!();
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Fail a decoded request body with a length-limit error once it exceeds `limit` bytes.
+        ///
+        /// A request body limit set on the transport or by an outer body limit layer
+        /// also applies to the decoded body; the smallest limit wins.
+        pub fn max_decoded_size(mut self, limit: Option<usize>) -> Self {
+            self.max_decoded_size = limit;
+            self
+        }
+    }
 
     rama_utils::macros::generate_set_and_with! {
         /// Passes through the request even when the encoding is not supported.

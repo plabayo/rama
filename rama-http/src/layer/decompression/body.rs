@@ -1,11 +1,12 @@
 #![allow(unused_imports)]
 
 use crate::HeaderMap;
-use crate::body::{Body, Frame, SizeHint, StreamingBody};
+use crate::body::{Body, Frame, SizeHint, StreamingBody, util::LengthLimitError};
 use crate::layer::util::compression::{
     AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
-    compressed_body_poll_frame, impl_decorate_async_read,
+    impl_decorate_async_read,
 };
+use compression_codecs::zstd::params::DParameter;
 use rama_core::error::BoxError;
 
 use async_compression::tokio::bufread::BrotliDecoder;
@@ -18,6 +19,7 @@ use rama_core::futures::ready;
 use rama_core::stream::io::StreamReader;
 use std::task::Context;
 use std::{io, marker::PhantomData, pin::Pin, task::Poll};
+use tokio::io::{AsyncBufRead, AsyncRead, ReadBuf};
 
 pin_project! {
     /// Response body of [`RequestDecompression`] and [`Decompression`].
@@ -30,6 +32,7 @@ pin_project! {
     {
         #[pin]
         pub(crate) inner: BodyInner<B>,
+        decoded_budget: Option<usize>,
     }
 }
 
@@ -42,6 +45,7 @@ where
             inner: BodyInner::Identity {
                 inner: B::default(),
             },
+            decoded_budget: None,
         }
     }
 }
@@ -51,13 +55,22 @@ where
     B: StreamingBody,
 {
     pub(crate) fn new(inner: BodyInner<B>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            decoded_budget: None,
+        }
+    }
+
+    /// Fail with a [`LengthLimitError`] once decoded data exceeds `limit` bytes.
+    pub(crate) fn with_decoded_limit(mut self, limit: Option<usize>) -> Self {
+        self.decoded_budget = limit;
+        self
     }
 }
 
 type GzipBody<B> = WrapBody<GzipDecoder<B>>;
 type DeflateBody<B> = WrapBody<ZlibDecoder<B>>;
-type BrotliBody<B> = WrapBody<BrotliDecoder<B>>;
+type BrotliBody<B> = WrapBody<BrotliWindowGuard<B>>;
 type ZstdBody<B> = WrapBody<ZstdDecoder<B>>;
 
 pin_project! {
@@ -101,7 +114,7 @@ impl<B: StreamingBody> BodyInner<B> {
         Self::Deflate { inner }
     }
 
-    pub(crate) fn brotli(inner: WrapBody<BrotliDecoder<B>>) -> Self {
+    pub(crate) fn brotli(inner: BrotliBody<B>) -> Self {
         Self::Brotli { inner }
     }
 
@@ -125,7 +138,33 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        compressed_body_poll_frame!(self, cx)
+        let this = self.project();
+        let decoded = match this.inner.project() {
+            BodyInnerProj::Empty { .. } => return Poll::Ready(None),
+            BodyInnerProj::Identity { inner } => {
+                return match ready!(inner.poll_frame(cx)) {
+                    Some(Ok(frame)) => Poll::Ready(Some(Ok(
+                        frame.map_data(|mut buf| buf.copy_to_bytes(buf.remaining()))
+                    ))),
+                    Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
+                    None => Poll::Ready(None),
+                };
+            }
+            BodyInnerProj::Gzip { inner } => ready!(inner.poll_frame(cx)),
+            BodyInnerProj::Deflate { inner } => ready!(inner.poll_frame(cx)),
+            BodyInnerProj::Brotli { inner } => ready!(inner.poll_frame(cx)),
+            BodyInnerProj::Zstd { inner } => ready!(inner.poll_frame(cx)),
+        };
+        if let (Some(budget), Some(Ok(frame))) = (this.decoded_budget.as_mut(), &decoded)
+            && let Some(data) = frame.data_ref()
+        {
+            if data.len() > *budget {
+                *budget = 0;
+                return Poll::Ready(Some(Err(LengthLimitError::new().into())));
+            }
+            *budget -= data.len();
+        }
+        Poll::Ready(decoded)
     }
 
     fn is_end_stream(&self) -> bool {
@@ -156,12 +195,77 @@ impl_decorate_async_read!(ZlibDecoder: |input, _quality| {
     ZlibDecoder::new(input)
 });
 
-impl_decorate_async_read!(BrotliDecoder: |input, _quality| {
-    BrotliDecoder::new(input)
-});
+/// RFC 9659 §3: a "zstd" content coding never needs a window above 8 MiB.
+const ZSTD_MAX_WINDOW_LOG: u32 = 23;
 
 impl_decorate_async_read!(ZstdDecoder: |input, _quality| {
-    let mut decoder = ZstdDecoder::new(input);
+    let mut decoder =
+        ZstdDecoder::with_params(input, &[DParameter::window_log_max(ZSTD_MAX_WINDOW_LOG)]);
     decoder.multiple_members(true);
     decoder
 });
+
+pin_project! {
+    /// Brotli decoder input that rejects a stream header asking for a large window
+    /// (RFC 7932 §9.1 marks that WBITS pattern invalid): a few bytes could demand up to 1 GiB.
+    pub(crate) struct BrotliWindowGuard<R> {
+        #[pin]
+        inner: R,
+        checked: bool,
+    }
+}
+
+/// Low 7 bits of a stream header using the invalid `0010001` WBITS code.
+const BROTLI_LARGE_WINDOW_HEADER: u8 = 0b001_0001;
+
+impl<R: AsyncRead> AsyncRead for BrotliWindowGuard<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        self.project().inner.poll_read(cx, buf)
+    }
+}
+
+impl<R: AsyncBufRead> AsyncBufRead for BrotliWindowGuard<R> {
+    fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
+        let this = self.project();
+        let buf = ready!(this.inner.poll_fill_buf(cx))?;
+        if !*this.checked
+            && let Some(&first) = buf.first()
+        {
+            *this.checked = true;
+            if first & 0x7f == BROTLI_LARGE_WINDOW_HEADER {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "brotli stream requests a large window",
+                )));
+            }
+        }
+        Poll::Ready(Ok(buf))
+    }
+
+    fn consume(self: Pin<&mut Self>, amt: usize) {
+        self.project().inner.consume(amt);
+    }
+}
+
+impl<B> DecorateAsyncRead for BrotliWindowGuard<B>
+where
+    B: StreamingBody,
+{
+    type Input = AsyncReadBody<B>;
+    type Output = BrotliDecoder<BrotliWindowGuard<Self::Input>>;
+
+    fn apply(input: Self::Input, _quality: CompressionLevel) -> Self::Output {
+        BrotliDecoder::new(BrotliWindowGuard {
+            inner: input,
+            checked: false,
+        })
+    }
+
+    fn get_pin_mut(pinned: Pin<&mut Self::Output>) -> Pin<&mut Self::Input> {
+        pinned.get_pin_mut().project().inner
+    }
+}

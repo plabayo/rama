@@ -534,6 +534,14 @@ impl ChunkedState {
         trace!("read_trailer");
         let byte = byte!(rdr, cx);
 
+        // A bare LF ends the line for lenient peers, so accepting it would desync framing.
+        if byte == b'\n' {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid chunk trailer: bare LF",
+            )));
+        }
+
         let Some(trailers_buf) = trailers_buf.as_mut() else {
             return Poll::Ready(Err(io::Error::other(
                 "h1 decode: trailer buf is None while it was expected to be available to write read trailer byte",
@@ -598,6 +606,11 @@ impl ChunkedState {
                 }
                 Poll::Ready(Ok(Self::EndLf))
             }
+            // Lenient peers end the body here, so taking it as a trailer would swallow the next message.
+            b'\n' => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid last chunk: bare LF",
+            ))),
             byte => {
                 match trailers_buf {
                     None => {
@@ -647,6 +660,9 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
     let mut headers = vec![httparse::EMPTY_HEADER; count];
     let res = httparse::parse_headers(buf, &mut headers);
     match res {
+        Ok(httparse::Status::Complete((consumed, _))) if consumed != buf.len() => Err(
+            io::Error::new(io::ErrorKind::InvalidData, "invalid chunk trailer section"),
+        ),
         Ok(httparse::Status::Complete((_, headers))) => {
             for header in headers {
                 use std::convert::TryFrom;
@@ -977,6 +993,35 @@ mod tests {
         decoder.decode_fut(&mut mock_buf).await.expect("decode");
         let e = decoder.decode_fut(&mut mock_buf).await.unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn test_read_chunked_rejects_bare_lf_after_last_chunk() {
+        let mut mock_buf = &b"5\r\nhello\r\n0\r\n\nGET /smuggled HTTP/1.1\r\n\r\n"[..];
+        let mut decoder = Decoder::chunked(None, None);
+        decoder.decode_fut(&mut mock_buf).await.expect("decode");
+        let e = decoder.decode_fut(&mut mock_buf).await.unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        assert!(mock_buf.starts_with(b"GET /smuggled"), "{mock_buf:?}");
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn test_read_chunked_rejects_bare_lf_in_trailer() {
+        let mut mock_buf = &b"5\r\nhello\r\n0\r\nx-a: 1\nGET /smuggled HTTP/1.1\r\n\r\n"[..];
+        let mut decoder = Decoder::chunked(None, None);
+        decoder.decode_fut(&mut mock_buf).await.expect("decode");
+        let e = decoder.decode_fut(&mut mock_buf).await.unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        assert!(mock_buf.starts_with(b"GET /smuggled"), "{mock_buf:?}");
+    }
+
+    #[test]
+    fn decode_trailers_rejects_unparsed_remainder() {
+        let mut buf = BytesMut::from(&b"x-a: 1\r\n\r\nleftover"[..]);
+        let e = decode_trailers(&mut buf, 4).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
     }
 
     #[cfg(not(miri))]

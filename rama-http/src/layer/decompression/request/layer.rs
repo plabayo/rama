@@ -17,6 +17,7 @@ use rama_core::Layer;
 pub struct RequestDecompressionLayer {
     accept: AcceptEncoding,
     pass_through_unaccepted: bool,
+    max_decoded_size: Option<usize>,
 }
 
 impl<S> Layer<S> for RequestDecompressionLayer {
@@ -27,6 +28,7 @@ impl<S> Layer<S> for RequestDecompressionLayer {
             inner: service,
             accept: self.accept,
             pass_through_unaccepted: self.pass_through_unaccepted,
+            max_decoded_size: self.max_decoded_size,
         }
     }
 }
@@ -36,6 +38,17 @@ impl RequestDecompressionLayer {
     #[must_use]
     pub fn new() -> Self {
         Default::default()
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Fail a decoded request body with a length-limit error once it exceeds `limit` bytes.
+        ///
+        /// A request body limit set on the transport or by an outer body limit layer
+        /// also applies to the decoded body; the smallest limit wins.
+        pub fn max_decoded_size(mut self, limit: Option<usize>) -> Self {
+            self.max_decoded_size = limit;
+            self
+        }
     }
 
     rama_utils::macros::generate_set_and_with! {
