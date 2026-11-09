@@ -177,7 +177,12 @@ test("Alt-Svc discovery reloads only a non-H3 secure navigation once", async () 
         const context = vm.createContext({
           window: { addEventListener() {} },
           location: { protocol: scheme, host: "fixture.invalid", href, replace(url) { redirects.push(url); } },
-          document: { querySelector() { return { content: "enabled" }; }, getElementById() { return {}; } },
+          document: {
+            querySelector(selector) {
+              return selector === 'meta[name="rama-h3-probe"]' ? { content: "enabled" } : null;
+            },
+            getElementById() { return {}; },
+          },
           performance: { getEntriesByType() { return [{ nextHopProtocol: protocol }]; } },
           crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
           URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
@@ -194,4 +199,94 @@ test("Alt-Svc discovery reloads only a non-H3 secure navigation once", async () 
       }
     }
   }
+});
+
+test("site probes follow the page's own flows and report each site flow", async () => {
+  const sites = [
+    { site: "same-site", origin: "https://ss.fixture.invalid", token: "tok-ss" },
+    { site: "cross-site", origin: "https://xss.fixture.example", token: "tok-xss" },
+  ];
+  const calls = [];
+  const reports = [];
+  const input = { hidden: true, innerHTML: "" };
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+    location: { protocol: "https:", host: "fixture.invalid", href: "https://fixture.invalid/report" },
+    document: {
+      querySelector(selector) {
+        if (selector === 'meta[name="rama-fp-sites"]') return { content: JSON.stringify(sites) };
+        return null;
+      },
+      getElementById() { return input; },
+      createElement() { return {}; },
+      head: { append() {} },
+      body: { append() {} },
+    },
+    performance: { getEntriesByType() { return [{ nextHopProtocol: "h2" }]; } },
+    crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    Image: class {},
+    URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
+  });
+  vm.runInContext(source, context);
+  context.showProtocol = (...args) => reports.push(args);
+  const version = (url) => JSON.stringify({ fp: { request_info: { version: "HTTP/2.0" } } });
+  context.makePostRequest = async (url) => { calls.push(["fetch", url]); return { text: async () => version(url) }; };
+  context.makeRequestWithXHR = async (url) => { calls.push(["xhr", url]); return version(url); };
+  context.connectWebSocket = async (probe, url) => {
+    calls.push(["ws", url]);
+    if (url && url.includes("xss")) throw new Error("refused");
+    return { probe, greeting: { initiator: "ws", version: "HTTP/2.0" } };
+  };
+  context.loadSubresource = async (_element, _attribute, url) => {
+    calls.push(["load", url]);
+    return "h2";
+  };
+  // Objects from the page's realm have their own prototypes.
+  const result = JSON.parse(JSON.stringify(await context.main()));
+  assert.match(input.innerHTML, /<form method="POST"/);
+  assert.deepEqual(Object.keys(result.sites), ["same-site", "cross-site"]);
+  for (const [site, { origin, token }] of [["same-site", sites[0]], ["cross-site", sites[1]]]) {
+    const flows = result.sites[site];
+    assert.deepEqual(
+      Object.keys(flows), ["image", "style", "script", "frame", "fetch", "xhr", "ws"],
+    );
+    const urls = calls.map(([, url]) => url).filter((url) => url && url.includes(new URL(origin).host));
+    assert.equal(urls.length, 7, site);
+    for (const url of urls) {
+      assert.equal(new URL(url).searchParams.get("rama-fp-site"), token);
+    }
+    assert.ok(urls.some((url) => url.startsWith("wss://")), site);
+  }
+  assert.deepEqual(result.sites["same-site"].ws, { protocol: "HTTP/2.0" });
+  assert.deepEqual(result.sites["cross-site"].ws, { error: "refused" });
+  assert.deepEqual(result.sites["cross-site"].image, { protocol: "h2" });
+  assert.ok(reports.some(([flow, protocol]) => flow === "WebSocket (cross-site)" && protocol === "unavailable"));
+});
+
+test("an invalid site configuration never breaks the page's own journey", async () => {
+  const reports = [];
+  const input = { hidden: true, innerHTML: "" };
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+    location: { protocol: "https:", host: "fixture.invalid", href: "https://fixture.invalid/report" },
+    document: {
+      querySelector(selector) {
+        return selector === 'meta[name="rama-fp-sites"]' ? { content: "{not json" } : null;
+      },
+      getElementById() { return input; },
+    },
+    performance: { getEntriesByType() { return [{ nextHopProtocol: "h2" }]; } },
+    crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
+  });
+  vm.runInContext(source, context);
+  context.showProtocol = (...args) => reports.push(args);
+  context.makePostRequest = async () => ({ text: async () => '{"fp":{"request_info":{"version":"HTTP/2.0"}}}' });
+  context.makeRequestWithXHR = async () => '{"fp":{"request_info":{"version":"HTTP/2.0"}}}';
+  context.connectWebSocket = async (probe) => ({ probe, greeting: {} });
+  // Objects from the page's realm have their own prototypes.
+  const result = JSON.parse(JSON.stringify(await context.main()));
+  assert.deepEqual(result.sites, {});
+  assert.match(input.innerHTML, /<form method="POST"/);
+  assert.ok(reports.some(([flow, protocol]) => flow === "Sites" && protocol === "unavailable"));
 });

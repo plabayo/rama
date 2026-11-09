@@ -93,6 +93,7 @@ fn request(path: &str) -> Request<()> {
 fn only_explicit_report_and_api_flows_prepare_observations() {
     for (method, path, expected) in [
         (Method::GET, "/report", true),
+        (Method::GET, "/landing?rama-fp-site=token", true),
         (Method::GET, "/report?h3_probe=1", false),
         (Method::GET, "/report?other=1&h3_probe", false),
         (Method::GET, "/report?other=h3_probe", true),
@@ -254,6 +255,63 @@ fn subresource_request(path: &str, destination: &'static str) -> Request<()> {
 }
 
 #[test]
+fn embedded_frames_and_api_preflights_are_subresources() {
+    let cases: [(Method, &str, &[(&str, &'static str)], bool); 6] = [
+        (Method::GET, "/frame", &[("sec-fetch-dest", "iframe")], true),
+        (
+            Method::GET,
+            "/frame",
+            &[("sec-fetch-dest", "document")],
+            false,
+        ),
+        (
+            Method::OPTIONS,
+            "/api/fetch/number/1",
+            &[
+                ("sec-fetch-mode", "cors"),
+                ("access-control-request-method", "POST"),
+            ],
+            true,
+        ),
+        (
+            Method::OPTIONS,
+            "/api/xml/number/1",
+            &[
+                ("sec-fetch-mode", "cors"),
+                ("access-control-request-method", "POST"),
+            ],
+            true,
+        ),
+        (
+            Method::OPTIONS,
+            "/api/fetch/number/1",
+            &[("sec-fetch-mode", "cors")],
+            false,
+        ),
+        (
+            Method::OPTIONS,
+            "/report",
+            &[
+                ("sec-fetch-mode", "cors"),
+                ("access-control-request-method", "POST"),
+            ],
+            false,
+        ),
+    ];
+    for (method, path, fields, expected) in cases {
+        let mut headers = HeaderMap::new();
+        for (name, value) in fields {
+            headers.insert(*name, HeaderValue::from_static(value));
+        }
+        assert_eq!(
+            is_subresource(&method, &Uri::parse(path).unwrap(), &headers),
+            expected,
+            "{method} {path} {fields:?}"
+        );
+    }
+}
+
+#[test]
 fn only_page_assets_with_fetch_metadata_are_subresources() {
     for (method, path, destination, expected) in [
         (Method::GET, "/assets/style.css", Some("style"), true),
@@ -362,6 +420,7 @@ async fn real_auth_layer_runs_after_safe_capture_and_each_intent_submits_once() 
     let service = CaptureLayer::new(queue.clone()).into_layer(
         StorageAuthLayer {
             storage_auth: Some("private-canary".to_owned()),
+            site_tokens: None,
         }
         .into_layer(service_fn(|request: Request<()>| async {
             Ok::<_, Infallible>(request)
@@ -770,12 +829,14 @@ async fn metadata_without_an_admitted_intent_never_prepares_or_reserves() {
 async fn wire_reports(version: Version) -> (CollectionQueue, CollectionReceiver) {
     let (queue, receiver) = queue(8);
     let service = CaptureLayer::new(queue.clone()).into_layer(
-        StorageAuthLayer { storage_auth: None }.into_layer(service_fn(
-            |request: Request| async move {
-                submit(request.extensions(), None);
-                Ok::<_, Infallible>(Response::new(Body::empty()))
-            },
-        )),
+        StorageAuthLayer {
+            storage_auth: None,
+            site_tokens: None,
+        }
+        .into_layer(service_fn(|request: Request| async move {
+            submit(request.extensions(), None);
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        })),
     );
     let mut http = HttpServer::auto(WeakScope::detached());
     http.h2_mut().set_observe_early_frames(true);
@@ -907,9 +968,14 @@ async fn h3_wire_reports() -> (CollectionQueue, CollectionReceiver) {
         }),
         storage_auth: None,
         geo_db: None,
+        sites: None,
     });
     let service = CaptureLayer::new(queue.clone()).into_layer(
-        StorageAuthLayer { storage_auth: None }.into_layer(service_fn(move |request: Request| {
+        StorageAuthLayer {
+            storage_auth: None,
+            site_tokens: None,
+        }
+        .into_layer(service_fn(move |request: Request| {
             let state = state.clone();
             async move {
                 data::get_http_info_and_capture(
@@ -1178,6 +1244,7 @@ async fn storage_auth_rejects_empty_or_incorrect_cookies() {
     ] {
         let service = StorageAuthLayer {
             storage_auth: configured.map(str::to_owned),
+            site_tokens: None,
         }
         .into_layer(service_fn(|request: Request<()>| async {
             Ok::<_, Infallible>(request)

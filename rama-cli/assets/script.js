@@ -125,12 +125,13 @@ function makeRequestWithXHR(url, method, number) {
 
 // A greeting alone proves only server-to-browser delivery. Require a UTF-8
 // round trip and a clean close before reporting this flow as successful.
-function connectWebSocket(probe = "rama-fp echo: " + "🐢".repeat(32)) {
+function connectWebSocket(
+  probe = "rama-fp echo: " + "🐢".repeat(32),
+  url = `ws${location.protocol === "https:" ? "s" : ""}://${location.host}/api/ws`,
+  flow = "WebSocket",
+) {
   return new Promise((completed, reject) => {
-    const socket = new WebSocket(
-      `ws${location.protocol === "https:" ? "s" : ""}://${location.host}/api/ws`,
-      ["a", "b"],
-    );
+    const socket = new WebSocket(url, ["a", "b"]);
     let greeting;
     let echoed = false;
     let settled = false;
@@ -175,7 +176,7 @@ function connectWebSocket(probe = "rama-fp echo: " + "🐢".repeat(32)) {
       }
       settled = true;
       clearTimeout(deadline);
-      showProtocol("WebSocket", greeting.version);
+      showProtocol(flow, greeting.version);
       completed({ greeting, probe });
     };
   });
@@ -216,6 +217,106 @@ function showProtocol(flow, protocol, status = "") {
     item.append(note);
   }
   report.append(item);
+}
+
+// Other hosts of this service, whose requests are same-site or cross-site to this
+// page. Their site token authorizes requests that carry no storage cookie.
+function siteProbeConfig() {
+  const content = document.querySelector('meta[name="rama-fp-sites"]')?.content;
+  return content ? JSON.parse(content) : [];
+}
+
+function siteUrl(site, path, protocol) {
+  const url = new URL(path, site.origin);
+  if (protocol) url.protocol = protocol;
+  url.searchParams.set("rama-fp-site", site.token);
+  return url.href;
+}
+
+// The resource timing entry tells which protocol served a subresource.
+function loadedProtocol(url) {
+  return performance.getEntriesByName(url).at(-1)?.nextHopProtocol || "";
+}
+
+function loadSubresource(element, attribute, url, parent) {
+  return new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => reject(new Error(`${url} timed out`)), 15000);
+    element.onload = () => {
+      clearTimeout(deadline);
+      resolve(loadedProtocol(url));
+    };
+    element.onerror = () => {
+      clearTimeout(deadline);
+      reject(new Error(`${url} failed to load`));
+    };
+    element[attribute] = url;
+    parent?.append(element);
+  });
+}
+
+// Each flow a page sends to another site; a failed flow is reported, not thrown.
+async function probeSite(site) {
+  const label = (flow) => `${flow} (${site.site})`;
+  const number = Math.floor(Math.random() * 1000) + 1;
+  const flows = {
+    image: ["Image", () => loadSubresource(new Image(), "src", siteUrl(site, "/assets/banner.jpeg"))],
+    style: ["Stylesheet", () => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      return loadSubresource(link, "href", siteUrl(site, "/assets/style.css"), document.head);
+    }],
+    script: ["Script", () => loadSubresource(
+      document.createElement("script"), "src", siteUrl(site, "/assets/site.js"), document.head,
+    )],
+    frame: ["Frame", () => {
+      const frame = document.createElement("iframe");
+      frame.hidden = true;
+      return loadSubresource(frame, "src", siteUrl(site, "/frame"), document.body);
+    }],
+    fetch: ["Fetch", async () => {
+      const response = await makePostRequest(siteUrl(site, `/api/fetch/number/${number}`), number);
+      return JSON.parse(await response.text()).fp.request_info.version;
+    }],
+    xhr: ["XMLHttpRequest", async () => {
+      const response = await makeRequestWithXHR(
+        siteUrl(site, `/api/xml/number/${number}`), "POST", number,
+      );
+      return JSON.parse(response).fp.request_info.version;
+    }],
+    ws: ["WebSocket", async () => {
+      const url = siteUrl(site, "/api/ws", "wss:");
+      const { greeting } = await connectWebSocket(websocketProbe(), url, label("WebSocket"));
+      return greeting.version;
+    }],
+  };
+  const results = {};
+  for (const [name, [flow, run]] of Object.entries(flows)) {
+    try {
+      const protocol = await run();
+      results[name] = { protocol };
+      if (name !== "ws") showProtocol(label(flow), protocol);
+    } catch (error) {
+      results[name] = { error: String(error?.message || error) };
+      showProtocol(label(flow), "unavailable", results[name].error);
+    }
+  }
+  return results;
+}
+
+// Site probes never fail the page's own journey; missing results fail its verification.
+async function probeSites() {
+  const results = {};
+  let sites;
+  try {
+    sites = siteProbeConfig();
+  } catch (error) {
+    showProtocol("Sites", "unavailable", `invalid configuration: ${error?.message || error}`);
+    return results;
+  }
+  for (const site of sites) {
+    results[site.site] = await probeSite(site);
+  }
+  return results;
 }
 
 // Each page load has its own echo payload; standalone callers keep the fixed default.
@@ -276,6 +377,8 @@ async function main() {
       showProtocol("WebSocket", "unavailable", "unsupported or connection failed");
     }
 
+    const sites = await probeSites();
+
     console.log("Requests completed successfully");
     console.log("Result:", result);
     console.log("Result2:", result2);
@@ -298,7 +401,7 @@ async function main() {
     const inputEl = document.getElementById("input");
     inputEl.hidden = false;
     inputEl.innerHTML = formHtml;
-    return { fetch: responseText, xhr: response4, websocket };
+    return { fetch: responseText, xhr: response4, websocket, sites };
   } catch (error) {
     console.error("An error occurred:", error);
     window.location.href = "/";

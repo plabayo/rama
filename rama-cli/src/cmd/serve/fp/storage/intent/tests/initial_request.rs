@@ -30,6 +30,7 @@ async fn unclassified_initial_assets_keep_safe_recipe_and_connection_ownership()
         let service = CaptureLayer::new(queue.clone()).into_layer(
             StorageAuthLayer {
                 storage_auth: Some("private-canary".to_owned()),
+                site_tokens: None,
             }
             .into_layer(service_fn(|input: Request<&'static str>| async {
                 Ok::<_, Infallible>(input)

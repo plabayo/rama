@@ -27,6 +27,16 @@ transport parameters and first flight, HTTP/3 SETTINGS and header order.
    on to HTTP/3. The deployments in
    [`rama-fp/infra`](https://github.com/plabayo/rama/tree/main/rama-fp/infra) are complete
    examples.
+
+   Browsers send many requests to other hosts: images, stylesheets, scripts, frames,
+   API calls, links and forms, each with `Sec-Fetch-Site: same-site` or `cross-site`.
+   To capture those too, serve the same service on two more names and pass them:
+   `--same-site-domain` takes a name that shares the page's registrable domain
+   (`h2.fp.ss.ramaproxy.org` for `h2.fp.ramaproxy.org`), `--cross-site-domain` one with
+   its own (`h2.fp.xss.ramaproxy.com`). The report page then sends each kind of request
+   to both. A request to those names carries no storage cookie: the page gives it a
+   short-lived token signed with a key derived from `RAMA_FP_STORAGE_COOKIE`, so every
+   instance answering those names needs the same value.
 2. Open `https://your-host/` in the browser or app to profile and choose
    *Get Fingerprint Report*. The report page also runs fetch, XHR, WebSocket and form
    requests, so every kind of request is captured. Mobile devices only need to reach the

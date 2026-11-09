@@ -38,7 +38,11 @@ With `uv` installed, run
 The nightly job uses this same command and uploads that one receipt directory.
 
 Each cell records requested and resolved browser identity, its origin, successful
-per-flow protocols and session/quit outcomes. Generic errors remain failed cells;
+per-flow protocols and session/quit outcomes. Every HTTPS cell also needs the
+same-site and cross-site flows its report page sends to the `ss.ramaproxy.org` and
+`xss.ramaproxy.com` hosts of its service (`site_protocols`): subresources, fetch,
+XHR, WebSocket, a link and a form per site. A deployment without those hosts fails
+the job. Generic errors remain failed cells;
 "unsupported" needs a separately verified provider disposition. Receipts contain
 no cookies, session IDs or exception messages. Session start means the driver
 context yielded; quit success means WebDriver's quit call returned. Neither is an

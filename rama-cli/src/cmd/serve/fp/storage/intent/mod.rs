@@ -9,7 +9,7 @@ use rama::{
     extensions::{Extension, Extensions, ExtensionsRef},
     http::{
         HeaderMap, Method, Request, Version,
-        header::USER_AGENT,
+        header::{ACCESS_CONTROL_REQUEST_METHOD, USER_AGENT},
         headers::{HeaderMapExt as _, SecFetchDest, SecFetchMode, SecPurpose},
         proto::h3::observation::H3RequestObservation,
     },
@@ -110,25 +110,38 @@ pub(in super::super) fn is_speculative(headers: &HeaderMap) -> bool {
     headers.typed_get::<SecPurpose>().is_some()
 }
 
-/// A stylesheet, script or image the page loads from its own assets. Its flow is
-/// described by its Fetch metadata, so a request without it is not one.
+/// A request the page makes without an initiator of its own: a stylesheet, script
+/// or image of its assets, the frame it embeds, or the CORS preflight of an API
+/// call. Its flow is described by its Fetch metadata, so a request without it is
+/// not one.
 fn is_subresource(method: &Method, uri: &Uri, headers: &HeaderMap) -> bool {
+    let Some(path) = uri.path().map(|path| path.as_encoded_str()) else {
+        return false;
+    };
+    if is_protocol_probe(uri) || is_speculative(headers) {
+        return false;
+    }
+    let destination = headers.typed_get::<SecFetchDest>();
+    if method == Method::OPTIONS {
+        return (path.starts_with("/api/fetch/number/") || path.starts_with("/api/xml/number/"))
+            && headers.contains_key(ACCESS_CONTROL_REQUEST_METHOD)
+            && headers.typed_get::<SecFetchMode>() == Some(SecFetchMode::Cors);
+    }
     method == Method::GET
-        && uri
-            .path()
-            .is_some_and(|path| path.as_encoded_str().starts_with("/assets/"))
-        && !is_protocol_probe(uri)
-        && !is_speculative(headers)
-        && matches!(
-            headers.typed_get::<SecFetchDest>(),
-            Some(SecFetchDest::Style | SecFetchDest::Script | SecFetchDest::Image)
-        )
+        && match path.as_ref() {
+            "/frame" => destination == Some(SecFetchDest::Iframe),
+            path if path.starts_with("/assets/") => matches!(
+                destination,
+                Some(SecFetchDest::Style | SecFetchDest::Script | SecFetchDest::Image)
+            ),
+            _ => false,
+        }
 }
 
 fn initiator(method: &Method, uri: &Uri, headers: &HeaderMap) -> Option<Initiator> {
     let path = uri.path()?.as_encoded_str();
     if method == Method::GET
-        && path == "/report"
+        && (path == "/report" || path == "/landing")
         && !is_protocol_probe(uri)
         && !is_speculative(headers)
     {

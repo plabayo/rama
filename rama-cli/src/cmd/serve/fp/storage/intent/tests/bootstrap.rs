@@ -165,6 +165,7 @@ async fn untracked_initial_navigation_is_stored_before_its_exact_bootstrap_conne
             let service = CaptureLayer::new(queue.clone()).into_layer(
                 StorageAuthLayer {
                     storage_auth: Some("private-canary".to_owned()),
+                    site_tokens: None,
                 }
                 .into_layer(service_fn(|input: Request<()>| async {
                     Ok::<_, Infallible>(input)
@@ -286,6 +287,7 @@ async fn speculative_initial_navigation_keeps_its_bootstrap_but_not_the_navigato
     let service = CaptureLayer::new(queue.clone()).into_layer(
         StorageAuthLayer {
             storage_auth: Some("private-canary".to_owned()),
+            site_tokens: None,
         }
         .into_layer(service_fn(|input: Request<()>| async {
             Ok::<_, Infallible>(input)
@@ -367,6 +369,7 @@ async fn a_cookie_after_the_first_request_still_records_the_connection_authorize
     let service = CaptureLayer::new(queue.clone()).into_layer(
         StorageAuthLayer {
             storage_auth: Some("private-canary".to_owned()),
+            site_tokens: None,
         }
         .into_layer(service_fn(|input: Request<()>| async {
             Ok::<_, Infallible>(input)
@@ -468,6 +471,7 @@ async fn missing_initial_fields_cannot_be_replaced_by_a_later_operation() {
             let service = CaptureLayer::new(queue.clone()).into_layer(
                 StorageAuthLayer {
                     storage_auth: Some("private-canary".to_owned()),
+                    site_tokens: None,
                 }
                 .into_layer(service_fn(|input: Request<()>| async {
                     Ok::<_, Infallible>(input)
@@ -570,6 +574,7 @@ async fn queued_bootstrap(empty: bool) -> (CollectionQueue, CollectionReceiver) 
     let service = CaptureLayer::new(queue.clone()).into_layer(
         StorageAuthLayer {
             storage_auth: Some("private-canary".to_owned()),
+            site_tokens: None,
         }
         .into_layer(service_fn(|input: Request<()>| async {
             Ok::<_, Infallible>(input)

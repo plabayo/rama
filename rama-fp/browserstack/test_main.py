@@ -13,11 +13,19 @@ from urllib.parse import quote
 import main
 
 
+SITE_FLOWS = dict.fromkeys(
+    ("image", "style", "script", "frame", "fetch", "xhr", "ws", "navigate", "form"), "h2"
+)
+
+
 class NightlyTests(unittest.TestCase):
     storage_cookie = "private/storage-cookie&value"
-    completed = SimpleNamespace(protocols=dict.fromkeys(
-        ("navigate", "fetch", "xhr", "ws", "form", "form_get"), "h3"
-    ))
+    completed = SimpleNamespace(
+        protocols=dict.fromkeys(
+            ("navigate", "fetch", "xhr", "ws", "form", "form_get"), "h3"
+        ),
+        site_protocols={"same-site": SITE_FLOWS, "cross-site": SITE_FLOWS},
+    )
 
     def collect(self, journey, *, entrypoints=None, profile=None):
         """Supply browser outcomes; exercise real exit handling and receipt writing."""
@@ -81,6 +89,55 @@ class NightlyTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 code, _, _ = self.collect(main.UnsupportedFlow(reason))
                 self.assertEqual(code, expected)
+
+    def test_https_cells_require_every_site_flow(self):
+        incomplete = dict(SITE_FLOWS)
+        del incomplete["frame"]
+        for site_protocols, expected in (
+            (None, 1),
+            ({"same-site": SITE_FLOWS}, 1),
+            ({"same-site": SITE_FLOWS, "cross-site": incomplete}, 1),
+            ({"same-site": SITE_FLOWS, "cross-site": dict(SITE_FLOWS, image="unknown")}, 0),
+            ({"same-site": SITE_FLOWS, "cross-site": dict(SITE_FLOWS, fetch="unknown")}, 1),
+        ):
+            with self.subTest(site_protocols=site_protocols):
+                result = SimpleNamespace(
+                    protocols=self.completed.protocols, site_protocols=site_protocols
+                )
+                code, receipts, _ = self.collect(lambda *_args, **_kwargs: result)
+                self.assertEqual(code, expected)
+                if not expected:
+                    self.assertEqual(receipts["000-0"]["site_protocols"], site_protocols)
+
+    def test_plaintext_cells_send_no_site_flows(self):
+        requested = []
+
+        def journey(_driver, _origin, *, sites, **_kwargs):
+            requested.append(sites)
+            return SimpleNamespace(protocols=self.completed.protocols, site_protocols=None)
+
+        code, receipts, _ = self.collect(
+            journey, entrypoints=[("http://h1.invalid/", "h1")]
+        )
+        self.assertEqual((code, requested), (0, [False]))
+        self.assertNotIn("site_protocols", receipts["000-0"])
+
+    def test_an_excused_websocket_may_be_missing_on_the_site_hosts_too(self):
+        without_ws = dict(SITE_FLOWS)
+        del without_ws["ws"]
+        for site_protocols, expected in (
+            ({"same-site": without_ws, "cross-site": without_ws}, 0),
+            ({"same-site": without_ws}, 1),
+        ):
+            with self.subTest(site_protocols=site_protocols):
+                unsupported = main.UnsupportedFlow(
+                    "ws: WebSocket over HTTP/3 is not supported by this browser"
+                )
+                unsupported.site_protocols = site_protocols
+                code, receipts, _ = self.collect(unsupported)
+                self.assertEqual(code, expected)
+                if not expected:
+                    self.assertEqual(receipts["000-0"]["site_protocols"], site_protocols)
 
     def test_fingerprint_mismatch_fails_but_matching_or_absent_profiles_do_not(self):
         for profile, expected in (

@@ -13,6 +13,12 @@ IDENTITY_FIELDS = (
     "platformName",
 )
 FLOW_NAMES = {"navigate", "fetch", "xhr", "ws", "form", "form_get"}
+SITE_KINDS = {"same-site", "cross-site"}
+SITE_FLOW_NAMES = {
+    "image", "style", "script", "frame", "fetch", "xhr", "ws", "navigate", "form"
+}
+# Subresource transports come from resource timing, which a browser may withhold.
+SITE_TIMED_FLOWS = {"image", "style", "script", "frame"}
 
 
 def secret_forms(secrets):
@@ -69,6 +75,29 @@ def checked_partial_protocols(values):
     return dict(values)
 
 
+def checked_site_protocols(values, *, websocket=True):
+    """Every flow sent to the same-site and cross-site hosts of an HTTPS cell.
+
+    Only a WebSocket the browser cannot use on this origin (``websocket`` False)
+    may be absent.
+    """
+    if not isinstance(values, dict) or set(values) != SITE_KINDS:
+        raise ValueError("invalid site protocol receipt")
+    required = SITE_FLOW_NAMES if websocket else SITE_FLOW_NAMES - {"ws"}
+    for flows in values.values():
+        if (
+            not isinstance(flows, dict)
+            or not required <= set(flows) <= SITE_FLOW_NAMES
+            or any(
+                value not in ("h1", "h2", "h3")
+                and not (value == "unknown" and flow in SITE_TIMED_FLOWS)
+                for flow, value in flows.items()
+            )
+        ):
+            raise ValueError("invalid site protocol receipt")
+    return {site: dict(flows) for site, flows in values.items()}
+
+
 def write_receipt(path, receipt, *, secrets):
     """Fail closed before writing malformed flow evidence or credential material."""
     protocols = receipt["protocols"]
@@ -76,9 +105,17 @@ def write_receipt(path, receipt, *, secrets):
         checked_protocols(protocols)
     if "completed_protocols" in receipt:
         checked_partial_protocols(receipt["completed_protocols"])
+    if receipt.get("site_protocols") is not None:
+        checked_site_protocols(
+            receipt["site_protocols"], websocket=protocols is not None
+        )
     for visit in receipt.get("visits", ()):
         if visit["status"] == "passed":
             checked_protocols(visit["protocols"])
+        if visit.get("site_protocols") is not None:
+            checked_site_protocols(
+                visit["site_protocols"], websocket=visit["status"] == "passed"
+            )
     data = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
     if any(secret in data for secret in secret_forms(secrets)):
         raise ValueError("private material in cell receipt")

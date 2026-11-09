@@ -14,6 +14,8 @@ A failed cell is retried once in a fresh session; its receipt records
 this host drives also gets a second session when an H3 cell stayed on TCP.
 Origins in `REVISITED` run the journey twice in one session, recorded per visit in
 `visits`; the cell passes when either visit completes.
+Every HTTPS cell also requires the same-site and cross-site flows its report page
+advertises, recorded as `site_protocols`; a deploy without those hosts fails the job.
 """
 
 import argparse
@@ -26,6 +28,7 @@ from pathlib import Path
 import platform
 import sys
 import time
+from urllib.parse import urlsplit
 
 from selenium.common.exceptions import WebDriverException
 
@@ -37,6 +40,7 @@ from matrix import desktop_permutations, mobile_configs
 from receipts import (
     checked_partial_protocols,
     checked_protocols,
+    checked_site_protocols,
     identity,
     secret_forms,
     write_receipt,
@@ -248,6 +252,9 @@ def run_session(
 
     def attempt(cell, origin, protocol):
         started = time.monotonic()
+        # Browsers send Fetch metadata only to secure origins: their same-site and
+        # cross-site flows are required on every HTTPS cell.
+        secure = urlsplit(origin).scheme == "https"
         receipt = {
             "cell": cell,
             "requested": identity(capability, secrets=secrets),
@@ -300,22 +307,36 @@ def run_session(
                                 origin,
                                 cookies=None if visit else cookies,
                                 expected_protocol=protocol,
+                                sites=secure,
                             )
                         except UnsupportedFlow as error:
                             unsupported = error
-                            visits.append(
-                                {"status": "unsupported", "unsupported_reason": str(error)}
-                            )
+                            entry = {"status": "unsupported", "unsupported_reason": str(error)}
+                            # A journey stopped before the forms reached no site host.
+                            if secure and error.site_protocols is not None:
+                                entry["site_protocols"] = checked_site_protocols(
+                                    error.site_protocols, websocket=False
+                                )
+                            visits.append(entry)
                         else:
                             protocols = checked_protocols(result.protocols)
-                            visits.append({"status": "passed", "protocols": protocols})
+                            entry = {"status": "passed", "protocols": protocols}
+                            if secure:
+                                entry["site_protocols"] = checked_site_protocols(
+                                    result.site_protocols
+                                )
+                            visits.append(entry)
                             if not receipt["journey_completed"]:
                                 receipt["protocols"] = protocols
+                                if "site_protocols" in entry:
+                                    receipt["site_protocols"] = entry["site_protocols"]
                                 receipt["journey_completed"] = True
                     if origin in REVISITED:
                         receipt["visits"] = visits
                     if not receipt["journey_completed"]:
                         receipt["unsupported_reason"] = str(unsupported)
+                        if "site_protocols" in visits[-1]:
+                            receipt["site_protocols"] = visits[-1]["site_protocols"]
                         if unsupported.protocols is not None:
                             receipt["completed_protocols"] = checked_partial_protocols(
                                 unsupported.protocols
