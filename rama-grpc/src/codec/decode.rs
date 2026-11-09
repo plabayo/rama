@@ -318,8 +318,11 @@ impl StreamingInner {
                 return Poll::Ready(Err(status));
             }
             None => {
-                // FIXME: improve buf usage.
-                return Poll::Ready(if self.buf.has_remaining() || self.chunk.has_remaining() {
+                // a header read without its message body is a truncated message as well
+                let truncated = self.buf.has_remaining()
+                    || self.chunk.has_remaining()
+                    || matches!(self.state, State::ReadBody { .. });
+                return Poll::Ready(if truncated {
                     trace!("unexpected EOF decoding stream, state: {:?}", self.state);
                     Err(Status::internal("Unexpected EOF decoding stream."))
                 } else {
@@ -589,6 +592,16 @@ mod tests {
         let chunks = vec![Bytes::copy_from_slice(&wire[..wire.len() - 1])];
         let status = collect(streaming(chunks, None)).await.unwrap_err();
         assert_eq!(status.code(), Code::Internal);
+    }
+
+    #[tokio::test]
+    async fn header_without_its_message_is_an_error() {
+        let wire = frame(0, b"x");
+        for cut in [HEADER_SIZE, HEADER_SIZE - 1] {
+            let chunks = vec![Bytes::copy_from_slice(&wire[..cut])];
+            let status = collect(streaming(chunks, None)).await.unwrap_err();
+            assert_eq!(status.code(), Code::Internal, "cut at {cut}");
+        }
     }
 
     #[tokio::test]
