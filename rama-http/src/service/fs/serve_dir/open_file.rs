@@ -5,7 +5,7 @@ use super::{
 use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch, IfRange};
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, header};
-use http_range_header::StartPosition;
+use http_range_header::{RangeInvalid, RangeUnsatisfiableError};
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
 use rama_http_types::mime::Mime;
@@ -776,35 +776,34 @@ fn try_parse_range(
     ignore_multi_range_requests: bool,
 ) -> Option<Result<RangeInclusive<u64>, RangeError>> {
     let header_value = maybe_range_ref?;
-    let Ok(parsed) = http_range_header::parse_range_header(header_value) else {
-        return Some(Err(RangeError::Unsatisfiable));
-    };
-
-    if parsed.ranges.len() > 1 {
-        // ServeDir and ServeFile do not support multipart responses. Optionally
-        // ignore the Range header before semantic and overlap validation.
-        return if ignore_multi_range_requests {
+    // ServeDir and ServeFile do not support multipart responses. Optionally
+    // ignore the Range header before semantic and overlap validation.
+    let multiple = || {
+        if ignore_multi_range_requests {
             None
         } else {
             Some(Err(RangeError::MultipleRangesNotSupported))
-        };
+        }
+    };
+    let parsed = match http_range_header::parse_range_header(header_value) {
+        Ok(parsed) => parsed,
+        // A reversed spec fails the whole header while parsing, before its range count is known.
+        Err(RangeUnsatisfiableError::Invalid(RangeInvalid::Reversed))
+            if header_value.contains(',') =>
+        {
+            return multiple();
+        }
+        Err(_err) => return Some(Err(RangeError::Unsatisfiable)),
+    };
+    if parsed.len() > 1 {
+        return multiple();
     }
 
-    if file_size == 0 {
-        // RFC 9110 §14.1.1: only a non-empty suffix fits, and it is the whole (empty) file
-        let satisfiable = parsed
-            .ranges
-            .first()
-            .is_some_and(|range| matches!(range.start, StartPosition::FromLast(n) if n > 0));
-        return (!satisfiable).then_some(Err(RangeError::Unsatisfiable));
+    match parsed.validate(file_size) {
+        // Empty only for a zero-length file whose non-empty suffix is the whole file (RFC 9110 §14.1.1).
+        Ok(mut ranges) => ranges.pop().map(Ok),
+        Err(_err) => Some(Err(RangeError::Unsatisfiable)),
     }
-
-    Some(
-        parsed
-            .validate(file_size)
-            .map_err(|_err| RangeError::Unsatisfiable)
-            .and_then(|mut ranges| ranges.pop().ok_or(RangeError::Unsatisfiable)),
-    )
 }
 
 /// `Some(true)` => exists and is a directory. `Some(false)` => exists and is
