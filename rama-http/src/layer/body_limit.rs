@@ -46,11 +46,19 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef, Ingress},
 };
 use rama_utils::macros::define_inner_service_accessors;
+
+#[cfg(feature = "compression")]
+use rama_core::extensions::Extension;
 use std::fmt;
 
 /// Apply a limit to the request body's size.
 ///
 /// See the [module docs](crate::layer::body_limit) for an example.
+/// Request body limit applied by an outer [`BodyLimitService`], for layers that transform the body.
+#[cfg(feature = "compression")]
+#[derive(Debug, Clone, Copy, Extension)]
+pub(crate) struct AppliedRequestBodyLimit(pub(crate) usize);
+
 #[derive(Debug, Clone)]
 pub struct BodyLimitLayer {
     size: usize,
@@ -104,6 +112,10 @@ where
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let inherited_limit = inherited_request_limit(req.extensions());
         let additional_limit = additional_request_limit(self.size, inherited_limit);
+        #[cfg(feature = "compression")]
+        if let Some(limit) = additional_limit {
+            req.extensions().insert(AppliedRequestBodyLimit(limit));
+        }
         let req = req.map(|body| match additional_limit {
             Some(limit) => Body::new(Limited::new(body, limit)),
             None => Body::new(body),
