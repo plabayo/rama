@@ -1,6 +1,6 @@
 //! Connection utilities
 
-use std::io;
+use std::{io, time::Duration};
 
 use rama_core::extensions::{Extension, Extensions};
 use rama_utils::reactive::{ChangeListener, Changed, Reactive, ReactiveRepr};
@@ -19,6 +19,53 @@ pub fn is_connection_error(e: &io::Error) -> bool {
             | io::ErrorKind::NotConnected
             | io::ErrorKind::BrokenPipe
             | io::ErrorKind::Interrupted
+    )
+}
+
+/// Pause policy for a listener whose `accept` fails, such as on `EMFILE`.
+///
+/// Errors that only concern the connection being accepted retry right away; anything else
+/// pauses accepting, doubling from 10ms up to 1s until an accept succeeds again.
+#[derive(Debug, Default)]
+pub struct AcceptBackoff {
+    next: Option<Duration>,
+}
+
+impl AcceptBackoff {
+    const MIN_DELAY: Duration = Duration::from_millis(10);
+    const MAX_DELAY: Duration = Duration::from_secs(1);
+
+    /// Create a backoff in its initial state.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { next: None }
+    }
+
+    /// Record a successful accept.
+    pub fn reset(&mut self) {
+        self.next = None;
+    }
+
+    /// Record a failed accept, returning how long to pause before accepting again.
+    ///
+    /// `None` means the error was about that one connection and accepting can continue.
+    pub fn on_error(&mut self, err: &io::Error) -> Option<Duration> {
+        if is_connection_error(err) || is_pending_network_error(err) {
+            return None;
+        }
+        let delay = self.next.unwrap_or(Self::MIN_DELAY);
+        self.next = Some((delay * 2).min(Self::MAX_DELAY));
+        Some(delay)
+    }
+}
+
+/// Network errors `accept` reports for the pending connection, not the listener (accept(2)).
+fn is_pending_network_error(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::NetworkDown
+            | io::ErrorKind::NetworkUnreachable
+            | io::ErrorKind::HostUnreachable
     )
 }
 
@@ -286,5 +333,37 @@ mod tests {
         assert!(linger.without_max_bytes().is_enabled());
         assert!(!linger.with_idle_timeout(Duration::ZERO).is_enabled());
         assert!(!linger.with_timeout(Duration::ZERO).is_enabled());
+    }
+}
+
+#[cfg(test)]
+mod accept_backoff_tests {
+    use super::*;
+
+    #[test]
+    fn connection_errors_do_not_pause() {
+        let mut backoff = AcceptBackoff::new();
+        for kind in [
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::NetworkUnreachable,
+            io::ErrorKind::HostUnreachable,
+        ] {
+            assert_eq!(backoff.on_error(&io::Error::from(kind)), None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn listener_errors_pause_with_doubling_and_reset() {
+        let mut backoff = AcceptBackoff::new();
+        let emfile = io::Error::other("too many open files");
+        let delays: Vec<_> = (0..9).filter_map(|_| backoff.on_error(&emfile)).collect();
+        assert_eq!(
+            delays,
+            [10, 20, 40, 80, 160, 320, 640, 1000, 1000].map(Duration::from_millis)
+        );
+
+        backoff.reset();
+        assert_eq!(backoff.on_error(&emfile), Some(Duration::from_millis(10)));
     }
 }
