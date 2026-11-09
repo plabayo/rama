@@ -52,7 +52,7 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-util", "net"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]
 workspace = true

@@ -7,10 +7,10 @@ use rama_core::{extensions::Extension, io::peek::PeekStopReason};
 /// Covers malformed headers/messages, reassembly-limit violations, and EOF
 /// before a complete hello. QUIC also applies it to unsupported versions.
 /// A parse failure does not necessarily mean the
-/// destination would reject the connection. Timeouts use [`PeekTimeoutPolicy`]
-/// separately; transport read errors always return an error.
+/// destination would reject the connection. Timeouts and interrupts use
+/// [`PeekPolicy`] separately; transport read errors always return an error.
 ///
-/// [`PeekTimeoutPolicy`]: rama_core::io::peek::PeekTimeoutPolicy
+/// [`PeekPolicy`]: rama_core::io::peek::PeekPolicy
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MalformedTlsPolicy {
     /// Reject the connection instead of invoking the fallback. Use this for

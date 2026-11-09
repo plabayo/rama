@@ -74,6 +74,11 @@ class HandshakeCountTests(unittest.TestCase):
         return SimpleNamespace(dcid=dcid, scid=scid, packet_number=number,
                                get_field=lambda name: fields if name == "crypto_offset" else None)
 
+    @staticmethod
+    def new_ids(*ids):
+        fields = SimpleNamespace(all_fields=[SimpleNamespace(get_default_value=lambda i=i: i) for i in ids])
+        return SimpleNamespace(get_field=lambda name: fields if name == "nci_connection_id" else None)
+
     def test_lost_server_state_does_not_duplicate_a_client_attempt(self):
         client = [self.initial("original", offsets=(0,)),
                   self.initial("original", offsets=(1037,)),
@@ -81,7 +86,7 @@ class HandshakeCountTests(unittest.TestCase):
                   self.initial("new-server", offsets=(0,))]
         server = [self.initial("", scid="expired-server"),
                   self.initial("", scid="new-server")]
-        self.assertEqual(count_client_hellos(client, server, []), 1)
+        self.assertEqual(count_client_hellos(client, server, [], []), 1)
 
     def test_retry_and_new_connection_ids_are_not_extra_attempts(self):
         client = [self.initial("original", offsets=(0,)),
@@ -89,20 +94,28 @@ class HandshakeCountTests(unittest.TestCase):
                   self.initial("server", offsets=(0,)),
                   self.initial("new-connection-id")]
         self.assertEqual(count_client_hellos(client, [self.initial("", scid="server")],
-                                            [self.initial("", scid="retry")]), 1)
+                                            [self.initial("", scid="retry")], []), 1)
+
+    def test_client_hello_resent_to_a_new_connection_id_is_not_an_extra_attempt(self):
+        client = [self.initial("original", offsets=(0,)),
+                  self.initial("server", offsets=(67, 0)),
+                  self.initial("issued-1", offsets=(67, 0)),
+                  self.initial("unissued", offsets=(0,))]
+        issued = [self.new_ids("issued-1", "issued-2"), SimpleNamespace(get_field=lambda name: None)]
+        self.assertEqual(count_client_hellos(client, [self.initial("", scid="server")], [], issued), 2)
 
     def test_distinct_attempts_count_even_with_zero_length_client_scids(self):
         for attempts in (0, 1, 49, 50, 51):
             with self.subTest(attempts=attempts):
                 client = [self.initial(f"original-{i}", offsets=(100, 0)) for i in range(attempts)]
-                self.assertEqual(count_client_hellos(client, [], []), attempts)
+                self.assertEqual(count_client_hellos(client, [], [], []), attempts)
 
     def test_ack_only_and_tail_fragments_are_not_client_hellos(self):
         client = [self.initial("ack-only"), self.initial("fragment", offsets=(1037,))]
-        self.assertEqual(count_client_hellos(client, [], []), 0)
+        self.assertEqual(count_client_hellos(client, [], [], []), 0)
 
     def test_missing_client_hello_dcid_fails_closed(self):
         initial = self.initial("original", offsets=(0,))
         del initial.dcid
         with self.assertRaises(AttributeError):
-            count_client_hellos([initial], [], [])
+            count_client_hellos([initial], [], [], [])

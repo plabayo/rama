@@ -1,28 +1,37 @@
-use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr, num::NonZeroUsize, sync::Arc};
+use std::{
+    cell::RefCell,
+    convert::Infallible,
+    io,
+    net::SocketAddr,
+    num::{NonZeroU32, NonZeroUsize},
+    sync::Arc,
+};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rama::{
     Service,
-    error::{BoxError, BoxErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::ExtensionsRef as _,
     net::{
-        apple::networkextension::{Datagram, UdpFlow, tproxy::TransparentProxyServiceContext},
+        apple::networkextension::{
+            Datagram, UdpFlow,
+            tproxy::{TransparentProxyFlowMeta, TransparentProxyServiceContext},
+        },
         client::ConnectorTarget,
+        socket::core::{Domain, Protocol, Socket, Type},
     },
     service::service_fn,
     telemetry::tracing,
-    udp::{SharedQueueBudget, UdpSocket, bind_udp_with_address},
+    udp::{SharedQueueBudget, UdpSocket, bind_udp_with_address, bind_udp_with_socket},
     utils::octets::kib,
 };
 
 #[cfg(any(test, feature = "e2e"))]
 use rama::bytes::Bytes;
 #[cfg(any(test, feature = "e2e"))]
-use rama::net::apple::networkextension::tproxy::{
-    DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES, TransparentProxyFlowMeta,
-};
+use rama::net::apple::networkextension::tproxy::DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES;
 #[cfg(any(test, feature = "e2e"))]
 use std::time::Duration;
 
@@ -155,11 +164,16 @@ pub(super) async fn try_new_service(
 /// `ConnectorTarget` in the flow's extensions is informational — the
 /// first peer the app addressed when the flow was opened — not a
 /// binding constraint; we log it for telemetry only.
+///
+/// If the app bound its socket to an interface, the egress sockets
+/// are bound to it too, as the kernel would do without us.
 async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Result<(), Infallible> {
     #[cfg(not(any(test, feature = "e2e")))]
     let _ = udp_policy_scope;
-    #[cfg(any(test, feature = "e2e"))]
     let flow_meta = ingress.extensions().get_arc::<TransparentProxyFlowMeta>();
+    let bound_if = flow_meta
+        .as_deref()
+        .and_then(TransparentProxyFlowMeta::bound_interface_index);
     let initial_target_hwp = ingress
         .extensions()
         .get_ref()
@@ -180,6 +194,7 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
 
     tracing::info!(
         initial_target = ?initial_target_hwp,
+        bound_if,
         "tproxy udp forwarding started"
     );
 
@@ -238,11 +253,11 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
                     (datagram, peer)
                 };
                 let socket = match peer {
-                    SocketAddr::V4(_) => match ensure_bound(&mut egress_v4, "0.0.0.0:0").await {
+                    SocketAddr::V4(_) => match ensure_bound(&mut egress_v4, V4_UNSPECIFIED, bound_if).await {
                         Some(s) => s,
                         None => break,
                     },
-                    SocketAddr::V6(_) => match ensure_bound(&mut egress_v6, "[::]:0").await {
+                    SocketAddr::V6(_) => match ensure_bound(&mut egress_v6, V6_UNSPECIFIED, bound_if).await {
                         Some(s) => s,
                         None => break,
                     },
@@ -400,20 +415,55 @@ fn should_hold_e2e_pressure_flow(
 /// Lazily bind a per-family egress socket on first use. Returns
 /// `None` and logs on bind failure (the caller treats this as a
 /// flow-terminal condition).
-async fn ensure_bound<'s>(
-    slot: &'s mut Option<UdpSocket>,
-    bind_addr: &str,
-) -> Option<&'s UdpSocket> {
+async fn ensure_bound(
+    slot: &mut Option<UdpSocket>,
+    bind_addr: SocketAddr,
+    bound_if: Option<NonZeroU32>,
+) -> Option<&UdpSocket> {
     if slot.is_none() {
-        match bind_udp_with_address(bind_addr).await {
+        match bind_egress_socket(bind_addr, bound_if).await {
             Ok(socket) => *slot = Some(socket),
             Err(err) => {
-                tracing::error!(%err, bind_addr, "tproxy udp failed to bind egress socket");
+                tracing::error!(
+                    %err,
+                    %bind_addr,
+                    bound_if,
+                    "tproxy udp failed to bind egress socket"
+                );
                 return None;
             }
         }
     }
     slot.as_ref()
+}
+
+const V4_UNSPECIFIED: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
+const V6_UNSPECIFIED: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0);
+
+/// Bind an egress socket, pinned to `bound_if` when the app bound
+/// its own socket to that interface.
+async fn bind_egress_socket(
+    bind_addr: SocketAddr,
+    bound_if: Option<NonZeroU32>,
+) -> Result<UdpSocket, BoxError> {
+    let Some(index) = bound_if else {
+        return bind_udp_with_address(bind_addr).await;
+    };
+    let domain = Domain::for_address(bind_addr);
+    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))
+        .context("create udp egress socket")?;
+    if bind_addr.is_ipv4() {
+        socket.bind_device_by_index_v4(Some(index))
+    } else {
+        socket.bind_device_by_index_v6(Some(index))
+    }
+    .context("bind udp egress socket to interface")?;
+    socket
+        .bind(&bind_addr.into())
+        .context("bind udp egress socket")?;
+    bind_udp_with_socket(socket).await
 }
 
 /// Wrapper used inside `tokio::select!` arms. `None` shorts to `pending()` so
@@ -594,6 +644,57 @@ mod tests {
             assert_eq!(peer, sender_addr);
             assert_eq!(payload.as_ref(), expected);
         }
+    }
+
+    fn loopback_index() -> NonZeroU32 {
+        rama::net::socket::interfaces()
+            .expect("list interfaces")
+            .into_iter()
+            .find(|iface| iface.name() == "lo0")
+            .and_then(|iface| iface.index())
+            .and_then(NonZeroU32::new)
+            .expect("lo0 has an index")
+    }
+
+    #[test]
+    fn egress_socket_follows_app_bound_interface() {
+        use rama::net::socket::core::SockRef;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let lo0 = loopback_index();
+
+            let unbound = bind_egress_socket(V4_UNSPECIFIED, None).await.unwrap();
+            assert_eq!(SockRef::from(&unbound).device_index_v4().unwrap(), None);
+
+            let bound = bind_egress_socket(V4_UNSPECIFIED, Some(lo0)).await.unwrap();
+            assert_eq!(SockRef::from(&bound).device_index_v4().unwrap(), Some(lo0));
+
+            // own recv buffer: recv_from_slot would touch the
+            // scratch counters the test above asserts on
+            let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            bound
+                .send_to(b"ping", peer.local_addr().unwrap())
+                .await
+                .unwrap();
+            let mut buf = [0u8; 8];
+            let (n, from) = tokio::time::timeout(Duration::from_secs(3), peer.recv_from(&mut buf))
+                .await
+                .expect("bound egress datagram timed out")
+                .unwrap();
+            assert_eq!(&buf[..n], b"ping");
+            assert_eq!(from.port(), bound.local_addr().unwrap().port());
+
+            match bind_egress_socket(V6_UNSPECIFIED, Some(lo0)).await {
+                Ok(bound) => {
+                    assert_eq!(SockRef::from(&bound).device_index_v6().unwrap(), Some(lo0));
+                }
+                Err(err) => eprintln!("skipping unavailable IPv6: {err}"),
+            }
+        });
     }
 
     #[test]
