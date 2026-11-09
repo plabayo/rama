@@ -73,9 +73,13 @@ def count_handshakes(self):
     # Upstream #508 counts an expired server allocation as another handshake.
     # Use #509's client-side count; expected counts and file checks stay intact.
     trace = self._client_trace()
+    new_ids = trace._get_packets(trace._get_direction_filter(Direction.FROM_SERVER)
+                                 + "quic.nci.connection_id")
     return count_client_hellos(trace.get_initial(Direction.FROM_CLIENT),
                                trace.get_initial(Direction.FROM_SERVER),
-                               trace.get_retry(Direction.FROM_SERVER))
+                               trace.get_retry(Direction.FROM_SERVER),
+                               [layer for packet in new_ids for layer in packet.layers
+                                if layer.layer_name == "quic"])
 
 
 testcase.TestCase._count_handshakes = count_handshakes

@@ -12,14 +12,18 @@ HANDSHAKE_COUNTER_SOURCE = (
 )
 
 
-def count_client_hellos(client_initials, server_initials, server_retries):
+def count_client_hellos(client_initials, server_initials, server_retries, server_new_ids):
     """Upstream #509: count attempts, including lost/recreated server state, once."""
     # ClientHello retransmissions use the original DCID until a server Initial
-    # or Retry arrives. Exclude those server-selected IDs and ACK-only Initials
-    # sent to NEW_CONNECTION_ID values. Client SCIDs can be zero-length, and
-    # Initial packet numbers need not start at zero.
+    # or Retry arrives, and may move on to a NEW_CONNECTION_ID value before the
+    # handshake completes. Exclude every server-issued ID and ACK-only Initials.
+    # Client SCIDs can be zero-length, and Initial packet numbers need not start at zero.
     server_chosen = {getattr(packet, "scid", "")
                      for packet in [*server_initials, *server_retries]}
+    for packet in server_new_ids:
+        issued = packet.get_field("nci_connection_id")
+        if issued is not None:
+            server_chosen.update(field.get_default_value() for field in issued.all_fields)
     client_chosen = set()
     for packet in client_initials:
         offsets = packet.get_field("crypto_offset")
