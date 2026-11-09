@@ -445,6 +445,14 @@ class SiteProbeTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 workflow.checked_site_results(value)
 
+    def test_a_failed_site_flow_names_the_pages_own_error(self):
+        error = "site probe budget\n exhausted " + "x" * 200
+        with self.assertRaises(ValueError) as raised:
+            workflow.checked_site_results(site_results({("cross-site", "xhr"): {"error": error}}))
+        reason = str(raised.exception)
+        self.assertTrue(reason.startswith("xhr failed for cross-site: site probe budget exhausted x"))
+        self.assertLess(len(reason), 200)
+
     def test_an_excused_websocket_may_fail_on_the_site_hosts(self):
         checked = workflow.checked_site_results(
             site_results({("cross-site", "ws"): {"error": "refused"}}),

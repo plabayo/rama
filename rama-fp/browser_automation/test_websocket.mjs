@@ -137,6 +137,7 @@ test("the load-owned Promise exposes one completed journey without duplicate wor
     document: { querySelector() { return null; }, getElementById() { return input; } },
     performance: { getEntriesByType() { return [{ nextHopProtocol: "h3" }]; } },
     crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    setTimeout() { return 1; }, clearTimeout() {},
     URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
   });
   vm.runInContext(source, context);
@@ -185,6 +186,7 @@ test("Alt-Svc discovery reloads only a non-H3 secure navigation once", async () 
           },
           performance: { getEntriesByType() { return [{ nextHopProtocol: protocol }]; } },
           crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+          setTimeout() { return 1; }, clearTimeout() {},
           URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
         });
         vm.runInContext(source, context);
@@ -225,6 +227,7 @@ test("site probes follow the page's own flows and report each site flow", async 
     performance: { getEntriesByType() { return [{ nextHopProtocol: "h2" }]; } },
     crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
     Image: class {},
+    setTimeout() { return 1; }, clearTimeout() {},
     URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
   });
   vm.runInContext(source, context);
@@ -282,6 +285,7 @@ test("an invalid site configuration never breaks the page's own journey", async 
     },
     performance: { getEntriesByType() { return [{ nextHopProtocol: "h2" }]; } },
     crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    setTimeout() { return 1; }, clearTimeout() {},
     URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
   });
   vm.runInContext(source, context);
@@ -296,21 +300,29 @@ test("an invalid site configuration never breaks the page's own journey", async 
   assert.ok(reports.some(([flow, protocol]) => flow === "Sites" && protocol === "unavailable"));
 });
 
-test("a stalled site host never holds the page's form", async () => {
+test("a stalled site host holds neither the form nor the flow past the site budget", async () => {
   const input = { hidden: true, innerHTML: "" };
-  const site = { site: "cross-site", origin: "https://xss.fixture.example", token: "tok" };
+  const sites = [
+    { site: "same-site", origin: "https://ss.fixture.invalid", token: "tok-ss" },
+    { site: "cross-site", origin: "https://xss.fixture.example", token: "tok-xss" },
+  ];
+  const timers = new Map();
   const context = vm.createContext({
     window: { addEventListener() {} },
     location: { protocol: "https:", host: "fixture.invalid", href: "https://fixture.invalid/report" },
     document: {
       querySelector(selector) {
-        return selector === 'meta[name="rama-fp-sites"]' ? { content: JSON.stringify([site]) } : null;
+        return selector === 'meta[name="rama-fp-sites"]' ? { content: JSON.stringify(sites) } : null;
       },
       getElementById() { return input; },
+      createElement() { return {}; },
+      head: { append() {} },
     },
     performance: { getEntriesByType() { return [{ nextHopProtocol: "h2" }]; } },
     crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
     Image: class {},
+    setTimeout(callback, ms) { timers.set(ms, callback); return ms; },
+    clearTimeout(id) { timers.delete(id); },
     URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
   });
   vm.runInContext(source, context);
@@ -318,14 +330,32 @@ test("a stalled site host never holds the page's form", async () => {
   const page = '{"fp":{"request_info":{"version":"HTTP/2.0"}}}';
   context.makePostRequest = async () => ({ text: async () => page });
   context.makeRequestWithXHR = async () => page;
-  context.connectWebSocket = async (probe) => ({ probe, greeting: {} });
-  context.loadSubresource = () => new Promise(() => {});
-  let settled = false;
-  context.main().finally(() => { settled = true; });
+  context.connectWebSocket = async (probe) => ({ probe, greeting: { version: "HTTP/2.0" } });
+  context.loadFrame = async () => "HTTP/2.0";
+  const loads = [];
+  context.loadSubresource = (_element, _attribute, url) => {
+    loads.push(url);
+    return url.includes("xss") ? new Promise(() => {}) : Promise.resolve("h2");
+  };
+  let result;
+  context.main().then((value) => { result = value; });
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(input.innerHTML, /<form method="POST"/);
   assert.equal(input.hidden, false);
-  assert.equal(settled, false);
+  assert.equal(result, undefined);
+
+  // The healthy site completes while the stalled one waits on its first flow.
+  assert.equal(timers.size, 1);
+  const [expire] = timers.values();
+  expire();
+  await new Promise((resolve) => setImmediate(resolve));
+  const { sites: probed } = JSON.parse(JSON.stringify(result));
+  for (const flow of ["image", "style", "script", "frame", "fetch", "xhr", "ws"]) {
+    assert.ok(probed["same-site"][flow].protocol, flow);
+    assert.deepEqual(probed["cross-site"][flow], { error: "site probe budget exhausted" }, flow);
+  }
+  // Flows after the deadline never start.
+  assert.equal(loads.filter((url) => url.includes("xss")).length, 1);
 });
 
 test("a stalled host cannot hold fetch or XHR past their deadlines", async () => {

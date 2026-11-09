@@ -484,6 +484,8 @@ SITE_TIMED_FLOWS = ("image", "style", "script")
 SITE_PAGE_FLOWS = SITE_TIMED_FLOWS + ("frame", "fetch", "xhr", "ws")
 SITE_FLOW_NAMES = SITE_PAGE_FLOWS + ("navigate", "form")
 SITE_TOKEN_PARAM = "rama-fp-site"
+# The page's own error text, which names no URL, tells a stall from a refusal.
+MAX_SITE_ERROR_CHARS = 120
 # Base64url of expiry, authorization, a page origin of at most 255 bytes and a MAC.
 _SITE_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,400}")
 
@@ -545,7 +547,8 @@ def checked_site_results(value, *, websocket=True):
             if "error" in result:
                 if flow == "ws" and not websocket:
                     continue
-                raise ValueError(f"{flow} failed for {site}")
+                error = " ".join(str(result["error"]).split())[:MAX_SITE_ERROR_CHARS]
+                raise ValueError(f"{flow} failed for {site}: {error}")
             protocol = PROTOCOLS.get(result.get("protocol"))
             if protocol is None and flow in SITE_TIMED_FLOWS and result.get("protocol") == "":
                 protocol = "unknown"

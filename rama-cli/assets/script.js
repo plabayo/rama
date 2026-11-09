@@ -1,5 +1,8 @@
 // A stalled host must not hold the page's journey, so every request has a deadline.
 const REQUEST_DEADLINE_MS = 10000;
+// Automation awaits the site probes for at most 30s after the form shows, then
+// submits it: every site shares this budget so the page's own forms are still captured.
+const SITE_PROBE_BUDGET_MS = 20000;
 
 // Function to make a fetch request with exponential backoff
 async function fetchWithBackoff(url, options) {
@@ -250,16 +253,17 @@ function loadedProtocol(url) {
   return performance.getEntriesByName(url).at(-1)?.nextHopProtocol || "";
 }
 
+// Errors name no URL: its site token must not reach the evidence.
 function loadSubresource(element, attribute, url, parent) {
   return new Promise((resolve, reject) => {
-    const deadline = setTimeout(() => reject(new Error(`${url} timed out`)), REQUEST_DEADLINE_MS);
+    const deadline = setTimeout(() => reject(new Error("load timed out")), REQUEST_DEADLINE_MS);
     element.onload = () => {
       clearTimeout(deadline);
       resolve(loadedProtocol(url));
     };
     element.onerror = () => {
       clearTimeout(deadline);
-      reject(new Error(`${url} failed to load`));
+      reject(new Error("failed to load"));
     };
     element[attribute] = url;
     parent?.append(element);
@@ -285,7 +289,7 @@ function loadFrame(site, url) {
     }
     deadline = setTimeout(() => {
       window.removeEventListener("message", onMessage);
-      reject(new Error(`${url} did not confirm its load`));
+      reject(new Error("frame did not confirm its load"));
     }, REQUEST_DEADLINE_MS);
     window.addEventListener("message", onMessage);
     frame.src = url;
@@ -293,8 +297,26 @@ function loadFrame(site, url) {
   });
 }
 
+// Settles each flow by the shared deadline; flows not yet started there never start.
+function siteBudget(ms) {
+  const exhausted = () => new Error("site probe budget exhausted");
+  let expired = false;
+  let timer;
+  const expiry = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      expired = true;
+      reject(exhausted());
+    }, ms);
+  });
+  expiry.catch(() => {});
+  return {
+    run: (flow) => (expired ? Promise.reject(exhausted()) : Promise.race([flow(), expiry])),
+    release: () => clearTimeout(timer),
+  };
+}
+
 // Each flow a page sends to another site; a failed flow is reported, not thrown.
-async function probeSite(site) {
+async function probeSite(site, budget) {
   const label = (flow) => `${flow} (${site.site})`;
   const number = Math.floor(Math.random() * 1000) + 1;
   const flows = {
@@ -327,7 +349,7 @@ async function probeSite(site) {
   const results = {};
   for (const [name, [flow, run]] of Object.entries(flows)) {
     try {
-      const protocol = await run();
+      const protocol = await budget.run(run);
       results[name] = { protocol };
       if (name !== "ws") showProtocol(label(flow), protocol);
     } catch (error) {
@@ -348,8 +370,13 @@ async function probeSites() {
     showProtocol("Sites", "unavailable", `invalid configuration: ${error?.message || error}`);
     return results;
   }
-  for (const site of sites) {
-    results[site.site] = await probeSite(site);
+  // Sites run side by side, so one stalled host cannot use up the other's budget.
+  const budget = siteBudget(SITE_PROBE_BUDGET_MS);
+  try {
+    const probed = await Promise.all(sites.map((site) => probeSite(site, budget)));
+    sites.forEach((site, index) => { results[site.site] = probed[index]; });
+  } finally {
+    budget.release();
   }
   return results;
 }
