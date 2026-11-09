@@ -264,8 +264,15 @@ mod tests {
                 mime::Mime::from_str("application/xml").unwrap(),
             ),
             ("text/plain", mime::TEXT_PLAIN),
-            ("text/plain; charset=utf8", mime::TEXT_PLAIN_UTF_8),
-            ("text/plain; charset=utf8; q=0.5", mime::TEXT_PLAIN_UTF_8),
+            (
+                "text/plain; charset=utf8",
+                mime::Mime::from_str("text/plain; charset=utf8").unwrap(),
+            ),
+            (
+                "text/plain; charset=utf8; q=0.5",
+                mime::Mime::from_str("text/plain; charset=utf8").unwrap(),
+            ),
+            ("text/plain; charset=utf-8", mime::TEXT_PLAIN_UTF_8),
         ] {
             let mut accept =
                 Accept::decode(&mut [&HeaderValue::from_static(header_value)].into_iter()).unwrap();
