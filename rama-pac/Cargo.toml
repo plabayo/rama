@@ -29,7 +29,7 @@ js-interpreter = ["rama-js/interpreter"]
 [dependencies]
 ahash = { workspace = true }
 arc-swap = { workspace = true }
-jiff = { workspace = true }
+jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
 parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-dns = { workspace = true }
