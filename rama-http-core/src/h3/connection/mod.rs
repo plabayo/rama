@@ -686,22 +686,28 @@ impl State {
         let Some(prefix) = record.request_qpack else {
             return false;
         };
-        let instructions = decoder.instruction_observation().map(|(instructions, _)| {
-            let retained = prefix.instruction_count.min(instructions.len());
-            let complete = prefix.complete && retained == prefix.instruction_count;
-            // A head without dynamic references cannot order a capacity received in the same pass.
-            let capacity = if retained == 0 {
-                instructions
-                    .iter()
-                    .take_while(|instruction| {
-                        matches!(instruction, ObservedEncoderInstruction::Capacity { .. })
-                    })
-                    .count()
-            } else {
-                0
-            };
-            (&instructions[..retained + capacity], complete)
-        });
+        let instructions = decoder
+            .instruction_observation()
+            .map(|(instructions, recorded)| {
+                let retained = prefix.instruction_count.min(instructions.len());
+                let mut complete = prefix.complete && retained == prefix.instruction_count;
+                // A head without dynamic references cannot order a capacity received in the same pass.
+                let capacity = if retained == 0 {
+                    instructions
+                        .iter()
+                        .take_while(|instruction| {
+                            matches!(instruction, ObservedEncoderInstruction::Capacity { .. })
+                        })
+                        .count()
+                } else {
+                    0
+                };
+                // A run reaching the end of a truncated record may have lost its tail.
+                if capacity > 0 && retained + capacity == instructions.len() && !recorded {
+                    complete = false;
+                }
+                (&instructions[..retained + capacity], complete)
+            });
         let snapshot = record.request_snapshot(
             instructions,
             decoder
@@ -3401,6 +3407,7 @@ mod observation_tests {
             frozen.encoder_instructions[0],
             ObservedEncoderInstruction::Capacity { capacity: 4096 }
         ));
+        assert!(frozen.completeness.qpack);
         assert_eq!(
             shared
                 .observation_snapshot()
@@ -3409,6 +3416,27 @@ mod observation_tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn observation_capacity_run_cut_by_the_budget_is_incomplete() {
+        let shared = shared(ObservationLimits {
+            events: 8,
+            ..ObservationLimits::default()
+        });
+        settings(&shared);
+        let (_, first) = shared.request_observation(0, &[]).unwrap();
+        let mut instructions = BytesMut::new();
+        for capacity in 0..9 {
+            EncoderInstruction::SetDynamicTableCapacity { capacity }.encode(&mut instructions);
+        }
+        shared
+            .feed_instructions(StreamType::QPACK_ENCODER, &instructions)
+            .unwrap();
+        shared.publish_first_request_observation();
+        let frozen = first.first_request.get().unwrap();
+        assert_eq!(frozen.encoder_instructions.len(), 8);
+        assert!(!frozen.completeness.qpack);
     }
 
     #[test]
