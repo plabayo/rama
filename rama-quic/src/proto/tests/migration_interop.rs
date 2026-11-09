@@ -645,3 +645,75 @@ fn zero_length_client_probe_of_preferred_address_is_answered() {
         Some(alt.into())
     );
 }
+
+/// A client that issued a single spare probes the preferred address with one unpadded packet.
+#[test]
+fn single_spare_client_probe_of_preferred_address_is_answered() {
+    let _guard = subscribe();
+    let mut transport = TransportConfig::default();
+    // The client may then issue one identifier beyond its handshake one.
+    transport
+        .try_set_active_connection_id_limit(VarInt::from_u32(2))
+        .unwrap();
+    let mut config = server_config();
+    config.set_transport_config(Arc::new(transport));
+    let alt = SocketAddrV6::new(
+        Ipv6Addr::LOCALHOST,
+        SERVER_PORTS.lock().next().unwrap(),
+        0,
+        0,
+    );
+    config.set_preferred_address_v6(alt);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
+    pair.server.alt_addr = Some(alt.into());
+    let ch = pair.begin_connect(client_config());
+    // Probe as soon as the server holds the spare, before any replacement is issued.
+    let server_ch = loop {
+        assert!(
+            pair.step(),
+            "the server never received the spare identifier"
+        );
+        if let Some((&handle, conn)) = pair.server.connections.iter().next()
+            && (conn.active_rem_cid_seq() > 0 || !conn.unused_rem_cid_seqs().is_empty())
+        {
+            break handle;
+        }
+    };
+
+    let token = 0xcfde_5604_06a7_fc99_u64;
+    let mut frames = vec![0x1a];
+    frames.extend_from_slice(&token.to_be_bytes());
+    let now = pair.time;
+    let cid = pair.client_conn_mut(ch).active_rem_cid();
+    let packet = pair
+        .client_conn_mut(ch)
+        .encode_peer_packet_for_test(now, cid, &frames);
+    let credit = 3 * packet.len();
+    pair.server.outbound.clear();
+    pair.server.inbound.push_back(Inbound {
+        at: now,
+        ecn: None,
+        packet,
+        from: Some(pair.client.addr),
+        to: Some(alt.into()),
+    });
+    pair.server.drive(now, pair.client.addr);
+    let sent: Vec<_> = pair
+        .server
+        .outbound
+        .drain(..)
+        .filter(|(tx, _)| tx.local == Some(alt.into()))
+        .collect();
+    let answered = sent.iter().any(|(_, bytes)| {
+        pair.server_conn_mut(server_ch)
+            .sent_frames_for_test(bytes)
+            .iter()
+            .any(|f| matches!(f, frame::Frame::PathResponse(t) if *t == token))
+    });
+    assert!(answered, "no PATH_RESPONSE from the preferred address");
+    let spent: usize = sent.iter().map(|(tx, _)| tx.size).sum();
+    assert!(spent <= credit, "spent {spent} of {credit}");
+}
