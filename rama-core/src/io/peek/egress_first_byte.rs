@@ -1,7 +1,7 @@
 use std::{
     io,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Weak},
     task::{Context, Poll},
 };
 
@@ -116,7 +116,7 @@ impl<S: Io + Unpin + ExtensionsRef> PeekEgressFirstByteIo<S> {
             io: Some(io),
             probed: None,
         }));
-        interrupt.attach(EgressProbe(probe.clone()));
+        interrupt.attach(EgressProbe(Arc::downgrade(&probe)));
         Self {
             state: State::Shared(probe),
             extensions,
@@ -229,11 +229,15 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PeekEgressFirstByteIo<S> {
     }
 }
 
-struct EgressProbe<S>(Arc<Mutex<Probe<S>>>);
+// Weak: the interrupt may outlive the egress, which must close once its wrapper is dropped.
+struct EgressProbe<S>(Weak<Mutex<Probe<S>>>);
 
 impl<S: AsyncRead + Unpin + Send + 'static> PeekInterruptSource for EgressProbe<S> {
     fn poll_interrupt(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let mut probe = self.0.lock();
+        let Some(probe) = self.0.upgrade() else {
+            return Poll::Pending;
+        };
+        let mut probe = probe.lock();
         let Probe { io, probed } = &mut *probe;
         if probed.is_some() {
             return Poll::Ready(());
@@ -419,5 +423,40 @@ mod tests {
             }));
         let found = service.serve(input).await.unwrap().unwrap();
         assert!(Arc::ptr_eq(&existing, &found));
+    }
+
+    #[tokio::test]
+    async fn dropping_an_unused_wrapper_closes_the_egress() {
+        let interrupt = PeekInterrupt::new();
+        let (mut server, egress) = duplex(64);
+        let io = PeekEgressFirstByteIo::new(ServiceInput::new(egress), &interrupt);
+        drop(io);
+
+        let mut buf = [0u8; 1];
+        let n = tokio::time::timeout(Duration::from_secs(5), server.read(&mut buf))
+            .await
+            .expect("the dropped egress must close while the interrupt lives")
+            .unwrap();
+        assert_eq!(0, n);
+        assert!(!interrupt.is_triggered());
+    }
+
+    #[tokio::test]
+    async fn interrupt_held_by_the_egress_itself_does_not_keep_it_open() {
+        let (mut server, egress) = duplex(64);
+        let egress = ServiceInput::new(egress);
+        let interrupt = egress
+            .extensions()
+            .get_arc_or_insert(|| Arc::new(PeekInterrupt::new()));
+        let io = PeekEgressFirstByteIo::new(egress, &interrupt);
+        drop(interrupt);
+        drop(io);
+
+        let mut buf = [0u8; 1];
+        let n = tokio::time::timeout(Duration::from_secs(5), server.read(&mut buf))
+            .await
+            .expect("an interrupt reachable from the egress must not keep it open")
+            .unwrap();
+        assert_eq!(0, n);
     }
 }
