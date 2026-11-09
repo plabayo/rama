@@ -3,6 +3,7 @@ use crate::layer::set_status::SetStatus;
 use crate::mime::Mime;
 use crate::service::web::response::IntoResponse;
 use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
+use bitflags::bitflags;
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
@@ -12,9 +13,11 @@ use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::include_dir::Dir;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::{
     convert::Infallible,
-    path::{Path, PathBuf},
+    ffi::OsStr,
+    path::{Component, Path, PathBuf},
 };
 
 pub(crate) mod future;
@@ -47,12 +50,15 @@ const DEFAULT_CAPACITY: usize = 65536;
 ///   existing file (`/file.html/something`)
 /// - The path is not a valid file name for the platform (e.g. a segment is
 ///   too long or contains a NUL byte)
+/// - Any segment of the path is a hidden entry that is not allowed
+///   (see [`ServeDir::with_allowed_hidden_kinds`])
 /// - We don't have necessary permissions to read the file
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
     base: DirSource,
     buf_chunk_size: usize,
     symlink_policy: ServeDirSymlinkPolicy,
+    hidden: HiddenPathFilter,
     ignore_multi_range_requests: bool,
     precompressed_variants: Option<PrecompressedVariants>,
     // This is used to specialise implementation for
@@ -86,6 +92,7 @@ impl ServeDir<DefaultServeDirFallback> {
             base,
             buf_chunk_size: DEFAULT_CAPACITY,
             symlink_policy: ServeDirSymlinkPolicy::default(),
+            hidden: HiddenPathFilter::default(),
             ignore_multi_range_requests: false,
             precompressed_variants: None,
             variant: ServeVariant::Directory {
@@ -107,6 +114,8 @@ impl ServeDir<DefaultServeDirFallback> {
             base: DirSource::Filesystem(path.as_ref().to_path_buf()),
             buf_chunk_size: DEFAULT_CAPACITY,
             symlink_policy: ServeDirSymlinkPolicy::default(),
+            // the single file is chosen by the operator, not by the request
+            hidden: HiddenPathFilter::allow_all(),
             ignore_multi_range_requests: false,
             precompressed_variants: None,
             variant: ServeVariant::SingleFile { mime },
@@ -191,6 +200,64 @@ impl<F> ServeDir<F> {
         /// do not resolve filesystem symlinks.
         pub fn symlink_policy(mut self, policy: ServeDirSymlinkPolicy) -> Self {
             self.symlink_policy = policy;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the kinds of hidden entries that are served.
+        ///
+        /// Hidden entries are not served by default: a request with a hidden
+        /// path segment is handled as if nothing exists at that path, and
+        /// directory listings omit hidden entries. This covers filesystem and
+        /// embedded sources as well as precompressed variants. Names allowed
+        /// via [`ServeDir::with_allowed_hidden_names`] are served regardless.
+        ///
+        /// Has no effect for [`ServeFile`](super::ServeFile) (single-file mode).
+        ///
+        /// Defaults to [`ServeDirHiddenKinds::empty`].
+        pub fn allowed_hidden_kinds(mut self, kinds: ServeDirHiddenKinds) -> Self {
+            if matches!(self.variant, ServeVariant::Directory { .. }) {
+                self.hidden.allowed_kinds = kinds;
+            }
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Replace the names of hidden entries that are served regardless of
+        /// [`ServeDir::with_allowed_hidden_kinds`].
+        ///
+        /// A name matches a single path segment exactly (case-sensitive),
+        /// wherever that segment appears in the path.
+        ///
+        /// Has no effect for [`ServeFile`](super::ServeFile) (single-file mode).
+        ///
+        /// Defaults to `.well-known` ([RFC 8615](https://www.rfc-editor.org/rfc/rfc8615)).
+        pub fn allowed_hidden_names(
+            mut self,
+            names: impl IntoIterator<Item: Into<Box<str>>>,
+        ) -> Self {
+            if matches!(self.variant, ServeVariant::Directory { .. }) {
+                self.hidden.allowed_names = names.into_iter().map(Into::into).collect();
+            }
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Add a name to the hidden entries that are served regardless of
+        /// [`ServeDir::with_allowed_hidden_kinds`].
+        ///
+        /// See [`ServeDir::with_allowed_hidden_names`] for how names match.
+        ///
+        /// Has no effect for [`ServeFile`](super::ServeFile) (single-file mode).
+        pub fn allow_hidden_name(mut self, name: impl Into<Box<str>>) -> Self {
+            if matches!(self.variant, ServeVariant::Directory { .. }) {
+                let mut names = self.hidden.allowed_names.to_vec();
+                names.push(name.into());
+                self.hidden.allowed_names = names.into();
+            }
             self
         }
     }
@@ -298,6 +365,7 @@ impl<F> ServeDir<F> {
             base: self.base,
             buf_chunk_size: self.buf_chunk_size,
             symlink_policy: self.symlink_policy,
+            hidden: self.hidden,
             ignore_multi_range_requests: self.ignore_multi_range_requests,
             precompressed_variants: self.precompressed_variants,
             variant: self.variant,
@@ -389,9 +457,9 @@ impl<F> ServeDir<F> {
         let canonical_uri = req.uri().clone().canonicalize();
 
         let requested_path = canonical_uri.path_or_root();
-        let Some(path_to_file) = self
-            .variant
-            .build_and_validate_path(&self.base, requested_path.as_ref())
+        let Some(path_to_file) =
+            self.variant
+                .build_and_validate_path(&self.base, requested_path.as_ref(), &self.hidden)
         else {
             return if let Some((fallback, request)) = fallback_and_request {
                 future::serve_fallback(fallback, request).await
@@ -425,7 +493,10 @@ impl<F> ServeDir<F> {
             buf_chunk_size,
             &self.base,
             precompression_configured,
-            self.symlink_policy,
+            open_file::PathAccess {
+                symlink_policy: self.symlink_policy,
+                hidden: &self.hidden,
+            },
         )
         .await;
 
@@ -611,7 +682,12 @@ enum ServeVariant {
 impl ServeVariant {
     /// Build and validate the file path based on the serve variant and requested path.
     /// Returns None if the path is invalid or unsafe.
-    fn build_and_validate_path(&self, source: &DirSource, requested_path: &str) -> Option<PathBuf> {
+    fn build_and_validate_path(
+        &self,
+        source: &DirSource,
+        requested_path: &str,
+        hidden: &HiddenPathFilter,
+    ) -> Option<PathBuf> {
         match self {
             Self::Directory { .. } => {
                 let path = requested_path.trim_start_matches('/');
@@ -623,6 +699,9 @@ impl ServeVariant {
                 // the shared utils primitive, then map the cleaned relative path
                 // under the configured root.
                 let relative = rama_utils::fs::sanitize_relative_path(&*path_decoded).ok()?;
+                if hidden.hides_path(&relative) {
+                    return None;
+                }
 
                 let mut path_to_file = match source {
                     DirSource::Filesystem(base_path) => base_path.clone(),
@@ -636,6 +715,92 @@ impl ServeVariant {
                 DirSource::Embedded(_) => Some(PathBuf::new()), // For embedded single file
             },
         }
+    }
+}
+
+bitflags! {
+    /// Kinds of hidden entries that [`ServeDir`] serves anyway.
+    ///
+    /// See [`ServeDir::with_allowed_hidden_kinds`]. The empty set, the default,
+    /// serves no hidden entries at all.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct ServeDirHiddenKinds: u8 {
+        /// Entries whose name starts with a `.`, such as `.env` or `.git`.
+        const DOT_PREFIXED = 1 << 0;
+        /// Filesystem entries carrying the hidden file attribute.
+        ///
+        /// Only Windows exposes this attribute; elsewhere, and for embedded
+        /// sources, no entry is of this kind.
+        const HIDDEN_ATTRIBUTE = 1 << 1;
+    }
+}
+
+/// Decides which path segments [`ServeDir`] treats as hidden.
+#[derive(Debug, Clone)]
+struct HiddenPathFilter {
+    allowed_kinds: ServeDirHiddenKinds,
+    allowed_names: Arc<[Box<str>]>,
+}
+
+impl Default for HiddenPathFilter {
+    fn default() -> Self {
+        Self {
+            allowed_kinds: ServeDirHiddenKinds::empty(),
+            // RFC 8615: ACME http-01 and security.txt live here
+            allowed_names: Arc::new([Box::from(".well-known")]),
+        }
+    }
+}
+
+impl HiddenPathFilter {
+    fn allow_all() -> Self {
+        Self {
+            allowed_kinds: ServeDirHiddenKinds::all(),
+            allowed_names: Arc::new([]),
+        }
+    }
+
+    #[cfg(windows)]
+    fn allows_all(&self) -> bool {
+        self.allowed_kinds.is_all()
+    }
+
+    fn is_allowed_name(&self, name: &OsStr) -> bool {
+        self.allowed_names
+            .iter()
+            .any(|allowed| allowed.as_bytes() == name.as_encoded_bytes())
+    }
+
+    /// Whether `name` alone marks the segment as hidden.
+    fn hides_name(&self, name: &OsStr) -> bool {
+        !self
+            .allowed_kinds
+            .contains(ServeDirHiddenKinds::DOT_PREFIXED)
+            && name.as_encoded_bytes().starts_with(b".")
+            && !self.is_allowed_name(name)
+    }
+
+    /// Whether any normal segment of `path` is hidden by name.
+    fn hides_path(&self, path: &Path) -> bool {
+        path.components()
+            .any(|component| matches!(component, Component::Normal(name) if self.hides_name(name)))
+    }
+
+    #[cfg(windows)]
+    fn checks_attributes(&self) -> bool {
+        !self
+            .allowed_kinds
+            .contains(ServeDirHiddenKinds::HIDDEN_ATTRIBUTE)
+    }
+
+    /// Whether the Windows file `attributes` of the entry `name` mark it as hidden.
+    #[cfg(windows)]
+    fn hides_attributes(&self, name: &OsStr, attributes: u32) -> bool {
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+
+        self.checks_attributes()
+            && attributes & FILE_ATTRIBUTE_HIDDEN != 0
+            && !self.is_allowed_name(name)
     }
 }
 

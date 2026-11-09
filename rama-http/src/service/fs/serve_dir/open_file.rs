@@ -1,5 +1,5 @@
 use super::{
-    DirSource, DirectoryServeMode, ServeDirSymlinkPolicy, ServeVariant,
+    DirSource, DirectoryServeMode, HiddenPathFilter, ServeDirSymlinkPolicy, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified, etag_from_metadata},
 };
 use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch, IfRange};
@@ -12,6 +12,10 @@ use rama_http_types::mime::Mime;
 use rama_net::uri::Uri;
 use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
 use std::io::Cursor;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt as _;
+#[cfg(windows)]
+use std::path::Component;
 use std::{
     ffi::OsStr,
     fs::Metadata,
@@ -28,6 +32,13 @@ use tokio::{fs::File, io::AsyncSeekExt};
 #[cfg(feature = "html")]
 #[path = "open_file_html.rs"]
 mod html;
+
+/// Which request-supplied filesystem paths may be served.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PathAccess<'a> {
+    pub(super) symlink_policy: ServeDirSymlinkPolicy,
+    pub(super) hidden: &'a HiddenPathFilter,
+}
 
 /// Represents the outcome of attempting to open a file for serving.
 pub(super) enum OpenFileOutput {
@@ -140,7 +151,7 @@ pub(super) async fn open_file(
     buf_chunk_size: usize,
     source: &DirSource,
     precompression_configured: bool,
-    symlink_policy: ServeDirSymlinkPolicy,
+    access: PathAccess<'_>,
 ) -> io::Result<OpenFileOutput> {
     let mime = match variant {
         ServeVariant::Directory {
@@ -158,7 +169,7 @@ pub(super) async fn open_file(
                 redirect_to_trailing_slash,
                 html_as_default_extension,
                 source,
-                symlink_policy,
+                access,
             )
             .await?
             {
@@ -180,7 +191,7 @@ pub(super) async fn open_file(
                     source,
                     path_to_file,
                     negotiated_encodings,
-                    symlink_policy,
+                    access,
                 )
                 .await
                 {
@@ -264,7 +275,7 @@ pub(super) async fn open_file(
                     source,
                     path_to_file,
                     negotiated_encodings,
-                    symlink_policy,
+                    access,
                 )
                 .await
                 {
@@ -522,15 +533,12 @@ async fn open_file_with_fallback(
     source: &DirSource,
     mut path: PathBuf,
     mut negotiated_encoding: Vec<QualityValue<Encoding>>,
-    symlink_policy: ServeDirSymlinkPolicy,
+    access: PathAccess<'_>,
 ) -> io::Result<(File, Option<Encoding>)> {
     let (file, encoding) = loop {
         // Get the preferred encoding among the negotiated ones.
         let encoding = preferred_encoding(&mut path, &negotiated_encoding);
-        match (
-            filesystem_metadata(source, &path, symlink_policy).await,
-            encoding,
-        ) {
+        match (filesystem_metadata(source, &path, access).await, encoding) {
             (Ok(_), maybe_encoding) => break (File::open(&path).await?, maybe_encoding),
             // Identity has no file extension to strip, so falling through to
             // the strip-and-retry path would clobber the originally requested
@@ -591,15 +599,12 @@ async fn file_metadata_with_fallback(
     source: &DirSource,
     mut path: PathBuf,
     mut negotiated_encoding: Vec<QualityValue<Encoding>>,
-    symlink_policy: ServeDirSymlinkPolicy,
+    access: PathAccess<'_>,
 ) -> io::Result<(Metadata, Option<Encoding>)> {
     let (file, encoding) = loop {
         // Get the preferred encoding among the negotiated ones.
         let encoding = preferred_encoding(&mut path, &negotiated_encoding);
-        match (
-            filesystem_metadata(source, &path, symlink_policy).await,
-            encoding,
-        ) {
+        match (filesystem_metadata(source, &path, access).await, encoding) {
             (Ok(file), maybe_encoding) => break (file, maybe_encoding),
             // See `open_file_with_fallback` for why Identity is skipped here.
             (Err(err), Some(encoding))
@@ -620,12 +625,10 @@ async fn file_metadata_with_fallback(
 async fn filesystem_metadata(
     source: &DirSource,
     path: &Path,
-    symlink_policy: ServeDirSymlinkPolicy,
+    access: PathAccess<'_>,
 ) -> io::Result<Metadata> {
     match source {
-        DirSource::Filesystem(root) => {
-            filesystem_metadata_from_root(root, path, symlink_policy).await
-        }
+        DirSource::Filesystem(root) => filesystem_metadata_from_root(root, path, access).await,
         DirSource::Embedded(_) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "embedded sources do not use filesystem metadata",
@@ -636,12 +639,8 @@ async fn filesystem_metadata(
 async fn filesystem_metadata_from_root(
     root: &Path,
     path: &Path,
-    symlink_policy: ServeDirSymlinkPolicy,
+    access: PathAccess<'_>,
 ) -> io::Result<Metadata> {
-    if symlink_policy == ServeDirSymlinkPolicy::AllowAll {
-        return tokio::fs::metadata(path).await;
-    }
-
     let root = if path.strip_prefix(root).is_ok() {
         root
     } else {
@@ -650,6 +649,19 @@ async fn filesystem_metadata_from_root(
             .unwrap_or_else(|| Path::new("."))
     };
 
+    if access.symlink_policy != ServeDirSymlinkPolicy::AllowAll {
+        reject_symlinks_below_root(root, path, access.symlink_policy).await?;
+    }
+    reject_hidden_resolved(root, path, access.hidden).await?;
+
+    tokio::fs::metadata(path).await
+}
+
+async fn reject_symlinks_below_root(
+    root: &Path,
+    path: &Path,
+    symlink_policy: ServeDirSymlinkPolicy,
+) -> io::Result<()> {
     // The configured root (or single-file target) is operator-trusted and may
     // legitimately be a symlink — e.g. a blue-green `current -> releases/N`
     // deploy, or `ServeFile` pointed at `latest.log -> 2026-06-19.log`. The
@@ -674,7 +686,67 @@ async fn filesystem_metadata_from_root(
         reject_symlink(path).await?;
     }
 
-    tokio::fs::metadata(path).await
+    Ok(())
+}
+
+/// Request names are checked before any lookup; only Windows can alias a
+/// hidden entry under another name (8.3 short names such as `GIT~1`).
+#[cfg(not(windows))]
+async fn reject_hidden_resolved(
+    _root: &Path,
+    _path: &Path,
+    _hidden: &HiddenPathFilter,
+) -> io::Result<()> {
+    Ok(())
+}
+
+/// Check the resolved on-disk names, as a short name (`GIT~1`) can alias a hidden entry.
+#[cfg(windows)]
+async fn reject_hidden_resolved(
+    root: &Path,
+    path: &Path,
+    hidden: &HiddenPathFilter,
+) -> io::Result<()> {
+    if hidden.allows_all() {
+        return Ok(());
+    }
+
+    let resolved_root = tokio::fs::canonicalize(root).await?;
+    let resolved = tokio::fs::canonicalize(path).await?;
+
+    let Ok(relative) = resolved.strip_prefix(&resolved_root) else {
+        // a permitted symlink left the root: police every resolved name
+        return if hidden.hides_path(&resolved) {
+            Err(hidden_entry_error())
+        } else {
+            Ok(())
+        };
+    };
+
+    let mut current = resolved_root.clone();
+    for component in relative.components() {
+        current.push(component);
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        if hidden.hides_name(name) {
+            return Err(hidden_entry_error());
+        }
+        if hidden.checks_attributes() {
+            let meta = tokio::fs::symlink_metadata(&current).await?;
+            if hidden.hides_attributes(name, meta.file_attributes()) {
+                return Err(hidden_entry_error());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn hidden_entry_error() -> io::Error {
+    // reported as missing so a hidden entry is indistinguishable from an absent one
+    io::Error::new(io::ErrorKind::NotFound, "hidden entries are not served")
 }
 
 async fn reject_symlink(path: &Path) -> io::Result<()> {
@@ -699,7 +771,6 @@ fn is_symlink_like(meta: &Metadata) -> bool {
 /// [`std::fs::FileType::is_symlink`] does not classify as symlinks.
 #[cfg(windows)]
 fn is_symlink_like(meta: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
     meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
@@ -714,13 +785,13 @@ async fn maybe_serve_directory(
     redirect_to_trailing_slash: bool,
     html_as_default_extension: bool,
     source: &DirSource,
-    symlink_policy: ServeDirSymlinkPolicy,
+    access: PathAccess<'_>,
 ) -> Result<Option<OpenFileOutput>, std::io::Error> {
     let uri_path = uri.path_or_root();
 
     // `Some(true)` => directory, `Some(false)` => file, `None` => does not exist.
     let is_directory: Option<bool> = match source {
-        DirSource::Filesystem(_) => is_dir(source, path_to_file, symlink_policy).await?,
+        DirSource::Filesystem(_) => is_dir(source, path_to_file, access).await?,
         DirSource::Embedded(base) => is_dir_embedded(path_to_file, base).await,
     };
 
@@ -764,7 +835,7 @@ async fn maybe_serve_directory(
         DirectoryServeMode::NotFound => Ok(Some(OpenFileOutput::FileNotFound)),
         #[cfg(feature = "html")]
         DirectoryServeMode::HtmlFileList => {
-            html::serve_html_listing(path_to_file, uri, source).await
+            html::serve_html_listing(path_to_file, uri, source, access.hidden).await
         }
     }
 }
@@ -814,9 +885,9 @@ fn try_parse_range(
 async fn is_dir(
     source: &DirSource,
     path_to_file: &Path,
-    symlink_policy: ServeDirSymlinkPolicy,
+    access: PathAccess<'_>,
 ) -> io::Result<Option<bool>> {
-    match filesystem_metadata(source, path_to_file, symlink_policy).await {
+    match filesystem_metadata(source, path_to_file, access).await {
         Ok(metadata) => Ok(Some(metadata.is_dir())),
         Err(err) if is_missing_file_error(&err) => Ok(None),
         Err(err) => Err(err),
