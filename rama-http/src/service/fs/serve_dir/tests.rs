@@ -3,7 +3,7 @@ use crate::header::ALLOW;
 #[cfg(unix)]
 use crate::service::fs::ServeDirSymlinkPolicy;
 use crate::service::fs::serve_dir::DirSource;
-use crate::service::fs::{DirectoryServeMode, ServeDir, ServeFile};
+use crate::service::fs::{DirectoryServeMode, ServeDir, ServeDirHiddenKinds, ServeFile};
 use crate::{Body, HeaderValue, Request, StatusCode, StreamingBody};
 use crate::{Method, Response, header};
 use brotli::BrotliDecompress;
@@ -11,10 +11,15 @@ use flate2::bufread::{DeflateDecoder, GzDecoder};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::service::service_fn;
-use rama_utils::include_dir::{Dir, include_dir};
+use rama_utils::fs::TempDir;
+use rama_utils::include_dir::{Dir, DirEntry, File as EmbeddedFile, include_dir};
 use std::convert::Infallible;
 use std::fs::{File, FileTimes};
 use std::io::Read;
+#[cfg(windows)]
+use std::io::Write as _;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[tokio::test]
@@ -2197,7 +2202,7 @@ fn test_is_reserved_dos_name() {
 
 #[test]
 fn test_build_and_validate_path_reserved_dos_names() {
-    use super::ServeVariant;
+    use super::{HiddenPathFilter, ServeVariant};
     use std::path::Path;
 
     let variant = ServeVariant::Directory {
@@ -2210,7 +2215,11 @@ fn test_build_and_validate_path_reserved_dos_names() {
     let reserved = ["/CON", "/CON.txt", "/com0", "/com1", "/com¹", "/CONIN$"];
 
     for path in reserved {
-        let result = variant.build_and_validate_path(&DirSource::Filesystem(base.into()), path);
+        let result = variant.build_and_validate_path(
+            &DirSource::Filesystem(base.into()),
+            path,
+            &HiddenPathFilter::default(),
+        );
         if cfg!(windows) {
             assert!(result.is_none(), "Expected None for path: {path}");
         } else {
@@ -2498,4 +2507,358 @@ async fn if_modified_since_304_includes_etag() {
         res.headers().get(header::LAST_MODIFIED).unwrap(),
         &last_modified
     );
+}
+
+const HIDDEN_URIS: [&str; 10] = [
+    "/.env",
+    "/.git/config",
+    "/.git/",
+    "/.git",
+    "/.git/index.html",
+    "/a/.secret/b",
+    "/%2Eenv",
+    "/%2egit/config",
+    "/a/%2Esecret/b",
+    "/.well-known/.private",
+];
+
+fn hidden_entries_root() -> TempDir {
+    let root = rama_utils::fs::tempdir().unwrap();
+    let path = root.path();
+    for dir in [".git", "a/.secret", ".well-known/acme-challenge"] {
+        std::fs::create_dir_all(path.join(dir)).unwrap();
+    }
+    for (file, contents) in [
+        ("public.txt", "public"),
+        (".env", "secret"),
+        (".git/config", "secret"),
+        (".git/index.html", "secret"),
+        ("a/.secret/b", "secret"),
+        (".well-known/acme-challenge/token", "token"),
+        (".well-known/security.txt", "contact"),
+        (".well-known/.private", "secret"),
+    ] {
+        std::fs::write(path.join(file), contents).unwrap();
+    }
+    root
+}
+
+const HIDDEN_ENTRIES_EMBEDDED: Dir<'static> = Dir::new(
+    "",
+    &[
+        DirEntry::File(EmbeddedFile::new("public.txt", b"public")),
+        DirEntry::File(EmbeddedFile::new(".env", b"secret")),
+        DirEntry::File(EmbeddedFile::new(".env.gz", b"secret")),
+        DirEntry::Dir(Dir::new(
+            ".git",
+            &[
+                DirEntry::File(EmbeddedFile::new(".git/config", b"secret")),
+                DirEntry::File(EmbeddedFile::new(".git/index.html", b"secret")),
+            ],
+        )),
+        DirEntry::Dir(Dir::new(
+            "a",
+            &[DirEntry::Dir(Dir::new(
+                "a/.secret",
+                &[DirEntry::File(EmbeddedFile::new("a/.secret/b", b"secret"))],
+            ))],
+        )),
+        DirEntry::Dir(Dir::new(
+            ".well-known",
+            &[
+                DirEntry::File(EmbeddedFile::new(".well-known/security.txt", b"contact")),
+                DirEntry::File(EmbeddedFile::new(".well-known/.private", b"secret")),
+            ],
+        )),
+    ],
+);
+
+async fn get(svc: &ServeDir, uri: &str) -> (StatusCode, String) {
+    get_with_headers(svc, uri, &[]).await
+}
+
+async fn get_with_headers(
+    svc: &ServeDir,
+    uri: &str,
+    headers: &[(header::HeaderName, &str)],
+) -> (StatusCode, String) {
+    let mut req = Request::builder().uri(uri);
+    for (name, value) in headers {
+        req = req.header(name, *value);
+    }
+    let res = svc.serve(req.body(Body::empty()).unwrap()).await.unwrap();
+    let status = res.status();
+    (status, body_into_text(res.into_body()).await)
+}
+
+async fn assert_hidden_uris_not_found(svc: &ServeDir) {
+    for uri in HIDDEN_URIS {
+        let (status, body) = get(svc, uri).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "uri: {uri}");
+        assert!(!body.contains("secret"), "uri: {uri}");
+
+        let req = Request::builder()
+            .method(Method::HEAD)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "HEAD uri: {uri}");
+    }
+}
+
+#[tokio::test]
+async fn hidden_entries_are_not_served() {
+    let root = hidden_entries_root();
+    let svc = ServeDir::new(root.path());
+
+    assert_hidden_uris_not_found(&svc).await;
+    assert_eq!(
+        get(&svc, "/public.txt").await,
+        (StatusCode::OK, "public".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn hidden_entries_are_not_served_embedded() {
+    let svc = ServeDir::new_embedded(HIDDEN_ENTRIES_EMBEDDED);
+
+    for uri in ["/.env", "/.git/config", "/a/.secret/b", "/%2Eenv", "/.git/"] {
+        let (status, body) = get(&svc, uri).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "uri: {uri}");
+        assert!(!body.contains("secret"), "uri: {uri}");
+    }
+    assert_eq!(
+        get(&svc, "/public.txt").await,
+        (StatusCode::OK, "public".to_owned())
+    );
+    assert_eq!(
+        get(&svc, "/.well-known/security.txt").await,
+        (StatusCode::OK, "contact".to_owned())
+    );
+    assert_eq!(
+        get(&svc, "/.well-known/.private").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let svc = svc.with_allowed_hidden_kinds(ServeDirHiddenKinds::DOT_PREFIXED);
+    assert_eq!(
+        get(&svc, "/.env").await,
+        (StatusCode::OK, "secret".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn hidden_entries_are_handed_to_the_fallback() {
+    async fn fallback(_: Request) -> Result<Response, Infallible> {
+        Ok(Response::new(Body::from("fallback")))
+    }
+
+    let root = hidden_entries_root();
+    let svc = ServeDir::new(root.path()).fallback(service_fn(fallback));
+    let req = Request::builder().uri("/.env").body(Body::empty()).unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_into_text(res.into_body()).await, "fallback");
+}
+
+#[tokio::test]
+async fn well_known_is_served_by_default() {
+    let root = hidden_entries_root();
+    let svc = ServeDir::new(root.path());
+
+    assert_eq!(
+        get(&svc, "/.well-known/acme-challenge/token").await,
+        (StatusCode::OK, "token".to_owned())
+    );
+    assert_eq!(
+        get(&svc, "/.well-known/security.txt").await,
+        (StatusCode::OK, "contact".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn allowed_hidden_kinds_serve_dot_prefixed_entries() {
+    let root = hidden_entries_root();
+    let svc = ServeDir::new(root.path())
+        .with_allowed_hidden_kinds(ServeDirHiddenKinds::DOT_PREFIXED)
+        .with_redirect_to_trailing_slash(false);
+
+    for uri in HIDDEN_URIS {
+        let (status, body) = get(&svc, uri).await;
+        assert_eq!(status, StatusCode::OK, "uri: {uri}");
+        assert_eq!(body, "secret", "uri: {uri}");
+    }
+}
+
+#[tokio::test]
+async fn allowed_hidden_names_are_served() {
+    let root = hidden_entries_root();
+
+    let svc = ServeDir::new(root.path()).with_allow_hidden_name(".git");
+    assert_eq!(
+        get(&svc, "/.git/config").await,
+        (StatusCode::OK, "secret".to_owned())
+    );
+    assert_eq!(get(&svc, "/.env").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(&svc, "/.well-known/security.txt").await.0,
+        StatusCode::OK
+    );
+
+    let svc = ServeDir::new(root.path()).with_allowed_hidden_names([".env"]);
+    assert_eq!(
+        get(&svc, "/.env").await,
+        (StatusCode::OK, "secret".to_owned())
+    );
+    assert_eq!(get(&svc, "/.git/config").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(&svc, "/.well-known/security.txt").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let svc = ServeDir::new(root.path()).with_allowed_hidden_names(Vec::<Box<str>>::new());
+    assert_eq!(
+        get(&svc, "/.well-known/security.txt").await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn precompressed_sibling_of_hidden_entry_is_not_served() {
+    let root = hidden_entries_root();
+    std::fs::write(root.path().join(".env.gz"), "secret").unwrap();
+    let svc = ServeDir::new(root.path()).with_precompressed_gzip();
+    let embedded = ServeDir::new_embedded(HIDDEN_ENTRIES_EMBEDDED).with_precompressed_gzip();
+
+    for svc in [&svc, &embedded] {
+        for uri in ["/.env", "/.env.gz", "/%2Eenv"] {
+            let (status, body) =
+                get_with_headers(svc, uri, &[(header::ACCEPT_ENCODING, "gzip")]).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "uri: {uri}");
+            assert!(!body.contains("secret"), "uri: {uri}");
+        }
+    }
+}
+
+#[cfg(feature = "html")]
+#[tokio::test]
+async fn hidden_entries_are_omitted_from_directory_listing() {
+    let root = hidden_entries_root();
+    let svc =
+        ServeDir::new(root.path()).with_directory_serve_mode(DirectoryServeMode::HtmlFileList);
+    let embedded = ServeDir::new_embedded(HIDDEN_ENTRIES_EMBEDDED)
+        .with_directory_serve_mode(DirectoryServeMode::HtmlFileList);
+
+    for svc in [&svc, &embedded] {
+        let (status, listing) = get(svc, "/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(listing.contains("public.txt"), "{listing}");
+        assert!(listing.contains(".well-known"), "{listing}");
+        assert!(!listing.contains(".env"), "{listing}");
+        assert!(!listing.contains(".git"), "{listing}");
+
+        let (status, listing) = get(svc, "/a/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!listing.contains(".secret"), "{listing}");
+
+        let (status, listing) = get(svc, "/.well-known/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(listing.contains("security.txt"), "{listing}");
+        assert!(!listing.contains(".private"), "{listing}");
+    }
+
+    let svc = svc.with_allowed_hidden_kinds(ServeDirHiddenKinds::DOT_PREFIXED);
+    let (status, listing) = get(&svc, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(listing.contains(".env"), "{listing}");
+    assert!(listing.contains(".git"), "{listing}");
+}
+
+#[tokio::test]
+async fn servefile_serves_a_hidden_target() {
+    let root = hidden_entries_root();
+    let svc = ServeFile::new(root.path().join(".env"));
+    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_into_text(res.into_body()).await, "secret");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_hidden_attribute_is_not_served() {
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+
+    let root = hidden_entries_root();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .attributes(FILE_ATTRIBUTE_HIDDEN)
+        .open(root.path().join("thumbs.db"))
+        .unwrap()
+        .write_all(b"secret")
+        .unwrap();
+
+    let svc = ServeDir::new(root.path());
+    assert_eq!(get(&svc, "/thumbs.db").await.0, StatusCode::NOT_FOUND);
+
+    let svc = svc.with_allowed_hidden_kinds(ServeDirHiddenKinds::HIDDEN_ATTRIBUTE);
+    assert_eq!(
+        get(&svc, "/thumbs.db").await,
+        (StatusCode::OK, "secret".to_owned())
+    );
+}
+
+/// The 8.3 short name of `path`, e.g. `GIT~1` for `.git`.
+#[cfg(windows)]
+fn windows_short_name(path: &std::path::Path) -> String {
+    let output = std::process::Command::new("cmd")
+        .args([
+            "/D",
+            "/C",
+            "for %I in (\"%RAMA_SHORT_NAME_PATH%\") do @echo %~snxI",
+        ])
+        .env("RAMA_SHORT_NAME_PATH", path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "short name lookup for {path:?}");
+    let name = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+    assert!(
+        !name.is_empty() && !name.starts_with('.'),
+        "{path:?} has no usable short name: {name:?}"
+    );
+    name
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires an NTFS temp dir with 8.3 name creation enabled"]
+async fn windows_short_name_does_not_alias_hidden_entries() {
+    let root = hidden_entries_root();
+    std::fs::write(root.path().join(".config.gz"), "secret").unwrap();
+    let env = windows_short_name(&root.path().join(".env"));
+    let git = windows_short_name(&root.path().join(".git"));
+    let compressed = windows_short_name(&root.path().join(".config.gz"));
+    let compressed_stem = compressed
+        .rsplit_once('.')
+        .map_or(compressed.as_str(), |(stem, _)| stem)
+        .to_owned();
+
+    let svc = ServeDir::new(root.path())
+        .with_precompressed_gzip()
+        .with_directory_serve_mode(DirectoryServeMode::AppendIndexHtml);
+    for uri in [
+        format!("/{env}"),
+        format!("/{git}/config"),
+        format!("/{git}/"),
+        format!("/{compressed_stem}"),
+    ] {
+        let (status, body) =
+            get_with_headers(&svc, &uri, &[(header::ACCEPT_ENCODING, "gzip")]).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "uri: {uri}");
+        assert!(!body.contains("secret"), "uri: {uri}");
+    }
 }

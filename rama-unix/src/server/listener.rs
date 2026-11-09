@@ -3,6 +3,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::WeakScope;
 use rama_core::graceful::attach_scope;
 use rama_core::telemetry::tracing::{self, Instrument};
+use rama_net::conn::AcceptBackoff;
 use std::io;
 use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
@@ -254,6 +255,7 @@ impl UnixListener {
             return;
         };
         let mut cancelled_fut = pin!(self.scope.cancelled());
+        let mut accept_backoff = AcceptBackoff::new();
 
         loop {
             tokio::select! {
@@ -264,6 +266,7 @@ impl UnixListener {
                 result = self.inner.accept() => {
                     match result {
                         Ok((socket, peer_addr)) => {
+                            accept_backoff.reset();
                             let service = service.clone();
 
                             let peer_addr: UnixSocketAddress = peer_addr.into();
@@ -286,21 +289,24 @@ impl UnixListener {
                                 _ = service.serve(socket).await;
                             }.instrument(serve_span));
                         }
-                        Err(err) => {
-                            handle_accept_err(err).await;
-                        }
+                        Err(err) => match accept_backoff.on_error(&err) {
+                            None => tracing::trace!("unix accept error: connection error: {err:?}"),
+                            Some(delay) => {
+                                // Running out of file descriptors keeps the listener readable, so retrying at once spins.
+                                tracing::error!("unix accept error: {err:?}; pausing accept for {delay:?}");
+                                tokio::select! {
+                                    _ = cancelled_fut.as_mut() => {
+                                        tracing::trace!("signal received: initiate graceful shutdown");
+                                        break;
+                                    }
+                                    () = tokio::time::sleep(delay) => {}
+                                }
+                            }
+                        },
                     }
                 }
             }
         }
-    }
-}
-
-async fn handle_accept_err(err: io::Error) {
-    if rama_net::conn::is_connection_error(&err) {
-        tracing::trace!("unix accept error: connect error: {err:?}");
-    } else {
-        tracing::error!("unix accept error: {err:?}");
     }
 }
 

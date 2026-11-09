@@ -13,6 +13,7 @@ pub struct DecompressionLayer<M = DefaultDecompressionMatcher> {
     accept: AcceptEncoding,
     insert_accept_encoding_header: bool,
     tolerate_decode_errors: bool,
+    max_decoded_size: Option<usize>,
     matcher: M,
 }
 
@@ -22,6 +23,7 @@ impl<M: Default> Default for DecompressionLayer<M> {
             accept: Default::default(),
             insert_accept_encoding_header: true,
             tolerate_decode_errors: false,
+            max_decoded_size: None,
             matcher: Default::default(),
         }
     }
@@ -39,6 +41,7 @@ where
             accept: self.accept,
             insert_accept_encoding_header: self.insert_accept_encoding_header,
             tolerate_decode_errors: self.tolerate_decode_errors,
+            max_decoded_size: self.max_decoded_size,
             matcher: self.matcher.clone(),
         }
     }
@@ -72,6 +75,7 @@ impl<M> DecompressionLayer<M> {
             accept: self.accept,
             insert_accept_encoding_header: self.insert_accept_encoding_header,
             tolerate_decode_errors: self.tolerate_decode_errors,
+            max_decoded_size: self.max_decoded_size,
             matcher,
         }
     }
@@ -85,6 +89,14 @@ impl<M> DecompressionLayer<M> {
         /// well-formed client stream rather than an aborted one.
         pub fn tolerate_decode_errors(mut self, tolerate: bool) -> Self {
             self.tolerate_decode_errors = tolerate;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Fail a decoded response body with a length-limit error once it exceeds `limit` bytes.
+        pub fn max_decoded_size(mut self, limit: Option<usize>) -> Self {
+            self.max_decoded_size = limit;
             self
         }
     }

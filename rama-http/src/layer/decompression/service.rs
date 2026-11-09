@@ -27,6 +27,7 @@ pub struct Decompression<S, M = DefaultDecompressionMatcher> {
     pub(crate) accept: AcceptEncoding,
     pub(crate) insert_accept_encoding_header: bool,
     pub(crate) tolerate_decode_errors: bool,
+    pub(crate) max_decoded_size: Option<usize>,
     pub(crate) matcher: M,
 }
 
@@ -38,6 +39,7 @@ impl<S> Decompression<S> {
             accept: AcceptEncoding::default(),
             insert_accept_encoding_header: true,
             tolerate_decode_errors: false,
+            max_decoded_size: None,
             matcher: DefaultDecompressionMatcher,
         }
     }
@@ -69,6 +71,7 @@ impl<S, M> Decompression<S, M> {
             accept: self.accept,
             insert_accept_encoding_header: self.insert_accept_encoding_header,
             tolerate_decode_errors: self.tolerate_decode_errors,
+            max_decoded_size: self.max_decoded_size,
             matcher,
         }
     }
@@ -83,6 +86,14 @@ impl<S, M> Decompression<S, M> {
         /// genuine upstream transport errors still propagate.
         pub fn tolerate_decode_errors(mut self, tolerate: bool) -> Self {
             self.tolerate_decode_errors = tolerate;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Fail a decoded response body with a length-limit error once it exceeds `limit` bytes.
+        pub fn max_decoded_size(mut self, limit: Option<usize>) -> Self {
+            self.max_decoded_size = limit;
             self
         }
     }
@@ -274,7 +285,8 @@ where
                     WrapBody::new(body, CompressionLevel::default())
                         .with_tolerate_decode_errors(self.tolerate_decode_errors),
                 )),
-            };
+            }
+            .with_decoded_limit(self.max_decoded_size);
 
             entry.remove();
             remove_payload_metadata_headers(&mut parts.headers);

@@ -20,7 +20,7 @@ use crate::service::web::extract::{FromRequest, FromRequestBody};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use ahash::HashMap;
 use rama_core::bytes::Bytes;
-use rama_core::error::error_chain;
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _, error_chain};
 use rama_core::extensions::Extension;
 use rama_core::futures::{Stream, TryStream};
 use rama_http_types::{
@@ -34,7 +34,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// Per-field size constraints for [`Multipart`].
+/// Per-field size and part-count constraints for [`Multipart`].
 ///
 /// Insert a `MultipartConfig` as a request extension via a layer to apply
 /// project-wide limits, or pass it to
@@ -49,19 +49,46 @@ use std::task::{Context, Poll};
 ///
 /// The total payload size is governed by the standard body limit and is not
 /// configured here.
-#[derive(Debug, Clone, Default, Extension)]
+#[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
 pub struct MultipartConfig {
     default_field_limit: Option<u64>,
     field_limits: HashMap<Cow<'static, str>, u64>,
+    max_parts: Option<usize>,
+}
+
+impl Default for MultipartConfig {
+    fn default() -> Self {
+        Self {
+            default_field_limit: None,
+            field_limits: HashMap::default(),
+            max_parts: Some(Self::DEFAULT_MAX_PARTS),
+        }
+    }
 }
 
 impl MultipartConfig {
-    /// Create an empty config. No limits are applied unless set via the
-    /// builder methods.
+    /// Default maximum number of parts in a [`Multipart`] stream.
+    pub const DEFAULT_MAX_PARTS: usize = 1000;
+
+    /// Create a config without per-field byte limits and with the
+    /// [default part limit](MultipartConfig::DEFAULT_MAX_PARTS).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    generate_set_and_with! {
+        /// Maximum number of parts accepted in one stream, `None` for no limit.
+        ///
+        /// Every part counts, whatever its name, content or position. The part
+        /// past the limit is rejected once its headers are read, before its body.
+        ///
+        /// Defaults to [`Self::DEFAULT_MAX_PARTS`].
+        pub fn max_parts(mut self, max: Option<usize>) -> Self {
+            self.max_parts = max;
+            self
+        }
     }
 
     generate_set_and_with! {
@@ -89,6 +116,12 @@ impl MultipartConfig {
     /// Merge another configuration into this one using a floor: for every
     /// limit set in either source, keep the lower value.
     pub fn merge_floor(&mut self, other: &Self) {
+        if let Some(other_max) = other.max_parts {
+            self.max_parts = Some(match self.max_parts {
+                Some(cur) => cur.min(other_max),
+                None => other_max,
+            });
+        }
         if let Some(other_default) = other.default_field_limit {
             self.default_field_limit = Some(match self.default_field_limit {
                 Some(cur) => cur.min(other_default),
@@ -140,36 +173,31 @@ impl MultipartConfig {
 #[derive(Debug)]
 pub struct Multipart {
     inner: multer::Multipart<'static>,
+    max_parts: Option<usize>,
+    parts_seen: usize,
 }
 
 impl Multipart {
     /// Build a `Multipart` from a body and boundary string with no per-field
-    /// limits.
+    /// limits and the [default part limit](MultipartConfig::DEFAULT_MAX_PARTS).
     pub fn from_body(body: crate::Body, boundary: impl Into<String>) -> Self {
-        let stream = body.into_data_stream();
-        let inner = multer::Multipart::new(stream, boundary);
-        Self { inner }
+        Self::from_body_with_config(body, boundary, None)
     }
 
     /// Build a `Multipart` from a body and boundary string, applying the
-    /// per-field limits in `config`. Pass `None` to skip building any
-    /// `multer::Constraints` and use parser defaults.
+    /// limits in `config`. Pass `None` for no per-field limits and the
+    /// [default part limit](MultipartConfig::DEFAULT_MAX_PARTS).
     pub fn from_body_with_config(
         body: crate::Body,
         boundary: impl Into<String>,
         config: Option<&MultipartConfig>,
     ) -> Self {
-        let stream = body.into_data_stream();
-        let inner = match config {
-            Some(c) => multer::Multipart::with_constraints(stream, boundary, c.to_constraints()),
-            None => multer::Multipart::new(stream, boundary),
-        };
-        Self { inner }
+        Self::from_stream_with_config(body.into_data_stream(), boundary, config)
     }
 
     /// Construct from any stream of `Result<Bytes, _>` and a boundary, with the
-    /// per-field limits in `config`. Pass `None` to skip building any
-    /// `multer::Constraints` and use parser defaults.
+    /// limits in `config`. Pass `None` for no per-field limits and the
+    /// [default part limit](MultipartConfig::DEFAULT_MAX_PARTS).
     pub fn from_stream_with_config<S, O, E, B>(
         stream: S,
         boundary: B,
@@ -181,26 +209,51 @@ impl Multipart {
         E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
         B: Into<String>,
     {
-        let inner = match config {
-            Some(c) => multer::Multipart::with_constraints(stream, boundary, c.to_constraints()),
-            None => multer::Multipart::new(stream, boundary),
+        let (inner, max_parts) = match config {
+            Some(c) => (
+                multer::Multipart::with_constraints(stream, boundary, c.to_constraints()),
+                c.max_parts,
+            ),
+            None => (
+                multer::Multipart::new(stream, boundary),
+                Some(MultipartConfig::DEFAULT_MAX_PARTS),
+            ),
         };
-        Self { inner }
+        Self {
+            inner,
+            max_parts,
+            parts_seen: 0,
+        }
     }
 
     /// Yield the next [`Field`] in the multipart stream, or `None` if the
     /// stream is exhausted.
     ///
+    /// Fails once the stream holds more parts than the configured maximum,
+    /// and keeps failing on later calls.
+    ///
     /// The previous `Field` must be dropped before this returns; the borrow
     /// checker enforces this.
     pub async fn next_field(&mut self) -> Result<Option<Field<'_>>, MultipartError> {
+        self.check_part_count()?;
         match self.inner.next_field().await {
-            Ok(Some(inner)) => Ok(Some(Field {
-                inner,
-                _marker: PhantomData,
-            })),
+            Ok(Some(inner)) => {
+                self.parts_seen = self.parts_seen.saturating_add(1);
+                self.check_part_count()?;
+                Ok(Some(Field {
+                    inner,
+                    _marker: PhantomData,
+                }))
+            }
             Ok(None) => Ok(None),
             Err(err) => Err(MultipartError::from(err)),
+        }
+    }
+
+    fn check_part_count(&self) -> Result<(), MultipartError> {
+        match self.max_parts {
+            Some(max) if self.parts_seen > max => Err(MultipartError::too_many_parts(max)),
+            _ => Ok(()),
         }
     }
 }
@@ -282,45 +335,67 @@ impl Stream for Field<'_> {
 /// Error type returned while reading a [`Multipart`] field.
 ///
 /// Maps multer parser failures to suitable HTTP status codes when used as a
-/// rejection: parse errors return `400 Bad Request`, size violations return
-/// `413 Payload Too Large`, and unexpected stream read failures return
-/// `500 Internal Server Error`.
+/// rejection: parse errors return `400 Bad Request`, size and part-count
+/// violations return `413 Payload Too Large`, and unexpected stream read
+/// failures return `500 Internal Server Error`.
 #[derive(Debug)]
 pub struct MultipartError {
-    source: multer::Error,
+    kind: MultipartErrorKind,
+}
+
+#[derive(Debug)]
+enum MultipartErrorKind {
+    Parse(multer::Error),
+    TooManyParts(BoxError),
 }
 
 impl MultipartError {
+    fn too_many_parts(max: usize) -> Self {
+        Self {
+            kind: MultipartErrorKind::TooManyParts(
+                BoxError::from_static_str("multipart stream exceeds the part limit")
+                    .context_field("max_parts", max),
+            ),
+        }
+    }
+
     /// HTTP status used when this error is converted into a response.
     #[must_use]
     pub fn status(&self) -> StatusCode {
-        if is_size_limit_error(&self.source) {
-            return StatusCode::PAYLOAD_TOO_LARGE;
-        }
-        match &self.source {
-            multer::Error::StreamReadFailed(_) | multer::Error::LockFailure => {
-                StatusCode::INTERNAL_SERVER_ERROR
+        match &self.kind {
+            MultipartErrorKind::TooManyParts(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            MultipartErrorKind::Parse(source) if is_size_limit_error(source) => {
+                StatusCode::PAYLOAD_TOO_LARGE
             }
-            _ => StatusCode::BAD_REQUEST,
+            MultipartErrorKind::Parse(
+                multer::Error::StreamReadFailed(_) | multer::Error::LockFailure,
+            ) => StatusCode::INTERNAL_SERVER_ERROR,
+            MultipartErrorKind::Parse(_) => StatusCode::BAD_REQUEST,
         }
     }
 
     /// Body text used for the rejection response.
     #[must_use]
     pub fn body_text(&self) -> String {
-        if self.status() == StatusCode::PAYLOAD_TOO_LARGE {
-            return "Request payload is too large".to_owned();
+        match &self.kind {
+            MultipartErrorKind::TooManyParts(_) => {
+                "Request has too many `multipart/form-data` parts".to_owned()
+            }
+            MultipartErrorKind::Parse(_) if self.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+                "Request payload is too large".to_owned()
+            }
+            MultipartErrorKind::Parse(source) => {
+                format!("Failed to parse `multipart/form-data` request: {source}")
+            }
         }
-        format!(
-            "Failed to parse `multipart/form-data` request: {}",
-            self.source
-        )
     }
 }
 
 impl From<multer::Error> for MultipartError {
     fn from(source: multer::Error) -> Self {
-        Self { source }
+        Self {
+            kind: MultipartErrorKind::Parse(source),
+        }
     }
 }
 
@@ -335,6 +410,9 @@ fn is_size_limit_error(error: &multer::Error) -> bool {
                         | multer::Error::StreamSizeExceeded { .. }
                 )
             )
+            || cause
+                .downcast_ref::<MultipartError>()
+                .is_some_and(|nested| matches!(nested.kind, MultipartErrorKind::TooManyParts(_)))
     })
 }
 
@@ -346,7 +424,10 @@ impl std::fmt::Display for MultipartError {
 
 impl std::error::Error for MultipartError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
+        match &self.kind {
+            MultipartErrorKind::Parse(source) => Some(source),
+            MultipartErrorKind::TooManyParts(source) => Some(source.as_ref()),
+        }
     }
 }
 
@@ -444,6 +525,7 @@ mod test {
     use crate::service::web::WebService;
     use rama_core::Service;
     use rama_core::extensions::ExtensionsRef;
+    use rama_core::futures::StreamExt as _;
     use rama_utils::octets::kib_u64;
 
     const BOUNDARY: &str = "X-RAMA-TEST-BOUNDARY";
@@ -1029,14 +1111,137 @@ mod test {
     fn test_config_merge_floor_keeps_min() {
         let mut a = MultipartConfig::new()
             .with_default_field_limit(1024)
-            .with_field_limit("avatar", kib_u64(8));
+            .with_field_limit("avatar", kib_u64(8))
+            .without_max_parts();
         let b = MultipartConfig::new()
             .with_default_field_limit(2048)
             .with_field_limit("avatar", kib_u64(4))
-            .with_field_limit("doc", 100);
+            .with_field_limit("doc", 100)
+            .with_max_parts(10);
         a.merge_floor(&b);
         assert_eq!(a.default_field_limit, Some(1024));
         assert_eq!(a.field_limits.get("avatar").copied(), Some(kib_u64(4)));
         assert_eq!(a.field_limits.get("doc").copied(), Some(100));
+        assert_eq!(a.max_parts, Some(10));
+
+        a.merge_floor(&MultipartConfig::new().without_max_parts());
+        assert_eq!(a.max_parts, Some(10));
+        a.merge_floor(&MultipartConfig::new().with_max_parts(5));
+        assert_eq!(a.max_parts, Some(5));
+    }
+
+    /// Empty, duplicate and file parts alike, so every kind of part is counted.
+    fn body_with_part_count(count: usize) -> Vec<u8> {
+        let kinds: [(&str, Option<&str>, Option<&str>, &[u8]); 3] = [
+            ("dup", None, None, b""),
+            ("dup", None, None, b"value"),
+            (
+                "file",
+                Some("a.bin"),
+                Some("application/octet-stream"),
+                b"\x00",
+            ),
+        ];
+        let parts: Vec<_> = kinds.into_iter().cycle().take(count).collect();
+        body_with(&parts)
+    }
+
+    fn part_counting_service() -> WebService {
+        WebService::default().with_post(
+            "/",
+            async |mut mp: Multipart| -> Result<String, MultipartRejection> {
+                let mut count = 0usize;
+                while mp.next_field().await?.is_some() {
+                    count += 1;
+                }
+                Ok(count.to_string())
+            },
+        )
+    }
+
+    async fn post_parts(count: usize, config: Option<MultipartConfig>) -> (StatusCode, Bytes) {
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, ct())
+            .body(body_with_part_count(count).into())
+            .unwrap();
+        if let Some(config) = config {
+            req.extensions().insert(config);
+        }
+        let resp = part_counting_service().serve(req).await.unwrap();
+        let status = resp.status();
+        (status, resp.into_body().collect().await.unwrap().to_bytes())
+    }
+
+    #[tokio::test]
+    async fn test_multipart_default_part_limit() {
+        let max = MultipartConfig::DEFAULT_MAX_PARTS;
+        for config in [None, Some(MultipartConfig::new())] {
+            assert_eq!(
+                post_parts(max, config.clone()).await,
+                (StatusCode::OK, Bytes::from(max.to_string()))
+            );
+            assert_eq!(
+                post_parts(max + 1, config).await,
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    Bytes::from_static(b"Request has too many `multipart/form-data` parts")
+                )
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_custom_part_limit() {
+        let config = MultipartConfig::new().with_max_parts(3);
+        assert_eq!(
+            post_parts(3, Some(config.clone())).await,
+            (StatusCode::OK, Bytes::from_static(b"3"))
+        );
+        assert_eq!(
+            post_parts(4, Some(config)).await.0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multipart_unlimited_parts() {
+        let config = MultipartConfig::new().without_max_parts();
+        let count = MultipartConfig::DEFAULT_MAX_PARTS + 50;
+        assert_eq!(
+            post_parts(count, Some(config)).await,
+            (StatusCode::OK, Bytes::from(count.to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multipart_part_limit_rejects_before_reading_the_body() {
+        let mut head = body_with(&[("a", None, None, b"1"), ("b", None, None, b"2")]);
+        // drop the close delimiter, then open a third part whose body never arrives
+        head.truncate(head.len() - BOUNDARY.len() - 6);
+        head.extend_from_slice(b"--");
+        head.extend_from_slice(BOUNDARY.as_bytes());
+        head.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"c\"\r\n\r\n");
+        // the extra part's body never arrives, so a body read would hang
+        let stream = rama_core::futures::stream::iter([Ok::<_, std::io::Error>(Bytes::from(head))])
+            .chain(rama_core::futures::stream::pending());
+        let config = MultipartConfig::new().with_max_parts(2);
+        let mut mp = Multipart::from_stream_with_config(stream, BOUNDARY, Some(&config));
+
+        for _ in 0..2 {
+            assert!(mp.next_field().await.unwrap().is_some());
+        }
+        let error = mp.next_field().await.unwrap_err();
+        assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        // the limit keeps holding once exceeded
+        let error = mp.next_field().await.unwrap_err();
+        assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn test_nested_part_limit_returns_payload_too_large() {
+        let nested = multer::Error::StreamReadFailed(Box::new(MultipartError::too_many_parts(1)));
+        let error = MultipartError::from(nested);
+        assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }
