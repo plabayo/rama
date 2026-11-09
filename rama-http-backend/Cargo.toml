@@ -54,7 +54,7 @@ rama-tcp = { workspace = true }
 rama-tls = { workspace = true }
 rama-ua = { workspace = true, optional = true }
 rama-utils = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "sync"] }
 tokio-util = { workspace = true }
 
 [target.'cfg(target_family = "unix")'.dependencies]
