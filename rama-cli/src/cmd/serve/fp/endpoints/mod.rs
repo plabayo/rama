@@ -1,16 +1,21 @@
 mod http3;
 mod websocket;
 
-use std::time::SystemTime;
+use std::{sync::LazyLock, time::SystemTime};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use itertools::Itertools as _;
 use rama::{
+    crypto::digest::sha256_slices,
     error::BoxError,
     extensions::ExtensionsRef,
     http::{
         BodyExtractExt, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        headers::{ContentSecurityPolicy, ContentType, SecFetchMode, SourceList, all_client_hints},
+        headers::{
+            ContentSecurityPolicy, ContentType, HashAlgorithm, SecFetchMode, SourceList,
+            all_client_hints,
+        },
         proto::h2,
         protocols::html::*,
         request::Parts,
@@ -38,6 +43,7 @@ use super::{
         TlsDisplayInfoExtensionData, UserAgentInfo, get_akamai_h2_info, get_http_info_and_capture,
         get_ja4h_info, get_request_info, get_tls_display_info, get_user_agent_info,
     },
+    sites::SiteGrant,
 };
 
 //------------------------------------------
@@ -378,18 +384,43 @@ pub(super) async fn get_landing(
     .into_response())
 }
 
+/// Browsers fire `load` on a frame whose navigation failed, so the frame confirms
+/// itself to the page its site token names.
+const FRAME_SCRIPT: &str = "const config = document.querySelector('meta[name=\"rama-fp-frame\"]');\n\
+if (config) {\n\
+  const { origin, version } = JSON.parse(config.content);\n\
+  parent.postMessage({ type: \"rama-fp-frame\", version }, origin);\n\
+}\n";
+
+static FRAME_SCRIPT_HASH: LazyLock<String> =
+    LazyLock::new(|| STANDARD.encode(sha256_slices([FRAME_SCRIPT.as_bytes()])));
+
 /// A page another host of this service embeds.
-pub(super) async fn get_frame() -> impl IntoResponse {
+pub(super) async fn get_frame(parts: Parts) -> impl IntoResponse {
+    let confirmation = parts.extensions.get_ref::<SiteGrant>().map(|grant| {
+        json!({ "origin": grant.origin, "version": format!("{:?}", parts.version) }).to_string()
+    });
     (
         // X-Frame-Options cannot allow framing; a frame-ancestors directive overrides it.
         response::Headers::single(
             ContentSecurityPolicy::empty()
                 .with_default_src(SourceList::none())
+                .with_script_src(
+                    SourceList::empty()
+                        .with_hash(HashAlgorithm::Sha256, FRAME_SCRIPT_HASH.as_str()),
+                )
                 .with_frame_ancestors(SourceList::empty().with_scheme(Protocol::HTTPS)),
         ),
         html!(
             lang = "en",
-            head!(meta!(charset = "UTF-8"), title!("ラマ | FP frame")),
+            head!(
+                meta!(charset = "UTF-8"),
+                title!("ラマ | FP frame"),
+                confirmation.map(|content| (
+                    meta!(name = "rama-fp-frame", content = content),
+                    script!(PreEscaped(FRAME_SCRIPT)),
+                )),
+            ),
             body!(p!("rama-fp frame probe")),
         ),
     )
@@ -1386,14 +1417,56 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn the_frame_page_is_embeddable_by_secure_pages_only() {
-        let response = get_frame().await.into_response();
+    async fn frame_page(grant: Option<SiteGrant>) -> (String, String) {
+        let (parts, ()) = Request::builder()
+            .version(Version::HTTP_2)
+            .body(())
+            .unwrap()
+            .into_parts();
+        if let Some(grant) = grant {
+            parts.extensions.insert(grant);
+        }
+        let response = get_frame(parts).await.into_response();
         let policy = response.headers()[CONTENT_SECURITY_POLICY]
             .to_str()
-            .unwrap();
+            .unwrap()
+            .to_owned();
+        let html = response.into_body().collect().await.unwrap().to_bytes();
+        (policy, String::from_utf8(html.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_frame_page_is_embeddable_by_secure_pages_only() {
+        let (policy, _) = frame_page(None).await;
         assert!(policy.contains("frame-ancestors https:"), "{policy}");
         assert!(policy.contains("default-src 'none'"), "{policy}");
+    }
+
+    #[tokio::test]
+    async fn the_frame_confirms_its_protocol_to_the_granted_page_only() {
+        let (_, html) = frame_page(None).await;
+        assert!(!html.contains("<script"), "{html}");
+
+        let grant = SiteGrant {
+            authorized: false,
+            origin: "https://h2.fp.example.org".into(),
+        };
+        let (policy, html) = frame_page(Some(grant)).await;
+        let script = html
+            .split_once("<script>")
+            .and_then(|(_, rest)| rest.split_once("</script>"))
+            .map(|(script, _)| script)
+            .unwrap_or_else(|| panic!("{html}"));
+        let hash = STANDARD.encode(sha256_slices([script.as_bytes()]));
+        assert!(
+            policy.contains(&format!("script-src 'sha256-{hash}'")),
+            "{policy}"
+        );
+        assert!(script.contains("parent.postMessage"), "{script}");
+        assert!(
+            html.contains(r#"content="{&quot;origin&quot;:&quot;https://h2.fp.example.org&quot;,&quot;version&quot;:&quot;HTTP/2.0&quot;}""#),
+            "{html}"
+        );
     }
 
     #[tokio::test]

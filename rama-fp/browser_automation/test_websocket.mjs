@@ -241,6 +241,10 @@ test("site probes follow the page's own flows and report each site flow", async 
     calls.push(["load", url]);
     return "h2";
   };
+  context.loadFrame = async (_site, url) => {
+    calls.push(["frame", url]);
+    return "HTTP/2.0";
+  };
   // Objects from the page's realm have their own prototypes.
   const result = JSON.parse(JSON.stringify(await context.main()));
   assert.match(input.innerHTML, /<form method="POST"/);
@@ -260,6 +264,7 @@ test("site probes follow the page's own flows and report each site flow", async 
   assert.deepEqual(result.sites["same-site"].ws, { protocol: "HTTP/2.0" });
   assert.deepEqual(result.sites["cross-site"].ws, { error: "refused" });
   assert.deepEqual(result.sites["cross-site"].image, { protocol: "h2" });
+  assert.deepEqual(result.sites["cross-site"].frame, { protocol: "HTTP/2.0" });
   assert.ok(reports.some(([flow, protocol]) => flow === "WebSocket (cross-site)" && protocol === "unavailable"));
 });
 
@@ -289,4 +294,122 @@ test("an invalid site configuration never breaks the page's own journey", async 
   assert.deepEqual(result.sites, {});
   assert.match(input.innerHTML, /<form method="POST"/);
   assert.ok(reports.some(([flow, protocol]) => flow === "Sites" && protocol === "unavailable"));
+});
+
+test("a stalled site host never holds the page's form", async () => {
+  const input = { hidden: true, innerHTML: "" };
+  const site = { site: "cross-site", origin: "https://xss.fixture.example", token: "tok" };
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+    location: { protocol: "https:", host: "fixture.invalid", href: "https://fixture.invalid/report" },
+    document: {
+      querySelector(selector) {
+        return selector === 'meta[name="rama-fp-sites"]' ? { content: JSON.stringify([site]) } : null;
+      },
+      getElementById() { return input; },
+    },
+    performance: { getEntriesByType() { return [{ nextHopProtocol: "h2" }]; } },
+    crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    Image: class {},
+    URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
+  });
+  vm.runInContext(source, context);
+  context.showProtocol = () => {};
+  const page = '{"fp":{"request_info":{"version":"HTTP/2.0"}}}';
+  context.makePostRequest = async () => ({ text: async () => page });
+  context.makeRequestWithXHR = async () => page;
+  context.connectWebSocket = async (probe) => ({ probe, greeting: {} });
+  context.loadSubresource = () => new Promise(() => {});
+  let settled = false;
+  context.main().finally(() => { settled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(input.innerHTML, /<form method="POST"/);
+  assert.equal(input.hidden, false);
+  assert.equal(settled, false);
+});
+
+test("a stalled host cannot hold fetch or XHR past their deadlines", async () => {
+  const timers = [];
+  let xhr;
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+    setTimeout(callback) { timers.push(callback); return timers.length; },
+    clearTimeout(id) { timers[id - 1] = null; },
+    AbortController,
+    fetch(_url, { signal }) {
+      return new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    },
+    XMLHttpRequest: class {
+      constructor() { xhr = this; }
+      open() {}
+      setRequestHeader() {}
+      send() {}
+    },
+    console: { log() {}, warn() {}, error() {} },
+  });
+  vm.runInContext(source, context);
+
+  let fetched;
+  context.fetchWithBackoff("https://stalled.invalid/api", {}).then(
+    () => { fetched = "resolved"; },
+    (error) => { fetched = error.message; },
+  );
+  // Each attempt's deadline aborts it; the backoff delay then starts the next one.
+  for (let step = 0; step < 20 && fetched === undefined; step += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    const next = timers.findIndex(Boolean);
+    if (next === -1) continue;
+    const fire = timers[next];
+    timers[next] = null;
+    fire();
+  }
+  assert.equal(fetched, "Max retries exceeded");
+
+  const sending = context.makeRequestWithXHR("https://stalled.invalid/api", "POST", 1);
+  xhr.ontimeout();
+  await assert.rejects(sending, /timed out/);
+});
+
+test("a frame counts only once it confirms itself from the probe host", async () => {
+  const site = { site: "cross-site", origin: "https://xss.fixture.example", token: "tok" };
+  const listeners = new Set();
+  let timer;
+  const frames = [];
+  const context = vm.createContext({
+    window: {
+      addEventListener(name, callback) { if (name === "message") listeners.add(callback); },
+      removeEventListener(_name, callback) { listeners.delete(callback); },
+    },
+    document: {
+      createElement(name) {
+        assert.equal(name, "iframe");
+        return { contentWindow: {} };
+      },
+      body: { append(frame) { frames.push(frame); } },
+    },
+    setTimeout(callback) { timer = callback; return 1; },
+    clearTimeout() { timer = null; },
+  });
+  vm.runInContext(source, context);
+  const deliver = (event) => [...listeners].forEach((listener) => listener(event));
+
+  // A failed navigation still fires load; without the frame's message it times out.
+  const unconfirmed = context.loadFrame(site, "https://xss.fixture.example/frame");
+  frames[0].onload?.();
+  const confirmation = { type: "rama-fp-frame", version: "HTTP/2.0" };
+  deliver({ source: {}, origin: site.origin, data: confirmation });
+  deliver({ source: frames[0].contentWindow, origin: "https://other.example", data: confirmation });
+  deliver({ source: frames[0].contentWindow, origin: site.origin, data: { type: "other", version: "HTTP/2.0" } });
+  timer();
+  await assert.rejects(unconfirmed, /did not confirm/);
+  assert.equal(listeners.size, 0);
+
+  const confirmed = context.loadFrame(site, "https://xss.fixture.example/frame");
+  deliver({ source: frames[1].contentWindow, origin: site.origin, data: confirmation });
+  assert.equal(await confirmed, "HTTP/2.0");
+  assert.equal(timer, null);
+  assert.equal(listeners.size, 0);
+  assert.equal(frames[1].hidden, true);
 });

@@ -99,6 +99,7 @@ class NightlyTests(unittest.TestCase):
             ({"same-site": SITE_FLOWS, "cross-site": incomplete}, 1),
             ({"same-site": SITE_FLOWS, "cross-site": dict(SITE_FLOWS, image="unknown")}, 0),
             ({"same-site": SITE_FLOWS, "cross-site": dict(SITE_FLOWS, fetch="unknown")}, 1),
+            ({"same-site": SITE_FLOWS, "cross-site": dict(SITE_FLOWS, frame="unknown")}, 1),
         ):
             with self.subTest(site_protocols=site_protocols):
                 result = SimpleNamespace(

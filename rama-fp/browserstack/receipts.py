@@ -18,7 +18,7 @@ SITE_FLOW_NAMES = {
     "image", "style", "script", "frame", "fetch", "xhr", "ws", "navigate", "form"
 }
 # Subresource transports come from resource timing, which a browser may withhold.
-SITE_TIMED_FLOWS = {"image", "style", "script", "frame"}
+SITE_TIMED_FLOWS = {"image", "style", "script"}
 
 
 def secret_forms(secrets):

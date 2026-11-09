@@ -432,6 +432,7 @@ class SiteProbeTests(unittest.TestCase):
         self.assertEqual(checked["cross-site"]["image"], "unknown")
         for overrides in (
             {("cross-site", "fetch"): {"protocol": ""}},
+            {("cross-site", "frame"): {"protocol": ""}},
             {("same-site", "frame"): {"error": "frame failed"}},
             {("same-site", "ws"): {"error": "refused"}},
             {("cross-site", "xhr"): {"protocol": "spdy"}},

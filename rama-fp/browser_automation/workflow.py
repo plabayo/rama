@@ -469,9 +469,9 @@ def completed_protocols(
 
 SITE_KINDS = ("same-site", "cross-site")
 # Subresources expose their protocol only through resource timing, which a browser
-# may withhold: those report "unknown" rather than fail.
-SITE_TIMED_FLOWS = ("image", "style", "script", "frame")
-SITE_PAGE_FLOWS = SITE_TIMED_FLOWS + ("fetch", "xhr", "ws")
+# may withhold: those report "unknown" rather than fail. The frame confirms its own.
+SITE_TIMED_FLOWS = ("image", "style", "script")
+SITE_PAGE_FLOWS = SITE_TIMED_FLOWS + ("frame", "fetch", "xhr", "ws")
 SITE_FLOW_NAMES = SITE_PAGE_FLOWS + ("navigate", "form")
 SITE_TOKEN_PARAM = "rama-fp-site"
 # Base64url of expiry, authorization, a page origin of at most 255 bytes and a MAC.

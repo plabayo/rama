@@ -1,3 +1,6 @@
+// A stalled host must not hold the page's journey, so every request has a deadline.
+const REQUEST_DEADLINE_MS = 10000;
+
 // Function to make a fetch request with exponential backoff
 async function fetchWithBackoff(url, options) {
   const maxRetries = 3;
@@ -5,14 +8,18 @@ async function fetchWithBackoff(url, options) {
   let delay = initialDelay;
 
   for (let i = 0; i < maxRetries; i++) {
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), REQUEST_DEADLINE_MS);
     try {
-      const response = await fetch(url, options);
+      // The deadline keeps running while the caller reads the body.
+      const response = await fetch(url, { ...options, signal: controller.signal });
       if (response.ok) {
         return response;
       }
     } catch (error) {
       console.error(`Request failed: ${error}`);
     }
+    clearTimeout(deadline);
 
     // Exponential backoff
     await new Promise((resolve) => setTimeout(resolve, delay));
@@ -106,6 +113,7 @@ function makeRequestWithXHR(url, method, number) {
     const xhr = new XMLHttpRequest();
     xhr.open(method, url);
     xhr.setRequestHeader("x-RAMA-custom-header-marker", `rama-fp${Date.now()}`);
+    xhr.timeout = REQUEST_DEADLINE_MS;
 
     xhr.onload = function () {
       if (xhr.status >= 200 && xhr.status < 300) {
@@ -117,6 +125,10 @@ function makeRequestWithXHR(url, method, number) {
 
     xhr.onerror = function () {
       reject(new Error("Request failed"));
+    };
+
+    xhr.ontimeout = function () {
+      reject(new Error("Request timed out"));
     };
 
     xhr.send(JSON.stringify({ number }));
@@ -146,7 +158,7 @@ function connectWebSocket(
 
     const deadline = setTimeout(
       () => fail(new Error("WebSocket round trip timed out")),
-      10000,
+      REQUEST_DEADLINE_MS,
     );
     socket.onmessage = function (event) {
       if (settled) return;
@@ -240,7 +252,7 @@ function loadedProtocol(url) {
 
 function loadSubresource(element, attribute, url, parent) {
   return new Promise((resolve, reject) => {
-    const deadline = setTimeout(() => reject(new Error(`${url} timed out`)), 15000);
+    const deadline = setTimeout(() => reject(new Error(`${url} timed out`)), REQUEST_DEADLINE_MS);
     element.onload = () => {
       clearTimeout(deadline);
       resolve(loadedProtocol(url));
@@ -251,6 +263,33 @@ function loadSubresource(element, attribute, url, parent) {
     };
     element[attribute] = url;
     parent?.append(element);
+  });
+}
+
+// A frame fires load even when its navigation fails, so only the frame's own
+// message from the probe host confirms it, with the protocol its server observed.
+function loadFrame(site, url) {
+  return new Promise((resolve, reject) => {
+    const frame = document.createElement("iframe");
+    frame.hidden = true;
+    let deadline;
+    function onMessage(event) {
+      const version = event.data?.version;
+      if (event.source !== frame.contentWindow || event.origin !== site.origin
+          || event.data?.type !== "rama-fp-frame" || typeof version !== "string") {
+        return;
+      }
+      clearTimeout(deadline);
+      window.removeEventListener("message", onMessage);
+      resolve(version);
+    }
+    deadline = setTimeout(() => {
+      window.removeEventListener("message", onMessage);
+      reject(new Error(`${url} did not confirm its load`));
+    }, REQUEST_DEADLINE_MS);
+    window.addEventListener("message", onMessage);
+    frame.src = url;
+    document.body.append(frame);
   });
 }
 
@@ -268,11 +307,7 @@ async function probeSite(site) {
     script: ["Script", () => loadSubresource(
       document.createElement("script"), "src", siteUrl(site, "/assets/site.js"), document.head,
     )],
-    frame: ["Frame", () => {
-      const frame = document.createElement("iframe");
-      frame.hidden = true;
-      return loadSubresource(frame, "src", siteUrl(site, "/frame"), document.body);
-    }],
+    frame: ["Frame", () => loadFrame(site, siteUrl(site, "/frame"))],
     fetch: ["Fetch", async () => {
       const response = await makePostRequest(siteUrl(site, `/api/fetch/number/${number}`), number);
       return JSON.parse(await response.text()).fp.request_info.version;
@@ -377,12 +412,6 @@ async function main() {
       showProtocol("WebSocket", "unavailable", "unsupported or connection failed");
     }
 
-    const sites = await probeSites();
-
-    console.log("Requests completed successfully");
-    console.log("Result:", result);
-    console.log("Result2:", result2);
-
     // Display a form to submit a rating
     const formHtml = `
             <form method="POST" action="/form">
@@ -401,6 +430,13 @@ async function main() {
     const inputEl = document.getElementById("input");
     inputEl.hidden = false;
     inputEl.innerHTML = formHtml;
+    // The form never waits for the other hosts; the flow's result still does.
+    const sites = await probeSites();
+
+    console.log("Requests completed successfully");
+    console.log("Result:", result);
+    console.log("Result2:", result2);
+
     return { fetch: responseText, xhr: response4, websocket, sites };
   } catch (error) {
     console.error("An error occurred:", error);
