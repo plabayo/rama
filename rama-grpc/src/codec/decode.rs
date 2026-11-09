@@ -8,7 +8,7 @@ use std::{
 use sync_wrapper::SyncWrapper;
 
 use rama_core::{
-    bytes::{Buf, BufMut, BytesMut},
+    bytes::{Buf, BufMut, Bytes, BytesMut},
     error::BoxError,
     futures::Stream,
     telemetry::tracing::{debug, trace},
@@ -32,7 +32,13 @@ struct StreamingInner {
     body: SyncWrapper<Body>,
     state: State,
     direction: Direction,
+    /// Unread bytes of the last received data frame; whole messages are split off it.
+    chunk: Bytes,
+    /// The current message, split off `chunk` without copying.
+    message: Option<Bytes>,
+    /// Assembles a header or message received across data frames.
     buf: BytesMut,
+    buffer_size: usize,
     trailers: Option<HeaderMap>,
     decompress_buf: BytesMut,
     encoding: Option<CompressionEncoding>,
@@ -134,7 +140,10 @@ impl<T> Streaming<T> {
                 )),
                 state: State::ReadHeader,
                 direction,
-                buf: BytesMut::with_capacity(buffer_size),
+                chunk: Bytes::new(),
+                message: None,
+                buf: BytesMut::new(),
+                buffer_size,
                 trailers: None,
                 decompress_buf: BytesMut::new(),
                 encoding,
@@ -150,11 +159,20 @@ impl StreamingInner {
         buffer_settings: BufferSettings,
     ) -> Result<Option<DecodeBuf<'_>>, Status> {
         if matches!(self.state, State::ReadHeader) {
-            if self.buf.remaining() < HEADER_SIZE {
-                return Ok(None);
+            let mut header = [0; HEADER_SIZE];
+            if self.buf.is_empty() && self.chunk.len() >= HEADER_SIZE {
+                self.chunk.copy_to_slice(&mut header);
+            } else {
+                self.assemble(HEADER_SIZE);
+                if self.buf.len() < HEADER_SIZE {
+                    return Ok(None);
+                }
+                self.buf.copy_to_slice(&mut header);
             }
+            let [compression_flag, len @ ..] = header;
+            let len = u32::from_be_bytes(len) as usize;
 
-            let compression_encoding = match self.buf.get_u8() {
+            let compression_encoding = match compression_flag {
                 0 => None,
                 1 => {
                     {
@@ -186,7 +204,6 @@ impl StreamingInner {
                 }
             };
 
-            let len = self.buf.get_u32() as usize;
             let limit = self
                 .max_message_size
                 .unwrap_or(DEFAULT_MAX_RECV_MESSAGE_SIZE);
@@ -196,7 +213,6 @@ impl StreamingInner {
                 )));
             }
 
-            // The buffer grows with what arrives: a declared length alone never sizes it.
             self.state = State::ReadBody {
                 compression: compression_encoding,
                 len,
@@ -204,10 +220,21 @@ impl StreamingInner {
         }
 
         if let State::ReadBody { len, compression } = self.state {
-            // if we haven't read enough of the message then return and keep
-            // reading
-            if self.buf.remaining() < len || self.buf.len() < len {
-                return Ok(None);
+            if self.message.is_none() {
+                if self.buf.is_empty() && self.chunk.len() >= len {
+                    self.message = Some(self.chunk.split_to(len));
+                } else {
+                    self.assemble(len);
+                    // if we haven't read enough of the message then return and keep
+                    // reading
+                    if self.buf.len() < len {
+                        return Ok(None);
+                    }
+                    // Handing over the whole buffer spares a shared copy of its allocation.
+                    if self.buf.len() == len {
+                        self.message = Some(std::mem::take(&mut self.buf).freeze());
+                    }
+                }
             }
 
             let decode_buf = if let Some(encoding) = compression {
@@ -217,15 +244,22 @@ impl StreamingInner {
                     .unwrap_or(DEFAULT_MAX_RECV_MESSAGE_SIZE);
                 let limited_out_buf = (&mut self.decompress_buf).limit(limit);
 
-                if let Err(err) = decompress(
+                let compressed = match &self.message {
+                    Some(message) => message.as_ref(),
+                    None => &self.buf[..len],
+                };
+                let decompressed = decompress(
                     CompressionSettings {
                         encoding,
                         buffer_growth_interval: buffer_settings.buffer_size,
                     },
-                    &mut self.buf,
+                    compressed,
                     limited_out_buf,
-                    len,
-                ) {
+                );
+                if self.message.take().is_none() {
+                    self.buf.advance(len);
+                }
+                if let Err(err) = decompressed {
                     if matches!(err.kind(), std::io::ErrorKind::WriteZero) {
                         return Err(Status::resource_exhausted(format!(
                             "Error decompressing: size limit, of {limit} bytes, exceeded while decompressing message"
@@ -242,6 +276,8 @@ impl StreamingInner {
                 }
                 let decompressed_len = self.decompress_buf.len();
                 DecodeBuf::new(&mut self.decompress_buf, decompressed_len)
+            } else if let Some(message) = &mut self.message {
+                DecodeBuf::from_bytes(message, len)
             } else {
                 DecodeBuf::new(&mut self.buf, len)
             };
@@ -250,6 +286,20 @@ impl StreamingInner {
         }
 
         Ok(None)
+    }
+
+    /// Moves bytes from `chunk` into `buf` until it holds `len` bytes or `chunk` runs out;
+    /// only a header or message received across data frames is copied.
+    fn assemble(&mut self, len: usize) {
+        let missing = len.saturating_sub(self.buf.len());
+        let needed = missing.min(self.chunk.len());
+        if needed == 0 {
+            return;
+        }
+        // The buffer grows with what arrives: a declared length alone never sizes it.
+        self.buf.reserve(needed.max(missing.min(self.buffer_size)));
+        self.buf.extend_from_slice(&self.chunk[..needed]);
+        self.chunk.advance(needed);
     }
 
     // Returns Some(()) if data was found or None if the loop in `poll_next` should break
@@ -269,7 +319,7 @@ impl StreamingInner {
             }
             None => {
                 // FIXME: improve buf usage.
-                return Poll::Ready(if self.buf.has_remaining() {
+                return Poll::Ready(if self.buf.has_remaining() || self.chunk.has_remaining() {
                     trace!("unexpected EOF decoding stream, state: {:?}", self.state);
                     Err(Status::internal("Unexpected EOF decoding stream."))
                 } else {
@@ -280,7 +330,12 @@ impl StreamingInner {
 
         Poll::Ready(match frame.into_data() {
             Ok(data) => {
-                self.buf.put(data);
+                // Bytes left in `chunk` belong before the new frame.
+                if self.chunk.has_remaining() {
+                    let rest = std::mem::take(&mut self.chunk);
+                    self.buf.put(rest);
+                }
+                self.chunk = data;
                 Ok(Some(()))
             }
             Err(frame) => match frame.into_trailers() {
@@ -393,6 +448,7 @@ impl<T> Streaming<T> {
             Some(mut decode_buf) => match self.decoder.get_mut().decode(&mut decode_buf)? {
                 Some(msg) => {
                     self.inner.state = State::ReadHeader;
+                    self.inner.message = None;
                     Ok(Some(msg))
                 }
                 None => Ok(None),
@@ -436,3 +492,137 @@ impl<T> fmt::Debug for Streaming<T> {
 
 #[cfg(test)]
 static_assertions::assert_impl_all!(Streaming<()>: Send, Sync);
+
+#[cfg(test)]
+mod tests {
+    use quickcheck_macros::quickcheck;
+    use rama_core::futures::stream;
+
+    #[cfg(feature = "compression")]
+    use super::super::compression::compress;
+    use super::*;
+
+    /// Hands out each message as received.
+    struct Raw;
+
+    impl Decoder for Raw {
+        type Item = Bytes;
+        type Error = Status;
+
+        fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Bytes>, Status> {
+            Ok(Some(src.copy_to_bytes(src.remaining())))
+        }
+    }
+
+    fn frame(flag: u8, message: &[u8]) -> Vec<u8> {
+        let mut frame = vec![flag];
+        frame.extend_from_slice(&(message.len() as u32).to_be_bytes());
+        frame.extend_from_slice(message);
+        frame
+    }
+
+    fn streaming(chunks: Vec<Bytes>, encoding: Option<CompressionEncoding>) -> Streaming<Bytes> {
+        let body = Body::from_stream(stream::iter(chunks.into_iter().map(Ok::<_, BoxError>)));
+        Streaming::new_request(Raw, body, encoding, None)
+    }
+
+    async fn collect(mut streaming: Streaming<Bytes>) -> Result<Vec<Bytes>, Status> {
+        let mut messages = Vec::new();
+        while let Some(message) = streaming.message().await? {
+            messages.push(message);
+        }
+        Ok(messages)
+    }
+
+    /// Splits `wire` into chunks of the given sizes, the rest going into a last chunk.
+    fn split(wire: &[u8], sizes: &[u8]) -> Vec<Bytes> {
+        let mut wire = Bytes::copy_from_slice(wire);
+        let mut chunks = Vec::new();
+        for &size in sizes {
+            let size = usize::from(size).max(1).min(wire.len());
+            if size == 0 {
+                break;
+            }
+            chunks.push(wire.split_to(size));
+        }
+        if !wire.is_empty() {
+            chunks.push(wire);
+        }
+        chunks
+    }
+
+    #[quickcheck]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "quickcheck generates owned inputs"
+    )]
+    fn messages_survive_any_chunking(messages: Vec<Vec<u8>>, sizes: Vec<u8>) -> bool {
+        let wire: Vec<u8> = messages.iter().flat_map(|m| frame(0, m)).collect();
+        let decoded = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(collect(streaming(split(&wire, &sizes), None)));
+        decoded.unwrap() == messages
+    }
+
+    #[tokio::test]
+    async fn messages_received_whole_share_the_received_bytes() {
+        let wire = Bytes::from([frame(0, b"first"), frame(0, b"second")].concat());
+        let messages = collect(streaming(vec![wire.clone()], None)).await.unwrap();
+        assert_eq!(messages, [&b"first"[..], &b"second"[..]]);
+        assert_eq!(messages[0].as_ptr(), wire[HEADER_SIZE..].as_ptr());
+        assert_eq!(messages[1].as_ptr(), wire[2 * HEADER_SIZE + 5..].as_ptr());
+    }
+
+    #[tokio::test]
+    async fn header_and_message_across_frames() {
+        let wire = [frame(0, b"split"), frame(0, b"whole")].concat();
+        // the first header spans two frames, its message a third
+        let chunks = split(&wire, &[2, 6]);
+        let messages = collect(streaming(chunks, None)).await.unwrap();
+        assert_eq!(messages, [&b"split"[..], &b"whole"[..]]);
+    }
+
+    #[tokio::test]
+    async fn truncated_message_is_an_error() {
+        let wire = frame(0, b"truncated");
+        let chunks = vec![Bytes::copy_from_slice(&wire[..wire.len() - 1])];
+        let status = collect(streaming(chunks, None)).await.unwrap_err();
+        assert_eq!(status.code(), Code::Internal);
+    }
+
+    #[tokio::test]
+    async fn message_above_the_limit_is_refused() {
+        let mut wire = vec![0];
+        wire.extend_from_slice(&u32::MAX.to_be_bytes());
+        let status = collect(streaming(vec![Bytes::from(wire)], None))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::OutOfRange);
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn compressed_messages_whole_or_across_frames() {
+        let mut compressed = BytesMut::new();
+        let mut plain = BytesMut::from(&b"compressed message"[..]);
+        let len = plain.len();
+        compress(
+            CompressionSettings {
+                encoding: CompressionEncoding::Gzip,
+                buffer_growth_interval: 64,
+            },
+            &mut plain,
+            &mut compressed,
+            len,
+        )
+        .unwrap();
+        let wire = [frame(1, &compressed), frame(1, &compressed)].concat();
+        for chunks in [vec![Bytes::from(wire.clone())], split(&wire, &[3, 7, 11])] {
+            let messages = collect(streaming(chunks, Some(CompressionEncoding::Gzip)))
+                .await
+                .unwrap();
+            assert_eq!(messages, [&b"compressed message"[..]; 2]);
+        }
+    }
+}
