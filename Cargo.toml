@@ -152,7 +152,7 @@ iri-string = "0.7"
 itertools = { version = "0.15", default-features = false }
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.7" }
-jiff = { version = "0.2.41", features = ["serde"] }
+jiff = { version = "0.2.41", default-features = false, features = ["std", "serde", "perf-inline"] }
 jni = "0.22"
 libc = "0.2"
 libfuzzer-sys = "0.4"

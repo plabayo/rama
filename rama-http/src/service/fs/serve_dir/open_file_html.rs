@@ -11,7 +11,7 @@
 //! than spliced into the attribute raw.
 
 use crate::service::fs::serve_dir::{DirSource, open_file::OpenFileOutput};
-use jiff::Zoned;
+use jiff::{Timestamp, tz::TimeZone};
 use rama_net::uri::Uri;
 use rama_utils::include_dir;
 use std::{fmt, path::PathBuf, time::SystemTime};
@@ -186,7 +186,7 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
     let rows: Vec<_> = entries
         .into_iter()
         .map(|entry| {
-            let modified = format_system_time_local(entry.modified);
+            let modified = format_system_time_utc(entry.modified);
             let mime = (!entry.is_dir)
                 .then(|| crate::mime::guess::from_path(entry.name.as_str()).first())
                 .flatten();
@@ -246,9 +246,14 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
     .into_string()
 }
 
-fn format_system_time_local(system_time: SystemTime) -> String {
-    Zoned::try_from(system_time)
-        .map(|zdt| zdt.strftime("%Y-%m-%d %H:%M:%S %:z").to_string())
+// UTC needs no time zone database and reads the same in every build.
+fn format_system_time_utc(system_time: SystemTime) -> String {
+    Timestamp::try_from(system_time)
+        .map(|ts| {
+            ts.to_zoned(TimeZone::UTC)
+                .strftime("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+        })
         .unwrap_or_else(|_| "-".to_owned())
 }
 
@@ -258,6 +263,15 @@ mod test {
 
     use super::*;
     use crate::mime::Mime;
+
+    #[test]
+    fn listing_times_render_in_utc() {
+        let modified = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(90 * 60);
+        assert_eq!(
+            format_system_time_utc(modified),
+            "1970-01-01 01:30:00 +00:00"
+        );
+    }
 
     #[test]
     fn test_emoji_for_mime() {
