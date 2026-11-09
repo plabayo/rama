@@ -142,3 +142,45 @@ fn trailing_slash_preserved() {
     let u = parse_graceful("/foo/").unwrap();
     assert_origin_form(&u, "/foo/", None, None);
 }
+
+#[test]
+fn delimiters_split_the_same_with_and_without_non_ascii_bytes() {
+    for (path, query, fragment) in [
+        ("/a", None, None),
+        ("/a", Some(""), None),
+        ("/a", None, Some("")),
+        ("/a", Some("b=c"), Some("d")),
+        ("/a", Some("b?c"), Some("d?e#f")),
+        ("/a", None, Some("b?c")),
+        ("/", Some("?"), Some("#")),
+    ] {
+        for extra in ["", "é"] {
+            let path = format!("{path}{extra}");
+            let query = query.map(|q| format!("{q}{extra}"));
+            let fragment = fragment.map(|f| format!("{f}{extra}"));
+            let mut input = path.clone();
+            if let Some(q) = &query {
+                input.push('?');
+                input.push_str(q);
+            }
+            if let Some(f) = &fragment {
+                input.push('#');
+                input.push_str(f);
+            }
+            let u = parse_graceful(&input).unwrap();
+            assert_origin_form(&u, &path, query.as_deref(), fragment.as_deref());
+        }
+    }
+}
+
+#[test]
+fn control_bytes_are_reported_where_they_are() {
+    for at in 1..8 {
+        let mut input = *b"/ab?c#de";
+        input[at] = 0x7F;
+        assert_matches!(
+            super::parse_graceful_bytes(&input),
+            Err(ParseError::ControlCharInUri { at: found, byte: 0x7F }) if found == at,
+        );
+    }
+}
