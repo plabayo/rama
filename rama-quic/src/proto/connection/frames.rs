@@ -317,10 +317,13 @@ impl Connection {
         // We want to reuse encryption and underlying protocol overhead,
         // but sending multiple ACKs for a single incoming packet is a waste of peer's resources,
         // so we have next_bundled_ack_time to control when to send ACKs.
+        // Handshake spaces always report what arrived: an ACK of the peer's ACK-only packets
+        // lets it detect a lost flight before its probe timer does (RFC 9002 §6.1).
         let any_frames_sent = buf.len() > pre_payload_len;
         if any_frames_sent
             && sent.largest_acked.is_none()
-            && self.next_bundled_ack_time.is_some_and(|time| time <= now)
+            && (space_id != SpaceId::Data
+                || self.next_bundled_ack_time.is_some_and(|time| time <= now))
             && space.pending_acks.can_send_with_other_frames()
         {
             Self::try_populate_acks(

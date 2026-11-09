@@ -41,7 +41,7 @@ clap = { workspace = true }
 dial9 = { workspace = true, optional = true }
 hickory-resolver = { workspace = true }
 itertools = { workspace = true, default-features = true }
-jiff = { workspace = true }
+jiff = { workspace = true, features = ["tz-system", "tz-fat", "tzdb-zoneinfo", "tzdb-concatenated", "tzdb-bundle-platform"] }
 parking_lot = { workspace = true }
 rama = { workspace = true, features = [
     "boring",

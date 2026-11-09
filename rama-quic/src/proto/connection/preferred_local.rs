@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use rama_quic_proto::{
-    ConnectionId, TransportError, coding::BufMutExt as _, frame, packet::SpaceId,
+    ConnectionId, ResetToken, TransportError, coding::BufMutExt as _, frame, packet::SpaceId,
 };
 use rand::RngExt as _;
 
@@ -15,10 +15,16 @@ use super::{
     qlog::path::MigrationState,
     timer::Timer,
 };
-use crate::proto::{Duration, Instant, MIN_INITIAL_SIZE, Transmit};
+use crate::proto::{Duration, Instant, MIN_INITIAL_SIZE, Transmit, cid_queue::Retired};
 
 // A one-sided firewall must not consume a new peer CID on every delayed packet.
 const MAX_CANDIDATE_ATTEMPTS: u8 = 3;
+
+struct PromotedCid {
+    token: ResetToken,
+    retired: Retired,
+    old_cid: ConnectionId,
+}
 
 pub(super) struct ServerCandidate {
     pub(super) remote: SocketAddr,
@@ -68,11 +74,19 @@ impl Connection {
             && matches!(&self.side, ConnectionSide::Server { server_config }
                 if Self::is_preferred_local(server_config, local));
         if preferred && !self.state.is_closed() {
+            let zero_length = self.rem_cids.active().is_empty();
             if self.server_candidate.is_none()
                 && self.server_candidate_attempts < MAX_CANDIDATE_ATTEMPTS
-                && let Some(cid) = self.rem_cids.reserve()
+                && let Some((id, seq)) = if zero_length {
+                    // A peer with zero-length identifiers has none to spare, nor needs one.
+                    Some((self.rem_cids.active(), self.rem_cids.active_seq()))
+                } else {
+                    self.rem_cids.reserve().map(|cid| (cid.id, cid.seq))
+                }
             {
-                self.install_reset_route(cid.seq, remote);
+                if !zero_length {
+                    self.install_reset_route(seq, remote);
+                }
                 // A different local address can have a different RTT. Bound the
                 // attempt with three conservative PTOs, independently of ACKs
                 // and the congestion/recovery state on the original path.
@@ -82,8 +96,8 @@ impl Connection {
                 self.server_candidate = Some(Box::new(ServerCandidate {
                     remote,
                     local,
-                    cid: cid.id,
-                    seq: cid.seq,
+                    cid: id,
+                    seq,
                     challenge: Some(Challenge::of_address(self.rng.random(), self.path_counter)),
                     generation: self.path_counter,
                     received: 0,
@@ -94,7 +108,7 @@ impl Connection {
                     interval,
                     deadline,
                 }));
-                self.spin_cid_changed(remote, local, cid.id);
+                self.spin_cid_changed(remote, local, id);
                 self.timers.set(Timer::PathProbe, deadline);
             }
             if let Some(candidate) = self.server_candidate.as_mut()
@@ -251,6 +265,71 @@ impl Connection {
         let Some(candidate) = self.server_candidate.as_ref() else {
             return Ok(());
         };
+        let remote_changed = candidate.remote != self.path.remote;
+        // A zero-length identifier stays as it is: only the path moves.
+        let (promoted, previous) = if self.rem_cids.active().is_empty() {
+            self.drop_previous_path();
+            (None, PrevCid::Active)
+        } else {
+            (
+                Some(self.promote_candidate_cid(remote_changed)?),
+                PrevCid::Held,
+            )
+        };
+        let Some(candidate) = self.server_candidate.take() else {
+            return Err(TransportError::INTERNAL_ERROR(
+                "preferred candidate disappeared during promotion",
+            ));
+        };
+        self.timers.stop(Timer::PathProbe);
+        let token = match promoted {
+            Some(promoted) => {
+                self.retire_rem_cids(&promoted.retired)?;
+                self.qlog_remote_cid_updated(now, promoted.old_cid);
+                Some(promoted.token)
+            }
+            None => None,
+        };
+        // §9.3.3's old-path challenge protects against a forwarded source-address
+        // change. A local-only transition needs no such check; a simultaneous
+        // peer move still challenges the original using its retained identifier.
+        self.migrate(
+            now,
+            candidate.remote,
+            candidate.local,
+            if remote_changed {
+                PreviousPath::Keep(previous)
+            } else {
+                PreviousPath::Discard
+            },
+        );
+        self.path.challenge = None;
+        self.path.validated = true;
+        self.path.mtu_validated = true;
+        self.path.received_dcid = candidate.non_probing;
+        self.path.total_recvd = candidate.received;
+        self.path.total_sent = candidate.sent;
+        if !remote_changed {
+            self.timers.stop(Timer::PathValidation);
+        }
+        self.arm_path_challenge_timer();
+        if let Some(token) = token {
+            self.set_reset_token(candidate.remote, token);
+        }
+        self.qlog_migration_state(now, MigrationState::MigrationComplete);
+        Ok(())
+    }
+
+    /// Move the active identifier to the reserved one the candidate path uses.
+    fn promote_candidate_cid(
+        &mut self,
+        remote_changed: bool,
+    ) -> Result<PromotedCid, TransportError> {
+        let Some(candidate) = self.server_candidate.as_ref() else {
+            return Err(TransportError::INTERNAL_ERROR(
+                "preferred candidate disappeared during promotion",
+            ));
+        };
         // Check every fallible promotion precondition before dropping a usable
         // fallback. Retirement normally cancels the candidate as it arrives.
         if !self
@@ -269,7 +348,6 @@ impl Connection {
             ));
         }
         let old_cid = self.rem_cids.active();
-        let remote_changed = candidate.remote != self.path.remote;
         self.drop_previous_path();
         let promoted = if remote_changed {
             self.rem_cids.promote_reserved_holding()
@@ -282,39 +360,10 @@ impl Connection {
                 "preferred path identifier promotion failed",
             ));
         };
-        let Some(candidate) = self.server_candidate.take() else {
-            return Err(TransportError::INTERNAL_ERROR(
-                "preferred candidate disappeared during promotion",
-            ));
-        };
-        self.timers.stop(Timer::PathProbe);
-        self.retire_rem_cids(&retired)?;
-        self.qlog_remote_cid_updated(now, old_cid);
-        // §9.3.3's old-path challenge protects against a forwarded source-address
-        // change. A local-only transition needs no such check; a simultaneous
-        // peer move still challenges the original using its retained identifier.
-        self.migrate(
-            now,
-            candidate.remote,
-            candidate.local,
-            if remote_changed {
-                PreviousPath::Keep(PrevCid::Held)
-            } else {
-                PreviousPath::Discard
-            },
-        );
-        self.path.challenge = None;
-        self.path.validated = true;
-        self.path.mtu_validated = true;
-        self.path.received_dcid = candidate.non_probing;
-        self.path.total_recvd = candidate.received;
-        self.path.total_sent = candidate.sent;
-        if !remote_changed {
-            self.timers.stop(Timer::PathValidation);
-        }
-        self.arm_path_challenge_timer();
-        self.set_reset_token(candidate.remote, token);
-        self.qlog_migration_state(now, MigrationState::MigrationComplete);
-        Ok(())
+        Ok(PromotedCid {
+            token,
+            retired,
+            old_cid,
+        })
     }
 }

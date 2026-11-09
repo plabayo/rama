@@ -127,7 +127,7 @@ compression-core = "0.4"
 const_format = "0.2"
 core-foundation = "0.10"
 csv = "1.4"
-dial9 = { version = "0.5.7", default-features = false, features = ["tokio"] }
+dial9 = { version = "0.5.8", default-features = false, features = ["tokio"] }
 dial9-trace-format = "0.5.4"
 divan = "0.1"
 fastbloom = { version = "0.17", default-features = false }
@@ -142,7 +142,7 @@ hmac = "0.13"
 honggfuzz = "0.5"
 http = "1" # interop-only (rama-http-hyperium / rama-tower); native rama Uri handles CONNECT, so no version pin needed
 http-body = "1" # interop-only (rama-http-hyperium body bridge)
-http-range-header = "0.4.2"
+http-range-header = "1.0.0"
 httparse = "1.10"
 httpdate = "1.0"
 idna = "1"
@@ -152,7 +152,7 @@ iri-string = "0.7"
 itertools = { version = "0.15", default-features = false }
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.7" }
-jiff = { version = "0.2.39", features = ["serde"] }
+jiff = { version = "0.2.41", default-features = false, features = ["std", "serde", "perf-inline"] }
 jni = "0.22"
 libc = "0.2"
 libfuzzer-sys = "0.4"
@@ -163,7 +163,7 @@ memchr = { version = "2.8", default-features = false }
 memmap2 = "0.9"
 metrique-writer-core = { version = "0.1.22", default-features = false }
 mimalloc = { version = "0.1.52", default-features = false }
-mime = "0.3.17"
+mime = "0.3.18"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 multer = "3.1"

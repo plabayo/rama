@@ -981,3 +981,48 @@ fn current_path_ecn_accepts_congestion_marks_and_lost_ack_counts() {
             .assert_ecn_feedback(now, &[0, 1], Some(counts), true);
     }
 }
+
+/// A client whose server flight keeps getting lost acknowledges the server's ACK-only Initials
+/// in its probes, so the server detects the loss without waiting for its own probe timer.
+#[test]
+fn initial_probe_acknowledges_ack_only_server_packets() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let server = pair.server.assert_accept();
+    pair.client.inbound.clear(); // Lose the server's complete first flight.
+
+    // Only an ACK of the ClientHello arrives, the way a peer that holds back its own
+    // retransmission answers a repeated Initial.
+    let now = pair.time;
+    let ack = pair
+        .server_conn_mut(server)
+        .initial_frames_for_test(now, &[0x02, 0x00, 0x00, 0x00, 0x00]);
+    pair.client
+        .inbound
+        .push_back(Inbound::plain(now, None, ack));
+    pair.drive_client();
+    pair.server.inbound.clear();
+
+    pair.time = pair.client_conn_mut(client).loss_detection_timer().unwrap();
+    pair.drive_client();
+    let datagrams: Vec<_> = pair
+        .server
+        .inbound
+        .drain(..)
+        .map(|inbound| inbound.packet)
+        .collect();
+    assert!(!datagrams.is_empty(), "the client probes");
+    let acked = datagrams.iter().any(|datagram| {
+        pair.client_conn_mut(client)
+            .sent_datagram_frames_for_test(datagram)
+            .iter()
+            .any(|frame| matches!(frame, frame::Frame::Ack(_)))
+    });
+    assert!(
+        acked,
+        "the probe acknowledges the server packet that arrived"
+    );
+}

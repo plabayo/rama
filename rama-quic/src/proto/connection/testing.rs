@@ -115,6 +115,15 @@ impl Connection {
         self.encode_packet_in_space_for_test(now, SpaceId::Initial, self.rem_cids.active(), &[1])
     }
 
+    /// An Initial packet carrying exactly `frames` (plus padding), such as an ACK-only one.
+    pub(crate) fn initial_frames_for_test(
+        &mut self,
+        now: Instant,
+        frames: &[u8],
+    ) -> rama_core::bytes::BytesMut {
+        self.encode_packet_in_space_for_test(now, SpaceId::Initial, self.rem_cids.active(), frames)
+    }
+
     /// Prove possession of Handshake keys without delivering TLS Finished.
     pub(crate) fn handshake_ping_for_test(&mut self, now: Instant) -> rama_core::bytes::BytesMut {
         self.encode_packet_in_space_for_test(now, SpaceId::Handshake, self.rem_cids.active(), &[1])

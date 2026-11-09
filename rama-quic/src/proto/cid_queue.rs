@@ -796,6 +796,11 @@ impl CidQueue {
         }
     }
 
+    /// How many connection IDs beyond the active one are available to switch to.
+    pub(crate) fn unused_count(&self) -> usize {
+        self.unused.iter().flatten().count()
+    }
+
     /// Whether a connection ID beyond the active one is available to switch to.
     pub(crate) fn has_unused(&self) -> bool {
         self.unused.iter().any(Option::is_some)
