@@ -28,11 +28,11 @@ pub trait PeekInterruptSource: Send + 'static {
 /// is decided by its [`PeekPolicy`] based on how far that peek got.
 ///
 /// It is triggered explicitly via [`Self::trigger`] or by an attached
-/// [`PeekInterruptSource`], e.g. the first byte probed by [`PeekEgressLayer`].
+/// [`PeekInterruptSource`], e.g. the first byte probed by [`PeekEgressFirstByteLayer`].
 ///
 /// [`Extensions`]: crate::extensions::Extensions
 /// [`PeekPolicy`]: super::PeekPolicy
-/// [`PeekEgressLayer`]: super::PeekEgressLayer
+/// [`PeekEgressFirstByteLayer`]: super::PeekEgressFirstByteLayer
 #[derive(Default, Extension)]
 pub struct PeekInterrupt {
     triggered: AtomicBool,

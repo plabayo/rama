@@ -30,7 +30,7 @@ use rama::{
     },
     io::{
         BridgeIo, Io,
-        peek::{PeekAction, PeekEgressLayer, PeekPolicy},
+        peek::{PeekAction, PeekEgressFirstByteLayer, PeekPolicy},
     },
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutput, MapOutputLayer},
     net::{
@@ -204,7 +204,10 @@ impl DemoTcpMitmService {
         // A server speaking first ends the ingress peeks without waiting for the peek duration.
         if within_connect_tunnel {
             return Either::A(
-                (ConsumeErrLayer::trace_as_debug(), PeekEgressLayer::new())
+                (
+                    ConsumeErrLayer::trace_as_debug(),
+                    PeekEgressFirstByteLayer::new(),
+                )
                     .into_layer(app_mitm_layer),
             );
         }
@@ -215,7 +218,13 @@ impl DemoTcpMitmService {
             .with_peek_policy(peek_policy)
             .with_fallback(app_mitm_layer);
 
-        Either::B((ConsumeErrLayer::trace_as_debug(), PeekEgressLayer::new()).into_layer(mitm_svc))
+        Either::B(
+            (
+                ConsumeErrLayer::trace_as_debug(),
+                PeekEgressFirstByteLayer::new(),
+            )
+                .into_layer(mitm_svc),
+        )
     }
 
     #[allow(clippy::needless_pass_by_value)]

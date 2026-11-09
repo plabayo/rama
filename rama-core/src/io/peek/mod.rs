@@ -18,9 +18,11 @@ use crate::{
     service::{RejectError, RejectService},
 };
 
-mod egress;
+mod egress_first_byte;
 #[doc(inline)]
-pub use egress::{PeekEgressIo, PeekEgressLayer, PeekEgressService};
+pub use egress_first_byte::{
+    PeekEgressFirstByteIo, PeekEgressFirstByteLayer, PeekEgressFirstByteService,
+};
 
 mod interrupt;
 #[doc(inline)]

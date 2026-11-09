@@ -21,40 +21,40 @@ use crate::{
 ///
 /// This lets ingress peekers stop waiting for a client that will not speak
 /// first, e.g. for server-first protocols such as SMTP or SSH, instead of
-/// relying on a timeout. See [`PeekEgressService`].
+/// relying on a timeout. See [`PeekEgressFirstByteService`].
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-pub struct PeekEgressLayer;
+pub struct PeekEgressFirstByteLayer;
 
-impl PeekEgressLayer {
-    /// Create a new [`PeekEgressLayer`].
+impl PeekEgressFirstByteLayer {
+    /// Create a new [`PeekEgressFirstByteLayer`].
     #[must_use]
     pub const fn new() -> Self {
         Self
     }
 }
 
-impl<S> Layer<S> for PeekEgressLayer {
-    type Service = PeekEgressService<S>;
+impl<S> Layer<S> for PeekEgressFirstByteLayer {
+    type Service = PeekEgressFirstByteService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        PeekEgressService { inner }
+        PeekEgressFirstByteService { inner }
     }
 }
 
-/// The [`Service`] produced by [`PeekEgressLayer`].
+/// The [`Service`] produced by [`PeekEgressFirstByteLayer`].
 ///
 /// It reuses the [`PeekInterrupt`] found in the ingress extensions, or
-/// inserts a new one, and wraps the egress in a [`PeekEgressIo`]. The egress
+/// inserts a new one, and wraps the egress in a [`PeekEgressFirstByteIo`]. The egress
 /// is probed only while a peek waits on that interrupt, at most one byte is
 /// read, and that byte is replayed as the first byte read from the egress.
 #[derive(Debug, Clone, ExtensionsRef)]
-pub struct PeekEgressService<S> {
+pub struct PeekEgressFirstByteService<S> {
     inner: S,
 }
 
-impl<S> PeekEgressService<S> {
-    /// Create a new [`PeekEgressService`].
+impl<S> PeekEgressFirstByteService<S> {
+    /// Create a new [`PeekEgressFirstByteService`].
     pub const fn new(inner: S) -> Self {
         Self { inner }
     }
@@ -62,9 +62,9 @@ impl<S> PeekEgressService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for PeekEgressService<S>
+impl<S, Ingress, Egress> Service<BridgeIo<Ingress, Egress>> for PeekEgressFirstByteService<S>
 where
-    S: Service<BridgeIo<Ingress, PeekEgressIo<Egress>>>,
+    S: Service<BridgeIo<Ingress, PeekEgressFirstByteIo<Egress>>>,
     Ingress: Io + ExtensionsRef,
     Egress: Io + Unpin + ExtensionsRef,
 {
@@ -76,17 +76,17 @@ where
         let interrupt = ingress
             .extensions()
             .get_arc_or_insert(|| Arc::new(PeekInterrupt::new()));
-        let egress = PeekEgressIo::new(egress, &interrupt);
+        let egress = PeekEgressFirstByteIo::new(egress, &interrupt);
         self.inner.serve(BridgeIo(ingress, egress)).await
     }
 }
 
 /// Egress [`Io`] that can be probed for its first byte by a [`PeekInterrupt`].
 ///
-/// Created by [`PeekEgressService`]. The probe ends on the first use of this
+/// Created by [`PeekEgressFirstByteService`]. The probe ends on the first use of this
 /// [`Io`], after which it behaves as the wrapped [`Io`], replaying a probed
 /// byte, EOF or error first.
-pub struct PeekEgressIo<S> {
+pub struct PeekEgressFirstByteIo<S> {
     state: State<S>,
     extensions: Extensions,
 }
@@ -108,7 +108,7 @@ enum Probed {
     Error(io::Error),
 }
 
-impl<S: Io + Unpin + ExtensionsRef> PeekEgressIo<S> {
+impl<S: Io + Unpin + ExtensionsRef> PeekEgressFirstByteIo<S> {
     /// Wrap `io` and attach its first-byte probe to `interrupt`.
     pub fn new(io: S, interrupt: &PeekInterrupt) -> Self {
         let extensions = io.extensions().clone();
@@ -124,7 +124,7 @@ impl<S: Io + Unpin + ExtensionsRef> PeekEgressIo<S> {
     }
 }
 
-impl<S> PeekEgressIo<S> {
+impl<S> PeekEgressFirstByteIo<S> {
     fn owned(&mut self) -> io::Result<(&mut Option<Probed>, &mut S)> {
         if let State::Shared(probe) = &self.state {
             let (io, probed) = {
@@ -138,31 +138,33 @@ impl<S> PeekEgressIo<S> {
         }
         match &mut self.state {
             State::Owned { probed, io } => Ok((probed, io)),
-            State::Shared(_) | State::Detached => Err(io::Error::other("peek egress io detached")),
+            State::Shared(_) | State::Detached => {
+                Err(io::Error::other("peek egress first-byte io detached"))
+            }
         }
     }
 }
 
-impl<S> ExtensionsRef for PeekEgressIo<S> {
+impl<S> ExtensionsRef for PeekEgressFirstByteIo<S> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
     }
 }
 
-impl<S> std::fmt::Debug for PeekEgressIo<S> {
+impl<S> std::fmt::Debug for PeekEgressFirstByteIo<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = match &self.state {
             State::Shared(_) => "shared",
             State::Owned { .. } => "owned",
             State::Detached => "detached",
         };
-        f.debug_struct("PeekEgressIo")
+        f.debug_struct("PeekEgressFirstByteIo")
             .field("state", &state)
             .finish()
     }
 }
 
-impl<S: AsyncRead + Unpin> AsyncRead for PeekEgressIo<S> {
+impl<S: AsyncRead + Unpin> AsyncRead for PeekEgressFirstByteIo<S> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -185,7 +187,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for PeekEgressIo<S> {
     }
 }
 
-impl<S: AsyncWrite + Unpin> AsyncWrite for PeekEgressIo<S> {
+impl<S: AsyncWrite + Unpin> AsyncWrite for PeekEgressFirstByteIo<S> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -268,10 +270,11 @@ mod tests {
     };
 
     type Bridge = BridgeIo<ServiceInput<DuplexStream>, ServiceInput<DuplexStream>>;
-    type Probed = BridgeIo<ServiceInput<DuplexStream>, PeekEgressIo<ServiceInput<DuplexStream>>>;
+    type Probed =
+        BridgeIo<ServiceInput<DuplexStream>, PeekEgressFirstByteIo<ServiceInput<DuplexStream>>>;
     type Peeked = BridgeIo<
         PeekPrefixedIo<ServiceInput<DuplexStream>>,
-        PeekEgressIo<ServiceInput<DuplexStream>>,
+        PeekEgressFirstByteIo<ServiceInput<DuplexStream>>,
     >;
 
     const HOUR: Duration = Duration::from_secs(3600);
@@ -303,7 +306,7 @@ mod tests {
                 },
             )
         };
-        PeekEgressLayer::new().into_layer(
+        PeekEgressFirstByteLayer::new().into_layer(
             PeekRouter::from_prefix(b"MAGIC", report("accept"))
                 .with_peek_policy(policy)
                 .with_fallback(report("fallback")),
@@ -330,7 +333,7 @@ mod tests {
         let (_client, server, input) = bridge();
         drop(server);
 
-        let router = PeekEgressLayer::new().into_layer(
+        let router = PeekEgressFirstByteLayer::new().into_layer(
             PeekRouter::from_prefix(
                 b"MAGIC",
                 service_fn(async |_: Peeked| Ok::<_, io::Error>(None)),
@@ -387,8 +390,8 @@ mod tests {
     #[tokio::test]
     async fn egress_without_a_peek_relays_both_ways() {
         let (_client, mut server, input) = bridge();
-        let service = PeekEgressLayer::new().into_layer(service_fn(
-            async |BridgeIo(_, mut egress): BridgeIo<_, PeekEgressIo<_>>| {
+        let service = PeekEgressFirstByteLayer::new().into_layer(service_fn(
+            async |BridgeIo(_, mut egress): BridgeIo<_, PeekEgressFirstByteIo<_>>| {
                 egress.write_all(b"ping").await?;
                 let mut pong = [0u8; 4];
                 egress.read_exact(&mut pong).await?;
@@ -410,9 +413,10 @@ mod tests {
         let existing = Arc::new(PeekInterrupt::new());
         input.extensions().insert_arc(existing.clone());
 
-        let service = PeekEgressLayer::new().into_layer(service_fn(async |input: Probed| {
-            Ok::<_, io::Error>(input.extensions().get_arc::<PeekInterrupt>())
-        }));
+        let service =
+            PeekEgressFirstByteLayer::new().into_layer(service_fn(async |input: Probed| {
+                Ok::<_, io::Error>(input.extensions().get_arc::<PeekInterrupt>())
+            }));
         let found = service.serve(input).await.unwrap().unwrap();
         assert!(Arc::ptr_eq(&existing, &found));
     }

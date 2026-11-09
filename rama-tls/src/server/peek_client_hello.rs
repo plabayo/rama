@@ -1018,7 +1018,7 @@ mod test {
             Layer as _,
             io::{
                 BridgeIo,
-                peek::{PeekAction, PeekEgressLayer},
+                peek::{PeekAction, PeekEgressFirstByteLayer},
             },
         };
         use rama_net::http::server::HttpPeekRouter;
@@ -1045,7 +1045,7 @@ mod test {
                 .with_peek_timeout(PEEK_TIMEOUT)
                 .with_peek_policy(policy)
                 .with_fallback(service_fn(async || Ok::<_, Infallible>("passthrough")));
-            PeekEgressLayer::new().into_layer(
+            PeekEgressFirstByteLayer::new().into_layer(
                 PeekTlsClientHelloService::new(service_fn(async || Ok::<_, Infallible>("tls")))
                     .with_peek_timeout(PEEK_TIMEOUT)
                     .with_peek_policy(policy)
