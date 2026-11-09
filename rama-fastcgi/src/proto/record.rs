@@ -119,12 +119,18 @@ impl RecordHeader {
     ///
     /// Reference: FastCGI Specification §3.3
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        buf.put_u8(FCGI_VERSION_1);
-        buf.put_u8(self.record_type.into());
-        buf.put_u16(self.request_id);
-        buf.put_u16(self.content_length);
-        buf.put_u8(self.padding_length);
-        buf.put_u8(0); // reserved
+        let [id_hi, id_lo] = self.request_id.to_be_bytes();
+        let [len_hi, len_lo] = self.content_length.to_be_bytes();
+        buf.put_slice(&[
+            FCGI_VERSION_1,
+            self.record_type.into(),
+            id_hi,
+            id_lo,
+            len_hi,
+            len_lo,
+            self.padding_length,
+            0, // reserved
+        ]);
     }
 }
 
@@ -186,10 +192,10 @@ impl BeginRequestBody {
     ///
     /// Reference: FastCGI Specification §5.1
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        buf.put_u16(self.role.into());
+        let [role_hi, role_lo] = u16::from(self.role).to_be_bytes();
         let flags: u8 = if self.keep_conn { FCGI_KEEP_CONN } else { 0 };
-        buf.put_u8(flags);
-        buf.put_bytes(0, 5); // reserved
+        // the trailing five bytes are reserved
+        buf.put_slice(&[role_hi, role_lo, flags, 0, 0, 0, 0, 0]);
     }
 }
 
@@ -285,9 +291,9 @@ impl EndRequestBody {
     ///
     /// Reference: FastCGI Specification §5.5
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        buf.put_u32(self.app_status);
-        buf.put_u8(self.protocol_status.into());
-        buf.put_bytes(0, 3); // reserved
+        let [s0, s1, s2, s3] = self.app_status.to_be_bytes();
+        // the trailing three bytes are reserved
+        buf.put_slice(&[s0, s1, s2, s3, self.protocol_status.into(), 0, 0, 0]);
     }
 }
 
@@ -339,8 +345,8 @@ impl UnknownTypeBody {
 
     /// Write this [`UnknownTypeBody`] into the buffer.
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        buf.put_u8(self.unknown_type);
-        buf.put_bytes(0, 7); // reserved
+        // the trailing seven bytes are reserved
+        buf.put_slice(&[self.unknown_type, 0, 0, 0, 0, 0, 0, 0]);
     }
 }
 
