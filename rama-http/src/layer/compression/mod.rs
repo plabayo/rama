@@ -161,6 +161,71 @@ mod tests {
         assert_eq!(decompressed, "Hello, World!");
     }
 
+    /// WBITS of a brotli stream header (RFC 7932 §9.1).
+    fn brotli_window_bits(first: u8) -> u8 {
+        if first & 1 == 0 {
+            return 16;
+        }
+        match ((first >> 1) & 0b111, (first >> 4) & 0b111) {
+            (0, 0) => 17,
+            (0, short) => 8 + short,
+            (long, _) => 17 + long,
+        }
+    }
+
+    async fn brotli_response(
+        make_body: impl Fn() -> Body + Send + Sync + 'static,
+    ) -> (u8, Vec<u8>) {
+        let svc = Compression::new(service_fn(move |_: Request| {
+            std::future::ready(Ok::<_, Infallible>(Response::new(make_body())))
+        }))
+        .with_compress_predicate(Always);
+        let req = Request::builder()
+            .header("accept-encoding", "br")
+            .body(Body::empty())
+            .unwrap();
+        let compressed = svc
+            .serve(req)
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let mut decoded = Vec::new();
+        let mut decoder = BrotliDecoder::new(&mut decoded);
+        decoder.write_all(&compressed).await.unwrap();
+        decoder.shutdown().await.unwrap();
+        (brotli_window_bits(compressed[0]), decoded)
+    }
+
+    #[tokio::test]
+    async fn brotli_window_fits_a_body_of_known_length() {
+        for (len, bits) in [(1, 10), (1008, 10), (1009, 11), (65_536, 17), (1 << 22, 22)] {
+            let data = Bytes::from(vec![b'x'; len]);
+            let (window, decoded) = brotli_response({
+                let data = data.clone();
+                move || Body::from(data.clone())
+            })
+            .await;
+            assert_eq!(window, bits, "body of {len} bytes");
+            assert_eq!(decoded, data);
+        }
+    }
+
+    #[tokio::test]
+    async fn brotli_window_stays_default_for_unknown_length() {
+        let (window, decoded) = brotli_response(|| {
+            Body::from_stream(rama_core::futures::stream::iter([Ok::<_, BoxError>(
+                Bytes::from_static(b"Hello, World!"),
+            )]))
+        })
+        .await;
+        assert_eq!(window, 22);
+        assert_eq!(decoded, b"Hello, World!");
+    }
+
     #[tokio::test]
     async fn x_gzip_works() {
         let svc = service_fn(handle);
@@ -414,11 +479,12 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.headers()[CONTENT_ENCODING], "br");
 
         // read the compressed body
         let body = res.into_body();
         let data = body.collect().await.unwrap().to_bytes();
-        String::from_utf8(data.to_vec()).unwrap_err();
+        assert_ne!(data, DATA.as_bytes());
     }
 
     #[tokio::test]
@@ -529,7 +595,11 @@ mod tests {
                 Ok::<_, std::io::Error>(DATA.as_bytes())
             }));
             let reader = StreamReader::new(stream);
-            let mut enc = BrotliEncoder::with_quality(reader, level.into_async_compression());
+            // the smallest window, as the body length is known and below 1 KiB
+            let params = async_compression::brotli::EncoderParams::default()
+                .quality(level.into_async_compression())
+                .window_size(10);
+            let mut enc = BrotliEncoder::with_params(reader, params);
 
             let mut buf = Vec::new();
             enc.read_to_end(&mut buf).await.unwrap();
