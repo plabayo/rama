@@ -5,13 +5,19 @@ use rama_core::{
     bytes::Bytes,
     error::{BoxError, ErrorContext, ErrorExt},
     extensions::{Extension, ExtensionsRef},
-    io::{HeapReader, Io, PrefixedIo},
+    io::{
+        HeapReader, Io, PrefixedIo,
+        peek::{
+            PeekPolicy, PeekStopReason, PeekVerdict, PeekWaiter,
+            peek_input_until_verdict_growing_with_output,
+        },
+    },
     telemetry::tracing,
 };
 use rama_net::address::Domain;
 use rama_net::forwarded::{Forwarded, ForwardedElement, ForwardedSelectionPolicy};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio::io::AsyncReadExt;
 
 /// Absolute upper bound on a single PROXY header: the v2 fixed header (16 bytes)
@@ -217,6 +223,8 @@ impl From<v2::Command> for HaProxyCommand {
 #[non_exhaustive]
 pub struct HaProxyLayer {
     peek: bool,
+    peek_timeout: Option<Duration>,
+    peek_policy: PeekPolicy,
     strictness: HaProxyStrictness,
     selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
     keep_existing_selection_policy: bool,
@@ -228,6 +236,8 @@ impl HaProxyLayer {
     pub const fn new() -> Self {
         Self {
             peek: false,
+            peek_timeout: None,
+            peek_policy: PeekPolicy::FAIL_OPEN,
             strictness: HaProxyStrictness::DEFAULT,
             selection_policy: None,
             keep_existing_selection_policy: false,
@@ -242,6 +252,31 @@ impl HaProxyLayer {
         /// the cloud (production, behind a loadbalancer).
         pub fn peek(mut self, value: bool) -> Self {
             self.peek = value;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set the maximum time spent peeking for a PROXY header, see [`Self::with_peek`].
+        ///
+        /// A timeout is inconclusive. Use [`Self::with_peek_policy`] to choose
+        /// whether it treats the input as not PROXY, rejects the connection or
+        /// keeps waiting.
+        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
+            self.peek_timeout = peek_timeout;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set how a peek timeout or [`PeekInterrupt`] is handled.
+        ///
+        /// Defaults to [`PeekPolicy::FAIL_OPEN`], under which a cutoff
+        /// treats the input as not PROXY.
+        ///
+        /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
+            self.peek_policy = peek_policy;
             self
         }
     );
@@ -279,6 +314,8 @@ impl<S> Layer<S> for HaProxyLayer {
         HaProxyService {
             inner,
             peek: self.peek,
+            peek_timeout: self.peek_timeout,
+            peek_policy: self.peek_policy,
             strictness: self.strictness,
             selection_policy: self.selection_policy.clone(),
             keep_existing_selection_policy: self.keep_existing_selection_policy,
@@ -294,6 +331,8 @@ impl<S> Layer<S> for HaProxyLayer {
 pub struct HaProxyService<S> {
     inner: S,
     peek: bool,
+    peek_timeout: Option<Duration>,
+    peek_policy: PeekPolicy,
     strictness: HaProxyStrictness,
     selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
     keep_existing_selection_policy: bool,
@@ -307,6 +346,8 @@ impl<S> HaProxyService<S> {
         Self {
             inner,
             peek: false,
+            peek_timeout: None,
+            peek_policy: PeekPolicy::FAIL_OPEN,
             strictness: HaProxyStrictness::DEFAULT,
             selection_policy: None,
             keep_existing_selection_policy: false,
@@ -321,6 +362,31 @@ impl<S> HaProxyService<S> {
         /// the cloud (production, behind a loadbalancer).
         pub fn peek(mut self, value: bool) -> Self {
             self.peek = value;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set the maximum time spent peeking for a PROXY header, see [`Self::with_peek`].
+        ///
+        /// A timeout is inconclusive. Use [`Self::with_peek_policy`] to choose
+        /// whether it treats the input as not PROXY, rejects the connection or
+        /// keeps waiting.
+        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
+            self.peek_timeout = peek_timeout;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set how a peek timeout or [`PeekInterrupt`] is handled.
+        ///
+        /// Defaults to [`PeekPolicy::FAIL_OPEN`], under which a cutoff
+        /// treats the input as not PROXY.
+        ///
+        /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
+            self.peek_policy = peek_policy;
             self
         }
     );
@@ -366,75 +432,48 @@ enum PeekOutcome {
 /// Performs the peek-mode disambiguation by reading enough bytes to decide
 /// whether the upstream traffic is v1, v2, or neither.
 ///
-/// The previous implementation issued a single `read()` and compared the full
-/// 12-byte buffer to the v2 signature — but `read()` can return fewer bytes,
-/// causing legitimate fragmented PROXY headers to be misclassified as plain
-/// traffic and silently corrupted. This version reads incrementally until it
-/// can make a definitive decision.
+/// Reads incrementally, as a PROXY header may arrive fragmented, and stops as
+/// soon as the bytes diverge from both prefixes. A cutoff of the `waiter`
+/// counts as not PROXY, unless its [`PeekPolicy`] fails the peek.
 async fn peek_disambiguate<IO: tokio::io::AsyncRead + Unpin>(
     stream: &mut IO,
     buffer: &mut Vec<u8>,
+    waiter: &mut PeekWaiter,
 ) -> Result<PeekOutcome, BoxError> {
-    // PROXY v1 prefix is "PROXY" (5 bytes); v2 prefix is 12 bytes starting
-    // with 0x0D 0x0A. The two prefixes differ at byte 0, so a single byte is
-    // enough to pick a candidate.
-    let v1_prefix = v1::PROTOCOL_PREFIX.as_bytes();
-    let v2_prefix = v2::PROTOCOL_PREFIX;
+    let max_len = v1::PROTOCOL_PREFIX.len().max(v2::PROTOCOL_PREFIX.len());
+    let output = peek_input_until_verdict_growing_with_output(
+        stream,
+        buffer,
+        max_len,
+        NonZeroUsize::new(max_len).unwrap_or(NonZeroUsize::MIN),
+        waiter,
+        proxy_prefix_verdict,
+    )
+    .await;
+    waiter.check::<BoxError>()?;
 
-    // Read at least one byte.
-    let mut scratch = [0u8; 16];
-    while buffer.is_empty() {
-        let n = stream
-            .read(&mut scratch)
-            .await
-            .context("haproxy peek: initial read")?;
-        if n == 0 {
-            // EOF before any bytes: nothing to commit to either protocol.
-            return Ok(PeekOutcome::NotProxy);
+    if output.stop_reason == PeekStopReason::ReadError {
+        return Err(BoxError::from_static_str("haproxy peek: read failed"));
+    }
+    Ok(output.data.unwrap_or(PeekOutcome::NotProxy))
+}
+
+fn proxy_prefix_verdict(buffer: &[u8]) -> PeekVerdict<PeekOutcome> {
+    let prefixes = [
+        (v1::PROTOCOL_PREFIX.as_bytes(), PeekOutcome::V1),
+        (v2::PROTOCOL_PREFIX, PeekOutcome::V2),
+    ];
+    let mut need_more = false;
+    for (prefix, outcome) in prefixes {
+        if buffer.starts_with(prefix) {
+            return PeekVerdict::Match(outcome);
         }
-        buffer.extend_from_slice(&scratch[..n]);
+        need_more |= prefix.starts_with(buffer);
     }
-
-    // First byte decides the candidate protocol.
-    let candidate_v1 = buffer[0] == v1_prefix[0];
-    let candidate_v2 = buffer[0] == v2_prefix[0];
-    if !candidate_v1 && !candidate_v2 {
-        return Ok(PeekOutcome::NotProxy);
-    }
-
-    let target_len = if candidate_v1 {
-        v1_prefix.len()
+    if need_more {
+        PeekVerdict::NeedMore
     } else {
-        v2_prefix.len()
-    };
-
-    while buffer.len() < target_len {
-        let n = stream
-            .read(&mut scratch)
-            .await
-            .context("haproxy peek: prefix read")?;
-        if n == 0 {
-            // EOF before we could disambiguate: assume not PROXY and let the
-            // inner service deal with the bytes.
-            return Ok(PeekOutcome::NotProxy);
-        }
-        buffer.extend_from_slice(&scratch[..n]);
-
-        // Early bail: if the bytes seen so far already diverge from the
-        // candidate prefix, this is not a PROXY header.
-        let expected = if candidate_v1 { v1_prefix } else { v2_prefix };
-        let cmp_len = buffer.len().min(expected.len());
-        if buffer[..cmp_len] != expected[..cmp_len] {
-            return Ok(PeekOutcome::NotProxy);
-        }
-    }
-
-    if candidate_v1 && &buffer[..v1_prefix.len()] == v1_prefix {
-        Ok(PeekOutcome::V1)
-    } else if candidate_v2 && &buffer[..v2_prefix.len()] == v2_prefix {
-        Ok(PeekOutcome::V2)
-    } else {
-        Ok(PeekOutcome::NotProxy)
+        PeekVerdict::Reject
     }
 }
 
@@ -460,7 +499,10 @@ where
 
         if self.peek {
             tracing::trace!("haproxy protocol peeking enabled: start detection");
-            match peek_disambiguate(&mut stream, &mut buffer).await? {
+            let mut waiter = PeekWaiter::new(self.peek_timeout)
+                .with_policy(self.peek_policy)
+                .maybe_with_interrupt(stream.extensions().get_arc());
+            match peek_disambiguate(&mut stream, &mut buffer, &mut waiter).await? {
                 PeekOutcome::V1 => {
                     tracing::trace!(
                         "haproxy protocol peeked: v1 detected: continue with haproxy handling"
@@ -680,6 +722,121 @@ mod test {
         let mut v = Vec::default();
         _ = stream.read_to_end(&mut v).await?;
         Ok(v)
+    }
+
+    mod peek_cutoff {
+        use std::time::Duration;
+
+        use rama_core::io::peek::{PeekAction, PeekInterrupt, PeekTimeoutError};
+        use tokio::io::{AsyncWriteExt as _, DuplexStream, duplex};
+
+        use super::*;
+
+        const PEEK_TIMEOUT: Duration = Duration::from_millis(200);
+        const HOUR: Duration = Duration::from_secs(3600);
+        const V1_HEADER: &[u8] = b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n";
+
+        /// Inner service reporting the first `n` bytes it reads.
+        fn read_n(
+            n: usize,
+        ) -> impl Service<
+            PrefixedIo<HeapReader, ServiceInput<DuplexStream>>,
+            Output = Vec<u8>,
+            Error = BoxError,
+        > {
+            service_fn(
+                move |mut stream: PrefixedIo<HeapReader, ServiceInput<DuplexStream>>| async move {
+                    let mut bytes = vec![0; n];
+                    stream.read_exact(&mut bytes).await?;
+                    Ok::<_, BoxError>(bytes)
+                },
+            )
+        }
+
+        fn peeking(
+            n: usize,
+            policy: PeekPolicy,
+        ) -> HaProxyService<
+            impl Service<
+                PrefixedIo<HeapReader, ServiceInput<DuplexStream>>,
+                Output = Vec<u8>,
+                Error = BoxError,
+            >,
+        > {
+            HaProxyService::new(read_n(n))
+                .with_peek(true)
+                .with_peek_timeout(PEEK_TIMEOUT)
+                .with_peek_policy(policy)
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn idle_direct_client_reaches_inner_service_after_timeout() {
+            let (_client, server) = duplex(256);
+            let read = tokio::time::timeout(
+                HOUR,
+                peeking(0, PeekPolicy::FAIL_OPEN).serve(ServiceInput::new(server)),
+            )
+            .await
+            .expect("an idle peer must not block the peek past its timeout")
+            .unwrap();
+            assert!(read.is_empty());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn partial_prefix_is_replayed_or_rejected_per_policy() {
+            let (mut client, server) = duplex(256);
+            client.write_all(b"PRO").await.unwrap();
+            let read = peeking(3, PeekPolicy::FAIL_OPEN)
+                .serve(ServiceInput::new(server))
+                .await
+                .unwrap();
+            assert_eq!(b"PRO", &read[..]);
+
+            let (mut client, server) = duplex(256);
+            client.write_all(b"PRO").await.unwrap();
+            let error = peeking(3, PeekPolicy::FAIL_CLOSED)
+                .serve(ServiceInput::new(server))
+                .await
+                .unwrap_err();
+            assert!(error.is::<PeekTimeoutError>());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn slow_header_is_still_parsed_when_partial_timeouts_wait() {
+            let (mut client, server) = duplex(256);
+            let (head, tail) = V1_HEADER.split_at(3);
+            client.write_all(head).await.unwrap();
+            let _client = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                client.write_all(tail).await.unwrap();
+                client.write_all(b"foo").await.unwrap();
+                client
+            });
+
+            let policy = PeekPolicy::FAIL_CLOSED.with_timeout_partial(PeekAction::Wait);
+            let read =
+                tokio::time::timeout(HOUR, peeking(3, policy).serve(ServiceInput::new(server)))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(b"foo", &read[..]);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn interrupt_ends_idle_peek_without_a_timeout() {
+            let (_client, server) = duplex(256);
+            let input = ServiceInput::new(server);
+            let interrupt = Arc::new(PeekInterrupt::new());
+            interrupt.trigger();
+            input.extensions().insert_arc(interrupt);
+
+            let service = HaProxyService::new(read_n(0)).with_peek(true);
+            let read = tokio::time::timeout(HOUR, service.serve(input))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(read.is_empty());
+        }
     }
 
     /// The layer installs its selection policy for the connection; the PROXY header names
