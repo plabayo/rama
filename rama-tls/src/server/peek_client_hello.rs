@@ -7,7 +7,7 @@ use rama_core::{
     io::{
         HeapReader, PeekIoProvider, PrefixedIo,
         peek::{
-            PeekOutput, PeekStopReason, PeekTimeoutError, PeekTimeoutPolicy, PeekVerdict,
+            PeekOutput, PeekPolicy, PeekStopReason, PeekVerdict, PeekWaiter,
             peek_input_until_verdict_growing_with_output, peek_input_until_verdict_with_options,
         },
     },
@@ -15,7 +15,6 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_utils::octets::kib;
-use tokio::time::Instant;
 
 use crate::client::{
     ClientHello, ClientHelloHandshakePrefix, ClientHelloPeekStatus, ClientHelloReassemblyConfig,
@@ -36,11 +35,10 @@ use super::NoTlsRejectError;
 /// Non-TLS traffic invokes that fallback. By default malformed, over-limit, or
 /// EOF-truncated TLS also invokes it, with a [`ClientHelloPeekStatus`] extension
 /// identifying the failure. Use [`PeekTlsClientHelloService::with_malformed_tls_policy`]
-/// to opt into rejection. With the default [`PeekTimeoutPolicy::FailOpen`], a
+/// to opt into rejection. With the default [`PeekPolicy::FAIL_OPEN`], a
 /// timed-out prefix also invokes the fallback. Strict SNI routing should select
-/// [`MalformedTlsPolicy::Reject`], use
-/// [`PeekTimeoutPolicy::FailClosed`] via [`PeekTlsClientHelloService::with_peek_timeout_policy`]
-/// and configure a finite peek timeout.
+/// [`MalformedTlsPolicy::Reject`] and a [`PeekPolicy`] that never falls back on
+/// partial input, see [`PeekTlsClientHelloService::with_peek_policy`].
 ///
 /// Use the standalone [`peek_client_hello_from_input`] function if you prefer
 /// this is as a standalone function instead.
@@ -52,7 +50,7 @@ pub struct PeekTlsClientHelloService<S, F = RejectService<(), NoTlsRejectError>>
     service: S,
     fallback: F,
     peek_timeout: Option<Duration>,
-    peek_timeout_policy: PeekTimeoutPolicy,
+    peek_policy: PeekPolicy,
     reassembly_config: ClientHelloReassemblyConfig,
     malformed_tls_policy: MalformedTlsPolicy,
 }
@@ -64,7 +62,7 @@ impl<S> PeekTlsClientHelloService<S> {
             service,
             fallback: RejectService::new(NoTlsRejectError),
             peek_timeout: None,
-            peek_timeout_policy: PeekTimeoutPolicy::default(),
+            peek_policy: PeekPolicy::FAIL_OPEN,
             reassembly_config: ClientHelloReassemblyConfig::default(),
             malformed_tls_policy: MalformedTlsPolicy::default(),
         }
@@ -78,7 +76,7 @@ impl<S> PeekTlsClientHelloService<S> {
             service: self.service,
             fallback,
             peek_timeout: self.peek_timeout,
-            peek_timeout_policy: self.peek_timeout_policy,
+            peek_policy: self.peek_policy,
             reassembly_config: self.reassembly_config,
             malformed_tls_policy: self.malformed_tls_policy,
         }
@@ -89,7 +87,7 @@ impl<S, F> PeekTlsClientHelloService<S, F> {
     rama_utils::macros::generate_set_and_with! {
         /// Choose whether unparseable, over-limit, or EOF-truncated TLS is
         /// sent to the fallback (the default) or rejected.
-        /// This does not change the reassembly bounds or timeout policy.
+        /// This does not change the reassembly bounds or peek policy.
         pub fn malformed_tls_policy(mut self, policy: MalformedTlsPolicy) -> Self {
             self.malformed_tls_policy = policy;
             self
@@ -109,8 +107,8 @@ impl<S, F> PeekTlsClientHelloService<S, F> {
         /// Set the maximum time spent peeking for a TLS ClientHello.
         ///
         /// A timeout is inconclusive. Use
-        /// [`PeekTlsClientHelloService::with_peek_timeout_policy`] to choose
-        /// whether it invokes the fallback or rejects the connection.
+        /// [`PeekTlsClientHelloService::with_peek_policy`] to choose whether it
+        /// invokes the fallback, rejects the connection or keeps waiting.
         pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
             self.peek_timeout = peek_timeout;
             self
@@ -118,12 +116,14 @@ impl<S, F> PeekTlsClientHelloService<S, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set how an inconclusive peek timeout is handled.
+        /// Set how a peek timeout or [`PeekInterrupt`] is handled.
         ///
-        /// Defaults to [`PeekTimeoutPolicy::FailOpen`]. Non-TLS traffic invokes
+        /// Defaults to [`PeekPolicy::FAIL_OPEN`]. Non-TLS traffic invokes
         /// the fallback; malformed TLS follows the separate malformed-TLS policy.
-        pub fn peek_timeout_policy(mut self, peek_timeout_policy: PeekTimeoutPolicy) -> Self {
-            self.peek_timeout_policy = peek_timeout_policy;
+        ///
+        /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+        pub fn peek_policy(mut self, peek_policy: PeekPolicy) -> Self {
+            self.peek_policy = peek_policy;
             self
         }
     }
@@ -132,11 +132,10 @@ impl<S, F> PeekTlsClientHelloService<S, F> {
 /// Functional API to try to peek TLS:CH from an existing I/O input,
 /// returning the stream as-is with the read data prefixed from memory.
 ///
-/// Timeouts use [`PeekTimeoutPolicy::FailOpen`] for backward compatibility. Use
-/// [`peek_client_hello_from_input_with_timeout_policy`] to select an explicit
-/// policy. Unparseable TLS also selects fallback by default; use
-/// [`peek_client_hello_from_input_with_policies`] to opt into rejection or obtain
-/// the inspection status.
+/// A timeout invokes the fallback. Use [`peek_client_hello_from_input_with_config`]
+/// to configure the [`PeekWaiter`]. Unparseable TLS also selects fallback by
+/// default; use [`peek_client_hello_from_input_with_policies`] to opt into
+/// rejection or obtain the inspection status.
 ///
 /// Use [`PeekTlsClientHelloService`] if you prefer it as a rama [`Service`] instead.
 pub async fn peek_client_hello_from_input<PeekableInput>(
@@ -152,48 +151,22 @@ pub async fn peek_client_hello_from_input<PeekableInput>(
 where
     PeekableInput: PeekIoProvider<PeekIo: Unpin>,
 {
-    peek_client_hello_from_input_with_timeout_policy(input, timeout, PeekTimeoutPolicy::FailOpen)
-        .await
-}
-
-/// Functional API to try to peek a TLS ClientHello with an explicit timeout
-/// policy, returning the stream with every consumed byte prefixed from memory.
-///
-/// Non-TLS, malformed, over-limit, and EOF-truncated TLS returns
-/// `Ok((input, None))`. An inconclusive timeout returns a timed-out [`std::io::Error`]
-/// when [`PeekTimeoutPolicy::FailClosed`] is selected.
-pub async fn peek_client_hello_from_input_with_timeout_policy<PeekableInput>(
-    input: PeekableInput,
-    timeout: Option<Duration>,
-    timeout_policy: PeekTimeoutPolicy,
-) -> Result<
-    (
-        PeekableInput::Mapped<TlsClientHelloPrefixedIo<PeekableInput::PeekIo>>,
-        Option<ClientHello>,
-    ),
-    std::io::Error,
->
-where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
-{
     peek_client_hello_from_input_with_config(
         input,
-        timeout,
-        timeout_policy,
+        PeekWaiter::new(timeout),
         ClientHelloReassemblyConfig::default(),
     )
     .await
 }
 
-/// Peek a ClientHello with explicit timeout policy and reassembly configuration.
+/// Peek a ClientHello with an explicit [`PeekWaiter`] and reassembly configuration.
 ///
 /// Unparseable, over-limit, and EOF-truncated TLS selects fallback. Use
 /// [`peek_client_hello_from_input_with_policies`] to opt into rejection or obtain
 /// the inspection status.
 pub async fn peek_client_hello_from_input_with_config<PeekableInput>(
     input: PeekableInput,
-    timeout: Option<Duration>,
-    timeout_policy: PeekTimeoutPolicy,
+    waiter: PeekWaiter,
     config: ClientHelloReassemblyConfig,
 ) -> Result<
     (
@@ -207,8 +180,7 @@ where
 {
     let (input, hello, _) = peek_client_hello_from_input_with_policies(
         input,
-        timeout,
-        timeout_policy,
+        waiter,
         MalformedTlsPolicy::default(),
         config,
     )
@@ -216,7 +188,7 @@ where
     Ok((input, hello))
 }
 
-/// Peek a ClientHello with explicit timeout, parse-failure, and reassembly policies.
+/// Peek a ClientHello with an explicit [`PeekWaiter`], parse-failure, and reassembly policies.
 ///
 /// Preserves every consumed wire byte, including record headers and any bytes
 /// read beyond the hello. A TLS content type (20 through 24) followed by the
@@ -227,11 +199,11 @@ where
 /// [`ClientHelloPeekStatus`] into their input's extensions before dispatching.
 /// A lone content-type byte at EOF remains unclassified. Fallback stops peeking
 /// at the failure; it does not raise or disable the reassembly bounds.
-/// Timeouts still follow `timeout_policy`; read failures always return an error.
+/// Cutoffs follow the [`PeekPolicy`] of the `waiter`, which is shared by the
+/// header and body phases; read failures always return an error.
 pub async fn peek_client_hello_from_input_with_policies<PeekableInput>(
     mut input: PeekableInput,
-    timeout: Option<Duration>,
-    timeout_policy: PeekTimeoutPolicy,
+    mut waiter: PeekWaiter,
     malformed_tls_policy: MalformedTlsPolicy,
     config: ClientHelloReassemblyConfig,
 ) -> Result<
@@ -248,12 +220,10 @@ where
     let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
     let peekable_io = input.peek_io_mut();
 
-    let start = Instant::now();
-
     // Fail fast on non-TLS prefixes (see `client_hello_header_verdict`) instead of
     // blocking until the full 5-byte window arrives; no attempt cap so a
     // fragmented but still-plausible TLS header keeps reading (bounded by the
-    // buffer, EOF, and the optional timeout).
+    // buffer, EOF, and the waiter).
     let PeekOutput {
         data,
         peek_size,
@@ -262,15 +232,13 @@ where
         peekable_io,
         &mut peek_buf,
         0,
-        timeout,
+        &mut waiter,
         None,
         client_hello_header_verdict,
     )
     .await;
 
-    if stop_reason == PeekStopReason::Timeout && timeout_policy == PeekTimeoutPolicy::FailClosed {
-        return Err(PeekTimeoutError::new().into());
-    }
+    waiter.check::<std::io::Error>()?;
 
     if stop_reason == PeekStopReason::ReadError {
         return Err(std::io::Error::other("I/O failure reading TLS header"));
@@ -280,7 +248,7 @@ where
     let tls_candidate = peek_size >= 2 && matches!(peek_buf[0], 20..=24) && peek_buf[1] == 3;
     if data.is_none()
         && tls_candidate
-        && stop_reason != PeekStopReason::Timeout
+        && !stop_reason.is_cutoff()
         && malformed_tls_policy == MalformedTlsPolicy::Reject
     {
         return Err(std::io::Error::new(
@@ -303,7 +271,7 @@ where
         let peeked_input = input.map_peek_io(|io| PrefixedIo::new(prefix_data, io));
 
         tracing::trace!("return without a ClientHello after header classification");
-        let failure = if stop_reason == PeekStopReason::Timeout || tls_candidate {
+        let failure = if stop_reason.is_cutoff() || tls_candidate {
             Some(stop_reason)
         } else {
             None
@@ -315,8 +283,6 @@ where
     // and the final record's tail. Keep the original framing for replay.
     let read_chunk = NonZeroUsize::new(kib(1)).unwrap_or(NonZeroUsize::MIN);
 
-    let new_timeout = timeout.map(|t| t.saturating_sub(start.elapsed()));
-
     let mut v = Vec::with_capacity(read_chunk.get() + TLS_HEADER_PEEK_LEN);
     v.extend_from_slice(&peek_buf[..]);
 
@@ -325,7 +291,7 @@ where
         &mut v,
         config.max_wire_size(),
         read_chunk,
-        new_timeout,
+        &mut waiter,
         |buffer| match parse_client_hello_handshake_prefix_with_config(buffer, config) {
             ClientHelloHandshakePrefix::Complete(hello) => PeekVerdict::Match(hello),
             ClientHelloHandshakePrefix::Incomplete => PeekVerdict::NeedMore,
@@ -334,14 +300,10 @@ where
     )
     .await;
 
-    if output.stop_reason == PeekStopReason::Timeout
-        && timeout_policy == PeekTimeoutPolicy::FailClosed
-    {
-        return Err(PeekTimeoutError::new().into());
-    }
+    waiter.check::<std::io::Error>()?;
 
     match output.stop_reason {
-        PeekStopReason::Match | PeekStopReason::Timeout => {}
+        PeekStopReason::Match | PeekStopReason::Timeout | PeekStopReason::Interrupted => {}
         PeekStopReason::ReadError => {
             return Err(std::io::Error::other("I/O failure reading TLS ClientHello"));
         }
@@ -385,11 +347,13 @@ where
 
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let extensions = input.extensions().clone();
+        let waiter = PeekWaiter::new(self.peek_timeout)
+            .with_policy(self.peek_policy)
+            .maybe_with_interrupt(extensions.get_arc());
         let (peeked_input, maybe_client_hello, status) =
             peek_client_hello_from_input_with_policies(
                 input,
-                self.peek_timeout,
-                self.peek_timeout_policy,
+                waiter,
                 self.malformed_tls_policy,
                 self.reassembly_config,
             )
@@ -455,7 +419,7 @@ mod test {
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-    use rama_core::io::Io;
+    use rama_core::io::{Io, peek::PeekTimeoutError};
 
     use super::*;
 
@@ -547,11 +511,11 @@ mod test {
             &b"\x16\x02"[..],
             &b"\x16"[..],
         ] {
-            for policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
-                let (mut io, hello) = peek_client_hello_from_input_with_timeout_policy(
+            for policy in [PeekPolicy::FAIL_OPEN, PeekPolicy::FAIL_CLOSED] {
+                let (mut io, hello) = peek_client_hello_from_input_with_config(
                     std::io::Cursor::new(bytes.to_vec()),
-                    None,
-                    policy,
+                    PeekWaiter::new(None).with_policy(policy),
+                    ClientHelloReassemblyConfig::default(),
                 )
                 .await
                 .unwrap();
@@ -581,7 +545,7 @@ mod test {
             record(&[1, 0, 0, 0]),
         ];
         cases.extend((5..full.len()).map(|end| full[..end].to_vec()));
-        for timeout_policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
+        for timeout_policy in [PeekPolicy::FAIL_OPEN, PeekPolicy::FAIL_CLOSED] {
             for malformed_policy in [MalformedTlsPolicy::Reject, MalformedTlsPolicy::Fallback] {
                 for bytes in &cases {
                     let fallback_calls = Arc::new(AtomicUsize::new(0));
@@ -589,7 +553,7 @@ mod test {
                     let router = PeekTlsClientHelloService::new(service_fn(async || {
                         Ok::<_, Infallible>(Vec::<u8>::new())
                     }))
-                    .with_peek_timeout_policy(timeout_policy)
+                    .with_peek_policy(timeout_policy)
                     .with_malformed_tls_policy(malformed_policy)
                     .with_fallback(service_fn(
                         move |mut io: PeekedCursor| {
@@ -650,8 +614,7 @@ mod test {
                 Duration::from_secs(1),
                 peek_client_hello_from_input_with_policies(
                     server,
-                    None,
-                    PeekTimeoutPolicy::FailClosed,
+                    PeekWaiter::new(None).with_policy(PeekPolicy::FAIL_CLOSED),
                     MalformedTlsPolicy::Fallback,
                     config,
                 ),
@@ -898,8 +861,7 @@ mod test {
 
         let (mut input, client_hello, status) = peek_client_hello_from_input_with_policies(
             server,
-            Some(PEEK_TIMEOUT),
-            PeekTimeoutPolicy::FailOpen,
+            PeekWaiter::new(Some(PEEK_TIMEOUT)).with_policy(PeekPolicy::FAIL_OPEN),
             MalformedTlsPolicy::Reject,
             ClientHelloReassemblyConfig::default(),
         )
@@ -968,7 +930,7 @@ mod test {
         let router =
             PeekTlsClientHelloService::new(service_fn(async || Ok::<_, Infallible>("tls")))
                 .with_peek_timeout(Duration::from_millis(10))
-                .with_peek_timeout_policy(PeekTimeoutPolicy::FailClosed)
+                .with_peek_policy(PeekPolicy::FAIL_CLOSED)
                 .with_malformed_tls_policy(MalformedTlsPolicy::Fallback)
                 .with_fallback(fallback);
         let (mut client, server) = tokio::io::duplex(CH_ONE_ONE_ONE_ONE.len());
@@ -989,11 +951,11 @@ mod test {
             0x16, 0x03, 0x03, 0x00, 0x06, 0x02, 0x00, 0x00, 0x02, 0xaa, 0xbb,
         ];
 
-        for policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
+        for policy in [PeekPolicy::FAIL_OPEN, PeekPolicy::FAIL_CLOSED] {
             let router =
                 PeekTlsClientHelloService::new(service_fn(async || Ok::<_, Infallible>("tls")))
                     .with_peek_timeout(Duration::from_millis(10))
-                    .with_peek_timeout_policy(policy)
+                    .with_peek_policy(policy)
                     .with_malformed_tls_policy(MalformedTlsPolicy::Reject)
                     .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
 
@@ -1044,5 +1006,138 @@ mod test {
             .await
             .unwrap();
         assert_eq!("ok", response);
+    }
+
+    /// Bridge scenarios as seen by a transparent proxy: the egress is connected
+    /// while ingress is peeked through TLS, then HTTP, then passthrough.
+    #[cfg(feature = "http")]
+    mod bridge {
+        use std::time::Duration;
+
+        use rama_core::{
+            Layer as _,
+            io::{
+                BridgeIo,
+                peek::{PeekAction, PeekEgressLayer},
+            },
+        };
+        use rama_net::http::server::HttpPeekRouter;
+        use tokio::io::{DuplexStream, duplex};
+
+        use super::*;
+
+        const PEEK_TIMEOUT: Duration = Duration::from_millis(200);
+        const HOUR: Duration = Duration::from_secs(3600);
+
+        type Bridge = BridgeIo<ServiceInput<DuplexStream>, ServiceInput<DuplexStream>>;
+
+        fn bridge() -> (DuplexStream, DuplexStream, Bridge) {
+            let (client, ingress) = duplex(4096);
+            let (server, egress) = duplex(4096);
+            let bridge = BridgeIo(ServiceInput::new(ingress), ServiceInput::new(egress));
+            (client, server, bridge)
+        }
+
+        fn stack(
+            policy: PeekPolicy,
+        ) -> impl Service<Bridge, Output = &'static str, Error = BoxError> {
+            let http = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>("http")))
+                .with_peek_timeout(PEEK_TIMEOUT)
+                .with_peek_policy(policy)
+                .with_fallback(service_fn(async || Ok::<_, Infallible>("passthrough")));
+            PeekEgressLayer::new().into_layer(
+                PeekTlsClientHelloService::new(service_fn(async || Ok::<_, Infallible>("tls")))
+                    .with_peek_timeout(PEEK_TIMEOUT)
+                    .with_peek_policy(policy)
+                    .with_fallback(http),
+            )
+        }
+
+        /// Sends `first`, then `rest` after `delay`, keeping both peers open.
+        fn client_sends(
+            mut client: DuplexStream,
+            server: DuplexStream,
+            first: &'static [u8],
+            delay: Duration,
+            rest: &'static [u8],
+        ) -> tokio::task::JoinHandle<(DuplexStream, DuplexStream)> {
+            tokio::spawn(async move {
+                client.write_all(first).await.unwrap();
+                tokio::time::sleep(delay).await;
+                client.write_all(rest).await.unwrap();
+                (client, server)
+            })
+        }
+
+        async fn route(
+            policy: PeekPolicy,
+            first: &'static [u8],
+            rest: &'static [u8],
+        ) -> &'static str {
+            let (client, server, input) = bridge();
+            let _peers = client_sends(client, server, first, Duration::from_millis(500), rest);
+            tokio::time::timeout(HOUR, stack(policy).serve(input))
+                .await
+                .unwrap()
+                .unwrap()
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn delayed_client_hello_skips_inspection_only_when_idle_timeouts_fall_back() {
+            assert_eq!(
+                "passthrough",
+                route(PeekPolicy::FAIL_OPEN, b"", CH_ONE_ONE_ONE_ONE).await
+            );
+
+            // A server-first peer still ends the idle wait, via the egress probe.
+            let policy = PeekPolicy::FAIL_OPEN.with_timeout_idle(PeekAction::Wait);
+            assert_eq!("tls", route(policy, b"", CH_ONE_ONE_ONE_ONE).await);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn slow_client_hello_tail_skips_inspection_only_when_partial_timeouts_fall_back() {
+            let (head, tail) = CH_ONE_ONE_ONE_ONE.split_at(64);
+            assert_eq!(
+                "passthrough",
+                route(PeekPolicy::FAIL_OPEN, head, tail).await
+            );
+
+            let policy = PeekPolicy::FAIL_OPEN.with_timeout_partial(PeekAction::Wait);
+            assert_eq!("tls", route(policy, head, tail).await);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn slow_client_hello_tail_fails_closed_instead_of_bypassing() {
+            let (head, tail) = CH_ONE_ONE_ONE_ONE.split_at(64);
+            let (client, server, input) = bridge();
+            let _peers = client_sends(client, server, head, Duration::from_millis(500), tail);
+            let policy = PeekPolicy::FAIL_OPEN.with_timeout_partial(PeekAction::Fail);
+            let error = stack(policy).serve(input).await.unwrap_err();
+            assert!(error_chain_has_peek_timeout(error.as_ref()));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn server_first_protocol_falls_back_before_the_peek_timeout() {
+            let (_client, mut server, input) = bridge();
+            server
+                .write_all(b"220 mail.example.com ESMTP ready\r\n")
+                .await
+                .unwrap();
+
+            let start = tokio::time::Instant::now();
+            let policy = PeekPolicy::FAIL_CLOSED;
+            let label = stack(policy).serve(input).await.unwrap();
+            assert_eq!("passthrough", label);
+            assert!(start.elapsed() < PEEK_TIMEOUT);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn http_client_is_still_detected_with_the_egress_probe() {
+            let policy = PeekPolicy::FAIL_CLOSED;
+            assert_eq!(
+                "http",
+                route(policy, b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n", b"").await
+            );
+        }
     }
 }

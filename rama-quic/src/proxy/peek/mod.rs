@@ -10,7 +10,7 @@ use rama_core::{
     extensions::{Extension, ExtensionsRef},
     io::{
         BridgeIo,
-        peek::{PeekStopReason, PeekTimeoutPolicy},
+        peek::{PeekAction, PeekCutoff, PeekPolicy, PeekProgress, PeekStopReason},
     },
     service::RejectService,
     telemetry::tracing,
@@ -190,7 +190,7 @@ impl std::error::Error for QuicPeekRejectedError {}
 /// any local QUIC output exists. The deadline is absolute from `serve`, and the read ahead is
 /// bounded by [`CaptureLimits`]. Defaults use [`DEFAULT_QUIC_PEEK_LIMITS`] and
 /// select the configured fallback for every rejection. Use
-/// [`Self::with_malformed_tls_policy`] and [`Self::with_peek_timeout_policy`] for
+/// [`Self::with_malformed_tls_policy`] and [`Self::with_peek_policy`] for
 /// the same policy controls as TCP, or [`Self::with_fallback_policy`] for per-class
 /// QUIC control. The last applicable setter wins.
 ///
@@ -292,10 +292,14 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
 
     rama_utils::macros::generate_set_and_with! {
         /// Whether an inconclusive inspection deadline selects fallback.
-        /// Defaults to [`PeekTimeoutPolicy::FailOpen`]. This updates only the
+        /// Defaults to [`PeekPolicy::FAIL_OPEN`]. This updates only the
         /// deadline class, independently of the malformed-TLS policy.
-        pub fn peek_timeout_policy(mut self, policy: PeekTimeoutPolicy) -> Self {
-            self.fallback_policy.deadline = policy == PeekTimeoutPolicy::FailOpen;
+        ///
+        /// The first datagram is in hand, so the partial-input timeout action
+        /// applies. The deadline is a hard budget: [`PeekAction::Wait`] fails.
+        pub fn peek_policy(mut self, policy: PeekPolicy) -> Self {
+            self.fallback_policy.deadline =
+                policy.action(PeekCutoff::Timeout, PeekProgress::Partial) == PeekAction::Fallback;
             self
         }
     }

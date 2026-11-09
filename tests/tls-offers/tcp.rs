@@ -6,7 +6,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorExt as _},
     extensions::ExtensionsRef as _,
     http::{Version, conn::TargetHttpVersion},
-    io::peek::PeekTimeoutPolicy,
+    io::peek::{PeekPolicy, PeekWaiter},
     net::{
         Protocol,
         client::{
@@ -61,8 +61,7 @@ async fn first_hello(peer: DuplexStream) -> Result<Option<ClientHello>, BoxError
     // A malformed native offer must fail this fixture, not look like refusal.
     let (_, hello, _) = peek_client_hello_from_input_with_policies(
         peer,
-        None,
-        PeekTimeoutPolicy::FailClosed,
+        PeekWaiter::new(None).with_policy(PeekPolicy::FAIL_CLOSED),
         MalformedTlsPolicy::Reject,
         ClientHelloReassemblyConfig::default(),
     )
