@@ -1970,6 +1970,53 @@ async fn rejected_connect_closes_the_connection_unread() {
     assert_eq!(*requests.lock(), [Method::CONNECT]);
 }
 
+/// A bare LF after the last chunk or inside its trailers ends the message for lenient peers,
+/// so the bytes after it must never be read as part of this request.
+#[tokio::test]
+async fn chunked_bare_lf_does_not_swallow_the_next_request() {
+    for body in [
+        &b"5\r\nhello\r\n0\r\n\n"[..],
+        &b"5\r\nhello\r\n0\r\nx-trailer: a\n"[..],
+    ] {
+        let (listener, addr) = setup_tcp_listener();
+        let mut wire =
+            b"POST /front HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+                .to_vec();
+        wire.extend_from_slice(body);
+        wire.extend_from_slice(b"GET /smuggled HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let client = thread::spawn(move || {
+            let mut tcp = connect(&addr);
+            tcp.write_all(&wire).expect("write");
+            let mut response = Vec::new();
+            _ = tcp.read_to_end(&mut response);
+        });
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let (socket, _) = listener.accept().await.unwrap();
+        let served = http1::Builder::new().serve_connection(
+            ServiceInput::new(socket),
+            RamaHttpService::new(service_fn(move |req: Request| {
+                let recorder = recorder.clone();
+                async move {
+                    let path = req.uri().path().map(|p| p.to_string());
+                    let collected = req.into_body().collect().await;
+                    recorder.lock().push((path, collected.is_ok()));
+                    Ok::<_, Infallible>(Response::new(Empty::<Bytes>::new()))
+                }
+            })),
+        );
+        _ = tokio::time::timeout(Duration::from_secs(5), served).await;
+        client.join().unwrap();
+
+        assert_eq!(
+            *seen.lock(),
+            [(Some("/front".to_owned()), false)],
+            "{body:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn http_connect_new() {
     let (listener, addr) = setup_tcp_listener();
