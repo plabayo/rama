@@ -186,3 +186,24 @@ fn flow_meta_records_intercept_decision_after_handler() {
     );
     assert_ne!(seen_meta.flow_id, 0);
 }
+
+#[test]
+fn bound_interface_index_requires_an_explicit_bind() {
+    let meta = |is_bound, index| {
+        let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+        meta.is_bound = is_bound;
+        meta.local_interface_index = index;
+        meta
+    };
+
+    assert_eq!(
+        meta(Some(true), Some(7)).bound_interface_index(),
+        std::num::NonZeroU32::new(7)
+    );
+    // unbound: the index is only the kernel's current pick
+    assert_eq!(meta(Some(false), Some(7)).bound_interface_index(), None);
+    assert_eq!(meta(None, Some(7)).bound_interface_index(), None);
+    // bound but no usable index
+    assert_eq!(meta(Some(true), None).bound_interface_index(), None);
+    assert_eq!(meta(Some(true), Some(0)).bound_interface_index(), None);
+}
