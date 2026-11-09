@@ -172,7 +172,7 @@ impl Connection {
         for result in frame::Iter::new(payload)? {
             let frame = result?;
             let span = match frame {
-                Frame::Padding => continue,
+                Frame::Padding { .. } => continue,
                 _ => Some(trace_span!("frame", ty = %frame.ty())),
             };
 
@@ -206,7 +206,7 @@ impl Connection {
 
             // Check whether this could be a probing packet
             match frame {
-                Frame::Padding
+                Frame::Padding { .. }
                 | Frame::PathChallenge(_)
                 | Frame::PathResponse(_)
                 | Frame::NewConnectionId(_) => {}
@@ -231,7 +231,7 @@ impl Connection {
                 Frame::Ack(ack) => {
                     self.on_ack_received(now, SpaceId::Data, &ack)?;
                 }
-                Frame::Padding | Frame::Ping => {}
+                Frame::Padding { .. } | Frame::Ping => {}
                 Frame::Close(reason) => {
                     close = Some(reason);
                 }

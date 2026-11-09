@@ -299,10 +299,20 @@ impl VarIntDecoder {
     /// which case the buffered progress is retained for the next call.
     pub fn decode<B: Buf>(&mut self, r: &mut B) -> Option<VarInt> {
         if self.filled == 0 {
-            if !r.has_remaining() {
+            let chunk = r.chunk();
+            let Some(&first) = chunk.first() else {
+                // An empty chunk means an empty buffer.
                 return None;
+            };
+            let len = 1usize << (first >> 6);
+            if let Some(encoded) = chunk.get(..len) {
+                let mut bytes = [0; 8];
+                bytes[8 - len..].copy_from_slice(encoded);
+                bytes[8 - len] &= 0b0011_1111;
+                r.advance(len);
+                return Some(VarInt(u64::from_be_bytes(bytes)));
             }
-            let first = r.get_u8();
+            r.advance(1);
             // tag 0b00/01/10/11 -> 1/2/4/8 encoded bytes
             self.len = 1 << (first >> 6);
             self.buf[0] = first & 0b0011_1111;

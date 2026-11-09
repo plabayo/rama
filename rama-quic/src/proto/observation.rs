@@ -196,10 +196,10 @@ impl ServerObservation {
                 self.done = true;
                 break;
             };
-            if matches!(item, Frame::Padding)
+            if let Frame::Padding { len: run } = item
                 && let Some(ObservedFrame::Padding { len }) = observed.last_mut()
             {
-                *len += 1;
+                *len += run;
                 continue;
             }
             if self.frames >= self.limits.frames {
@@ -209,7 +209,7 @@ impl ServerObservation {
             }
             self.frames += 1;
             observed.push(match item {
-                Frame::Padding => ObservedFrame::Padding { len: 1 },
+                Frame::Padding { len } => ObservedFrame::Padding { len },
                 Frame::Ping => ObservedFrame::Ping,
                 Frame::Ack(_) => ObservedFrame::Ack,
                 Frame::Crypto(crypto) => {

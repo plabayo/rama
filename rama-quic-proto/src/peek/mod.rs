@@ -285,7 +285,7 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
             let mut padding = false;
             for frame in frames {
                 let frame = frame.map_err(|_error| CaptureError::Malformed("frame"))?;
-                let is_padding = matches!(frame, Frame::Padding);
+                let is_padding = matches!(frame, Frame::Padding { .. });
                 // A run of PADDING counts as one frame against the budget.
                 if !(is_padding && padding) {
                     charge(&mut self.remaining.frames, 1, "frames")?;

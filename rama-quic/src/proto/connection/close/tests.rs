@@ -130,7 +130,7 @@ mod packet_budget_tests {
                 let mut frames = frame::Iter::new(packet.payload.freeze())
                     .unwrap()
                     .map(Result::unwrap)
-                    .filter(|frame| !matches!(frame, Frame::Padding));
+                    .filter(|frame| !matches!(frame, Frame::Padding { .. }));
                 if ack_fits {
                     assert!(
                         matches!(frames.next(), Some(Frame::Ack(_))),
