@@ -389,7 +389,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 engineGeneration: engineGeneration) ?? requestedConnectTimeoutMs
         configureDrainPolicy(egressOpts)
         egressEofGraceMs = egressOpts?.egressEofGraceMs ?? defaultEgressEofGraceMs
-        let nwParams = makeTcpNwParameters(egressOpts, stampMetadata: flow.applyMetadata)
+        let nwParams = makeTcpNwParameters(
+            egressOpts, boundInterface: flow.boundInterface,
+            stampMetadata: flow.applyMetadata)
         allowProxy = egressOpts?.parameters.allow_proxy ?? false
         proxyPolicy = nwParams.proxyPolicy
 

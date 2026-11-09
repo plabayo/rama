@@ -25,7 +25,7 @@ mod peek_client_hello;
 pub use peek_client_hello::{
     InputWithClientHello, PeekTlsClientHelloService, TlsClientHelloPrefixedIo,
     peek_client_hello_from_input, peek_client_hello_from_input_with_config,
-    peek_client_hello_from_input_with_policies, peek_client_hello_from_input_with_timeout_policy,
+    peek_client_hello_from_input_with_policies,
 };
 
 mod sni;

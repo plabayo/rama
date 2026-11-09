@@ -1,3 +1,4 @@
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -1596,6 +1597,24 @@ impl TransparentProxyFlowMeta {
     #[must_use]
     pub fn age(&self) -> Duration {
         self.opened_at.elapsed()
+    }
+
+    /// Index of the interface the originating app explicitly bound
+    /// this flow to, `None` when unbound or unknown.
+    ///
+    /// Services that dial their own egress (e.g. a UDP relay) should
+    /// bind it to this interface (`IP_BOUND_IF` / `IPV6_BOUND_IF`),
+    /// as the kernel would without the proxy in the path. TCP egress
+    /// dialed by the Swift provider already does so.
+    ///
+    /// For unbound flows `local_interface_index` is only the kernel's
+    /// current pick; pinning to it would break normal failover.
+    #[must_use]
+    pub fn bound_interface_index(&self) -> Option<NonZeroU32> {
+        if self.is_bound != Some(true) {
+            return None;
+        }
+        self.local_interface_index.and_then(NonZeroU32::new)
     }
 
     generate_set_and_with! {

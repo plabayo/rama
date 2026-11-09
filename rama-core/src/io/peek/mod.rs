@@ -1,18 +1,38 @@
+//! Protocol peeking: inspect the first bytes of an input without consuming them.
+//!
+//! Peekers wait for input through a [`PeekWaiter`], which a timeout and a
+//! [`PeekInterrupt`] can cut short as directed by a [`PeekPolicy`].
+
 use core::num::NonZeroUsize;
 use std::time::Duration;
 
 use rama_utils::octets::kib;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt as _},
-    time::Instant,
-};
+use tokio::io::AsyncRead;
 
 use super::{PeekIoProvider, PrefixedIo, ReplayReader};
 use crate::{
     Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext},
+    extensions::ExtensionsRef,
     service::{RejectError, RejectService},
+};
+
+mod egress_first_byte;
+#[doc(inline)]
+pub use egress_first_byte::{
+    PeekEgressFirstByteIo, PeekEgressFirstByteLayer, PeekEgressFirstByteService,
+};
+
+mod interrupt;
+#[doc(inline)]
+pub use interrupt::{PeekInterrupt, PeekInterruptSource};
+
+mod wait;
+#[doc(inline)]
+pub use wait::{
+    PeekAction, PeekCutoff, PeekInterruptedError, PeekPolicy, PeekPolicyProvider, PeekProgress,
+    PeekRead, PeekTimeoutError, PeekWaiter,
 };
 
 /// Default maximum number of bytes inspected by [`PeekRouter`].
@@ -20,29 +40,6 @@ pub const DEFAULT_PEEK_MAX_SIZE: usize = kib(8);
 
 /// Default number of bytes requested per read by [`PeekRouter`].
 pub const DEFAULT_PEEK_READ_CHUNK_SIZE: usize = 64;
-
-/// Policy applied when protocol peeking reaches its configured timeout before
-/// a definitive match or rejection.
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
-pub enum PeekTimeoutPolicy {
-    /// Treat an inconclusive timeout as a non-match and invoke the fallback.
-    #[default]
-    FailOpen,
-    /// Reject the connection with [`PeekTimeoutError`] instead of invoking the
-    /// fallback.
-    FailClosed,
-}
-
-rama_utils::macros::error::static_str_error! {
-    #[doc = "protocol peek timed out before reaching a definitive verdict"]
-    pub struct PeekTimeoutError;
-}
-
-impl From<PeekTimeoutError> for std::io::Error {
-    fn from(error: PeekTimeoutError) -> Self {
-        Self::new(std::io::ErrorKind::TimedOut, error)
-    }
-}
 
 /// Reason a protocol peek operation stopped.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -58,24 +55,34 @@ pub enum PeekStopReason {
     ReadError,
     /// The configured timeout elapsed before a definitive verdict.
     Timeout,
+    /// The input's [`PeekInterrupt`] was triggered before a definitive verdict.
+    Interrupted,
     /// The configured read-attempt budget was exhausted.
     AttemptsExhausted,
     /// The maximum peek size was reached before a definitive verdict.
     MaxPeekSizeReached,
 }
 
+impl PeekStopReason {
+    /// Returns `true` when a [`PeekCutoff`] stopped the peek.
+    #[must_use]
+    pub const fn is_cutoff(self) -> bool {
+        matches!(self, Self::Timeout | Self::Interrupted)
+    }
+}
+
 /// A generic [`Service`] router driven by a fail-fast [`PeekVerdict`] predicate.
 ///
 /// Peeking uses a grow-on-demand heap buffer and replays all read bytes. Any
 /// outcome other than [`PeekVerdict::Match`] dispatches to the fallback, except
-/// an inconclusive timeout when [`PeekTimeoutPolicy::FailClosed`] is selected.
+/// a timeout or interrupt for which the [`PeekPolicy`] selects [`PeekAction::Fail`].
 #[derive(Debug, Clone)]
-pub struct PeekRouter<P, T, F = RejectService<(), RejectError>> {
+pub struct PeekRouter<P, T, F = RejectService<(), RejectError>, Pol = PeekPolicy> {
     predicate: P,
     acceptor: T,
     fallback: F,
     peek_timeout: Option<Duration>,
-    peek_timeout_policy: PeekTimeoutPolicy,
+    peek_policy: Pol,
     max_peek_size: usize,
     peek_read_chunk_size: NonZeroUsize,
 }
@@ -89,48 +96,58 @@ impl<P, T> PeekRouter<P, T, RejectService<(), RejectError>> {
             acceptor,
             fallback: RejectService::default(),
             peek_timeout: None,
-            peek_timeout_policy: PeekTimeoutPolicy::default(),
+            peek_policy: PeekPolicy::FAIL_OPEN,
             max_peek_size: DEFAULT_PEEK_MAX_SIZE,
             peek_read_chunk_size: NonZeroUsize::new(DEFAULT_PEEK_READ_CHUNK_SIZE)
                 .unwrap_or(NonZeroUsize::MIN),
         }
     }
+}
 
+impl<P, T, Pol> PeekRouter<P, T, RejectService<(), RejectError>, Pol> {
     /// Attach a fallback [`Service`].
     #[must_use]
-    pub fn with_fallback<F>(self, fallback: F) -> PeekRouter<P, T, F> {
+    pub fn with_fallback<F>(self, fallback: F) -> PeekRouter<P, T, F, Pol> {
         PeekRouter {
             predicate: self.predicate,
             acceptor: self.acceptor,
             fallback,
             peek_timeout: self.peek_timeout,
-            peek_timeout_policy: self.peek_timeout_policy,
+            peek_policy: self.peek_policy,
             max_peek_size: self.max_peek_size,
             peek_read_chunk_size: self.peek_read_chunk_size,
         }
     }
 }
 
-impl<P, T, F> PeekRouter<P, T, F> {
+impl<P, T, F, Pol> PeekRouter<P, T, F, Pol> {
     rama_utils::macros::generate_set_and_with! {
         /// Set the maximum time spent peeking into the input.
         ///
-        /// A timeout is inconclusive. Use [`PeekRouter::with_peek_timeout_policy`]
-        /// to choose whether it invokes the fallback or rejects the connection.
+        /// A timeout is inconclusive. Use [`PeekRouter::with_peek_policy`]
+        /// to choose whether it invokes the fallback, rejects the connection
+        /// or keeps waiting.
         pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
             self.peek_timeout = peek_timeout;
             self
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set how an inconclusive peek timeout is handled.
-        ///
-        /// Defaults to [`PeekTimeoutPolicy::FailOpen`]. Definitive predicate
-        /// rejections invoke the fallback under either policy.
-        pub fn peek_timeout_policy(mut self, peek_timeout_policy: PeekTimeoutPolicy) -> Self {
-            self.peek_timeout_policy = peek_timeout_policy;
-            self
+    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
+    /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    ///
+    /// Defaults to [`PeekPolicy::FAIL_OPEN`]. Definitive predicate
+    /// rejections invoke the fallback under any policy.
+    #[must_use]
+    pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> PeekRouter<P, T, F, Pol2> {
+        PeekRouter {
+            predicate: self.predicate,
+            acceptor: self.acceptor,
+            fallback: self.fallback,
+            peek_timeout: self.peek_timeout,
+            peek_policy,
+            max_peek_size: self.max_peek_size,
+            peek_read_chunk_size: self.peek_read_chunk_size,
         }
     }
 
@@ -174,11 +191,12 @@ impl<T> PeekRouter<(), T> {
     }
 }
 
-impl<PeekableInput, Output, P, T, F> Service<PeekableInput> for PeekRouter<P, T, F>
+impl<PeekableInput, Output, P, T, F, Pol> Service<PeekableInput> for PeekRouter<P, T, F, Pol>
 where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
     P: Fn(&[u8]) -> PeekVerdict<()> + Send + Sync + 'static,
+    Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
             PeekableInput::Mapped<PeekPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
@@ -194,22 +212,20 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
+        let mut waiter = PeekWaiter::new(self.peek_timeout)
+            .with_policy(self.peek_policy.peek_policy(&input))
+            .maybe_with_interrupt(input.extensions().get_arc());
         let mut peek_buffer = Vec::new();
         let output = peek_input_until_verdict_growing_with_output(
             input.peek_io_mut(),
             &mut peek_buffer,
             self.max_peek_size,
             self.peek_read_chunk_size,
-            self.peek_timeout,
+            &mut waiter,
             &self.predicate,
         )
         .await;
-
-        if output.stop_reason == PeekStopReason::Timeout
-            && self.peek_timeout_policy == PeekTimeoutPolicy::FailClosed
-        {
-            return Err(PeekTimeoutError::new().into());
-        }
+        waiter.check::<BoxError>()?;
 
         let replay = ReplayReader::new(Bytes::from(peek_buffer));
         let input = input.map_peek_io(|io| PrefixedIo::new(replay, io));
@@ -241,7 +257,7 @@ pub type PeekPrefixedIo<S> = PrefixedIo<ReplayReader, S>;
 /// `peek_size` reports how many bytes were copied into the caller-provided
 /// buffer before peeking stopped. `data` is only populated when the predicate
 /// matched those bytes. [`PeekOutput::stop_reason`] distinguishes an
-/// inconclusive timeout from a definitive [`PeekVerdict::Reject`].
+/// inconclusive cutoff from a definitive [`PeekVerdict::Reject`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeekOutput<D> {
     pub data: Option<D>,
@@ -250,8 +266,8 @@ pub struct PeekOutput<D> {
 }
 
 #[inline(always)]
-/// Read into `buffer` until `predicate` matches, peeking stops, or the optional
-/// `timeout` expires.
+/// Read into `buffer` until `predicate` matches, peeking stops, or the
+/// `waiter` cuts the peek short.
 ///
 /// This helper is intended for protocol sniffing and similar cases where a
 /// caller needs to inspect a small prefix without committing to a full parser.
@@ -260,7 +276,7 @@ pub struct PeekOutput<D> {
 /// - `predicate` returns `Some(_)`;
 /// - the reader returns EOF;
 /// - the reader returns an error;
-/// - the optional timeout elapses;
+/// - the `waiter` cuts the peek short, see [`PeekWaiter`];
 /// - the internal read-attempt budget is exhausted.
 ///
 /// The attempt budget defaults to `max(buffer.len() / 4, 1) + 1` reads. This keeps
@@ -272,14 +288,14 @@ pub struct PeekOutput<D> {
 pub fn peek_input_until<R, O, P>(
     reader: &mut R,
     buffer: &mut [u8],
-    timeout: Option<Duration>,
+    waiter: &mut PeekWaiter,
     predicate: P,
 ) -> impl Future<Output = PeekOutput<O>>
 where
     R: AsyncRead + Unpin,
     P: Fn(&[u8]) -> Option<O>,
 {
-    peek_input_until_with_offset(reader, buffer, 0, timeout, predicate)
+    peek_input_until_with_offset(reader, buffer, 0, waiter, predicate)
 }
 
 /// Same as [`peek_input_until`] but with a starting offset as peek-size.
@@ -295,7 +311,7 @@ pub fn peek_input_until_with_offset<R, O, P>(
     reader: &mut R,
     buffer: &mut [u8],
     offset: usize,
-    timeout: Option<Duration>,
+    waiter: &mut PeekWaiter,
     predicate: P,
 ) -> impl Future<Output = PeekOutput<O>>
 where
@@ -308,7 +324,7 @@ where
         reader,
         buffer,
         offset,
-        timeout,
+        waiter,
         Some(default_budget),
         predicate,
     )
@@ -332,7 +348,7 @@ pub enum PeekVerdict<O> {
     /// The peeked bytes can never match; stop now, surface no data, and do not
     /// issue another read.
     Reject,
-    /// Not enough bytes to decide yet; keep reading (subject to the timeout,
+    /// Not enough bytes to decide yet; keep reading (subject to the waiter,
     /// EOF, and attempt budget).
     NeedMore,
 }
@@ -343,7 +359,7 @@ pub enum PeekVerdict<O> {
 ///
 /// `max_attempts`:
 /// - `Some(n)` — stop after `n` read attempts even if the predicate did not match.
-/// - `None` — no attempt cap; rely on the reader's EOF and the optional `timeout`.
+/// - `None` — no attempt cap; rely on the reader's EOF and the `waiter`.
 ///
 /// The default budget used by [`peek_input_until`] and [`peek_input_until_with_offset`]
 /// is derived from the buffer length (`max(buffer.len() / 4, 1) + 1`), which is a
@@ -359,7 +375,7 @@ pub fn peek_input_until_with_options<R, O, P>(
     reader: &mut R,
     buffer: &mut [u8],
     offset: usize,
-    timeout: Option<Duration>,
+    waiter: &mut PeekWaiter,
     max_attempts: Option<NonZeroUsize>,
     predicate: P,
 ) -> impl Future<Output = PeekOutput<O>>
@@ -371,7 +387,7 @@ where
         reader,
         buffer,
         offset,
-        timeout,
+        waiter,
         max_attempts,
         move |buf| match predicate(buf) {
             Some(data) => PeekVerdict::Match(data),
@@ -389,7 +405,7 @@ where
 pub fn peek_input_until_verdict<R, O, P>(
     reader: &mut R,
     buffer: &mut [u8],
-    timeout: Option<Duration>,
+    waiter: &mut PeekWaiter,
     predicate: P,
 ) -> impl Future<Output = PeekOutput<O>>
 where
@@ -402,7 +418,7 @@ where
         reader,
         buffer,
         0,
-        timeout,
+        waiter,
         Some(default_budget),
         predicate,
     )
@@ -419,7 +435,7 @@ pub async fn peek_input_until_verdict_with_options<R, O, P>(
     reader: &mut R,
     buffer: &mut [u8],
     offset: usize,
-    timeout: Option<Duration>,
+    waiter: &mut PeekWaiter,
     max_attempts: Option<NonZeroUsize>,
     predicate: P,
 ) -> PeekOutput<O>
@@ -452,44 +468,23 @@ where
         return output;
     }
 
-    let peek_deadline = timeout.map(|d| Instant::now() + d);
     let attempt_cap = max_attempts.map(NonZeroUsize::get).unwrap_or(usize::MAX);
 
     for _ in 0..attempt_cap {
-        let read_fut = reader.read(&mut buffer[output.peek_size..]);
-
-        let n = match peek_deadline {
-            Some(deadline) => {
-                let now = Instant::now();
-                if now >= deadline {
-                    tracing::debug!("I/O peek: abort: deadline reached");
-                    output.stop_reason = PeekStopReason::Timeout;
-                    return output;
-                }
-
-                let remaining = deadline - now;
-                match tokio::time::timeout(remaining, read_fut).await {
-                    Err(err) => {
-                        tracing::debug!("I/O peek: time-fenced peek read timeout error: {err}");
-                        output.stop_reason = PeekStopReason::Timeout;
-                        return output;
-                    }
-                    Ok(Err(err)) => {
-                        tracing::debug!("I/O peek: time-fenced peek read error: {err}");
-                        output.stop_reason = PeekStopReason::ReadError;
-                        return output;
-                    }
-                    Ok(Ok(n)) => n,
-                }
+        let n = match waiter
+            .read(reader, &mut buffer[output.peek_size..], output.peek_size)
+            .await
+        {
+            PeekRead::Read(n) => n,
+            PeekRead::Error(err) => {
+                tracing::debug!("I/O peek: peek read error: {err}");
+                output.stop_reason = PeekStopReason::ReadError;
+                return output;
             }
-            None => match read_fut.await {
-                Err(err) => {
-                    tracing::debug!("I/O peek: peek read error: {err}");
-                    output.stop_reason = PeekStopReason::ReadError;
-                    return output;
-                }
-                Ok(n) => n,
-            },
+            PeekRead::Cutoff(cutoff) => {
+                output.stop_reason = cutoff.into();
+                return output;
+            }
         };
 
         if n == 0 {
@@ -539,14 +534,14 @@ where
 /// header); a non-empty existing prefix is classified first and preserved for
 /// replay. The predicate is never called with an empty slice. The buffer grows
 /// in `read_chunk`-sized steps. Returns the matched value, or `None` on reject /
-/// EOF / timeout / reaching `max_len` without a match; either way `buffer` is
+/// EOF / cutoff / reaching `max_len` without a match; either way `buffer` is
 /// left holding exactly the peeked bytes.
 pub async fn peek_input_until_verdict_growing<R, O, P>(
     reader: &mut R,
     buffer: &mut Vec<u8>,
     max_len: usize,
     read_chunk: NonZeroUsize,
-    timeout: Option<Duration>,
+    waiter: &mut PeekWaiter,
     predicate: P,
 ) -> Option<O>
 where
@@ -554,27 +549,33 @@ where
     P: Fn(&[u8]) -> PeekVerdict<O>,
 {
     peek_input_until_verdict_growing_with_output(
-        reader, buffer, max_len, read_chunk, timeout, predicate,
+        reader, buffer, max_len, read_chunk, waiter, predicate,
     )
     .await
     .data
 }
 
 /// Same as [`peek_input_until_verdict_growing`], but returns the complete
-/// [`PeekOutput`] so callers can distinguish a timeout from a definitive
+/// [`PeekOutput`] so callers can distinguish a cutoff from a definitive
 /// rejection and other inconclusive stop conditions.
 pub async fn peek_input_until_verdict_growing_with_output<R, O, P>(
     reader: &mut R,
     buffer: &mut Vec<u8>,
     max_len: usize,
     read_chunk: NonZeroUsize,
-    timeout: Option<Duration>,
+    waiter: &mut PeekWaiter,
     predicate: P,
 ) -> PeekOutput<O>
 where
     R: AsyncRead + Unpin,
     P: Fn(&[u8]) -> PeekVerdict<O>,
 {
+    let stop = |buffer: &Vec<u8>, stop_reason| PeekOutput {
+        data: None,
+        peek_size: buffer.len(),
+        stop_reason,
+    };
+
     if !buffer.is_empty() {
         match predicate(buffer) {
             PeekVerdict::Match(data) => {
@@ -584,18 +585,11 @@ where
                     stop_reason: PeekStopReason::Match,
                 };
             }
-            PeekVerdict::Reject => {
-                return PeekOutput {
-                    data: None,
-                    peek_size: buffer.len(),
-                    stop_reason: PeekStopReason::Rejected,
-                };
-            }
+            PeekVerdict::Reject => return stop(buffer, PeekStopReason::Rejected),
             PeekVerdict::NeedMore => {}
         }
     }
 
-    let peek_deadline = timeout.map(|d| Instant::now() + d);
     let chunk = read_chunk.get();
 
     while buffer.len() < max_len {
@@ -603,63 +597,23 @@ where
         let want = chunk.min(max_len - start);
         buffer.resize(start + want, 0);
 
-        let read_fut = reader.read(&mut buffer[start..]);
-        let n = match peek_deadline {
-            Some(deadline) => {
-                let now = Instant::now();
-                if now >= deadline {
-                    buffer.truncate(start);
-                    tracing::debug!("I/O peek(grow): abort: deadline reached");
-                    return PeekOutput {
-                        data: None,
-                        peek_size: buffer.len(),
-                        stop_reason: PeekStopReason::Timeout,
-                    };
-                }
-                match tokio::time::timeout(deadline - now, read_fut).await {
-                    Err(err) => {
-                        buffer.truncate(start);
-                        tracing::debug!("I/O peek(grow): time-fenced read timeout: {err}");
-                        return PeekOutput {
-                            data: None,
-                            peek_size: buffer.len(),
-                            stop_reason: PeekStopReason::Timeout,
-                        };
-                    }
-                    Ok(Err(err)) => {
-                        buffer.truncate(start);
-                        tracing::debug!("I/O peek(grow): time-fenced read error: {err}");
-                        return PeekOutput {
-                            data: None,
-                            peek_size: buffer.len(),
-                            stop_reason: PeekStopReason::ReadError,
-                        };
-                    }
-                    Ok(Ok(n)) => n,
-                }
+        let n = match waiter.read(reader, &mut buffer[start..], start).await {
+            PeekRead::Read(n) => n,
+            PeekRead::Error(err) => {
+                buffer.truncate(start);
+                tracing::debug!("I/O peek(grow): read error: {err}");
+                return stop(buffer, PeekStopReason::ReadError);
             }
-            None => match read_fut.await {
-                Err(err) => {
-                    buffer.truncate(start);
-                    tracing::debug!("I/O peek(grow): read error: {err}");
-                    return PeekOutput {
-                        data: None,
-                        peek_size: buffer.len(),
-                        stop_reason: PeekStopReason::ReadError,
-                    };
-                }
-                Ok(n) => n,
-            },
+            PeekRead::Cutoff(cutoff) => {
+                buffer.truncate(start);
+                return stop(buffer, cutoff.into());
+            }
         };
 
         buffer.truncate(start + n);
         if n == 0 {
             tracing::trace!("I/O peek(grow): break loop: no new data read...");
-            return PeekOutput {
-                data: None,
-                peek_size: buffer.len(),
-                stop_reason: PeekStopReason::Eof,
-            };
+            return stop(buffer, PeekStopReason::Eof);
         }
 
         match predicate(buffer) {
@@ -670,22 +624,12 @@ where
                     stop_reason: PeekStopReason::Match,
                 };
             }
-            PeekVerdict::Reject => {
-                return PeekOutput {
-                    data: None,
-                    peek_size: buffer.len(),
-                    stop_reason: PeekStopReason::Rejected,
-                };
-            }
+            PeekVerdict::Reject => return stop(buffer, PeekStopReason::Rejected),
             PeekVerdict::NeedMore => {}
         }
     }
 
-    PeekOutput {
-        data: None,
-        peek_size: buffer.len(),
-        stop_reason: PeekStopReason::MaxPeekSizeReached,
-    }
+    stop(buffer, PeekStopReason::MaxPeekSizeReached)
 }
 
 #[cfg(test)]
@@ -708,8 +652,8 @@ mod tests {
         task::{Context, Poll},
     };
 
-    use crate::{io::Io, service::service_fn};
-    use tokio::io::ReadBuf;
+    use crate::{ServiceInput, io::Io, service::service_fn};
+    use tokio::io::{AsyncReadExt as _, ReadBuf};
 
     async fn collect_accepted(
         mut stream: impl Io + Unpin,
@@ -748,19 +692,25 @@ mod tests {
         .with_fallback(service_fn(collect_fallback));
 
         let matched = router
-            .serve(std::io::Cursor::new(b"MAGIC payload".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"MAGIC payload".to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(("accepted", b"MAGIC payload".to_vec()), matched);
 
         let second_match = router
-            .serve(std::io::Cursor::new(b"SPELL payload".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"SPELL payload".to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(("accepted", b"SPELL payload".to_vec()), second_match);
 
         let rejected = router
-            .serve(std::io::Cursor::new(b"OTHER payload".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"OTHER payload".to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(("fallback", b"OTHER payload".to_vec()), rejected);
@@ -781,7 +731,9 @@ mod tests {
         .with_fallback(service_fn(collect_fallback));
 
         let result = router
-            .serve(std::io::Cursor::new(b"\x05payload".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"\x05payload".to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(("accepted", b"\x05payload".to_vec()), result);
@@ -798,7 +750,9 @@ mod tests {
         .with_fallback(service_fn(collect_fallback));
 
         let result = router
-            .serve(std::io::Cursor::new(b"eight123".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"eight123".to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(("fallback", b"eight123".to_vec()), result);
@@ -820,7 +774,10 @@ mod tests {
         )
         .with_max_peek_size(NonZeroUsize::new(4).unwrap())
         .with_fallback(service_fn(read_limit));
-        let input = tokio::io::join(IdleAfterReader::new(b"four"), tokio::io::sink());
+        let input = ServiceInput::new(tokio::io::join(
+            IdleAfterReader::new(b"four"),
+            tokio::io::sink(),
+        ));
 
         let result = tokio::time::timeout(Duration::from_secs(1), router.serve(input))
             .await
@@ -854,10 +811,49 @@ mod tests {
         .with_peek_timeout(Duration::from_millis(10))
         .with_fallback(service_fn(read_partial));
 
-        let input = tokio::io::join(IdleAfterReader::new(b"MA"), tokio::io::sink());
+        let input = ServiceInput::new(tokio::io::join(
+            IdleAfterReader::new(b"MA"),
+            tokio::io::sink(),
+        ));
         let result = router.serve(input).await.unwrap();
         assert_eq!(("fallback", b"MA".to_vec()), result);
-        assert_eq!(PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::default());
+        assert_eq!(PeekPolicy::FAIL_OPEN, PeekPolicy::default());
+    }
+
+    #[derive(Debug, Clone, crate::extensions::Extension)]
+    struct Strict;
+
+    #[tokio::test]
+    async fn peek_router_selects_its_policy_per_input() {
+        type Input = ServiceInput<tokio::io::Join<IdleAfterReader, tokio::io::Sink>>;
+        let router = PeekRouter::from_prefix(b"MAGIC", service_fn(collect_accepted))
+            .with_peek_timeout(Duration::from_millis(10))
+            .with_peek_policy(|input: &Input| {
+                if input.extensions().contains::<Strict>() {
+                    PeekPolicy::FAIL_CLOSED
+                } else {
+                    PeekPolicy::FAIL_OPEN
+                }
+            })
+            .with_fallback(service_fn(async |mut stream: PeekPrefixedIo<Input>| {
+                let mut bytes = [0_u8; 2];
+                stream.read_exact(&mut bytes).await?;
+                Ok::<_, io::Error>(("fallback", bytes.to_vec()))
+            }));
+        let partial = || {
+            ServiceInput::new(tokio::io::join(
+                IdleAfterReader::new(b"MA"),
+                tokio::io::sink(),
+            ))
+        };
+
+        let result = router.serve(partial()).await.unwrap();
+        assert_eq!(("fallback", b"MA".to_vec()), result);
+
+        let strict = partial();
+        strict.extensions().insert(Strict);
+        let error = router.serve(strict).await.unwrap_err();
+        assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
     }
 
     #[tokio::test]
@@ -874,10 +870,13 @@ mod tests {
             service_fn(async || Ok::<_, Infallible>(("accepted", Vec::new()))),
         )
         .with_peek_timeout(Duration::from_millis(10))
-        .with_peek_timeout_policy(PeekTimeoutPolicy::FailClosed)
+        .with_peek_policy(PeekPolicy::FAIL_CLOSED)
         .with_fallback(fallback);
 
-        let input = tokio::io::join(IdleAfterReader::new(b"MA"), tokio::io::sink());
+        let input = ServiceInput::new(tokio::io::join(
+            IdleAfterReader::new(b"MA"),
+            tokio::io::sink(),
+        ));
         let error = router.serve(input).await.unwrap_err();
 
         assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
@@ -886,14 +885,14 @@ mod tests {
 
     #[tokio::test]
     async fn peek_router_definitive_mismatch_falls_back_under_both_timeout_policies() {
-        for policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
+        for policy in [PeekPolicy::FAIL_OPEN, PeekPolicy::FAIL_CLOSED] {
             let router = PeekRouter::from_prefix(b"MAGIC", service_fn(collect_accepted))
                 .with_peek_timeout(Duration::from_millis(10))
-                .with_peek_timeout_policy(policy)
+                .with_peek_policy(policy)
                 .with_fallback(service_fn(collect_fallback));
 
             let result = router
-                .serve(std::io::Cursor::new(b"NOPE".to_vec()))
+                .serve(ServiceInput::new(std::io::Cursor::new(b"NOPE".to_vec())))
                 .await
                 .unwrap();
             assert_eq!(("fallback", b"NOPE".to_vec()), result);
@@ -903,11 +902,11 @@ mod tests {
     #[tokio::test]
     async fn peek_router_fail_closed_without_timeout_preserves_existing_eof_fallback() {
         let router = PeekRouter::from_prefix(b"PING", service_fn(collect_accepted))
-            .with_peek_timeout_policy(PeekTimeoutPolicy::FailClosed)
+            .with_peek_policy(PeekPolicy::FAIL_CLOSED)
             .with_fallback(service_fn(collect_fallback));
 
         let result = router
-            .serve(std::io::Cursor::new(b"PI".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(b"PI".to_vec())))
             .await
             .unwrap();
         assert_eq!(("fallback", b"PI".to_vec()), result);
@@ -932,7 +931,7 @@ mod tests {
             .read(b"MA")
             .read_error(io::Error::new(io::ErrorKind::BrokenPipe, "boom"))
             .build();
-        let input = tokio::io::join(reader, tokio::io::sink());
+        let input = ServiceInput::new(tokio::io::join(reader, tokio::io::sink()));
 
         let result = router.serve(input).await.unwrap();
         assert_eq!(("fallback", b"MA".to_vec()), result);
@@ -956,7 +955,10 @@ mod tests {
 
         let matched = PeekRouter::from_prefix(b"PING", service_fn(read_ping))
             .with_fallback(service_fn(read_pong));
-        let matched_input = tokio::io::join(IdleAfterReader::new(b"PING"), tokio::io::sink());
+        let matched_input = ServiceInput::new(tokio::io::join(
+            IdleAfterReader::new(b"PING"),
+            tokio::io::sink(),
+        ));
         let result = tokio::time::timeout(Duration::from_secs(1), matched.serve(matched_input))
             .await
             .expect("matching prefix must not wait for more input")
@@ -965,7 +967,10 @@ mod tests {
 
         let rejected = PeekRouter::from_prefix(b"PING", service_fn(read_ping))
             .with_fallback(service_fn(read_pong));
-        let rejected_input = tokio::io::join(IdleAfterReader::new(b"PONG"), tokio::io::sink());
+        let rejected_input = ServiceInput::new(tokio::io::join(
+            IdleAfterReader::new(b"PONG"),
+            tokio::io::sink(),
+        ));
         let result = tokio::time::timeout(Duration::from_secs(1), rejected.serve(rejected_input))
             .await
             .expect("diverging prefix must not wait for more input")
@@ -979,7 +984,7 @@ mod tests {
             .with_fallback(service_fn(collect_fallback));
 
         let result = router
-            .serve(std::io::Cursor::new(b"PI".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(b"PI".to_vec())))
             .await
             .unwrap();
         assert_eq!(("fallback", b"PI".to_vec()), result);
@@ -991,7 +996,9 @@ mod tests {
             .with_max_peek_size(NonZeroUsize::new(2).unwrap())
             .with_fallback(service_fn(collect_fallback));
         let result = router
-            .serve(std::io::Cursor::new(b"PING payload".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"PING payload".to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(("fallback", b"PING payload".to_vec()), result);
@@ -1011,8 +1018,13 @@ mod tests {
         let mut reader = tokio_test::io::Builder::new().build();
         let mut buffer = [];
 
-        let output =
-            peek_input_until::<_, (), _>(&mut reader, &mut buffer, None, |_| unreachable!()).await;
+        let output = peek_input_until::<_, (), _>(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |_| unreachable!(),
+        )
+        .await;
 
         assert!(output.data.is_none());
         assert_eq!(output.peek_size, 0);
@@ -1023,9 +1035,12 @@ mod tests {
         let mut reader = tokio_test::io::Builder::new().read(b"hello").build();
         let mut buffer = [0_u8; 8];
 
-        let output = peek_input_until(&mut reader, &mut buffer, None, |buf| {
-            (buf == b"hello").then_some("hello")
-        })
+        let output = peek_input_until(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf| (buf == b"hello").then_some("hello"),
+        )
         .await;
 
         assert_eq!(output.data, Some("hello"));
@@ -1042,9 +1057,12 @@ mod tests {
             .build();
         let mut buffer = [0_u8; 8];
 
-        let output = peek_input_until(&mut reader, &mut buffer, None, |buf| {
-            (buf == b"hello").then_some(buf.len())
-        })
+        let output = peek_input_until(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf| (buf == b"hello").then_some(buf.len()),
+        )
         .await;
 
         assert_eq!(output.data, Some(5));
@@ -1057,9 +1075,12 @@ mod tests {
         let mut reader = tokio_test::io::Builder::new().read(b"he").build();
         let mut buffer = [0_u8; 8];
 
-        let output = peek_input_until(&mut reader, &mut buffer, None, |buf| {
-            (buf == b"hello").then_some(())
-        })
+        let output = peek_input_until(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf| (buf == b"hello").then_some(()),
+        )
         .await;
 
         assert!(output.data.is_none());
@@ -1076,9 +1097,12 @@ mod tests {
             .build();
         let mut buffer = [0_u8; 8];
 
-        let output = peek_input_until(&mut reader, &mut buffer, None, |buf| {
-            (buf == b"hello").then_some(())
-        })
+        let output = peek_input_until(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf| (buf == b"hello").then_some(()),
+        )
         .await;
 
         assert!(output.data.is_none());
@@ -1094,9 +1118,12 @@ mod tests {
             .build();
         let mut buffer = [0_u8; 8];
 
-        let output = peek_input_until(&mut reader, &mut buffer, None, |buf| {
-            (!buf.is_empty()).then_some(())
-        })
+        let output = peek_input_until(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf| (!buf.is_empty()).then_some(()),
+        )
         .await;
 
         assert!(output.data.is_none());
@@ -1114,7 +1141,7 @@ mod tests {
         let output = peek_input_until(
             &mut reader,
             &mut buffer,
-            Some(Duration::from_millis(10)),
+            &mut PeekWaiter::new(Some(Duration::from_millis(10))),
             |buf| (buf == b"hello").then_some(()),
         )
         .await;
@@ -1134,7 +1161,7 @@ mod tests {
             &mut reader,
             &mut buffer,
             0,
-            None,
+            &mut PeekWaiter::new(None),
             NonZeroUsize::new(2),
             |buf| (buf == b"hel").then_some(()),
         )
@@ -1162,7 +1189,7 @@ mod tests {
             &mut reader,
             &mut buffer,
             0,
-            None,
+            &mut PeekWaiter::new(None),
             NonZeroUsize::new(5),
             |buf| (buf == b"hel").then_some(()),
         )
@@ -1183,11 +1210,15 @@ mod tests {
             .build();
         let mut buffer = [0_u8; 8];
 
-        let output =
-            peek_input_until_with_options(&mut reader, &mut buffer, 0, None, None, |buf| {
-                (buf == b"hello").then_some(buf.len())
-            })
-            .await;
+        let output = peek_input_until_with_options(
+            &mut reader,
+            &mut buffer,
+            0,
+            &mut PeekWaiter::new(None),
+            None,
+            |buf| (buf == b"hello").then_some(buf.len()),
+        )
+        .await;
 
         assert_eq!(output.data, Some(5));
         assert_eq!(output.peek_size, 5);
@@ -1198,13 +1229,18 @@ mod tests {
         let mut reader = tokio_test::io::Builder::new().read(b"hello").build();
         let mut buffer = [0_u8; 8];
 
-        let output = peek_input_until_verdict(&mut reader, &mut buffer, None, |buf| {
-            if buf == b"hello" {
-                PeekVerdict::Match("hello")
-            } else {
-                PeekVerdict::NeedMore
-            }
-        })
+        let output = peek_input_until_verdict(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf| {
+                if buf == b"hello" {
+                    PeekVerdict::Match("hello")
+                } else {
+                    PeekVerdict::NeedMore
+                }
+            },
+        )
         .await;
 
         assert_eq!(output.data, Some("hello"));
@@ -1219,15 +1255,20 @@ mod tests {
             .build();
         let mut buffer = [0_u8; 8];
 
-        let output = peek_input_until_verdict(&mut reader, &mut buffer, None, |buf| {
-            if buf == b"hello" {
-                PeekVerdict::Match(buf.len())
-            } else if b"hello".starts_with(buf) {
-                PeekVerdict::NeedMore
-            } else {
-                PeekVerdict::Reject
-            }
-        })
+        let output = peek_input_until_verdict(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf| {
+                if buf == b"hello" {
+                    PeekVerdict::Match(buf.len())
+                } else if b"hello".starts_with(buf) {
+                    PeekVerdict::NeedMore
+                } else {
+                    PeekVerdict::Reject
+                }
+            },
+        )
         .await;
 
         assert_eq!(output.data, Some(5));
@@ -1244,7 +1285,7 @@ mod tests {
             &mut reader,
             &mut buffer,
             offset,
-            None,
+            &mut PeekWaiter::new(None),
             None,
             |buf: &[u8]| {
                 if buf == b"hello" {
@@ -1270,13 +1311,18 @@ mod tests {
 
         let output = tokio::time::timeout(
             Duration::from_secs(5),
-            peek_input_until_verdict(&mut reader, &mut [0_u8; 5], None, |buf: &[u8]| {
-                if buf.first() == Some(&0x16) {
-                    PeekVerdict::Match(())
-                } else {
-                    PeekVerdict::Reject
-                }
-            }),
+            peek_input_until_verdict(
+                &mut reader,
+                &mut [0_u8; 5],
+                &mut PeekWaiter::new(None),
+                |buf: &[u8]| {
+                    if buf.first() == Some(&0x16) {
+                        PeekVerdict::Match(())
+                    } else {
+                        PeekVerdict::Reject
+                    }
+                },
+            ),
         )
         .await
         .expect("reject must stop peeking without waiting for a full buffer");
@@ -1305,7 +1351,7 @@ mod tests {
             &mut reader,
             &mut buffer,
             0,
-            None,
+            &mut PeekWaiter::new(None),
             None,
             |buf: &[u8]| {
                 if buf.first() != Some(&0x16) {
@@ -1330,9 +1376,12 @@ mod tests {
         let mut reader = tokio_test::io::Builder::new().read(b"he").build();
         let mut buffer = [0_u8; 8];
 
-        let output = peek_input_until(&mut reader, &mut buffer, None, |buf| {
-            (buf == b"hello").then_some(())
-        })
+        let output = peek_input_until(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf| (buf == b"hello").then_some(()),
+        )
         .await;
 
         assert!(output.data.is_none());
@@ -1347,9 +1396,12 @@ mod tests {
         let mut reader = tokio_test::io::Builder::new().read(b"a").read(b"b").build();
         let mut buffer = [0_u8; 4];
 
-        let output = peek_input_until(&mut reader, &mut buffer, None, |buf| {
-            (buf == b"ab").then_some(())
-        })
+        let output = peek_input_until(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf| (buf == b"ab").then_some(()),
+        )
         .await;
 
         assert_eq!(output.data, Some(()));
@@ -1362,15 +1414,20 @@ mod tests {
         let mut reader = tokio_test::io::Builder::new().read(b"a").read(b"b").build();
         let mut buffer = [0_u8; 4];
 
-        let output = peek_input_until_verdict(&mut reader, &mut buffer, None, |buf: &[u8]| {
-            if buf == b"ab" {
-                PeekVerdict::Match(())
-            } else if b"ab".starts_with(buf) {
-                PeekVerdict::NeedMore
-            } else {
-                PeekVerdict::Reject
-            }
-        })
+        let output = peek_input_until_verdict(
+            &mut reader,
+            &mut buffer,
+            &mut PeekWaiter::new(None),
+            |buf: &[u8]| {
+                if buf == b"ab" {
+                    PeekVerdict::Match(())
+                } else if b"ab".starts_with(buf) {
+                    PeekVerdict::NeedMore
+                } else {
+                    PeekVerdict::Reject
+                }
+            },
+        )
         .await;
 
         assert_eq!(output.data, Some(()));
@@ -1390,7 +1447,7 @@ mod tests {
             &mut buffer,
             64,
             NonZeroUsize::new(4).unwrap(),
-            None,
+            &mut PeekWaiter::new(None),
             |buf: &[u8]| {
                 if buf == b"hello" {
                     PeekVerdict::Match(buf.len())
@@ -1417,7 +1474,7 @@ mod tests {
             &mut buffer,
             8,
             NonZeroUsize::new(8).unwrap(),
-            None,
+            &mut PeekWaiter::new(None),
             |_buf: &[u8]| -> PeekVerdict<()> { unreachable!() },
         )
         .await;
@@ -1439,7 +1496,7 @@ mod tests {
             &mut buffer,
             5,
             NonZeroUsize::new(2).unwrap(),
-            None,
+            &mut PeekWaiter::new(None),
             |_buf: &[u8]| PeekVerdict::<()>::NeedMore,
         )
         .await;
@@ -1461,7 +1518,7 @@ mod tests {
             &mut buffer,
             64,
             NonZeroUsize::new(8).unwrap(),
-            Some(Duration::from_secs(5)),
+            &mut PeekWaiter::new(Some(Duration::from_secs(5))),
             |buf: &[u8]| {
                 if buf == b"hello" {
                     PeekVerdict::Match(())
@@ -1490,7 +1547,7 @@ mod tests {
             &mut buffer,
             64,
             NonZeroUsize::new(8).unwrap(),
-            None,
+            &mut PeekWaiter::new(None),
             |buf: &[u8]| {
                 if buf == b"hello" {
                     PeekVerdict::Match(())
@@ -1519,7 +1576,7 @@ mod tests {
                 &mut buffer,
                 64,
                 NonZeroUsize::new(8).unwrap(),
-                None,
+                &mut PeekWaiter::new(None),
                 |buf: &[u8]| {
                     if buf.is_empty() {
                         PeekVerdict::NeedMore

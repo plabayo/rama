@@ -179,6 +179,9 @@ final class MockTcpFlow: TcpFlowLike, @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Set before handing the flow to the core.
+    var boundInterface: nw_interface_t?
+
     // MARK: - Driving the lifecycle surface (test side)
 
     /// Fire the `open` completion handler. Returns `false` when no

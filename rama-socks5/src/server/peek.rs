@@ -3,17 +3,18 @@ use std::time::Duration;
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
+    extensions::ExtensionsRef,
     io::{
         PeekIoProvider, PrefixedIo, StackReader,
-        peek::{PeekOutput, PeekStopReason, PeekTimeoutError, PeekTimeoutPolicy, PeekVerdict},
+        peek::{
+            PeekOutput, PeekPolicy, PeekPolicyProvider, PeekRead, PeekStopReason, PeekVerdict,
+            PeekWaiter,
+        },
     },
     service::RejectService,
     telemetry::tracing,
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt as _},
-    time::Instant,
-};
+use tokio::io::AsyncRead;
 
 use crate::proto::ProtocolVersion;
 
@@ -25,18 +26,18 @@ use crate::proto::ProtocolVersion;
 /// The SOCKS5 service is selected only for a complete greeting with at least
 /// one advertised method and without `0xff`, which is reserved for the server's
 /// `NO ACCEPTABLE METHODS` response. A definitive non-SOCKS5 prefix or malformed
-/// greeting invokes the fallback under either timeout policy; an inconclusive
-/// timeout is fail-open by default and can be made fail-closed with
-/// [`Socks5PeekRouter::with_peek_timeout_policy`].
+/// greeting invokes the fallback under any policy; an inconclusive timeout or
+/// interrupt is handled by the [`PeekPolicy`], see
+/// [`Socks5PeekRouter::with_peek_policy`].
 ///
 /// This kind of router can be useful in case you want to have a proxy
 /// which supports for example both HTTP proxy requests as well socks5 proxy requests.
 #[derive(Debug, Clone)]
-pub struct Socks5PeekRouter<T, F = RejectService<(), NoSocks5RejectError>> {
+pub struct Socks5PeekRouter<T, F = RejectService<(), NoSocks5RejectError>, Pol = PeekPolicy> {
     socks5_acceptor: T,
     fallback: F,
     peek_timeout: Option<Duration>,
-    peek_timeout_policy: PeekTimeoutPolicy,
+    peek_policy: Pol,
 }
 
 rama_utils::macros::error::static_str_error! {
@@ -51,22 +52,24 @@ impl<T> Socks5PeekRouter<T> {
             socks5_acceptor,
             fallback: RejectService::new(NoSocks5RejectError),
             peek_timeout: None,
-            peek_timeout_policy: PeekTimeoutPolicy::default(),
-        }
-    }
-
-    /// Attach a fallback [`Service`] tp this [`Socks5PeekRouter`].
-    pub fn with_fallback<F>(self, fallback: F) -> Socks5PeekRouter<T, F> {
-        Socks5PeekRouter {
-            socks5_acceptor: self.socks5_acceptor,
-            fallback,
-            peek_timeout: self.peek_timeout,
-            peek_timeout_policy: self.peek_timeout_policy,
+            peek_policy: PeekPolicy::FAIL_OPEN,
         }
     }
 }
 
-impl<T, F> Socks5PeekRouter<T, F> {
+impl<T, Pol> Socks5PeekRouter<T, RejectService<(), NoSocks5RejectError>, Pol> {
+    /// Attach a fallback [`Service`] tp this [`Socks5PeekRouter`].
+    pub fn with_fallback<F>(self, fallback: F) -> Socks5PeekRouter<T, F, Pol> {
+        Socks5PeekRouter {
+            socks5_acceptor: self.socks5_acceptor,
+            fallback,
+            peek_timeout: self.peek_timeout,
+            peek_policy: self.peek_policy,
+        }
+    }
+}
+
+impl<T, F, Pol> Socks5PeekRouter<T, F, Pol> {
     rama_utils::macros::generate_set_and_with! {
         /// Set the maximum time spent peeking for a SOCKS5 greeting.
         ///
@@ -74,23 +77,28 @@ impl<T, F> Socks5PeekRouter<T, F> {
         /// advertised method octets. Values previously sized for a two-byte
         /// prefix may need to be increased for slow or highly fragmented peers.
         ///
-        /// A timeout is inconclusive. Use
-        /// [`Socks5PeekRouter::with_peek_timeout_policy`] to choose whether it
-        /// invokes the fallback or rejects the connection.
+        /// A timeout is inconclusive. Use [`Socks5PeekRouter::with_peek_policy`]
+        /// to choose whether it invokes the fallback, rejects the connection
+        /// or keeps waiting.
         pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
             self.peek_timeout = peek_timeout;
             self
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set how an inconclusive peek timeout is handled.
-        ///
-        /// Defaults to [`PeekTimeoutPolicy::FailOpen`]. A definitive non-SOCKS5
-        /// prefix invokes the fallback under either policy.
-        pub fn peek_timeout_policy(mut self, peek_timeout_policy: PeekTimeoutPolicy) -> Self {
-            self.peek_timeout_policy = peek_timeout_policy;
-            self
+    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
+    /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    ///
+    /// Defaults to [`PeekPolicy::FAIL_OPEN`]. A definitive non-SOCKS5
+    /// prefix invokes the fallback under any policy.
+    ///
+    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
+    pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> Socks5PeekRouter<T, F, Pol2> {
+        Socks5PeekRouter {
+            socks5_acceptor: self.socks5_acceptor,
+            fallback: self.fallback,
+            peek_timeout: self.peek_timeout,
+            peek_policy,
         }
     }
 }
@@ -98,12 +106,11 @@ impl<T, F> Socks5PeekRouter<T, F> {
 async fn peek_socks5_greeting<R>(
     reader: &mut R,
     buffer: &mut [u8; SOCKS5_GREETING_PEEK_LEN],
-    timeout: Option<Duration>,
+    waiter: &mut PeekWaiter,
 ) -> PeekOutput<()>
 where
     R: AsyncRead + Unpin,
 {
-    let deadline = timeout.map(|duration| Instant::now() + duration);
     let mut peek_size = 0;
 
     loop {
@@ -130,40 +137,27 @@ where
         // allowing an invalid version to fall back immediately.
         let target_size = 2 + usize::from(buffer[1]);
         debug_assert!(peek_size < target_size);
-        let read = reader.read(&mut buffer[peek_size..target_size]);
-        let result = match deadline {
-            Some(deadline) => {
-                if Instant::now() >= deadline {
-                    return PeekOutput {
-                        data: None,
-                        peek_size,
-                        stop_reason: PeekStopReason::Timeout,
-                    };
-                }
-                match tokio::time::timeout_at(deadline, read).await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        return PeekOutput {
-                            data: None,
-                            peek_size,
-                            stop_reason: PeekStopReason::Timeout,
-                        };
-                    }
-                }
-            }
-            None => read.await,
-        };
+        let read = waiter
+            .read(reader, &mut buffer[peek_size..target_size], peek_size)
+            .await;
 
-        match result {
-            Ok(0) => {
+        match read {
+            PeekRead::Read(0) => {
                 return PeekOutput {
                     data: None,
                     peek_size,
                     stop_reason: PeekStopReason::Eof,
                 };
             }
-            Ok(n) => peek_size += n,
-            Err(err) => {
+            PeekRead::Read(n) => peek_size += n,
+            PeekRead::Cutoff(cutoff) => {
+                return PeekOutput {
+                    data: None,
+                    peek_size,
+                    stop_reason: cutoff.into(),
+                };
+            }
+            PeekRead::Error(err) => {
                 tracing::debug!("SOCKS5 greeting peek read error: {err}");
                 return PeekOutput {
                     data: None,
@@ -202,10 +196,11 @@ fn socks5_greeting_verdict(buffer: &[u8]) -> PeekVerdict<()> {
     PeekVerdict::Match(())
 }
 
-impl<PeekableInput, Output, T, F> Service<PeekableInput> for Socks5PeekRouter<T, F>
+impl<PeekableInput, Output, T, F, Pol> Service<PeekableInput> for Socks5PeekRouter<T, F, Pol>
 where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
+    Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
             PeekableInput::Mapped<Socks5PrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
@@ -221,20 +216,18 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
+        let mut waiter = PeekWaiter::new(self.peek_timeout)
+            .with_policy(self.peek_policy.peek_policy(&input))
+            .maybe_with_interrupt(input.extensions().get_arc());
         let mut peek_buf = [0u8; SOCKS5_GREETING_PEEK_LEN];
         let peekable_io = input.peek_io_mut();
 
         let PeekOutput {
             data: socks5_prefix,
             peek_size,
-            stop_reason,
-        } = peek_socks5_greeting(peekable_io, &mut peek_buf, self.peek_timeout).await;
-
-        if stop_reason == PeekStopReason::Timeout
-            && self.peek_timeout_policy == PeekTimeoutPolicy::FailClosed
-        {
-            return Err(PeekTimeoutError::new().into());
-        }
+            ..
+        } = peek_socks5_greeting(peekable_io, &mut peek_buf, &mut waiter).await;
+        waiter.check::<BoxError>()?;
 
         let is_socks5 = socks5_prefix.is_some();
 
@@ -285,6 +278,8 @@ mod test {
     };
 
     use super::*;
+    use rama_core::io::peek::PeekTimeoutError;
+    use tokio::io::AsyncReadExt as _;
 
     #[tokio::test]
     async fn test_peek_router() {
@@ -603,6 +598,30 @@ mod test {
         assert_eq!("fallback", response);
     }
 
+    #[derive(Debug, Clone, rama_core::extensions::Extension)]
+    struct Strict;
+
+    #[tokio::test]
+    async fn peek_policy_is_selected_per_input() {
+        let router = Socks5PeekRouter::new(service_fn(async || Ok::<_, Infallible>("socks5")))
+            .with_peek_timeout(Duration::from_millis(10))
+            .with_peek_policy(|input: &ServiceInput<ScriptedReader>| {
+                if input.extensions().contains::<Strict>() {
+                    PeekPolicy::FAIL_CLOSED
+                } else {
+                    PeekPolicy::FAIL_OPEN
+                }
+            })
+            .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
+        let partial = || ServiceInput::new(ScriptedReader::new([b"\x05".as_slice()], true));
+
+        assert_eq!("fallback", router.serve(partial()).await.unwrap());
+        let strict = partial();
+        strict.extensions().insert(Strict);
+        let error = router.serve(strict).await.unwrap_err();
+        assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
+    }
+
     #[tokio::test]
     async fn partial_socks5_greeting_fail_closed_returns_error_without_fallback() {
         let fallback_calls = Arc::new(AtomicUsize::new(0));
@@ -613,7 +632,7 @@ mod test {
         });
         let router = Socks5PeekRouter::new(service_fn(async || Ok::<_, Infallible>("socks5")))
             .with_peek_timeout(Duration::from_millis(10))
-            .with_peek_timeout_policy(PeekTimeoutPolicy::FailClosed)
+            .with_peek_policy(PeekPolicy::FAIL_CLOSED)
             .with_fallback(fallback);
         let input = ServiceInput::new(ScriptedReader::new([b"\x05".as_slice()], true));
 
@@ -624,10 +643,10 @@ mod test {
 
     #[tokio::test]
     async fn definitive_non_socks5_prefix_falls_back_under_both_timeout_policies() {
-        for policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
+        for policy in [PeekPolicy::FAIL_OPEN, PeekPolicy::FAIL_CLOSED] {
             let router = Socks5PeekRouter::new(service_fn(async || Ok::<_, Infallible>("socks5")))
                 .with_peek_timeout(Duration::from_millis(10))
-                .with_peek_timeout_policy(policy)
+                .with_peek_policy(policy)
                 .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
 
             let response = router
