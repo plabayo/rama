@@ -69,7 +69,7 @@ impl Default for MultipartConfig {
 
 impl MultipartConfig {
     /// Default maximum number of parts in a [`Multipart`] stream.
-    pub const DEFAULT_MAX_PARTS: usize = 100;
+    pub const DEFAULT_MAX_PARTS: usize = 1000;
 
     /// Create a config without per-field byte limits and with the
     /// [default part limit](MultipartConfig::DEFAULT_MAX_PARTS).
@@ -1175,13 +1175,14 @@ mod test {
 
     #[tokio::test]
     async fn test_multipart_default_part_limit() {
+        let max = MultipartConfig::DEFAULT_MAX_PARTS;
         for config in [None, Some(MultipartConfig::new())] {
             assert_eq!(
-                post_parts(100, config.clone()).await,
-                (StatusCode::OK, Bytes::from_static(b"100"))
+                post_parts(max, config.clone()).await,
+                (StatusCode::OK, Bytes::from(max.to_string()))
             );
             assert_eq!(
-                post_parts(101, config).await,
+                post_parts(max + 1, config).await,
                 (
                     StatusCode::PAYLOAD_TOO_LARGE,
                     Bytes::from_static(b"Request has too many `multipart/form-data` parts")
@@ -1206,9 +1207,10 @@ mod test {
     #[tokio::test]
     async fn test_multipart_unlimited_parts() {
         let config = MultipartConfig::new().without_max_parts();
+        let count = MultipartConfig::DEFAULT_MAX_PARTS + 50;
         assert_eq!(
-            post_parts(250, Some(config)).await,
-            (StatusCode::OK, Bytes::from_static(b"250"))
+            post_parts(count, Some(config)).await,
+            (StatusCode::OK, Bytes::from(count.to_string()))
         );
     }
 
