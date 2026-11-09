@@ -335,6 +335,7 @@ pub async fn run(
         // Assets
         .with_get("/assets/style.css", endpoints::get_assets_style)
         .with_get("/assets/script.js", endpoints::get_assets_script)
+        .with_get("/assets/llama.svg", endpoints::get_assets_llama)
         // Report and API
         .with_get("/report", endpoints::get_report)
         // WS

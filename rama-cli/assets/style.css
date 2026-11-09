@@ -45,6 +45,14 @@ h1 a {
     color: darkblue;
 }
 
+h1 a img {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    margin-right: 0.25em;
+    vertical-align: -0.125em;
+}
+
 #root,
 #__next {
     isolation: isolate;

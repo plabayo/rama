@@ -110,6 +110,21 @@ pub(in super::super) fn is_speculative(headers: &HeaderMap) -> bool {
     headers.typed_get::<SecPurpose>().is_some()
 }
 
+/// A stylesheet, script or image the page loads from its own assets. Its flow is
+/// described by its Fetch metadata, so a request without it is not one.
+fn is_subresource(method: &Method, uri: &Uri, headers: &HeaderMap) -> bool {
+    method == Method::GET
+        && uri
+            .path()
+            .is_some_and(|path| path.as_encoded_str().starts_with("/assets/"))
+        && !is_protocol_probe(uri)
+        && !is_speculative(headers)
+        && matches!(
+            headers.typed_get::<SecFetchDest>(),
+            Some(SecFetchDest::Style | SecFetchDest::Script | SecFetchDest::Image)
+        )
+}
+
 fn initiator(method: &Method, uri: &Uri, headers: &HeaderMap) -> Option<Initiator> {
     let path = uri.path()?.as_encoded_str();
     if method == Method::GET
@@ -162,8 +177,12 @@ where
             && request.headers().typed_get::<SecFetchDest>() == Some(SecFetchDest::Document)
             && !is_speculative(request.headers());
         let initiator = initiator.or_else(|| navigation.then_some(Initiator::Navigator));
+        // No handler reports these requests: they are submitted once answered.
+        let untracked = bootstrap_only
+            || (initiator.is_none()
+                && is_subresource(request.method(), request.uri(), request.headers()));
         let mut completed = None;
-        if (initiator.is_some() || bootstrap_only)
+        if (initiator.is_some() || untracked)
             && let Some(reservation) = self.queue.try_reserve()
         {
             let day = match current_day() {
@@ -194,7 +213,7 @@ where
                         prepared.timer = Some(PreparationTimer(timer.abort_handle()));
                     }
                     request.extensions().insert_arc(intent);
-                    if bootstrap_only {
+                    if untracked {
                         completed = Some(request.extensions().clone());
                     }
                 }

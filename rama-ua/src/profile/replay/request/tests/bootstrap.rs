@@ -192,6 +192,42 @@ fn initial_mapping_keeps_duplicate_current_values_and_exact_field_associations()
 }
 
 #[test]
+fn nearest_flow_initial_request_drops_captured_insertions() {
+    let (mut selection, bootstrap, sequence) = initial_recipe();
+    selection.effective.flow_match = FlowMatch::Nearest {
+        other_destination: false,
+        other_method: false,
+    };
+    let mut original = HeaderMap::new();
+    original.append("x-live", HeaderValue::from_static("current-first"));
+    original.append("x-live", HeaderValue::from_static("current-second"));
+    let replayed = selection
+        .replay_initial_request(&original, &bootstrap, &sequence)
+        .unwrap();
+    for item in [
+        LoweredProfileItem::NearestFlow,
+        LoweredProfileItem::Http3InitialInsertions,
+    ] {
+        assert!(
+            replayed
+                .report
+                .differences
+                .contains(&ProfilePreservationDifference::LoweredProfileItem { item }),
+            "{item:?}"
+        );
+    }
+    let choices = replayed.qpack_headers.unwrap();
+    assert!(
+        choices
+            .headers
+            .iter()
+            .map(|(_name, preference)| preference)
+            .chain(choices.pseudo_headers.values())
+            .all(|preference| preference.insertion.is_none())
+    );
+}
+
+#[test]
 fn initial_mapping_rejects_malformed_and_lowers_unusable_associations() {
     let (selection, bootstrap, sequence) = initial_recipe();
     let mut original = HeaderMap::new();

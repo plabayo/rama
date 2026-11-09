@@ -13,7 +13,8 @@ use std::{fmt, str::FromStr};
 /// or implicitly via a layer service to extract that info from a custom http header.
 ///
 /// [`ProfileEmulateLayer`] uses it to select the captured request flow to replay;
-/// without it a top-level navigation is assumed.
+/// without it the request's Fetch metadata describes the flow, or else a
+/// top-level navigation is assumed.
 ///
 /// [`Extensions`]: rama_core::extensions::Extensions
 /// [`ProfileEmulateLayer`]: crate::layer::emulate::ProfileEmulateLayer

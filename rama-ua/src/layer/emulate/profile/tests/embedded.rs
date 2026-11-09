@@ -3,7 +3,7 @@ use std::ptr;
 use rama_http::{HeaderMap, HeaderValue, header};
 
 use super::{
-    parity::{embedded, embedded_database},
+    parity::{embedded, embedded_database, emulate_seeded},
     *,
 };
 use crate::profile::{
@@ -14,6 +14,7 @@ use crate::profile::{
         variants::{ProfileSelector, RequestSelection, SelectionRequest, VariantPins},
     },
 };
+use crate::{PlatformKind, UserAgentKind, layer::emulate::SelectedUserAgentProfile};
 
 #[tokio::test]
 async fn embedded_h3_emulation_prepares_quic_and_h3_components() {
@@ -369,4 +370,100 @@ fn replay_into_a_full_header_map_errors_instead_of_panicking() {
         }
     }
     selection.replay_request(&headers).unwrap_err();
+}
+
+/// Requests a Chrome on macOS sends while browsing a page through a MITM proxy.
+const BROWSING: [(&str, &str, &str, &str, Option<&str>); 6] = [
+    ("GET", "navigate", "none", "document", Some("?1")),
+    ("GET", "navigate", "same-origin", "document", Some("?1")),
+    ("GET", "no-cors", "same-origin", "style", None),
+    ("GET", "no-cors", "cross-site", "image", None),
+    ("GET", "no-cors", "same-origin", "script", None),
+    ("POST", "cors", "same-origin", "empty", None),
+];
+
+#[tokio::test]
+async fn embedded_browsing_emulates_every_request_of_a_page() {
+    let selector = ProfileSelector {
+        client: Some(UserAgentKind::Chromium.as_str().into()),
+        platform: Some(PlatformKind::MacOS),
+        ..ProfileSelector::default()
+    };
+    for (method, mode, site, destination, user_activation) in BROWSING {
+        for seed in 0..4 {
+            let mut request = Request::builder()
+                .method(method)
+                .uri("https://h2.fp.ramaproxy.org/report")
+                .version(Version::HTTP_2)
+                .extension(TargetHttpVersion(Version::HTTP_2))
+                .header("sec-fetch-mode", mode)
+                .header("sec-fetch-site", site)
+                .header("sec-fetch-dest", destination)
+                .body(())
+                .unwrap();
+            if let Some(value) = user_activation {
+                request
+                    .headers_mut()
+                    .insert("sec-fetch-user", HeaderValue::from_static(value));
+            }
+            let emitted = emulate_seeded(
+                embedded().with_selector(selector.clone()),
+                request,
+                [seed; 32],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{method} {mode} {site} {destination}: {error}"));
+            let selected = emitted
+                .extensions()
+                .get_ref::<SelectedUserAgentProfile>()
+                .unwrap();
+            assert_eq!(selected.ua_kind, Some(UserAgentKind::Chromium));
+            assert_eq!(selected.platform, Some(PlatformKind::MacOS));
+            let headers = emitted.headers();
+            assert_eq!(headers["sec-fetch-mode"], mode);
+            assert_eq!(headers["sec-fetch-site"], site);
+            assert_eq!(headers["sec-fetch-dest"], destination);
+            assert_eq!(
+                headers
+                    .get("sec-fetch-user")
+                    .map(|value| value.to_str().unwrap()),
+                user_activation,
+                "{method} {mode} {site} {destination}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn embedded_request_without_context_replays_a_navigation() {
+    for version in [Version::HTTP_2, Version::HTTP_3] {
+        for seed in 0..=u8::MAX {
+            let emitted = emulate_seeded(
+                embedded(),
+                Request::builder()
+                    .uri("https://example.com/")
+                    .version(version)
+                    .extension(TargetHttpVersion(version))
+                    .body(())
+                    .unwrap(),
+                [seed; 32],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{version:?} seed {seed}: {error}"));
+            // Some navigations were captured without Fetch metadata.
+            for (name, navigation) in [
+                ("sec-fetch-mode", "navigate"),
+                ("sec-fetch-dest", "document"),
+            ] {
+                assert!(
+                    emitted
+                        .headers()
+                        .get(name)
+                        .is_none_or(|value| value == navigation),
+                    "{version:?} seed {seed}: {name} {:?}",
+                    emitted.headers().get(name)
+                );
+            }
+        }
+    }
 }

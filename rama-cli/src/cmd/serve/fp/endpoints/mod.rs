@@ -810,6 +810,12 @@ pub(super) async fn get_assets_script() -> impl IntoResponse {
     )
 }
 
+const LLAMA_SVG: &str = include_str!("../../../../../assets/llama.svg");
+
+pub(super) async fn get_assets_llama() -> impl IntoResponse {
+    (response::Headers::single(ContentType::svg()), LLAMA_SVG)
+}
+
 //------------------------------------------
 // render utilities
 //------------------------------------------
@@ -882,7 +888,13 @@ where
         ),
         body!(main!(
             h1!(
-                a!(href = "/", title = "rama-fp home", "ラマ"),
+                a!(
+                    href = "/",
+                    title = "rama-fp home",
+                    // Same-origin so the capture service records the image subresource.
+                    img!(src = "/assets/llama.svg", alt = ""),
+                    "ラマ",
+                ),
                 PreEscaped(" &nbsp; | &nbsp; "),
                 h1_title,
             ),

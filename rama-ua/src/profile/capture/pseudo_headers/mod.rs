@@ -90,9 +90,7 @@ impl PseudoHeaderCapture {
     /// Check method-dependent shapes against the flow rather than treating an
     /// observed CONNECT order as interchangeable with ordinary requests.
     pub fn validate_method(&self, method: &Method) -> Result<(), ProfileDataError> {
-        let mut mask = 0u8;
         for field in &self.fields {
-            mask |= 1 << tag(field.name);
             if field.name == PseudoHeader::Method
                 && let Some(metadata) = field.representation
             {
@@ -103,6 +101,16 @@ impl PseudoHeaderCapture {
                 )?;
             }
         }
+        self.validate_method_shape(method)
+    }
+
+    /// [`Self::validate_method`] for a capture recorded with another method,
+    /// whose `:method` representation is therefore not replayed.
+    pub fn validate_method_shape(&self, method: &Method) -> Result<(), ProfileDataError> {
+        let mask = self
+            .fields
+            .iter()
+            .fold(0u8, |mask, field| mask | 1 << tag(field.name));
         let valid = if *method == Method::CONNECT {
             matches!(mask, 0b00101 | 0b11111)
         } else {
