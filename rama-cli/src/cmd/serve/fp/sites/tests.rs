@@ -177,6 +177,15 @@ fn the_page_policy_admits_the_probe_hosts() {
         ] {
             assert!(directive.contains(host), "{directive}");
         }
+        // 'none' must stand alone; next to hosts browsers ignore or enforce it.
+        assert!(!directive.contains("'none'"), "{directive}");
+    }
+    let connect = directives
+        .iter()
+        .find(|directive| directive.starts_with("connect-src"))
+        .unwrap();
+    for host in ["wss://h2.fp.ss.example.org", "wss://h2.fp.xss.example.com"] {
+        assert!(connect.contains(host), "{connect}");
     }
 }
 

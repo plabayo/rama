@@ -132,17 +132,21 @@ impl Sites {
 
     /// Let pages load subresources, call the APIs and submit forms on the probe hosts.
     pub(super) fn extend_csp(&self, csp: ContentSecurityPolicy) -> ContentSecurityPolicy {
-        let with_sites = |sources: SourceList| {
+        let with_scheme = |sources: SourceList, scheme: Protocol| {
             self.sites.iter().fold(sources, |sources, site| {
-                sources.with_host(HostSource::new(site.host.clone()).with_scheme(Protocol::HTTPS))
+                sources.with_host(HostSource::new(site.host.clone()).with_scheme(scheme.clone()))
             })
         };
+        let with_sites = |sources| with_scheme(sources, Protocol::HTTPS);
         csp.with_script_src(with_sites(SourceList::self_origin()))
             .with_style_src(with_sites(SourceList::self_origin()))
             .with_img_src(with_sites(SourceList::self_origin().with_data()))
-            // CSP3 lets an https source match wss for the WebSocket probe.
-            .with_connect_src(with_sites(SourceList::self_origin()))
-            .with_frame_src(with_sites(SourceList::none()))
+            // Browsers do not let an https source match wss, as CSP3 allows.
+            .with_connect_src(with_scheme(
+                with_sites(SourceList::self_origin()),
+                Protocol::WSS,
+            ))
+            .with_frame_src(with_sites(SourceList::empty()))
             .with_form_action(with_sites(SourceList::self_origin()))
     }
 }

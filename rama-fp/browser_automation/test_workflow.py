@@ -454,15 +454,28 @@ class SiteProbeTests(unittest.TestCase):
         self.assertEqual(checked["same-site"]["ws"], "h2")
 
     def test_site_navigations_chain_within_each_pages_form_policy(self):
+        start = "https://h2.fp.example.org/form?source=web&turtles=yes"
+
         class Browser:
-            current_url = "https://h2.fp.example.org/form?source=web&turtles=yes"
+            """Like Safari: the URL changes before the next document replaces this one."""
+
+            current_url = start
+            document_url = start
             pending = None
+            polls = 0
             injected = []
 
             def execute_script(self, script, *args):
+                if "document.URL" in script:
+                    self.polls += 1
+                    if self.polls > 2:
+                        self.document_url = self.current_url
+                    return self.document_url == args[0]
                 if args:
                     self.pending = args[0]
-                    self.injected.append(("form" if "form" in script else "link", args[0]))
+                    self.injected.append(
+                        ("form" if "form" in script else "link", args[0], self.document_url)
+                    )
                     return None
                 return "h2" if "nextHopProtocol" in script else True
 
@@ -470,6 +483,7 @@ class SiteProbeTests(unittest.TestCase):
 
         def navigate(driver, _selector, timeout=30):
             driver.current_url = driver.pending
+            driver.polls = 0
 
         sites = workflow.parse_site_probes(json.dumps(SITES))
         with patch.object(workflow, "submit_form", side_effect=navigate), patch.object(
@@ -477,18 +491,22 @@ class SiteProbeTests(unittest.TestCase):
         ):
             protocols = workflow.visit_sites(
                 browser,
-                workflow.WebDriverWait(browser, 1),
+                workflow.WebDriverWait(browser, 5, poll_frequency=0.01),
                 "https://h2.fp.example.org/",
                 sites,
                 1,
             )
+        same_form = "https://h2.fp.ss.example.org/form?rama-fp-site=tok_ss-1"
+        cross_form = "https://h2.fp.xss.example.com/form?rama-fp-site=tok_xss-2"
+        same_landing = "https://h2.fp.ss.example.org/landing?rama-fp-site=tok_ss-1"
+        # Each step starts from the document the previous one loaded.
         self.assertEqual(
             browser.injected,
             [
-                ("form", "https://h2.fp.ss.example.org/form?rama-fp-site=tok_ss-1"),
-                ("form", "https://h2.fp.xss.example.com/form?rama-fp-site=tok_xss-2"),
-                ("link", "https://h2.fp.ss.example.org/landing?rama-fp-site=tok_ss-1"),
-                ("link", "https://h2.fp.example.org/landing?rama-fp-site=tok_ss-1"),
+                ("form", same_form, start),
+                ("form", cross_form, same_form),
+                ("link", same_landing, cross_form),
+                ("link", "https://h2.fp.example.org/landing?rama-fp-site=tok_ss-1", same_landing),
             ],
         )
         self.assertEqual(
@@ -498,7 +516,6 @@ class SiteProbeTests(unittest.TestCase):
                 "cross-site": {"form": "h2", "navigate": "h2"},
             },
         )
-
 
 if __name__ == "__main__":
     unittest.main()

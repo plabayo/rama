@@ -68,17 +68,27 @@ def activate_by_keyboard(driver, selector, timeout=30):
     ).until(activate)
 
 
-def get_form_navigation_complete(browser):
-    """Wait for the GET form's distinct URL, without probing a detached DOM node."""
-    url = urlsplit(browser.current_url)
-    return (
-        url.path == "/form"
-        and parse_qs(url.query) == {"source": ["web"], "turtles": ["yes"]}
-        and browser.execute_script(
+def navigated_to(accept):
+    """A wait condition for a loaded document at a URL that `accept` admits.
+
+    Safari reports a navigation's URL before its document replaces the current one,
+    so the loaded document must itself be at that URL.
+    """
+
+    def complete(browser):
+        url = browser.current_url
+        return accept(urlsplit(url)) and browser.execute_script(
             "return document.readyState === 'complete' && document.URL === arguments[0]",
-            browser.current_url,
+            url,
         ) is True
-    )
+
+    return complete
+
+
+get_form_navigation_complete = navigated_to(
+    lambda url: url.path == "/form"
+    and parse_qs(url.query) == {"source": ["web"], "turtles": ["yes"]}
+)
 
 
 @dataclass(frozen=True)
@@ -587,9 +597,8 @@ def visit_sites(driver, wait, origin, sites, timeout):
             follow_link(driver, "#rama-fp-site-link", timeout=timeout)
         expected = urlsplit(target)
         wait.until(
-            lambda browser: (lambda url: url.hostname == expected.hostname
-                             and url.path == expected.path)(urlsplit(browser.current_url))
-            and browser.execute_script("return document.readyState === 'complete'") is True,
+            navigated_to(lambda url, expected=expected: url.hostname == expected.hostname
+                         and url.path == expected.path),
             f"{site} {flow} did not navigate",
         )
         protocol = PROTOCOLS.get(driver.execute_script(
@@ -703,11 +712,7 @@ def run_capture_flow(
     # click no-op on the long report page. The browser still submits the form.
     submit_form(driver, 'form[action="/form"]', timeout=timeout)
     wait.until(
-        lambda browser: urlsplit(browser.current_url).path == "/form"
-        and browser.execute_script(
-            "return document.readyState === 'complete' && document.URL === arguments[0]",
-            browser.current_url,
-        ) is True,
+        navigated_to(lambda url: url.path == "/form"),
         "POST form submission did not navigate",
     )
     post_protocol = driver.execute_script(
