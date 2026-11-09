@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::HeaderMap;
-use crate::body::http_body::{Body, Frame};
+use crate::body::http_body::{Body, Frame, SizeHint};
 use bytes::{Buf, BufMut, Bytes};
 
 use crate::body::http_body_util::util::BufList;
@@ -93,6 +93,14 @@ impl<B: Buf> Body for Collected<B> {
 
         Poll::Ready(Some(Ok(frame)))
     }
+
+    fn is_end_stream(&self) -> bool {
+        self.trailers.is_none() && !self.bufs.has_remaining()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.bufs.remaining() as u64)
+    }
 }
 
 impl<B> Default for Collected<B> {
@@ -115,6 +123,25 @@ mod tests {
     use crate::body::http_body_util::{BodyExt, Full, StreamBody};
 
     use super::*;
+
+    #[tokio::test]
+    async fn size_and_end_follow_what_is_left() {
+        let mut collected = Collected::default();
+        assert!(collected.is_end_stream());
+        collected.push_frame(Frame::data(&b"hello"[..]));
+        collected.push_frame(Frame::data(&b" world"[..]));
+        collected.push_frame(Frame::trailers(HeaderMap::new()));
+        assert_eq!(collected.size_hint().exact(), Some(11));
+
+        assert!(collected.frame().await.unwrap().unwrap().is_data());
+        assert_eq!(collected.size_hint().exact(), Some(6));
+        assert!(collected.frame().await.unwrap().unwrap().is_data());
+        assert_eq!(collected.size_hint().exact(), Some(0));
+        // the trailers are still to come
+        assert!(!collected.is_end_stream());
+        assert!(collected.frame().await.unwrap().unwrap().is_trailers());
+        assert!(collected.is_end_stream());
+    }
 
     #[tokio::test]
     async fn full_body() {

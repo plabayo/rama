@@ -1,9 +1,6 @@
 //! Connection-scoped QPACK encoding, bounded reference tracking and decoder-stream feedback.
 
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, VecDeque},
-};
+use std::collections::{BTreeMap, VecDeque};
 
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -48,7 +45,73 @@ pub struct EncodeField<'a, N, V> {
     pub preferences: Option<&'a FieldPreferences>,
 }
 
-impl<'a> EncodeField<'a, Cow<'a, [u8]>, &'a [u8]> {
+/// Names up to this long are lowercased without allocating.
+///
+/// With the length and the variant tag this is as large as a borrowed or owned name,
+/// so holding names inline does not grow the fields that carry them.
+const INLINE_NAME_LEN: usize = 22;
+
+const _: () =
+    assert!(size_of::<LowercaseName<'_>>() == size_of::<Box<[u8]>>() + size_of::<usize>());
+
+/// The lowercase spelling of a header name, as [`EncodeField::from_header`] puts it on the wire.
+#[derive(Clone, Debug)]
+pub struct LowercaseName<'a>(LowercaseNameRepr<'a>);
+
+#[derive(Clone, Debug)]
+enum LowercaseNameRepr<'a> {
+    Borrowed(&'a [u8]),
+    Inline {
+        bytes: [u8; INLINE_NAME_LEN],
+        len: u8,
+    },
+    Owned(Box<[u8]>),
+}
+
+impl<'a> LowercaseName<'a> {
+    fn new(name: &'a rama_http_types::HeaderName) -> Self {
+        let spelled = name.as_str().as_bytes();
+        // Only a custom name keeps the case it was received in.
+        if name.standard().is_some() || !spelled.iter().any(u8::is_ascii_uppercase) {
+            return Self(LowercaseNameRepr::Borrowed(spelled));
+        }
+        Self(match u8::try_from(spelled.len()) {
+            Ok(len) if spelled.len() <= INLINE_NAME_LEN => {
+                let mut bytes = [0; INLINE_NAME_LEN];
+                bytes[..spelled.len()].copy_from_slice(spelled);
+                bytes.make_ascii_lowercase();
+                LowercaseNameRepr::Inline { bytes, len }
+            }
+            _ => LowercaseNameRepr::Owned(spelled.to_ascii_lowercase().into_boxed_slice()),
+        })
+    }
+
+    /// A name that is lowercase as given.
+    #[must_use]
+    pub fn lowercase(name: &'a [u8]) -> Self {
+        debug_assert!(!name.iter().any(u8::is_ascii_uppercase));
+        Self(LowercaseNameRepr::Borrowed(name))
+    }
+
+    /// Whether these are the bytes of the header name itself.
+    #[must_use]
+    pub fn is_borrowed(&self) -> bool {
+        matches!(self.0, LowercaseNameRepr::Borrowed(_))
+    }
+}
+
+impl AsRef<[u8]> for LowercaseName<'_> {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        match &self.0 {
+            LowercaseNameRepr::Borrowed(name) => name,
+            LowercaseNameRepr::Inline { bytes, len } => &bytes[..usize::from(*len)],
+            LowercaseNameRepr::Owned(name) => name,
+        }
+    }
+}
+
+impl<'a> EncodeField<'a, LowercaseName<'a>, &'a [u8]> {
     /// Encode a lowercase name and preserve [`rama_http_types::HeaderValue::is_sensitive`].
     /// Values and already-lowercase names remain borrowed. Mixed-case custom names
     /// are normalized only for the wire, without changing the original header map.
@@ -58,10 +121,7 @@ impl<'a> EncodeField<'a, Cow<'a, [u8]>, &'a [u8]> {
         value: &'a rama_http_types::HeaderValue,
     ) -> Self {
         Self {
-            name: match name.as_lower_str() {
-                Cow::Borrowed(name) => Cow::Borrowed(name.as_bytes()),
-                Cow::Owned(name) => Cow::Owned(name.into_bytes()),
-            },
+            name: LowercaseName::new(name),
             value: value.as_bytes(),
             never_index: value.is_sensitive(),
             preferences: None,

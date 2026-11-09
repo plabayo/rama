@@ -249,7 +249,6 @@ impl Decoder {
             // determined from the first byte.
             match Representation::load(ty)? {
                 Representation::Indexed => {
-                    tracing::trace!("indexed: rem = {}", src.remaining());
                     can_resize = false;
                     let entry = self.decode_indexed(src)?;
                     consume(src);
@@ -258,7 +257,6 @@ impl Decoder {
                     }
                 }
                 Representation::LiteralWithIndexing => {
-                    tracing::trace!("literal with indexing: rem = {}", src.remaining());
                     can_resize = false;
                     let entry = self.decode_literal(src, true)?;
 
@@ -272,7 +270,6 @@ impl Decoder {
                     }
                 }
                 Representation::LiteralWithoutIndexing => {
-                    tracing::trace!("LiteralWithoutIndexing: rem = {}", src.remaining());
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
                     consume(src);
@@ -281,7 +278,6 @@ impl Decoder {
                     }
                 }
                 Representation::LiteralNeverIndexed => {
-                    tracing::trace!("LiteralNeverIndexed: rem = {}", src.remaining());
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?.with_sensitive(true);
                     consume(src);
@@ -291,7 +287,6 @@ impl Decoder {
                     }
                 }
                 Representation::SizeUpdate => {
-                    tracing::trace!("SizeUpdate: rem = {}", src.remaining());
                     if !can_resize {
                         return Err(DecoderError::InvalidMaxDynamicSize);
                     }
@@ -549,7 +544,9 @@ fn consume(buf: &mut Cursor<&mut BytesMut>) {
     // remove bytes from the internal BytesMut when they have been successfully
     // decoded. This is a more permanent cursor position, which will be
     // used to resume if decoding was only partial.
-    take(buf, 0);
+    let pos = buf.position() as usize;
+    buf.get_mut().advance(pos);
+    buf.set_position(0);
 }
 
 // ===== impl Table =====

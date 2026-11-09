@@ -136,8 +136,8 @@ impl FileRequestExtent {
             (Self::Loaded(contents), Some(range)) => {
                 Body::from(contents.slice(*range.start() as usize..=*range.end() as usize))
             }
-            (Self::Stream(file, _), None) => {
-                Body::new(AsyncReadBody::with_capacity(file, chunk_size).boxed())
+            (Self::Stream(file, size), None) => {
+                Body::new(AsyncReadBody::with_capacity_limited(file, chunk_size, size).boxed())
             }
             (Self::Stream(file, _), Some(range)) => Body::new(
                 AsyncReadBody::with_capacity_limited(

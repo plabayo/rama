@@ -267,20 +267,23 @@ impl Error {
         self.find_source::<TimedOut>().is_some()
     }
 
-    #[inline(always)]
+    #[cold]
+    #[inline(never)]
     pub(super) fn new(kind: Kind) -> Self {
         Self {
             inner: Box::new(ErrorImpl { kind, cause: None }),
         }
     }
 
-    #[inline(always)]
+    #[cold]
+    #[inline(never)]
     pub(super) fn with<C: Into<BoxError>>(mut self, cause: C) -> Self {
         self.inner.cause = Some(cause.into());
         self
     }
 
-    #[inline(always)]
+    #[cold]
+    #[inline(never)]
     pub(super) fn with_display(
         mut self,
         msg: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
@@ -307,107 +310,107 @@ impl Error {
             .unwrap_or(h2::Reason::INTERNAL_ERROR)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_canceled() -> Self {
         Self::new(Kind::Canceled)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_parse_internal() -> Self {
         Self::new(Kind::Parse(Parse::Internal))
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_incomplete() -> Self {
         Self::new(Kind::IncompleteMessage)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_too_large() -> Self {
         Self::new(Kind::Parse(Parse::TooLarge))
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_version_h2() -> Self {
         Self::new(Kind::Parse(Parse::VersionH2))
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_unexpected_message() -> Self {
         Self::new(Kind::UnexpectedMessage)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_io(cause: std::io::Error) -> Self {
         Self::new(Kind::Io).with(cause)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_closed() -> Self {
         Self::new(Kind::ChannelClosed)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_body<E: Into<BoxError>>(cause: E) -> Self {
         Self::new(Kind::Body).with(cause)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_body_write<E: Into<BoxError>>(cause: E) -> Self {
         Self::new(Kind::BodyWrite).with(cause)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_body_write_aborted() -> Self {
         Self::new(Kind::User(User::BodyWriteAborted))
     }
 
-    #[inline(always)]
+    #[cold]
     fn new_user(user: User) -> Self {
         Self::new(Kind::User(user))
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_user_header() -> Self {
         Self::new_user(User::UnexpectedHeader)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_user_target() -> Self {
         Self::new_user(User::InvalidTarget)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_header_timeout() -> Self {
         Self::new(Kind::HeaderTimeout)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_user_unsupported_status_code() -> Self {
         Self::new_user(User::UnsupportedStatusCode)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_user_service<E: Into<BoxError>>(cause: E) -> Self {
         Self::new_user(User::Service).with(cause)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_user_body<E: Into<BoxError>>(cause: E) -> Self {
         Self::new_user(User::Body).with(cause)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_shutdown(cause: std::io::Error) -> Self {
         Self::new(Kind::Shutdown).with(cause)
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_user_dispatch_gone() -> Self {
         Self::new(Kind::User(User::DispatchGone))
     }
 
-    #[inline(always)]
+    #[cold]
     pub(super) fn new_h2(cause: h2::Error) -> Self {
         match cause.try_into_io() {
             Ok(io_err) => Self::new_io(io_err),
@@ -416,6 +419,7 @@ impl Error {
     }
 
     /// Only for the error of one request: its own stream outcome, or it was never opened.
+    #[cold]
     pub(super) fn new_h2_request(cause: h2::Error) -> Self {
         // a remote GOAWAY only reaches a request when it does not cover that request
         if cause.is_remote()

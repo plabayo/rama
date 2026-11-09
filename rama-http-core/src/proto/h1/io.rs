@@ -409,6 +409,9 @@ impl<T: Unpin, B> Unpin for Buffered<T, B> {}
 
 // TODO: This trait is old... at least rename to PollBytes or something...
 pub(crate) trait MemRead {
+    /// Reads one byte, or `None` once the transport reached EOF.
+    fn read_byte(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<Option<u8>>>;
+
     fn read_mem(&mut self, cx: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>>;
 }
 
@@ -417,6 +420,16 @@ where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     B: Buf,
 {
+    #[inline]
+    fn read_byte(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<Option<u8>>> {
+        if self.read_buf.is_empty() && ready!(self.poll_read_from_io(cx))? == 0 {
+            return Poll::Ready(Ok(None));
+        }
+        let byte = self.read_buf[0];
+        self.read_buf.advance(1);
+        Poll::Ready(Ok(Some(byte)))
+    }
+
     fn read_mem(&mut self, cx: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
         if !self.read_buf.is_empty() {
             let n = std::cmp::min(len, self.read_buf.len());
@@ -710,6 +723,11 @@ impl<B: Buf> Buf for WriteBuf<B> {
     #[inline]
     fn remaining(&self) -> usize {
         self.headers.remaining() + self.queue.remaining()
+    }
+
+    #[inline]
+    fn has_remaining(&self) -> bool {
+        self.headers.has_remaining() || self.queue.has_remaining()
     }
 
     #[inline]

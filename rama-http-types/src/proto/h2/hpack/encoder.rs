@@ -321,17 +321,9 @@ fn finish_encoded_str(idx: usize, dst: &mut BytesMut) {
         // This is just done to reserve space in the destination
         dst.put_slice(&buf[1..head_len]);
 
-        // Shift the header forward
-        for i in 0..huff_len {
-            let src_i = idx + 1 + (huff_len - (i + 1));
-            let dst_i = idx + head_len + (huff_len - (i + 1));
-            dst[dst_i] = dst[src_i];
-        }
-
-        // Copy in the head
-        for i in 0..head_len {
-            dst[idx + i] = buf[i];
-        }
+        // Shift the string forward and copy in the head
+        dst.copy_within(idx + 1..idx + 1 + huff_len, idx + head_len);
+        dst[idx..idx + head_len].copy_from_slice(&buf[..head_len]);
     }
 }
 
@@ -506,6 +498,43 @@ mod test {
             let key = format!("x-hello-world-{i:02}");
             let res = encode(&mut encoder, vec![header(&key, &key)]);
             assert_eq!(0x80 | (61 + (65 - i)), res[0]);
+        }
+    }
+
+    #[test]
+    fn strings_round_trip_at_every_length_head_size() {
+        // Huffman lengths around the 1, 2, 3 and 4 byte length heads.
+        for len in (0..300).chain([16_380, 16_520, 2_200_000]) {
+            let original: Vec<u8> = (0..len).map(|i| b"Aa0-zZ%\xff"[i % 8]).collect();
+            for lowercase in [false, true] {
+                let mut dst = BytesMut::from(&b"prefix"[..]);
+                let expected = if lowercase {
+                    encode_str_lowercase_ascii(&original, &mut dst);
+                    original.to_ascii_lowercase()
+                } else {
+                    encode_str(&original, &mut dst);
+                    original.clone()
+                };
+                assert_eq!(&dst[..6], b"prefix");
+
+                let wire = &dst[6..];
+                assert_eq!(wire[0] & 0x80, if len == 0 { 0 } else { 0x80 }, "len={len}");
+                let (mut huff_len, mut head_len) = (usize::from(wire[0] & 0x7f), 1);
+                if huff_len == 0x7f {
+                    let mut shift = 0;
+                    loop {
+                        let byte = wire[head_len];
+                        head_len += 1;
+                        huff_len += usize::from(byte & 0x7f) << shift;
+                        shift += 7;
+                        if byte & 0x80 == 0 {
+                            break;
+                        }
+                    }
+                }
+                assert_eq!(wire.len(), head_len + huff_len, "len={len}");
+                assert_eq!(huff_decode(&wire[head_len..]), expected, "len={len}");
+            }
         }
     }
 

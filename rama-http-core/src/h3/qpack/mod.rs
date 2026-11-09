@@ -13,7 +13,7 @@ mod decoder;
 pub use decoder::{Decoder, DecoderConfig, FieldPair};
 
 mod encoder;
-pub use encoder::{EncodeField, Encoder, EncoderConfig};
+pub use encoder::{EncodeField, Encoder, EncoderConfig, LowercaseName};
 
 #[cfg(test)]
 mod tests;

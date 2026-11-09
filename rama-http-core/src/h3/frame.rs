@@ -319,8 +319,8 @@ impl FrameDecoder {
                         if self.payload.capacity() - have < take {
                             self.payload.reserve(usize::max(take, have).min(len - have));
                         }
-                        let chunk = self.inbox.split_to(take);
-                        self.payload.extend_from_slice(&chunk);
+                        self.payload.extend_from_slice(&self.inbox[..take]);
+                        self.inbox.advance(take);
                         if self.payload.len() < len {
                             return Ok(None);
                         }

@@ -248,15 +248,20 @@ impl fmt::Debug for Decoder {
 
 macro_rules! byte (
     ($rdr:ident, $cx:expr) => ({
-        let buf = ready!($rdr.read_mem($cx, 1))?;
-        if !buf.is_empty() {
-            buf[0]
-        } else {
-            return Poll::Ready(Err(io::Error::new(io::ErrorKind::UnexpectedEof,
-                                      "unexpected EOF during chunk size line")));
+        match ready!($rdr.read_byte($cx))? {
+            Some(byte) => byte,
+            None => return Poll::Ready(Err(unexpected_eof_in_chunk_line())),
         }
     })
 );
+
+#[cold]
+fn unexpected_eof_in_chunk_line() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "unexpected EOF during chunk size line",
+    )
+}
 
 macro_rules! or_overflow {
     ($e:expr) => (
@@ -342,8 +347,6 @@ impl ChunkedState {
         rdr: &mut R,
         size: &mut u64,
     ) -> Poll<Result<Self, io::Error>> {
-        trace!("Read chunk start");
-
         let radix = 16;
         match byte!(rdr, cx) {
             b @ b'0'..=b'9' => {
@@ -374,8 +377,6 @@ impl ChunkedState {
         rdr: &mut R,
         size: &mut u64,
     ) -> Poll<Result<Self, io::Error>> {
-        trace!("Read chunk hex size");
-
         let radix = 16;
         match byte!(rdr, cx) {
             b @ b'0'..=b'9' => {
@@ -406,7 +407,6 @@ impl ChunkedState {
         cx: &mut Context<'_>,
         rdr: &mut R,
     ) -> Poll<Result<Self, io::Error>> {
-        trace!("read_size_lws");
         match byte!(rdr, cx) {
             // LWS can follow the chunk size, but no more digits can come
             b'\t' | b' ' => Poll::Ready(Ok(Self::SizeLws)),
@@ -423,7 +423,6 @@ impl ChunkedState {
         rdr: &mut R,
         extensions_cnt: &mut u64,
     ) -> Poll<Result<Self, io::Error>> {
-        trace!("read_extension");
         // We don't care about extensions really at all. Just ignore them.
         // They "end" at the next CRLF.
         //
@@ -531,7 +530,6 @@ impl ChunkedState {
         trailers_buf: &mut Option<BytesMut>,
         h1_max_header_size: usize,
     ) -> Poll<Result<Self, io::Error>> {
-        trace!("read_trailer");
         let byte = byte!(rdr, cx);
 
         // A bare LF ends the line for lenient peers, so accepting it would desync framing.
@@ -717,11 +715,19 @@ impl StdError for IncompleteBody {}
 mod tests {
     use std::{pin::Pin, time::Duration};
 
+    use rama_core::bytes::Buf;
     use tokio::io::{AsyncRead, ReadBuf};
 
     use super::*;
 
     impl MemRead for &[u8] {
+        fn read_byte(&mut self, _: &mut Context<'_>) -> Poll<io::Result<Option<u8>>> {
+            Poll::Ready(Ok(self.split_first().map(|(byte, rest)| {
+                *self = rest;
+                *byte
+            })))
+        }
+
         fn read_mem(&mut self, _: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
             let n = std::cmp::min(len, self.len());
             if n > 0 {
@@ -736,6 +742,13 @@ mod tests {
     }
 
     impl MemRead for &mut (dyn AsyncRead + Unpin) {
+        fn read_byte(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<Option<u8>>> {
+            let mut byte = [0];
+            let mut buf = ReadBuf::new(&mut byte);
+            ready!(Pin::new(self).poll_read(cx, &mut buf)?);
+            Poll::Ready(Ok(buf.filled().first().copied()))
+        }
+
         fn read_mem(&mut self, cx: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
             let mut v = vec![0; len];
             let mut buf = ReadBuf::new(&mut v);
@@ -745,6 +758,10 @@ mod tests {
     }
 
     impl MemRead for Bytes {
+        fn read_byte(&mut self, _: &mut Context<'_>) -> Poll<io::Result<Option<u8>>> {
+            Poll::Ready(Ok(self.try_get_u8().ok()))
+        }
+
         fn read_mem(&mut self, _: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
             let n = std::cmp::min(len, self.len());
             let ret = self.split_to(n);
