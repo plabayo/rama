@@ -545,3 +545,103 @@ fn sent_packets_decode_across_a_local_key_update() {
         .count();
     assert!(streamed > 2);
 }
+
+/// A client with zero-length connection IDs probes the preferred address from its current port.
+#[test]
+fn zero_length_client_probe_of_preferred_address_is_answered() {
+    let _guard = subscribe();
+    let mut config = server_config();
+    let alt = SocketAddrV6::new(
+        Ipv6Addr::LOCALHOST,
+        SERVER_PORTS.lock().next().unwrap(),
+        0,
+        0,
+    );
+    config.set_preferred_address_v6(alt);
+    let mut client_endpoint = EndpointConfig::try_with_rand_key().unwrap();
+    client_endpoint.set_cid_generator(Arc::new(|| {
+        Box::new(RandomConnectionIdGenerator::new(0).expect("zero is a length"))
+    }));
+    let client = Endpoint::new(Arc::new(client_endpoint), None, true, None);
+    let server = Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        Some(Arc::new(config)),
+        true,
+        None,
+    );
+    let mut pair = Pair::new_from_endpoint(client, server);
+    pair.server.alt_addr = Some(alt.into());
+    let ch = pair.begin_connect(client_config());
+    drive_settled(&mut pair);
+    let server_ch = pair.server.assert_accept();
+    drive_settled(&mut pair);
+
+    let token = 0x5d0b_4f0f_d936_46c9_u64;
+    let mut frames = vec![0x1a];
+    frames.extend_from_slice(&token.to_be_bytes());
+    frames.resize(1150, 0);
+    let now = pair.time;
+    let cid = pair.client_conn_mut(ch).active_rem_cid();
+    let packet = pair
+        .client_conn_mut(ch)
+        .encode_peer_packet_for_test(now, cid, &frames);
+    pair.server.outbound.clear();
+    pair.server.inbound.push_back(Inbound {
+        at: now,
+        ecn: None,
+        packet,
+        from: Some(pair.client.addr),
+        to: Some(alt.into()),
+    });
+    pair.server.drive(now, pair.client.addr);
+    let sent: Vec<_> = pair.server.outbound.drain(..).collect();
+    let answered = sent.iter().any(|(tx, bytes)| {
+        tx.local == Some(alt.into())
+            && pair
+                .server_conn_mut(server_ch)
+                .sent_frames_for_test(bytes)
+                .iter()
+                .any(|f| matches!(f, frame::Frame::PathResponse(t) if *t == token))
+    });
+    let unanswered = pair
+        .server_conn_mut(server_ch)
+        .stats()
+        .path
+        .unanswered_off_path_challenges;
+    assert!(
+        answered,
+        "no PATH_RESPONSE from the preferred address; unanswered={unanswered}; sent={:?}",
+        sent.iter()
+            .map(|(tx, _)| (tx.local, tx.size))
+            .collect::<Vec<_>>()
+    );
+    // The server's own challenge from the preferred address is answered, then traffic follows.
+    let challenge = sent
+        .iter()
+        .filter(|(tx, _)| tx.local == Some(alt.into()))
+        .flat_map(|(_, bytes)| pair.server_conn_mut(server_ch).sent_frames_for_test(bytes))
+        .find_map(|f| match f {
+            frame::Frame::PathChallenge(t) => Some(t),
+            _ => None,
+        })
+        .expect("server challenges the preferred path");
+    let mut frames = vec![0x1b];
+    frames.extend_from_slice(&challenge.to_be_bytes());
+    frames.push(0x01);
+    frames.resize(1150, 0);
+    let packet = pair
+        .client_conn_mut(ch)
+        .encode_peer_packet_for_test(now, cid, &frames);
+    pair.server.inbound.push_back(Inbound {
+        at: now,
+        ecn: None,
+        packet,
+        from: Some(pair.client.addr),
+        to: Some(alt.into()),
+    });
+    pair.server.drive(now, pair.client.addr);
+    assert_eq!(
+        pair.server_conn_mut(server_ch).path_local(),
+        Some(alt.into())
+    );
+}
