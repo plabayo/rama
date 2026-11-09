@@ -264,7 +264,7 @@ async fn the_deadline_is_fixed_when_the_association_is_handed_over() {
             service_fn(async |_: InputWithQuicClientHello<_>| Ok::<_, BoxError>(())),
         )
         .with_peek_timeout(Duration::from_millis(100))
-        .with_peek_timeout_policy(PeekTimeoutPolicy::FailClosed);
+        .with_peek_policy(PeekPolicy::FAIL_CLOSED);
         let serving = peek.serve(ingress);
         // A late first poll, and the rest of the flight after the deadline, find it expired.
         advance(Duration::from_millis(150)).await;
@@ -477,7 +477,7 @@ async fn a_peeked_association_is_bridged_with_its_client_hello() {
 #[tokio::test(start_paused = true)]
 async fn shared_policies_control_quic_failures_and_timeouts_independently() {
     for malformed in [MalformedTlsPolicy::Fallback, MalformedTlsPolicy::Reject] {
-        for timeout_policy in [PeekTimeoutPolicy::FailOpen, PeekTimeoutPolicy::FailClosed] {
+        for timeout_policy in [PeekPolicy::FAIL_OPEN, PeekPolicy::FAIL_CLOSED] {
             for class in [
                 QuicPeekRejection::NotQuic,
                 QuicPeekRejection::UnsupportedVersion,
@@ -501,7 +501,7 @@ async fn shared_policies_control_quic_failures_and_timeouts_independently() {
                 .with_limits(limits)
                 .with_peek_timeout(Duration::from_millis(100))
                 .with_malformed_tls_policy(malformed)
-                .with_peek_timeout_policy(timeout_policy)
+                .with_peek_policy(timeout_policy)
                 .with_fallback(service_fn(
                     async |mut input: PrefixedDatagramSocket<MemoryDatagramSocket>| {
                         Ok::<_, BoxError>(drain(&mut input).await)
@@ -512,7 +512,7 @@ async fn shared_policies_control_quic_failures_and_timeouts_independently() {
                 let result = service.clone().serve(ingress).await;
                 let allowed = match class {
                     QuicPeekRejection::NotQuic => true,
-                    QuicPeekRejection::Deadline => timeout_policy == PeekTimeoutPolicy::FailOpen,
+                    QuicPeekRejection::Deadline => timeout_policy == PeekPolicy::FAIL_OPEN,
                     _ => malformed == MalformedTlsPolicy::Fallback,
                 };
                 if allowed {
