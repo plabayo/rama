@@ -47,6 +47,7 @@ let defaultTcpKeepaliveCount = 3
 /// Millisecond connect timeouts remain enforced by the flow's dispatch timer.
 func makeTcpNwParameters(
     _ opts: RamaTcpEgressConnectOptions?, proxyControl: TcpProxyControl = .system,
+    boundInterface: nw_interface_t? = nil,
     stampMetadata: ((nw_parameters_t) -> Void)? = nil
 ) -> TcpNwParameters {
     let parameters = rama_nw_tcp_parameters()
@@ -85,6 +86,9 @@ func makeTcpNwParameters(
         }
         applyNativeNwEgressParameters(opts.parameters, to: parameters)
     }
+    // Keep the app's bind (IP_BOUND_IF, --interface, ...), the
+    // kernel would honor it without us in the path.
+    if let boundInterface { nw_parameters_require_interface(parameters, boundInterface) }
     if opts?.parameters.preserve_original_meta_data ?? true { stampMetadata?(parameters) }
     let policy = proxyControl.apply(
         to: parameters, allowProxy: opts?.parameters.allow_proxy ?? false)

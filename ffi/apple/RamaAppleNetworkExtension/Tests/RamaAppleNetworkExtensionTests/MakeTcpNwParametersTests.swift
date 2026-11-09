@@ -76,6 +76,16 @@ final class MakeTcpNwParametersTests: XCTestCase {
         return nw_protocol_stack_copy_transport_protocol(stack).map(NativeTcpOptions.init)
     }
 
+    func testUnboundEgressRequiresNoInterface() {
+        XCTAssertNil(nw_parameters_copy_required_interface(makeTcpNwParameters(nil).native))
+    }
+
+    func testBoundInterfaceIsRequiredOnEgress() throws {
+        let params = makeTcpNwParameters(nil, boundInterface: try loopbackNwInterface())
+        let required = try XCTUnwrap(nw_parameters_copy_required_interface(params.native))
+        XCTAssertEqual(String(cString: nw_interface_get_name(required)), "lo0")
+    }
+
     func testPreferNoProxiesIsTrueWhenOptsAreNil() {
         XCTAssertTrue(
             nw_parameters_get_prefer_no_proxy(makeTcpNwParameters(nil).native),
@@ -290,4 +300,23 @@ private struct NativeTcpOptions {
     var maximumSegmentSize: Int { integer("maximum_segment_size") }
     var connectionDropTime: Int { integer("retransmit_connection_drop_time") }
     var persistTimeout: Int { integer("persist_timeout") }
+}
+
+/// lo0 as a real nw_interface_t, for bound-interface tests.
+func loopbackNwInterface(timeout: TimeInterval = 2) throws -> nw_interface_t {
+    let monitor = nw_path_monitor_create_with_type(nw_interface_type_loopback)
+    let found = Locked<nw_interface_t?>(nil)
+    let seen = DispatchSemaphore(value: 0)
+    nw_path_monitor_set_update_handler(monitor) { path in
+        nw_path_enumerate_interfaces(path) { iface in
+            found.withLock { if $0 == nil { $0 = iface } }
+            return false
+        }
+        seen.signal()
+    }
+    nw_path_monitor_set_queue(monitor, DispatchQueue(label: "test.loopback-interface"))
+    nw_path_monitor_start(monitor)
+    defer { nw_path_monitor_cancel(monitor) }
+    _ = seen.wait(timeout: .now() + timeout)
+    return try XCTUnwrap(found.withLock { $0 }, "no loopback interface found")
 }

@@ -40,6 +40,19 @@ func flowInterfaceMeta(_ flow: NEAppProxyFlow?) -> (
     )
 }
 
+extension TcpFlowLike {
+    var boundInterface: nw_interface_t? { nil }
+}
+
+extension NEAppProxyTCPFlow {
+    // Only an explicit bind counts: for unbound flows
+    // networkInterface is just the kernel's current pick,
+    // and pinning to it would break normal failover.
+    var boundInterface: nw_interface_t? {
+        isBound ? networkInterface : nil
+    }
+}
+
 /// Maps an `nw_interface_type_t` (read off a flow's egress `networkInterface`)
 /// to the `NwInterfaceType` discriminant the Rust side decodes via
 /// `interface_type_from_u8`. Returns `nil` for unknown types so Rust fails safe
