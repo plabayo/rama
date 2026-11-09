@@ -28,7 +28,10 @@ use rama::{
             matcher::HttpWebSocketRelayServiceRequestMatcher, mitm::WebSocketRelayService,
         },
     },
-    io::{BridgeIo, Io},
+    io::{
+        BridgeIo, Io,
+        peek::{PeekAction, PeekEgressLayer, PeekPolicy},
+    },
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutput, MapOutputLayer},
     net::{
         address::Domain,
@@ -155,6 +158,9 @@ impl DemoTcpMitmService {
     {
         let settings = self.state.load_full();
         let peek_duration = Duration::from_secs_f64(self.peek_duration_s.max(0.5));
+        // Idle flows still fall back after the peek duration, but a started
+        // protocol message is never passed through unseen because it is slow.
+        let peek_policy = PeekPolicy::FAIL_OPEN.with_timeout_partial(PeekAction::Wait);
 
         let http_mitm_svc = HttpMitmRelay::new(scope.clone()).with_http_middleware(
             self.http_relay_middleware(scope.clone(), within_connect_tunnel, settings.clone()),
@@ -174,10 +180,12 @@ impl DemoTcpMitmService {
         let inner_http_router = HttpPeekRouter::new(http_mitm_svc.clone())
             .with_known_non_http_protocol_methods()
             .with_peek_timeout(peek_duration)
+            .with_peek_policy(peek_policy)
             .with_fallback(plain_passthrough);
         let outer_http_router = HttpPeekRouter::new(http_mitm_svc)
             .with_known_non_http_protocol_methods()
             .with_peek_timeout(peek_duration)
+            .with_peek_policy(peek_policy)
             .with_fallback(promote_passthrough.clone());
 
         let excluded_domains =
@@ -190,18 +198,24 @@ impl DemoTcpMitmService {
             (tls_mitm_relay_policy, settings.tls_mitm_relay.clone()).into_layer(inner_http_router),
         )
         .with_peek_timeout(peek_duration)
+        .with_peek_policy(peek_policy)
         .with_fallback(outer_http_router);
 
+        // A server speaking first ends the ingress peeks without waiting for the peek duration.
         if within_connect_tunnel {
-            return Either::A(ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_layer));
+            return Either::A(
+                (ConsumeErrLayer::trace_as_debug(), PeekEgressLayer::new())
+                    .into_layer(app_mitm_layer),
+            );
         }
 
         let socks5_mitm_relay = Socks5MitmRelayService::new(scope, app_mitm_layer.clone());
         let mitm_svc = Socks5PeekRouter::new(socks5_mitm_relay)
             .with_peek_timeout(peek_duration)
+            .with_peek_policy(peek_policy)
             .with_fallback(app_mitm_layer);
 
-        Either::B(ConsumeErrLayer::trace_as_debug().into_layer(mitm_svc))
+        Either::B((ConsumeErrLayer::trace_as_debug(), PeekEgressLayer::new()).into_layer(mitm_svc))
     }
 
     #[allow(clippy::needless_pass_by_value)]

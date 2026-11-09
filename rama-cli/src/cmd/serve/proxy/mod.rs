@@ -88,7 +88,7 @@ use rama::{
         proto::{MethodKind as IcapMethodKind, Preview},
     },
     inspect as inspection,
-    io::timeout::TimeoutIo,
+    io::{peek::PeekEgressLayer, timeout::TimeoutIo},
     layer::{
         ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
@@ -973,14 +973,15 @@ macro_rules! build_mitm_service {
             .maybe_with_peek_timeout(peek_timeout)
             .with_fallback(non_tls);
         let inspect = ConsumeErrLayer::trace_as(error_level).into_layer(application);
-        Arc::new(MitmTargetPolicyService {
+        // a server speaking first ends the ingress peeks without waiting for their timeout
+        Arc::new(PeekEgressLayer::new().into_layer(MitmTargetPolicyService {
             inspect,
             passthrough,
             policy: mitm_policy,
             control: Some(capture_control),
             defer_ip_target: true,
             inspection,
-        })
+        }))
     }};
 }
 
