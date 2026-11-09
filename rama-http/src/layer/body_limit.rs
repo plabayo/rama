@@ -43,22 +43,19 @@ use rama_core::{
     Layer, Service,
     bytes::Bytes,
     error::BoxError,
-    extensions::{Extensions, ExtensionsRef, Ingress},
+    extensions::{Extension, Extensions, ExtensionsRef, Ingress},
 };
 use rama_utils::macros::define_inner_service_accessors;
-
-#[cfg(feature = "compression")]
-use rama_core::extensions::Extension;
 use std::fmt;
+
+/// Strictest request body limit applied by an outer [`BodyLimitService`],
+/// for inner layers that transform the body.
+#[derive(Debug, Clone, Copy, Extension)]
+pub(crate) struct AppliedRequestBodyLimit(pub(crate) usize);
 
 /// Apply a limit to the request body's size.
 ///
 /// See the [module docs](crate::layer::body_limit) for an example.
-/// Request body limit applied by an outer [`BodyLimitService`], for layers that transform the body.
-#[cfg(feature = "compression")]
-#[derive(Debug, Clone, Copy, Extension)]
-pub(crate) struct AppliedRequestBodyLimit(pub(crate) usize);
-
 #[derive(Debug, Clone)]
 pub struct BodyLimitLayer {
     size: usize,
@@ -112,7 +109,7 @@ where
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let inherited_limit = inherited_request_limit(req.extensions());
         let additional_limit = additional_request_limit(self.size, inherited_limit);
-        #[cfg(feature = "compression")]
+        // Only a stricter limit replaces the marker, so nested layers keep the smallest one.
         if let Some(limit) = additional_limit {
             req.extensions().insert(AppliedRequestBodyLimit(limit));
         }
@@ -124,11 +121,16 @@ where
     }
 }
 
+/// Strictest request limit already enforced by the transport or an outer body limit layer.
 fn inherited_request_limit(extensions: &Extensions) -> Option<usize> {
-    extensions
+    let transport = extensions
         .get_ref::<Ingress<Extensions>>()
         .and_then(|ingress| ingress.get_ref::<BodyLimit>())
-        .and_then(BodyLimit::request)
+        .and_then(BodyLimit::request);
+    let application = extensions
+        .get_ref::<AppliedRequestBodyLimit>()
+        .map(|limit| limit.0);
+    [transport, application].into_iter().flatten().min()
 }
 
 fn additional_request_limit(configured: usize, inherited: Option<usize>) -> Option<usize> {
@@ -153,7 +155,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{additional_request_limit, inherited_request_limit};
+    use super::{AppliedRequestBodyLimit, additional_request_limit, inherited_request_limit};
     use crate::BodyLimit;
     use rama_core::extensions::{Extensions, Ingress};
 
@@ -178,5 +180,17 @@ mod tests {
 
         assert_eq!(inherited_request_limit(&request_extensions), Some(5));
         assert_eq!(additional_request_limit(8, Some(5)), None);
+    }
+
+    #[test]
+    fn outer_application_limit_is_inherited() {
+        let request_extensions = Extensions::new();
+        request_extensions.insert(AppliedRequestBodyLimit(3));
+        assert_eq!(inherited_request_limit(&request_extensions), Some(3));
+
+        let ingress_extensions = Extensions::new();
+        ingress_extensions.insert(BodyLimit::request_only(5));
+        request_extensions.insert(Ingress(ingress_extensions));
+        assert_eq!(inherited_request_limit(&request_extensions), Some(3));
     }
 }

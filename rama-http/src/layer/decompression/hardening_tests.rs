@@ -165,6 +165,26 @@ async fn request_decoded_size_inherits_outer_body_limit_layer() {
     );
 }
 
+#[tokio::test]
+async fn request_decoded_size_keeps_strictest_nested_body_limit() {
+    for (outer, inner) in [(kib(64), mib(2)), (mib(2), kib(64))] {
+        let svc = (
+            BodyLimitLayer::new(outer),
+            BodyLimitLayer::new(inner),
+            RequestDecompressionLayer::new(),
+        )
+            .into_layer(service_fn(collect_status));
+        assert_eq!(
+            svc.serve(encoded_request("gzip", gzip()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "outer {outer}, inner {inner}"
+        );
+    }
+}
+
 fn encoded_response(
     encoding: &'static str,
     body: Vec<u8>,
