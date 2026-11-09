@@ -34,7 +34,8 @@ use rama_http_types::proto::h3::{
         Startup as CriticalStreamStartup,
     },
     observation::{
-        H3ObservationSnapshot, H3RequestObservation, ObservationLimits, ObservedFieldRepresentation,
+        H3ObservationSnapshot, H3RequestObservation, ObservationLimits, ObservedEncoderInstruction,
+        ObservedFieldRepresentation,
     },
     qpack::FieldSectionBase,
 };
@@ -687,10 +688,19 @@ impl State {
         };
         let instructions = decoder.instruction_observation().map(|(instructions, _)| {
             let retained = prefix.instruction_count.min(instructions.len());
-            (
-                &instructions[..retained],
-                prefix.complete && retained == prefix.instruction_count,
-            )
+            let complete = prefix.complete && retained == prefix.instruction_count;
+            // A head without dynamic references cannot order a capacity received in the same pass.
+            let capacity = if retained == 0 {
+                instructions
+                    .iter()
+                    .take_while(|instruction| {
+                        matches!(instruction, ObservedEncoderInstruction::Capacity { .. })
+                    })
+                    .count()
+            } else {
+                0
+            };
+            (&instructions[..retained + capacity], complete)
         });
         let snapshot = record.request_snapshot(
             instructions,
@@ -3363,6 +3373,42 @@ mod observation_tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn observation_static_first_request_keeps_capacity_from_the_same_pass() {
+        let shared = shared(ObservationLimits::default());
+        settings(&shared);
+        // The request stream can be decoded before the encoder stream of the same packet.
+        let (_, first) = shared.request_observation(0, &[]).unwrap();
+        assert!(first.first_request.get().is_none());
+        let mut instructions = BytesMut::new();
+        EncoderInstruction::SetDynamicTableCapacity { capacity: 4096 }.encode(&mut instructions);
+        EncoderInstruction::InsertWithLiteralName {
+            name: Bytes::from_static(b"x-later"),
+            value: Bytes::from_static(b"next request"),
+            name_huffman: false,
+            value_huffman: false,
+        }
+        .encode(&mut instructions);
+        shared
+            .feed_instructions(StreamType::QPACK_ENCODER, &instructions)
+            .unwrap();
+        shared.publish_first_request_observation();
+        let frozen = first.first_request.get().unwrap();
+        assert_eq!(frozen.encoder_instructions.len(), 1);
+        assert!(matches!(
+            frozen.encoder_instructions[0],
+            ObservedEncoderInstruction::Capacity { capacity: 4096 }
+        ));
+        assert_eq!(
+            shared
+                .observation_snapshot()
+                .unwrap()
+                .encoder_instructions
+                .len(),
+            2
+        );
     }
 
     #[test]
