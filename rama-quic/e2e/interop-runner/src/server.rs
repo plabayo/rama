@@ -87,7 +87,8 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .server_config(
             &tls,
             crate::tls_options()
-                .with_early_data(testcase == TestCase::ZeroRtt)
+                // Some clients keep only early-data-capable tickets, so resumption issues them too.
+                .with_early_data(matches!(testcase, TestCase::ZeroRtt | TestCase::Resumption))
                 .with_early_data_context(b"rama-interop-runner-v1"),
         )?
         .with_transport_config(transport(scope.clone(), "server", testcase).await?);
