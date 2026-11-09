@@ -167,6 +167,41 @@ final class CoreEdgeCaseTests: XCTestCase {
         capture.releaseAll()
     }
 
+    // MARK: - bound interface
+
+    func testBoundFlowEgressRequiresTheBoundInterface() throws {
+        XCTAssertEqual(try egressRequiredInterfaceName(bound: loopbackNwInterface()), "lo0")
+    }
+
+    func testUnboundFlowEgressRequiresNoInterface() throws {
+        XCTAssertNil(try egressRequiredInterfaceName(bound: nil))
+    }
+
+    private func egressRequiredInterfaceName(bound: nw_interface_t?) throws -> String? {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        defer { core.detachEngine(reason: 0) }
+        let capture = NwConnectionCapture()
+        let inner = capture.factory
+        let required = Locked<String??>(nil)
+        core.nwConnectionFactory = { host, port, params in
+            let name = nw_parameters_copy_required_interface(params)
+                .map { String(cString: nw_interface_get_name($0)) }
+            required.withLock { $0 = .some(name) }
+            return inner(host, port, params)
+        }
+
+        let flow = MockTcpFlow()
+        flow.boundInterface = bound
+        XCTAssertTrue(core.handleTcpFlow(flow, meta: makeMeta()))
+        let conn = capture.waitForLastConnection()
+        conn.transition(to: .failed(.posix(.ECONNREFUSED)))
+        waitFor("flow cleaned up") { core.tcpFlowCount == 0 }
+        conn.simulateCancelled()
+        capture.releaseAll()
+        return try XCTUnwrap(required.withLock { $0 }, "factory was not called")
+    }
+
     // MARK: - Engine attached twice without detach
 
     func testEngineAttachReplacesPreviousEngine() {

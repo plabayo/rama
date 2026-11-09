@@ -748,6 +748,9 @@ protocol TcpFlowLike: TcpFlowReadable, TcpFlowWritable, AnyObject {
     /// The public C overload is available on all supported macOS versions;
     /// unlike the Swift NWParameters overload it needs no wrapper conversion.
     func applyMetadata(to params: nw_parameters_t)
+    /// Interface the app bound its socket to, nil when unbound.
+    /// Conformance lives in FlowInterfaceMeta.swift (needs Network).
+    var boundInterface: nw_interface_t? { get }
 }
 
 extension NEAppProxyTCPFlow: @unchecked @retroactive Sendable {}
