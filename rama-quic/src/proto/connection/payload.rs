@@ -405,7 +405,15 @@ impl Connection {
         // packet is applied. A peer can send NEW_CONNECTION_ID in descending
         // order; switching per frame would retire lower IDs not processed yet,
         // leaving no spare to answer its first preferred-address probe.
-        if self.side.is_server() && self.rem_cids.active_seq() == 0 {
+        // An advertised preferred address keeps one spare for the client's first probe of it.
+        let spare = match &self.side {
+            ConnectionSide::Server { server_config } if server_config.has_preferred_address() => 1,
+            _ => 0,
+        };
+        if self.side.is_server()
+            && self.rem_cids.active_seq() == 0
+            && self.rem_cids.unused_count() > spare
+        {
             self.update_rem_cid(now);
         }
 

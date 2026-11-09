@@ -10,20 +10,23 @@
 //! bytes inside filenames are percent-encoded by the URI builder rather
 //! than spliced into the attribute raw.
 
-use crate::service::fs::serve_dir::{DirSource, open_file::OpenFileOutput};
-use jiff::Zoned;
+use crate::service::fs::serve_dir::{DirSource, HiddenPathFilter, open_file::OpenFileOutput};
+use jiff::{Timestamp, tz::TimeZone};
 use rama_net::uri::Uri;
 use rama_utils::include_dir;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt as _;
 use std::{fmt, path::PathBuf, time::SystemTime};
 
 /// Handle a directory request under
 /// [`DirectoryServeMode::HtmlFileList`](crate::service::fs::serve_dir::DirectoryServeMode::HtmlFileList):
 /// collect the directory's entries (filesystem or embedded), then render
-/// them into an [`OpenFileOutput::Html`] response body.
+/// them into an [`OpenFileOutput::Html`] response body. Hidden entries are omitted.
 pub(super) async fn serve_html_listing(
     path_to_file: &PathBuf,
     uri: &Uri,
     source: &DirSource,
+    hidden: &HiddenPathFilter,
 ) -> std::io::Result<Option<OpenFileOutput>> {
     let mut entries = vec![];
 
@@ -32,9 +35,16 @@ pub(super) async fn serve_html_listing(
             let mut dir = tokio::fs::read_dir(path_to_file).await?;
             while let Some(entry) = dir.next_entry().await? {
                 let file_name = entry.file_name();
+                if hidden.hides_name(&file_name) {
+                    continue;
+                }
                 let file_name_str = file_name.to_string_lossy().to_string();
 
                 let metadata = entry.metadata().await?;
+                #[cfg(windows)]
+                if hidden.hides_attributes(&file_name, metadata.file_attributes()) {
+                    continue;
+                }
                 let is_dir = metadata.is_dir();
                 let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 let size = if is_dir { 0 } else { metadata.len() };
@@ -43,15 +53,23 @@ pub(super) async fn serve_html_listing(
             }
         }
         DirSource::Embedded(base) => {
-            let Some(dir) = base.get_dir(path_to_file) else {
-                return Ok(Some(OpenFileOutput::FileNotFound));
+            // the empty path is the embedded root itself, which is not one of its entries
+            let dir = if path_to_file.as_os_str().is_empty() {
+                base
+            } else {
+                match base.get_dir(path_to_file) {
+                    Some(dir) => dir,
+                    None => return Ok(Some(OpenFileOutput::FileNotFound)),
+                }
             };
 
             // Process all entries (directories and files)
             for entry in dir.entries() {
-                let file_name_str = entry
-                    .path()
-                    .file_name()
+                let file_name = entry.path().file_name();
+                if file_name.is_some_and(|name| hidden.hides_name(name)) {
+                    continue;
+                }
+                let file_name_str = file_name
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
 
@@ -186,7 +204,7 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
     let rows: Vec<_> = entries
         .into_iter()
         .map(|entry| {
-            let modified = format_system_time_local(entry.modified);
+            let modified = format_system_time_utc(entry.modified);
             let mime = (!entry.is_dir)
                 .then(|| crate::mime::guess::from_path(entry.name.as_str()).first())
                 .flatten();
@@ -246,9 +264,14 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
     .into_string()
 }
 
-fn format_system_time_local(system_time: SystemTime) -> String {
-    Zoned::try_from(system_time)
-        .map(|zdt| zdt.strftime("%Y-%m-%d %H:%M:%S %:z").to_string())
+// UTC needs no time zone database and reads the same in every build.
+fn format_system_time_utc(system_time: SystemTime) -> String {
+    Timestamp::try_from(system_time)
+        .map(|ts| {
+            ts.to_zoned(TimeZone::UTC)
+                .strftime("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+        })
         .unwrap_or_else(|_| "-".to_owned())
 }
 
@@ -258,6 +281,15 @@ mod test {
 
     use super::*;
     use crate::mime::Mime;
+
+    #[test]
+    fn listing_times_render_in_utc() {
+        let modified = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(90 * 60);
+        assert_eq!(
+            format_system_time_utc(modified),
+            "1970-01-01 01:30:00 +00:00"
+        );
+    }
 
     #[test]
     fn test_emoji_for_mime() {

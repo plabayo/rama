@@ -35,7 +35,10 @@ impl Connection {
         remote: SocketAddr,
         local: Option<SocketAddr>,
     ) -> Option<(ConnectionId, u64)> {
-        if remote == self.path.remote && self.same_local(local) {
+        // A zero-length identifier is the one used on every path (RFC 9000 §5.1.1).
+        if (remote == self.path.remote && self.same_local(local))
+            || self.rem_cids.active().is_empty()
+        {
             return Some((self.rem_cids.active(), self.rem_cids.active_seq()));
         }
         if let Some(candidate) = self.server_candidate.as_ref()

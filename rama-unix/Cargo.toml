@@ -35,6 +35,7 @@ rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "net"] }
 
 [dev-dependencies]
+libc = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
 [lints]

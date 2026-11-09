@@ -614,6 +614,9 @@ where
 
     fn try_keep_alive(&mut self, cx: &mut Context<'_>) {
         self.state.try_keep_alive::<T>();
+        if self.state.is_idle() {
+            self.io.release_idle_read_buf();
+        }
         self.maybe_notify(cx);
     }
 

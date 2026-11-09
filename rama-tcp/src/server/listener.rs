@@ -6,6 +6,7 @@ use rama_core::graceful::WeakScope;
 use rama_core::graceful::attach_scope;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
+use rama_net::conn::AcceptBackoff;
 use rama_net::socket::core::SockRef;
 use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
@@ -310,6 +311,7 @@ impl TcpListener {
             return;
         };
         let mut cancelled_fut = pin!(self.scope.cancelled());
+        let mut accept_backoff = AcceptBackoff::new();
 
         loop {
             tokio::select! {
@@ -320,6 +322,7 @@ impl TcpListener {
                 result = self.inner.accept() => {
                     match result {
                         Ok((socket, peer_addr)) => {
+                            accept_backoff.reset();
                             let socket = TcpStream::new(socket);
                             let service = service.clone();
 
@@ -345,33 +348,24 @@ impl TcpListener {
                                 _ = service.serve(socket).await;
                             }.instrument(span));
                         }
-                        Err(err) => {
-                            handle_accept_err(err).await;
-                        }
+                        Err(err) => match accept_backoff.on_error(&err) {
+                            None => tracing::trace!("TCP accept error: connection error: {err:?}"),
+                            Some(delay) => {
+                                // Running out of file descriptors keeps the listener readable, so retrying at once spins.
+                                tracing::error!("TCP accept error: {err:?}; pausing accept for {delay:?}");
+                                tokio::select! {
+                                    _ = cancelled_fut.as_mut() => {
+                                        tracing::trace!("signal received: initiate graceful shutdown");
+                                        break;
+                                    }
+                                    () = tokio::time::sleep(delay) => {}
+                                }
+                            }
+                        },
                     }
                 }
             }
         }
-    }
-}
-
-async fn handle_accept_err(err: io::Error) {
-    if rama_net::conn::is_connection_error(&err) {
-        tracing::trace!("TCP accept error: connect error: {err:?}");
-    } else {
-        // [From `hyper::Server` in 0.14](https://github.com/hyperium/hyper/blob/v0.14.27/src/server/tcp.rs#L186)
-        //
-        // > A possible scenario is that the process has hit the max open files
-        // > allowed, and so trying to accept a new connection will fail with
-        // > `EMFILE`. In some cases, it's preferable to just wait for some time, if
-        // > the application will likely close some files (or connections), and try
-        // > to accept the connection again. If this option is `true`, the error
-        // > will be logged at the `error` level, since it is still a big deal,
-        // > and then the listener will sleep for 1 second.
-        //
-        // hyper allowed customizing this but axum does not.
-        tracing::error!("TCP accept error: {err:?}");
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 

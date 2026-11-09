@@ -8,6 +8,7 @@ use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::io::poll_read_limited;
 use rama_core::telemetry::tracing::{debug, trace};
+use rama_utils::octets::kib;
 use std::task::ready;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
@@ -30,6 +31,13 @@ const DISCARD_BUF_SIZE: usize = 4096;
 /// a message is still not complete, a `TooLarge` error is triggered.
 // Note: if this changes, update server::conn::Http::max_buf_size docs.
 pub(crate) const DEFAULT_MAX_BUFFER_SIZE: usize = 8192 + 4096 * 100;
+
+/// Flatten-mode chunks at least this large are written from their own buffer
+/// after a prefix copy; one TLS record of plaintext, so the first write stays a single record.
+const FLATTEN_COPY_LIMIT: usize = kib(16);
+
+/// A drained buffer above this capacity is released instead of kept for the idle connection.
+const MAX_RETAINED_BUF_SIZE: usize = kib(128);
 
 /// The maximum number of distinct `Buf`s to hold in a list before requiring
 /// a flush. Only affects when the buffer strategy is to queue buffers.
@@ -151,6 +159,14 @@ where
         if self.read_buf.is_empty() && self.read_buf.capacity() > DISCARD_BUF_SIZE {
             self.read_buf = BytesMut::new();
         }
+    }
+
+    /// Between messages, drop a read buffer a large message grew so an idle connection holds little.
+    pub(crate) fn release_idle_read_buf(&mut self) {
+        if self.read_buf.is_empty() && self.read_buf.capacity() > MAX_RETAINED_BUF_SIZE {
+            self.read_buf = BytesMut::new();
+        }
+        self.read_buf_strategy.reset_next();
     }
 
     /// Whether the peer ended its stream or reading from it failed.
@@ -360,25 +376,19 @@ where
         }
     }
 
-    /// Specialized version of `flush` when strategy is Flatten.
-    ///
-    /// Since all buffered bytes are flattened into the single headers buffer,
-    /// that skips some bookkeeping around using multiple buffers.
+    /// Specialized version of `flush` when strategy is Flatten: one slice per write.
     fn poll_flush_flattened(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        loop {
-            let n = ready!(Pin::new(&mut self.io).poll_write(cx, self.write_buf.headers.chunk()))?;
+        while self.write_buf.has_remaining() {
+            let n = ready!(Pin::new(&mut self.io).poll_write(cx, self.write_buf.chunk()))?;
             debug!("flushed {} bytes", n);
-            self.write_buf.headers.advance(n);
-            if self.write_buf.headers.remaining() == 0 {
-                self.write_buf.headers.reset();
-                break;
-            } else if n == 0 {
+            if n == 0 {
                 trace!(
                     "write returned zero, but {} bytes remaining",
                     self.write_buf.remaining()
                 );
                 return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
             }
+            self.write_buf.advance(n);
         }
         Pin::new(&mut self.io).poll_flush(cx)
     }
@@ -434,6 +444,16 @@ impl ReadStrategy {
             decrease_now: false,
             next: INIT_BUFFER_SIZE,
             max,
+        }
+    }
+
+    fn reset_next(&mut self) {
+        if let Self::Adaptive {
+            decrease_now, next, ..
+        } = self
+        {
+            *next = INIT_BUFFER_SIZE;
+            *decrease_now = false;
         }
     }
 
@@ -536,7 +556,11 @@ impl Cursor<Vec<u8>> {
 
     fn reset(&mut self) {
         self.pos = 0;
-        self.bytes.clear();
+        if self.bytes.capacity() > MAX_RETAINED_BUF_SIZE {
+            self.bytes = Vec::with_capacity(INIT_BUFFER_SIZE);
+        } else {
+            self.bytes.clear();
+        }
     }
 }
 
@@ -599,6 +623,28 @@ where
     pub(super) fn buffer<BB: Buf + Into<B>>(&mut self, mut buf: BB) {
         debug_assert!(buf.has_remaining());
         match self.strategy {
+            // Bytes already queued go out first, so later ones may not jump ahead into the headers.
+            WriteStrategy::Flatten if self.queue.has_remaining() => self.queue.push(buf.into()),
+            // Only contiguous chunks: a chunked frame split here would cost extra tiny writes.
+            WriteStrategy::Flatten
+                if buf.remaining() >= FLATTEN_COPY_LIMIT
+                    && buf.chunk().len() == buf.remaining() =>
+            {
+                let head = self.headers_mut();
+                if head.has_remaining() {
+                    // Top up pending head bytes so they leave together with the body's start.
+                    let room = FLATTEN_COPY_LIMIT.saturating_sub(head.remaining());
+                    head.maybe_unshift(room);
+                    head.bytes.extend_from_slice(&buf.chunk()[..room]);
+                    buf.advance(room);
+                }
+                trace!(
+                    "buffer.flatten: head.remaining = {}; queued remaining: {}",
+                    head.remaining(),
+                    buf.remaining(),
+                );
+                self.queue.push(buf.into());
+            }
             WriteStrategy::Flatten => {
                 let head = self.headers_mut();
 
@@ -635,7 +681,10 @@ where
 
     fn can_buffer(&self) -> bool {
         match self.strategy {
-            WriteStrategy::Flatten => self.remaining() < self.max_buf_size,
+            // A queued chunk drains before more body is polled, bounding what one connection holds.
+            WriteStrategy::Flatten => {
+                !self.queue.has_remaining() && self.remaining() < self.max_buf_size
+            }
             WriteStrategy::Queue => {
                 self.queue.bufs_cnt() < MAX_BUF_LIST_BUFFERS && self.remaining() < self.max_buf_size
             }
@@ -706,6 +755,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use rama_utils::octets::mib;
     use tokio_test::io::Builder as Mock;
 
     #[tokio::test]
@@ -968,6 +1018,160 @@ mod tests {
         assert_eq!(buffered.write_buf.queue.bufs_cnt(), 0);
     }
     */
+
+    fn flatten_buffered(
+        mock: tokio_test::io::Mock,
+    ) -> Buffered<rama_core::ServiceInput<tokio_test::io::Mock>, Cursor<Vec<u8>>> {
+        let mut buffered = Buffered::new(rama_core::ServiceInput::new(mock));
+        buffered.write_buf.set_strategy(WriteStrategy::Flatten);
+        buffered
+    }
+
+    fn pattern(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn write_buf_flatten_large_chunk_is_not_copied() {
+        let head = b"HTTP/1.1 200 OK\r\ncontent-length: 4194304\r\n\r\n";
+        let body = pattern(mib(4));
+        let mut wire = head.to_vec();
+        wire.extend_from_slice(&body);
+        let (first, rest) = wire.split_at(FLATTEN_COPY_LIMIT);
+        let mut buffered = flatten_buffered(Mock::new().write(first).write(rest).build());
+
+        buffered.headers_buf().extend_from_slice(head);
+        buffered.buffer(Cursor::new(body));
+        assert_eq!(buffered.write_buf.headers.remaining(), FLATTEN_COPY_LIMIT);
+        assert_eq!(buffered.write_buf.queue.bufs_cnt(), 1);
+        assert!(
+            !buffered.can_buffer(),
+            "a queued chunk drains before more is buffered"
+        );
+
+        buffered.flush().await.expect("flush");
+        assert!(!buffered.has_buffered_write());
+        assert!(buffered.write_buf.headers.bytes.capacity() <= 2 * FLATTEN_COPY_LIMIT);
+        assert!(buffered.can_buffer());
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn write_buf_flatten_large_chunk_without_pending_head_is_written_directly() {
+        let body = pattern(kib(64));
+        let mut buffered = flatten_buffered(Mock::new().write(&body).build());
+
+        buffered.buffer(Cursor::new(body.clone()));
+        assert_eq!(buffered.write_buf.headers.remaining(), 0);
+        assert_eq!(buffered.write_buf.queue.bufs_cnt(), 1);
+
+        buffered.flush().await.expect("flush");
+        assert_eq!(
+            buffered.write_buf.headers.bytes.capacity(),
+            INIT_BUFFER_SIZE
+        );
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn write_buf_flatten_releases_oversized_buffer_after_flush() {
+        let mut wire = Vec::new();
+        let mut buffered = flatten_buffered({
+            for i in 0..64u8 {
+                wire.extend(std::iter::repeat_n(i, kib(4)));
+            }
+            Mock::new().write(&wire).build()
+        });
+        for i in 0..64u8 {
+            buffered.buffer(Cursor::new(vec![i; kib(4)]));
+        }
+        assert!(buffered.write_buf.headers.bytes.capacity() > MAX_RETAINED_BUF_SIZE);
+
+        buffered.flush().await.expect("flush");
+        assert_eq!(
+            buffered.write_buf.headers.bytes.capacity(),
+            INIT_BUFFER_SIZE
+        );
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn write_buf_flatten_keeps_order_behind_queued_chunk() {
+        let head = b"HTTP/1.1 200 OK\r\n\r\n";
+        let large = pattern(kib(32));
+        let mut wire = head.to_vec();
+        wire.extend_from_slice(&large);
+        wire.extend_from_slice(b"tail");
+        let (first, rest) = wire.split_at(FLATTEN_COPY_LIMIT);
+        let (middle, tail) = rest.split_at(rest.len() - 4);
+        let mut buffered =
+            flatten_buffered(Mock::new().write(first).write(middle).write(tail).build());
+
+        buffered.headers_buf().extend_from_slice(head);
+        buffered.buffer(Cursor::new(large));
+        buffered.buffer(Cursor::new(b"tail".to_vec()));
+        assert_eq!(buffered.write_buf.queue.bufs_cnt(), 2);
+
+        buffered.flush().await.expect("flush");
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn write_buf_flatten_survives_partial_and_pending_writes() {
+        let head = b"HTTP/1.1 200 OK\r\n\r\n";
+        let body = pattern(kib(40));
+        let mut wire = head.to_vec();
+        wire.extend_from_slice(&body);
+
+        // Each mock write accepts at most its piece, so every write is partial.
+        let mut mock = Mock::new();
+        mock.wait(Duration::from_millis(1));
+        for piece in wire.chunks(1000) {
+            mock.write(piece);
+        }
+        let mut buffered = flatten_buffered(mock.build());
+
+        buffered.headers_buf().extend_from_slice(head);
+        buffered.buffer(Cursor::new(body));
+        buffered.flush().await.expect("flush");
+        assert!(!buffered.has_buffered_write());
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn idle_read_buf_is_released_after_large_upload() {
+        let chunk = vec![7u8; kib(512)];
+        let mut mock = Mock::new();
+        for _ in 0..16 {
+            mock.read(&chunk);
+        }
+        let mut buffered =
+            Buffered::<_, Cursor<Vec<u8>>>::new(rama_core::ServiceInput::new(mock.build()));
+        let mut total = 0;
+        while total < 16 * chunk.len() {
+            total += std::future::poll_fn(|cx| buffered.read_mem(cx, usize::MAX))
+                .await
+                .unwrap()
+                .len();
+        }
+        assert!(buffered.read_buf.capacity() > MAX_RETAINED_BUF_SIZE);
+
+        buffered.release_idle_read_buf();
+        assert_eq!(buffered.read_buf.capacity(), 0);
+        assert_eq!(buffered.read_buf_strategy.next(), INIT_BUFFER_SIZE);
+    }
+
+    #[test]
+    fn idle_read_buf_keeps_pipelined_bytes() {
+        let mut buffered =
+            Buffered::<_, Cursor<Vec<u8>>>::new(rama_core::ServiceInput::new(Mock::new().build()));
+        buffered.read_buf = BytesMut::with_capacity(4 * MAX_RETAINED_BUF_SIZE);
+        buffered.read_buf.extend_from_slice(b"GET / HTTP/1.1\r\n");
+
+        buffered.release_idle_read_buf();
+        assert_eq!(buffered.read_buf(), b"GET / HTTP/1.1\r\n");
+    }
 
     #[cfg(not(miri))]
     #[tokio::test]

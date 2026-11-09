@@ -101,6 +101,20 @@ where
 #[non_exhaustive]
 pub struct LengthLimitError;
 
+impl LengthLimitError {
+    /// Create the error for a body that crossed its length limit.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for LengthLimitError {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl fmt::Display for LengthLimitError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("length limit exceeded")

@@ -498,3 +498,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod hardening_tests;
