@@ -35,6 +35,8 @@ std = [
     "rama-utils/std",
     "tracing/std",
     "dep:ahash",
+    "dep:memchr",
+    "memchr/std",
     "dep:parking_lot",
     "dep:rand",
     "dep:serde_json",
@@ -65,6 +67,7 @@ bytes = { workspace = true }
 dial9 = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 futures = { workspace = true, default-features = false, features = ["alloc", "async-await"] }
+memchr = { workspace = true, optional = true }
 metrique-writer-core = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }

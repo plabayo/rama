@@ -4794,6 +4794,7 @@ dependencies = [
  "dial9-trace-format",
  "futures",
  "loom",
+ "memchr",
  "metrique-writer-core",
  "opentelemetry",
  "opentelemetry-semantic-conventions",

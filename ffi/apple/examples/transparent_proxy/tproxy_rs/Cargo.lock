@@ -2422,6 +2422,7 @@ dependencies = [
  "dial9",
  "dial9-trace-format",
  "futures",
+ "memchr",
  "metrique-writer-core",
  "parking_lot 0.13.0",
  "pin-project-lite",

@@ -1154,6 +1154,7 @@ dependencies = [
  "asynk-strim",
  "bytes",
  "futures",
+ "memchr",
  "parking_lot 0.13.0",
  "pin-project-lite",
  "rama-error",
