@@ -47,9 +47,9 @@ pub struct EncodeField<'a, N, V> {
 
 /// Names up to this long are lowercased without allocating.
 ///
-/// With the length and the variant tag this is as large as a borrowed or owned name,
+/// Three words less the length and the variant tag: as large as a borrowed or owned name,
 /// so holding names inline does not grow the fields that carry them.
-const INLINE_NAME_LEN: usize = 22;
+const INLINE_NAME_LEN: usize = 3 * size_of::<usize>() - 2;
 
 const _: () =
     assert!(size_of::<LowercaseName<'_>>() == size_of::<Box<[u8]>>() + size_of::<usize>());
