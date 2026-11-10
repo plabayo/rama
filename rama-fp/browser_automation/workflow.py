@@ -11,6 +11,7 @@ import re
 import time
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Mapping, Optional
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
@@ -90,6 +91,29 @@ class JourneyTimeout(TimeoutException):
     """A journey wait that ran out, with a message built here rather than by a driver."""
 
 
+def activated_again(condition, activate, after):
+    """`condition`, activating the shown document once more if it outlives `after` seconds.
+
+    A navigation whose request stalled leaves the document that started it in place.
+    """
+    deadline = time.monotonic() + after
+    pending = True
+
+    def check(browser):
+        nonlocal pending
+        if condition(browser):
+            return True
+        if pending and time.monotonic() >= deadline and browser.execute_script(
+            "return window.ramaFpFormPage === true"
+        ) is True:
+            pending = False
+            print("RETRY navigation: its document was not replaced", flush=True)
+            activate()
+        return False
+
+    return check
+
+
 def await_navigation(driver, wait, condition, message):
     """`wait.until(condition)`; a timeout names the document the browser shows instead."""
     try:
@@ -97,10 +121,19 @@ def await_navigation(driver, wait, condition, message):
     except TimeoutException as error:
         try:
             url = urlsplit(driver.current_url)
-            state = driver.execute_script("return document.readyState")
+            shown, state = driver.execute_script(
+                "return [document.URL, document.readyState]"
+            )
+            shown = urlsplit(shown)
             # Host and path only: a query can carry a site token.
             where = f"{url.hostname}{url.path} ({state})"
-        except WebDriverException:
+            if shown[:3] != url[:3]:
+                # The reported URL is then a navigation that never replaced the document.
+                where = (
+                    f"{shown.scheme}://{shown.hostname}{shown.path} ({state}), "
+                    f"bound for {url.scheme}://{url.hostname}{url.path}"
+                )
+        except (WebDriverException, TypeError, ValueError):
             where = "an unreadable document"
         raise JourneyTimeout(f"{message}; at {where}") from error
 
@@ -620,15 +653,19 @@ def visit_sites(driver, wait, origin, sites, timeout):
     for site, flow, target in steps:
         if flow == "form":
             driver.execute_script(_INJECT_SITE_FORM, target)
-            submit_form(driver, "#rama-fp-site-form", timeout=timeout)
+            activate = partial(submit_form, driver, "#rama-fp-site-form", timeout=timeout)
         else:
             driver.execute_script(_INJECT_LINK, target, "rama-fp-site-link")
-            follow_link(driver, "#rama-fp-site-link", timeout=timeout)
+            activate = partial(follow_link, driver, "#rama-fp-site-link", timeout=timeout)
+        activate()
         expected = urlsplit(target)
         await_navigation(
             driver, wait,
-            navigated_to(lambda url, expected=expected: url.hostname == expected.hostname
-                         and url.path == expected.path),
+            activated_again(
+                navigated_to(lambda url, expected=expected: url.hostname == expected.hostname
+                             and url.path == expected.path),
+                activate, timeout / 3,
+            ),
             f"{site} {flow} did not navigate",
         )
         protocol = PROTOCOLS.get(driver.execute_script(
@@ -677,6 +714,10 @@ def run_capture_flow(
                 driver.add_cookie({"name": name, "value": value, "path": "/"})
 
         driver.get(urljoin(origin, "/report"))
+        # A load that failed leaves the browser on the page it came from.
+        if urlsplit(driver.current_url).path != "/report":
+            print("RETRY report: the browser did not leave its previous page", flush=True)
+            driver.get(urljoin(origin, "/report"))
         user_agent = driver.execute_script("return navigator.userAgent")
         if not all_flows:
             protocol = driver.execute_script(
@@ -740,10 +781,11 @@ def run_capture_flow(
 
     # Native keyboard activation avoids SafariDriver's intermittent
     # click no-op on the long report page. The browser still submits the form.
-    submit_form(driver, 'form[action="/form"]', timeout=timeout)
+    activate = partial(submit_form, driver, 'form[action="/form"]', timeout=timeout)
+    activate()
     await_navigation(
         driver, wait,
-        navigated_to(lambda url: url.path == "/form"),
+        activated_again(navigated_to(lambda url: url.path == "/form"), activate, timeout / 3),
         "POST form submission did not navigate",
     )
     post_protocol = driver.execute_script(
@@ -759,9 +801,14 @@ def run_capture_flow(
         "POST form response never showed the GET form",
     )
     form_html = driver.page_source
-    submit_form(driver, 'form[method="GET"][action="/form"]', timeout=timeout)
+    activate = partial(
+        submit_form, driver, 'form[method="GET"][action="/form"]', timeout=timeout
+    )
+    activate()
     await_navigation(
-        driver, wait, get_form_navigation_complete, "GET form submission did not navigate"
+        driver, wait,
+        activated_again(get_form_navigation_complete, activate, timeout / 3),
+        "GET form submission did not navigate",
     )
     get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
@@ -770,10 +817,11 @@ def run_capture_flow(
 
     # A same-origin link click, the navigation a page's own links make.
     driver.execute_script(_INJECT_LINK, urljoin(origin, "/landing"), "rama-fp-link")
-    follow_link(driver, "#rama-fp-link", timeout=timeout)
+    activate = partial(follow_link, driver, "#rama-fp-link", timeout=timeout)
+    activate()
     await_navigation(
         driver, wait,
-        navigated_to(lambda url: url.path == "/landing"),
+        activated_again(navigated_to(lambda url: url.path == "/landing"), activate, timeout / 3),
         "same-origin link did not navigate",
     )
     link_protocol = driver.execute_script(

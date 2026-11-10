@@ -381,20 +381,46 @@ class FormSubmissionTests(unittest.TestCase):
         self.assertNotIn("private provider data", str(caught.exception))
 
     def test_navigation_timeout_names_the_shown_document_without_its_query(self):
-        driver = Mock()
-        driver.current_url = "https://h1.fp.ss.example.org/form?rama_fp_site=tok_private"
-        driver.execute_script.return_value = "loading"
-        wait = Mock()
-        wait.until.side_effect = TimeoutException("same-site form did not navigate")
-        with self.assertRaises(workflow.JourneyTimeout) as caught:
-            workflow.await_navigation(
-                driver, wait, Mock(), "same-site form did not navigate"
-            )
-        self.assertEqual(
-            caught.exception.msg,
-            "same-site form did not navigate; at h1.fp.ss.example.org/form (loading)",
-        )
+        target = "https://h1.fp.ss.example.org/form?rama_fp_site=tok_private"
+        for shown, where in (
+            (target, "h1.fp.ss.example.org/form (loading)"),
+            # A stalled request: the browser reports its target, the old page stays.
+            (
+                "https://h1.fp.example.org/landing?rama_fp_site=tok_private",
+                "https://h1.fp.example.org/landing (loading), "
+                "bound for https://h1.fp.ss.example.org/form",
+            ),
+        ):
+            with self.subTest(shown=shown):
+                driver = Mock()
+                driver.current_url = target
+                driver.execute_script.return_value = [shown, "loading"]
+                wait = Mock()
+                wait.until.side_effect = TimeoutException("same-site form did not navigate")
+                with self.assertRaises(workflow.JourneyTimeout) as caught:
+                    workflow.await_navigation(
+                        driver, wait, Mock(), "same-site form did not navigate"
+                    )
+                self.assertEqual(
+                    caught.exception.msg, "same-site form did not navigate; at " + where
+                )
 
+    def test_a_stalled_navigation_is_activated_once_more(self):
+        for marked, presses in ((True, 1), (False, 0)):
+            with self.subTest(marked=marked):
+                browser = Mock()
+                browser.execute_script.return_value = marked
+                activate = Mock()
+                check = workflow.activated_again(lambda _browser: False, activate, 0)
+                self.assertFalse(check(browser))
+                self.assertFalse(check(browser))
+                self.assertEqual(activate.call_count, presses)
+        activate = Mock()
+        early = workflow.activated_again(lambda _browser: False, activate, 60)
+        self.assertFalse(early(Mock()))
+        done = workflow.activated_again(lambda _browser: True, activate, 0)
+        self.assertTrue(done(Mock()))
+        activate.assert_not_called()
 
 
 SITES = [
