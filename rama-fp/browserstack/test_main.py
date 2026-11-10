@@ -48,6 +48,8 @@ class NightlyTests(unittest.TestCase):
             main, "device_session", side_effect=lambda *_args: nullcontext(browser)
         ), patch.object(
             main, "run_capture_flow", side_effect=journey
+        ), patch.object(
+            main.time, "sleep"
         ), redirect_stdout(io.StringIO()) as stdout:
             output = Path(directory) / "receipts"
             code = main.main(["--output", str(output), "--device", "safari"])

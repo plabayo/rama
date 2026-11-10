@@ -13,7 +13,8 @@ A failed cell is retried once in a fresh session; its receipt records
 `first_failure_reason`, and only a cell failing both attempts fails the job. A browser
 this host drives also gets a second session when an H3 cell stayed on TCP.
 Origins in `REVISITED` run the journey twice in one session, recorded per visit in
-`visits`; the cell passes when either visit completes.
+`visits`; the cell passes when either visit completes. The revisit starts once the
+origin has dropped the first visit's connections.
 Every HTTPS cell also requires the same-site and cross-site flows its report page
 advertises, recorded as `site_protocols`; a deploy without those hosts fails the job.
 """
@@ -76,6 +77,11 @@ ENTRYPOINTS = (
 # A second visit opens later connections (resumed handshakes) and gives browsers that
 # learn HTTP/3 slowly another chance to switch.
 REVISITED = frozenset(("https://h3.fp.ramaproxy.org/", "https://fp.ramaproxy.org/"))
+
+# Seconds after which an fp origin has dropped a connection: it drains each one at
+# up to 17.6 s of age and drops it 5 s later. A revisit starts after this pause, so
+# no navigation of it is sent on a first-visit connection that ends under it.
+CONNECTIONS_DROPPED_AFTER = 23
 
 # Browsers this host drives (`--device`), for what BrowserStack's proxied sessions cannot
 # capture. Simulator and emulator run the device's own browser and network code, so their
@@ -308,6 +314,8 @@ def run_session(
                     unsupported = None
                     for visit in range(2 if origin in REVISITED else 1):
                         stage = "revisit" if visit else "journey"
+                        if visit:
+                            time.sleep(CONNECTIONS_DROPPED_AFTER)
                         try:
                             # The session keeps the cookies the first visit installed.
                             result = run_capture_flow(
