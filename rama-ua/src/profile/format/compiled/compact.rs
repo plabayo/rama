@@ -1,16 +1,15 @@
-//! Request and header captures stored as their profile's field table and index
-//! lists rather than canonical bytes. Export rebuilds every compacted capture
-//! through the load path and requires its exact canonical bytes back.
+//! Request and header captures stored as positions in the set's field table rather
+//! than canonical bytes. Each distinct header capture is stored once for the set.
 
 use std::sync::Arc;
 
-use ahash::{HashMap, HashSet};
+use ahash::HashMap;
 use rama_core::{bytes::Bytes, error::BoxError};
 use rama_http::{HeaderName, HeaderValue, proto::h3::observation::ObservedFieldRepresentation};
 use serde::{Deserialize, Serialize};
 
+use super::wire::WireValue;
 use crate::profile::{
-    analysis::{capture::VariantValue, profile::AnalyzedProfile},
     capture::{
         completeness::ProfileCaptureCompleteness,
         headers::{
@@ -20,24 +19,14 @@ use crate::profile::{
         joint::{CapturedSlot, CapturedSlotKind, JointCaptureLimits},
         pseudo_headers::PseudoHeaderCapture,
     },
-    format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
+    format::canonical::{CanonicalValue, ProfileDataError, ValueId},
     replay::request::{
-        CompactCapture, CompactKind, FieldEntry, FieldTable, FieldTableBuilder, PendingCompact,
-        PlannedHeaders, PlannedValue,
+        CompactKind, FieldEntry, FieldTable, PlannedField, PlannedHeaders, PlannedValue,
     },
 };
 
-/// One profile of a compiled set.
 #[derive(Debug, Serialize, Deserialize)]
-pub(super) struct CompiledProfile {
-    /// Compacted variants keep their id here; their bytes are empty.
-    pub(super) analysis: AnalyzedProfile,
-    fields: Vec<CompiledField>,
-    pub(super) compact: Vec<CompiledCompact>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct CompiledField {
+pub(super) struct CompiledField {
     /// The name as captured, including its case.
     name: Box<str>,
     sensitive: bool,
@@ -62,160 +51,88 @@ enum CompiledFieldValue {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(super) struct CompiledCompact {
-    pub(super) scope: u32,
-    pub(super) variant: u32,
-    capture: CompiledCapture,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum CompiledCapture {
+pub(super) enum CompiledCapture {
     /// A request joint capture: its headers and its other slots in canonical form.
     Request {
-        headers: Option<CompiledHeaders>,
-        other: Vec<(u16, CanonicalValue)>,
+        headers: Option<u32>,
+        other: Vec<(u16, WireValue)>,
     },
-    Headers(CompiledHeaders),
+    Headers(u32),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct CompiledHeaders {
-    completeness: u8,
+/// One distinct header capture of the set.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(super) struct CompiledHeaders {
+    pub(super) completeness: u8,
     version: u8,
-    /// Field table entry and occurrence, in captured order.
-    fields: Vec<(u32, u32)>,
+    /// Set field table entry and occurrence, in captured order.
+    pub(super) fields: Box<[(u32, u32)]>,
 }
 
-impl CompiledProfile {
-    /// Every value stored with its bytes: scope structures, canonical variants and the
-    /// canonical slots of compacted request captures.
-    pub(super) fn values_mut(&mut self) -> Vec<&mut CanonicalValue> {
-        let compacted = self.compacted();
-        let mut values = Vec::new();
-        for (scope_index, scope) in self.analysis.scopes.iter_mut().enumerate() {
-            values.push(&mut scope.structure);
-            for (variant_index, variant) in scope.observations.variants.iter_mut().enumerate() {
-                if compacted.contains(&(scope_index, variant_index)) {
-                    continue;
-                }
-                if let VariantValue::Canonical(value) = &mut variant.value {
-                    values.push(value);
-                }
-            }
-        }
-        for compact in &mut self.compact {
-            if let CompiledCapture::Request { other, .. } = &mut compact.capture {
-                values.extend(other.iter_mut().map(|(_kind, value)| value));
-            }
-        }
-        values
-    }
-
-    fn compacted(&self) -> HashSet<(usize, usize)> {
-        self.compact
-            .iter()
-            .map(|compact| (compact.scope as usize, compact.variant as usize))
-            .collect()
-    }
-}
-
-/// Compact the request and header captures of `profile` and prove each rebuilds exactly.
-pub(super) fn compile_profile(profile: &AnalyzedProfile) -> Result<CompiledProfile, BoxError> {
-    let mut analysis = profile.clone();
-    // Selection reads only totals and losses, and replay reads samples only for HTTP/3 SETTINGS.
-    for scope in analysis.scopes.iter_mut() {
-        if scope.observations.domain != CanonicalDomain::Order {
-            scope.observations.sample_values = Box::default();
-        }
-        scope.observations.counts.values = Box::default();
-        scope.observations.counts.untracked_distinct = Default::default();
-    }
-    let mut builder = FieldTableBuilder::default();
-    let mut pending = Vec::new();
-    for (scope_index, scope) in analysis.scopes.iter_mut().enumerate() {
-        let request = scope.flow.is_some() && scope.observations.domain == CanonicalDomain::Joint;
-        let headers = scope.observations.domain == CanonicalDomain::Headers;
-        if !request && !headers {
-            continue;
-        }
-        for (variant_index, variant) in scope.observations.variants.iter_mut().enumerate() {
-            let original = variant.value.canonical()?.into_owned();
-            let compacted = if request {
-                PendingCompact::request(&original, &mut builder)
-            } else {
-                PendingCompact::headers(&original, &mut builder)
-            };
-            // A capture that does not decode stays canonical; selection reports it.
-            let Ok(compacted) = compacted else {
-                variant.value = VariantValue::Canonical(original);
-                continue;
-            };
-            variant.value = VariantValue::Canonical(CanonicalValue {
-                id: original.id,
-                bytes: Bytes::new(),
-            });
-            pending.push((scope_index, variant_index, original, compacted));
-        }
-    }
-    let fields = compiled_fields(&builder.finish());
-    // Rebuild through the load path, so export proves what loading will produce.
-    let table = Arc::new(load_fields(&fields)?);
-    let mut compact = Vec::with_capacity(pending.len());
-    for (scope, variant, original, compacted) in pending {
-        let capture = compiled_capture(compacted.kind());
-        let loaded = load_capture(original.id, &capture, &table, &mut HashMap::default())?;
-        if loaded.canonical()?.bytes != original.bytes {
-            return Err(ProfileDataError::Invalid("compact capture round trip").into());
-        }
-        let position = |index: usize| {
-            u32::try_from(index)
-                .map_err(|_error| ProfileDataError::LimitExceeded("compact capture position"))
+impl CompiledCapture {
+    /// The canonical slots of a request capture.
+    pub(super) fn values_mut(&mut self) -> impl Iterator<Item = &mut WireValue> {
+        let other = match self {
+            Self::Request { other, .. } => other.as_mut_slice(),
+            Self::Headers(_) => &mut [],
         };
-        compact.push(CompiledCompact {
-            scope: position(scope)?,
-            variant: position(variant)?,
-            capture,
-        });
+        other.iter_mut().map(|(_kind, value)| value)
     }
-    Ok(CompiledProfile {
-        analysis,
-        fields,
-        compact,
+}
+
+/// Collects each distinct header capture of a set once.
+#[derive(Default)]
+pub(super) struct HeaderInterner {
+    headers: Vec<CompiledHeaders>,
+    index: HashMap<CompiledHeaders, u32>,
+}
+
+impl HeaderInterner {
+    fn intern(&mut self, headers: &PlannedHeaders) -> Result<u32, ProfileDataError> {
+        let headers = CompiledHeaders {
+            completeness: headers.completeness.tag(),
+            version: version_tag(headers.version),
+            fields: headers
+                .fields
+                .iter()
+                .map(|field| (field.entry, field.occurrence))
+                .collect(),
+        };
+        if let Some(index) = self.index.get(&headers) {
+            return Ok(*index);
+        }
+        let index = u32::try_from(self.headers.len())
+            .map_err(|_error| ProfileDataError::LimitExceeded("compiled header captures"))?;
+        self.headers.push(headers.clone());
+        self.index.insert(headers, index);
+        Ok(index)
+    }
+
+    pub(super) fn finish(self) -> Vec<CompiledHeaders> {
+        self.headers
+    }
+}
+
+pub(super) fn compiled_capture(
+    kind: &CompactKind,
+    headers: &mut HeaderInterner,
+) -> Result<CompiledCapture, ProfileDataError> {
+    Ok(match kind {
+        CompactKind::Request { plan, other } => CompiledCapture::Request {
+            headers: plan
+                .headers()
+                .map(|planned| headers.intern(planned))
+                .transpose()?,
+            other: other
+                .iter()
+                .map(|slot| (slot.kind.tag(), WireValue::Bytes(slot.value.bytes.clone())))
+                .collect(),
+        },
+        CompactKind::Headers(planned) => CompiledCapture::Headers(headers.intern(planned)?),
     })
 }
 
-/// Put every compacted capture of `compiled` back into its analysis.
-pub(super) fn load_profile(compiled: CompiledProfile) -> Result<AnalyzedProfile, BoxError> {
-    let CompiledProfile {
-        mut analysis,
-        fields,
-        compact,
-    } = compiled;
-    let table = Arc::new(load_fields(&fields)?);
-    let mut pseudo = HashMap::default();
-    for compact in compact {
-        let variant = analysis
-            .scopes
-            .get_mut(compact.scope as usize)
-            .and_then(|scope| {
-                scope
-                    .observations
-                    .variants
-                    .get_mut(compact.variant as usize)
-            })
-            .ok_or(ProfileDataError::Invalid("compact capture position"))?;
-        let id = variant.value.id();
-        variant.value = VariantValue::Compact(Arc::new(load_capture(
-            id,
-            &compact.capture,
-            &table,
-            &mut pseudo,
-        )?));
-    }
-    Ok(analysis)
-}
-
-fn compiled_fields(table: &FieldTable) -> Vec<CompiledField> {
+pub(super) fn compiled_fields(table: &FieldTable) -> Vec<CompiledField> {
     table
         .entries()
         .iter()
@@ -242,9 +159,9 @@ fn compiled_fields(table: &FieldTable) -> Vec<CompiledField> {
         .collect()
 }
 
-fn load_fields(fields: &[CompiledField]) -> Result<FieldTable, ProfileDataError> {
+pub(super) fn load_fields(fields: &[CompiledField]) -> Result<Vec<FieldEntry>, ProfileDataError> {
     let limit = HeaderCapturePolicy::default().bytes;
-    let entries = fields
+    fields
         .iter()
         .map(|field| {
             let value_bytes = match &field.value {
@@ -287,8 +204,7 @@ fn load_fields(fields: &[CompiledField]) -> Result<FieldTable, ProfileDataError>
                 capture_safe,
             })
         })
-        .collect::<Result<_, ProfileDataError>>()?;
-    Ok(FieldTable::new(entries))
+        .collect()
 }
 
 fn header_value(bytes: &Bytes) -> Result<PlannedValue, ProfileDataError> {
@@ -297,141 +213,104 @@ fn header_value(bytes: &Bytes) -> Result<PlannedValue, ProfileDataError> {
         .map_err(|_error| ProfileDataError::Invalid("compact header value"))
 }
 
-fn compiled_capture(kind: &CompactKind) -> CompiledCapture {
-    match kind {
-        CompactKind::Request { plan, other } => CompiledCapture::Request {
-            headers: plan.headers().map(compiled_headers),
-            other: other
-                .iter()
-                .map(|slot| (slot.kind.tag(), slot.value.clone()))
-                .collect(),
-        },
-        CompactKind::Headers(headers) => CompiledCapture::Headers(compiled_headers(headers)),
-    }
+/// The field table of one profile: the set entries its captures name, in first use order.
+pub(super) struct ProfileFields<'a> {
+    fields: &'a [FieldEntry],
+    headers: &'a [CompiledHeaders],
+    local: HashMap<u32, u32>,
+    entries: Vec<FieldEntry>,
+    pseudo: HashMap<ValueId, Arc<PseudoHeaderCapture>>,
 }
 
-fn compiled_headers(headers: &PlannedHeaders) -> CompiledHeaders {
-    CompiledHeaders {
-        completeness: headers.completeness.tag(),
-        version: version_tag(headers.version),
-        fields: headers
-            .fields
-            .iter()
-            .map(|field| (field.entry, field.occurrence))
-            .collect(),
-    }
-}
-
-fn load_capture(
-    id: ValueId,
-    capture: &CompiledCapture,
-    table: &Arc<FieldTable>,
-    pseudo: &mut HashMap<ValueId, Arc<PseudoHeaderCapture>>,
-) -> Result<CompactCapture, ProfileDataError> {
-    let kind = match capture {
-        CompiledCapture::Headers(headers) => CompactKind::Headers(load_headers(headers, table)?),
-        CompiledCapture::Request { other, .. }
-            if other.len() >= JointCaptureLimits::default().slots =>
-        {
-            return Err(ProfileDataError::LimitExceeded("compact request slots"));
+impl<'a> ProfileFields<'a> {
+    pub(super) fn new(fields: &'a [FieldEntry], headers: &'a [CompiledHeaders]) -> Self {
+        Self {
+            fields,
+            headers,
+            local: HashMap::default(),
+            entries: Vec::new(),
+            pseudo: HashMap::default(),
         }
-        CompiledCapture::Request { headers, other } => CompactKind::request(
-            headers
-                .as_ref()
-                .map(|headers| load_headers(headers, table))
-                .transpose()?,
-            other
-                .iter()
-                .map(|(kind, value)| {
-                    Ok(CapturedSlot {
-                        kind: CapturedSlotKind::from_tag(*kind)?,
-                        value: value.clone(),
+    }
+
+    /// Load a compact capture whose canonical slots `resolve` returns.
+    pub(super) fn capture(
+        &mut self,
+        capture: &CompiledCapture,
+        mut resolve: impl FnMut(&WireValue) -> Result<CanonicalValue, BoxError>,
+    ) -> Result<CompactKind, BoxError> {
+        Ok(match capture {
+            CompiledCapture::Headers(index) => CompactKind::Headers(self.headers(*index)?),
+            CompiledCapture::Request { other, .. }
+                if other.len() >= JointCaptureLimits::default().slots =>
+            {
+                return Err(ProfileDataError::LimitExceeded("compact request slots").into());
+            }
+            CompiledCapture::Request { headers, other } => {
+                let headers = headers.map(|index| self.headers(index)).transpose()?;
+                let other = other
+                    .iter()
+                    .map(|(kind, value)| {
+                        Ok(CapturedSlot {
+                            kind: CapturedSlotKind::from_tag(*kind)?,
+                            value: resolve(value)?,
+                        })
                     })
-                })
-                .collect::<Result<_, ProfileDataError>>()?,
-            pseudo,
-        )?,
-    };
-    Ok(PendingCompact::from_parts(id, kind).finish(Arc::clone(table)))
-}
-
-/// The limits the canonical header decoder applies, so a compact capture never replays more.
-fn load_headers(
-    headers: &CompiledHeaders,
-    table: &FieldTable,
-) -> Result<PlannedHeaders, ProfileDataError> {
-    let policy = HeaderCapturePolicy::default();
-    if headers.fields.len() > policy.fields {
-        return Err(ProfileDataError::LimitExceeded("compact header fields"));
-    }
-    let completeness = ProfileCaptureCompleteness::from_tag(headers.completeness)?;
-    completeness.require_complete("compact header capture")?;
-    let fields = headers
-        .fields
-        .iter()
-        .map(|(entry, occurrence)| table.field(*entry, *occurrence))
-        .collect::<Result<Box<[_]>, ProfileDataError>>()?;
-    let bytes = fields.iter().fold(0_usize, |total, field| {
-        let entry = table.get(*field);
-        let value = match &entry.value {
-            PlannedValue::Profile(value) => value.len(),
-            PlannedValue::Request(_) => 0,
-        };
-        total
-            .saturating_add(entry.name.as_str().len())
-            .saturating_add(value)
-    });
-    if bytes > policy.bytes {
-        return Err(ProfileDataError::LimitExceeded("compact header bytes"));
-    }
-    Ok(PlannedHeaders {
-        completeness,
-        version: version_from_tag(headers.version)?,
-        fields,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::profile::format::compiled::decode_compiled_profiles;
-
-    fn compiled_with_headers(edit: impl Fn(&mut CompiledHeaders)) -> CompiledProfile {
-        let profiles = decode_compiled_profiles(include_bytes!("../embed_profiles.bin")).unwrap();
-        let mut compiled = compile_profile(&profiles[0]).unwrap();
-        let headers = compiled
-            .compact
-            .iter_mut()
-            .find_map(|compact| match &mut compact.capture {
-                CompiledCapture::Request {
-                    headers: Some(headers),
-                    ..
-                } => Some(headers),
-                _ => None,
-            })
-            .unwrap();
-        edit(headers);
-        compiled
+                    .collect::<Result<_, BoxError>>()?;
+                CompactKind::request(headers, other, &mut self.pseudo)?
+            }
+        })
     }
 
-    #[test]
-    fn compact_plans_beyond_the_header_limits_are_refused_at_load() {
-        let many = compiled_with_headers(|headers| {
-            let first = headers.fields[0];
-            headers.fields = vec![first; 32_768];
-        });
-        let error = load_profile(many).unwrap_err();
-        assert!(
-            error.to_string().contains("compact header fields"),
-            "{error}"
-        );
+    /// The limits the canonical header decoder applies, so a compact capture never replays more.
+    fn headers(&mut self, index: u32) -> Result<PlannedHeaders, ProfileDataError> {
+        let headers = self
+            .headers
+            .get(index as usize)
+            .ok_or(ProfileDataError::Invalid("compact header capture index"))?;
+        let policy = HeaderCapturePolicy::default();
+        if headers.fields.len() > policy.fields {
+            return Err(ProfileDataError::LimitExceeded("compact header fields"));
+        }
+        let completeness = ProfileCaptureCompleteness::from_tag(headers.completeness)?;
+        completeness.require_complete("compact header capture")?;
+        let mut bytes = 0_usize;
+        let mut fields = Vec::with_capacity(headers.fields.len());
+        for (entry, occurrence) in &headers.fields {
+            let field = self
+                .fields
+                .get(*entry as usize)
+                .ok_or(ProfileDataError::Invalid("compact header field entry"))?;
+            let value = match &field.value {
+                PlannedValue::Profile(value) => value.len(),
+                PlannedValue::Request(_) => 0,
+            };
+            bytes = bytes
+                .saturating_add(field.name.as_str().len())
+                .saturating_add(value);
+            let next = u32::try_from(self.entries.len())
+                .map_err(|_error| ProfileDataError::LimitExceeded("profile replay fields"))?;
+            let local = *self.local.entry(*entry).or_insert_with(|| {
+                self.entries.push(field.clone());
+                next
+            });
+            fields.push(PlannedField {
+                entry: local,
+                occurrence: *occurrence,
+            });
+        }
+        if bytes > policy.bytes {
+            return Err(ProfileDataError::LimitExceeded("compact header bytes"));
+        }
+        Ok(PlannedHeaders {
+            completeness,
+            version: version_from_tag(headers.version)?,
+            fields: fields.into(),
+        })
+    }
 
-        let incomplete = compiled_with_headers(|headers| {
-            headers.completeness = ProfileCaptureCompleteness::Incomplete.tag();
-        });
-        load_profile(incomplete).unwrap_err();
-
-        let intact = compiled_with_headers(|_headers| {});
-        load_profile(intact).unwrap();
+    /// The finished table every capture of the profile shares.
+    pub(super) fn finish(self) -> Arc<FieldTable> {
+        Arc::new(FieldTable::new(self.entries))
     }
 }

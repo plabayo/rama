@@ -419,6 +419,18 @@ async fn embedded_browsing_emulates_every_request_of_a_page() {
                 .unwrap();
             assert_eq!(selected.ua_kind, Some(UserAgentKind::Chromium));
             assert_eq!(selected.platform, Some(PlatformKind::MacOS));
+            let report = emitted
+                .extensions()
+                .get_ref::<ProfilePreservationReport>()
+                .unwrap();
+            assert!(
+                !report
+                    .differences
+                    .contains(&ProfilePreservationDifference::LoweredProfileItem {
+                        item: LoweredProfileItem::NearestFlow,
+                    }),
+                "{method} {mode} {site} {destination} seed {seed}: {report:?}"
+            );
             let headers = emitted.headers();
             assert_eq!(headers["sec-fetch-mode"], mode);
             assert_eq!(headers["sec-fetch-site"], site);
