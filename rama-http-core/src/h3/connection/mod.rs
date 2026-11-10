@@ -594,6 +594,10 @@ pub(crate) struct PeerSettings {
     pub(crate) extended_connect: bool,
 }
 
+/// The largest client-initiated bidirectional stream ID: a GOAWAY that carries it tells the
+/// peer to stop sending requests and excludes none (RFC 9114 §5.2).
+pub(crate) const MAX_REQUEST_ID: u64 = (1 << 62) - 4;
+
 // Uncontended in steady state: the driver files, one consumer per association drains.
 type DatagramDemux = Mutex<super::datagram::Demux>;
 
@@ -614,7 +618,7 @@ struct State {
     control_in_flight: bool,
     receive_closed: bool,
     local_goaway: Option<u64>,
-    /// When the first local GOAWAY was queued.
+    /// When the first local GOAWAY that excludes requests was queued.
     local_goaway_at: Option<Instant>,
 }
 
@@ -1257,7 +1261,10 @@ impl Shared {
             ))?;
         value.encode(&mut bytes);
         state.local_goaway = Some(id);
-        state.local_goaway_at.get_or_insert_with(Instant::now);
+        // A notice that excludes no request starts no drain.
+        if id < MAX_REQUEST_ID {
+            state.local_goaway_at.get_or_insert_with(Instant::now);
+        }
         state
             .control_output
             .push_back((bytes.freeze(), ControlFrame::Goaway(id)));
@@ -2448,13 +2455,14 @@ impl<C: transport::Connection> Driver<C> {
                     self.connection.accept_bi().await.map_err(|error| Error::from_transport(&error))?;
                     return Err(self.reject_server_request());
                 }
-                // Admission owns bidi streams until shutdown. Afterwards the driver
-                // rejects newly arriving requests while accepted work drains (§5.2).
+                // Admission owns bidi streams until a GOAWAY excludes requests. Afterwards
+                // the driver rejects newly arriving ones while accepted work drains (§5.2).
                 loop {
                     let progress = self.shared.progress.notified();
                     let mut progress = pin!(progress);
                     progress.as_mut().enable();
-                    if self.shared.state.lock().local_goaway.is_some() {
+                    let excluding = |id| id < MAX_REQUEST_ID;
+                    if self.shared.state.lock().local_goaway.is_some_and(excluding) {
                         break;
                     }
                     progress.await;

@@ -15,10 +15,12 @@ use rama_http_core::{
     service::RamaHttpService,
 };
 use rama_http_types::Request;
-use std::convert::Infallible;
+use std::{convert::Infallible, time::Duration};
+use tokio::time::{Instant, sleep};
 
-/// Serves until the graceful phase of `scope`, drains with a GOAWAY, and drops
-/// the connection at the hard phase of `scope`.
+/// Serves until the graceful phase of `scope`, tells the peer to stop, still serves the
+/// requests it had already sent, drains with a GOAWAY, and drops the connection at the
+/// hard phase of `scope`.
 pub(super) async fn serve<C, S, R>(
     conn: C,
     config: Config,
@@ -65,11 +67,20 @@ where
     let mut cancelled = std::pin::pin!(cancelled);
     let mut requests = FuturesUnordered::new();
     let service = RamaHttpService::new(service);
+    // Announced: the peer is told to stop. Draining: its notice ended, nothing more is admitted.
+    let mut announced = false;
     let mut draining = false;
+    let notice = sleep(Duration::ZERO);
+    let mut notice = std::pin::pin!(notice);
     loop {
         tokio::select! {
-            result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
-            _ = &mut cancelled, if !draining => {
+            result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await,
+            _ = &mut cancelled, if !announced => {
+                let period = connection.announce_shutdown()?;
+                notice.as_mut().reset(Instant::now() + period);
+                announced = true;
+            }
+            () = &mut notice, if announced && !draining => {
                 connection.shutdown()?;
                 draining = true;
             }
@@ -77,7 +88,7 @@ where
                 let stream = match accepted {
                     Ok(stream) => stream,
                     // Keep accepted work alive while the driver files received input.
-                    Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
+                    Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await,
                     Err(error) => return Err(error.into()),
                 };
                 let service = service.clone();
@@ -96,7 +107,7 @@ where
             result = requests.next(), if !requests.is_empty() => {
                 if let Some(Err(error)) = result {
                     if clean_close(error) {
-                        return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await;
+                        return drain(driver, &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await;
                     }
                     if error.scope() == ErrorScope::Connection {
                         return completed(Err(error));

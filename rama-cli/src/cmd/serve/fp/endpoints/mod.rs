@@ -9,6 +9,7 @@ use rama::{
     crypto::digest::sha256_slices,
     error::BoxError,
     extensions::ExtensionsRef,
+    graceful::{Cause, scope_context},
     http::{
         BodyExtractExt, Response, StatusCode, Version,
         body::util::BodyExt as _,
@@ -382,6 +383,27 @@ pub(super) async fn get_landing(
         ),
     )
     .into_response())
+}
+
+/// Drains the connection that carried the request: it is answered, and the client's next
+/// request to this host opens a new connection.
+pub(super) async fn get_disconnect(parts: Parts) -> impl IntoResponse {
+    if let Some(scope) = scope_context(&parts.extensions) {
+        scope.cancel(Cause::Reason("the client asked for a new connection"));
+    }
+    // The page references nothing, so the browser's next request is its next navigation.
+    html!(
+        lang = "en",
+        head!(
+            meta!(charset = "UTF-8"),
+            title!("ラマ | FP"),
+            link!(rel = "icon", href = FAVICON_DATA_URL),
+        ),
+        body!(p!(
+            id = "disconnect",
+            "This connection takes no further requests."
+        )),
+    )
 }
 
 /// Browsers fire `load` on a frame whose navigation failed, so the frame confirms

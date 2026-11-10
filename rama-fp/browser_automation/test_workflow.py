@@ -1,5 +1,7 @@
 """Protocol/coverage regressions run identically with normal and optimized Python."""
 
+from contextlib import redirect_stdout
+import io
 import json
 import unittest
 from unittest.mock import Mock, patch
@@ -9,6 +11,7 @@ from selenium.common.exceptions import (
     NoSuchWindowException,
     StaleElementReferenceException,
     TimeoutException,
+    WebDriverException,
 )
 
 from browser_automation import workflow
@@ -501,6 +504,29 @@ class SiteProbeTests(unittest.TestCase):
         )
         self.assertNotIn("ws", checked["cross-site"])
         self.assertEqual(checked["same-site"]["ws"], "h2")
+
+    def test_a_host_that_cannot_be_reached_does_not_stop_the_other_drains(self):
+        asked = []
+
+        def get(url):
+            asked.append(url)
+            if "ss.example" in url:
+                raise WebDriverException("private provider detail")
+
+        with redirect_stdout(io.StringIO()) as stdout:
+            workflow.drop_connections(
+                Mock(get=get),
+                ["https://h2.fp.example.org/", *(site["origin"] for site in SITES)],
+            )
+        self.assertEqual(
+            asked,
+            [
+                "https://h2.fp.example.org/disconnect",
+                "https://h2.fp.ss.example.org/disconnect",
+                "https://h2.fp.xss.example.com/disconnect",
+            ],
+        )
+        self.assertNotIn("private", stdout.getvalue())
 
     def test_site_navigations_chain_within_each_pages_form_policy(self):
         start = "https://h2.fp.example.org/form?source=web&turtles=yes"

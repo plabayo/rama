@@ -4,7 +4,7 @@ primary_region = 'fra'
 [processes]
 # The site hosts are the `fp` app's: browsers reach a new origin over TCP first, which
 # this app's bootstrap door answers with its "switch to HTTP/3" page only.
-app_secure = "serve fp --bind fly-global-services:443 -c 2048 -t 16 --rate 100 --throttle 1048576 --http-version h3 --h3-mtu-upper-bound 1280 --h3-bootstrap-bind 0.0.0.0:8443 -s --same-site-domain fp.ss.ramaproxy.org --cross-site-domain fp.xss.ramaproxy.com"
+app_secure = "serve fp --bind fly-global-services:443 -c 2048 -t 120 --rate 100 --throttle 1048576 --http-version h3 --h3-mtu-upper-bound 1280 --h3-bootstrap-bind 0.0.0.0:8443 -s --same-site-domain fp.ss.ramaproxy.org --cross-site-domain fp.xss.ramaproxy.com"
 
 [build]
 dockerfile = '../Dockerfile.h3'

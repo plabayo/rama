@@ -677,6 +677,20 @@ def visit_sites(driver, wait, origin, sites, timeout):
     return protocols
 
 
+def drop_connections(driver, origins):
+    """Have each origin drain the connection this browser reaches it on.
+
+    The browser then opens a new connection for its next request to that host. A host
+    that does not answer keeps its connection: the journey before it is already complete.
+    """
+    for origin in origins:
+        try:
+            driver.get(urljoin(origin, "/disconnect"))
+        except WebDriverException as error:
+            # Provider exception text can contain private data; log only its type.
+            print(f"SKIP disconnect: {type(error).__name__}", flush=True)
+
+
 def run_capture_flow(
     driver,
     origin,
@@ -685,6 +699,7 @@ def run_capture_flow(
     expected_protocol=None,
     all_flows=True,
     sites=False,
+    new_connections_after=False,
     timeout=30,
 ):
     """Collect one real browser journey against a configurable fp origin.
@@ -692,6 +707,8 @@ def run_capture_flow(
     ``cookies`` is used by nightly storage authorization/metadata. Local isolated
     tests omit it to keep reference requests credential-free. The caller owns the
     driver and always quits it in a context manager/finally block.
+    ``new_connections_after`` ends a completed journey by having every host it
+    reached drain its connection, so a later journey in the session opens new ones.
     """
     parsed = urlsplit(origin)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -830,6 +847,9 @@ def run_capture_flow(
     site_navigations = (
         visit_sites(driver, wait, origin, site_probes, timeout) if sites else None
     )
+    if new_connections_after:
+        hosts = [probe["origin"] for probe in site_probes.values()] if sites else []
+        drop_connections(driver, [origin, *hosts])
 
     def site_protocols_of(results, *, websocket):
         checked = checked_site_results(

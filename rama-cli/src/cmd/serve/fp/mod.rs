@@ -378,6 +378,7 @@ pub async fn run(
         .with_get("/assets/site.js", endpoints::get_assets_site_script)
         .with_get("/frame", endpoints::get_frame)
         .with_get("/landing", endpoints::get_landing)
+        .with_get("/disconnect", endpoints::get_disconnect)
         // Report and API
         .with_get("/report", endpoints::get_report)
         // WS
@@ -680,30 +681,96 @@ where
 mod tests {
     use super::*;
 
+    use rama::graceful::Scope;
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::TcpStream,
+    };
+
+    fn plaintext_h1_config() -> CliCommandFingerprint {
+        CliCommandFingerprint {
+            bind: SocketAddress::local_ipv4(0),
+            concurrent: 0,
+            timeout: 2.,
+            connection_grace: ConnectionGraceArgs::default(),
+            rate: 0,
+            throttle: 0,
+            forward: None,
+            http_version: "h1".parse().unwrap(),
+            http3: Http3Args {
+                h3_bind: None,
+                h3_mtu_upper_bound: None,
+                h3_bootstrap_bind: None,
+                h3_no_session_resumption: false,
+            },
+            secure: false,
+            same_site_domain: None,
+            cross_site_domain: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnect_drains_only_the_connection_that_asked() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let scope = Scope::new();
+            let cfg = plaintext_h1_config();
+            let listeners = HttpListeners::bind(
+                scope.clone_weak(),
+                cfg.bind,
+                cfg.http_version,
+                None,
+                &cfg.http3,
+            )
+            .await
+            .unwrap();
+            let address = listeners.tcp.as_ref().unwrap().local_addr().unwrap();
+            serve_http(
+                &scope.clone_weak(),
+                &Http3Endpoints::default(),
+                &cfg,
+                listeners,
+                None,
+                Arc::new(
+                    ConsumeErrLayer::trace_as(tracing::Level::WARN).into_layer(
+                        Router::new()
+                            .with_get("/disconnect", endpoints::get_disconnect)
+                            .with_get("/kept", "kept"),
+                    ),
+                ),
+                (None, None),
+            )
+            .unwrap();
+            let mut asked = TcpStream::connect(address).await.unwrap();
+            let mut other = TcpStream::connect(address).await.unwrap();
+            asked
+                .write_all(b"GET /disconnect HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+            // A persistent connection reads to its end only once the server closes it.
+            let mut response = String::new();
+            asked.read_to_string(&mut response).await.unwrap();
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            // A subresource would be fetched over a new connection, ahead of the next navigation.
+            assert!(!response.contains("src=") && !response.contains("/assets/"));
+
+            other
+                .write_all(b"GET /kept HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            other.read_to_string(&mut response).await.unwrap();
+            assert!(response.ends_with("kept"), "{response}");
+            assert!(!scope.is_cancelled());
+        })
+        .await
+        .expect("bounded disconnect exchange");
+    }
+
     #[tokio::test]
     async fn plaintext_fp_listener_attaches_positive_connection_provenance() {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         tokio::time::timeout(Duration::from_secs(5), async {
             let scope = WeakScope::detached();
-            let cfg = CliCommandFingerprint {
-                bind: SocketAddress::local_ipv4(0),
-                concurrent: 0,
-                timeout: 2.,
-                connection_grace: ConnectionGraceArgs::default(),
-                rate: 0,
-                throttle: 0,
-                forward: None,
-                http_version: "h1".parse().unwrap(),
-                http3: Http3Args {
-                    h3_bind: None,
-                    h3_mtu_upper_bound: None,
-                    h3_bootstrap_bind: None,
-                    h3_no_session_resumption: false,
-                },
-                secure: false,
-                same_site_domain: None,
-                cross_site_domain: None,
-            };
+            let cfg = plaintext_h1_config();
             let listeners =
                 HttpListeners::bind(scope.clone(), cfg.bind, cfg.http_version, None, &cfg.http3)
                     .await
@@ -725,7 +792,7 @@ mod tests {
                 (None, None),
             )
             .unwrap();
-            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            let mut stream = TcpStream::connect(address).await.unwrap();
             stream
                 .write_all(b"GET /report HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
                 .await
