@@ -2560,3 +2560,267 @@ fn an_abort_observed_on_a_composite_fixes_the_cancel_it_implies() {
 fn an_abort_observed_below_a_composite_fixes_the_cancel_it_implies() {
     abort_each_step_of_an_abort_observation(true);
 }
+
+/// A root as a server makes it, a connection below it and a task scope below that.
+fn graced_tree() -> (Scope, Scope, Scope) {
+    let root = Scope::new()
+        .with_signal(std::future::pending::<()>())
+        .with_grace(5 * SEC);
+    let child = root.child();
+    let leaf = child.child();
+    (root, child, leaf)
+}
+
+#[test]
+fn a_grace_alone_keeps_a_chain_off_the_slow_path() {
+    rt().block_on(async {
+        let (_root, _child, leaf) = graced_tree();
+        let (flag, waker) = Flag::waker();
+        let mut cancelled = leaf.cancelled();
+        let mut aborted = leaf.aborted();
+        let mut drained = leaf.drained();
+        assert!(poll(&mut cancelled, &waker).is_pending());
+        assert!(poll(&mut aborted, &waker).is_pending());
+        assert!(poll(&mut drained, &waker).is_pending());
+
+        // A grace schedules nothing before a cancel: polling a registered wait again reads
+        // the flags of each level once, and an observation walks up once.
+        let _before = super::node::walk_steps::take();
+        for _ in 0..3 {
+            assert!(poll(&mut cancelled, &waker).is_pending());
+            assert!(poll(&mut aborted, &waker).is_pending());
+            assert!(poll(&mut drained, &waker).is_pending());
+        }
+        assert_eq!(super::node::walk_steps::take(), 0);
+        assert!(!leaf.is_cancelled());
+        assert!(!leaf.is_aborted());
+        assert_eq!(super::node::walk_steps::take(), 4);
+        assert!(!flag.woken());
+    });
+}
+
+#[test]
+fn a_wait_polled_again_below_a_graced_root_follows_a_cancel_and_the_grace() {
+    rt().block_on(async {
+        // Cancelled at the root, the connection, or the leaf itself.
+        for level in 0..3 {
+            let (root, child, leaf) = graced_tree();
+            let (flag, waker) = Flag::waker();
+            let mut cancelled = leaf.cancelled();
+            let mut aborted = leaf.aborted();
+            for _ in 0..3 {
+                assert!(poll(&mut cancelled, &waker).is_pending());
+                assert!(poll(&mut aborted, &waker).is_pending());
+            }
+            assert!(!flag.woken());
+
+            let cancelled_at = Instant::now();
+            [&root, &child, &leaf][level].cancel(Cause::Reason("stop"));
+            assert!(flag.woken(), "level {level}");
+            assert!(poll(&mut cancelled, &waker).is_ready());
+            assert_eq!(reason(leaf.cause().as_ref()), Some("stop"));
+            // Only the root has a grace: it counts from a cancel of the root alone.
+            assert!(poll(&mut aborted, &waker).is_pending());
+            assert!(poll(&mut aborted, &waker).is_pending());
+            advance(4 * SEC).await;
+            assert!(poll(&mut aborted, &waker).is_pending());
+            assert!(!leaf.is_aborted());
+            advance(SEC).await;
+            if level == 0 {
+                assert!(flag.woken(), "the grace timer wakes the waiter");
+                assert!(poll(&mut aborted, &waker).is_ready());
+                assert_eq!(cancelled_at.elapsed(), 5 * SEC);
+                assert!(matches!(leaf.abort_cause(), Some(Cause::GraceElapsed)));
+            } else {
+                assert!(!flag.woken());
+                assert!(poll(&mut aborted, &waker).is_pending());
+                assert!(!leaf.is_aborted());
+                root.abort(Cause::Owner);
+                assert!(flag.woken());
+                assert!(poll(&mut aborted, &waker).is_ready());
+            }
+        }
+    });
+}
+
+#[test]
+fn a_wait_polled_again_below_a_graced_root_follows_an_abort() {
+    for level in 0..3 {
+        let (root, child, leaf) = graced_tree();
+        let (flag, waker) = Flag::waker();
+        let mut cancelled = leaf.cancelled();
+        let mut aborted = leaf.aborted();
+        for _ in 0..3 {
+            assert!(poll(&mut cancelled, &waker).is_pending());
+            assert!(poll(&mut aborted, &waker).is_pending());
+        }
+        [&root, &child, &leaf][level].abort(Cause::Reason("now"));
+        assert!(flag.woken(), "level {level}");
+        assert!(poll(&mut aborted, &waker).is_ready());
+        assert!(poll(&mut cancelled, &waker).is_ready());
+        assert_eq!(reason(leaf.abort_cause().as_ref()), Some("now"));
+    }
+}
+
+#[test]
+fn a_wait_polled_again_below_a_graced_root_follows_a_deadline_set_later() {
+    rt().block_on(async {
+        // The deadline lands on the root, the connection, or the leaf itself.
+        for level in 0..3 {
+            let (root, child, leaf) = graced_tree();
+            let (flag, waker) = Flag::waker();
+            let mut cancelled = leaf.cancelled();
+            let mut aborted = leaf.aborted();
+            for _ in 0..3 {
+                assert!(poll(&mut cancelled, &waker).is_pending());
+                assert!(poll(&mut aborted, &waker).is_pending());
+            }
+            let start = Instant::now();
+            let _timed = [&root, &child, &leaf][level].clone().with_timeout(2 * SEC);
+            assert!(flag.woken(), "level {level}");
+            assert!(poll(&mut cancelled, &waker).is_pending());
+            assert!(poll(&mut aborted, &waker).is_pending());
+            assert!(poll(&mut cancelled, &waker).is_pending());
+            advance(2 * SEC).await;
+            assert!(flag.woken(), "the deadline timer wakes the waiter");
+            assert!(poll(&mut cancelled, &waker).is_ready());
+            assert!(matches!(leaf.cause(), Some(Cause::Deadline)));
+            assert!(poll(&mut aborted, &waker).is_pending());
+            advance(5 * SEC).await;
+            // The root's grace counts from the root's own deadline only.
+            assert_eq!(poll(&mut aborted, &waker).is_ready(), level == 0);
+            assert_eq!(leaf.is_aborted(), level == 0);
+            if level == 0 {
+                assert_eq!(start.elapsed(), 7 * SEC);
+            }
+        }
+    });
+}
+
+#[test]
+fn a_wait_polled_again_below_a_graced_root_takes_a_changed_waker() {
+    let (root, _child, leaf) = graced_tree();
+    let (first_flag, first_waker) = Flag::waker();
+    let (second_flag, second_waker) = Flag::waker();
+    let mut cancelled = leaf.cancelled();
+    assert!(poll(&mut cancelled, &first_waker).is_pending());
+    assert!(poll(&mut cancelled, &first_waker).is_pending());
+    assert!(poll(&mut cancelled, &second_waker).is_pending());
+    assert!(poll(&mut cancelled, &second_waker).is_pending());
+    assert_eq!(waiter_count(&leaf), 1);
+    root.cancel(Cause::Owner);
+    assert!(!first_flag.woken());
+    assert!(second_flag.woken());
+    assert!(poll(&mut cancelled, &second_waker).is_ready());
+}
+
+#[test]
+fn a_wait_polled_again_on_a_composite_below_a_graced_root_follows_each_parent() {
+    rt().block_on(async {
+        for part in 0..2 {
+            let graced = Scope::new()
+                .with_signal(std::future::pending::<()>())
+                .with_grace(5 * SEC);
+            let plain = Scope::new();
+            let work = Scope::child_of([&graced, &plain]).child();
+            let (flag, waker) = Flag::waker();
+            let mut cancelled = work.cancelled();
+            let mut aborted = work.aborted();
+            for _ in 0..3 {
+                assert!(poll(&mut cancelled, &waker).is_pending());
+                assert!(poll(&mut aborted, &waker).is_pending());
+            }
+            assert!(!work.is_cancelled());
+            assert!(!flag.woken());
+
+            [&graced, &plain][part].cancel(Cause::Reason("parent"));
+            assert!(flag.woken(), "part {part}");
+            assert!(poll(&mut cancelled, &waker).is_ready());
+            assert_eq!(reason(work.cause().as_ref()), Some("parent"));
+            assert!(poll(&mut aborted, &waker).is_pending());
+            advance(5 * SEC).await;
+            // Only the graced parent turns its cancel into an abort.
+            assert_eq!(poll(&mut aborted, &waker).is_ready(), part == 0);
+            assert_eq!(work.is_aborted(), part == 0);
+        }
+    });
+}
+
+#[test]
+fn a_grace_at_any_level_counts_from_a_cancel_at_or_above_it_only() {
+    rt().block_on(async {
+        // Every set of graced levels against a cancel of each level, or of none: a level is
+        // aborted by time once a graced level at or above it is cancelled, itself or from above.
+        for graced in 0..8_u8 {
+            for cancel in [None, Some(0), Some(1), Some(2)] {
+                let root = Scope::new();
+                let child = root.child();
+                let leaf = child.child();
+                let levels = [&root, &child, &leaf];
+                for (level, scope) in levels.iter().enumerate() {
+                    if graced & (1 << level) != 0 {
+                        let _graced = (*scope).clone().with_grace(5 * SEC);
+                    }
+                }
+                let mut waits: Vec<_> = levels
+                    .iter()
+                    .map(|scope| (scope.cancelled(), scope.aborted()))
+                    .collect();
+                for _ in 0..2 {
+                    for (cancelled, aborted) in &mut waits {
+                        assert!(poll_noop(cancelled).is_pending());
+                        assert!(poll_noop(aborted).is_pending());
+                    }
+                }
+                if let Some(cancel) = cancel {
+                    levels[cancel].cancel(Cause::Owner);
+                }
+                let case = format!("graced {graced:03b}, cancel {cancel:?}");
+                for (level, scope) in levels.iter().enumerate() {
+                    let is_cancelled = cancel.is_some_and(|cancel| cancel <= level);
+                    assert_eq!(scope.is_cancelled(), is_cancelled, "{case}, level {level}");
+                    assert!(!scope.is_aborted(), "{case}, level {level}");
+                    let (cancelled, aborted) = &mut waits[level];
+                    assert_eq!(poll_noop(cancelled).is_ready(), is_cancelled, "{case}");
+                    assert!(poll_noop(aborted).is_pending(), "{case}, level {level}");
+                }
+                advance(5 * SEC).await;
+                for (level, scope) in levels.iter().enumerate() {
+                    let is_aborted = cancel
+                        .is_some_and(|cancel| (cancel..=level).any(|at| graced & (1 << at) != 0));
+                    assert_eq!(scope.is_aborted(), is_aborted, "{case}, level {level}");
+                    let (_, aborted) = &mut waits[level];
+                    assert_eq!(poll_noop(aborted).is_ready(), is_aborted, "{case}");
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn a_task_below_a_graced_root_runs_through_the_grace_and_stops_at_its_end() {
+    rt().block_on(async {
+        let (root, _child, leaf) = graced_tree();
+        let polls = Arc::new(AtomicUsize::new(0));
+        let counted = polls.clone();
+        let task = leaf.spawn_task(std::future::poll_fn(move |cx| {
+            // Wakes itself: the stop wait is polled again with one waker each time.
+            counted.fetch_add(1, Ordering::SeqCst);
+            cx.waker().wake_by_ref();
+            Poll::<()>::Pending
+        }));
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        root.cancel(Cause::Owner);
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!task.is_finished(), "a task drains through the grace");
+        advance(5 * SEC).await;
+        assert!(task.await.unwrap().is_none());
+        let seen = polls.load(Ordering::SeqCst);
+        assert!(seen >= 16, "{seen} polls");
+        assert!(matches!(leaf.abort_cause(), Some(Cause::GraceElapsed)));
+    });
+}
