@@ -957,3 +957,8 @@ name = "http1_body_drain"
 path = "benches/http1_body_drain.rs"
 required-features = ["http-full", "rustls", "ring"]
 harness = false
+
+[[bench]]
+name = "json_tokenizer"
+required-features = ["std"]
+harness = false
