@@ -3,6 +3,7 @@
 pub mod bootstrap;
 #[cfg(feature = "tls")]
 mod extension_order;
+mod reserved_draw;
 pub(crate) mod shapes;
 
 use std::{error::Error, fmt, ptr, sync::Arc};
@@ -18,7 +19,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 pub(crate) use self::shapes::RequestPlanRef;
-use self::shapes::{RequestShapeCache, request_variants_for_headers};
+use self::{
+    reserved_draw::ReservedDraws,
+    shapes::{RequestShapeCache, request_variants_for_headers},
+};
 use crate::{
     DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent,
     profile::{
@@ -559,9 +563,9 @@ impl SelectedProfile {
             .iter()
             .map(|(_index, scope)| scope.observations.counts.total)
             .collect::<Vec<_>>();
-        let scope = scopes
+        let (scope_index, scope) = scopes
             .get(scope_draw.weighted_index(&weights)?)
-            .map(|(_index, scope)| *scope)
+            .copied()
             .ok_or(SelectionError::IncompatibleConnectionContext)?;
         let variant = if let Some(pin) = self.pins.connection {
             scope
@@ -619,6 +623,27 @@ impl SelectedProfile {
                 },
             ),
         )?;
+        // Only QUIC connections carry reserved identifiers a client draws afresh.
+        let capture = if contains(analysis.components.quic.as_deref(), scope_index)
+            || contains(analysis.components.h3.as_deref(), scope_index)
+        {
+            reserved_draw::draw_reserved(
+                capture,
+                ReservedDraws {
+                    seed,
+                    context: ProfileDrawContext {
+                        profile: analysis.id,
+                        analysis_revision: analysis.classifier_revision,
+                        scope: scope.id,
+                        key,
+                        domain: DrawDomain::ReservedIdentifiers,
+                        slot: 0,
+                    },
+                },
+            )?
+        } else {
+            capture
+        };
         Ok(ConnectionSelection {
             profile: analysis.id,
             variant,
