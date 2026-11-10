@@ -2,11 +2,11 @@
 
 use crate::protocol::{error::ProtocolError, frame::mask::apply_mask, message::Message};
 use rama_core::{
-    bytes::{self, Bytes, BytesMut},
+    bytes::{Buf, Bytes, BytesMut},
     telemetry::tracing::trace,
 };
 use rama_utils::octets::kib;
-use std::io::{self, Cursor, Error as IoError, ErrorKind as IoErrorKind, Read, Write};
+use std::io::{self, Cursor, Error as IoError, ErrorKind as IoErrorKind, IoSlice, Read, Write};
 
 pub mod coding;
 
@@ -27,6 +27,12 @@ const MAX_READ_LEN: usize = kib(128);
 
 /// Payloads up to this size are copied out, so a kept message never pins the read buffer.
 const COPIED_PAYLOAD_MAX_LEN: usize = kib(4);
+
+/// Payloads from this size on are written from their own storage instead of through `out_buffer`.
+const DIRECT_PAYLOAD_MIN_LEN: usize = kib(64);
+
+/// Capacity a drained `out_buffer` keeps at least; twice the write length when that is larger.
+const RETAINED_OUT_BUFFER_LEN: usize = kib(256);
 
 /// A reader and writer for WebSocket frames.
 #[derive(Debug)]
@@ -124,7 +130,9 @@ pub(super) struct FrameCodec {
     read_len: usize,
     /// Buffer to send packets to the network.
     out_buffer: BytesMut,
-    /// Capacity limit for `out_buffer`.
+    /// Payload of the last buffered frame, written right after `out_buffer` without a copy.
+    out_payload: Option<Bytes>,
+    /// Limit for the bytes waiting in `out_buffer` and `out_payload` together.
     max_out_buffer_len: usize,
     /// Buffer target length to reach before writing to the stream
     /// on calls to `buffer_frame`.
@@ -145,6 +153,7 @@ impl FrameCodec {
             min_read_len: in_buf_len.max(FrameHeader::MAX_SIZE),
             read_len: in_buf_len.max(FrameHeader::MAX_SIZE),
             out_buffer: <_>::default(),
+            out_payload: None,
             max_out_buffer_len: usize::MAX,
             out_buffer_write_len: 0,
             header: None,
@@ -159,6 +168,7 @@ impl FrameCodec {
             min_read_len: min_in_buf_len.max(FrameHeader::MAX_SIZE),
             read_len: min_in_buf_len.max(FrameHeader::MAX_SIZE),
             out_buffer: <_>::default(),
+            out_payload: None,
             max_out_buffer_len: usize::MAX,
             out_buffer_write_len: 0,
             header: None,
@@ -191,7 +201,7 @@ impl FrameCodec {
                 let mut cursor = Cursor::new(&self.in_buffer[..self.filled]);
                 self.header = FrameHeader::parse(&mut cursor)?;
                 let advanced = cursor.position() as usize;
-                bytes::Buf::advance(&mut self.in_buffer, advanced);
+                self.in_buffer.advance(advanced);
                 self.filled -= advanced;
 
                 if let Some((_, len)) = &self.header {
@@ -244,7 +254,7 @@ impl FrameCodec {
 
         let payload = if len <= COPIED_PAYLOAD_MAX_LEN {
             let mut payload = self.in_buffer[..len].to_vec();
-            bytes::Buf::advance(&mut self.in_buffer, len);
+            self.in_buffer.advance(len);
             if let Some(mask) = mask {
                 apply_mask(&mut payload, mask);
             }
@@ -287,9 +297,26 @@ impl FrameCodec {
         Ok(size)
     }
 
-    /// Writes a frame into the `out_buffer`.
-    /// If the out buffer size is over the `out_buffer_write_len` will also write
-    /// the out buffer into the provided `stream`.
+    /// Bytes queued for the stream.
+    fn out_len(&self) -> usize {
+        self.out_buffer.len() + self.out_payload.as_ref().map_or(0, Bytes::len)
+    }
+
+    /// Empties the drained `out_buffer`, giving back storage that one outsized frame grew.
+    #[inline]
+    fn reset_out_buffer(&mut self) {
+        let retained = RETAINED_OUT_BUFFER_LEN.max(self.out_buffer_write_len.saturating_mul(2));
+        if self.out_buffer.capacity() > retained {
+            self.out_buffer = BytesMut::new();
+        } else {
+            self.out_buffer.clear();
+        }
+    }
+
+    /// Queues a frame for the stream.
+    /// If the queued size is over the `out_buffer_write_len`, or the frame carries a payload
+    /// large enough to be written from its own storage, will also write what is queued into
+    /// the provided `stream`.
     ///
     /// To ensure buffered frames are written call [`Self::write_out_buffer`].
     ///
@@ -302,11 +329,15 @@ impl FrameCodec {
     where
         Stream: Write,
     {
-        if frame.len() + self.out_buffer.len() > self.max_out_buffer_len {
+        if frame.len() + self.out_len() > self.max_out_buffer_len {
             return Err(ProtocolError::WriteBufferFull(Message::Frame(frame)));
         }
 
         trace!("writing frame {frame}");
+
+        if frame.payload_len() >= DIRECT_PAYLOAD_MIN_LEN || self.out_payload.is_some() {
+            return self.buffer_frame_around_payload(stream, frame);
+        }
 
         self.out_buffer.reserve(frame.len());
         frame.format_into_buf(&mut self.out_buffer);
@@ -318,7 +349,43 @@ impl FrameCodec {
         }
     }
 
-    /// Writes the out_buffer to the provided stream.
+    /// [`Self::buffer_frame`] for a frame that follows a queued payload or brings a large one.
+    fn buffer_frame_around_payload<Stream>(
+        &mut self,
+        stream: &mut Stream,
+        frame: Frame,
+    ) -> Result<(), ProtocolError>
+    where
+        Stream: Write,
+    {
+        // a payload the stream did not take yet goes on the wire before this frame
+        if let Some(payload) = self.out_payload.take() {
+            self.out_buffer.extend_from_slice(&payload);
+        }
+
+        let frame = if frame.payload_len() >= DIRECT_PAYLOAD_MIN_LEN {
+            match frame.format_header_into_buf(&mut self.out_buffer) {
+                Ok(payload) => {
+                    self.out_payload = Some(payload);
+                    return self.write_out_payload(stream);
+                }
+                Err(frame) => frame,
+            }
+        } else {
+            frame
+        };
+
+        self.out_buffer.reserve(frame.len());
+        frame.format_into_buf(&mut self.out_buffer);
+
+        if self.out_buffer.len() > self.out_buffer_write_len {
+            self.write_out_buffer(stream)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Writes what is queued to the provided stream: the `out_buffer`, then the `out_payload`.
     ///
     /// Does **not** flush.
     pub(super) fn write_out_buffer<Stream>(
@@ -328,17 +395,21 @@ impl FrameCodec {
     where
         Stream: Write,
     {
+        if self.out_payload.is_some() {
+            return self.write_out_payload(stream);
+        }
+
         let mut pos = 0;
         loop {
             if pos == self.out_buffer.len() {
-                self.out_buffer.clear();
+                self.reset_out_buffer();
                 return Ok(());
             }
             match stream.write(&self.out_buffer[pos..]) {
                 Ok(0) => {
                     // Drop already-written bytes before returning so that
                     // a retry starts from the correct position.
-                    bytes::Buf::advance(&mut self.out_buffer, pos);
+                    self.out_buffer.advance(pos);
                     return Err(IoError::new(
                         IoErrorKind::ConnectionReset,
                         "Connection reset while sending",
@@ -348,11 +419,59 @@ impl FrameCodec {
                 Ok(n) => pos += n,
                 Err(err) => {
                     // Advance past the written prefix without moving the unwritten tail.
-                    bytes::Buf::advance(&mut self.out_buffer, pos);
+                    self.out_buffer.advance(pos);
                     return Err(err.into());
                 }
             }
         }
+    }
+
+    /// [`Self::write_out_buffer`] with a queued payload: one vectored write covers the
+    /// buffered bytes and the payload.
+    fn write_out_payload<Stream>(&mut self, stream: &mut Stream) -> Result<(), ProtocolError>
+    where
+        Stream: Write,
+    {
+        let mut pos = 0;
+        let result = loop {
+            let buffered = &self.out_buffer[pos..];
+            let buffered_len = buffered.len();
+            let written = match (&self.out_payload, buffered_len) {
+                (None, 0) => break Ok(()),
+                (None, _) => stream.write(buffered),
+                (Some(payload), 0) => stream.write(payload),
+                (Some(payload), _) => {
+                    stream.write_vectored(&[IoSlice::new(buffered), IoSlice::new(payload)])
+                }
+            };
+            match written {
+                Ok(0) => {
+                    break Err(IoError::new(
+                        IoErrorKind::ConnectionReset,
+                        "Connection reset while sending",
+                    ));
+                }
+                Ok(n) if n <= buffered_len => pos += n,
+                Ok(n) => {
+                    pos += buffered_len;
+                    if let Some(payload) = &mut self.out_payload {
+                        payload.advance(n - buffered_len);
+                        if payload.is_empty() {
+                            self.out_payload = None;
+                        }
+                    }
+                }
+                Err(err) => break Err(err),
+            }
+        };
+
+        // Drop the written prefix, so a retry starts from the correct position.
+        if pos == self.out_buffer.len() {
+            self.reset_out_buffer();
+        } else {
+            self.out_buffer.advance(pos);
+        }
+        result.map_err(Into::into)
     }
 }
 
@@ -362,7 +481,7 @@ mod tests {
     use std::assert_matches;
 
     use super::{
-        Frame, FrameCodec, FrameSocket,
+        Bytes, Frame, FrameCodec, FrameSocket,
         coding::{OpCode, OpCodeData},
     };
 
@@ -605,6 +724,140 @@ mod tests {
         while !done_or_blocked(sock.flush()) {}
 
         assert_eq!(sock.into_inner().0.wire, expected);
+    }
+
+    /// Accepts at most 50 000 bytes per call, spread over the given slices, and fails every
+    /// other call with `WouldBlock`.
+    #[derive(Default)]
+    struct VectoredTrickleWrite {
+        wire: Vec<u8>,
+        block: bool,
+    }
+
+    impl io::Write for VectoredTrickleWrite {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.write_vectored(&[io::IoSlice::new(buf)])
+        }
+
+        fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+            self.block = !self.block;
+            if self.block {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            let mut room = 50_000;
+            for buf in bufs {
+                let len = buf.len().min(room);
+                self.wire.extend_from_slice(&buf[..len]);
+                room -= len;
+            }
+            Ok(50_000 - room)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Small and large frames, unmasked and masked, the masked ones with an exclusively owned
+    /// or a shared payload; returns them with the bytes they put on the wire.
+    fn mixed_frames() -> (Vec<Frame>, Vec<Bytes>, Vec<u8>) {
+        let mut frames = Vec::new();
+        let mut shared = Vec::new();
+        let mut expected = Vec::new();
+        for (i, len) in [10, 70_000, 200, 150_000, 66_000, 3, 64 * 1024]
+            .into_iter()
+            .enumerate()
+        {
+            for (masked, share) in [(false, false), (true, false), (true, true)] {
+                let payload: Vec<u8> = (0..len).map(|n| (n + i) as u8).collect();
+                let mut frame = Frame::message(payload, OpCode::Data(OpCodeData::Binary), true);
+                if masked {
+                    frame.set_random_mask();
+                }
+                frame.clone().format(&mut expected).unwrap();
+                if share {
+                    shared.push(frame.clone().into_payload());
+                }
+                frames.push(frame);
+            }
+        }
+        (frames, shared, expected)
+    }
+
+    #[test]
+    fn write_large_frames_in_partial_writes() {
+        // Queue each frame while earlier ones are still partly written.
+        let (frames, _shared, expected) = mixed_frames();
+        let mut sock = FrameSocket::new(TrickleWrite::default());
+        for frame in frames {
+            done_or_blocked(sock.write(frame));
+            done_or_blocked(sock.flush());
+        }
+        while !done_or_blocked(sock.flush()) {}
+        assert!(sock.into_inner().0.wire == expected);
+
+        let (frames, _shared, expected) = mixed_frames();
+        let mut sock = FrameSocket::new(VectoredTrickleWrite::default());
+        for frame in frames {
+            done_or_blocked(sock.write(frame));
+        }
+        while !done_or_blocked(sock.flush()) {}
+        assert!(sock.into_inner().0.wire == expected);
+    }
+
+    #[test]
+    fn large_payload_is_written_without_passing_the_out_buffer() {
+        struct Blocked;
+        impl io::Write for Blocked {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        for masked in [false, true] {
+            let mut large = Frame::message(vec![7; 70_000], OpCode::Data(OpCodeData::Binary), true);
+            if masked {
+                large.set_random_mask();
+            }
+            let mut expected = Vec::new();
+            large.clone().format(&mut expected).unwrap();
+
+            let mut codec = FrameCodec::new(0);
+            codec.set_max_out_buffer_len(100_000);
+
+            // the queued payload stays in its own storage and counts towards the limit
+            assert!(!done_or_blocked(codec.buffer_frame(&mut Blocked, large)));
+            assert!(codec.out_buffer.capacity() < 70_000);
+            assert_matches!(
+                codec.buffer_frame(&mut Blocked, Frame::ping(vec![0; 30_000])),
+                Err(ProtocolError::WriteBufferFull(_))
+            );
+
+            let mut wire = Vec::new();
+            codec.write_out_buffer(&mut wire).unwrap();
+            assert!(wire == expected);
+        }
+    }
+
+    #[test]
+    fn drained_out_buffer_releases_outsized_storage() {
+        // a shared masked payload has to be copied to be masked
+        let payload = Bytes::from(vec![7; 1024 * 1024]);
+        let mut frame = Frame::message(payload.clone(), OpCode::Data(OpCodeData::Binary), true);
+        frame.set_random_mask();
+
+        let mut codec = FrameCodec::new(0);
+        codec.buffer_frame(&mut io::sink(), frame).unwrap();
+        drop(payload);
+        assert_eq!(codec.out_buffer.capacity(), 0);
+
+        // regular traffic keeps its buffer
+        let small = Frame::message(vec![7; 1024], OpCode::Data(OpCodeData::Binary), true);
+        codec.buffer_frame(&mut io::sink(), small).unwrap();
+        assert!(codec.out_buffer.capacity() >= 1024);
     }
 
     #[test]

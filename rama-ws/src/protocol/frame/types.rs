@@ -377,6 +377,38 @@ impl Frame {
         Ok(())
     }
 
+    /// Length of the payload alone.
+    #[inline]
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+
+    /// Appends only the header to `buf` and hands back the payload as it goes on the wire.
+    ///
+    /// A masked payload is masked in place, which needs exclusive ownership; a shared one
+    /// returns the frame untouched.
+    pub(crate) fn format_header_into_buf(mut self, buf: &mut BytesMut) -> Result<Bytes, Self> {
+        let payload = match self.header.mask {
+            None => mem::take(&mut self.payload),
+            Some(mask) => match mem::take(&mut self.payload).try_into_mut() {
+                Ok(mut payload) => {
+                    apply_mask(&mut payload, mask);
+                    payload.freeze()
+                }
+                Err(payload) => {
+                    self.payload = payload;
+                    return Err(self);
+                }
+            },
+        };
+
+        let payload_len = payload.len() as u64;
+        let mut header = [0; FrameHeader::MAX_SIZE];
+        self.header.format_buf(payload_len, &mut &mut header[..]);
+        buf.extend_from_slice(&header[..self.header.len(payload_len)]);
+        Ok(payload)
+    }
+
     pub(crate) fn format_into_buf(mut self, buf: &mut BytesMut) {
         let payload_len = self.payload.len() as u64;
         let mut header = [0; FrameHeader::MAX_SIZE];
