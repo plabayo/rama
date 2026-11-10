@@ -17,6 +17,17 @@ def simctl(*arguments, timeout=120, capture=False):
     ).stdout
 
 
+def simctl_listing(*arguments):
+    # A fresh runner starts CoreSimulator on the first listing, which can stall for minutes.
+    for attempt in range(1, 4):
+        try:
+            return json.loads(simctl("list", *arguments, "--json", timeout=300, capture=True))
+        except subprocess.TimeoutExpired:
+            if attempt == 3:
+                raise
+            print(f"simctl list {' '.join(arguments)} stalled; retrying", flush=True)
+
+
 def devices_by_runtime(devices, runtimes):
     versions = {runtime["identifier"]: runtime["version"] for runtime in runtimes
                 if runtime.get("isAvailable") and ".iOS-" in runtime["identifier"]}
@@ -152,8 +163,8 @@ def main():
         return 0
     if args.output is None:
         parser.error("output is required")
-    devices = json.loads(simctl("list", "devices", "available", "--json", capture=True))["devices"]
-    runtimes = json.loads(simctl("list", "runtimes", "--json", capture=True))["runtimes"]
+    devices = simctl_listing("devices", "available")["devices"]
+    runtimes = simctl_listing("runtimes")["runtimes"]
     failed = False
     for version, udid in devices_by_runtime(devices, runtimes):
         try:
