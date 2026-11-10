@@ -22,7 +22,7 @@ class NightlyTests(unittest.TestCase):
     storage_cookie = "private/storage-cookie&value"
     completed = SimpleNamespace(
         protocols=dict.fromkeys(
-            ("navigate", "fetch", "xhr", "ws", "form", "form_get"), "h3"
+            ("navigate", "fetch", "xhr", "ws", "form", "form_get", "link"), "h3"
         ),
         site_protocols={"same-site": SITE_FLOWS, "cross-site": SITE_FLOWS},
     )

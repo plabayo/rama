@@ -41,7 +41,7 @@ class ReceiptTests(unittest.TestCase):
 
     def test_writer_rejects_incomplete_unknown_and_private_values_before_writing(self):
         flows = dict.fromkeys(
-            ("navigate", "fetch", "xhr", "ws", "form", "form_get"), "h3"
+            ("navigate", "fetch", "xhr", "ws", "form", "form_get", "link"), "h3"
         )
         for name, changes, secrets in (
             ("missing_flow", {"protocols": {"navigate": "h3"}}, ()),
@@ -84,7 +84,7 @@ class ReceiptTests(unittest.TestCase):
     def test_write_is_exclusive_and_preserves_mixed_protocols(self):
         receipt = {
             "protocols": {
-                **dict.fromkeys(("navigate", "fetch", "xhr", "form", "form_get"), "h3"),
+                **dict.fromkeys(("navigate", "fetch", "xhr", "form", "form_get", "link"), "h3"),
                 "ws": "h1",
             }
         }

@@ -433,6 +433,7 @@ def completed_protocols(
     page_protocols,
     post_protocol,
     get_protocol,
+    link_protocol,
     page_results,
     platform_version=None,
 ):
@@ -457,18 +458,23 @@ def completed_protocols(
             raise ValueError("form navigation protocol unavailable")
         if get_protocol not in PROTOCOLS:
             raise ValueError("GET form navigation protocol unavailable")
+        if link_protocol not in PROTOCOLS:
+            raise ValueError("link navigation protocol unavailable")
         protocols["form"] = PROTOCOLS[post_protocol]
         protocols["form_get"] = PROTOCOLS[get_protocol]
+        protocols["link"] = PROTOCOLS[link_protocol]
         verify_protocols(protocols, expected_protocol)
         page_results = checked_page_results(
             page_results, protocols, websocket="ws" in protocols
         )
     except ValueError as error:
         error.add_note(
-            "Both form submissions completed; protocols: POST="
+            "Both form submissions and the link completed; protocols: POST="
             + PROTOCOLS.get(post_protocol, "unavailable")
             + ", GET="
             + PROTOCOLS.get(get_protocol, "unavailable")
+            + ", link="
+            + PROTOCOLS.get(link_protocol, "unavailable")
             + ". Partial collection is not successful coverage."
         )
         raise
@@ -567,9 +573,9 @@ _INJECT_SITE_FORM = """
         + '<button type="submit">Submit</button>';
     document.body.append(form);
 """
-_INJECT_SITE_LINK = """
+_INJECT_LINK = """
     const link = document.createElement("a");
-    link.id = "rama-fp-site-link";
+    link.id = arguments[1];
     link.href = arguments[0];
     link.textContent = "Visit";
     document.body.append(link);
@@ -596,7 +602,7 @@ def visit_sites(driver, wait, origin, sites, timeout):
             driver.execute_script(_INJECT_SITE_FORM, target)
             submit_form(driver, "#rama-fp-site-form", timeout=timeout)
         else:
-            driver.execute_script(_INJECT_SITE_LINK, target)
+            driver.execute_script(_INJECT_LINK, target, "rama-fp-site-link")
             follow_link(driver, "#rama-fp-site-link", timeout=timeout)
         expected = urlsplit(target)
         wait.until(
@@ -700,7 +706,7 @@ def run_capture_flow(
 
     # Preserve this page's observations before either form replaces its DOM.
     # Validate them after both forms, so an unavailable WebSocket does not hide
-    # otherwise useful HTTP captures. All six operations remain mandatory.
+    # otherwise useful HTTP captures. All seven operations remain mandatory.
     # One script read: element handles can go stale if the page re-renders.
     page_protocols = driver.execute_script(
         'return Array.from(document.querySelectorAll("#flow-protocols li"), li => li.innerText)'
@@ -737,6 +743,17 @@ def run_capture_flow(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
     get_form_html = driver.page_source
+
+    # A same-origin link click, the navigation a page's own links make.
+    driver.execute_script(_INJECT_LINK, urljoin(origin, "/landing"), "rama-fp-link")
+    follow_link(driver, "#rama-fp-link", timeout=timeout)
+    wait.until(
+        navigated_to(lambda url: url.path == "/landing"),
+        "same-origin link did not navigate",
+    )
+    link_protocol = driver.execute_script(
+        'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
+    )
     site_navigations = (
         visit_sites(driver, wait, origin, site_probes, timeout) if sites else None
     )
@@ -753,7 +770,7 @@ def run_capture_flow(
     try:
         protocols, checked_results = completed_protocols(
             user_agent, expected_protocol, page_protocols, post_protocol, get_protocol,
-            page_results, driver.capabilities.get("safari:platformVersion"),
+            link_protocol, page_results, driver.capabilities.get("safari:platformVersion"),
         )
     except UnsupportedFlow as unsupported:
         # The browser limit that excused the WebSocket also excuses it on the site hosts.

@@ -12,7 +12,7 @@ IDENTITY_FIELDS = (
     "deviceName",
     "platformName",
 )
-FLOW_NAMES = {"navigate", "fetch", "xhr", "ws", "form", "form_get"}
+FLOW_NAMES = {"navigate", "fetch", "xhr", "ws", "form", "form_get", "link"}
 SITE_KINDS = {"same-site", "cross-site"}
 SITE_FLOW_NAMES = {
     "image", "style", "script", "frame", "fetch", "xhr", "ws", "navigate", "form"
@@ -56,7 +56,7 @@ def identity(capabilities, *, secrets):
 
 
 def checked_protocols(values):
-    """Accept only complete six-flow evidence, including the actual WS transport."""
+    """Accept only complete seven-flow evidence, including the actual WS transport."""
     if set(values) != FLOW_NAMES or any(
         value not in ("h1", "h2", "h3") for value in values.values()
     ):

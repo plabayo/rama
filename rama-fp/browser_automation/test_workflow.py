@@ -110,12 +110,12 @@ class CompletedProtocolTests(unittest.TestCase):
         lines.append("WebSocket: unavailable")
         with self.assertRaises(UnsupportedFlow) as unsupported:
             completed_protocols(
-                FIREFOX, "h3", lines, "h3", "h3", page_results(websocket=None)
+                FIREFOX, "h3", lines, "h3", "h3", "h3", page_results(websocket=None)
             )
         self.assertTrue(str(unsupported.exception).startswith("ws:"))
         self.assertEqual(
             unsupported.exception.protocols,
-            dict.fromkeys(["navigate", "fetch", "xhr", "form", "form_get"], "h3"),
+            dict.fromkeys(["navigate", "fetch", "xhr", "form", "form_get", "link"], "h3"),
         )
 
     def test_a_supported_websocket_is_returned_with_every_flow(self):
@@ -124,7 +124,7 @@ class CompletedProtocolTests(unittest.TestCase):
             for name in ("Navigation", "Fetch", "XMLHttpRequest", "WebSocket")
         ]
         protocols, _results = completed_protocols(
-            FIREFOX, "h2", lines, "h2", "h2", page_results(fetch="h2", xhr="h2")
+            FIREFOX, "h2", lines, "h2", "h2", "h2", page_results(fetch="h2", xhr="h2")
         )
         self.assertEqual(protocols["ws"], "h2")
 
@@ -191,9 +191,9 @@ class FlowProtocolTests(unittest.TestCase):
                 parse_protocol_report(lines + [duplicate])
 
     def test_each_http_flow_and_form_rejects_fallback(self):
-        for failed in ["navigate", "fetch", "xhr", "form", "form_get"]:
+        for failed in ["navigate", "fetch", "xhr", "form", "form_get", "link"]:
             protocols = dict.fromkeys(
-                ["navigate", "fetch", "xhr", "ws", "form", "form_get"], "h3"
+                ["navigate", "fetch", "xhr", "ws", "form", "form_get", "link"], "h3"
             )
             protocols[failed] = "h2"
             with self.subTest(flow=failed), self.assertRaisesRegex(
@@ -204,7 +204,7 @@ class FlowProtocolTests(unittest.TestCase):
     def test_websocket_uses_its_actual_protocol_independently_of_http(self):
         for websocket in ("h1", "h2", "h3"):
             protocols = dict.fromkeys(
-                ["navigate", "fetch", "xhr", "form", "form_get"], "h3"
+                ["navigate", "fetch", "xhr", "form", "form_get", "link"], "h3"
             )
             protocols["ws"] = websocket
             original = dict(protocols)

@@ -351,7 +351,7 @@ def run_session(
                         (
                             f"unsupported at {origin}: {receipt['unsupported_reason']}"
                             if receipt["unsupported_reason"]
-                            else f"all six flows completed at {origin}"
+                            else f"all seven flows completed at {origin}"
                         ),
                     )
                 except Exception as error:
