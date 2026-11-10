@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import quote
 
+from selenium.common.exceptions import TimeoutException
+
 import main
 
 
@@ -169,6 +171,15 @@ class NightlyTests(unittest.TestCase):
     def test_provider_error_details_are_not_reported(self):
         error = main.WebDriverException("provider session private-access-key")
         self.assertEqual(main.failure_reason(error, secrets=()), "WebDriverException")
+
+    def test_journey_timeouts_keep_their_own_message(self):
+        error = main.JourneyTimeout("same-site form did not navigate; at h3.fp.example.org/form")
+        self.assertEqual(
+            main.failure_reason(error, secrets=()),
+            "JourneyTimeout: same-site form did not navigate; at h3.fp.example.org/form",
+        )
+        provider = TimeoutException("provider session private-access-key")
+        self.assertEqual(main.failure_reason(provider, secrets=()), "TimeoutException")
 
 
 if __name__ == "__main__":

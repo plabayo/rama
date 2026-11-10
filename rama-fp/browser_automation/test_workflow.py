@@ -386,7 +386,7 @@ class FormSubmissionTests(unittest.TestCase):
         driver.execute_script.return_value = "loading"
         wait = Mock()
         wait.until.side_effect = TimeoutException("same-site form did not navigate")
-        with self.assertRaises(TimeoutException) as caught:
+        with self.assertRaises(workflow.JourneyTimeout) as caught:
             workflow.await_navigation(
                 driver, wait, Mock(), "same-site form did not navigate"
             )

@@ -35,7 +35,12 @@ from selenium.common.exceptions import WebDriverException
 # Allow `python rama-fp/browserstack/main.py` from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from browser_automation.drivers import browser_options, device_session, remote_session
-from browser_automation.workflow import PROTOCOLS, UnsupportedFlow, run_capture_flow
+from browser_automation.workflow import (
+    PROTOCOLS,
+    JourneyTimeout,
+    UnsupportedFlow,
+    run_capture_flow,
+)
 from matrix import desktop_permutations, mobile_configs
 from receipts import (
     checked_partial_protocols,
@@ -135,7 +140,7 @@ def capabilities(build):
 
 
 def failure_reason(error, *, secrets, driver_message=False):
-    """Name every failure; keep text only for the journey's own validation errors.
+    """Name every failure; keep text only for the journey's own validation errors and waits.
 
     Provider and driver messages can echo session data, so only their type is kept,
     unless the driver runs on this host (`driver_message`), where no provider session exists.
@@ -143,7 +148,10 @@ def failure_reason(error, *, secrets, driver_message=False):
     reason = type(error).__name__
     if type(error) is ValueError:
         text = " ".join([str(error), *getattr(error, "__notes__", ())])
-    elif driver_message and isinstance(error, WebDriverException) and error.msg:
+    elif (
+        type(error) is JourneyTimeout
+        or driver_message and isinstance(error, WebDriverException)
+    ) and error.msg:
         text = error.msg
     else:
         return reason

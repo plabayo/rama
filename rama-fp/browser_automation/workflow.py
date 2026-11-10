@@ -86,6 +86,10 @@ def navigated_to(accept):
     return complete
 
 
+class JourneyTimeout(TimeoutException):
+    """A journey wait that ran out, with a message built here rather than by a driver."""
+
+
 def await_navigation(driver, wait, condition, message):
     """`wait.until(condition)`; a timeout names the document the browser shows instead."""
     try:
@@ -98,7 +102,7 @@ def await_navigation(driver, wait, condition, message):
             where = f"{url.hostname}{url.path} ({state})"
         except WebDriverException:
             where = "an unreadable document"
-        raise TimeoutException(f"{message}; at {where}") from error
+        raise JourneyTimeout(f"{message}; at {where}") from error
 
 
 get_form_navigation_complete = navigated_to(
