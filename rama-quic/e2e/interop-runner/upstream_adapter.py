@@ -38,13 +38,22 @@ def run_test_with_evidence(self, server, client, prefix, fn):
 def cleanup_dir(directory):
     # The pinned upstream creates this path itself. Cleanup only that volume,
     # with a pinned image and a label identifying our run (never docker prune).
-    subprocess.run(
-        ["docker", "run", "--rm", "--label",
-         "rama.quic-interop.project=" + os.environ["COMPOSE_PROJECT_NAME"],
-         "--volume", f"{directory}:/cleanup", os.environ["RAMA_CLEANUP_IMAGE"],
-         "sh", "-c", "rm -rf /cleanup/*"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30, check=True,
-    )
+    # A daemon busy stopping containers can stall one start; root-owned leftovers
+    # would break the temporary directory cleanup, so only a persistent stall fails.
+    for attempt in range(1, 4):
+        try:
+            subprocess.run(
+                ["docker", "run", "--rm", "--label",
+                 "rama.quic-interop.project=" + os.environ["COMPOSE_PROJECT_NAME"],
+                 "--volume", f"{directory}:/cleanup", os.environ["RAMA_CLEANUP_IMAGE"],
+                 "sh", "-c", "rm -rf /cleanup/*"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60, check=True,
+            )
+            return
+        except subprocess.TimeoutExpired:
+            if attempt == 3:
+                raise
+            logging.warning("cleanup of %s stalled (attempt %d); retrying", directory, attempt)
 
 
 def capture_quic_ports(*args, **kwargs):
