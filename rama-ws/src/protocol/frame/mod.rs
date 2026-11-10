@@ -34,6 +34,9 @@ const DIRECT_PAYLOAD_MIN_LEN: usize = kib(64);
 /// Capacity a drained `out_buffer` keeps at least; twice the write length when that is larger.
 const RETAINED_OUT_BUFFER_LEN: usize = kib(256);
 
+/// Step in which a shared payload is masked into `out_buffer`; a multiple of the mask length.
+const MASKED_CHUNK_LEN: usize = kib(64);
+
 /// A reader and writer for WebSocket frames.
 #[derive(Debug)]
 pub struct FrameSocket<Stream> {
@@ -132,6 +135,8 @@ pub(super) struct FrameCodec {
     out_buffer: BytesMut,
     /// Payload of the last buffered frame, written right after `out_buffer` without a copy.
     out_payload: Option<Bytes>,
+    /// Mask `out_payload` still needs: it then goes through `out_buffer` in masked chunks.
+    out_payload_mask: Option<[u8; 4]>,
     /// Limit for the bytes waiting in `out_buffer` and `out_payload` together.
     max_out_buffer_len: usize,
     /// Buffer target length to reach before writing to the stream
@@ -154,6 +159,7 @@ impl FrameCodec {
             read_len: in_buf_len.max(FrameHeader::MAX_SIZE),
             out_buffer: <_>::default(),
             out_payload: None,
+            out_payload_mask: None,
             max_out_buffer_len: usize::MAX,
             out_buffer_write_len: 0,
             header: None,
@@ -169,6 +175,7 @@ impl FrameCodec {
             read_len: min_in_buf_len.max(FrameHeader::MAX_SIZE),
             out_buffer: <_>::default(),
             out_payload: None,
+            out_payload_mask: None,
             max_out_buffer_len: usize::MAX,
             out_buffer_write_len: 0,
             header: None,
@@ -359,21 +366,14 @@ impl FrameCodec {
         Stream: Write,
     {
         // a payload the stream did not take yet goes on the wire before this frame
-        if let Some(payload) = self.out_payload.take() {
-            self.out_buffer.extend_from_slice(&payload);
-        }
+        self.stage_out_payload(usize::MAX);
 
-        let frame = if frame.payload_len() >= DIRECT_PAYLOAD_MIN_LEN {
-            match frame.format_header_into_buf(&mut self.out_buffer) {
-                Ok(payload) => {
-                    self.out_payload = Some(payload);
-                    return self.write_out_payload(stream);
-                }
-                Err(frame) => frame,
-            }
-        } else {
-            frame
-        };
+        if frame.payload_len() >= DIRECT_PAYLOAD_MIN_LEN {
+            let (payload, mask) = frame.format_header_into_buf(&mut self.out_buffer);
+            self.out_payload = Some(payload);
+            self.out_payload_mask = mask;
+            return self.write_out_payload(stream);
+        }
 
         self.out_buffer.reserve(frame.len());
         frame.format_into_buf(&mut self.out_buffer);
@@ -426,17 +426,45 @@ impl FrameCodec {
         }
     }
 
+    /// Moves up to `limit` bytes of the queued payload into `out_buffer`, masked when it
+    /// still needs to be.
+    fn stage_out_payload(&mut self, limit: usize) {
+        let Some(payload) = &mut self.out_payload else {
+            return;
+        };
+        let len = payload.len().min(limit);
+        let start = self.out_buffer.len();
+        self.out_buffer.extend_from_slice(&payload[..len]);
+        payload.advance(len);
+        if let Some(mask) = self.out_payload_mask {
+            apply_mask(&mut self.out_buffer[start..], mask);
+        }
+        if payload.is_empty() {
+            self.out_payload = None;
+            self.out_payload_mask = None;
+        }
+    }
+
     /// [`Self::write_out_buffer`] with a queued payload: one vectored write covers the
-    /// buffered bytes and the payload.
+    /// buffered bytes and the payload, and a payload that is shared goes out in masked chunks.
     fn write_out_payload<Stream>(&mut self, stream: &mut Stream) -> Result<(), ProtocolError>
     where
         Stream: Write,
     {
         let mut pos = 0;
         let result = loop {
+            if self.out_payload_mask.is_some() && self.out_buffer.len() - pos < MASKED_CHUNK_LEN {
+                self.out_buffer.advance(pos);
+                pos = 0;
+                self.stage_out_payload(MASKED_CHUNK_LEN);
+            }
+            let direct = match self.out_payload_mask {
+                None => self.out_payload.as_ref(),
+                Some(_) => None,
+            };
             let buffered = &self.out_buffer[pos..];
             let buffered_len = buffered.len();
-            let written = match (&self.out_payload, buffered_len) {
+            let written = match (direct, buffered_len) {
                 (None, 0) => break Ok(()),
                 (None, _) => stream.write(buffered),
                 (Some(payload), 0) => stream.write(payload),
@@ -481,7 +509,7 @@ mod tests {
     use std::assert_matches;
 
     use super::{
-        Bytes, Frame, FrameCodec, FrameSocket,
+        Bytes, Frame, FrameCodec, FrameSocket, RETAINED_OUT_BUFFER_LEN,
         coding::{OpCode, OpCodeData},
     };
 
@@ -805,18 +833,21 @@ mod tests {
         assert!(sock.into_inner().0.wire == expected);
     }
 
-    #[test]
-    fn large_payload_is_written_without_passing_the_out_buffer() {
-        struct Blocked;
-        impl io::Write for Blocked {
-            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::WouldBlock.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
+    /// Never takes a byte.
+    struct Blocked;
+
+    impl io::Write for Blocked {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::WouldBlock.into())
         }
 
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn large_payload_is_written_without_passing_the_out_buffer() {
         for masked in [false, true] {
             let mut large = Frame::message(vec![7; 70_000], OpCode::Data(OpCodeData::Binary), true);
             if masked {
@@ -843,15 +874,33 @@ mod tests {
     }
 
     #[test]
-    fn drained_out_buffer_releases_outsized_storage() {
-        // a shared masked payload has to be copied to be masked
+    fn shared_masked_payload_goes_out_in_bounded_chunks() {
         let payload = Bytes::from(vec![7; 1024 * 1024]);
         let mut frame = Frame::message(payload.clone(), OpCode::Data(OpCodeData::Binary), true);
         frame.set_random_mask();
+        let mut expected = Vec::new();
+        frame.clone().format(&mut expected).unwrap();
 
         let mut codec = FrameCodec::new(0);
-        codec.buffer_frame(&mut io::sink(), frame).unwrap();
-        drop(payload);
+        let mut wire = Vec::new();
+        codec.buffer_frame(&mut wire, frame).unwrap();
+        assert!(wire == expected);
+        assert!(codec.out_buffer.capacity() < RETAINED_OUT_BUFFER_LEN);
+        // the caller's copy is left as it was
+        assert!(payload.iter().all(|byte| *byte == 7));
+    }
+
+    #[test]
+    fn drained_out_buffer_releases_outsized_storage() {
+        // a frame queued behind a payload the stream did not take copies that payload
+        let large = Frame::message(vec![7; 1024 * 1024], OpCode::Data(OpCodeData::Binary), true);
+        let mut codec = FrameCodec::new(0);
+        assert!(!done_or_blocked(codec.buffer_frame(&mut Blocked, large)));
+        assert!(!done_or_blocked(
+            codec.buffer_frame(&mut Blocked, Frame::ping(vec![0; 8]))
+        ));
+        assert!(codec.out_buffer.capacity() >= 1024 * 1024);
+        codec.write_out_buffer(&mut io::sink()).unwrap();
         assert_eq!(codec.out_buffer.capacity(), 0);
 
         // regular traffic keeps its buffer
