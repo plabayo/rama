@@ -6,7 +6,7 @@ use rama::{
     graceful::WeakScope,
 };
 
-use super::{data::DataSource, redacted_storage_auth, storage::Storage};
+use super::{data::DataSource, redacted_storage_auth, sites::Sites, storage::Storage};
 
 #[derive(Clone)]
 #[non_exhaustive]
@@ -17,6 +17,8 @@ pub(super) struct State {
     pub(super) storage_auth: Option<String>,
     /// Optional IP geolocation database, configured via `RAMA_IP_GEO_DB`.
     pub(super) geo_db: Option<Arc<IpGeoDb>>,
+    /// Other hosts of this service whose requests the report page probes.
+    pub(super) sites: Option<Sites>,
 }
 
 impl fmt::Debug for State {
@@ -29,6 +31,7 @@ impl fmt::Debug for State {
                 &redacted_storage_auth(self.storage_auth.as_deref()),
             )
             .field("geo_db", &self.geo_db)
+            .field("sites", &self.sites)
             .finish()
     }
 }
@@ -62,6 +65,7 @@ impl State {
             storage,
             storage_auth: storage_auth.map(|s| s.to_owned()),
             geo_db,
+            sites: None,
         })
     }
 }
@@ -78,6 +82,7 @@ mod tests {
             storage: None,
             storage_auth: Some("super-secret-cookie".to_owned()),
             geo_db: None,
+            sites: None,
         };
 
         let formatted = format!("{state:?}");

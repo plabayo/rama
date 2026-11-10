@@ -29,6 +29,25 @@ Rama includes a database of pre-configured profiles for common browsers and plat
 
 The emulation can be applied selectively based on the given input, allowing for sophisticated emulation strategies that can adapt to different scenarios or rotate between multiple profiles to avoid detection.
 
+## Which recorded request is replayed
+
+A profile records requests per kind of request, its flow: the HTTP version, the method,
+the initiator (navigation, form, fetch, XHR, WebSocket) and the `Sec-Fetch-*` values a
+browser sends with it. A request is matched by its own `Sec-Fetch-*` headers, so traffic
+relayed from a real browser needs no initiator; a request without either is treated as
+a navigation.
+
+When the profile has no recording of that flow, such as a stylesheet, an image or a
+link click, the closest recording replays instead. Closer means it differs only in less
+significant fields, from most to least significant: `Sec-Fetch-Mode`,
+`Sec-Fetch-Dest`, the method, `Sec-Fetch-User`, `Sec-Fetch-Site`, and the initiator.
+The request keeps its own `Sec-Fetch-*` values, and also its `Accept`, `Priority` and
+`Upgrade-Insecure-Requests` when the recording was for another destination. Such
+requests list `NearestFlow` in their `ProfilePreservationReport`. A WebSocket handshake
+never stands in for an ordinary request, nor the other way around. The
+[`ProfileEmulateLayer`](https://ramaproxy.org/docs/rama/ua/layer/emulate/struct.ProfileEmulateLayer.html)
+documentation has the complete rules.
+
 ## HTTP/3 profile budgets
 
 Browsers advertise larger QPACK receive limits than Rama's defaults; Chrome, for
@@ -54,7 +73,7 @@ The embedded profiles are stored at [`rama-ua/src/profile/format/embed_profiles.
 - counted TLS ClientHellos over TCP and over QUIC
 - QUIC transport parameters and first-flight structure, where the browser used HTTP/3
 
-The profiles are analyzed when they are exported, so loading them only decompresses and decodes the file, in well under a second. Refresh it with `just update-embedded-profiles`; `rama ua compact profiles.json --output embed_profiles.bin` compiles an archive of your own the same way. `rama ua export --embed` and `rama ua compact` accept `--exclude-user-agent` to leave out a profile that cannot emulate itself; the refresh recipe passes the exclusions listed in `rama-fp/justfile`.
+The profiles are analyzed when they are exported, so loading them decompresses and decodes the file and recomputes the content digests it leaves out, in well under a second. Refresh it with `just update-embedded-profiles`; `rama ua compact profiles.json --output embed_profiles.bin` compiles an archive of your own the same way. `rama ua export --embed` and `rama ua compact` accept `--exclude-user-agent` to leave out a profile that cannot emulate itself; the refresh recipe passes the exclusions listed in `rama-fp/justfile`.
 
 To see which browsers, versions and protocols (H1, H2, H3, TLS over TCP, QUIC) your build embeds, run `rama ua view --embedded`; add `--summary` for a plain list. `rama ua view FILE` does the same for an exported archive or a compiled set, such as the embedded file of another Rama version.
 

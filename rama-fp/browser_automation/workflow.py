@@ -11,13 +11,15 @@ import re
 import time
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Mapping, Optional
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 from selenium.common.exceptions import (
     NoSuchWindowException,
     StaleElementReferenceException,
     TimeoutException,
+    WebDriverException,
 )
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -31,6 +33,25 @@ def submit_form(driver, form_selector, timeout=30):
     Safari can report a detached element or window for the keypress that navigated; an
     unmarked document then means the form was submitted, not that its button is missing.
     """
+    try:
+        activate_by_keyboard(
+            driver, form_selector + ' button[type="submit"]', timeout=timeout
+        )
+    except TimeoutException as error:
+        # Keep our own bounded diagnostic; provider messages may contain secrets.
+        raise ValueError("form submit button unavailable: " + form_selector) from error
+
+
+def follow_link(driver, link_selector, timeout=30):
+    """Follow a link by keyboard, so its navigation carries user activation."""
+    try:
+        activate_by_keyboard(driver, link_selector, timeout=timeout)
+    except TimeoutException as error:
+        raise ValueError("link unavailable: " + link_selector) from error
+
+
+def activate_by_keyboard(driver, selector, timeout=30):
+    """Press Enter on an element until its document is replaced by a navigation."""
     marked = False
 
     def activate(browser):
@@ -40,32 +61,88 @@ def submit_form(driver, form_selector, timeout=30):
             marked = True
         elif browser.execute_script("return window.ramaFpFormPage !== true") is True:
             return True
-        browser.find_element(
-            By.CSS_SELECTOR, form_selector + ' button[type="submit"]'
-        ).send_keys(Keys.ENTER)
+        browser.find_element(By.CSS_SELECTOR, selector).send_keys(Keys.ENTER)
         return True
 
-    try:
-        WebDriverWait(
-            driver, timeout,
-            ignored_exceptions=(StaleElementReferenceException, NoSuchWindowException),
-        ).until(activate)
-    except TimeoutException as error:
-        # Keep our own bounded diagnostic; provider messages may contain secrets.
-        raise ValueError("form submit button unavailable: " + form_selector) from error
+    WebDriverWait(
+        driver, timeout,
+        ignored_exceptions=(StaleElementReferenceException, NoSuchWindowException),
+    ).until(activate)
 
 
-def get_form_navigation_complete(browser):
-    """Wait for the GET form's distinct URL, without probing a detached DOM node."""
-    url = urlsplit(browser.current_url)
-    return (
-        url.path == "/form"
-        and parse_qs(url.query) == {"source": ["web"], "turtles": ["yes"]}
-        and browser.execute_script(
-            "return document.readyState === 'complete' && document.URL === arguments[0]",
-            browser.current_url,
+def navigated_to(accept):
+    """A wait condition for a parsed document at a URL that `accept` admits.
+
+    Safari reports a navigation's URL before its document replaces the current one,
+    so the parsed document must itself be at that URL. Images may still be loading;
+    they do not prevent reading the completed DOM or its navigation timing.
+    """
+
+    def complete(browser):
+        url = browser.current_url
+        return accept(urlsplit(url)) and browser.execute_script(
+            "return document.readyState !== 'loading' && document.URL === arguments[0]",
+            url,
         ) is True
-    )
+
+    return complete
+
+
+class JourneyTimeout(TimeoutException):
+    """A journey wait that ran out, with a message built here rather than by a driver."""
+
+
+def activated_again(condition, activate, after):
+    """`condition`, activating the shown document once more if it outlives `after` seconds.
+
+    A navigation whose request stalled leaves the document that started it in place.
+    """
+    deadline = time.monotonic() + after
+    pending = True
+
+    def check(browser):
+        nonlocal pending
+        if condition(browser):
+            return True
+        if pending and time.monotonic() >= deadline and browser.execute_script(
+            "return window.ramaFpFormPage === true"
+        ) is True:
+            pending = False
+            print("RETRY navigation: its document was not replaced", flush=True)
+            activate()
+        return False
+
+    return check
+
+
+def await_navigation(driver, wait, condition, message):
+    """`wait.until(condition)`; a timeout names the document the browser shows instead."""
+    try:
+        wait.until(condition, message)
+    except TimeoutException as error:
+        try:
+            url = urlsplit(driver.current_url)
+            shown, state = driver.execute_script(
+                "return [document.URL, document.readyState]"
+            )
+            shown = urlsplit(shown)
+            # Host and path only: a query can carry a site token.
+            where = f"{url.hostname}{url.path} ({state})"
+            if shown[:3] != url[:3]:
+                # The reported URL is then a navigation that never replaced the document.
+                where = (
+                    f"{shown.scheme}://{shown.hostname}{shown.path} ({state}), "
+                    f"bound for {url.scheme}://{url.hostname}{url.path}"
+                )
+        except (WebDriverException, TypeError, ValueError):
+            where = "an unreadable document"
+        raise JourneyTimeout(f"{message}; at {where}") from error
+
+
+get_form_navigation_complete = navigated_to(
+    lambda url: url.path == "/form"
+    and parse_qs(url.query) == {"source": ["web"], "turtles": ["yes"]}
+)
 
 
 @dataclass(frozen=True)
@@ -81,6 +158,8 @@ class FlowResult:
     get_form_html: Optional[str] = None
     page_results: Optional[Mapping] = None
     report_url: Optional[str] = None
+    # Per site kind, the transport of each flow sent to that host of the service.
+    site_protocols: Optional[Mapping[str, Mapping[str, str]]] = None
 
     @property
     def websocket_probe(self):
@@ -116,6 +195,7 @@ class UnsupportedFlow(ValueError):
     def __init__(self, reason, protocols=None):
         super().__init__(reason)
         self.protocols = protocols
+        self.site_protocols = None
 
 
 _SAFARI_VERSION = re.compile(r"Version/(\d+)(?:\.(\d+))?")
@@ -407,6 +487,7 @@ def completed_protocols(
     page_protocols,
     post_protocol,
     get_protocol,
+    link_protocol,
     page_results,
     platform_version=None,
 ):
@@ -431,18 +512,23 @@ def completed_protocols(
             raise ValueError("form navigation protocol unavailable")
         if get_protocol not in PROTOCOLS:
             raise ValueError("GET form navigation protocol unavailable")
+        if link_protocol not in PROTOCOLS:
+            raise ValueError("link navigation protocol unavailable")
         protocols["form"] = PROTOCOLS[post_protocol]
         protocols["form_get"] = PROTOCOLS[get_protocol]
+        protocols["link"] = PROTOCOLS[link_protocol]
         verify_protocols(protocols, expected_protocol)
         page_results = checked_page_results(
             page_results, protocols, websocket="ws" in protocols
         )
     except ValueError as error:
         error.add_note(
-            "Both form submissions completed; protocols: POST="
+            "Both form submissions and the link completed; protocols: POST="
             + PROTOCOLS.get(post_protocol, "unavailable")
             + ", GET="
             + PROTOCOLS.get(get_protocol, "unavailable")
+            + ", link="
+            + PROTOCOLS.get(link_protocol, "unavailable")
             + ". Partial collection is not successful coverage."
         )
         raise
@@ -451,14 +537,179 @@ def completed_protocols(
     return protocols, page_results
 
 
+SITE_KINDS = ("same-site", "cross-site")
+# Subresources expose their protocol only through resource timing, which a browser
+# may withhold: those report "unknown" rather than fail. The frame confirms its own.
+SITE_TIMED_FLOWS = ("image", "style", "script")
+SITE_PAGE_FLOWS = SITE_TIMED_FLOWS + ("frame", "fetch", "xhr", "ws")
+SITE_FLOW_NAMES = SITE_PAGE_FLOWS + ("navigate", "form")
+SITE_TOKEN_PARAM = "rama-fp-site"
+# The page's own error text, which names no URL, tells a stall from a refusal.
+MAX_SITE_ERROR_CHARS = 120
+# Base64url of expiry, authorization, a page origin of at most 255 bytes and a MAC.
+_SITE_TOKEN = re.compile(r"[A-Za-z0-9_-]{1,400}")
+
+
+def parse_site_probes(content):
+    """The other hosts the report page probes, one per site kind, all of them required."""
+    if not isinstance(content, str):
+        raise ValueError("report page advertises no same-site and cross-site hosts")
+    try:
+        probes = json.loads(content)
+    except ValueError as error:
+        raise ValueError("invalid site probe configuration") from error
+    if not isinstance(probes, list):
+        raise ValueError("invalid site probe configuration")
+    sites = {}
+    for probe in probes:
+        if not isinstance(probe, dict) or set(probe) != {"site", "origin", "token"}:
+            raise ValueError("invalid site probe")
+        site, origin, token = probe["site"], probe["origin"], probe["token"]
+        parsed = urlsplit(origin) if isinstance(origin, str) else None
+        if (
+            site not in SITE_KINDS
+            or site in sites
+            or parsed is None
+            or parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+            or not isinstance(token, str)
+            or not _SITE_TOKEN.fullmatch(token)
+        ):
+            raise ValueError("invalid site probe")
+        sites[site] = {"origin": origin, "token": token}
+    if set(sites) != set(SITE_KINDS):
+        raise ValueError("report page must probe both a same-site and a cross-site host")
+    return sites
+
+
+def site_url(origin, path, token):
+    return urljoin(origin, path) + "?" + urlencode({SITE_TOKEN_PARAM: token})
+
+
+def checked_site_results(value, *, websocket=True):
+    """Every flow the report page sent to each site host; only a WebSocket the
+    browser cannot use on this origin may be missing."""
+    if not isinstance(value, dict) or set(value) != set(SITE_KINDS):
+        raise ValueError("site probe results unavailable")
+    protocols = {}
+    for site in SITE_KINDS:
+        flows = value[site]
+        if not isinstance(flows, dict) or set(flows) != set(SITE_PAGE_FLOWS):
+            raise ValueError("incomplete site probe results for " + site)
+        protocols[site] = {}
+        for flow in SITE_PAGE_FLOWS:
+            result = flows[flow]
+            if not isinstance(result, dict):
+                raise ValueError(f"invalid {flow} result for {site}")
+            if "error" in result:
+                if flow == "ws" and not websocket:
+                    continue
+                error = " ".join(str(result["error"]).split())[:MAX_SITE_ERROR_CHARS]
+                raise ValueError(f"{flow} failed for {site}: {error}")
+            protocol = PROTOCOLS.get(result.get("protocol"))
+            if protocol is None and flow in SITE_TIMED_FLOWS and result.get("protocol") == "":
+                protocol = "unknown"
+            if protocol is None:
+                raise ValueError(f"{flow} protocol unavailable for {site}")
+            protocols[site][flow] = protocol
+    return protocols
+
+
+_INJECT_SITE_FORM = """
+    const form = document.createElement("form");
+    form.id = "rama-fp-site-form";
+    form.method = "POST";
+    form.action = arguments[0];
+    form.innerHTML = '<input type="hidden" name="source" value="web">'
+        + '<button type="submit">Submit</button>';
+    document.body.append(form);
+"""
+_INJECT_LINK = """
+    const link = document.createElement("a");
+    link.id = arguments[1];
+    link.href = arguments[0];
+    link.textContent = "Visit";
+    document.body.append(link);
+"""
+
+
+def visit_sites(driver, wait, origin, sites, timeout):
+    """User-activated form submissions and link navigations to each site host.
+
+    Each step starts from the page the previous one reached, so the chain stays inside
+    what each page's form-action policy admits:
+    primary -form-> same-site -form-> cross-site -link-> same-site -link-> primary.
+    """
+    same, cross = sites["same-site"], sites["cross-site"]
+    steps = (
+        ("same-site", "form", site_url(same["origin"], "/form", same["token"])),
+        ("cross-site", "form", site_url(cross["origin"], "/form", cross["token"])),
+        ("cross-site", "navigate", site_url(same["origin"], "/landing", same["token"])),
+        ("same-site", "navigate", site_url(origin, "/landing", same["token"])),
+    )
+    protocols = {site: {} for site in SITE_KINDS}
+    for site, flow, target in steps:
+        if flow == "form":
+            driver.execute_script(_INJECT_SITE_FORM, target)
+            activate = partial(submit_form, driver, "#rama-fp-site-form", timeout=timeout)
+        else:
+            driver.execute_script(_INJECT_LINK, target, "rama-fp-site-link")
+            activate = partial(follow_link, driver, "#rama-fp-site-link", timeout=timeout)
+        activate()
+        expected = urlsplit(target)
+        await_navigation(
+            driver, wait,
+            activated_again(
+                navigated_to(lambda url, expected=expected: url.hostname == expected.hostname
+                             and url.path == expected.path),
+                activate, timeout / 3,
+            ),
+            f"{site} {flow} did not navigate",
+        )
+        protocol = PROTOCOLS.get(driver.execute_script(
+            'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
+        ))
+        if protocol is None:
+            raise ValueError(f"{flow} protocol unavailable for {site}")
+        protocols[site][flow] = protocol
+    return protocols
+
+
+def drop_connections(driver, origins):
+    """Have each origin drain the connection this browser reaches it on.
+
+    The browser then opens a new connection for its next request to that host. A host
+    that does not answer keeps its connection: the journey before it is already complete.
+    """
+    for origin in origins:
+        try:
+            driver.get(urljoin(origin, "/disconnect"))
+        except WebDriverException as error:
+            # Provider exception text can contain private data; log only its type.
+            print(f"SKIP disconnect: {type(error).__name__}", flush=True)
+
+
 def run_capture_flow(
-    driver, origin, *, cookies=None, expected_protocol=None, all_flows=True, timeout=30
+    driver,
+    origin,
+    *,
+    cookies=None,
+    expected_protocol=None,
+    all_flows=True,
+    sites=False,
+    new_connections_after=False,
+    timeout=30,
 ):
     """Collect one real browser journey against a configurable fp origin.
 
     ``cookies`` is used by nightly storage authorization/metadata. Local isolated
     tests omit it to keep reference requests credential-free. The caller owns the
     driver and always quits it in a context manager/finally block.
+    ``new_connections_after`` ends a completed journey by having every host it
+    reached drain its connection, so a later journey in the session opens new ones.
     """
     parsed = urlsplit(origin)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -470,6 +721,7 @@ def run_capture_flow(
     # Retry until the same completion condition holds; a closed window still times out.
     wait = WebDriverWait(driver, timeout, ignored_exceptions=(NoSuchWindowException,))
     driver.set_page_load_timeout(timeout)
+    # ``sites`` requires the same-site and cross-site flows the report page advertises.
     # Until the report's form is visible, the H3-only origin may still show its
     # TCP bootstrap door: a browser that never switched is unsupported, not a failure.
     try:
@@ -480,6 +732,10 @@ def run_capture_flow(
                 driver.add_cookie({"name": name, "value": value, "path": "/"})
 
         driver.get(urljoin(origin, "/report"))
+        # A load that failed leaves the browser on the page it came from.
+        if urlsplit(driver.current_url).path != "/report":
+            print("RETRY report: the browser did not leave its previous page", flush=True)
+            driver.get(urljoin(origin, "/report"))
         user_agent = driver.execute_script("return navigator.userAgent")
         if not all_flows:
             protocol = driver.execute_script(
@@ -530,23 +786,24 @@ def run_capture_flow(
 
     # Preserve this page's observations before either form replaces its DOM.
     # Validate them after both forms, so an unavailable WebSocket does not hide
-    # otherwise useful HTTP captures. All six operations remain mandatory.
+    # otherwise useful HTTP captures. All seven operations remain mandatory.
     # One script read: element handles can go stale if the page re-renders.
     page_protocols = driver.execute_script(
         'return Array.from(document.querySelectorAll("#flow-protocols li"), li => li.innerText)'
     ) or []
     report_html = driver.page_source
     report_url = driver.current_url
+    site_probes = parse_site_probes(driver.execute_script(
+        'return document.querySelector(\'meta[name="rama-fp-sites"]\')?.content ?? null'
+    )) if sites else None
 
     # Native keyboard activation avoids SafariDriver's intermittent
     # click no-op on the long report page. The browser still submits the form.
-    submit_form(driver, 'form[action="/form"]', timeout=timeout)
-    wait.until(
-        lambda browser: urlsplit(browser.current_url).path == "/form"
-        and browser.execute_script(
-            "return document.readyState === 'complete' && document.URL === arguments[0]",
-            browser.current_url,
-        ) is True,
+    activate = partial(submit_form, driver, 'form[action="/form"]', timeout=timeout)
+    activate()
+    await_navigation(
+        driver, wait,
+        activated_again(navigated_to(lambda url: url.path == "/form"), activate, timeout / 3),
         "POST form submission did not navigate",
     )
     post_protocol = driver.execute_script(
@@ -562,16 +819,60 @@ def run_capture_flow(
         "POST form response never showed the GET form",
     )
     form_html = driver.page_source
-    submit_form(driver, 'form[method="GET"][action="/form"]', timeout=timeout)
-    wait.until(get_form_navigation_complete, "GET form submission did not navigate")
+    activate = partial(
+        submit_form, driver, 'form[method="GET"][action="/form"]', timeout=timeout
+    )
+    activate()
+    await_navigation(
+        driver, wait,
+        activated_again(get_form_navigation_complete, activate, timeout / 3),
+        "GET form submission did not navigate",
+    )
     get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
+    get_form_html = driver.page_source
 
-    protocols, page_results = completed_protocols(
-        user_agent, expected_protocol, page_protocols, post_protocol, get_protocol,
-        page_results, driver.capabilities.get("safari:platformVersion"),
+    # A same-origin link click, the navigation a page's own links make.
+    driver.execute_script(_INJECT_LINK, urljoin(origin, "/landing"), "rama-fp-link")
+    activate = partial(follow_link, driver, "#rama-fp-link", timeout=timeout)
+    activate()
+    await_navigation(
+        driver, wait,
+        activated_again(navigated_to(lambda url: url.path == "/landing"), activate, timeout / 3),
+        "same-origin link did not navigate",
     )
+    link_protocol = driver.execute_script(
+        'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
+    )
+    site_navigations = (
+        visit_sites(driver, wait, origin, site_probes, timeout) if sites else None
+    )
+    if new_connections_after:
+        hosts = [probe["origin"] for probe in site_probes.values()] if sites else []
+        drop_connections(driver, [origin, *hosts])
+
+    def site_protocols_of(results, *, websocket):
+        checked = checked_site_results(
+            results.get("sites") if isinstance(results, dict) else None,
+            websocket=websocket,
+        )
+        for site, flows in site_navigations.items():
+            checked[site].update(flows)
+        return checked
+
+    try:
+        protocols, checked_results = completed_protocols(
+            user_agent, expected_protocol, page_protocols, post_protocol, get_protocol,
+            link_protocol, page_results, driver.capabilities.get("safari:platformVersion"),
+        )
+    except UnsupportedFlow as unsupported:
+        # The browser limit that excused the WebSocket also excuses it on the site hosts.
+        if sites:
+            unsupported.site_protocols = site_protocols_of(page_results, websocket=False)
+        raise
+    site_protocols = site_protocols_of(page_results, websocket=True) if sites else None
+    page_results = checked_results
     return FlowResult(
         user_agent,
         driver.capabilities.get("browserName", ""),
@@ -579,7 +880,8 @@ def run_capture_flow(
         protocols,
         report_html,
         form_html,
-        driver.page_source,
+        get_form_html,
         page_results,
         report_url,
+        site_protocols,
     )

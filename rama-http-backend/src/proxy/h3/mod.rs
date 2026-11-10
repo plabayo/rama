@@ -40,7 +40,7 @@ use rama_http_types::proto::h3::{Code, SettingId, Settings};
 use rama_net::proxy::IoForwardService;
 use rama_quic_proto::{Side, VarInt};
 use rama_utils::guard::DropGuard;
-use tokio::time::Instant;
+use tokio::time::{Instant, sleep};
 
 use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
 use crate::{
@@ -487,24 +487,33 @@ where
         let mut cancelled = pin!(self.scope.cancelled());
         let forwarding = IoForwardService::new(self.scope.clone());
         let mut requests = FuturesUnordered::new();
+        // Announced: the peer is told to stop. Draining: its notice ended, nothing more is admitted.
+        let mut announced = false;
         let mut draining = false;
+        let mut notice = pin!(sleep(Duration::ZERO));
         // The exchange borrows the HTTP/3 state, so the guards see its outcome while it lives.
         let result = async {
             loop {
                 tokio::select! {
-                    result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
-                    _ = &mut cancelled, if !draining => {
-                        connection.shutdown()?;
-                        draining = true;
+                    result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await,
+                    _ = &mut cancelled, if !announced => {
+                        let period = connection.announce_shutdown()?;
+                        notice.as_mut().reset(Instant::now() + period);
+                        announced = true;
                     }
-                    _ = &mut upstream_draining, if !draining => {
+                    _ = &mut upstream_draining, if !announced => {
+                        let period = connection.announce_shutdown()?;
+                        notice.as_mut().reset(Instant::now() + period);
+                        announced = true;
+                    }
+                    () = &mut notice, if announced && !draining => {
                         connection.shutdown()?;
                         draining = true;
                     }
                     accepted = connection.accept(), if !draining => {
                         let stream = match accepted {
                             Ok(stream) => stream,
-                            Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await,
+                            Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await,
                             Err(error) => return completed(Err(error)),
                         };
                         let service = service.clone();
@@ -586,7 +595,7 @@ where
                     result = requests.next(), if !requests.is_empty() => {
                         if let Some(Err(error)) = result {
                             if clean_close(error) {
-                                return drain(driver, &mut requests, close_timeout, (!draining).then_some(&mut cancelled)).await;
+                                return drain(driver, &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await;
                             }
                             if error.scope() == ErrorScope::Connection {
                                 return completed(Err(error));

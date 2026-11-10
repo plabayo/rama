@@ -10,14 +10,24 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import quote
 
+from selenium.common.exceptions import TimeoutException
+
 import main
+
+
+SITE_FLOWS = dict.fromkeys(
+    ("image", "style", "script", "frame", "fetch", "xhr", "ws", "navigate", "form"), "h2"
+)
 
 
 class NightlyTests(unittest.TestCase):
     storage_cookie = "private/storage-cookie&value"
-    completed = SimpleNamespace(protocols=dict.fromkeys(
-        ("navigate", "fetch", "xhr", "ws", "form", "form_get"), "h3"
-    ))
+    completed = SimpleNamespace(
+        protocols=dict.fromkeys(
+            ("navigate", "fetch", "xhr", "ws", "form", "form_get", "link"), "h3"
+        ),
+        site_protocols={"same-site": SITE_FLOWS, "cross-site": SITE_FLOWS},
+    )
 
     def collect(self, journey, *, entrypoints=None, profile=None):
         """Supply browser outcomes; exercise real exit handling and receipt writing."""
@@ -60,6 +70,21 @@ class NightlyTests(unittest.TestCase):
         self.assertEqual(receipts["000-0"]["status"], "failed")
         self.assertEqual(receipts["000-1"]["status"], "passed")
 
+    def test_failed_cells_within_the_budget_are_reported_without_failing_the_job(self):
+        def journey(_driver, origin, **_kwargs):
+            if origin == "https://broken-0.invalid/":
+                raise RuntimeError("journey failed")
+            return self.completed
+
+        for cells, expected in ((100, 0), (99, 1)):
+            with self.subTest(cells=cells):
+                code, receipts, log = self.collect(journey, entrypoints=[
+                    (f"https://broken-{index}.invalid/", "h3") for index in range(cells)
+                ])
+                self.assertEqual(code, expected)
+                self.assertEqual(receipts["000-0"]["status"], "failed")
+                self.assertIn(f"SUMMARY 1 of {cells} cells failed", log)
+
     def test_failed_revisit_cannot_be_hidden_by_a_successful_first_visit(self):
         def journey(_driver, _origin, *, cookies, **_kwargs):
             if cookies is None:
@@ -81,6 +106,56 @@ class NightlyTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 code, _, _ = self.collect(main.UnsupportedFlow(reason))
                 self.assertEqual(code, expected)
+
+    def test_https_cells_require_every_site_flow(self):
+        incomplete = dict(SITE_FLOWS)
+        del incomplete["frame"]
+        for site_protocols, expected in (
+            (None, 1),
+            ({"same-site": SITE_FLOWS}, 1),
+            ({"same-site": SITE_FLOWS, "cross-site": incomplete}, 1),
+            ({"same-site": SITE_FLOWS, "cross-site": dict(SITE_FLOWS, image="unknown")}, 0),
+            ({"same-site": SITE_FLOWS, "cross-site": dict(SITE_FLOWS, fetch="unknown")}, 1),
+            ({"same-site": SITE_FLOWS, "cross-site": dict(SITE_FLOWS, frame="unknown")}, 1),
+        ):
+            with self.subTest(site_protocols=site_protocols):
+                result = SimpleNamespace(
+                    protocols=self.completed.protocols, site_protocols=site_protocols
+                )
+                code, receipts, _ = self.collect(lambda *_args, **_kwargs: result)
+                self.assertEqual(code, expected)
+                if not expected:
+                    self.assertEqual(receipts["000-0"]["site_protocols"], site_protocols)
+
+    def test_plaintext_cells_send_no_site_flows(self):
+        requested = []
+
+        def journey(_driver, _origin, *, sites, **_kwargs):
+            requested.append(sites)
+            return SimpleNamespace(protocols=self.completed.protocols, site_protocols=None)
+
+        code, receipts, _ = self.collect(
+            journey, entrypoints=[("http://h1.invalid/", "h1")]
+        )
+        self.assertEqual((code, requested), (0, [False]))
+        self.assertNotIn("site_protocols", receipts["000-0"])
+
+    def test_an_excused_websocket_may_be_missing_on_the_site_hosts_too(self):
+        without_ws = dict(SITE_FLOWS)
+        del without_ws["ws"]
+        for site_protocols, expected in (
+            ({"same-site": without_ws, "cross-site": without_ws}, 0),
+            ({"same-site": without_ws}, 1),
+        ):
+            with self.subTest(site_protocols=site_protocols):
+                unsupported = main.UnsupportedFlow(
+                    "ws: WebSocket over HTTP/3 is not supported by this browser"
+                )
+                unsupported.site_protocols = site_protocols
+                code, receipts, _ = self.collect(unsupported)
+                self.assertEqual(code, expected)
+                if not expected:
+                    self.assertEqual(receipts["000-0"]["site_protocols"], site_protocols)
 
     def test_fingerprint_mismatch_fails_but_matching_or_absent_profiles_do_not(self):
         for profile, expected in (
@@ -111,6 +186,15 @@ class NightlyTests(unittest.TestCase):
     def test_provider_error_details_are_not_reported(self):
         error = main.WebDriverException("provider session private-access-key")
         self.assertEqual(main.failure_reason(error, secrets=()), "WebDriverException")
+
+    def test_journey_timeouts_keep_their_own_message(self):
+        error = main.JourneyTimeout("same-site form did not navigate; at h3.fp.example.org/form")
+        self.assertEqual(
+            main.failure_reason(error, secrets=()),
+            "JourneyTimeout: same-site form did not navigate; at h3.fp.example.org/form",
+        )
+        provider = TimeoutException("provider session private-access-key")
+        self.assertEqual(main.failure_reason(provider, secrets=()), "TimeoutException")
 
 
 if __name__ == "__main__":

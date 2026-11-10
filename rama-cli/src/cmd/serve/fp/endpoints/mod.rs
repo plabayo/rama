@@ -1,14 +1,22 @@
 mod http3;
 mod websocket;
 
+use std::{sync::LazyLock, time::SystemTime};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use itertools::Itertools as _;
 use rama::{
+    crypto::digest::sha256_slices,
     error::BoxError,
     extensions::ExtensionsRef,
+    graceful::{Cause, scope_context},
     http::{
         BodyExtractExt, Response, StatusCode, Version,
         body::util::BodyExt as _,
-        headers::{ContentType, SecFetchMode, all_client_hints},
+        headers::{
+            ContentSecurityPolicy, ContentType, HashAlgorithm, SecFetchMode, SourceList,
+            all_client_hints,
+        },
         proto::h2,
         protocols::html::*,
         request::Parts,
@@ -18,7 +26,10 @@ use rama::{
         },
         ws::handshake::server::ServerWebSocket,
     },
-    net::address::ip::geo::IpGeoInfo,
+    net::{
+        AuthorityInputExt as _, Protocol,
+        address::{Host, ip::geo::IpGeoInfo},
+    },
     telemetry::tracing,
     ua::profile::model::{http::Http2Settings, js::JsProfileWebApis, ua::UserAgentSourceInfo},
 };
@@ -27,12 +38,13 @@ use serde_json::json;
 
 use self::http3::{http3_observation_data, http3_tables};
 use super::{
-    State,
+    State, StorageAuthorized,
     data::{
         DataSource, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
         TlsDisplayInfoExtensionData, UserAgentInfo, get_akamai_h2_info, get_http_info_and_capture,
         get_ja4h_info, get_request_info, get_tls_display_info, get_user_agent_info,
     },
+    sites::SiteGrant,
 };
 
 //------------------------------------------
@@ -216,6 +228,7 @@ pub(super) async fn get_report(
         state.storage = None;
     }
     let ja4h = get_ja4h_info(&parts);
+    let site_probes = site_probes(&state, &parts);
 
     let mut request_info = get_request_info(
         SecFetchMode::Navigate,
@@ -319,10 +332,120 @@ pub(super) async fn get_report(
                     "disabled"
                 }
             ),
+            site_probes.map(|content| meta!(name = "rama-fp-sites", content = content)),
         ),
         (geo_comment, h3_data, report_body(None::<&str>, tables)),
     )
     .into_response())
+}
+
+/// The other hosts this page probes, as JSON for `script.js`; a probe host links to none.
+fn site_probes(state: &State, parts: &Parts) -> Option<String> {
+    let sites = state.sites.as_ref()?;
+    let authority = parts.authority()?;
+    if let Host::Name(domain) = &authority.host
+        && sites.is_site_host(domain)
+    {
+        return None;
+    }
+    // Probe hosts exist in secure mode only, so this page is served over https.
+    let page_origin = format!(
+        "https://{}",
+        authority.without_default_port_for(Some(&Protocol::HTTPS))
+    );
+    let authorized = parts.extensions.contains::<StorageAuthorized>();
+    serde_json::to_string(&sites.probes(authorized, &page_origin, SystemTime::now())?).ok()
+}
+
+/// A navigation from a page on another host of this service.
+pub(super) async fn get_landing(
+    StateParam(mut state): StateParam<State>,
+    parts: Parts,
+) -> Result<Response, ErrorResponse> {
+    if super::storage::is_speculative(&parts.headers) {
+        state.storage = None;
+    }
+    get_http_info_and_capture(
+        &state,
+        parts.headers,
+        &parts.extensions,
+        parts.version,
+        Initiator::Navigator,
+    )
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+    Ok(page(
+        "🧭 Site Visit",
+        (),
+        div!(
+            id = "landing",
+            p!("This navigation came from another host of the fingerprinting service.")
+        ),
+    )
+    .into_response())
+}
+
+/// Drains the connection that carried the request: it is answered, and the client's next
+/// request to this host opens a new connection.
+pub(super) async fn get_disconnect(parts: Parts) -> impl IntoResponse {
+    if let Some(scope) = scope_context(&parts.extensions) {
+        scope.cancel(Cause::Reason("the client asked for a new connection"));
+    }
+    // The page references nothing, so the browser's next request is its next navigation.
+    html!(
+        lang = "en",
+        head!(
+            meta!(charset = "UTF-8"),
+            title!("ラマ | FP"),
+            link!(rel = "icon", href = FAVICON_DATA_URL),
+        ),
+        body!(p!(
+            id = "disconnect",
+            "This connection takes no further requests."
+        )),
+    )
+}
+
+/// Browsers fire `load` on a frame whose navigation failed, so the frame confirms
+/// itself to the page its site token names.
+const FRAME_SCRIPT: &str = "const config = document.querySelector('meta[name=\"rama-fp-frame\"]');\n\
+if (config) {\n\
+  const { origin, version } = JSON.parse(config.content);\n\
+  parent.postMessage({ type: \"rama-fp-frame\", version }, origin);\n\
+}\n";
+
+static FRAME_SCRIPT_HASH: LazyLock<String> =
+    LazyLock::new(|| STANDARD.encode(sha256_slices([FRAME_SCRIPT.as_bytes()])));
+
+/// A page another host of this service embeds.
+pub(super) async fn get_frame(parts: Parts) -> impl IntoResponse {
+    let confirmation = parts.extensions.get_ref::<SiteGrant>().map(|grant| {
+        json!({ "origin": grant.origin, "version": format!("{:?}", parts.version) }).to_string()
+    });
+    (
+        // X-Frame-Options cannot allow framing; a frame-ancestors directive overrides it.
+        response::Headers::single(
+            ContentSecurityPolicy::empty()
+                .with_default_src(SourceList::none())
+                .with_script_src(
+                    SourceList::empty()
+                        .with_hash(HashAlgorithm::Sha256, FRAME_SCRIPT_HASH.as_str()),
+                )
+                .with_frame_ancestors(SourceList::empty().with_scheme(Protocol::HTTPS)),
+        ),
+        html!(
+            lang = "en",
+            head!(
+                meta!(charset = "UTF-8"),
+                title!("ラマ | FP frame"),
+                confirmation.map(|content| (
+                    meta!(name = "rama-fp-frame", content = content),
+                    script!(PreEscaped(FRAME_SCRIPT)),
+                )),
+            ),
+            body!(p!("rama-fp frame probe")),
+        ),
+    )
 }
 
 fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<Table>) {
@@ -810,6 +933,28 @@ pub(super) async fn get_assets_script() -> impl IntoResponse {
     )
 }
 
+const LLAMA_SVG: &str = include_str!("../../../../../assets/llama.svg");
+
+const BANNER_JPEG: &[u8] = include_bytes!("../../../../../assets/banner.jpeg");
+
+pub(super) async fn get_assets_banner() -> impl IntoResponse {
+    (response::Headers::single(ContentType::jpeg()), BANNER_JPEG)
+}
+
+/// Loading it from another host of this service records a script request.
+const SITE_JS: &str = "// rama-fp site probe\n";
+
+pub(super) async fn get_assets_site_script() -> impl IntoResponse {
+    (
+        response::Headers::single(ContentType::javascript_utf8()),
+        SITE_JS,
+    )
+}
+
+pub(super) async fn get_assets_llama() -> impl IntoResponse {
+    (response::Headers::single(ContentType::svg()), LLAMA_SVG)
+}
+
 //------------------------------------------
 // render utilities
 //------------------------------------------
@@ -882,7 +1027,13 @@ where
         ),
         body!(main!(
             h1!(
-                a!(href = "/", title = "rama-fp home", "ラマ"),
+                a!(
+                    href = "/",
+                    title = "rama-fp home",
+                    // Same-origin so the capture service records the image subresource.
+                    img!(src = "/assets/llama.svg", alt = ""),
+                    "ラマ",
+                ),
                 PreEscaped(" &nbsp; | &nbsp; "),
                 h1_title,
             ),
@@ -896,10 +1047,7 @@ where
                 a!(
                     href = "https://ramaproxy.org",
                     title = "rama proxy website",
-                    img!(
-                        src = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg",
-                        alt = "rama banner",
-                    ),
+                    img!(src = "/assets/banner.jpeg", alt = "rama banner"),
                 ),
             ),
         )),
@@ -1077,10 +1225,17 @@ mod tests {
     use rama::{
         Service,
         bytes::Bytes,
-        http::{Request, body::Frame, header::SET_COOKIE, service::web::Router},
+        http::{
+            Request,
+            body::Frame,
+            header::{CONTENT_SECURITY_POLICY, SET_COOKIE},
+            service::web::Router,
+        },
+        net::address::Domain,
         quic::{QuicConnectionInfo, proto::Version as QuicVersion},
     };
 
+    use super::super::sites::Sites;
     use super::*;
 
     #[tokio::test]
@@ -1109,6 +1264,7 @@ mod tests {
             storage: None,
             storage_auth: None,
             geo_db: None,
+            sites: None,
         })
         .with_post("/api/fetch/number/{number}", post_api_fetch_number);
 
@@ -1149,6 +1305,7 @@ mod tests {
             storage: None,
             storage_auth: None,
             geo_db: None,
+            sites: None,
         })
         .with_post("/fetch/{number}", post_api_fetch_number)
         .with_post("/xhr/{number}", post_api_xml_http_request_number);
@@ -1177,6 +1334,7 @@ mod tests {
             storage: None,
             storage_auth: None,
             geo_db: None,
+            sites: None,
         })
         .with_post("/fetch/{number}", post_api_fetch_number)
         .with_post("/xhr/{number}", post_api_xml_http_request_number);
@@ -1215,6 +1373,7 @@ mod tests {
             storage: Some(super::super::storage::Storage::unavailable()),
             storage_auth: None,
             geo_db: None,
+            sites: None,
         })
         .with_get("/report", get_report);
         for (path, expected) in [
@@ -1237,6 +1396,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_reports_on_the_primary_host_advertise_the_site_hosts() {
+        let service = Router::new_with_state(State {
+            data_source: DataSource::default(),
+            probe_http3: false,
+            storage: None,
+            storage_auth: Some("secret".to_owned()),
+            geo_db: None,
+            sites: Sites::try_new(
+                Some(Domain::from_static("fp.ss.example.org")),
+                Some(Domain::from_static("fp.xss.example.com")),
+                Some("secret"),
+            )
+            .unwrap(),
+        })
+        .with_get("/report", get_report);
+        for (host, advertised) in [
+            ("fp.example.org", true),
+            ("fp.ss.example.org", false),
+            ("fp.xss.example.com", false),
+        ] {
+            let response = service
+                .serve(
+                    Request::get("/report")
+                        .header("host", host)
+                        .header("user-agent", "site-probe-regression/1")
+                        .body(Default::default())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let html = response.into_body().collect().await.unwrap().to_bytes();
+            let html = std::str::from_utf8(&html).unwrap();
+            assert_eq!(
+                html.contains(r#"name="rama-fp-sites""#),
+                advertised,
+                "{host}"
+            );
+            for origin in ["https://fp.ss.example.org", "https://fp.xss.example.com"] {
+                assert_eq!(html.contains(origin), advertised, "{host} {origin}");
+            }
+        }
+    }
+
+    async fn frame_page(grant: Option<SiteGrant>) -> (String, String) {
+        let (parts, ()) = Request::builder()
+            .version(Version::HTTP_2)
+            .body(())
+            .unwrap()
+            .into_parts();
+        if let Some(grant) = grant {
+            parts.extensions.insert(grant);
+        }
+        let response = get_frame(parts).await.into_response();
+        let policy = response.headers()[CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let html = response.into_body().collect().await.unwrap().to_bytes();
+        (policy, String::from_utf8(html.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_frame_page_is_embeddable_by_secure_pages_only() {
+        let (policy, _) = frame_page(None).await;
+        assert!(policy.contains("frame-ancestors https:"), "{policy}");
+        assert!(policy.contains("default-src 'none'"), "{policy}");
+    }
+
+    #[tokio::test]
+    async fn the_frame_confirms_its_protocol_to_the_granted_page_only() {
+        let (_, html) = frame_page(None).await;
+        assert!(!html.contains("<script"), "{html}");
+
+        let grant = SiteGrant {
+            authorized: false,
+            origin: "https://h2.fp.example.org".into(),
+        };
+        let (policy, html) = frame_page(Some(grant)).await;
+        let script = html
+            .split_once("<script>")
+            .and_then(|(_, rest)| rest.split_once("</script>"))
+            .map(|(script, _)| script)
+            .unwrap_or_else(|| panic!("{html}"));
+        let hash = STANDARD.encode(sha256_slices([script.as_bytes()]));
+        assert!(
+            policy.contains(&format!("script-src 'sha256-{hash}'")),
+            "{policy}"
+        );
+        assert!(script.contains("parent.postMessage"), "{script}");
+        assert!(
+            html.contains(r#"content="{&quot;origin&quot;:&quot;https://h2.fp.example.org&quot;,&quot;version&quot;:&quot;HTTP/2.0&quot;}""#),
+            "{html}"
+        );
+    }
+
+    #[tokio::test]
     async fn xhr_and_form_consume_uploads_before_responding() {
         let service = Router::new_with_state(State {
             data_source: DataSource::default(),
@@ -1244,6 +1499,7 @@ mod tests {
             storage: None,
             storage_auth: None,
             geo_db: None,
+            sites: None,
         })
         .with_post("/xhr/{number}", post_api_xml_http_request_number)
         .with_post("/form", form);

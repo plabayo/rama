@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from selenium.common.exceptions import SessionNotCreatedException, WebDriverException
+from urllib3.exceptions import ReadTimeoutError
 
 from browser_automation.drivers import device_session, local_session
 
@@ -102,6 +103,15 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(start.call_count, 3)
         self.assertEqual(sleep.call_count, 2)
         driver.quit.assert_called_once()
+        # A session request safaridriver never answers is retried as well.
+        unanswered = ReadTimeoutError(None, "/session", "Read timed out.")
+        driver = MagicMock()
+        with patch("browser_automation.drivers.time.sleep"), patch(
+            "browser_automation.drivers.webdriver.Safari", side_effect=[unanswered, driver]
+        ) as start:
+            with device_session("ios-simulator", "26.2") as session:
+                self.assertIs(session, driver)
+        self.assertEqual(start.call_count, 2)
         # Only the simulator showed slow Safari launches; desktop errors stay failures.
         with patch(
             "browser_automation.drivers.webdriver.Safari", side_effect=slow

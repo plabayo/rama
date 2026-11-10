@@ -1,6 +1,11 @@
 //! Echo service that echos the http request and tls client config
 
-use std::{convert::Infallible, fmt, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    fmt,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use clap::Args;
 use itertools::Itertools;
@@ -15,8 +20,8 @@ use rama::{
         BodyLimitLayer, HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            AcceptCh, AltSvc, ClientHint, Cookie, CriticalCh, HeaderMapExt, SecWebSocketProtocol,
-            Vary, all_client_hint_header_names, all_client_hints,
+            AcceptCh, AltSvc, ClientHint, Cookie, CriticalCh, HeaderMapExt, ReferrerPolicy,
+            SecWebSocketProtocol, Vary, all_client_hint_header_names, all_client_hints,
             exotic::XClacksOverhead,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
             sec_websocket_extensions,
@@ -39,7 +44,7 @@ use rama::{
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
     net::{
-        address::SocketAddress,
+        address::{Domain, SocketAddress},
         stream::layer::{ThrottleLayer, ThrottleMode},
         tls::ApplicationProtocol,
     },
@@ -62,10 +67,12 @@ use rama::{
 mod collection;
 mod data;
 mod endpoints;
+mod sites;
 mod state;
 mod storage;
 pub(crate) use storage::{CountedProfileSource, compact_profile_archive, export_counted_profiles};
 
+use sites::{SiteCorsLayer, SiteTokens, Sites};
 #[doc(inline)]
 use state::State;
 
@@ -152,6 +159,22 @@ pub struct CliCommandFingerprint {
     #[arg(long, short = 's')]
     /// run service in secure mode (enable TLS)
     secure: bool,
+
+    #[arg(long, requires = "secure")]
+    /// another host of this service sharing the page's registrable domain,
+    /// such as `h2.fp.ss.ramaproxy.org`
+    ///
+    /// The report page loads subresources, API calls and navigations from it,
+    /// so their same-site requests are recorded. Secure mode only: browsers send
+    /// no Fetch metadata in plain text.
+    same_site_domain: Option<Domain>,
+
+    #[arg(long, requires = "secure")]
+    /// another host of this service with its own registrable domain,
+    /// such as `h2.fp.xss.ramaproxy.com`
+    ///
+    /// As `--same-site-domain`, for cross-site requests.
+    cross_site_domain: Option<Domain>,
 }
 
 /// run the rama FP service
@@ -224,6 +247,12 @@ pub async fn run(
         .await
         .context("create state")?;
     state.probe_http3 = listeners.http3.is_some() && listeners.tcp.is_some();
+    state.sites = Sites::try_new(
+        cfg.same_site_domain.clone(),
+        cfg.cross_site_domain.clone(),
+        storage_auth.as_deref(),
+    )
+    .context("configure site probes")?;
 
     let ws_service = ConsumeErrLayer::default().into_layer(
         WebSocketAcceptor::new()
@@ -272,8 +301,16 @@ pub async fn run(
     //     `wss:` to the same origin, so no scheme wildcard is needed).
     let fp_csp = rama::cli::service::http_security::rama_html_csp()
         .with_connect_src(rama::http::headers::SourceList::self_origin());
-    let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
+    let fp_csp = match &state.sites {
+        Some(sites) => sites.extend_csp(fp_csp),
+        None => fp_csp,
+    };
+    let (csp_layer, nosniff_layer, _referrer_layer, frame_layer) =
         rama::cli::service::http_security::defence_in_depth_layer(fp_csp);
+    // The browser default: captures then hold the Referer field where browsers send it.
+    let referrer_layer = SetResponseHeaderLayer::if_not_present_typed(
+        ReferrerPolicy::STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+    );
 
     // Attribution header, derived from the loaded databases' notices.
     let geo_attribution = {
@@ -315,6 +352,7 @@ pub async fn run(
                 .as_ref()
                 .and_then(storage::Storage::capture_layer),
             StorageAuthLayer::new(&state),
+            SiteCorsLayer,
         ),
         SetResponseHeaderLayer::if_not_present_typed(AcceptCh(client_hints.clone())),
         SetResponseHeaderLayer::if_not_present_typed(CriticalCh(client_hints)),
@@ -335,6 +373,12 @@ pub async fn run(
         // Assets
         .with_get("/assets/style.css", endpoints::get_assets_style)
         .with_get("/assets/script.js", endpoints::get_assets_script)
+        .with_get("/assets/llama.svg", endpoints::get_assets_llama)
+        .with_get("/assets/banner.jpeg", endpoints::get_assets_banner)
+        .with_get("/assets/site.js", endpoints::get_assets_site_script)
+        .with_get("/frame", endpoints::get_frame)
+        .with_get("/landing", endpoints::get_landing)
+        .with_get("/disconnect", endpoints::get_disconnect)
         // Report and API
         .with_get("/report", endpoints::get_report)
         // WS
@@ -508,6 +552,7 @@ where
 #[derive(Clone)]
 struct StorageAuthLayer {
     storage_auth: Option<String>,
+    site_tokens: Option<SiteTokens>,
 }
 
 impl fmt::Debug for StorageAuthLayer {
@@ -517,6 +562,7 @@ impl fmt::Debug for StorageAuthLayer {
                 "storage_auth",
                 &redacted_storage_auth(self.storage_auth.as_deref()),
             )
+            .field("site_tokens", &self.site_tokens)
             .finish()
     }
 }
@@ -525,6 +571,7 @@ impl StorageAuthLayer {
     fn new(state: &State) -> Self {
         Self {
             storage_auth: state.storage_auth.clone(),
+            site_tokens: state.sites.as_ref().map(|sites| sites.tokens().clone()),
         }
     }
 }
@@ -536,6 +583,7 @@ impl<S> Layer<S> for StorageAuthLayer {
         StorageAuthService {
             inner,
             storage_auth: self.storage_auth.clone(),
+            site_tokens: self.site_tokens.clone(),
         }
     }
 
@@ -543,6 +591,7 @@ impl<S> Layer<S> for StorageAuthLayer {
         StorageAuthService {
             inner,
             storage_auth: self.storage_auth,
+            site_tokens: self.site_tokens,
         }
     }
 }
@@ -551,6 +600,7 @@ impl<S> Layer<S> for StorageAuthLayer {
 struct StorageAuthService<S> {
     inner: S,
     storage_auth: Option<String>,
+    site_tokens: Option<SiteTokens>,
 }
 
 impl<S: fmt::Debug> fmt::Debug for StorageAuthService<S> {
@@ -561,6 +611,7 @@ impl<S: fmt::Debug> fmt::Debug for StorageAuthService<S> {
                 "storage_auth",
                 &redacted_storage_auth(self.storage_auth.as_deref()),
             )
+            .field("site_tokens", &self.site_tokens)
             .finish()
     }
 }
@@ -574,6 +625,17 @@ where
     type Error = S::Error;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        // A site host receives no storage cookie: a page's site token authorizes it.
+        if let Some(grant) = self
+            .site_tokens
+            .as_ref()
+            .and_then(|tokens| tokens.grant(&req, SystemTime::now()))
+        {
+            if grant.authorized {
+                req.extensions().insert(StorageAuthorized);
+            }
+            req.extensions().insert(grant);
+        }
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {
             let cookie = cookie
                 .iter()
@@ -619,28 +681,96 @@ where
 mod tests {
     use super::*;
 
+    use rama::graceful::Scope;
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::TcpStream,
+    };
+
+    fn plaintext_h1_config() -> CliCommandFingerprint {
+        CliCommandFingerprint {
+            bind: SocketAddress::local_ipv4(0),
+            concurrent: 0,
+            timeout: 2.,
+            connection_grace: ConnectionGraceArgs::default(),
+            rate: 0,
+            throttle: 0,
+            forward: None,
+            http_version: "h1".parse().unwrap(),
+            http3: Http3Args {
+                h3_bind: None,
+                h3_mtu_upper_bound: None,
+                h3_bootstrap_bind: None,
+                h3_no_session_resumption: false,
+            },
+            secure: false,
+            same_site_domain: None,
+            cross_site_domain: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnect_drains_only_the_connection_that_asked() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let scope = Scope::new();
+            let cfg = plaintext_h1_config();
+            let listeners = HttpListeners::bind(
+                scope.clone_weak(),
+                cfg.bind,
+                cfg.http_version,
+                None,
+                &cfg.http3,
+            )
+            .await
+            .unwrap();
+            let address = listeners.tcp.as_ref().unwrap().local_addr().unwrap();
+            serve_http(
+                &scope.clone_weak(),
+                &Http3Endpoints::default(),
+                &cfg,
+                listeners,
+                None,
+                Arc::new(
+                    ConsumeErrLayer::trace_as(tracing::Level::WARN).into_layer(
+                        Router::new()
+                            .with_get("/disconnect", endpoints::get_disconnect)
+                            .with_get("/kept", "kept"),
+                    ),
+                ),
+                (None, None),
+            )
+            .unwrap();
+            let mut asked = TcpStream::connect(address).await.unwrap();
+            let mut other = TcpStream::connect(address).await.unwrap();
+            asked
+                .write_all(b"GET /disconnect HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+            // A persistent connection reads to its end only once the server closes it.
+            let mut response = String::new();
+            asked.read_to_string(&mut response).await.unwrap();
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            // A subresource would be fetched over a new connection, ahead of the next navigation.
+            assert!(!response.contains("src=") && !response.contains("/assets/"));
+
+            other
+                .write_all(b"GET /kept HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            other.read_to_string(&mut response).await.unwrap();
+            assert!(response.ends_with("kept"), "{response}");
+            assert!(!scope.is_cancelled());
+        })
+        .await
+        .expect("bounded disconnect exchange");
+    }
+
     #[tokio::test]
     async fn plaintext_fp_listener_attaches_positive_connection_provenance() {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         tokio::time::timeout(Duration::from_secs(5), async {
             let scope = WeakScope::detached();
-            let cfg = CliCommandFingerprint {
-                bind: SocketAddress::local_ipv4(0),
-                concurrent: 0,
-                timeout: 2.,
-                connection_grace: ConnectionGraceArgs::default(),
-                rate: 0,
-                throttle: 0,
-                forward: None,
-                http_version: "h1".parse().unwrap(),
-                http3: Http3Args {
-                    h3_bind: None,
-                    h3_mtu_upper_bound: None,
-                    h3_bootstrap_bind: None,
-                    h3_no_session_resumption: false,
-                },
-                secure: false,
-            };
+            let cfg = plaintext_h1_config();
             let listeners =
                 HttpListeners::bind(scope.clone(), cfg.bind, cfg.http_version, None, &cfg.http3)
                     .await
@@ -662,7 +792,7 @@ mod tests {
                 (None, None),
             )
             .unwrap();
-            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            let mut stream = TcpStream::connect(address).await.unwrap();
             stream
                 .write_all(b"GET /report HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
                 .await
@@ -682,6 +812,7 @@ mod tests {
     fn storage_auth_layer_debug_redacts_secret() {
         let layer = StorageAuthLayer {
             storage_auth: Some("super-secret-cookie".to_owned()),
+            site_tokens: None,
         };
 
         let formatted = format!("{layer:?}");
@@ -701,6 +832,7 @@ mod tests {
         let service = StorageAuthService {
             inner: "inner-service",
             storage_auth: Some("super-secret-cookie".to_owned()),
+            site_tokens: None,
         };
 
         let formatted = format!("{service:?}");

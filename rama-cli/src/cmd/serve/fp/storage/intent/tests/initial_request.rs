@@ -30,6 +30,7 @@ async fn unclassified_initial_assets_keep_safe_recipe_and_connection_ownership()
         let service = CaptureLayer::new(queue.clone()).into_layer(
             StorageAuthLayer {
                 storage_auth: Some("private-canary".to_owned()),
+                site_tokens: None,
             }
             .into_layer(service_fn(|input: Request<&'static str>| async {
                 Ok::<_, Infallible>(input)
@@ -226,7 +227,7 @@ async fn unclassified_later_or_incomplete_requests_never_claim_initial_recipe() 
             .insert("sec-fetch-mode", HeaderValue::from_static("no-cors"));
         input
             .headers_mut()
-            .insert("sec-fetch-dest", HeaderValue::from_static("style"));
+            .insert("sec-fetch-dest", HeaderValue::from_static("empty"));
         let mut native = input
             .extensions()
             .get_ref::<H3RequestObservation>()
@@ -264,6 +265,63 @@ async fn unclassified_later_or_incomplete_requests_never_claim_initial_recipe() 
         .unwrap();
         assert!(records.lock().is_empty(), "{change}");
     }
+}
+
+#[tokio::test]
+async fn later_h3_subresource_is_captured_but_never_as_the_initial_recipe() {
+    let (queue, receiver) = queue(8);
+    let service =
+        CaptureLayer::new(queue.clone()).into_layer(service_fn(|request: Request<()>| async {
+            Ok::<_, Infallible>(request)
+        }));
+    let ingress = Extensions::new();
+    ingress.insert(CollectionLease::default());
+    ingress.insert(collector::tests::observed());
+    let mut input = empty_initial_request(&ingress, false);
+    *input.uri_mut() = Uri::parse("/assets/style.css").unwrap();
+    // The fixture's observed fields fix the header set: only values change.
+    for (name, value) in [("sec-fetch-mode", "no-cors"), ("sec-fetch-dest", "style")] {
+        input
+            .headers_mut()
+            .insert(name, HeaderValue::from_static(value));
+    }
+    let mut native = input
+        .extensions()
+        .get_ref::<H3RequestObservation>()
+        .unwrap()
+        .clone();
+    native.stream_id = 4;
+    input.extensions().insert(native);
+    let input = service.serve(input).await.unwrap();
+    assert!(input.extensions().contains::<CaptureIntent>());
+    assert_eq!(queue.counts().invalid_capture, 0);
+    let records = Arc::new(Mutex::new(Vec::new()));
+    worker::run(
+        receiver,
+        MemorySink(records.clone()),
+        store_limits(),
+        QueueConfig {
+            capacity: 8,
+            ..QueueConfig::default()
+        },
+        async {},
+        current_day,
+        || Ok([8; 12]),
+    )
+    .await
+    .unwrap();
+    let records = records.lock();
+    assert!(records.iter().any(|(_, capture)| matches!(
+        &capture.flow,
+        Some(FlowKey::Http { fetch: Some(fetch), .. }) if fetch.destination.as_deref() == Some("style")
+    )));
+    assert!(records.iter().all(|(_, capture)| {
+        capture
+            .joint
+            .slots
+            .iter()
+            .all(|slot| slot.kind != CapturedSlotKind::Http3Bootstrap)
+    }));
 }
 
 #[tokio::test]

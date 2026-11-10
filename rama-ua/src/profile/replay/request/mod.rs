@@ -6,12 +6,18 @@ use std::{collections::VecDeque, error::Error, fmt};
 use rama_core::{extensions::Extension, telemetry::tracing};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Version,
-    header::{COOKIE, Entry, TE},
+    header::{
+        ACCEPT, COOKIE, Entry, SEC_FETCH_DEST, SEC_FETCH_MODE, SEC_FETCH_SITE, SEC_FETCH_USER, TE,
+        UPGRADE_INSECURE_REQUESTS,
+    },
     proto::{
-        h2::PseudoHeaderOrder,
-        h3::qpack::{
-            FieldSectionBase,
-            encoding::{FieldPreferences, HeaderPreferences},
+        h2::{PseudoHeader, PseudoHeaderOrder},
+        h3::{
+            observation::ObservedFieldRepresentation,
+            qpack::{
+                FieldSectionBase,
+                encoding::{FieldPreferences, HeaderPreferences},
+            },
         },
     },
 };
@@ -32,11 +38,27 @@ use crate::profile::{
         headers::RequestBinding,
         http3::{H3ClientSequenceCapture, bootstrap::H3BootstrapCapture},
         joint::CapturedSlotKind,
+        pseudo_headers::PseudoHeaderOccurrence,
     },
     format::canonical::ProfileDataError,
     model::identity::FlowKey,
-    selection::variants::{CookieLayoutEvidence, RequestSelection},
+    selection::variants::{
+        CookieLayoutEvidence, FlowMatch, PreparedRequestProfile, RequestSelection,
+    },
 };
+
+/// Fields describing the request's own context: its Fetch metadata, then the
+/// fields a browser derives from the request destination.
+static REQUEST_CONTEXT_FIELDS: [HeaderName; 7] = [
+    SEC_FETCH_SITE,
+    SEC_FETCH_MODE,
+    SEC_FETCH_USER,
+    SEC_FETCH_DEST,
+    ACCEPT,
+    HeaderName::from_static("priority"),
+    UPGRADE_INSECURE_REQUESTS,
+];
+const FETCH_METADATA_FIELDS: usize = 4;
 
 /// A caller-provided H2 option that can add or change connection wire output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -185,6 +207,9 @@ pub enum LoweredProfileItem {
     /// The connection used the caller's own TLS configuration, as asked by
     /// [`TlsAgent::Preserve`](crate::TlsAgent::Preserve).
     CallerTls,
+    /// No capture covers the request's flow; the closest captured flow replays with
+    /// the caller's own request context fields, see [`FlowMatch::Nearest`].
+    NearestFlow,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Extension)]
@@ -307,6 +332,10 @@ impl RequestSelection {
         let FlowKey::Http { method, .. } = &self.effective.flow else {
             return Err(ProfileDataError::Invalid("HTTP bootstrap flow").into());
         };
+        if self.effective.flow_match != FlowMatch::Exact {
+            // Captured insertions hold the captured flow's values, not the caller's.
+            return self.replay_without_initial_insertions(original, "nearest captured flow");
+        }
         let insertions = match Insertions::new(bootstrap, sequence, self.variant, method).and_then(
             |insertions| {
                 insertions.validate_request(&self.effective.capture)?;
@@ -369,19 +398,41 @@ impl RequestSelection {
             decoded = (plan, fields.finish());
             (&decoded.0, &decoded.1)
         };
-        let (version, method) = match &self.effective.flow {
+        let (version, method, caller_fetch) = match &self.effective.flow {
             FlowKey::Http {
-                version, method, ..
-            } => (*version, method),
+                version,
+                method,
+                fetch,
+                ..
+            } => (*version, method, fetch.is_some()),
             FlowKey::Other { .. } => {
                 return Err(ProfileDataError::Invalid("HTTP replay flow").into());
+            }
+        };
+        let mut report = ProfilePreservationReport::default();
+        let (caller_context, method_bound): (&[HeaderName], bool) = match self.effective.flow_match
+        {
+            FlowMatch::Exact => (&[], true),
+            FlowMatch::Nearest {
+                other_destination,
+                other_method,
+            } => {
+                report.push(ProfilePreservationDifference::LoweredProfileItem {
+                    item: LoweredProfileItem::NearestFlow,
+                });
+                // Without Fetch metadata the caller leaves the request context to the capture.
+                let fields = match (caller_fetch, other_destination) {
+                    (false, _) => &[][..],
+                    (true, false) => &REQUEST_CONTEXT_FIELDS[..FETCH_METADATA_FIELDS],
+                    (true, true) => &REQUEST_CONTEXT_FIELDS[..],
+                };
+                (fields, !other_method)
             }
         };
         let mut headers = None;
         let mut pseudo_headers = None;
         let mut qpack_base = None;
         let mut qpack_headers = None;
-        let mut report = ProfilePreservationReport::default();
         let mut initial_regular_fields = None;
         let mut initial_pseudo_fields = None;
         for slot in plan.slots.iter() {
@@ -414,8 +465,8 @@ impl RequestSelection {
                         captured,
                         table,
                         original,
-                        self.effective.cookie_layout,
-                        &self.effective.network_hints,
+                        &self.effective,
+                        caller_context,
                         &mut report,
                         qpack_headers.as_mut().map(|choices| &mut choices.headers),
                     )?);
@@ -470,20 +521,23 @@ impl RequestSelection {
                             requested: version,
                         });
                     }
-                    captured.validate_method(method)?;
+                    let representation =
+                        |field| replayed_pseudo_representation(field, method_bound);
+                    if method_bound {
+                        captured.validate_method(method)?;
+                    } else {
+                        captured.validate_method_shape(method)?;
+                    }
                     if version == Version::HTTP_3 {
                         qpack::observe_base(
                             &mut qpack_base,
-                            captured
-                                .fields
-                                .iter()
-                                .filter_map(|field| field.representation.as_ref()),
+                            captured.fields.iter().filter_map(representation),
                         );
                     }
                     if version == Version::HTTP_3 {
                         initial_pseudo_fields = Some(captured.fields.len());
                         for (index, field) in captured.fields.iter().enumerate() {
-                            if let Some(metadata) = &field.representation {
+                            if let Some(metadata) = representation(field) {
                                 let mut preferences = qpack::field_preferences(metadata)?;
                                 if let Some(insertions) = &insertions {
                                     preferences.insertion = insertions.for_field(
@@ -528,12 +582,23 @@ impl RequestSelection {
     }
 }
 
+/// A `:method` captured for another method is encoded natively.
+fn replayed_pseudo_representation(
+    field: &PseudoHeaderOccurrence,
+    method_bound: bool,
+) -> Option<&ObservedFieldRepresentation> {
+    field
+        .representation
+        .as_ref()
+        .filter(|_| method_bound || field.name != PseudoHeader::Method)
+}
+
 fn replay_headers(
     captured: &PlannedHeaders,
     table: &FieldTable,
     original: &HeaderMap,
-    cookie_layout: CookieLayoutEvidence,
-    network_hints: &[(Box<str>, Box<[u8]>)],
+    effective: &PreparedRequestProfile,
+    caller_context: &[HeaderName],
     report: &mut ProfilePreservationReport,
     mut encoding: Option<&mut HeaderMap<FieldPreferences>>,
 ) -> Result<HeaderMap, ProfileReplayError> {
@@ -562,7 +627,8 @@ fn replay_headers(
     };
     // RFC 9113 §8.2.2 and RFC 9114 §4.2 allow only `te: trailers`, so the capture decides it.
     let profile_te = matches!(captured.version, Version::HTTP_2 | Version::HTTP_3);
-    let mut cookies = replay_cookie_values(&mut original, cookie_slots, cookie_layout, report)?;
+    let mut cookies =
+        replay_cookie_values(&mut original, cookie_slots, effective.cookie_layout, report)?;
     let mut cookie_slot = 0;
     let mut output = HeaderMap::try_with_capacity(captured.fields.len().max(original.len()))
         .map_err(|_error| ProfileDataError::LimitExceeded("replayed header fields"))?;
@@ -613,10 +679,18 @@ fn replay_headers(
             original[index].value.clone()
         });
         let value = match &table.get(*field).value {
+            // The caller describes its own request context; an absent field stays absent.
+            PlannedValue::Profile(_) if caller_context.contains(&table.get(*field).name) => {
+                let Some(value) = original_value else {
+                    continue;
+                };
+                value
+            }
             PlannedValue::Profile(value) => {
                 let name = table.get(*field).name.as_str();
                 // An empty network hint is a placeholder for the value drawn for this request.
-                let drawn = network_hints
+                let drawn = effective
+                    .network_hints
                     .iter()
                     .find(|(hint, _)| value.is_empty() && hint.as_ref() == name)
                     .map(|(_, drawn)| HeaderValue::from_bytes(drawn))

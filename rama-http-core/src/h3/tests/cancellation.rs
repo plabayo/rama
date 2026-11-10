@@ -504,3 +504,60 @@ async fn explicit_response_reset_stops_upload_while_application_holds_body() {
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_request_that_crossed_the_shutdown_notice_is_served() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let faults = pair.datagram_faults.clone().unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let get = || {
+            Request::builder()
+                .uri("https://localhost/")
+                .body(Body::empty())
+                .unwrap()
+        };
+        for crossing in [false, true] {
+            if crossing {
+                // The client sends its request before the notice can reach it.
+                faults[1].drop_next(usize::MAX);
+                assert!(!server.announce_shutdown().unwrap().is_zero());
+            }
+            let request = get();
+            let sent = spawn(async move {
+                let response = client.send_request(request).await.unwrap();
+                (client, response)
+            });
+            let (_received, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            faults[1].drop_next(0);
+            response
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+            let (returned, response) = sent.await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            client = returned;
+        }
+        // The client that read the notice starts no further request.
+        client.closed_or_draining().await;
+        let error = client.send_request(get()).await.unwrap_err();
+        assert_eq!(error.code(), Code::H3_REQUEST_REJECTED);
+        server.shutdown().unwrap();
+        server.drained().await.unwrap();
+        pair.client.close(Code::H3_NO_ERROR.value() as u32, b"done");
+        _ = client_driver.await;
+        _ = server_driver.await;
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}

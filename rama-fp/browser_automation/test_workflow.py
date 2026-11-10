@@ -1,5 +1,7 @@
 """Protocol/coverage regressions run identically with normal and optimized Python."""
 
+from contextlib import redirect_stdout
+import io
 import json
 import unittest
 from unittest.mock import Mock, patch
@@ -9,6 +11,7 @@ from selenium.common.exceptions import (
     NoSuchWindowException,
     StaleElementReferenceException,
     TimeoutException,
+    WebDriverException,
 )
 
 from browser_automation import workflow
@@ -110,12 +113,12 @@ class CompletedProtocolTests(unittest.TestCase):
         lines.append("WebSocket: unavailable")
         with self.assertRaises(UnsupportedFlow) as unsupported:
             completed_protocols(
-                FIREFOX, "h3", lines, "h3", "h3", page_results(websocket=None)
+                FIREFOX, "h3", lines, "h3", "h3", "h3", page_results(websocket=None)
             )
         self.assertTrue(str(unsupported.exception).startswith("ws:"))
         self.assertEqual(
             unsupported.exception.protocols,
-            dict.fromkeys(["navigate", "fetch", "xhr", "form", "form_get"], "h3"),
+            dict.fromkeys(["navigate", "fetch", "xhr", "form", "form_get", "link"], "h3"),
         )
 
     def test_a_supported_websocket_is_returned_with_every_flow(self):
@@ -124,7 +127,7 @@ class CompletedProtocolTests(unittest.TestCase):
             for name in ("Navigation", "Fetch", "XMLHttpRequest", "WebSocket")
         ]
         protocols, _results = completed_protocols(
-            FIREFOX, "h2", lines, "h2", "h2", page_results(fetch="h2", xhr="h2")
+            FIREFOX, "h2", lines, "h2", "h2", "h2", page_results(fetch="h2", xhr="h2")
         )
         self.assertEqual(protocols["ws"], "h2")
 
@@ -191,9 +194,9 @@ class FlowProtocolTests(unittest.TestCase):
                 parse_protocol_report(lines + [duplicate])
 
     def test_each_http_flow_and_form_rejects_fallback(self):
-        for failed in ["navigate", "fetch", "xhr", "form", "form_get"]:
+        for failed in ["navigate", "fetch", "xhr", "form", "form_get", "link"]:
             protocols = dict.fromkeys(
-                ["navigate", "fetch", "xhr", "ws", "form", "form_get"], "h3"
+                ["navigate", "fetch", "xhr", "ws", "form", "form_get", "link"], "h3"
             )
             protocols[failed] = "h2"
             with self.subTest(flow=failed), self.assertRaisesRegex(
@@ -204,7 +207,7 @@ class FlowProtocolTests(unittest.TestCase):
     def test_websocket_uses_its_actual_protocol_independently_of_http(self):
         for websocket in ("h1", "h2", "h3"):
             protocols = dict.fromkeys(
-                ["navigate", "fetch", "xhr", "form", "form_get"], "h3"
+                ["navigate", "fetch", "xhr", "form", "form_get", "link"], "h3"
             )
             protocols["ws"] = websocket
             original = dict(protocols)
@@ -380,6 +383,214 @@ class FormSubmissionTests(unittest.TestCase):
             workflow.submit_form(driver, 'form[action="/form"]', timeout=0)
         self.assertNotIn("private provider data", str(caught.exception))
 
+    def test_navigation_timeout_names_the_shown_document_without_its_query(self):
+        target = "https://h1.fp.ss.example.org/form?rama_fp_site=tok_private"
+        for shown, where in (
+            (target, "h1.fp.ss.example.org/form (loading)"),
+            # A stalled request: the browser reports its target, the old page stays.
+            (
+                "https://h1.fp.example.org/landing?rama_fp_site=tok_private",
+                "https://h1.fp.example.org/landing (loading), "
+                "bound for https://h1.fp.ss.example.org/form",
+            ),
+        ):
+            with self.subTest(shown=shown):
+                driver = Mock()
+                driver.current_url = target
+                driver.execute_script.return_value = [shown, "loading"]
+                wait = Mock()
+                wait.until.side_effect = TimeoutException("same-site form did not navigate")
+                with self.assertRaises(workflow.JourneyTimeout) as caught:
+                    workflow.await_navigation(
+                        driver, wait, Mock(), "same-site form did not navigate"
+                    )
+                self.assertEqual(
+                    caught.exception.msg, "same-site form did not navigate; at " + where
+                )
+
+    def test_a_stalled_navigation_is_activated_once_more(self):
+        for marked, presses in ((True, 1), (False, 0)):
+            with self.subTest(marked=marked):
+                browser = Mock()
+                browser.execute_script.return_value = marked
+                activate = Mock()
+                check = workflow.activated_again(lambda _browser: False, activate, 0)
+                self.assertFalse(check(browser))
+                self.assertFalse(check(browser))
+                self.assertEqual(activate.call_count, presses)
+        activate = Mock()
+        early = workflow.activated_again(lambda _browser: False, activate, 60)
+        self.assertFalse(early(Mock()))
+        done = workflow.activated_again(lambda _browser: True, activate, 0)
+        self.assertTrue(done(Mock()))
+        activate.assert_not_called()
+
+
+SITES = [
+    {"site": "same-site", "origin": "https://h2.fp.ss.example.org", "token": "tok_ss-1"},
+    {"site": "cross-site", "origin": "https://h2.fp.xss.example.com", "token": "tok_xss-2"},
+]
+
+
+def site_results(overrides=None):
+    flows = {
+        flow: {"protocol": "h2"} for flow in workflow.SITE_PAGE_FLOWS
+    }
+    results = {"same-site": dict(flows), "cross-site": dict(flows)}
+    for (site, flow), result in (overrides or {}).items():
+        results[site][flow] = result
+    return results
+
+
+class SiteProbeTests(unittest.TestCase):
+    def test_both_site_hosts_are_required(self):
+        sites = workflow.parse_site_probes(json.dumps(SITES))
+        self.assertEqual(
+            sites["cross-site"],
+            {"origin": "https://h2.fp.xss.example.com", "token": "tok_xss-2"},
+        )
+        for content in (
+            None,
+            json.dumps(SITES[:1]),
+            json.dumps(SITES + SITES[:1]),
+            json.dumps([dict(SITES[0], origin="http://h2.fp.ss.example.org"), SITES[1]]),
+            json.dumps([dict(SITES[0], origin="https://h2.fp.ss.example.org/x"), SITES[1]]),
+            json.dumps([dict(SITES[0], token="a&b=c"), SITES[1]]),
+            json.dumps([dict(SITES[0], extra=1), SITES[1]]),
+            "{not json",
+        ):
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                workflow.parse_site_probes(content)
+
+    def test_site_urls_carry_the_token(self):
+        self.assertEqual(
+            workflow.site_url("https://h2.fp.ss.example.org", "/landing", "tok_ss-1"),
+            "https://h2.fp.ss.example.org/landing?rama-fp-site=tok_ss-1",
+        )
+
+    def test_every_site_flow_must_complete(self):
+        checked = workflow.checked_site_results(
+            site_results({("cross-site", "image"): {"protocol": ""}})
+        )
+        self.assertEqual(checked["same-site"]["fetch"], "h2")
+        self.assertEqual(checked["cross-site"]["image"], "unknown")
+        for overrides in (
+            {("cross-site", "fetch"): {"protocol": ""}},
+            {("cross-site", "frame"): {"protocol": ""}},
+            {("same-site", "frame"): {"error": "frame failed"}},
+            {("same-site", "ws"): {"error": "refused"}},
+            {("cross-site", "xhr"): {"protocol": "spdy"}},
+        ):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                workflow.checked_site_results(site_results(overrides))
+        incomplete = site_results()
+        del incomplete["same-site"]["script"]
+        for value in (incomplete, {"same-site": site_results()["same-site"]}, None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                workflow.checked_site_results(value)
+
+    def test_a_failed_site_flow_names_the_pages_own_error(self):
+        error = "site probe budget\n exhausted " + "x" * 200
+        with self.assertRaises(ValueError) as raised:
+            workflow.checked_site_results(site_results({("cross-site", "xhr"): {"error": error}}))
+        reason = str(raised.exception)
+        self.assertTrue(reason.startswith("xhr failed for cross-site: site probe budget exhausted x"))
+        self.assertLess(len(reason), 200)
+
+    def test_an_excused_websocket_may_fail_on_the_site_hosts(self):
+        checked = workflow.checked_site_results(
+            site_results({("cross-site", "ws"): {"error": "refused"}}),
+            websocket=False,
+        )
+        self.assertNotIn("ws", checked["cross-site"])
+        self.assertEqual(checked["same-site"]["ws"], "h2")
+
+    def test_a_host_that_cannot_be_reached_does_not_stop_the_other_drains(self):
+        asked = []
+
+        def get(url):
+            asked.append(url)
+            if "ss.example" in url:
+                raise WebDriverException("private provider detail")
+
+        with redirect_stdout(io.StringIO()) as stdout:
+            workflow.drop_connections(
+                Mock(get=get),
+                ["https://h2.fp.example.org/", *(site["origin"] for site in SITES)],
+            )
+        self.assertEqual(
+            asked,
+            [
+                "https://h2.fp.example.org/disconnect",
+                "https://h2.fp.ss.example.org/disconnect",
+                "https://h2.fp.xss.example.com/disconnect",
+            ],
+        )
+        self.assertNotIn("private", stdout.getvalue())
+
+    def test_site_navigations_chain_within_each_pages_form_policy(self):
+        start = "https://h2.fp.example.org/form?source=web&turtles=yes"
+
+        class Browser:
+            """Like Safari: the URL changes before the next document replaces this one."""
+
+            current_url = start
+            document_url = start
+            pending = None
+            polls = 0
+            injected = []
+
+            def execute_script(self, script, *args):
+                if "document.URL" in script:
+                    self.polls += 1
+                    if self.polls > 2:
+                        self.document_url = self.current_url
+                    return self.document_url == args[0]
+                if args:
+                    self.pending = args[0]
+                    self.injected.append(
+                        ("form" if "form" in script else "link", args[0], self.document_url)
+                    )
+                    return None
+                return "h2" if "nextHopProtocol" in script else True
+
+        browser = Browser()
+
+        def navigate(driver, _selector, timeout=30):
+            driver.current_url = driver.pending
+            driver.polls = 0
+
+        sites = workflow.parse_site_probes(json.dumps(SITES))
+        with patch.object(workflow, "submit_form", side_effect=navigate), patch.object(
+            workflow, "follow_link", side_effect=navigate
+        ):
+            protocols = workflow.visit_sites(
+                browser,
+                workflow.WebDriverWait(browser, 5, poll_frequency=0.01),
+                "https://h2.fp.example.org/",
+                sites,
+                1,
+            )
+        same_form = "https://h2.fp.ss.example.org/form?rama-fp-site=tok_ss-1"
+        cross_form = "https://h2.fp.xss.example.com/form?rama-fp-site=tok_xss-2"
+        same_landing = "https://h2.fp.ss.example.org/landing?rama-fp-site=tok_ss-1"
+        # Each step starts from the document the previous one loaded.
+        self.assertEqual(
+            browser.injected,
+            [
+                ("form", same_form, start),
+                ("form", cross_form, same_form),
+                ("link", same_landing, cross_form),
+                ("link", "https://h2.fp.example.org/landing?rama-fp-site=tok_ss-1", same_landing),
+            ],
+        )
+        self.assertEqual(
+            protocols,
+            {
+                "same-site": {"form": "h2", "navigate": "h2"},
+                "cross-site": {"form": "h2", "navigate": "h2"},
+            },
+        )
 
 if __name__ == "__main__":
     unittest.main()

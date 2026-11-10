@@ -62,6 +62,7 @@ fn selection_for_version(fields: Vec<HeaderOccurrence>, version: Version) -> Req
                 fetch: None,
                 connection: Default::default(),
             },
+            flow_match: FlowMatch::Exact,
             plan: None,
         },
     }
@@ -489,6 +490,7 @@ fn qpack_preferences_skip_omitted_bindings() {
 }
 
 mod bootstrap;
+mod nearest;
 
 #[test]
 fn mixed_qpack_families_select_native_current_field_boundary_preferences() {

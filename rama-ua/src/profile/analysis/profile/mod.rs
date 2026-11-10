@@ -58,7 +58,7 @@ pub struct ProfileAnalysisLimits {
 impl Default for ProfileAnalysisLimits {
     fn default() -> Self {
         Self {
-            scopes: 256,
+            scopes: 4096,
             stored_scopes: 8192,
             bytes: mib(64),
             metadata_bytes: kib(16),

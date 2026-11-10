@@ -584,7 +584,8 @@ impl JointCapture {
 
 /// Compare historical indices under the current normalization without changing
 /// their persisted scope IDs, counts, or reservoir sampling identities. Covers H2
-/// ACK timing and header keys that retained per-request or per-device literals.
+/// ACK timing, header keys that retained per-request or per-device literals, and
+/// TLS trust anchor lists kept in handshake order.
 pub(in crate::profile) fn normalize_stored_structure(
     value: &CanonicalValue,
     maximum: usize,
@@ -600,6 +601,13 @@ pub(in crate::profile) fn normalize_stored_structure(
             H2Capture::decode(value, h2_limits, true)?.structural(h2_limits)
         }
         HEADER_STRUCTURE_DOMAIN => normalize_header_structure(value, maximum),
+        #[cfg(feature = "tls")]
+        CanonicalDomain::TlsStructure => {
+            decode_tls_structure(value, maximum)?.structural(TlsCaptureLimits {
+                elements: maximum,
+                bytes: maximum,
+            })
+        }
         CanonicalDomain::JointStructure => {
             let limits = JointCaptureLimits {
                 slots: maximum,
@@ -615,6 +623,15 @@ pub(in crate::profile) fn normalize_stored_structure(
                     }
                     CapturedSlotKind::Headers => {
                         slot.value = normalize_header_structure(&slot.value, maximum)?;
+                    }
+                    #[cfg(feature = "tls")]
+                    CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls => {
+                        slot.value = decode_tls_structure(&slot.value, maximum)?.structural(
+                            TlsCaptureLimits {
+                                elements: maximum,
+                                bytes: maximum,
+                            },
+                        )?;
                     }
                     _ => {}
                 }

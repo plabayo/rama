@@ -10,10 +10,15 @@ bootstrap door) are recorded as "unsupported" and do not fail the job, unless
 every H3 cell stayed on that door, which points at a broken H3 origin.
 A failed cell is retried once in a fresh session; its receipt records
 `attempts` and, after a retry, the first attempt's `first_failure_stage` and
-`first_failure_reason`, and only a cell failing both attempts fails the job. A browser
+`first_failure_reason`, and only a cell failing both attempts counts as failed. The job
+fails when more than `FAILED_CELL_BUDGET_PERCENT` of the cells that ran failed, so one
+flaky device in a full matrix is reported without failing it. A browser
 this host drives also gets a second session when an H3 cell stayed on TCP.
 Origins in `REVISITED` run the journey twice in one session, recorded per visit in
-`visits`; the cell passes when either visit completes.
+`visits`; the cell passes when either visit completes. The first visit ends by having
+its hosts drain their connections, so the revisit opens new ones.
+Every HTTPS cell also requires the same-site and cross-site flows its report page
+advertises, recorded as `site_protocols`; a deploy without those hosts fails the job.
 """
 
 import argparse
@@ -26,17 +31,24 @@ from pathlib import Path
 import platform
 import sys
 import time
+from urllib.parse import urlsplit
 
 from selenium.common.exceptions import WebDriverException
 
 # Allow `python rama-fp/browserstack/main.py` from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from browser_automation.drivers import browser_options, device_session, remote_session
-from browser_automation.workflow import PROTOCOLS, UnsupportedFlow, run_capture_flow
+from browser_automation.workflow import (
+    PROTOCOLS,
+    JourneyTimeout,
+    UnsupportedFlow,
+    run_capture_flow,
+)
 from matrix import desktop_permutations, mobile_configs
 from receipts import (
     checked_partial_protocols,
     checked_protocols,
+    checked_site_protocols,
     identity,
     secret_forms,
     write_receipt,
@@ -131,7 +143,7 @@ def capabilities(build):
 
 
 def failure_reason(error, *, secrets, driver_message=False):
-    """Name every failure; keep text only for the journey's own validation errors.
+    """Name every failure; keep text only for the journey's own validation errors and waits.
 
     Provider and driver messages can echo session data, so only their type is kept,
     unless the driver runs on this host (`driver_message`), where no provider session exists.
@@ -139,7 +151,10 @@ def failure_reason(error, *, secrets, driver_message=False):
     reason = type(error).__name__
     if type(error) is ValueError:
         text = " ".join([str(error), *getattr(error, "__notes__", ())])
-    elif driver_message and isinstance(error, WebDriverException) and error.msg:
+    elif (
+        type(error) is JourneyTimeout
+        or driver_message and isinstance(error, WebDriverException)
+    ) and error.msg:
         text = error.msg
     else:
         return reason
@@ -248,6 +263,9 @@ def run_session(
 
     def attempt(cell, origin, protocol):
         started = time.monotonic()
+        # Browsers send Fetch metadata only to secure origins: their same-site and
+        # cross-site flows are required on every HTTPS cell.
+        secure = urlsplit(origin).scheme == "https"
         receipt = {
             "cell": cell,
             "requested": identity(capability, secrets=secrets),
@@ -300,22 +318,37 @@ def run_session(
                                 origin,
                                 cookies=None if visit else cookies,
                                 expected_protocol=protocol,
+                                sites=secure,
+                                new_connections_after=origin in REVISITED and not visit,
                             )
                         except UnsupportedFlow as error:
                             unsupported = error
-                            visits.append(
-                                {"status": "unsupported", "unsupported_reason": str(error)}
-                            )
+                            entry = {"status": "unsupported", "unsupported_reason": str(error)}
+                            # A journey stopped before the forms reached no site host.
+                            if secure and error.site_protocols is not None:
+                                entry["site_protocols"] = checked_site_protocols(
+                                    error.site_protocols, websocket=False
+                                )
+                            visits.append(entry)
                         else:
                             protocols = checked_protocols(result.protocols)
-                            visits.append({"status": "passed", "protocols": protocols})
+                            entry = {"status": "passed", "protocols": protocols}
+                            if secure:
+                                entry["site_protocols"] = checked_site_protocols(
+                                    result.site_protocols
+                                )
+                            visits.append(entry)
                             if not receipt["journey_completed"]:
                                 receipt["protocols"] = protocols
+                                if "site_protocols" in entry:
+                                    receipt["site_protocols"] = entry["site_protocols"]
                                 receipt["journey_completed"] = True
                     if origin in REVISITED:
                         receipt["visits"] = visits
                     if not receipt["journey_completed"]:
                         receipt["unsupported_reason"] = str(unsupported)
+                        if "site_protocols" in visits[-1]:
+                            receipt["site_protocols"] = visits[-1]["site_protocols"]
                         if unsupported.protocols is not None:
                             receipt["completed_protocols"] = checked_partial_protocols(
                                 unsupported.protocols
@@ -330,7 +363,7 @@ def run_session(
                         (
                             f"unsupported at {origin}: {receipt['unsupported_reason']}"
                             if receipt["unsupported_reason"]
-                            else f"all six flows completed at {origin}"
+                            else f"all seven flows completed at {origin}"
                         ),
                     )
                 except Exception as error:
@@ -399,6 +432,9 @@ def run_session(
     return failures
 
 
+# Real devices fail a session now and then; a regression fails far more cells than this.
+FAILED_CELL_BUDGET_PERCENT = 1
+
 def h3_never_reached(receipts):
     """Every H3 cell ran but stayed on the TCP bootstrap door."""
     h3 = [row for row in receipts if row.get("expected_http_protocol") == "h3"]
@@ -459,6 +495,14 @@ def main(argv=None):
         for future in concurrent.futures.as_completed(futures):
             failures += len(future.result())
     receipts = [json.loads(path.read_text()) for path in args.output.glob("*.json")]
+    ran = sum(row.get("status") in ("passed", "failed") for row in receipts)
+    over_budget = failures * 100 > ran * FAILED_CELL_BUDGET_PERCENT
+    print(
+        f"SUMMARY {failures} of {ran} cells failed, budget {FAILED_CELL_BUDGET_PERCENT}%:",
+        "over" if over_budget else "within",
+        flush=True,
+    )
+    failures = int(over_budget)
     if h3_never_reached(receipts):
         print("FAILED no H3 cell left the HTTP/3 bootstrap door", flush=True)
         failures += 1

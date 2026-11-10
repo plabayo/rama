@@ -1,8 +1,8 @@
 use rama_core::bytes::Bytes;
 use rama_tls::{
     CipherSuite, ExtensionId, GREASE_PSK_KEY_EXCHANGE_MODE_FIRST, GREASE_U16_FIRST,
-    ProtocolVersion, SignatureScheme, SupportedGroup, grease_u16, is_grease_psk_key_exchange_mode,
-    is_grease_u16,
+    ProtocolVersion, SignatureScheme, SupportedGroup, client::trust_anchors_identifier_list,
+    grease_u16, is_grease_psk_key_exchange_mode, is_grease_u16,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -15,6 +15,24 @@ fn normalize_grease(value: &mut u16, is_grease: impl Fn(u16) -> bool) {
     if is_grease(*value) {
         *value = GREASE_U16_FIRST;
     }
+}
+
+/// A trust anchor list in identifier byte order, as some clients shuffle it per handshake.
+fn sorted_trust_anchors(value: &[u8]) -> Option<Box<[u8]>> {
+    let mut rest = trust_anchors_identifier_list(value)?;
+    let mut identifiers = Vec::new();
+    while let Some((&length, tail)) = rest.split_first() {
+        let length = usize::from(length);
+        identifiers.push(rest.get(..=length)?);
+        rest = tail.get(length..)?;
+    }
+    identifiers.sort_unstable();
+    let mut sorted = Vec::with_capacity(value.len());
+    sorted.extend_from_slice(value.get(..2)?);
+    for identifier in identifiers {
+        sorted.extend_from_slice(identifier);
+    }
+    Some(sorted.into())
 }
 
 fn grease_representative(index: usize) -> Result<u16, ProfileDataError> {
@@ -48,6 +66,14 @@ impl TlsCapture {
     /// Groups order and reserved-value variation without assigning replay behavior.
     /// Complete captures retain the literal values and correlated original orders.
     pub fn structural(&self, limits: TlsCaptureLimits) -> Result<CanonicalValue, ProfileDataError> {
+        self.structure(limits, true)
+    }
+
+    pub(super) fn structure(
+        &self,
+        limits: TlsCaptureLimits,
+        sort_trust_anchors: bool,
+    ) -> Result<CanonicalValue, ProfileDataError> {
         self.validate_fields(limits)?;
         let mut normalized = self.clone();
 
@@ -68,6 +94,13 @@ impl TlsCapture {
             }
 
             match &mut extension.value {
+                TlsCapturedExtensionValue::Literal(value)
+                    if sort_trust_anchors && extension_id == ExtensionId::TRUST_ANCHORS =>
+                {
+                    if let Some(sorted) = sorted_trust_anchors(value) {
+                        *value = sorted;
+                    }
+                }
                 TlsCapturedExtensionValue::ConnectionLength(length) => *length = 0,
                 TlsCapturedExtensionValue::PreSharedKeys { identities, .. } => identities.fill(1),
                 TlsCapturedExtensionValue::EchOuter { payload, .. } => *payload = 0,
@@ -143,7 +176,11 @@ pub(in crate::profile) fn decode_tls_structure(
         bytes: maximum_bytes,
     };
     let capture = TlsCapture::from_canonical(&inner, limits)?;
-    if capture.structural(limits)?.bytes != value.bytes {
+    // Structures stored before trust anchor lists were sorted stay readable;
+    // stored-structure normalization merges them.
+    if capture.structural(limits)?.bytes != value.bytes
+        && capture.structure(limits, false)?.bytes != value.bytes
+    {
         return Err(ProfileDataError::Invalid("noncanonical TLS structure"));
     }
     Ok(capture)

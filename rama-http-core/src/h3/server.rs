@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
     task::Poll,
+    time::Duration,
 };
 
 use rama_core::{
@@ -38,7 +39,7 @@ use tokio::{
 
 use super::{
     Error, PriorityObserver, body,
-    connection::{Config, Driver, Shared, receive::settings::SettingsPrelude},
+    connection::{Config, Driver, MAX_REQUEST_ID, Shared, receive::settings::SettingsPrelude},
     control::Role,
     datagram::{Association, DatagramDrops, Semantics},
     headers,
@@ -50,6 +51,10 @@ use crate::{
     headers::{ResponseLength, is_tunnel_response, set_content_length_if_missing},
     server::conn::timeout::{Activity, ConnTimer, HeadBudget},
 };
+
+/// The least and the most a shutdown notice lasts, whatever the round-trip estimate.
+const MIN_SHUTDOWN_NOTICE: Duration = Duration::from_millis(50);
+const MAX_SHUTDOWN_NOTICE: Duration = Duration::from_secs(1);
 
 /// Accepts request streams; the accompanying driver must run concurrently.
 pub struct Connection<C> {
@@ -246,6 +251,19 @@ impl<C: transport::Connection> Connection<C> {
     #[must_use]
     pub fn datagram_drops(&self) -> DatagramDrops {
         self.shared.datagram_drops()
+    }
+
+    /// Tell the peer to send no further requests, while those it already sent are still
+    /// admitted (RFC 9114 §5.2). Returns how long such a request may take to arrive: keep
+    /// accepting for that long, then call [`Self::shutdown`].
+    pub fn announce_shutdown(&mut self) -> Result<Duration, Error> {
+        if self.draining {
+            return Ok(Duration::ZERO);
+        }
+        self.shared.send_goaway(MAX_REQUEST_ID)?;
+        // One round trip covers the notice and a request that crossed it; the rest is for a loss.
+        let round_trips = self.connection.rtt().saturating_mul(3);
+        Ok(round_trips.clamp(MIN_SHUTDOWN_NOTICE, MAX_SHUTDOWN_NOTICE))
     }
 
     /// Stop admitting requests and notify the peer while accepted streams finish.

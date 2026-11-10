@@ -22,6 +22,7 @@ pub(crate) struct CountedProfileSource {
     after: Option<ValueId>,
     skipped: usize,
     truncated: usize,
+    dropped_stored_scopes: usize,
     dropped_scopes: usize,
     superseded_scopes: usize,
     limited: bool,
@@ -55,6 +56,7 @@ impl CountedProfileSource {
             after: None,
             skipped: 0,
             truncated: 0,
+            dropped_stored_scopes: 0,
             dropped_scopes: 0,
             superseded_scopes: 0,
             limited: false,
@@ -76,6 +78,11 @@ impl CountedProfileSource {
     }
 
     /// Stored scopes left out of truncated profiles.
+    pub(crate) fn dropped_stored_scopes(&self) -> usize {
+        self.dropped_stored_scopes
+    }
+
+    /// Normalized scopes left out of truncated profiles.
     pub(crate) fn dropped_scopes(&self) -> usize {
         self.dropped_scopes
     }
@@ -152,7 +159,8 @@ impl CountedProfileSource {
                     self.superseded_scopes += truncation.superseded_scopes;
                     if truncation.is_truncated() {
                         self.truncated += 1;
-                        self.dropped_scopes += truncation.dropped_stored_scopes;
+                        self.dropped_stored_scopes += truncation.dropped_stored_scopes;
+                        self.dropped_scopes += truncation.dropped_scopes;
                     }
                     return Ok(Some(ProfileArchiveEntry {
                         evidence,

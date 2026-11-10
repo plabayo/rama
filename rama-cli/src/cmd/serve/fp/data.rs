@@ -670,6 +670,7 @@ mod observation_tests {
                     storage: None,
                     storage_auth: None,
                     geo_db: None,
+                    sites: None,
                 },
                 HeaderMap::new(),
                 &ext,

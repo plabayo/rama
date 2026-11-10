@@ -1,6 +1,6 @@
 //! Select the initial request recipe linked by a captured H3 connection.
 
-use super::{SelectedProfile, SelectionError, connection_context_matches, scope_flow_matches};
+use super::{SelectedProfile, SelectionError, connection_context_matches, scope_flow_distance};
 use crate::profile::{
     capture::{
         http3::bootstrap::{H3BootstrapCapture, H3BootstrapLimits},
@@ -87,7 +87,7 @@ impl SelectedProfile {
             .ok_or(SelectionError::MissingProfile)?;
         let present = analysis.scopes.iter().any(|scope| {
             scope.observations.domain == CanonicalDomain::Joint
-                && scope_flow_matches(scope, &self.flow, flow.id)
+                && scope_flow_distance(scope, &self.flow, flow.id).is_some()
                 && connection_context_matches(
                     &scope.context.connection,
                     &selected.effective.context.connection,

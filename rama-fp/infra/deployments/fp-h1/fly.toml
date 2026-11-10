@@ -3,8 +3,8 @@ primary_region = 'fra'
 
 [processes]
 # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
-app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version h1 -s"
-app_insecure = "serve fp --bind 0.0.0.0:8080 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version h1"
+app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 120 --rate 100 --throttle 1048576 -f haproxy --http-version h1 -s --same-site-domain h1.fp.ss.ramaproxy.org --cross-site-domain h1.fp.xss.ramaproxy.com"
+app_insecure = "serve fp --bind 0.0.0.0:8080 -c 2048 -t 120 --rate 100 --throttle 1048576 -f haproxy --http-version h1"
 
 [build]
 image = "glendc/rama:edge"

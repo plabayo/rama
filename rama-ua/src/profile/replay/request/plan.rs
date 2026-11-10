@@ -60,7 +60,7 @@ pub(crate) struct PlannedField {
 }
 
 /// A distinct captured field of a profile.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct FieldEntry {
     pub(crate) name: HeaderName,
     pub(crate) sensitive: bool,
@@ -70,7 +70,7 @@ pub(crate) struct FieldEntry {
     pub(crate) capture_safe: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum PlannedValue {
     Profile(HeaderValue),
     Request(RequestBinding),
@@ -106,20 +106,6 @@ impl FieldTable {
     #[cfg(feature = "embed-profiles")]
     pub(crate) fn entries(&self) -> &[FieldEntry] {
         &self.0
-    }
-
-    /// A planned field that names an entry of this table.
-    #[cfg(feature = "embed-profiles")]
-    pub(crate) fn field(
-        &self,
-        entry: u32,
-        occurrence: u32,
-    ) -> Result<PlannedField, ProfileDataError> {
-        if (entry as usize) < self.0.len() {
-            Ok(PlannedField { entry, occurrence })
-        } else {
-            Err(ProfileDataError::Invalid("compact header field entry"))
-        }
     }
 }
 

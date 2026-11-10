@@ -64,7 +64,12 @@ the H3 origin serves pages over QUIC only. Its TCP port only runs the bootstrap
 and a reload onto HTTP/3, or explains why a browser that stays on TCP was not
 switched. The reload carries a query marker and a short-lived cookie so it
 happens once; the H3 origin strips both before capturing and clears the cookie.
-Unsupported clients are reported explicitly.
+Only a navigation uses up that one reload, and the bootstrap holds each TCP
+connection briefly before its handshake, so a browser that races QUIC against
+TCP for a new connection settles on QUIC. Unsupported clients are reported explicitly.
+
+`GET /disconnect` on any origin drains the connection that carried it, so the
+client's next request opens a new one; the capture harness uses it before a revisit.
 
 Each origin has its own address, and all but the H1 origin a DNS HTTPS record
 advertising only their supported ALPNs (one on the H1 origin would only make

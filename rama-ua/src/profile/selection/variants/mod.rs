@@ -11,7 +11,7 @@ use rama_core::{
     extensions::{Extension, Extensions},
     telemetry::tracing,
 };
-use rama_http::{HeaderMap, Version};
+use rama_http::{HeaderMap, Method, Version};
 use rama_net::client::pool::{ConnectionReuse, ConnectionReusePolicy, PoolPartition, ReuseKey};
 use rama_utils::octets::kib;
 use serde::{Deserialize, Serialize};
@@ -180,6 +180,8 @@ pub struct PreparedRequestProfile {
     /// Replaced only through [`Self::set_capture`], so a cached plan never outlives it.
     pub(crate) capture: VariantValue,
     pub flow: FlowKey,
+    /// How the captured flow relates to [`Self::flow`].
+    pub flow_match: FlowMatch,
     /// Cookie layout evidence from this profile for the negotiated HTTP version.
     pub cookie_layout: CookieLayoutEvidence,
     /// Network quality hint values drawn for this request; they fill the capture's placeholders.
@@ -201,6 +203,24 @@ impl PreparedRequestProfile {
         self.capture = capture;
         self.plan = None;
     }
+}
+
+/// How a replayed capture's flow relates to the requested flow; the
+/// [`ProfileEmulateLayer`](crate::layer::emulate::ProfileEmulateLayer) docs
+/// describe how the closest capture is chosen and replayed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum FlowMatch {
+    /// The capture was recorded for the requested flow.
+    #[default]
+    Exact,
+    /// No capture of the profile covers the requested flow: the closest one of the
+    /// same protocol replays, with the caller's own request context fields.
+    Nearest {
+        /// The capture was recorded for another Fetch mode or destination.
+        other_destination: bool,
+        /// The capture was recorded for another request method.
+        other_method: bool,
+    },
 }
 
 /// Request-owned values cannot show whether a single captured cookie field
@@ -347,7 +367,7 @@ impl UserAgentDatabase {
             latest_versions: request.client.latest_versions,
             capabilities: ProfileCapabilities::default(),
         })?;
-        let mut matching = candidates
+        let captured = candidates
             .iter()
             .map(|candidate| candidate.profile)
             .filter_map(|profile| {
@@ -357,14 +377,20 @@ impl UserAgentDatabase {
                     .map(|analysis| (profile, analysis))
             })
             .collect::<Vec<_>>();
-        if matching.is_empty() {
+        if captured.is_empty() {
             return Err(SelectionError::MissingProfile);
         }
-        matching.retain(|(_profile, analysis)| has_flow(analysis, &request.flow, flow.id));
+        let mut matching = captured
+            .into_iter()
+            .filter_map(|(profile, analysis)| {
+                closest_flow(analysis, &request.flow, flow.id, protocol)
+                    .map(|distance| (profile, analysis, distance))
+            })
+            .collect::<Vec<_>>();
         if matching.is_empty() {
             return Err(SelectionError::MissingFlow);
         }
-        matching.retain(|(profile, _analysis)| {
+        matching.retain(|(profile, _analysis, _distance)| {
             CapabilitySet::from(profile.capabilities()).supports(request.required)
         });
         if matching.is_empty() {
@@ -374,22 +400,36 @@ impl UserAgentDatabase {
         // needs a captured connection for this transport and context.
         if request.pins.connection.is_none() {
             let context = flow_connection_context(&request.flow);
-            matching.retain(|(_profile, analysis)| {
+            matching.retain(|(_profile, analysis, _distance)| {
                 !connection_candidates(analysis, &context, request.required, true).is_empty()
             });
             if matching.is_empty() {
                 return Err(SelectionError::IncompatibleConnectionContext);
             }
         }
-        matching.sort_unstable_by_key(|(_profile, analysis)| analysis.id);
-        let scope = selection_scope(&matching, selection_flow.id, request.required);
+        // Profiles that captured the flow itself win over those that only come close.
+        if let Some(closest) = matching
+            .iter()
+            .map(|(_profile, _analysis, distance)| *distance)
+            .min()
+        {
+            matching.retain(|(_profile, _analysis, distance)| *distance == closest);
+        }
+        matching.sort_unstable_by_key(|(_profile, analysis, _distance)| analysis.id);
+        let scope = selection_scope(
+            matching
+                .iter()
+                .map(|(_profile, analysis, _distance)| analysis.id),
+            selection_flow.id,
+            request.required,
+        );
         let mut draw = ProfileDraw::new(
             seed,
             ProfileDrawContext {
                 profile: scope,
                 analysis_revision: matching
                     .iter()
-                    .map(|(_profile, analysis)| analysis.classifier_revision)
+                    .map(|(_profile, analysis, _distance)| analysis.classifier_revision)
                     .max()
                     .unwrap_or_default(),
                 scope,
@@ -400,10 +440,10 @@ impl UserAgentDatabase {
         );
         let weights = matching
             .iter()
-            .map(|(profile, _analysis)| observation_weight(profile.observation_weight()))
+            .map(|(profile, _analysis, _distance)| observation_weight(profile.observation_weight()))
             .collect::<Result<Vec<_>, _>>()?;
         let selected = draw.weighted_index(&weights)?;
-        let (profile, analysis) = matching
+        let (profile, analysis, _distance) = matching
             .get(selected)
             .copied()
             .ok_or(SelectionError::MissingProfile)?;
@@ -619,13 +659,14 @@ impl SelectedProfile {
             .iter()
             .enumerate()
             .filter(|(index, scope)| {
-                scope_flow_matches(scope, flow, canonical.id)
-                    && connection_context_matches(
-                        &scope.context.connection,
-                        &connection.effective.context.connection,
-                    )
-                    && scope.observations.domain == CanonicalDomain::Joint
-                    && request_scope_supports(analysis, *index, protocol)
+                connection_context_matches(
+                    &scope.context.connection,
+                    &connection.effective.context.connection,
+                ) && request_scope_usable(analysis, *index, protocol)
+            })
+            .filter_map(|(index, scope)| {
+                scope_flow_distance(scope, flow, canonical.id)
+                    .map(|distance| (index, scope, distance))
             })
             .collect::<Vec<_>>();
         // Browsers send fetch metadata only in secure contexts. Over TLS, a request shape
@@ -633,12 +674,12 @@ impl SelectedProfile {
         if (self.required.tls_tcp || self.required.tls_quic)
             && scopes
                 .iter()
-                .any(|(_index, scope)| has_fetch_metadata(scope))
+                .any(|(_index, scope, _distance)| has_fetch_metadata(scope))
         {
-            scopes.retain(|(_index, scope)| has_fetch_metadata(scope));
+            scopes.retain(|(_index, scope, _distance)| has_fetch_metadata(scope));
         }
         if let Some(pin) = self.pins.request {
-            scopes.retain(|(_index, scope)| {
+            scopes.retain(|(_index, scope, _distance)| {
                 scope
                     .observations
                     .variants
@@ -651,6 +692,18 @@ impl SelectedProfile {
         } else if scopes.is_empty() {
             return Err(SelectionError::MissingFlow);
         }
+        let closest = scopes
+            .iter()
+            .map(|(_index, _scope, distance)| *distance)
+            .min()
+            .unwrap_or_default();
+        let flow_match = closest.flow_match();
+        if flow_match != FlowMatch::Exact {
+            tracing::debug!(
+                ?flow_match,
+                "no captured scope covers the requested flow; replaying the closest one"
+            );
+        }
 
         // Capture request-owned fields once; every candidate compares against
         // the same validated caller input.
@@ -661,7 +714,10 @@ impl SelectedProfile {
             None,
         )?;
         let mut candidates = Vec::new();
-        for (index, scope) in scopes {
+        for (index, scope, _distance) in scopes
+            .into_iter()
+            .filter(|(_index, _scope, distance)| *distance == closest)
+        {
             let available: Vec<_> = scope
                 .observations
                 .variants
@@ -796,6 +852,7 @@ impl SelectedProfile {
                 scope: scope.id,
                 capture: variant.value.clone(),
                 flow: flow.clone(),
+                flow_match,
                 cookie_layout: self.request_shapes.cookie_layout(analysis, protocol),
                 network_hints,
                 plan,
@@ -873,11 +930,28 @@ fn protocol_reuse_class(version: Version) -> u8 {
     }
 }
 
-fn has_flow(analysis: &AnalyzedProfile, flow: &FlowKey, canonical: ValueId) -> bool {
+/// Distance of the closest request scope of `analysis` that can replay `flow`.
+fn closest_flow(
+    analysis: &AnalyzedProfile,
+    flow: &FlowKey,
+    canonical: ValueId,
+    protocol: Version,
+) -> Option<FlowDistance> {
     analysis
         .scopes
         .iter()
-        .any(|scope| scope_flow_matches(scope, flow, canonical))
+        .enumerate()
+        .filter(|(index, _scope)| request_scope_usable(analysis, *index, protocol))
+        .filter_map(|(_index, scope)| scope_flow_distance(scope, flow, canonical))
+        .min()
+}
+
+fn request_scope_usable(analysis: &AnalyzedProfile, index: usize, protocol: Version) -> bool {
+    analysis
+        .scopes
+        .get(index)
+        .is_some_and(|scope| scope.observations.domain == CanonicalDomain::Joint)
+        && request_scope_supports(analysis, index, protocol)
 }
 
 /// Connection scopes of `analysis` that can open a connection for `required` in `context`.
@@ -952,18 +1026,45 @@ fn connection_context_matches(left: &ConnectionContext, right: &ConnectionContex
     resumption && early_data && token
 }
 
-fn scope_flow_matches(
+/// How far a captured flow is from the requested one. Fields compare in the order
+/// documented on `ProfileEmulateLayer`, so the derived order ranks candidates;
+/// the default, nothing different, is an exact match.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct FlowDistance {
+    mode: bool,
+    destination: bool,
+    method: bool,
+    user_activation: bool,
+    site: bool,
+    initiator: bool,
+}
+
+impl FlowDistance {
+    fn flow_match(self) -> FlowMatch {
+        if self == Self::default() {
+            FlowMatch::Exact
+        } else {
+            FlowMatch::Nearest {
+                other_destination: self.mode || self.destination,
+                other_method: self.method,
+            }
+        }
+    }
+}
+
+/// `None` when the scope cannot replay the requested flow at all.
+fn scope_flow_distance(
     scope: &AnalyzedProfileScope,
     requested: &FlowKey,
     canonical: ValueId,
-) -> bool {
-    scope.flow.as_ref().map_or_else(
-        || scope.context.flow == Some(canonical),
-        |observed| flow_matches(observed, requested),
-    )
+) -> Option<FlowDistance> {
+    match &scope.flow {
+        Some(observed) => flow_distance(observed, requested),
+        None => (scope.context.flow == Some(canonical)).then(FlowDistance::default),
+    }
 }
 
-fn flow_matches(observed: &FlowKey, requested: &FlowKey) -> bool {
+fn flow_distance(observed: &FlowKey, requested: &FlowKey) -> Option<FlowDistance> {
     match (observed, requested) {
         (
             FlowKey::Http {
@@ -981,11 +1082,34 @@ fn flow_matches(observed: &FlowKey, requested: &FlowKey) -> bool {
                 connection: requested_connection,
             },
         ) => {
-            observed_version == requested_version
-                && observed_method == requested_method
-                && initiator_matches(*observed_initiator, *requested_initiator)
-                && fetch_context_matches(observed_fetch.as_ref(), requested_fetch.as_ref())
-                && connection_context_matches(observed_connection, requested_connection)
+            if observed_version != requested_version
+                || !connection_context_matches(observed_connection, requested_connection)
+                // A tunnel or WebSocket handshake never replays as an ordinary request.
+                || (*observed_method == Method::CONNECT) != (*requested_method == Method::CONNECT)
+                || is_websocket(*observed_initiator, observed_fetch.as_ref())
+                    != is_websocket(*requested_initiator, requested_fetch.as_ref())
+            {
+                return None;
+            }
+            // Without Fetch metadata the caller leaves the request context to the capture.
+            let differs = |field: fn(&FetchContext) -> Option<&str>| {
+                requested_fetch.as_ref().is_some_and(|requested| {
+                    observed_fetch.as_ref().and_then(field) != field(requested)
+                })
+            };
+            Some(FlowDistance {
+                mode: differs(|fetch| fetch.mode.as_deref()),
+                destination: differs(|fetch| fetch.destination.as_deref()),
+                method: observed_method != requested_method,
+                user_activation: differs(|fetch| fetch.user_activation.as_deref()),
+                site: differs(|fetch| fetch.site.as_deref()),
+                initiator: !initiator_matches(
+                    *observed_initiator,
+                    observed_fetch.as_ref(),
+                    *requested_initiator,
+                    requested_fetch.is_some(),
+                ),
+            })
         }
         (
             FlowKey::Other {
@@ -996,39 +1120,41 @@ fn flow_matches(observed: &FlowKey, requested: &FlowKey) -> bool {
                 protocol: requested_protocol,
                 operation: requested_operation,
             },
-        ) => observed_protocol == requested_protocol && observed_operation == requested_operation,
-        _ => false,
+        ) => (observed_protocol == requested_protocol && observed_operation == requested_operation)
+            .then(FlowDistance::default),
+        _ => None,
     }
 }
 
+fn is_websocket(initiator: Option<RequestInitiator>, fetch: Option<&FetchContext>) -> bool {
+    initiator == Some(RequestInitiator::Ws)
+        || fetch.is_some_and(|fetch| fetch.mode.as_deref() == Some("websocket"))
+}
+
+/// A request without an initiator is described by its Fetch metadata, or else
+/// assumed to be a top-level navigation.
 fn initiator_matches(
     observed: Option<RequestInitiator>,
+    observed_fetch: Option<&FetchContext>,
     requested: Option<RequestInitiator>,
+    requested_fetch: bool,
 ) -> bool {
-    match requested {
-        Some(requested) => observed == Some(requested),
-        None => observed.is_none_or(|observed| observed == RequestInitiator::Navigate),
+    match (requested, observed) {
+        (Some(requested), observed) => observed == Some(requested),
+        // Fetch metadata cannot tell a link from a GET form, nor fetch from XHR.
+        (None, _) if requested_fetch => true,
+        (None, observed) => {
+            observed.is_none_or(|observed| observed == RequestInitiator::Navigate)
+                && observed_fetch.is_none_or(|fetch| {
+                    fetch.mode.as_deref() == Some("navigate")
+                        && fetch.destination.as_deref() == Some("document")
+                })
+        }
     }
 }
 
 fn has_fetch_metadata(scope: &AnalyzedProfileScope) -> bool {
     matches!(scope.flow, Some(FlowKey::Http { fetch: Some(_), .. }))
-}
-
-fn fetch_context_matches(
-    observed: Option<&FetchContext>,
-    requested: Option<&FetchContext>,
-) -> bool {
-    match (observed, requested) {
-        (Some(observed), Some(requested)) => {
-            observed.mode == requested.mode
-                && observed.site == requested.site
-                && observed.destination == requested.destination
-                && observed.user_activation == requested.user_activation
-        }
-        (_, None) => true,
-        (None, Some(_)) => false,
-    }
 }
 
 fn selection_flow(flow: &FlowKey) -> Result<CanonicalValue, ProfileDataError> {
@@ -1079,7 +1205,7 @@ fn contains(scopes: Option<&[usize]>, index: usize) -> bool {
 }
 
 fn selection_scope(
-    candidates: &[(&UserAgentProfile, &Arc<AnalyzedProfile>)],
+    candidates: impl Iterator<Item = ValueId>,
     flow: ValueId,
     required: CapabilitySet,
 ) -> ValueId {
@@ -1087,8 +1213,8 @@ fn selection_scope(
     digest.update(SELECTION_PREFIX);
     digest.update(flow.0);
     digest.update(required.bytes());
-    for (_profile, analysis) in candidates {
-        digest.update(analysis.id.0);
+    for candidate in candidates {
+        digest.update(candidate.0);
     }
     ValueId(digest.finalize().into())
 }

@@ -279,9 +279,10 @@ pub(crate) async fn export_counted_profiles(
     if source.truncated() > 0 {
         writeln!(
             io::stderr(),
-            "Profile export: {} profiles kept only the scopes seen in the most runs and days; {} stored scopes left out.",
+            "Profile export: {} profiles over their scope bound kept every flow, then the scopes seen in the most runs and days; {} scopes ({} stored) left out.",
             source.truncated(),
             source.dropped_scopes(),
+            source.dropped_stored_scopes(),
         )?;
     }
     if source.superseded_scopes() > 0 {

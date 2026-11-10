@@ -4,6 +4,7 @@
 use std::{
     convert::Infallible,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 use rama::{
@@ -14,7 +15,7 @@ use rama::{
     http::{
         HeaderMap, HeaderValue, Request, Response, StatusCode,
         header::{COOKIE, REFRESH, SET_COOKIE},
-        headers::{AltSvc, CacheControl, Connection, Cookie, HeaderMapExt as _},
+        headers::{AltSvc, CacheControl, Connection, Cookie, HeaderMapExt as _, SecFetchMode},
         proto::h3::observation::{
             H3ObservationSnapshot, H3RequestObservation, InsertionFieldMatch,
         },
@@ -22,7 +23,7 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
-    layer::ConsumeErrLayer,
+    layer::{ConsumeErrLayer, layer_fn},
     net::{address::SocketAddress, tls::ApplicationProtocol, uri::Uri},
     tcp::server::TcpListener,
     telemetry::tracing,
@@ -38,6 +39,9 @@ const COOKIE_NAME: &str = "rama-h3-bootstrap";
 const MARKER: &str = "h3-bootstrap";
 const COOKIE_SET: &str = "rama-h3-bootstrap=1; Max-Age=60; Path=/; Secure; HttpOnly; SameSite=Lax";
 const COOKIE_CLEAR: &str = "rama-h3-bootstrap=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax";
+/// How long a TCP connection waits for its handshake: a browser that races QUIC against TCP
+/// for a new connection then settles on QUIC, and the door only serves those that cannot.
+const QUIC_HEAD_START: Duration = Duration::from_millis(300);
 
 /// Answers every TCP request by advertising `alt_svc` and asking the browser to come back.
 #[derive(Debug, Clone)]
@@ -56,6 +60,11 @@ impl Http3Bootstrap {
             .typed_get::<Cookie>()
             .is_some_and(|cookie| cookie.get(COOKIE_NAME).is_some())
             || request.uri().contains_query_name(MARKER);
+        // Only a navigation follows the reload, so a subresource leaves the one retry alone.
+        let navigation = request
+            .headers()
+            .typed_get::<SecFetchMode>()
+            .is_none_or(|mode| mode == SecFetchMode::Navigate);
         let reload = reload_target(request.uri());
         let mut response = if retried {
             page(
@@ -81,11 +90,12 @@ impl Http3Bootstrap {
         headers.typed_insert(CacheControl::new().with_no_store());
         // The reload must open a new connection, the first one Alt-Svc can apply to.
         headers.typed_insert(Connection::close());
-        if retried {
-            headers.insert(SET_COOKIE, HeaderValue::from_static(COOKIE_CLEAR));
-        } else {
+        if !retried {
             headers.insert(REFRESH, reload);
-            headers.insert(SET_COOKIE, HeaderValue::from_static(COOKIE_SET));
+        }
+        if navigation {
+            let cookie = if retried { COOKIE_CLEAR } else { COOKIE_SET };
+            headers.insert(SET_COOKIE, HeaderValue::from_static(cookie));
         }
         response
     }
@@ -267,6 +277,24 @@ impl Service<Request> for Http3Bootstrap {
     }
 }
 
+/// Holds a connection for [`QUIC_HEAD_START`] before the inner service sees it.
+#[derive(Debug, Clone)]
+struct QuicHeadStart<S>(S);
+
+impl<S, Input> Service<Input> for QuicHeadStart<S>
+where
+    S: Service<Input>,
+    Input: Send + 'static,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        tokio::time::sleep(QUIC_HEAD_START).await;
+        self.0.serve(input).await
+    }
+}
+
 fn page(
     heading: &'static str,
     notice: impl IntoHtml,
@@ -320,6 +348,7 @@ pub(crate) async fn serve(
     );
     let service = (
         ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+        layer_fn(QuicHeadStart),
         // Only HTTP/1.1 can close the connection the reload must not reuse.
         TlsAcceptorLayer::new(tls.with_alpn([ApplicationProtocol::HTTP_11].into_iter().collect())),
     )
@@ -330,14 +359,18 @@ pub(crate) async fn serve(
 
 #[cfg(test)]
 mod tests {
-    use rama::http::{
-        Body,
-        header::CONNECTION,
-        proto::h3::observation::{
-            FieldRepresentation, ObservedEncoderBindings, ObservedFieldRepresentation,
-            ObservedInsertionBinding,
+    use rama::{
+        http::{
+            Body,
+            header::{CONNECTION, SEC_FETCH_MODE},
+            proto::h3::observation::{
+                FieldRepresentation, ObservedEncoderBindings, ObservedFieldRepresentation,
+                ObservedInsertionBinding,
+            },
         },
+        service::service_fn,
     };
+    use tokio::time::Instant;
 
     use super::*;
 
@@ -503,5 +536,37 @@ mod tests {
         assert!(headers.get(REFRESH).is_none());
         assert_eq!(headers.get(SET_COOKIE).unwrap(), COOKIE_CLEAR);
         assert!(headers.typed_get::<AltSvc>().is_some());
+    }
+
+    #[test]
+    fn a_subresource_leaves_the_retry_to_the_navigation() {
+        let mut subresource = Request::new(Body::empty());
+        subresource
+            .headers_mut()
+            .insert(SEC_FETCH_MODE, HeaderValue::from_static("no-cors"));
+        let response = bootstrap().respond(&subresource);
+        assert!(response.headers().get(SET_COOKIE).is_none());
+        assert!(response.headers().typed_get::<AltSvc>().is_some());
+
+        subresource
+            .headers_mut()
+            .insert(COOKIE, HeaderValue::from_static("rama-h3-bootstrap=1"));
+        let response = bootstrap().respond(&subresource);
+        assert!(response.headers().get(SET_COOKIE).is_none());
+
+        let mut navigation = Request::new(Body::empty());
+        navigation
+            .headers_mut()
+            .insert(SEC_FETCH_MODE, HeaderValue::from_static("navigate"));
+        let response = bootstrap().respond(&navigation);
+        assert_eq!(response.headers().get(SET_COOKIE).unwrap(), COOKIE_SET);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_is_held_before_it_is_served() {
+        let accepted = Instant::now();
+        let door = QuicHeadStart(service_fn(async |()| Ok::<_, Infallible>(Instant::now())));
+        let served = door.serve(()).await.unwrap();
+        assert!(served.duration_since(accepted) >= QUIC_HEAD_START);
     }
 }

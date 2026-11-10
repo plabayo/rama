@@ -53,13 +53,52 @@ const MAXIMUM_FETCH_CONTEXT_BYTES: usize = kib(16);
 
 /// Select a captured profile and publish its immutable emulation context.
 ///
-/// Requests without an explicit [`RequestInitiator`] select a top-level
-/// navigation flow. Missing `Sec-Fetch-*` headers do not constrain selection;
-/// the chosen captured navigation supplies its profile-owned Fetch metadata.
-///
 /// The selected identity follows the configured [`ProfileSelector`], completed by a
 /// [`UserAgent`] request extension or, with auto-detection, the request's own
-/// `User-Agent` header.
+/// `User-Agent` header. When no profile of that identity can emulate the request,
+/// [`ProfileSelectFallback`] decides whether a looser identity is tried.
+///
+/// # Request flow
+///
+/// A profile holds the requests it captured per flow: the HTTP version, the method,
+/// the [`RequestInitiator`] and the `Sec-Fetch-Mode`, `Sec-Fetch-Dest`,
+/// `Sec-Fetch-User` and `Sec-Fetch-Site` values. A request without an initiator is
+/// described by its Fetch metadata, so a capture with the same method and Fetch
+/// metadata is its flow whatever initiated it; without either it is a top-level
+/// navigation. A request without `Sec-Fetch-*` headers takes the capture's.
+///
+/// A capture of the request's own flow replays when the identity has one, and
+/// profiles holding one win over profiles that do not. Otherwise the closest capture
+/// replays. It always shares the request's HTTP version and connection context, and
+/// a WebSocket handshake or CONNECT tunnel only stands in for another one. Among
+/// the rest, a capture that differs in a less significant field is closer; from
+/// most to least significant:
+///
+/// 1. `Sec-Fetch-Mode`
+/// 2. `Sec-Fetch-Dest`
+/// 3. the method
+/// 4. `Sec-Fetch-User`
+/// 5. `Sec-Fetch-Site`
+/// 6. the initiator
+///
+/// A [`RequestInitiator::Navigate`] link navigation thus replays a form submission
+/// with the same Fetch metadata, and a stylesheet replays a navigation when no stylesheet was captured. Identity
+/// fallback only applies when the identity has no capture to stand in at all, such
+/// as none for the request's HTTP version.
+///
+/// A closest capture replays with the caller's own request context, as those fields
+/// describe the request rather than the browser. The caller's `Sec-Fetch-*` fields
+/// replace the captured ones, and so do its `Accept`, `Priority` and
+/// `Upgrade-Insecure-Requests` when the Fetch mode or destination differ. A kept
+/// field takes the captured field's position, one the capture lacks is appended
+/// after the captured fields, and a captured one the caller did not send is omitted. A caller without
+/// Fetch metadata keeps the capture's. An HTTP/3 `:method` captured for another
+/// method is encoded natively, and a connection's first HTTP/3 request drops the
+/// captured initial QPACK insertions. Such a request lists
+/// [`LoweredProfileItem::NearestFlow`] in its [`ProfilePreservationReport`], and its
+/// [`RequestSelection`] records the [`FlowMatch`].
+///
+/// # Caller identity
 ///
 /// A request keeps parts of its own identity with the [`PreserveHeaderUserAgent`]
 /// and [`PreserveClientHints`] extensions, or a [`UserAgent`] extension whose HTTP
@@ -68,6 +107,8 @@ const MAXIMUM_FETCH_CONTEXT_BYTES: usize = kib(16);
 ///
 /// [`PreserveHeaderUserAgent`]: super::PreserveHeaderUserAgent
 /// [`PreserveClientHints`]: super::PreserveClientHints
+/// [`RequestSelection`]: crate::profile::selection::variants::RequestSelection
+/// [`FlowMatch`]: crate::profile::selection::variants::FlowMatch
 #[derive(Debug, Clone)]
 pub struct ProfileEmulateLayer<P = Arc<UserAgentDatabase>> {
     source: P,

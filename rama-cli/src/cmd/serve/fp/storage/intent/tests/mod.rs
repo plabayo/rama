@@ -93,6 +93,7 @@ fn request(path: &str) -> Request<()> {
 fn only_explicit_report_and_api_flows_prepare_observations() {
     for (method, path, expected) in [
         (Method::GET, "/report", true),
+        (Method::GET, "/landing?rama-fp-site=token", true),
         (Method::GET, "/report?h3_probe=1", false),
         (Method::GET, "/report?other=1&h3_probe", false),
         (Method::GET, "/report?other=h3_probe", true),
@@ -239,6 +240,114 @@ async fn ineligible_routes_never_reserve_even_when_queue_is_full() {
     drop(reservation);
 }
 
+fn subresource_request(path: &str, destination: &'static str) -> Request<()> {
+    let mut request = request(path);
+    for (name, value) in [
+        ("sec-fetch-site", "same-origin"),
+        ("sec-fetch-mode", "no-cors"),
+        ("sec-fetch-dest", destination),
+    ] {
+        request
+            .headers_mut()
+            .insert(name, HeaderValue::from_static(value));
+    }
+    request
+}
+
+#[test]
+fn embedded_frames_and_api_preflights_are_subresources() {
+    let cases: [(Method, &str, &[(&str, &'static str)], bool); 6] = [
+        (Method::GET, "/frame", &[("sec-fetch-dest", "iframe")], true),
+        (
+            Method::GET,
+            "/frame",
+            &[("sec-fetch-dest", "document")],
+            false,
+        ),
+        (
+            Method::OPTIONS,
+            "/api/fetch/number/1",
+            &[
+                ("sec-fetch-mode", "cors"),
+                ("access-control-request-method", "POST"),
+            ],
+            true,
+        ),
+        (
+            Method::OPTIONS,
+            "/api/xml/number/1",
+            &[
+                ("sec-fetch-mode", "cors"),
+                ("access-control-request-method", "POST"),
+            ],
+            true,
+        ),
+        (
+            Method::OPTIONS,
+            "/api/fetch/number/1",
+            &[("sec-fetch-mode", "cors")],
+            false,
+        ),
+        (
+            Method::OPTIONS,
+            "/report",
+            &[
+                ("sec-fetch-mode", "cors"),
+                ("access-control-request-method", "POST"),
+            ],
+            false,
+        ),
+    ];
+    for (method, path, fields, expected) in cases {
+        let mut headers = HeaderMap::new();
+        for (name, value) in fields {
+            headers.insert(*name, HeaderValue::from_static(value));
+        }
+        assert_eq!(
+            is_subresource(&method, &Uri::parse(path).unwrap(), &headers),
+            expected,
+            "{method} {path} {fields:?}"
+        );
+    }
+}
+
+#[test]
+fn only_page_assets_with_fetch_metadata_are_subresources() {
+    for (method, path, destination, expected) in [
+        (Method::GET, "/assets/style.css", Some("style"), true),
+        (Method::GET, "/assets/script.js", Some("script"), true),
+        (Method::GET, "/assets/llama.svg", Some("image"), true),
+        (Method::GET, "/assets/style.css", None, false),
+        (Method::GET, "/assets/style.css", Some("document"), false),
+        (
+            Method::GET,
+            "/assets/style.css?h3_probe=1",
+            Some("style"),
+            false,
+        ),
+        (Method::POST, "/assets/style.css", Some("style"), false),
+        (Method::GET, "/report", Some("style"), false),
+    ] {
+        let mut headers = HeaderMap::new();
+        if let Some(destination) = destination {
+            headers.insert("sec-fetch-dest", HeaderValue::from_static(destination));
+        }
+        assert_eq!(
+            is_subresource(&method, &Uri::parse(path).unwrap(), &headers),
+            expected,
+            "{method} {path} {destination:?}"
+        );
+    }
+    let mut prefetch = HeaderMap::new();
+    prefetch.insert("sec-fetch-dest", HeaderValue::from_static("style"));
+    prefetch.insert("sec-purpose", HeaderValue::from_static("prefetch"));
+    assert!(!is_subresource(
+        &Method::GET,
+        &Uri::parse("/assets/style.css").unwrap(),
+        &prefetch
+    ));
+}
+
 #[derive(Clone)]
 struct MemorySink(Arc<Mutex<Vec<(IngestionAttempt, ProfileCapture)>>>);
 impl CollectionSink for MemorySink {
@@ -258,11 +367,60 @@ impl CollectionSink for MemorySink {
 }
 
 #[tokio::test]
+async fn answered_subresources_are_submitted_with_their_fetch_metadata() {
+    let (queue, receiver) = queue(2);
+    let service =
+        CaptureLayer::new(queue.clone()).into_layer(service_fn(|request: Request<()>| async {
+            Ok::<_, Infallible>(request)
+        }));
+    let connection = Extensions::new();
+    connection.insert(CollectionLease::default());
+    let input = subresource_request("/assets/style.css", "style");
+    input.extensions().insert(Ingress(connection));
+    let output = service.serve(input).await.unwrap();
+    let intent = output.extensions().get_ref::<CaptureIntent>().unwrap();
+    assert!(intent.0.lock().is_none(), "submitted once answered");
+    let records = Arc::new(Mutex::new(Vec::new()));
+    worker::run(
+        receiver,
+        MemorySink(records.clone()),
+        store_limits(),
+        QueueConfig {
+            capacity: 2,
+            ..QueueConfig::default()
+        },
+        async {},
+        current_day,
+        || Ok([1; 12]),
+    )
+    .await
+    .unwrap();
+    let records = records.lock();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].1.joint.level, CaptureLevel::Connection);
+    let Some(FlowKey::Http {
+        method,
+        initiator,
+        fetch: Some(fetch),
+        ..
+    }) = &records[1].1.flow
+    else {
+        panic!("subresource flow: {:?}", records[1].1.flow);
+    };
+    assert_eq!(*method, Method::GET);
+    assert_eq!(*initiator, None);
+    assert_eq!(fetch.mode.as_deref(), Some("no-cors"));
+    assert_eq!(fetch.destination.as_deref(), Some("style"));
+    assert_eq!(queue.counts().confirmed, 2);
+}
+
+#[tokio::test]
 async fn real_auth_layer_runs_after_safe_capture_and_each_intent_submits_once() {
     let (queue, receiver) = queue(2);
     let service = CaptureLayer::new(queue.clone()).into_layer(
         StorageAuthLayer {
             storage_auth: Some("private-canary".to_owned()),
+            site_tokens: None,
         }
         .into_layer(service_fn(|request: Request<()>| async {
             Ok::<_, Infallible>(request)
@@ -671,12 +829,14 @@ async fn metadata_without_an_admitted_intent_never_prepares_or_reserves() {
 async fn wire_reports(version: Version) -> (CollectionQueue, CollectionReceiver) {
     let (queue, receiver) = queue(8);
     let service = CaptureLayer::new(queue.clone()).into_layer(
-        StorageAuthLayer { storage_auth: None }.into_layer(service_fn(
-            |request: Request| async move {
-                submit(request.extensions(), None);
-                Ok::<_, Infallible>(Response::new(Body::empty()))
-            },
-        )),
+        StorageAuthLayer {
+            storage_auth: None,
+            site_tokens: None,
+        }
+        .into_layer(service_fn(|request: Request| async move {
+            submit(request.extensions(), None);
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        })),
     );
     let mut http = HttpServer::auto(WeakScope::detached());
     http.h2_mut().set_observe_early_frames(true);
@@ -808,9 +968,14 @@ async fn h3_wire_reports() -> (CollectionQueue, CollectionReceiver) {
         }),
         storage_auth: None,
         geo_db: None,
+        sites: None,
     });
     let service = CaptureLayer::new(queue.clone()).into_layer(
-        StorageAuthLayer { storage_auth: None }.into_layer(service_fn(move |request: Request| {
+        StorageAuthLayer {
+            storage_auth: None,
+            site_tokens: None,
+        }
+        .into_layer(service_fn(move |request: Request| {
             let state = state.clone();
             async move {
                 data::get_http_info_and_capture(
@@ -1079,6 +1244,7 @@ async fn storage_auth_rejects_empty_or_incorrect_cookies() {
     ] {
         let service = StorageAuthLayer {
             storage_auth: configured.map(str::to_owned),
+            site_tokens: None,
         }
         .into_layer(service_fn(|request: Request<()>| async {
             Ok::<_, Infallible>(request)

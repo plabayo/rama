@@ -105,7 +105,7 @@ def snapshot_container_logs(checkout, env, artifacts, console):
     return errors
 
 
-def compose_override(project, platform, simulator):
+def compose_override(project, platform, simulator, rama_role=None):
     services = {name: {"container_name": f"{project}-{name}", "platform": platform}
                 for name in ("sim", "client", "server", "iperf_client", "iperf_server")}
     services["sim"].update({
@@ -117,6 +117,9 @@ def compose_override(project, platform, simulator):
     # despite `up --timeout 10`; allow endpoints and packet capture processes to drain explicitly.
     for role in ("sim", "client", "server"):
         services[role]["stop_grace_period"] = "10s"
+    # The pinned peers ignore SIGTERM, so their full grace only shortens the case deadline.
+    if rama_role is not None:
+        services["server" if rama_role == "client" else "client"]["stop_grace_period"] = "1s"
     if "RUST_LOG" in os.environ:
         for role in ("client", "server"):
             services[role]["environment"] = {"RUST_LOG": os.environ["RUST_LOG"]}
@@ -328,12 +331,15 @@ def main():
                                ("quic-go", lock["peers"]["quic-go"], "quic-go/quic-go"),
                                ("ngtcp2", lock["peers"]["ngtcp2"], "ngtcp2/ngtcp2")]}
         (checkout / "implementations_quic.json").write_text(json.dumps(implementations, indent=2) + "\n")
-        override = compose_override(project, args.platform, lock["simulator"])
-        compose_path = artifacts / "compose.override.json"
-        compose_path.write_text(json.dumps(override, indent=2) + "\n")
-        env["COMPOSE_FILE"] = os.pathsep.join(map(str, [
-            checkout / "docker-compose.yml", compose_path, HERE / "compose.startup.yaml",
-        ]))
+        def compose_files(name, rama_role=None):
+            path = artifacts / name
+            override = compose_override(project, args.platform, lock["simulator"], rama_role)
+            path.write_text(json.dumps(override, indent=2) + "\n")
+            return os.pathsep.join(map(str, [
+                checkout / "docker-compose.yml", path, HERE / "compose.startup.yaml",
+            ]))
+
+        env["COMPOSE_FILE"] = compose_files("compose.override.json")
         # Avoid empty variables breaking Compose during final cleanup.
         for name in ("CLIENT_WWW", "CLIENT_DOWNLOADS", "SERVER_WWW", "SERVER_DOWNLOADS", "CERTS"):
             env[name] = str(artifacts)
@@ -365,7 +371,8 @@ def main():
             result = {"timeout_seconds": role_timeout(role_cases, len(lock["peers"]))}
             manifest["roles"][role] = result
             completion = artifacts / f"runner-completion-rama-{role}.json"
-            role_env = {**env, "RAMA_RUNNER_COMPLETION": str(completion)}
+            role_env = {**env, "RAMA_RUNNER_COMPLETION": str(completion),
+                        "COMPOSE_FILE": compose_files(f"compose.override-rama-{role}.json", role)}
             with (artifacts / f"rama-{role}.log").open("w") as console:
                 status = run_managed(command, timeout=result["timeout_seconds"], cwd=checkout, env=role_env,
                                      stdout=console, stderr=subprocess.STDOUT)

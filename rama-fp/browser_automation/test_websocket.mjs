@@ -137,6 +137,7 @@ test("the load-owned Promise exposes one completed journey without duplicate wor
     document: { querySelector() { return null; }, getElementById() { return input; } },
     performance: { getEntriesByType() { return [{ nextHopProtocol: "h3" }]; } },
     crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    setTimeout() { return 1; }, clearTimeout() {},
     URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
   });
   vm.runInContext(source, context);
@@ -177,9 +178,15 @@ test("Alt-Svc discovery reloads only a non-H3 secure navigation once", async () 
         const context = vm.createContext({
           window: { addEventListener() {} },
           location: { protocol: scheme, host: "fixture.invalid", href, replace(url) { redirects.push(url); } },
-          document: { querySelector() { return { content: "enabled" }; }, getElementById() { return {}; } },
+          document: {
+            querySelector(selector) {
+              return selector === 'meta[name="rama-h3-probe"]' ? { content: "enabled" } : null;
+            },
+            getElementById() { return {}; },
+          },
           performance: { getEntriesByType() { return [{ nextHopProtocol: protocol }]; } },
           crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+          setTimeout() { return 1; }, clearTimeout() {},
           URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
         });
         vm.runInContext(source, context);
@@ -194,4 +201,245 @@ test("Alt-Svc discovery reloads only a non-H3 secure navigation once", async () 
       }
     }
   }
+});
+
+test("site probes follow the page's own flows and report each site flow", async () => {
+  const sites = [
+    { site: "same-site", origin: "https://ss.fixture.invalid", token: "tok-ss" },
+    { site: "cross-site", origin: "https://xss.fixture.example", token: "tok-xss" },
+  ];
+  const calls = [];
+  const reports = [];
+  const input = { hidden: true, innerHTML: "" };
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+    location: { protocol: "https:", host: "fixture.invalid", href: "https://fixture.invalid/report" },
+    document: {
+      querySelector(selector) {
+        if (selector === 'meta[name="rama-fp-sites"]') return { content: JSON.stringify(sites) };
+        return null;
+      },
+      getElementById() { return input; },
+      createElement() { return {}; },
+      head: { append() {} },
+      body: { append() {} },
+    },
+    performance: { getEntriesByType() { return [{ nextHopProtocol: "h2" }]; } },
+    crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    Image: class {},
+    setTimeout() { return 1; }, clearTimeout() {},
+    URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
+  });
+  vm.runInContext(source, context);
+  context.showProtocol = (...args) => reports.push(args);
+  const version = (url) => JSON.stringify({ fp: { request_info: { version: "HTTP/2.0" } } });
+  context.makePostRequest = async (url) => { calls.push(["fetch", url]); return { text: async () => version(url) }; };
+  context.makeRequestWithXHR = async (url) => { calls.push(["xhr", url]); return version(url); };
+  context.connectWebSocket = async (probe, url) => {
+    calls.push(["ws", url]);
+    if (url && url.includes("xss")) throw new Error("refused");
+    return { probe, greeting: { initiator: "ws", version: "HTTP/2.0" } };
+  };
+  context.loadSubresource = async (_element, _attribute, url) => {
+    calls.push(["load", url]);
+    return "h2";
+  };
+  context.loadFrame = async (_site, url) => {
+    calls.push(["frame", url]);
+    return "HTTP/2.0";
+  };
+  // Objects from the page's realm have their own prototypes.
+  const result = JSON.parse(JSON.stringify(await context.main()));
+  assert.match(input.innerHTML, /<form method="POST"/);
+  assert.deepEqual(Object.keys(result.sites), ["same-site", "cross-site"]);
+  for (const [site, { origin, token }] of [["same-site", sites[0]], ["cross-site", sites[1]]]) {
+    const flows = result.sites[site];
+    assert.deepEqual(
+      Object.keys(flows), ["image", "style", "script", "frame", "fetch", "xhr", "ws"],
+    );
+    const urls = calls.map(([, url]) => url).filter((url) => url && url.includes(new URL(origin).host));
+    assert.equal(urls.length, 7, site);
+    for (const url of urls) {
+      assert.equal(new URL(url).searchParams.get("rama-fp-site"), token);
+    }
+    assert.ok(urls.some((url) => url.startsWith("wss://")), site);
+  }
+  assert.deepEqual(result.sites["same-site"].ws, { protocol: "HTTP/2.0" });
+  assert.deepEqual(result.sites["cross-site"].ws, { error: "refused" });
+  assert.deepEqual(result.sites["cross-site"].image, { protocol: "h2" });
+  assert.deepEqual(result.sites["cross-site"].frame, { protocol: "HTTP/2.0" });
+  assert.ok(reports.some(([flow, protocol]) => flow === "WebSocket (cross-site)" && protocol === "unavailable"));
+});
+
+test("an invalid site configuration never breaks the page's own journey", async () => {
+  const reports = [];
+  const input = { hidden: true, innerHTML: "" };
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+    location: { protocol: "https:", host: "fixture.invalid", href: "https://fixture.invalid/report" },
+    document: {
+      querySelector(selector) {
+        return selector === 'meta[name="rama-fp-sites"]' ? { content: "{not json" } : null;
+      },
+      getElementById() { return input; },
+    },
+    performance: { getEntriesByType() { return [{ nextHopProtocol: "h2" }]; } },
+    crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    setTimeout() { return 1; }, clearTimeout() {},
+    URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
+  });
+  vm.runInContext(source, context);
+  context.showProtocol = (...args) => reports.push(args);
+  context.makePostRequest = async () => ({ text: async () => '{"fp":{"request_info":{"version":"HTTP/2.0"}}}' });
+  context.makeRequestWithXHR = async () => '{"fp":{"request_info":{"version":"HTTP/2.0"}}}';
+  context.connectWebSocket = async (probe) => ({ probe, greeting: {} });
+  // Objects from the page's realm have their own prototypes.
+  const result = JSON.parse(JSON.stringify(await context.main()));
+  assert.deepEqual(result.sites, {});
+  assert.match(input.innerHTML, /<form method="POST"/);
+  assert.ok(reports.some(([flow, protocol]) => flow === "Sites" && protocol === "unavailable"));
+});
+
+test("a stalled site host holds neither the form nor the flow past the site budget", async () => {
+  const input = { hidden: true, innerHTML: "" };
+  const sites = [
+    { site: "same-site", origin: "https://ss.fixture.invalid", token: "tok-ss" },
+    { site: "cross-site", origin: "https://xss.fixture.example", token: "tok-xss" },
+  ];
+  const timers = new Map();
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+    location: { protocol: "https:", host: "fixture.invalid", href: "https://fixture.invalid/report" },
+    document: {
+      querySelector(selector) {
+        return selector === 'meta[name="rama-fp-sites"]' ? { content: JSON.stringify(sites) } : null;
+      },
+      getElementById() { return input; },
+      createElement() { return {}; },
+      head: { append() {} },
+    },
+    performance: { getEntriesByType() { return [{ nextHopProtocol: "h2" }]; } },
+    crypto: { getRandomValues(bytes) { return bytes.fill(7); } },
+    Image: class {},
+    setTimeout(callback, ms) { timers.set(ms, callback); return ms; },
+    clearTimeout(id) { timers.delete(id); },
+    URL, Uint8Array, console: { log() {}, warn() {}, error() {} },
+  });
+  vm.runInContext(source, context);
+  context.showProtocol = () => {};
+  const page = '{"fp":{"request_info":{"version":"HTTP/2.0"}}}';
+  context.makePostRequest = async () => ({ text: async () => page });
+  context.makeRequestWithXHR = async () => page;
+  context.connectWebSocket = async (probe) => ({ probe, greeting: { version: "HTTP/2.0" } });
+  context.loadFrame = async () => "HTTP/2.0";
+  const loads = [];
+  context.loadSubresource = (_element, _attribute, url) => {
+    loads.push(url);
+    return url.includes("xss") ? new Promise(() => {}) : Promise.resolve("h2");
+  };
+  let result;
+  context.main().then((value) => { result = value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(input.innerHTML, /<form method="POST"/);
+  assert.equal(input.hidden, false);
+  assert.equal(result, undefined);
+
+  // The healthy site completes while the stalled one waits on its first flow.
+  assert.equal(timers.size, 1);
+  const [expire] = timers.values();
+  expire();
+  await new Promise((resolve) => setImmediate(resolve));
+  const { sites: probed } = JSON.parse(JSON.stringify(result));
+  for (const flow of ["image", "style", "script", "frame", "fetch", "xhr", "ws"]) {
+    assert.ok(probed["same-site"][flow].protocol, flow);
+    assert.deepEqual(probed["cross-site"][flow], { error: "site probe budget exhausted" }, flow);
+  }
+  // Flows after the deadline never start.
+  assert.equal(loads.filter((url) => url.includes("xss")).length, 1);
+});
+
+test("a stalled host cannot hold fetch or XHR past their deadlines", async () => {
+  const timers = [];
+  let xhr;
+  const context = vm.createContext({
+    window: { addEventListener() {} },
+    setTimeout(callback) { timers.push(callback); return timers.length; },
+    clearTimeout(id) { timers[id - 1] = null; },
+    AbortController,
+    fetch(_url, { signal }) {
+      return new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    },
+    XMLHttpRequest: class {
+      constructor() { xhr = this; }
+      open() {}
+      setRequestHeader() {}
+      send() {}
+    },
+    console: { log() {}, warn() {}, error() {} },
+  });
+  vm.runInContext(source, context);
+
+  let fetched;
+  context.fetchWithBackoff("https://stalled.invalid/api", {}).then(
+    () => { fetched = "resolved"; },
+    (error) => { fetched = error.message; },
+  );
+  // Each attempt's deadline aborts it; the backoff delay then starts the next one.
+  for (let step = 0; step < 20 && fetched === undefined; step += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    const next = timers.findIndex(Boolean);
+    if (next === -1) continue;
+    const fire = timers[next];
+    timers[next] = null;
+    fire();
+  }
+  assert.equal(fetched, "Max retries exceeded");
+
+  const sending = context.makeRequestWithXHR("https://stalled.invalid/api", "POST", 1);
+  xhr.ontimeout();
+  await assert.rejects(sending, /timed out/);
+});
+
+test("a frame counts only once it confirms itself from the probe host", async () => {
+  const site = { site: "cross-site", origin: "https://xss.fixture.example", token: "tok" };
+  const listeners = new Set();
+  let timer;
+  const frames = [];
+  const context = vm.createContext({
+    window: {
+      addEventListener(name, callback) { if (name === "message") listeners.add(callback); },
+      removeEventListener(_name, callback) { listeners.delete(callback); },
+    },
+    document: {
+      createElement(name) {
+        assert.equal(name, "iframe");
+        return { contentWindow: {} };
+      },
+      body: { append(frame) { frames.push(frame); } },
+    },
+    setTimeout(callback) { timer = callback; return 1; },
+    clearTimeout() { timer = null; },
+  });
+  vm.runInContext(source, context);
+  const deliver = (event) => [...listeners].forEach((listener) => listener(event));
+
+  // A failed navigation still fires load; without the frame's message it times out.
+  const unconfirmed = context.loadFrame(site, "https://xss.fixture.example/frame");
+  frames[0].onload?.();
+  const confirmation = { type: "rama-fp-frame", version: "HTTP/2.0" };
+  deliver({ source: {}, origin: site.origin, data: confirmation });
+  deliver({ source: frames[0].contentWindow, origin: "https://other.example", data: confirmation });
+  deliver({ source: frames[0].contentWindow, origin: site.origin, data: { type: "other", version: "HTTP/2.0" } });
+  timer();
+  await assert.rejects(unconfirmed, /did not confirm/);
+  assert.equal(listeners.size, 0);
+
+  const confirmed = context.loadFrame(site, "https://xss.fixture.example/frame");
+  deliver({ source: frames[1].contentWindow, origin: site.origin, data: confirmation });
+  assert.equal(await confirmed, "HTTP/2.0");
+  assert.equal(timer, null);
+  assert.equal(listeners.size, 0);
+  assert.equal(frames[1].hidden, true);
 });
