@@ -71,16 +71,17 @@ def activate_by_keyboard(driver, selector, timeout=30):
 
 
 def navigated_to(accept):
-    """A wait condition for a loaded document at a URL that `accept` admits.
+    """A wait condition for a parsed document at a URL that `accept` admits.
 
     Safari reports a navigation's URL before its document replaces the current one,
-    so the loaded document must itself be at that URL.
+    so the parsed document must itself be at that URL. Images may still be loading;
+    they do not prevent reading the completed DOM or its navigation timing.
     """
 
     def complete(browser):
         url = browser.current_url
         return accept(urlsplit(url)) and browser.execute_script(
-            "return document.readyState === 'complete' && document.URL === arguments[0]",
+            "return document.readyState !== 'loading' && document.URL === arguments[0]",
             url,
         ) is True
 
