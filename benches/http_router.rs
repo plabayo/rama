@@ -126,3 +126,22 @@ fn dispatch(bencher: divan::Bencher, case: Case) {
         .with_inputs(|| request(&method, &path))
         .bench_local_values(|req| block_on(router.serve(black_box(req))));
 }
+
+#[divan::bench(args = [0, 1, 10])]
+fn web_service_not_found(bencher: divan::Bencher, endpoints: usize) {
+    let mut service = rama::http::service::web::WebService::new();
+    for i in 0..endpoints {
+        service = service.with_get(&format!("/endpoint{i}"), StatusCode::OK);
+    }
+    let method = Method::GET;
+    let path = "/missing";
+    assert_eq!(
+        block_on(service.serve(request(&method, path)))
+            .expect("infallible web service")
+            .status(),
+        StatusCode::NOT_FOUND,
+    );
+    bencher
+        .with_inputs(|| request(&method, path))
+        .bench_local_values(|req| block_on(service.serve(black_box(req))));
+}

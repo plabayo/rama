@@ -575,6 +575,9 @@ where
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
         // one scratch store serves every matcher that leaves it empty
+        if self.endpoints.is_empty() {
+            return self.not_found.serve(req).await;
+        }
         let mut ext = Extensions::new();
         for endpoint in &self.endpoints {
             if endpoint.matcher.matches(Some(&ext), &req) {
