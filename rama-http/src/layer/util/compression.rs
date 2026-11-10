@@ -16,6 +16,7 @@ use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 use rama_core::futures::ready;
 use rama_core::stream::io::StreamReader;
+use rama_utils::octets::kib;
 use std::io::ErrorKind;
 use std::{
     io,
@@ -120,7 +121,7 @@ pin_project! {
 }
 
 impl<M: DecorateAsyncRead> WrapBody<M> {
-    const INTERNAL_BUF_CAPACITY: usize = 8096;
+    const INTERNAL_BUF_CAPACITY: usize = kib(8);
 }
 
 impl<M: DecorateAsyncRead> WrapBody<M> {

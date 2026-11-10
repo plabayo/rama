@@ -804,6 +804,11 @@ required-features = ["http-full"]
 harness = false
 
 [[bench]]
+name = "http_compression"
+required-features = ["http-full"]
+harness = false
+
+[[bench]]
 name = "ws_write"
 required-features = ["http-full"]
 harness = false

@@ -16,6 +16,7 @@ use rama_core::{
 use pin_project_lite::pin_project;
 use rama_http_types::StreamingBody;
 use rama_http_types::body::{Frame, SizeHint};
+use rama_utils::octets::kib;
 use std::{
     io,
     pin::Pin,
@@ -88,12 +89,25 @@ impl EncodeV2 for Encoder {
     }
 }
 
-struct CompressData {
+/// Spare room reserved in the output buffer for each codec call.
+const INTERNAL_BUF_CAPACITY: usize = kib(8);
+
+/// Input compressed per poll, which bounds how long a poll takes.
+const INPUT_LEN_PER_POLL: usize = kib(64);
+
+/// Buffered output from which a data frame is emitted before more is compressed.
+const OUTPUT_FRAME_LEN: usize = kib(64);
+
+struct CompressData<D> {
     encoder: Encoder,
     output_buffer: BytesMut,
     always_flush: bool,
     state: CompressState,
     pending_trailers: Option<HeaderMap>,
+    /// Rest of the data frame being compressed.
+    input: Option<D>,
+    /// The encoder is being flushed before more input is read.
+    flushing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +131,7 @@ pin_project_cfg! {
         Compress {
             #[pin]
             inner: B,
-            data: CompressData,
+            data: CompressData<B::Data>,
         },
         Identity {
             #[pin]
@@ -129,19 +143,21 @@ pin_project_cfg! {
     }
 }
 
-impl CompressData {
-    const INTERNAL_BUF_CAPACITY: usize = 8096;
-
+impl<D> CompressData<D> {
     fn new(encoder: Encoder, always_flush: bool) -> Self {
         Self {
             encoder,
-            output_buffer: BytesMut::with_capacity(Self::INTERNAL_BUF_CAPACITY),
+            output_buffer: BytesMut::with_capacity(INTERNAL_BUF_CAPACITY),
             always_flush,
             state: CompressState::Reading,
             pending_trailers: None,
+            input: None,
+            flushing: false,
         }
     }
+}
 
+impl<D: Buf> CompressData<D> {
     /// Polls the inner body and compresses data.
     fn poll_compressed<B>(
         &mut self,
@@ -149,10 +165,10 @@ impl CompressData {
         mut inner: Pin<&mut B>,
     ) -> Poll<Option<Result<Frame<Bytes>, io::Error>>>
     where
-        B: StreamingBody,
-        B::Data: Buf,
+        B: StreamingBody<Data = D>,
         B::Error: Into<BoxError>,
     {
+        let mut budget = INPUT_LEN_PER_POLL;
         loop {
             match self.state {
                 CompressState::Done => return Poll::Ready(None),
@@ -167,23 +183,49 @@ impl CompressData {
                     }
                 }
 
-                CompressState::Finishing => {
-                    match drain_step(&mut self.encoder, &mut self.output_buffer, true) {
-                        Ok((done, written)) => {
-                            if done {
-                                self.state = if self.pending_trailers.is_some() {
-                                    CompressState::Trailers
-                                } else {
-                                    CompressState::Done
-                                };
-                            }
-                            if written > 0 {
-                                return Poll::Ready(Some(Ok(Frame::data(
-                                    self.output_buffer.split().freeze(),
-                                ))));
-                            }
+                CompressState::Finishing => match self.drain(true) {
+                    Ok(done) => {
+                        if done {
+                            self.state = if self.pending_trailers.is_some() {
+                                CompressState::Trailers
+                            } else {
+                                CompressState::Done
+                            };
                         }
-                        Err(error) => return Poll::Ready(Some(Err(error))),
+                        if let Some(frame) = self.take_output() {
+                            return Poll::Ready(Some(Ok(frame)));
+                        }
+                    }
+                    Err(error) => return Poll::Ready(Some(Err(error))),
+                },
+
+                CompressState::Reading if self.flushing => match self.drain(false) {
+                    Ok(done) => {
+                        if done {
+                            self.flushing = false;
+                        }
+                        if let Some(frame) = self.take_output() {
+                            return Poll::Ready(Some(Ok(frame)));
+                        }
+                    }
+                    Err(error) => return Poll::Ready(Some(Err(error))),
+                },
+
+                CompressState::Reading if self.input.is_some() => {
+                    if budget == 0 {
+                        // The encoder took a poll's worth of input without output: let the
+                        // caller run other work before the rest is compressed.
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    if let Err(error) = self.compress_input(&mut budget) {
+                        return Poll::Ready(Some(Err(error)));
+                    }
+                    // A flush joins the output it follows in one frame.
+                    if !self.flushing
+                        && let Some(frame) = self.take_output()
+                    {
+                        return Poll::Ready(Some(Ok(frame)));
                     }
                 }
 
@@ -198,14 +240,12 @@ impl CompressData {
                         }
                         Poll::Ready(Some(Ok(frame))) => {
                             match frame.into_data() {
-                                Ok(mut data) => {
-                                    let input_bytes = data.copy_to_bytes(data.remaining());
-                                    match self.compress_chunk(&input_bytes) {
-                                        Ok(Some(frame)) => return Poll::Ready(Some(Ok(frame))),
-                                        // Encoder buffered the data but didn't emit a block yet.
-                                        // We MUST continue to poll the inner body for more data.
-                                        Ok(None) => (),
-                                        Err(e) => return Poll::Ready(Some(Err(e))),
+                                // Skip empty DATA locally to avoid flate's no-progress BufError
+                                // while preserving EOF and trailers, and consider an upstream
+                                // fix in the future if needed.
+                                Ok(data) => {
+                                    if data.has_remaining() {
+                                        self.input = Some(data);
                                     }
                                 }
                                 Err(frame) => {
@@ -222,25 +262,42 @@ impl CompressData {
         }
     }
 
-    /// Compresses a chunk of input data.
-    fn compress_chunk(&mut self, input: &[u8]) -> io::Result<Option<Frame<Bytes>>> {
-        // Skip empty DATA locally to avoid flate's no-progress BufError while preserving EOF
-        // and trailers, and consider an upstream fix in the future if needed.
-        if input.is_empty() {
-            return Ok(None);
-        }
+    /// Compresses up to `budget` bytes of the data frame held in `input`.
+    fn compress_input(&mut self, budget: &mut usize) -> io::Result<()> {
+        let Some(data) = self.input.as_mut() else {
+            return Ok(());
+        };
+        let chunk = data.chunk();
+        // An empty chunk with bytes remaining breaks the `Buf` contract: end the frame over spinning.
+        let ended = chunk.is_empty();
+        let len = chunk.len().min(*budget);
+        let consumed = encode_input(&mut self.encoder, &chunk[..len], &mut self.output_buffer)?;
+        data.advance(consumed);
+        *budget -= consumed;
 
-        encode_all(&mut self.encoder, input, &mut self.output_buffer)?;
-
-        if self.always_flush {
-            flush_all(&mut self.encoder, &mut self.output_buffer)?;
+        if ended || !data.has_remaining() {
+            self.input = None;
+            self.flushing = self.always_flush;
         }
+        Ok(())
+    }
+}
 
-        if self.output_buffer.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(Frame::data(self.output_buffer.split().freeze())))
+impl<D> CompressData<D> {
+    /// Drains the encoder into the output buffer, a frame's worth at most.
+    ///
+    /// Returns whether the encoder holds nothing back any more.
+    fn drain(&mut self, finish: bool) -> io::Result<bool> {
+        loop {
+            let (done, _) = drain_step(&mut self.encoder, &mut self.output_buffer, finish)?;
+            if done || self.output_buffer.len() >= OUTPUT_FRAME_LEN {
+                return Ok(done);
+            }
         }
+    }
+
+    fn take_output(&mut self) -> Option<Frame<Bytes>> {
+        (!self.output_buffer.is_empty()).then(|| Frame::data(self.output_buffer.split().freeze()))
     }
 }
 
@@ -256,7 +313,14 @@ fn encode_into_spare<R>(
     output_buffer: &mut BytesMut,
     encode: impl FnOnce(&mut util::WriteBuffer<'_>) -> io::Result<R>,
 ) -> io::Result<(R, usize)> {
+    let buffered = output_buffer.len();
     let spare = output_buffer.spare_capacity_mut();
+    // A codec call fills a frame up to its mark, whatever capacity the buffer grew to.
+    let room = OUTPUT_FRAME_LEN
+        .saturating_sub(buffered)
+        .max(INTERNAL_BUF_CAPACITY)
+        .min(spare.len());
+    let spare = &mut spare[..room];
     let start = spare.as_mut_ptr().cast::<u8>();
     let spare_len = spare.len();
     let mut output = util::WriteBuffer::new_uninitialized(spare);
@@ -298,19 +362,13 @@ unsafe fn set_len_written(output_buffer: &mut BytesMut, written: usize) {
     unsafe { output_buffer.set_len(output_buffer.len() + written) };
 }
 
-/// Complete flushing before accepting another input chunk.
-fn flush_all(encoder: &mut impl EncodeV2, output: &mut BytesMut) -> io::Result<()> {
-    while !drain_step(encoder, output, false)?.0 {}
-    Ok(())
-}
-
 /// A synchronous codec has no waker: an unfinished drain must emit bytes.
 fn drain_step(
     encoder: &mut impl EncodeV2,
     output_buffer: &mut BytesMut,
     finish: bool,
 ) -> io::Result<(bool, usize)> {
-    output_buffer.reserve(CompressData::INTERNAL_BUF_CAPACITY);
+    output_buffer.reserve(INTERNAL_BUF_CAPACITY);
     let (done, written) = encode_into_spare(output_buffer, |output| {
         if finish {
             encoder.finish(output)
@@ -330,15 +388,18 @@ fn drain_step(
     Ok((done, written))
 }
 
-/// Consume every input byte, including codecs that buffer without emitting output.
-fn encode_all(
+/// Feed `input` to the encoder until all of it is consumed or a frame's worth of
+/// output is buffered, returning the length consumed.
+///
+/// A codec that buffers input without emitting output still consumes all of it.
+fn encode_input(
     encoder: &mut impl EncodeV2,
     input: &[u8],
     output_buffer: &mut BytesMut,
-) -> io::Result<()> {
+) -> io::Result<usize> {
     let mut input_buf = util::PartialBuffer::new(input);
-    while !input_buf.unwritten().is_empty() {
-        output_buffer.reserve(CompressData::INTERNAL_BUF_CAPACITY);
+    while !input_buf.unwritten().is_empty() && output_buffer.len() < OUTPUT_FRAME_LEN {
+        output_buffer.reserve(INTERNAL_BUF_CAPACITY);
         let consumed_before = input_buf.written_len();
         let ((), written) = encode_into_spare(output_buffer, |output| {
             encoder.encode(&mut input_buf, output)
@@ -350,7 +411,7 @@ fn encode_all(
             return Err(io::Error::other("compression encoder made no progress"));
         }
     }
-    Ok(())
+    Ok(input_buf.written_len())
 }
 
 impl<B> StreamCompressionBody<B>
@@ -496,9 +557,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::bytes::buf::Chain;
     use std::assert_matches;
+    use std::cell::RefCell;
     use std::collections::VecDeque;
-    use std::io::Read;
+    use std::io::{Read, Write};
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Wake, Waker};
 
     /// An encoder that swaps in a buffer over its own memory and reports one
     /// written byte there.
@@ -537,7 +604,7 @@ mod tests {
     #[test]
     fn encoder_replacing_its_output_buffer_is_rejected() {
         let mut output = BytesMut::new();
-        encode_all(&mut SwappingEncoder, b"data", &mut output).unwrap_err();
+        encode_input(&mut SwappingEncoder, b"data", &mut output).unwrap_err();
         assert!(output.is_empty());
 
         drain_step(&mut SwappingEncoder, &mut output, false).unwrap_err();
@@ -546,20 +613,20 @@ mod tests {
     }
 
     /// A test body that yields predefined frames.
-    struct TestBody {
-        frames: VecDeque<Frame<Bytes>>,
+    struct TestBody<D = Bytes> {
+        frames: VecDeque<Frame<D>>,
     }
 
-    impl TestBody {
-        fn new(frames: Vec<Frame<Bytes>>) -> Self {
+    impl<D> TestBody<D> {
+        fn new(frames: Vec<Frame<D>>) -> Self {
             Self {
                 frames: frames.into(),
             }
         }
     }
 
-    impl StreamingBody for TestBody {
-        type Data = Bytes;
+    impl<D: Buf + Unpin> StreamingBody for TestBody<D> {
+        type Data = D;
         type Error = std::convert::Infallible;
 
         fn poll_frame(
@@ -720,11 +787,7 @@ mod tests {
                 consumed: 0,
             };
             let mut output = BytesMut::new();
-            let error = if finish {
-                drain_step(&mut encoder, &mut output, true).unwrap_err()
-            } else {
-                flush_all(&mut encoder, &mut output).unwrap_err()
-            };
+            let error = drain_step(&mut encoder, &mut output, finish).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 "compression encoder made no drain progress"
@@ -749,7 +812,8 @@ mod tests {
             stalled: true,
             consumed: 0,
         };
-        let error = encode_all(&mut encoder, b"keep every byte", &mut BytesMut::new()).unwrap_err();
+        let error =
+            encode_input(&mut encoder, b"keep every byte", &mut BytesMut::new()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(encoder.consumed, 0);
     }
@@ -761,7 +825,8 @@ mod tests {
             consumed: 0,
         };
         let input = b"keep every byte";
-        encode_all(&mut encoder, input, &mut BytesMut::new()).unwrap();
+        let consumed = encode_input(&mut encoder, input, &mut BytesMut::new()).unwrap();
+        assert_eq!(consumed, input.len());
         assert_eq!(encoder.consumed, input.len());
     }
 
@@ -806,11 +871,19 @@ mod tests {
                     };
                     let mut compressed = Vec::new();
                     let mut received_trailers = None;
+                    let wakes = Arc::new(WakeCount::default());
+                    let waker = Waker::from(wakes.clone());
                     loop {
-                        let Poll::Ready(frame) = Pin::new(&mut body)
-                            .poll_frame(&mut Context::from_waker(std::task::Waker::noop()))
+                        let woken = wakes.0.load(Ordering::Relaxed);
+                        let Poll::Ready(frame) =
+                            Pin::new(&mut body).poll_frame(&mut Context::from_waker(&waker))
                         else {
-                            panic!("unexpected Pending: {encoding}, {width}, {always_flush}");
+                            // These ready-only fixtures are pending only when the body yields.
+                            assert!(
+                                wakes.0.load(Ordering::Relaxed) > woken,
+                                "Pending without wake-up: {encoding}, {width}, {always_flush}",
+                            );
+                            continue;
                         };
                         let Some(frame) = frame else { break };
                         let frame = frame.unwrap_or_else(|error| {
@@ -943,6 +1016,258 @@ mod tests {
                 .into_trailers()
                 .unwrap();
             assert_eq!(trailers.get("x-checksum").unwrap(), "abc123");
+        }
+    }
+
+    const ENCODINGS: [&str; 4] = ["gzip", "deflate", "br", "zstd"];
+
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[derive(Debug)]
+    enum Polled {
+        Data(Bytes),
+        Trailers(HeaderMap),
+        /// Pending after waking its own task.
+        Yielded,
+        /// Pending without a wake-up.
+        Idle,
+        Failed(io::Error),
+        End,
+    }
+
+    fn poll_once<B>(body: &mut StreamCompressionBody<B>) -> Polled
+    where
+        B: StreamingBody<Data: Buf, Error: Into<BoxError>>,
+        StreamCompressionBody<B>: Unpin,
+    {
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(wakes.clone());
+        match Pin::new(body).poll_frame(&mut Context::from_waker(&waker)) {
+            Poll::Pending if wakes.0.load(Ordering::Relaxed) > 0 => Polled::Yielded,
+            Poll::Pending => Polled::Idle,
+            Poll::Ready(None) => Polled::End,
+            Poll::Ready(Some(Err(error))) => Polled::Failed(error),
+            Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                Ok(data) => Polled::Data(data),
+                Err(frame) => Polled::Trailers(frame.into_trailers().unwrap()),
+            },
+        }
+    }
+
+    #[derive(Default)]
+    struct Drained {
+        data: Vec<u8>,
+        largest_frame: usize,
+        trailers: Option<HeaderMap>,
+        yields: usize,
+        error: Option<io::Error>,
+    }
+
+    /// Polls `body` to its end or first error; the inner body must never be idle.
+    fn drain<B>(body: &mut StreamCompressionBody<B>) -> Drained
+    where
+        B: StreamingBody<Data: Buf, Error: Into<BoxError>>,
+        StreamCompressionBody<B>: Unpin,
+    {
+        let mut drained = Drained::default();
+        loop {
+            match poll_once(body) {
+                Polled::Data(data) => {
+                    assert!(!data.is_empty(), "empty data frame");
+                    assert!(drained.trailers.is_none(), "data after trailers");
+                    drained.largest_frame = drained.largest_frame.max(data.len());
+                    drained.data.extend_from_slice(&data);
+                }
+                Polled::Trailers(trailers) => {
+                    assert!(drained.trailers.is_none(), "duplicate trailers");
+                    drained.trailers = Some(trailers);
+                }
+                Polled::Yielded => drained.yields += 1,
+                Polled::Idle => panic!("Pending without wake-up"),
+                Polled::Failed(error) => {
+                    drained.error = Some(error);
+                    return drained;
+                }
+                Polled::End => return drained,
+            }
+        }
+    }
+
+    fn compress_body<B: StreamingBody>(
+        encoding: &str,
+        inner: B,
+        always_flush: bool,
+    ) -> StreamCompressionBody<B> {
+        match encoding {
+            "gzip" => StreamCompressionBody::gzip(inner, Default::default(), always_flush),
+            "deflate" => StreamCompressionBody::deflate(inner, Default::default(), always_flush),
+            "br" => StreamCompressionBody::brotli(inner, Default::default(), always_flush),
+            "zstd" => StreamCompressionBody::zstd(inner, Default::default(), always_flush),
+            _ => panic!("unexpected test encoding: {encoding}"),
+        }
+    }
+
+    fn decode(encoding: &str, compressed: &[u8]) -> Vec<u8> {
+        let mut decoder: Box<dyn Read + '_> = match encoding {
+            "gzip" => Box::new(flate2::read::GzDecoder::new(compressed)),
+            "deflate" => Box::new(flate2::read::ZlibDecoder::new(compressed)),
+            "br" => Box::new(brotli::Decompressor::new(compressed, 4096)),
+            "zstd" => Box::new(zstd::stream::read::Decoder::new(compressed).unwrap()),
+            _ => panic!("unexpected test encoding: {encoding}"),
+        };
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        decoded
+    }
+
+    /// Bytes no codec can shrink.
+    fn noise(len: usize) -> Vec<u8> {
+        let mut state = 0x1234_5678_u32;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect()
+    }
+
+    #[derive(Default)]
+    struct Feed {
+        frames: VecDeque<Result<Frame<Bytes>, &'static str>>,
+        closed: bool,
+    }
+
+    /// Body fed by the test: pending, without a wake-up, while it has nothing and is open.
+    struct FedBody(Rc<RefCell<Feed>>);
+
+    impl StreamingBody for FedBody {
+        type Data = Bytes;
+        type Error = &'static str;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            let mut feed = self.0.borrow_mut();
+            match feed.frames.pop_front() {
+                Some(frame) => Poll::Ready(Some(frame)),
+                None if feed.closed => Poll::Ready(None),
+                None => Poll::Pending,
+            }
+        }
+    }
+
+    struct SharedSink(Rc<RefCell<Vec<u8>>>);
+
+    impl Write for SharedSink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Decoder that writes what it can decode so far into `decoded`.
+    fn stream_decoder(encoding: &str, decoded: Rc<RefCell<Vec<u8>>>) -> Box<dyn Write> {
+        let sink = SharedSink(decoded);
+        match encoding {
+            "gzip" => Box::new(flate2::write::GzDecoder::new(sink)),
+            "deflate" => Box::new(flate2::write::ZlibDecoder::new(sink)),
+            "br" => Box::new(brotli::DecompressorWriter::new(sink, 4096)),
+            "zstd" => Box::new(zstd::stream::write::Decoder::new(sink).unwrap()),
+            _ => panic!("unexpected test encoding: {encoding}"),
+        }
+    }
+
+    #[test]
+    fn large_frame_is_emitted_in_bounded_frames() {
+        let input = noise(kib(512));
+        for always_flush in [false, true] {
+            for encoding in ENCODINGS {
+                let inner = TestBody::new(vec![Frame::data(Bytes::from(input.clone()))]);
+                let mut body = compress_body(encoding, inner, always_flush);
+                let drained = drain(&mut body);
+                assert!(drained.error.is_none(), "{encoding}, {always_flush}");
+                // The last input call and one flush call may each overshoot the mark.
+                assert!(
+                    drained.largest_frame <= OUTPUT_FRAME_LEN + 2 * INTERNAL_BUF_CAPACITY,
+                    "{encoding}, {always_flush}: frame of {}",
+                    drained.largest_frame,
+                );
+                assert_eq!(decode(encoding, &drained.data), input, "{encoding}");
+            }
+        }
+    }
+
+    #[test]
+    fn input_without_output_yields_between_slices() {
+        // Repetitive input is taken in by every codec long before it emits a block.
+        let input = vec![b'a'; kib(512)];
+        for always_flush in [false, true] {
+            for encoding in ENCODINGS {
+                let mut trailers = HeaderMap::new();
+                trailers.insert("x-checksum", "complete".parse().unwrap());
+                let inner = TestBody::new(vec![
+                    Frame::data(Bytes::from(input.clone())),
+                    Frame::trailers(trailers.clone()),
+                ]);
+                let mut body = compress_body(encoding, inner, always_flush);
+                let drained = drain(&mut body);
+                assert!(drained.error.is_none(), "{encoding}, {always_flush}");
+                assert!(drained.yields > 0, "{encoding}, {always_flush}: no yield");
+                assert_eq!(drained.trailers, Some(trailers), "{encoding}");
+                assert_eq!(decode(encoding, &drained.data), input, "{encoding}");
+            }
+        }
+    }
+
+    #[test]
+    fn data_spanning_several_chunks_round_trips() {
+        let input = noise(kib(96));
+        let (head, tail) = input.split_at(kib(70));
+        for always_flush in [false, true] {
+            for encoding in ENCODINGS {
+                let data: Chain<Bytes, Bytes> =
+                    Bytes::copy_from_slice(head).chain(Bytes::copy_from_slice(tail));
+                let inner = TestBody::new(vec![Frame::data(data)]);
+                let mut body = compress_body(encoding, inner, always_flush);
+                let drained = drain(&mut body);
+                assert!(drained.error.is_none(), "{encoding}, {always_flush}");
+                assert_eq!(decode(encoding, &drained.data), input, "{encoding}");
+            }
+        }
+    }
+
+    #[test]
+    fn inner_error_follows_the_data_before_it() {
+        for encoding in ENCODINGS {
+            let feed = Rc::new(RefCell::new(Feed::default()));
+            feed.borrow_mut().frames.extend([
+                Ok(Frame::data(Bytes::from_static(b"delivered"))),
+                Err("inner body failed"),
+            ]);
+            let mut body = compress_body(encoding, FedBody(feed), true);
+            let drained = drain(&mut body);
+            let error = drained.error.expect("inner error");
+            assert_eq!(error.to_string(), "inner body failed", "{encoding}");
+
+            let decoded = Rc::new(RefCell::new(Vec::new()));
+            let mut decoder = stream_decoder(encoding, decoded.clone());
+            decoder.write_all(&drained.data).unwrap();
+            decoder.flush().unwrap();
+            assert_eq!(*decoded.borrow(), b"delivered", "{encoding}");
         }
     }
 }
