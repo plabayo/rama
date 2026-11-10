@@ -70,6 +70,21 @@ class NightlyTests(unittest.TestCase):
         self.assertEqual(receipts["000-0"]["status"], "failed")
         self.assertEqual(receipts["000-1"]["status"], "passed")
 
+    def test_failed_cells_within_the_budget_are_reported_without_failing_the_job(self):
+        def journey(_driver, origin, **_kwargs):
+            if origin == "https://broken-0.invalid/":
+                raise RuntimeError("journey failed")
+            return self.completed
+
+        for cells, expected in ((100, 0), (99, 1)):
+            with self.subTest(cells=cells):
+                code, receipts, log = self.collect(journey, entrypoints=[
+                    (f"https://broken-{index}.invalid/", "h3") for index in range(cells)
+                ])
+                self.assertEqual(code, expected)
+                self.assertEqual(receipts["000-0"]["status"], "failed")
+                self.assertIn(f"SUMMARY 1 of {cells} cells failed", log)
+
     def test_failed_revisit_cannot_be_hidden_by_a_successful_first_visit(self):
         def journey(_driver, _origin, *, cookies, **_kwargs):
             if cookies is None:

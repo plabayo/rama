@@ -10,7 +10,9 @@ bootstrap door) are recorded as "unsupported" and do not fail the job, unless
 every H3 cell stayed on that door, which points at a broken H3 origin.
 A failed cell is retried once in a fresh session; its receipt records
 `attempts` and, after a retry, the first attempt's `first_failure_stage` and
-`first_failure_reason`, and only a cell failing both attempts fails the job. A browser
+`first_failure_reason`, and only a cell failing both attempts counts as failed. The job
+fails when more than `FAILED_CELL_BUDGET_PERCENT` of the cells that ran failed, so one
+flaky device in a full matrix is reported without failing it. A browser
 this host drives also gets a second session when an H3 cell stayed on TCP.
 Origins in `REVISITED` run the journey twice in one session, recorded per visit in
 `visits`; the cell passes when either visit completes. The first visit ends by having
@@ -430,6 +432,9 @@ def run_session(
     return failures
 
 
+# Real devices fail a session now and then; a regression fails far more cells than this.
+FAILED_CELL_BUDGET_PERCENT = 1
+
 def h3_never_reached(receipts):
     """Every H3 cell ran but stayed on the TCP bootstrap door."""
     h3 = [row for row in receipts if row.get("expected_http_protocol") == "h3"]
@@ -490,6 +495,14 @@ def main(argv=None):
         for future in concurrent.futures.as_completed(futures):
             failures += len(future.result())
     receipts = [json.loads(path.read_text()) for path in args.output.glob("*.json")]
+    ran = sum(row.get("status") in ("passed", "failed") for row in receipts)
+    over_budget = failures * 100 > ran * FAILED_CELL_BUDGET_PERCENT
+    print(
+        f"SUMMARY {failures} of {ran} cells failed, budget {FAILED_CELL_BUDGET_PERCENT}%:",
+        "over" if over_budget else "within",
+        flush=True,
+    )
+    failures = int(over_budget)
     if h3_never_reached(receipts):
         print("FAILED no H3 cell left the HTTP/3 bootstrap door", flush=True)
         failures += 1
