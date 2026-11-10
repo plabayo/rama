@@ -380,6 +380,21 @@ class FormSubmissionTests(unittest.TestCase):
             workflow.submit_form(driver, 'form[action="/form"]', timeout=0)
         self.assertNotIn("private provider data", str(caught.exception))
 
+    def test_navigation_timeout_names_the_shown_document_without_its_query(self):
+        driver = Mock()
+        driver.current_url = "https://h1.fp.ss.example.org/form?rama_fp_site=tok_private"
+        driver.execute_script.return_value = "loading"
+        wait = Mock()
+        wait.until.side_effect = TimeoutException("same-site form did not navigate")
+        with self.assertRaises(TimeoutException) as caught:
+            workflow.await_navigation(
+                driver, wait, Mock(), "same-site form did not navigate"
+            )
+        self.assertEqual(
+            caught.exception.msg,
+            "same-site form did not navigate; at h1.fp.ss.example.org/form (loading)",
+        )
+
 
 
 SITES = [

@@ -18,6 +18,7 @@ from selenium.common.exceptions import (
     NoSuchWindowException,
     StaleElementReferenceException,
     TimeoutException,
+    WebDriverException,
 )
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -83,6 +84,21 @@ def navigated_to(accept):
         ) is True
 
     return complete
+
+
+def await_navigation(driver, wait, condition, message):
+    """`wait.until(condition)`; a timeout names the document the browser shows instead."""
+    try:
+        wait.until(condition, message)
+    except TimeoutException as error:
+        try:
+            url = urlsplit(driver.current_url)
+            state = driver.execute_script("return document.readyState")
+            # Host and path only: a query can carry a site token.
+            where = f"{url.hostname}{url.path} ({state})"
+        except WebDriverException:
+            where = "an unreadable document"
+        raise TimeoutException(f"{message}; at {where}") from error
 
 
 get_form_navigation_complete = navigated_to(
@@ -605,7 +621,8 @@ def visit_sites(driver, wait, origin, sites, timeout):
             driver.execute_script(_INJECT_LINK, target, "rama-fp-site-link")
             follow_link(driver, "#rama-fp-site-link", timeout=timeout)
         expected = urlsplit(target)
-        wait.until(
+        await_navigation(
+            driver, wait,
             navigated_to(lambda url, expected=expected: url.hostname == expected.hostname
                          and url.path == expected.path),
             f"{site} {flow} did not navigate",
@@ -720,7 +737,8 @@ def run_capture_flow(
     # Native keyboard activation avoids SafariDriver's intermittent
     # click no-op on the long report page. The browser still submits the form.
     submit_form(driver, 'form[action="/form"]', timeout=timeout)
-    wait.until(
+    await_navigation(
+        driver, wait,
         navigated_to(lambda url: url.path == "/form"),
         "POST form submission did not navigate",
     )
@@ -738,7 +756,9 @@ def run_capture_flow(
     )
     form_html = driver.page_source
     submit_form(driver, 'form[method="GET"][action="/form"]', timeout=timeout)
-    wait.until(get_form_navigation_complete, "GET form submission did not navigate")
+    await_navigation(
+        driver, wait, get_form_navigation_complete, "GET form submission did not navigate"
+    )
     get_protocol = driver.execute_script(
         'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
     )
@@ -747,7 +767,8 @@ def run_capture_flow(
     # A same-origin link click, the navigation a page's own links make.
     driver.execute_script(_INJECT_LINK, urljoin(origin, "/landing"), "rama-fp-link")
     follow_link(driver, "#rama-fp-link", timeout=timeout)
-    wait.until(
+    await_navigation(
+        driver, wait,
         navigated_to(lambda url: url.path == "/landing"),
         "same-origin link did not navigate",
     )

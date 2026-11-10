@@ -66,6 +66,7 @@ def probe_safari(version, timeout=600):
     """
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from selenium.common.exceptions import WebDriverException
+    from urllib3.exceptions import HTTPError as TransportError
     from browser_automation.drivers import device_session
 
     deadline = time.monotonic() + timeout
@@ -80,7 +81,7 @@ def probe_safari(version, timeout=600):
                     raise WebDriverException("Safari document is not ready")
             print(f"READY iOS {version}: Safari probe {attempt}", flush=True)
             return
-        except WebDriverException as error:
+        except (WebDriverException, TransportError) as error:
             # Provider exception text can contain private data; log only its type.
             print(f"WAIT iOS {version}: Safari probe {attempt}: {type(error).__name__}",
                   flush=True)

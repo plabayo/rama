@@ -18,6 +18,7 @@ from selenium.webdriver.common.selenium_manager import SeleniumManager
 from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.safari.service import Service as SafariService
+from urllib3.exceptions import HTTPError as TransportError
 
 OPTION_TYPES = {
     "chrome": webdriver.ChromeOptions,
@@ -110,12 +111,12 @@ def device_session(kind, platform_version=None):
     """Start a `device_options` browser and always release it."""
     options = device_options(kind, platform_version)
     if kind == "ios-simulator":
-        # On a slow runner safaridriver can exit at startup or outlast its wait for the
-        # simulator's Safari to launch.
+        # On a slow runner safaridriver can exit at startup, outlast its wait for the
+        # simulator's Safari to launch or not answer the session request in time.
         driver = launch(
             lambda: webdriver.Safari(options=options),
             delay=10.0,
-            transient=(WebDriverException,),
+            transient=(WebDriverException, TransportError),
         )
     elif isinstance(options, webdriver.SafariOptions):
         driver = webdriver.Safari(options=options)
