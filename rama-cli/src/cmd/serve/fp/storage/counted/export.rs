@@ -35,13 +35,16 @@ impl fmt::Display for ProfileReadLimit {
 
 impl std::error::Error for ProfileReadLimit {}
 
-/// Scopes left out of one exported profile; scopes seen in the most runs and days are kept.
+/// Scopes left out of one exported profile; every flow keeps its best-ranked scope
+/// per layer, then scopes seen in the most runs and days are kept.
 #[derive(Debug, Clone, Copy, Default)]
 pub(in super::super) struct ScopeTruncation {
     /// Stored scopes with retained days in the export window.
     pub stored_scopes: usize,
     /// Stored scopes not exported because their normalized scope did not fit.
     pub dropped_stored_scopes: usize,
+    /// Normalized scopes those dropped stored scopes belong to.
+    pub dropped_scopes: usize,
     /// Stored scopes not exported because the profile has captures of a newer revision.
     pub superseded_scopes: usize,
 }
@@ -73,6 +76,25 @@ macro_rules! scope_revision {
 
 /// Run `count` loads in pipelined chunks. Each chunk's bytes are charged before the next
 /// chunk starts, so beyond the budget at most one chunk of loads holds retained bytes.
+/// Each flow's best-ranked row per layer, then the rest, both in rank order, so a
+/// new flow is never evicted by more popular shapes of known flows.
+fn coverage_first<T, K: Ord>(
+    rows: impl IntoIterator<Item = T>,
+    mut coverage: impl FnMut(&T) -> Result<K, BoxError>,
+) -> Result<Vec<T>, BoxError> {
+    let mut covered = BTreeSet::new();
+    let (mut ranked, mut rest) = (Vec::new(), Vec::new());
+    for row in rows {
+        if covered.insert(coverage(&row)?) {
+            ranked.push(row);
+        } else {
+            rest.push(row);
+        }
+    }
+    ranked.append(&mut rest);
+    Ok(ranked)
+}
+
 async fn load_in_chunks<T, F, Fut>(
     count: usize,
     remaining: &mut usize,
@@ -247,9 +269,14 @@ pub(in super::super) async fn next_profile(
         let mut seen = BTreeSet::new();
         // Rows rank by capture runs, then days, then volume, so a burst of
         // high-volume shapes cannot evict shapes seen across runs and days.
+        let ranked = coverage_first(
+            rows.into_iter().take(analysis_limits.stored_scopes),
+            |row| Ok((row.try_get::<_, Option<Vec<u8>>>(5)?, row.try_get::<_, i32>(2)?)),
+        )?;
         let mut kept = BTreeSet::new();
+        let mut dropped = BTreeSet::new();
         let mut work = analysis_limits.maximum_work;
-        for row in rows.into_iter().take(analysis_limits.stored_scopes) {
+        for row in ranked {
             let scope = canonical(row.try_get(0)?, row.try_get(1)?)?;
             let revision =
                 ProfileObservationScope::from_canonical(&scope, analysis_limits.metadata_bytes)?
@@ -270,6 +297,7 @@ pub(in super::super) async fn next_profile(
             if !kept.contains(&normalized) {
                 if kept.len() >= analysis_limits.scopes {
                     truncation.dropped_stored_scopes += 1;
+                    dropped.insert(normalized);
                     continue;
                 }
                 kept.insert(normalized);
@@ -297,6 +325,7 @@ pub(in super::super) async fn next_profile(
             }
             planned.push((scope, structure, domain, flow, days));
         }
+        truncation.dropped_scopes = dropped.len();
         // Each bucket load is several dependent queries; issuing a profile's loads
         // together pipelines them on this one transaction instead of paying a
         // round trip per query. Every load is checked against the budget left
@@ -385,7 +414,8 @@ pub(in super::super) async fn next_profile(
             profile = ?evidence.profile.id,
             stored_scopes = truncation.stored_scopes,
             dropped_stored_scopes = truncation.dropped_stored_scopes,
-            "profile export dropped scopes over its bound; kept those seen in the most runs and days"
+            dropped_scopes = truncation.dropped_scopes,
+            "profile export dropped scopes over its bound; kept every flow, then those seen in the most runs and days"
         );
     }
     Ok(Some((evidence, seed, truncation)))
@@ -411,6 +441,24 @@ mod tests {
             }
         })
         .await
+    }
+
+    #[test]
+    fn every_flow_layer_ranks_before_more_popular_shapes_of_known_ones() {
+        // (flow, layer, rank) in popularity order.
+        let rows = [
+            ("old", 1, 0),
+            ("old", 1, 1),
+            ("old", 2, 2),
+            ("old", 1, 3),
+            ("new", 1, 4),
+            ("new", 1, 5),
+        ];
+        let ranked = coverage_first(rows, |&(flow, layer, _)| Ok((flow, layer))).unwrap();
+        assert_eq!(
+            ranked.iter().map(|&(_, _, rank)| rank).collect::<Vec<_>>(),
+            [0, 2, 4, 1, 3, 5]
+        );
     }
 
     #[tokio::test]
