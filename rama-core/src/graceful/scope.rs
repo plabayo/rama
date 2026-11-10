@@ -22,6 +22,31 @@ use super::{
     sync::{Arc, AtomicU8, Mutex, Ordering, yield_point},
 };
 
+pin_project_lite::pin_project! {
+    /// `future` raced against `stop`, which is polled first.
+    ///
+    /// A plain future rather than an async block around `select!`:
+    /// that one keeps `future` twice, doubling every spawned task.
+    struct RunUntil<S, F> {
+        #[pin]
+        stop: S,
+        #[pin]
+        future: F,
+    }
+}
+
+impl<S: Future<Output = ()>, F: Future> Future for RunUntil<S, F> {
+    type Output = Option<F::Output>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        if this.stop.poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        this.future.poll(cx).map(Some)
+    }
+}
+
 /// A node in a cancellation tree, held strongly.
 ///
 /// A scope is first cancelled (graceful phase: stop taking new work, finish what runs) and
@@ -276,13 +301,9 @@ impl Scope {
         &self,
         future: F,
     ) -> impl Future<Output = Option<F::Output>> + use<F> {
-        let cancelled = self.cancelled();
-        async move {
-            tokio::select! {
-                biased;
-                () = cancelled => None,
-                output = future => Some(output),
-            }
+        RunUntil {
+            stop: self.cancelled(),
+            future,
         }
     }
 
@@ -293,13 +314,9 @@ impl Scope {
         &self,
         future: F,
     ) -> impl Future<Output = Option<F::Output>> + use<F> {
-        let aborted = self.aborted();
-        async move {
-            tokio::select! {
-                biased;
-                () = aborted => None,
-                output = future => Some(output),
-            }
+        RunUntil {
+            stop: self.aborted(),
+            future,
         }
     }
 

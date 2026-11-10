@@ -243,8 +243,9 @@ where
         let peeked_input = input.map_peek_io(|io| PrefixedIo::new(peek, io));
 
         if is_socks5 {
-            self.socks5_acceptor
-                .serve(peeked_input)
+            // Boxed so a full SOCKS5 server stack does not size the future
+            // (and so the task) of every connection that takes the fallback.
+            Box::pin(self.socks5_acceptor.serve(peeked_input))
                 .await
                 .into_box_error()
         } else {
@@ -382,6 +383,35 @@ mod test {
 
             assert_eq!(greeting, response);
         }
+    }
+
+    // The router's future is part of the task of every connection, also the ones that
+    // take the fallback, so a large SOCKS5 server stack must not sit inline in it.
+    #[test]
+    fn acceptor_future_is_not_held_inline() {
+        let acceptor = service_fn(async || {
+            let state = [1u8; 16 * 1024];
+            tokio::task::yield_now().await;
+            Ok::<_, Infallible>(state.iter().map(|byte| usize::from(*byte)).sum::<usize>())
+        });
+        let router = Socks5PeekRouter::new(acceptor)
+            .with_fallback(service_fn(async || Ok::<_, Infallible>(0usize)));
+
+        let size = size_of_val(&router.serve(ServiceInput::new(std::io::Cursor::new(Vec::new()))));
+        assert!(size < 4 * 1024, "router future is {size} bytes");
+    }
+
+    #[tokio::test]
+    async fn boxed_acceptor_still_serves_socks5() {
+        let router = Socks5PeekRouter::new(service_fn(async || Ok::<_, Infallible>("socks5")))
+            .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
+        let response = router
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"\x05\x01\x00".to_vec(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response, "socks5");
     }
 
     #[tokio::test]

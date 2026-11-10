@@ -994,6 +994,43 @@ fn run_until_never_polls_a_future_of_a_finished_phase() {
     assert_eq!(polls.load(Ordering::SeqCst), 0);
 }
 
+// A task is one allocation the size of its future. Racing through an async block around
+// `select!` kept the future twice, which doubled every task spawned on a scope.
+#[test]
+fn run_until_does_not_store_the_future_twice() {
+    async fn work() -> usize {
+        let state = [1u8; 4096];
+        tokio::task::yield_now().await;
+        state.iter().map(|byte| usize::from(*byte)).sum()
+    }
+
+    let scope = Scope::new();
+    let plain = size_of_val(&work());
+    assert!(plain >= 4096, "the fixture keeps its state across an await");
+
+    let cancelled = size_of_val(&scope.run_until_cancelled(work()));
+    let aborted = size_of_val(&scope.run_until_aborted(work()));
+    assert!(
+        cancelled < plain + 128,
+        "{cancelled} for a future of {plain}"
+    );
+    assert!(aborted < plain + 128, "{aborted} for a future of {plain}");
+}
+
+#[test]
+fn run_until_yields_the_output_of_a_future_that_finishes_first() {
+    rt().block_on(async {
+        let scope = Scope::new();
+        assert_eq!(scope.run_until_cancelled(async { 1 }).await, Some(1));
+        assert_eq!(scope.run_until_aborted(async { 2 }).await, Some(2));
+
+        // cancelled but not aborted: only the cancellable one is cut
+        scope.cancel(Cause::Owner);
+        assert_eq!(scope.run_until_cancelled(async { 3 }).await, None);
+        assert_eq!(scope.run_until_aborted(async { 4 }).await, Some(4));
+    });
+}
+
 #[test]
 fn join_of_a_detached_scope_returns_at_once() {
     let mut join = Box::pin(Scope::detached().join());

@@ -146,14 +146,16 @@ mod private {
             let service = RamaHttpService::new(service);
             let stream = Box::pin(io);
             let (guard, released) = oneshot::channel::<()>();
-            let result = async {
+            // Boxed so the connection's state is freed once it ends,
+            // not kept for as long as an upgraded transport lives.
+            let result = Box::pin(async {
                 let mut conn = pin!(
                     self.serve_connection(stream, service)
                         .with_upgrades()
                         .with_upgrade_guard(guard)
                 );
                 serve_scoped!(conn, scope, map_http_core_result)
-            }
+            })
             .await;
             upgrade_closed(released, &scope).await;
             result
@@ -196,13 +198,15 @@ mod private {
             let service = RamaHttpService::new(service);
             let stream = Box::pin(io);
             let (guard, released) = oneshot::channel::<()>();
-            let result = async {
+            // Boxed so the connection's state is freed once it ends,
+            // not kept for as long as an upgraded transport lives.
+            let result = Box::pin(async {
                 let mut conn = pin!(
                     self.serve_connection_with_upgrades(stream, service)
                         .with_upgrade_guard(guard)
                 );
                 serve_scoped!(conn, scope, map_boxed_http_core_result)
-            }
+            })
             .await;
             upgrade_closed(released, &scope).await;
             result
