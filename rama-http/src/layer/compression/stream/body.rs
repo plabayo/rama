@@ -1,6 +1,6 @@
 use crate::HeaderMap;
 use crate::layer::compression::pin_project_cfg::pin_project_cfg;
-use crate::layer::util::compression::CompressionLevel;
+use crate::layer::util::compression::{CompressionLevel, brotli_window_bits};
 
 use compression_codecs::{
     BrotliEncoder, EncodeV2, GzipEncoder, ZlibEncoder, ZstdEncoder,
@@ -438,7 +438,16 @@ where
 
     #[inline(always)]
     pub(super) fn brotli(inner: B, level: CompressionLevel, always_flush: bool) -> Self {
+        // Match the buffered layer's on-the-fly compression quality and window.
+        let level = match level {
+            CompressionLevel::Default => CompressionLevel::Precise(4),
+            other => other,
+        };
         let params = BrotliEncoderParams::default().quality(level.into_compression_core());
+        let params = match inner.size_hint().exact().and_then(brotli_window_bits) {
+            Some(bits) => params.window_size(bits),
+            None => params,
+        };
         Self::compressed(
             inner,
             Encoder::Brotli(Box::new(BrotliEncoder::new(params))),

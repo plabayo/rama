@@ -22,7 +22,7 @@ use crate::{
     HeaderMap,
     layer::util::compression::{
         AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
-        compressed_body_poll_frame, impl_decorate_async_read,
+        brotli_window_bits, compressed_body_poll_frame, impl_decorate_async_read,
     },
 };
 
@@ -181,12 +181,6 @@ impl_decorate_async_read!(BrotliEncoder: |input, quality, body_len| {
     };
     BrotliEncoder::with_params(input, params)
 });
-
-/// Smallest brotli window (RFC 7932 §9.1: `2^WBITS - 16` bytes) holding a body of `len`
-/// bytes; a larger window gains no ratio and costs both peers memory.
-fn brotli_window_bits(len: u64) -> Option<i32> {
-    (10..22).find(|bits| (1_u64 << bits) - 16 >= len)
-}
 
 impl_decorate_async_read!(ZstdEncoder: |input, quality| {
     // See https://issues.chromium.org/issues/41493659:

@@ -175,24 +175,38 @@ mod tests {
 
     async fn brotli_response(
         make_body: impl Fn() -> Body + Send + Sync + 'static,
+        streaming: bool,
     ) -> (u8, Vec<u8>) {
-        let svc = Compression::new(service_fn(move |_: Request| {
+        let svc = service_fn(move |_: Request| {
             std::future::ready(Ok::<_, Infallible>(Response::new(make_body())))
-        }))
-        .with_compress_predicate(Always);
+        });
         let req = Request::builder()
             .header("accept-encoding", "br")
             .body(Body::empty())
             .unwrap();
-        let compressed = svc
-            .serve(req)
-            .await
-            .unwrap()
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes();
+        let compressed = if streaming {
+            stream::StreamCompression::new(svc)
+                .with_compress_predicate(Always)
+                .serve(req)
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+        } else {
+            Compression::new(svc)
+                .with_compress_predicate(Always)
+                .serve(req)
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+        };
         let mut decoded = Vec::new();
         let mut decoder = BrotliDecoder::new(&mut decoded);
         decoder.write_all(&compressed).await.unwrap();
@@ -202,28 +216,38 @@ mod tests {
 
     #[tokio::test]
     async fn brotli_window_fits_a_body_of_known_length() {
-        for (len, bits) in [(1, 10), (1008, 10), (1009, 11), (65_536, 17), (1 << 22, 22)] {
-            let data = Bytes::from(vec![b'x'; len]);
-            let (window, decoded) = brotli_response({
-                let data = data.clone();
-                move || Body::from(data.clone())
-            })
-            .await;
-            assert_eq!(window, bits, "body of {len} bytes");
-            assert_eq!(decoded, data);
+        for streaming in [false, true] {
+            for (len, bits) in [(1, 10), (1008, 10), (1009, 11), (65_536, 17), (1 << 22, 22)] {
+                let data = Bytes::from(vec![b'x'; len]);
+                let (window, decoded) = brotli_response(
+                    {
+                        let data = data.clone();
+                        move || Body::from(data.clone())
+                    },
+                    streaming,
+                )
+                .await;
+                assert_eq!(window, bits, "body of {len} bytes, streaming={streaming}");
+                assert_eq!(decoded, data);
+            }
         }
     }
 
     #[tokio::test]
     async fn brotli_window_stays_default_for_unknown_length() {
-        let (window, decoded) = brotli_response(|| {
-            Body::from_stream(rama_core::futures::stream::iter([Ok::<_, BoxError>(
-                Bytes::from_static(b"Hello, World!"),
-            )]))
-        })
-        .await;
-        assert_eq!(window, 22);
-        assert_eq!(decoded, b"Hello, World!");
+        for streaming in [false, true] {
+            let (window, decoded) = brotli_response(
+                || {
+                    Body::from_stream(rama_core::futures::stream::iter([Ok::<_, BoxError>(
+                        Bytes::from_static(b"Hello, World!"),
+                    )]))
+                },
+                streaming,
+            )
+            .await;
+            assert_eq!(window, 22);
+            assert_eq!(decoded, b"Hello, World!");
+        }
     }
 
     #[tokio::test]

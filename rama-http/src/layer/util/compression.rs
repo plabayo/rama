@@ -88,6 +88,12 @@ pub(crate) type AsyncReadBody<B> = StreamReader<
     <B as StreamingBody>::Data,
 >;
 
+/// Smallest brotli window (RFC 7932 §9.1: `2^WBITS - 16` bytes) holding a body of `len`
+/// bytes; a larger window gains no ratio and costs both peers memory.
+pub(crate) fn brotli_window_bits(len: u64) -> Option<i32> {
+    (10..22).find(|bits| (1_u64 << bits) - 16 >= len)
+}
+
 /// Trait for applying some decorator to an `AsyncRead`
 pub(crate) trait DecorateAsyncRead {
     type Input: AsyncRead;

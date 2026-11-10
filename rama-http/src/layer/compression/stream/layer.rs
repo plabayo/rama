@@ -113,6 +113,8 @@ impl<P> StreamCompressionLayer<P> {
 
     rama_utils::macros::generate_set_and_with! {
         /// Sets the compression quality.
+        ///
+        /// Brotli uses quality 4 by default.
         pub fn quality(mut self, quality: CompressionLevel) -> Self {
             self.quality = quality;
             self
