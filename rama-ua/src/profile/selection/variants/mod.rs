@@ -1141,11 +1141,14 @@ fn initiator_matches(
 ) -> bool {
     match (requested, observed) {
         (Some(requested), observed) => observed == Some(requested),
-        (None, Some(RequestInitiator::Navigate)) => true,
-        (None, Some(_)) => false,
-        (None, None) => {
-            requested_fetch
-                || observed_fetch.is_none_or(|fetch| fetch.mode.as_deref() == Some("navigate"))
+        // Fetch metadata cannot tell a link from a GET form, nor fetch from XHR.
+        (None, _) if requested_fetch => true,
+        (None, observed) => {
+            observed.is_none_or(|observed| observed == RequestInitiator::Navigate)
+                && observed_fetch.is_none_or(|fetch| {
+                    fetch.mode.as_deref() == Some("navigate")
+                        && fetch.destination.as_deref() == Some("document")
+                })
         }
     }
 }

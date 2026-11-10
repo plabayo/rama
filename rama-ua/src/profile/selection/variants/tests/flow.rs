@@ -89,7 +89,7 @@ fn replay(
 }
 
 #[test]
-fn link_navigation_replays_the_capture_with_the_same_fetch_metadata() {
+fn request_without_initiator_replays_any_capture_with_its_fetch_metadata() {
     let database: UserAgentDatabase = [profile_with_flows(
         "browser",
         &[
@@ -103,38 +103,53 @@ fn link_navigation_replays_the_capture_with_the_same_fetch_metadata() {
                 Some(RequestInitiator::Form),
                 Some(NAVIGATE_LINK),
             ),
+            http_flow(Method::POST, Some(RequestInitiator::Xhr), Some(FETCH_API)),
         ],
     )]
     .into_iter()
     .collect();
-    for key in 0..16 {
-        let (_, scope, flow_match) = replay(
-            &database,
-            &http_flow(Method::GET, None, Some(NAVIGATE_LINK)),
-            key,
-        )
-        .unwrap();
-        assert_eq!(scope, scope_tag(1));
-        assert_eq!(
-            flow_match,
+    for (flow, expected, flow_match) in [
+        (
+            http_flow(Method::GET, None, Some(NAVIGATE_LINK)),
+            scope_tag(1),
+            FlowMatch::Exact,
+        ),
+        (
+            http_flow(Method::GET, None, Some(NAVIGATE_TYPED)),
+            scope_tag(0),
+            FlowMatch::Exact,
+        ),
+        (
+            http_flow(Method::POST, None, Some(FETCH_API)),
+            scope_tag(2),
+            FlowMatch::Exact,
+        ),
+        // A link click the caller names still differs from a form submission.
+        (
+            http_flow(
+                Method::GET,
+                Some(RequestInitiator::Navigate),
+                Some(NAVIGATE_LINK),
+            ),
+            scope_tag(1),
             FlowMatch::Nearest {
                 other_destination: false,
                 other_method: false,
-            }
-        );
-        let (_, scope, flow_match) = replay(
-            &database,
-            &http_flow(Method::GET, None, Some(NAVIGATE_TYPED)),
-            key,
-        )
-        .unwrap();
-        assert_eq!(scope, scope_tag(0));
-        assert_eq!(flow_match, FlowMatch::Exact);
+            },
+        ),
+    ] {
+        for key in 0..16 {
+            assert_eq!(
+                replay(&database, &flow, key).unwrap(),
+                ("browser".into(), expected, flow_match),
+                "{flow:?}"
+            );
+        }
     }
 }
 
 #[test]
-fn request_without_context_replays_a_navigation_not_a_subresource() {
+fn request_without_context_replays_a_top_level_navigation() {
     let database: UserAgentDatabase = [profile_with_flows(
         "browser",
         &[
@@ -144,6 +159,11 @@ fn request_without_context_replays_a_navigation_not_a_subresource() {
                 Some(NAVIGATE_TYPED),
             ),
             http_flow(Method::GET, None, Some(STYLE)),
+            http_flow(
+                Method::GET,
+                None,
+                Some(("navigate", "same-origin", "iframe", None)),
+            ),
         ],
     )]
     .into_iter()
@@ -178,14 +198,6 @@ fn uncaptured_flows_replay_the_closest_capture() {
             scope_tag(0),
             FlowMatch::Nearest {
                 other_destination: true,
-                other_method: false,
-            },
-        ),
-        (
-            http_flow(Method::POST, None, Some(FETCH_API)),
-            scope_tag(1),
-            FlowMatch::Nearest {
-                other_destination: false,
                 other_method: false,
             },
         ),
@@ -302,27 +314,16 @@ fn profiles_that_captured_the_flow_win_over_nearest_matches() {
 #[test]
 fn closest_capture_follows_the_documented_field_order() {
     const IMAGE: Fetch = ("no-cors", "same-origin", "image", None);
-    let requested = http_flow(Method::GET, None, Some(IMAGE));
+    let fetch = |method, fetch| http_flow(method, Some(RequestInitiator::Fetch), Some(fetch));
+    let requested = fetch(Method::GET, IMAGE);
     // Each differs from the request in one field, from least to most significant.
     let ranked = [
-        http_flow(Method::GET, Some(RequestInitiator::Form), Some(IMAGE)),
-        http_flow(
-            Method::GET,
-            None,
-            Some(("no-cors", "cross-site", "image", None)),
-        ),
-        http_flow(
-            Method::GET,
-            None,
-            Some(("no-cors", "same-origin", "image", Some("?1"))),
-        ),
-        http_flow(Method::POST, None, Some(IMAGE)),
-        http_flow(Method::GET, None, Some(STYLE)),
-        http_flow(
-            Method::GET,
-            None,
-            Some(("cors", "same-origin", "image", None)),
-        ),
+        http_flow(Method::GET, Some(RequestInitiator::Xhr), Some(IMAGE)),
+        fetch(Method::GET, ("no-cors", "cross-site", "image", None)),
+        fetch(Method::GET, ("no-cors", "same-origin", "image", Some("?1"))),
+        fetch(Method::POST, IMAGE),
+        fetch(Method::GET, STYLE),
+        fetch(Method::GET, ("cors", "same-origin", "image", None)),
     ];
     for closest in 0..ranked.len() {
         let database: UserAgentDatabase = [profile_with_flows("browser", &ranked[closest..])]
@@ -346,10 +347,10 @@ fn closest_capture_follows_the_documented_field_order() {
     let database: UserAgentDatabase = [profile_with_flows(
         "browser",
         &[
-            http_flow(Method::POST, None, Some(IMAGE)),
+            fetch(Method::POST, IMAGE),
             http_flow(
                 Method::GET,
-                Some(RequestInitiator::Form),
+                Some(RequestInitiator::Xhr),
                 Some(("no-cors", "cross-site", "image", Some("?1"))),
             ),
         ],

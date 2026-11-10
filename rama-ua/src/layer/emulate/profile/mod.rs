@@ -63,7 +63,8 @@ const MAXIMUM_FETCH_CONTEXT_BYTES: usize = kib(16);
 /// A profile holds the requests it captured per flow: the HTTP version, the method,
 /// the [`RequestInitiator`] and the `Sec-Fetch-Mode`, `Sec-Fetch-Dest`,
 /// `Sec-Fetch-User` and `Sec-Fetch-Site` values. A request without an initiator is
-/// described by its Fetch metadata, and without either it is a top-level
+/// described by its Fetch metadata, so a capture with the same method and Fetch
+/// metadata is its flow whatever initiated it; without either it is a top-level
 /// navigation. A request without `Sec-Fetch-*` headers takes the capture's.
 ///
 /// A capture of the request's own flow replays when the identity has one, and
@@ -80,8 +81,8 @@ const MAXIMUM_FETCH_CONTEXT_BYTES: usize = kib(16);
 /// 5. `Sec-Fetch-Site`
 /// 6. the initiator
 ///
-/// A link navigation thus replays a form submission with the same Fetch metadata,
-/// and a stylesheet replays a navigation when no stylesheet was captured. Identity
+/// A [`RequestInitiator::Navigate`] link navigation thus replays a form submission
+/// with the same Fetch metadata, and a stylesheet replays a navigation when no stylesheet was captured. Identity
 /// fallback only applies when the identity has no capture to stand in at all, such
 /// as none for the request's HTTP version.
 ///
