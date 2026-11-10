@@ -636,6 +636,7 @@ jobs:
             fuzz/corpus/socks5_codec
             fuzz/corpus/tls_client_hello
             fuzz/corpus/grpc_frames
+            fuzz/corpus/multipart_*
             fuzz/artifacts/quic_*
             fuzz/artifacts/http_capsule
             fuzz/artifacts/h3_*
@@ -649,6 +650,7 @@ jobs:
             fuzz/artifacts/socks5_codec
             fuzz/artifacts/tls_client_hello
             fuzz/artifacts/grpc_frames
+            fuzz/artifacts/multipart_*
 
   docsrs-emulation:
     permissions:
