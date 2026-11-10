@@ -790,6 +790,11 @@ required-features = ["http-full"]
 harness = false
 
 [[bench]]
+name = "http_router"
+required-features = ["http-full"]
+harness = false
+
+[[bench]]
 name = "ndjson_parser"
 harness = false
 

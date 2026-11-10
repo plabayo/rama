@@ -23,7 +23,7 @@ use rama_utils::collections::NonEmptySmallVec;
 use crate::{
     Request, Response,
     headers::Allow,
-    matcher::path::{compile_pattern_with_policy, match_pattern},
+    matcher::path::compile_pattern_with_policy,
     matcher::{HttpMatcher, MethodMatcher, PathMatchPolicy, UriParams},
     service::web::{
         IntoEndpointService, IntoEndpointServiceWithState,
@@ -829,13 +829,15 @@ where
         // most-specific-first: the first matching route owns the path
         // (method mismatch -> 405, no fall-through to a vaguer route).
         for entry in self.routes.iter() {
-            let ext = Extensions::new();
-            if !match_pattern(&entry.pattern, Some(&ext), path) {
+            let Some(captured) = entry
+                .pattern
+                .captures(path)
+                .map(|captures| UriParams::from_captures(&captures))
+            else {
                 continue;
-            }
+            };
 
             // merge with any existing (nested-router) UriParams
-            let captured = ext.get_ref::<UriParams>().cloned().unwrap_or_default();
             let params = match req.extensions().get_ref::<UriParams>() {
                 Some(existing) => {
                     let mut params = existing.clone();
@@ -846,19 +848,25 @@ where
             };
             req.extensions().insert(params);
 
+            // one scratch store serves every matcher that leaves it empty
+            let mut mext = Extensions::new();
             for (matcher, service) in entry.handlers.iter() {
-                let mext = Extensions::new();
                 if matcher.matches(Some(&mext), &req) {
                     req.extensions().extend(&mext);
                     return service.serve(req).await;
                 }
+                if mext.self_iter_all().next().is_some() {
+                    mext = Extensions::new();
+                }
             }
 
             for (matcher, service) in entry.fallback_handlers.iter() {
-                let mext = Extensions::new();
                 if matcher.matches(Some(&mext), &req) {
                     fallback_handler = Some((mext, service));
                     break;
+                }
+                if mext.self_iter_all().next().is_some() {
+                    mext = Extensions::new();
                 }
             }
 
@@ -948,7 +956,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rama_core::{extensions::ExtensionsRef, service::service_fn};
+    use rama_core::{
+        extensions::{Extension, ExtensionsRef},
+        service::service_fn,
+    };
     use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt, header};
 
     use super::*;
@@ -1863,5 +1874,42 @@ mod tests {
         for path in ["/API/Value", "/api/value", "/PROBLEM/a%2Fb"] {
             assert_eq!(get_text(&router, path).await.0, StatusCode::NOT_FOUND);
         }
+    }
+    #[derive(Debug, Clone, Extension)]
+    struct Leaked;
+
+    /// Records match metadata and then declines the request.
+    struct InsertThenDecline;
+
+    impl Matcher<Request> for InsertThenDecline {
+        fn matches(&self, ext: Option<&Extensions>, _req: &Request) -> bool {
+            if let Some(ext) = ext {
+                ext.insert(Leaked);
+            }
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn test_router_failed_matcher_leaves_no_extensions() {
+        async fn leak_free(req: Request) -> StatusCode {
+            if req.extensions().contains::<Leaked>() {
+                StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                StatusCode::OK
+            }
+        }
+
+        let router = Router::new()
+            .with_match_route(
+                "/items/{id}",
+                HttpMatcher::custom(InsertThenDecline),
+                StatusCode::IM_A_TEAPOT,
+            )
+            .with_match_route("/items/{id}", HttpMatcher::method_get(), leak_free);
+
+        let req = Request::get("/items/42").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 }
