@@ -6,6 +6,7 @@ use tokio::{
 };
 
 use super::{PeekInterrupt, PeekStopReason};
+use crate::bytes::BufMut;
 
 /// Event that cuts a peek short before it reached a verdict.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -256,6 +257,28 @@ impl PeekWaiter {
     where
         R: AsyncRead + Unpin + ?Sized,
     {
+        self.wait_for_read(reader.read(buf), peeked).await
+    }
+
+    pub(super) async fn read_buf<R, B>(
+        &mut self,
+        reader: &mut R,
+        buf: &mut B,
+        peeked: usize,
+    ) -> PeekRead
+    where
+        R: AsyncRead + Unpin + ?Sized,
+        B: BufMut + ?Sized,
+    {
+        self.wait_for_read(reader.read_buf(buf), peeked).await
+    }
+
+    async fn wait_for_read(
+        &mut self,
+        read: impl Future<Output = io::Result<usize>>,
+        peeked: usize,
+    ) -> PeekRead {
+        let mut read = std::pin::pin!(read);
         let progress = PeekProgress::from_peeked(peeked);
         loop {
             let deadline = self
@@ -268,7 +291,7 @@ impl PeekWaiter {
 
             let cutoff = tokio::select! {
                 biased;
-                result = reader.read(&mut *buf) => {
+                result = &mut read => {
                     return match result {
                         Ok(n) => PeekRead::Read(n),
                         Err(err) => PeekRead::Error(err),

@@ -962,3 +962,8 @@ harness = false
 name = "json_tokenizer"
 required-features = ["std"]
 harness = false
+
+[[bench]]
+name = "io_peek"
+required-features = ["haproxy"]
+harness = false
