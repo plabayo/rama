@@ -8,6 +8,10 @@ pub mod html;
 
 pub mod json_ld;
 
+#[cfg(feature = "multipart")]
+#[cfg_attr(docsrs, doc(cfg(feature = "multipart")))]
+pub mod multipart;
+
 #[cfg(feature = "rss")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rss")))]
 pub mod rss;

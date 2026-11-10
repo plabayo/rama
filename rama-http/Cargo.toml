@@ -34,7 +34,7 @@ compression = [
     "dep:flate2",
 ]
 hyperium = ["dep:rama-http-hyperium"]
-multipart = ["dep:multer", "dep:mime_guess", "hyperium"]
+multipart = ["dep:memchr", "dep:mime_guess"]
 html = ["dep:rama-http-macros", "dep:memchr"]
 rss = ["dep:quick-xml"]
 # `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the
@@ -61,7 +61,6 @@ jiff = { workspace = true }
 memchr = { workspace = true, optional = true, default-features = true }
 mime_guess = { workspace = true, optional = true }
 moka = { workspace = true, features = ["sync"] }
-multer = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 percent-encoding = { workspace = true, features = ["std"] }
 pin-project-lite = { workspace = true }

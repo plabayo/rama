@@ -1,38 +1,51 @@
 //! Server-side `multipart/form-data` extractor.
 //!
-//! Built on top of the [`multer`] crate. Use [`Multipart`] as a handler
-//! argument to iterate over form fields. See the `http_multipart` example
-//! for usage.
+//! Use [`Multipart`] as a handler argument to iterate over form fields. See
+//! the `http_multipart` example for usage.
 //!
 //! Spec references (vendored under `rama-http/specifications/`):
 //! - RFC 7578 — `multipart/form-data`
 //! - RFC 2046 — MIME Part Two: Media Types (boundary framing)
-//! - RFC 6266 / RFC 8187 — `Content-Disposition` / charset-encoded params
+//! - RFC 6266 — `Content-Disposition`
 //!
-//! Parsing leans accept-friendly: the underlying `multer` parser accepts
-//! the various non-ASCII filename forms surveyed by RFC 7578 §5.1.3
-//! (raw UTF-8, RFC 2047 encoded-words, RFC 2231 / RFC 8187 ext-value),
-//! tolerates transport padding around boundaries (RFC 2046 §5.1.1), and
-//! ignores preamble and epilogue bytes.
+//! Built on the sans-IO parser in [`crate::protocols::multipart`], which a
+//! proxy can use directly to rewrite a form as it streams by.
+//!
+//! The body is parsed as it streams in and field data is handed out as slices
+//! of the body chunks, without buffering or copying it.
+//!
+//! Framing is strict wherever leniency would leave room for two parsers to
+//! read one body differently: lines end in CRLF, header lines are not folded,
+//! a line opening with the delimiter is a delimiter, and a body has to reach
+//! its close delimiter. Transport padding after a boundary is accepted, the
+//! preamble and epilogue are ignored (RFC 2046 §5.1.1).
+//!
+//! Names and file names are UTF-8, taken from a token or quoted string as
+//! sent: percent-encoding and RFC 2047 encoded-words are not decoded, and
+//! `filename*` is ignored (RFC 7578 §4.2). A file name is client input and can
+//! hold a path, never use it as one.
 
 use crate::Request;
+use crate::mime::{self, Mime};
+use crate::protocols::multipart::{Boundary, Event, FormData, InvalidBoundary, ParseError, Parser};
 use crate::service::web::extract::{FromRequest, FromRequestBody};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use ahash::HashMap;
-use rama_core::bytes::Bytes;
+use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _, error_chain};
 use rama_core::extensions::Extension;
-use rama_core::futures::{Stream, TryStream};
+use rama_core::futures::Stream;
 use rama_http_types::{
     HeaderMap, StatusCode,
-    body::util::LengthLimitError,
+    body::{BodyDataStream, util::LengthLimitError},
     header::{CONTENT_TYPE, content_type::parse_mime_type},
 };
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
-use std::marker::PhantomData;
+use std::future::poll_fn;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::sync::Arc;
+use std::task::{Context, Poll, ready};
 
 /// Per-field size and part-count constraints for [`Multipart`].
 ///
@@ -136,22 +149,10 @@ impl MultipartConfig {
         }
     }
 
-    /// Build a fresh `multer::Constraints` from this config.
-    ///
-    /// Allocates a `String` per named field limit (multer requires
-    /// `Into<String>`); bounded by the small number of distinct field names
-    /// users typically configure. The extractor only calls this when a
-    /// `MultipartConfig` is actually present as a request extension —
-    /// otherwise the parser is built with no constraints at all.
-    fn to_constraints(&self) -> multer::Constraints {
-        let mut limit = multer::SizeLimit::new();
-        if let Some(default) = self.default_field_limit {
-            limit = limit.per_field(default);
-        }
-        for (name, &n) in &self.field_limits {
-            limit = limit.for_field(name.as_ref().to_owned(), n);
-        }
-        multer::Constraints::new().size_limit(limit)
+    /// Byte limit of the field with the given name.
+    fn field_limit(&self, name: Option<&str>) -> Option<u64> {
+        name.and_then(|name| self.field_limits.get(name).copied())
+            .or(self.default_field_limit)
     }
 }
 
@@ -168,66 +169,92 @@ impl MultipartConfig {
 /// borrows from `&mut self`, so the previous field must be dropped before the
 /// next is requested.
 ///
+/// An error ends the stream: every later read fails the same way.
+///
 /// For producing multipart bodies on the client, see
 /// [`crate::service::client::multipart`].
 #[derive(Debug)]
 pub struct Multipart {
-    inner: multer::Multipart<'static>,
+    body: BodyDataStream,
+    /// `None` when the boundary cannot frame a body, with `failed` set to match.
+    parser: Option<Parser>,
+    config: Option<Arc<MultipartConfig>>,
     max_parts: Option<usize>,
     parts_seen: usize,
+    /// Whether the data of the part opened last is still being read.
+    in_field: bool,
+    field_limit: Option<u64>,
+    field_read: u64,
+    failed: Option<MultipartErrorKind>,
 }
 
 impl Multipart {
     /// Build a `Multipart` from a body and boundary string with no per-field
     /// limits and the [default part limit](MultipartConfig::DEFAULT_MAX_PARTS).
-    pub fn from_body(body: crate::Body, boundary: impl Into<String>) -> Self {
+    pub fn from_body(body: crate::Body, boundary: impl AsRef<[u8]>) -> Self {
         Self::from_body_with_config(body, boundary, None)
     }
 
     /// Build a `Multipart` from a body and boundary string, applying the
     /// limits in `config`. Pass `None` for no per-field limits and the
     /// [default part limit](MultipartConfig::DEFAULT_MAX_PARTS).
+    ///
+    /// A boundary that cannot frame a body fails the first read.
     pub fn from_body_with_config(
         body: crate::Body,
-        boundary: impl Into<String>,
+        boundary: impl AsRef<[u8]>,
         config: Option<&MultipartConfig>,
     ) -> Self {
-        Self::from_stream_with_config(body.into_data_stream(), boundary, config)
+        Self::new(body, Boundary::new(boundary), config.cloned().map(Arc::new))
     }
 
     /// Construct from any stream of `Result<Bytes, _>` and a boundary, with the
     /// limits in `config`. Pass `None` for no per-field limits and the
     /// [default part limit](MultipartConfig::DEFAULT_MAX_PARTS).
-    pub fn from_stream_with_config<S, O, E, B>(
+    ///
+    /// A boundary that cannot frame a body fails the first read.
+    pub fn from_stream_with_config<S, O, E>(
         stream: S,
-        boundary: B,
+        boundary: impl AsRef<[u8]>,
         config: Option<&MultipartConfig>,
     ) -> Self
     where
         S: Stream<Item = Result<O, E>> + Send + 'static,
         O: Into<Bytes> + 'static,
-        E: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
-        B: Into<String>,
+        E: Into<BoxError> + 'static,
     {
-        let (inner, max_parts) = match config {
-            Some(c) => (
-                multer::Multipart::with_constraints(stream, boundary, c.to_constraints()),
-                c.max_parts,
-            ),
-            None => (
-                multer::Multipart::new(stream, boundary),
-                Some(MultipartConfig::DEFAULT_MAX_PARTS),
-            ),
-        };
+        Self::from_body_with_config(crate::Body::from_stream(stream), boundary, config)
+    }
+
+    fn new(
+        body: crate::Body,
+        boundary: Result<Boundary, InvalidBoundary>,
+        config: Option<Arc<MultipartConfig>>,
+    ) -> Self {
+        let parser = boundary.ok().map(|boundary| Parser::new(&boundary));
         Self {
-            inner,
-            max_parts,
+            body: body.into_data_stream(),
+            failed: parser
+                .is_none()
+                .then_some(MultipartErrorKind::InvalidBoundary),
+            parser,
+            max_parts: match &config {
+                Some(config) => config.max_parts,
+                None => Some(MultipartConfig::DEFAULT_MAX_PARTS),
+            },
+            config,
             parts_seen: 0,
+            in_field: false,
+            field_limit: None,
+            field_read: 0,
         }
     }
 
     /// Yield the next [`Field`] in the multipart stream, or `None` if the
     /// stream is exhausted.
+    ///
+    /// What is left unread of the previous field is skipped, and still counts
+    /// toward its byte limit.
     ///
     /// Fails once the stream holds more parts than the configured maximum,
     /// and keeps failing on later calls.
@@ -235,26 +262,115 @@ impl Multipart {
     /// The previous `Field` must be dropped before this returns; the borrow
     /// checker enforces this.
     pub async fn next_field(&mut self) -> Result<Option<Field<'_>>, MultipartError> {
-        self.check_part_count()?;
-        match self.inner.next_field().await {
-            Ok(Some(inner)) => {
-                self.parts_seen = self.parts_seen.saturating_add(1);
-                self.check_part_count()?;
-                Ok(Some(Field {
-                    inner,
-                    _marker: PhantomData,
-                }))
+        while poll_fn(|cx| self.poll_chunk(cx)).await?.is_some() {}
+
+        // the parser opens a part or ends the stream once the previous part is done
+        let Event::Part(headers) = poll_fn(|cx| self.poll_event(cx)).await? else {
+            return Ok(None);
+        };
+
+        self.parts_seen = self.parts_seen.saturating_add(1);
+        if let Some(max) = self.max_parts
+            && self.parts_seen > max
+        {
+            return Err(self.fail(MultipartErrorKind::TooManyParts, None));
+        }
+
+        let Ok(disposition) = FormData::from_headers(&headers) else {
+            return Err(self.fail(MultipartErrorKind::InvalidContentDisposition, None));
+        };
+        let content_type = match read_content_type(&headers) {
+            Ok(content_type) => content_type,
+            Err(kind) => return Err(self.fail(kind, None)),
+        };
+
+        self.in_field = true;
+        self.field_read = 0;
+        self.field_limit = self
+            .config
+            .as_deref()
+            .and_then(|config| config.field_limit(disposition.name()));
+        let (name, file_name) = disposition.into_parts();
+
+        Ok(Some(Field {
+            index: self.parts_seen - 1,
+            multipart: self,
+            headers,
+            name,
+            file_name,
+            content_type,
+        }))
+    }
+
+    /// Drive the parser to its next event, reading the body as it asks for input.
+    fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<Result<Event, MultipartError>> {
+        if let Some(kind) = self.failed {
+            return Poll::Ready(Err(kind.into()));
+        }
+        let Some(parser) = &mut self.parser else {
+            return Poll::Ready(Err(MultipartErrorKind::InvalidBoundary.into()));
+        };
+        loop {
+            match parser.step() {
+                Ok(Event::NeedInput) => match ready!(Pin::new(&mut self.body).poll_next(cx)) {
+                    Some(Ok(chunk)) => parser.feed(chunk),
+                    Some(Err(err)) => {
+                        let kind = if is_size_limit_error(&err) {
+                            MultipartErrorKind::BodyTooLarge
+                        } else {
+                            MultipartErrorKind::Stream
+                        };
+                        return Poll::Ready(Err(self.fail(kind, Some(err))));
+                    }
+                    None => parser.set_eof(),
+                },
+                Ok(event) => return Poll::Ready(Ok(event)),
+                Err(err) => {
+                    return Poll::Ready(Err(self.fail(MultipartErrorKind::Parse(err), None)));
+                }
             }
-            Ok(None) => Ok(None),
-            Err(err) => Err(MultipartError::from(err)),
         }
     }
 
-    fn check_part_count(&self) -> Result<(), MultipartError> {
-        match self.max_parts {
-            Some(max) if self.parts_seen > max => Err(MultipartError::too_many_parts(max)),
-            _ => Ok(()),
+    /// Next chunk of the open field, `None` once its data is read in full.
+    fn poll_chunk(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Bytes>, MultipartError>> {
+        if !self.in_field {
+            if let Some(kind) = self.failed {
+                return Poll::Ready(Err(kind.into()));
+            }
+            return Poll::Ready(Ok(None));
         }
+        // a part's data is followed by nothing but the end of that part
+        let Event::Data(data) = ready!(self.poll_event(cx))? else {
+            self.in_field = false;
+            return Poll::Ready(Ok(None));
+        };
+        self.field_read = self.field_read.saturating_add(data.len() as u64);
+        if let Some(limit) = self.field_limit
+            && self.field_read > limit
+        {
+            let source = BoxError::from_static_str("multipart field exceeds its limit")
+                .context_field("limit", limit);
+            return Poll::Ready(Err(
+                self.fail(MultipartErrorKind::FieldTooLarge, Some(source))
+            ));
+        }
+        Poll::Ready(Ok(Some(data)))
+    }
+
+    fn fail(&mut self, kind: MultipartErrorKind, source: Option<BoxError>) -> MultipartError {
+        self.failed = Some(kind);
+        self.in_field = false;
+        MultipartError { kind, source }
+    }
+}
+
+fn read_content_type(headers: &HeaderMap) -> Result<Option<Mime>, MultipartErrorKind> {
+    let mut values = headers.get_all(CONTENT_TYPE).iter();
+    match (values.next(), values.next()) {
+        (None, _) => Ok(None),
+        (Some(value), None) => Ok(value.to_str().ok().and_then(|value| value.parse().ok())),
+        (Some(_), Some(_)) => Err(MultipartErrorKind::DuplicateContentType),
     }
 }
 
@@ -265,21 +381,31 @@ impl Multipart {
 /// chunks via [`chunk`](Self::chunk) or by iterating the field as a [`Stream`].
 #[derive(Debug)]
 pub struct Field<'a> {
-    inner: multer::Field<'static>,
-    _marker: PhantomData<&'a mut Multipart>,
+    multipart: &'a mut Multipart,
+    headers: HeaderMap,
+    name: Option<Box<str>>,
+    file_name: Option<Box<str>>,
+    content_type: Option<Mime>,
+    index: usize,
 }
 
 impl Field<'_> {
     /// Field name from `Content-Disposition: form-data; name="…"`.
+    ///
+    /// `None` when the part has no `Content-Disposition` header or the header
+    /// has no `name` parameter.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
-        self.inner.name()
+        self.name.as_deref()
     }
 
     /// File name from `Content-Disposition: form-data; filename="…"`.
+    ///
+    /// This is the value the client sent, which can be a full path or hold
+    /// `..` segments.
     #[must_use]
     pub fn file_name(&self) -> Option<&str> {
-        self.inner.file_name()
+        self.file_name.as_deref()
     }
 
     /// Parsed `Content-Type` of the field, if any.
@@ -288,35 +414,62 @@ impl Field<'_> {
     /// RFC 7578 §4.4 the default in that case is `text/plain`; users that
     /// want to honor that default should substitute it themselves.
     #[must_use]
-    pub fn content_type(&self) -> Option<&crate::mime::Mime> {
-        self.inner.content_type()
+    pub fn content_type(&self) -> Option<&Mime> {
+        self.content_type.as_ref()
     }
 
     /// Header map of this field.
-    pub fn headers(&self) -> Result<HeaderMap, rama_http_types::Error> {
-        rama_http_hyperium::TryIntoRamaHttp::try_into_rama_http(self.inner.headers())
+    #[must_use]
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
     }
 
     /// Index of this field within the multipart stream (0-based).
     #[must_use]
     pub fn index(&self) -> usize {
-        self.inner.index()
+        self.index
     }
 
     /// Collect the entire field body as bytes.
-    pub async fn bytes(self) -> Result<Bytes, MultipartError> {
-        self.inner.bytes().await.map_err(MultipartError::from)
+    pub async fn bytes(mut self) -> Result<Bytes, MultipartError> {
+        let Some(first) = self.chunk().await? else {
+            return Ok(Bytes::new());
+        };
+        // a field within one body chunk is handed out as is
+        let Some(second) = self.chunk().await? else {
+            return Ok(first);
+        };
+        let mut collected = BytesMut::with_capacity(first.len() + second.len());
+        collected.extend_from_slice(&first);
+        collected.extend_from_slice(&second);
+        while let Some(chunk) = self.chunk().await? {
+            collected.extend_from_slice(&chunk);
+        }
+        Ok(collected.freeze())
     }
 
-    /// Collect the entire field body as a UTF-8 string. Honors a
-    /// `charset` parameter on the field's `Content-Type` if present.
+    /// Collect the entire field body as a UTF-8 string.
+    ///
+    /// Fails when the body is not UTF-8, or when the `charset` parameter on
+    /// the field's `Content-Type` names another encoding; read such a field
+    /// with [`bytes`](Self::bytes) and decode it as needed. Such a failure
+    /// leaves the stream usable: the next field can still be read.
     pub async fn text(self) -> Result<String, MultipartError> {
-        self.inner.text().await.map_err(MultipartError::from)
+        let is_utf8 = self
+            .content_type
+            .as_ref()
+            .and_then(|content_type| content_type.get_param(mime::CHARSET))
+            .is_none_or(|charset| charset == mime::UTF_8 || charset == "us-ascii");
+        if !is_utf8 {
+            return Err(MultipartErrorKind::InvalidText.into());
+        }
+        let bytes = self.bytes().await?;
+        String::from_utf8(bytes.into()).map_err(|_e| MultipartErrorKind::InvalidText.into())
     }
 
     /// Pull the next chunk of the field body, or `None` once it is exhausted.
     pub async fn chunk(&mut self) -> Result<Option<Bytes>, MultipartError> {
-        self.inner.chunk().await.map_err(MultipartError::from)
+        poll_fn(|cx| self.multipart.poll_chunk(cx)).await
     }
 }
 
@@ -324,109 +477,126 @@ impl Stream for Field<'_> {
     type Item = Result<Bytes, MultipartError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        let inner = Pin::new(&mut this.inner);
-        inner
-            .try_poll_next(cx)
-            .map(|opt| opt.map(|res| res.map_err(MultipartError::from)))
+        self.get_mut()
+            .multipart
+            .poll_chunk(cx)
+            .map(Result::transpose)
     }
 }
 
 /// Error type returned while reading a [`Multipart`] field.
 ///
-/// Maps multer parser failures to suitable HTTP status codes when used as a
-/// rejection: parse errors return `400 Bad Request`, size and part-count
-/// violations return `413 Payload Too Large`, and unexpected stream read
-/// failures return `500 Internal Server Error`.
+/// Maps to an HTTP status when used as a rejection: a malformed body returns
+/// `400 Bad Request`, size and part-count violations return
+/// `413 Payload Too Large`, and unexpected stream read failures return
+/// `500 Internal Server Error`.
 #[derive(Debug)]
 pub struct MultipartError {
     kind: MultipartErrorKind,
+    source: Option<BoxError>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum MultipartErrorKind {
-    Parse(multer::Error),
-    TooManyParts(BoxError),
+    Parse(ParseError),
+    InvalidBoundary,
+    InvalidContentDisposition,
+    DuplicateContentType,
+    InvalidText,
+    FieldTooLarge,
+    TooManyParts,
+    /// The body stream failed on a size limit of its own.
+    BodyTooLarge,
+    Stream,
+}
+
+impl MultipartErrorKind {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Parse(ParseError::Incomplete) => "body ended before its close delimiter",
+            Self::Parse(ParseError::InvalidDelimiter) => "malformed delimiter line",
+            Self::Parse(ParseError::HeadersTooLarge) => "part headers are too large",
+            Self::Parse(_) => "malformed part headers",
+            Self::InvalidBoundary => "invalid boundary",
+            Self::InvalidContentDisposition => "invalid part `Content-Disposition`",
+            Self::DuplicateContentType => "part has more than one `Content-Type`",
+            Self::InvalidText => "field is not UTF-8 text",
+            Self::FieldTooLarge => "field exceeds its size limit",
+            Self::TooManyParts => "too many parts",
+            Self::BodyTooLarge => "body exceeds its size limit",
+            Self::Stream => "failed to read the body",
+        }
+    }
+}
+
+impl From<MultipartErrorKind> for MultipartError {
+    fn from(kind: MultipartErrorKind) -> Self {
+        Self { kind, source: None }
+    }
 }
 
 impl MultipartError {
-    fn too_many_parts(max: usize) -> Self {
-        Self {
-            kind: MultipartErrorKind::TooManyParts(
-                BoxError::from_static_str("multipart stream exceeds the part limit")
-                    .context_field("max_parts", max),
-            ),
-        }
-    }
-
     /// HTTP status used when this error is converted into a response.
     #[must_use]
     pub fn status(&self) -> StatusCode {
-        match &self.kind {
-            MultipartErrorKind::TooManyParts(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            MultipartErrorKind::Parse(source) if is_size_limit_error(source) => {
-                StatusCode::PAYLOAD_TOO_LARGE
-            }
-            MultipartErrorKind::Parse(
-                multer::Error::StreamReadFailed(_) | multer::Error::LockFailure,
-            ) => StatusCode::INTERNAL_SERVER_ERROR,
-            MultipartErrorKind::Parse(_) => StatusCode::BAD_REQUEST,
+        match self.kind {
+            MultipartErrorKind::FieldTooLarge
+            | MultipartErrorKind::TooManyParts
+            | MultipartErrorKind::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            MultipartErrorKind::Stream => StatusCode::INTERNAL_SERVER_ERROR,
+            MultipartErrorKind::Parse(_)
+            | MultipartErrorKind::InvalidBoundary
+            | MultipartErrorKind::InvalidContentDisposition
+            | MultipartErrorKind::DuplicateContentType
+            | MultipartErrorKind::InvalidText => StatusCode::BAD_REQUEST,
         }
     }
 
     /// Body text used for the rejection response.
     #[must_use]
     pub fn body_text(&self) -> String {
-        match &self.kind {
-            MultipartErrorKind::TooManyParts(_) => {
+        match self.kind {
+            MultipartErrorKind::TooManyParts => {
                 "Request has too many `multipart/form-data` parts".to_owned()
             }
-            MultipartErrorKind::Parse(_) if self.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            MultipartErrorKind::FieldTooLarge | MultipartErrorKind::BodyTooLarge => {
                 "Request payload is too large".to_owned()
             }
-            MultipartErrorKind::Parse(source) => {
-                format!("Failed to parse `multipart/form-data` request: {source}")
-            }
-        }
-    }
-}
-
-impl From<multer::Error> for MultipartError {
-    fn from(source: multer::Error) -> Self {
-        Self {
-            kind: MultipartErrorKind::Parse(source),
+            kind => [
+                "Failed to parse `multipart/form-data` request: ",
+                kind.reason(),
+            ]
+            .concat(),
         }
     }
 }
 
 // Size errors can arrive wrapped, e.g. from a nested multipart stream or a limited body.
-fn is_size_limit_error(error: &multer::Error) -> bool {
-    error_chain(error).any(|cause| {
+fn is_size_limit_error(error: &BoxError) -> bool {
+    error_chain(error.as_ref()).any(|cause| {
         cause.is::<LengthLimitError>()
-            || matches!(
-                cause.downcast_ref::<multer::Error>(),
-                Some(
-                    multer::Error::FieldSizeExceeded { .. }
-                        | multer::Error::StreamSizeExceeded { .. }
-                )
-            )
             || cause
                 .downcast_ref::<MultipartError>()
-                .is_some_and(|nested| matches!(nested.kind, MultipartErrorKind::TooManyParts(_)))
+                .is_some_and(|nested| nested.status() == StatusCode::PAYLOAD_TOO_LARGE)
     })
 }
 
 impl std::fmt::Display for MultipartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Error parsing `multipart/form-data` request")
+        write!(
+            f,
+            "Error parsing `multipart/form-data` request: {}",
+            self.kind.reason()
+        )
     }
 }
 
 impl std::error::Error for MultipartError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.kind {
-            MultipartErrorKind::Parse(source) => Some(source),
-            MultipartErrorKind::TooManyParts(source) => Some(source.as_ref()),
+        match (&self.source, &self.kind) {
+            (Some(source), _) => Some(source.as_ref()),
+            (None, MultipartErrorKind::Parse(err)) => Some(err),
+            (None, _) => None,
         }
     }
 }
@@ -445,8 +615,8 @@ impl crate::service::web::endpoint::IntoResponse for MultipartError {
 define_http_rejection! {
     #[status = BAD_REQUEST]
     #[body = "Multipart request is missing or has an invalid `Content-Type` boundary"]
-    /// Rejection used when no boundary parameter is present in the
-    /// `Content-Type` header (or when the header itself is missing).
+    /// Rejection used when the `Content-Type` header has no usable boundary
+    /// parameter: none, more than one, or one that cannot frame a body.
     pub struct InvalidMultipartBoundary;
 }
 
@@ -477,6 +647,21 @@ impl FromRequest for Multipart {
     }
 }
 
+/// The boundary framing a `multipart/form-data` body of the given type.
+///
+/// The type holds the first of repeated parameters, as every request gate reads it. A
+/// `boundary*` is rejected: it leaves room for another reader of the request to frame the
+/// body differently.
+fn read_boundary(content_type: &Mime) -> Result<Boundary, InvalidMultipartBoundary> {
+    if content_type.get_param("boundary*").is_some() {
+        return Err(InvalidMultipartBoundary);
+    }
+    let boundary = content_type
+        .get_param(mime::BOUNDARY)
+        .ok_or(InvalidMultipartBoundary)?;
+    Boundary::new(boundary.as_str()).map_err(|_e| InvalidMultipartBoundary)
+}
+
 impl FromRequestBody for Multipart {
     fn from_request_body(
         parts: &crate::request::Parts,
@@ -488,31 +673,20 @@ impl FromRequestBody for Multipart {
                 .ok_or(InvalidMultipartContentType)?;
 
             // RFC 7578 §4.1 requires the media type to be `multipart/form-data`.
-            // `multer::parse_boundary` only checks for a `boundary=` parameter
-            // and would otherwise accept `multipart/mixed`, `application/foo`,
-            // etc. Reject anything else with 415.
-            if content_type.type_() != crate::mime::MULTIPART
-                || content_type.subtype() != crate::mime::FORM_DATA
+            if content_type.type_() != mime::MULTIPART || content_type.subtype() != mime::FORM_DATA
             {
                 return Err(InvalidMultipartContentType.into());
             }
-            let boundary = multer::parse_boundary(content_type.as_ref())
-                .map_err(|_e| InvalidMultipartBoundary)?;
+            let boundary = read_boundary(&content_type)?;
 
-            // Look up the optional `MultipartConfig` extension via `get_arc` to
-            // avoid cloning the inner field-limits map on every request. When no
-            // config is set we skip building `multer::Constraints` entirely.
+            // `get_arc` shares the config instead of cloning its field-limits map per request.
             let config = parts.extensions.get_arc::<MultipartConfig>();
             Ok((boundary, config))
         })();
 
         async move {
             let (boundary, config) = prepared?;
-            Ok(Self::from_body_with_config(
-                body,
-                boundary,
-                config.as_deref(),
-            ))
+            Ok(Self::new(body, Ok(boundary), config))
         }
     }
 }
@@ -670,8 +844,7 @@ mod test {
     async fn test_multipart_quoted_boundary_in_content_type() {
         // RFC 2046 §5.1.1 allows the boundary to be quoted in the
         // Content-Type header, especially when it contains characters that
-        // require it. multer's parser strips the quotes; our wrapper must
-        // handle it transparently.
+        // require it. The quotes are not part of the boundary.
         let service =
             WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
                 let f = mp.next_field().await.unwrap().unwrap();
@@ -755,11 +928,8 @@ mod test {
         // RFC 7578 §4.2 explicitly forbids senders from using the RFC 5987
         // `filename*` ext-value in multipart/form-data; §5.1.3 likewise
         // doesn't list it among the encodings receivers should accept.
-        // multer correspondingly does not decode `filename*` and returns
-        // `None` for `file_name()` when only that form is present. Our
-        // wrapper accepts the request (we don't 415/400 on it), the field
-        // body is intact, and we surface multer's choice unchanged. Pin
-        // this so any future change in multer or our pipeline is caught.
+        // `filename*` is not decoded: `file_name()` is `None` when only that
+        // form is present, the request is accepted and the field body is intact.
         let mut body = Vec::new();
         body.extend_from_slice(b"--");
         body.extend_from_slice(BOUNDARY.as_bytes());
@@ -777,7 +947,6 @@ mod test {
             WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
                 let f = mp.next_field().await.unwrap().unwrap();
                 assert_eq!(f.name(), Some("file"));
-                // multer 3.1 does not decode `filename*` — pin that.
                 assert_eq!(f.file_name(), None);
                 assert_eq!(f.text().await.unwrap(), "hello");
                 StatusCode::OK
@@ -796,8 +965,7 @@ mod test {
     async fn test_multipart_filename_utf8_passthrough() {
         // RFC 7578 §5.1.1 says senders SHOULD use UTF-8 for non-ASCII
         // names; §5.1.3 says receivers should accept unencoded UTF-8.
-        // multer passes raw bytes through verbatim. Pin the exact
-        // decoded value.
+        // The raw bytes pass through verbatim.
         let mut body = Vec::new();
         body.extend_from_slice(b"--");
         body.extend_from_slice(BOUNDARY.as_bytes());
@@ -983,66 +1151,47 @@ mod test {
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    #[test]
-    fn test_size_limit_anywhere_in_error_chain_returns_payload_too_large() {
-        fn nested(source: multer::Error) -> multer::Error {
-            multer::Error::StreamReadFailed(Box::new(MultipartError::from(source)))
-        }
+    /// Status of a read whose body stream fails with `error`.
+    async fn stream_error_status(error: BoxError) -> (StatusCode, String) {
+        let stream = rama_core::futures::stream::once(async { Err::<Bytes, _>(error) });
+        let mut mp = Multipart::from_stream_with_config(stream, BOUNDARY, None);
+        let error = mp.next_field().await.unwrap_err();
+        (error.status(), error.body_text())
+    }
 
-        for (source, expected) in [
-            (
-                multer::Error::FieldSizeExceeded {
-                    limit: 8,
-                    field_name: None,
-                },
-                StatusCode::PAYLOAD_TOO_LARGE,
-            ),
-            (
-                multer::Error::StreamSizeExceeded { limit: 8 },
-                StatusCode::PAYLOAD_TOO_LARGE,
-            ),
-            (
-                nested(multer::Error::FieldSizeExceeded {
-                    limit: 8,
-                    field_name: Some("inner".to_owned()),
-                }),
-                StatusCode::PAYLOAD_TOO_LARGE,
-            ),
-            (
-                nested(nested(multer::Error::StreamSizeExceeded { limit: 8 })),
-                StatusCode::PAYLOAD_TOO_LARGE,
-            ),
-            (
-                multer::Error::StreamReadFailed(Box::new(std::io::Error::other("read failed"))),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ),
-            (
-                nested(multer::Error::IncompleteStream),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            ),
-            (multer::Error::IncompleteStream, StatusCode::BAD_REQUEST),
-        ] {
-            let error = MultipartError::from(source);
-            assert_eq!(error.status(), expected, "{error:?}");
-            if expected == StatusCode::PAYLOAD_TOO_LARGE {
-                assert_eq!(error.body_text(), "Request payload is too large");
-            }
+    /// An error as the body stream of an outer `Multipart` would report it for `inner`.
+    fn nested(inner: impl Into<BoxError>) -> BoxError {
+        MultipartError {
+            kind: MultipartErrorKind::Stream,
+            source: Some(inner.into()),
         }
+        .into()
     }
 
     #[tokio::test]
-    async fn test_nested_multipart_size_limit_returns_payload_too_large() {
-        let inner = rama_core::futures::stream::once(async {
-            Err::<Bytes, _>(MultipartError::from(multer::Error::FieldSizeExceeded {
-                limit: 8,
-                field_name: Some("outer".to_owned()),
-            }))
-        });
-        let mut mp = Multipart::from_stream_with_config(inner, BOUNDARY, None);
+    async fn test_size_limit_anywhere_in_error_chain_returns_payload_too_large() {
+        let field = || MultipartError::from(MultipartErrorKind::FieldTooLarge);
+        let parts = || MultipartError::from(MultipartErrorKind::TooManyParts);
+        for error in [
+            field().into(),
+            parts().into(),
+            nested(field()),
+            nested(nested(parts())),
+            nested(LengthLimitError::default()),
+        ] {
+            let (status, text) = stream_error_status(error).await;
+            assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(text, "Request payload is too large");
+        }
 
-        let error = mp.next_field().await.unwrap_err();
-        assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(error.body_text(), "Request payload is too large");
+        for error in [
+            BoxError::from(std::io::Error::other("read failed")),
+            nested(std::io::Error::other("read failed")),
+            MultipartError::from(MultipartErrorKind::Parse(ParseError::Incomplete)).into(),
+        ] {
+            let (status, _) = stream_error_status(error).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     #[tokio::test]
@@ -1238,10 +1387,393 @@ mod test {
         assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    #[test]
-    fn test_nested_part_limit_returns_payload_too_large() {
-        let nested = multer::Error::StreamReadFailed(Box::new(MultipartError::too_many_parts(1)));
-        let error = MultipartError::from(nested);
-        assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    /// A body of parts given as `(header lines, data)`.
+    fn raw_body(parts: &[(&[&str], &[u8])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (lines, data) in parts {
+            out.extend_from_slice(b"--");
+            out.extend_from_slice(BOUNDARY.as_bytes());
+            out.extend_from_slice(b"\r\n");
+            for line in *lines {
+                out.extend_from_slice(line.as_bytes());
+                out.extend_from_slice(b"\r\n");
+            }
+            out.extend_from_slice(b"\r\n");
+            out.extend_from_slice(data);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b"--");
+        out.extend_from_slice(BOUNDARY.as_bytes());
+        out.extend_from_slice(b"--\r\n");
+        out
+    }
+
+    /// A `Multipart` over `body` arriving in chunks of `size` bytes.
+    fn chunked(body: &[u8], size: usize, config: Option<&MultipartConfig>) -> Multipart {
+        let chunks: Vec<_> = body
+            .chunks(size)
+            .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+            .collect();
+        Multipart::from_stream_with_config(
+            rama_core::futures::stream::iter(chunks),
+            BOUNDARY,
+            config,
+        )
+    }
+
+    type Collected = (Option<String>, Option<String>, Option<String>, usize, Bytes);
+
+    async fn collect(mut mp: Multipart) -> Result<Vec<Collected>, MultipartError> {
+        let mut fields = Vec::new();
+        while let Some(field) = mp.next_field().await? {
+            fields.push((
+                field.name().map(ToOwned::to_owned),
+                field.file_name().map(ToOwned::to_owned),
+                field.content_type().map(ToString::to_string),
+                field.index(),
+                field.bytes().await?,
+            ));
+        }
+        Ok(fields)
+    }
+
+    #[tokio::test]
+    async fn test_multipart_reads_the_same_at_every_chunk_size() {
+        let mut large = Vec::new();
+        for n in 0..2000u32 {
+            large.extend_from_slice(b"\r\n--");
+            large.extend_from_slice(&BOUNDARY.as_bytes()[..(n as usize) % BOUNDARY.len()]);
+            large.extend_from_slice(&n.to_be_bytes());
+        }
+        let body = body_with(&[
+            ("text", None, None, b"hello"),
+            ("empty", None, None, b""),
+            (
+                "file",
+                Some("a.bin"),
+                Some("application/octet-stream"),
+                &large,
+            ),
+            (
+                "lines",
+                None,
+                Some("text/plain; charset=utf-8"),
+                b"\r\n\r\n",
+            ),
+        ]);
+
+        let whole = collect(chunked(&body, body.len(), None)).await.unwrap();
+        assert_eq!(whole.len(), 4);
+        assert_eq!(whole[0].0.as_deref(), Some("text"));
+        assert_eq!(whole[1].4, Bytes::new());
+        assert_eq!(whole[2].1.as_deref(), Some("a.bin"));
+        assert_eq!(whole[2].2.as_deref(), Some("application/octet-stream"));
+        assert_eq!(whole[2].4, large);
+        assert_eq!(whole[3].3, 3);
+        assert_eq!(&whole[3].4[..], b"\r\n\r\n");
+
+        for size in [1, 2, 3, 7, 31, 64, 1021, 4096] {
+            let split = collect(chunked(&body, size, None)).await.unwrap();
+            assert_eq!(split, whole, "chunks of {size}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_field_limit_is_exact() {
+        let config = MultipartConfig::new().with_field_limit("a", 5);
+        for size in [1, 4, 1024] {
+            let fits = body_with(&[("a", None, None, b"12345"), ("b", None, None, b"123456")]);
+            let fields = collect(chunked(&fits, size, Some(&config))).await.unwrap();
+            assert_eq!(fields.len(), 2, "chunks of {size}");
+
+            let over = body_with(&[("a", None, None, b"123456")]);
+            let error = collect(chunked(&over, size, Some(&config)))
+                .await
+                .unwrap_err();
+            assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(error.body_text(), "Request payload is too large");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_skipped_field_counts_toward_its_limit() {
+        let config = MultipartConfig::new().with_field_limit("a", 5);
+        let body = body_with(&[("a", None, None, b"123456"), ("b", None, None, b"v")]);
+        for size in [1, 1024] {
+            let mut mp = chunked(&body, size, Some(&config));
+            drop(mp.next_field().await.unwrap().unwrap());
+            let error = mp.next_field().await.unwrap_err();
+            assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_partially_read_field_is_skipped() {
+        let body = body_with(&[("a", None, None, &[b'x'; 300]), ("b", None, None, b"v")]);
+        let mut mp = chunked(&body, 16, None);
+        let mut field = mp.next_field().await.unwrap().unwrap();
+        assert!(field.chunk().await.unwrap().is_some());
+        drop(field);
+        let field = mp.next_field().await.unwrap().unwrap();
+        assert_eq!(field.name(), Some("b"));
+        assert_eq!(field.text().await.unwrap(), "v");
+        assert!(mp.next_field().await.unwrap().is_none());
+        assert!(mp.next_field().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_multipart_errors_repeat() {
+        let mut body = body_with(&[("a", None, None, b"1"), ("b", None, None, b"2")]);
+        // drop the close delimiter
+        body.truncate(body.len() - BOUNDARY.len() - 6);
+        for size in [1, 1024] {
+            let mut mp = chunked(&body, size, None);
+            let field = mp.next_field().await.unwrap().unwrap();
+            assert_eq!(field.text().await.unwrap(), "1");
+            let mut field = mp.next_field().await.unwrap().unwrap();
+            // the data seen so far may still turn out to open a delimiter
+            let error = loop {
+                match field.chunk().await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => panic!("field ended without its delimiter"),
+                    Err(error) => break error,
+                }
+            };
+            assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                error.body_text(),
+                "Failed to parse `multipart/form-data` request: body ended before its close delimiter"
+            );
+            assert_eq!(
+                field.chunk().await.unwrap_err().status(),
+                StatusCode::BAD_REQUEST
+            );
+            drop(field);
+            for _ in 0..2 {
+                let error = mp.next_field().await.unwrap_err();
+                assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_invalid_boundary_fails_every_read() {
+        for boundary in [
+            "",
+            "ends with space ",
+            "line\nbreak",
+            "caf\u{e9}",
+            &"x".repeat(71),
+        ] {
+            let mut mp = Multipart::from_body(crate::Body::from("--x--\r\n"), boundary);
+            for _ in 0..2 {
+                let error = mp.next_field().await.unwrap_err();
+                assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{boundary:?}");
+                assert_eq!(
+                    error.body_text(),
+                    "Failed to parse `multipart/form-data` request: invalid boundary"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_boundary_parameter_rules() {
+        let service =
+            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+                match mp.next_field().await {
+                    Ok(Some(_)) => StatusCode::OK,
+                    _ => StatusCode::IM_A_TEAPOT,
+                }
+            });
+        for (content_type, status) in [
+            (ct(), StatusCode::OK),
+            // the first of repeated parameters is the one in use
+            (
+                format!("multipart/form-data; boundary={BOUNDARY}; BOUNDARY=other"),
+                StatusCode::OK,
+            ),
+            (
+                format!("multipart/form-data; boundary=other; boundary={BOUNDARY}"),
+                StatusCode::IM_A_TEAPOT,
+            ),
+            (
+                format!("multipart/form-data; boundary*=utf-8''other; boundary={BOUNDARY}"),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                format!("multipart/form-data; boundary={BOUNDARY}; boundary*=utf-8''other"),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "multipart/form-data; boundary=\"\"".to_owned(),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "multipart/form-data; boundary=\"ends with space \"".to_owned(),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                format!("multipart/form-data; boundary={}", "x".repeat(71)),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "multipart/form-data; charset=utf-8".to_owned(),
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let req = rama_http_types::Request::builder()
+                .method(rama_http_types::Method::POST)
+                .header(rama_http_types::header::CONTENT_TYPE, &content_type)
+                .body(body_with(&[("a", None, None, b"v")]).into())
+                .unwrap();
+            let resp = service.serve(req).await.unwrap();
+            assert_eq!(resp.status(), status, "{content_type:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_part_header_rules() {
+        let rejected: [&[&str]; 5] = [
+            &[
+                "Content-Disposition: form-data; name=\"a\"",
+                "Content-Disposition: form-data; name=\"b\"",
+            ],
+            &["Content-Disposition: attachment; name=\"a\""],
+            &["Content-Disposition: form-data; name=\"a\"; name=\"b\""],
+            &["Content-Disposition: form-data; name=\"a"],
+            &[
+                "Content-Disposition: form-data; name=\"a\"",
+                "Content-Type: text/plain",
+                "Content-Type: text/html",
+            ],
+        ];
+        for lines in rejected {
+            let body = raw_body(&[
+                (&["Content-Disposition: form-data; name=\"ok\""], b"v"),
+                (lines, b"v"),
+            ]);
+            let mut mp = chunked(&body, 5, None);
+            assert!(mp.next_field().await.unwrap().is_some());
+            for _ in 0..2 {
+                let error = mp.next_field().await.unwrap_err();
+                assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{lines:?}");
+            }
+        }
+
+        // a part can go without a name, or without any header
+        let body = raw_body(&[
+            (&[], b"bare"),
+            (&["Content-Disposition: form-data"], b"nameless"),
+            (&["Content-Type: not a media type"], b"untyped"),
+        ]);
+        let fields = collect(chunked(&body, 5, None)).await.unwrap();
+        let data: Vec<_> = fields.iter().map(|field| &field.4[..]).collect();
+        assert_eq!(data, [&b"bare"[..], b"nameless", b"untyped"]);
+        assert!(
+            fields
+                .iter()
+                .all(|field| field.0.is_none() && field.2.is_none())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multipart_text_failure_leaves_the_stream_usable() {
+        const NAME: &str = "Content-Disposition: form-data; name=\"a\"";
+        let body = raw_body(&[
+            (
+                &[NAME, "Content-Type: text/plain; charset=iso-8859-1"],
+                b"caf\xe9",
+            ),
+            (&[NAME], b"caf\xe9"),
+            (
+                &[NAME, "Content-Type: text/plain; charset=UTF-8"],
+                "café".as_bytes(),
+            ),
+            (
+                &[NAME, "Content-Type: text/plain; charset=us-ascii"],
+                b"cafe",
+            ),
+            (
+                &[NAME, "Content-Type: text/plain; charset=utf-16"],
+                b"c\0a\0",
+            ),
+            (&[NAME], b""),
+        ]);
+        for size in [1, 1024] {
+            let mut mp = chunked(&body, size, None);
+            let mut texts = Vec::new();
+            while let Some(field) = mp.next_field().await.unwrap() {
+                texts.push(field.text().await.map_err(|error| {
+                    assert_eq!(
+                        error.body_text(),
+                        "Failed to parse `multipart/form-data` request: field is not UTF-8 text"
+                    );
+                    error.status()
+                }));
+            }
+            let invalid = || Err(StatusCode::BAD_REQUEST);
+            assert_eq!(
+                texts,
+                [
+                    invalid(),
+                    invalid(),
+                    Ok("café".to_owned()),
+                    Ok("cafe".to_owned()),
+                    invalid(),
+                    Ok(String::new()),
+                ]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_part_without_data() {
+        let mut body = Vec::new();
+        for name in ["a", "b"] {
+            body.extend_from_slice(b"--");
+            body.extend_from_slice(BOUNDARY.as_bytes());
+            body.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"");
+            body.extend_from_slice(name.as_bytes());
+            // no CRLF of its own before the next delimiter
+            body.extend_from_slice(b"\"\r\n\r\n");
+        }
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(BOUNDARY.as_bytes());
+        body.extend_from_slice(b"--");
+        for size in [1, 1024] {
+            let fields = collect(chunked(&body, size, None)).await.unwrap();
+            let names: Vec<_> = fields.iter().map(|field| field.0.as_deref()).collect();
+            assert_eq!(names, [Some("a"), Some("b")]);
+            assert!(fields.iter().all(|field| field.4.is_empty()));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_malformed_bodies_are_bad_requests() {
+        let valid = body_with(&[("a", None, None, b"v")]);
+        let text = String::from_utf8(valid).unwrap();
+        for body in [
+            String::new(),
+            "no delimiter at all".to_owned(),
+            text.replace("\r\n", "\n"),
+            text.replacen("\r\n", " junk\r\n", 1),
+            text.replacen("Content-Disposition:", "Content-Disposition :", 1),
+            text.replacen("\r\n\r\n", "\r\n folded\r\n\r\n", 1),
+            text.replacen("\r\n\r\n", "\r\nX: a\0b\r\n\r\n", 1),
+            text.replacen(
+                "\r\n\r\n",
+                &format!("\r\nX: {}\r\n\r\n", "x".repeat(17_000)),
+                1,
+            ),
+            text.replacen("\r\n\r\n", &"\r\nX: 1".repeat(40), 1),
+        ] {
+            for size in [1, 1024] {
+                let error = collect(chunked(body.as_bytes(), size, None))
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{body:?}");
+            }
+        }
     }
 }

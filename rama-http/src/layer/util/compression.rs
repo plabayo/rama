@@ -16,6 +16,7 @@ use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 use rama_core::futures::ready;
 use rama_core::stream::io::StreamReader;
+use rama_utils::octets::kib;
 use std::io::ErrorKind;
 use std::{
     io,
@@ -87,6 +88,12 @@ pub(crate) type AsyncReadBody<B> = StreamReader<
     <B as StreamingBody>::Data,
 >;
 
+/// Smallest brotli window (RFC 7932 §9.1: `2^WBITS - 16` bytes) holding a body of `len`
+/// bytes; a larger window gains no ratio and costs both peers memory.
+pub(crate) fn brotli_window_bits(len: u64) -> Option<i32> {
+    (10..22).find(|bits| (1_u64 << bits) - 16 >= len)
+}
+
 /// Trait for applying some decorator to an `AsyncRead`
 pub(crate) trait DecorateAsyncRead {
     type Input: AsyncRead;
@@ -120,7 +127,7 @@ pin_project! {
 }
 
 impl<M: DecorateAsyncRead> WrapBody<M> {
-    const INTERNAL_BUF_CAPACITY: usize = 8096;
+    const INTERNAL_BUF_CAPACITY: usize = kib(8);
 }
 
 impl<M: DecorateAsyncRead> WrapBody<M> {

@@ -12,7 +12,7 @@ use tokio::io::AsyncRead;
 use super::{PeekIoProvider, PrefixedIo, ReplayReader};
 use crate::{
     Service,
-    bytes::Bytes,
+    bytes::{BufMut as _, Bytes},
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     service::{RejectError, RejectService},
@@ -595,22 +595,22 @@ where
     while buffer.len() < max_len {
         let start = buffer.len();
         let want = chunk.min(max_len - start);
-        buffer.resize(start + want, 0);
+        buffer.reserve(want);
 
-        let n = match waiter.read(reader, &mut buffer[start..], start).await {
+        let n = match waiter
+            .read_buf(reader, &mut (&mut *buffer).limit(want), start)
+            .await
+        {
             PeekRead::Read(n) => n,
             PeekRead::Error(err) => {
-                buffer.truncate(start);
                 tracing::debug!("I/O peek(grow): read error: {err}");
                 return stop(buffer, PeekStopReason::ReadError);
             }
             PeekRead::Cutoff(cutoff) => {
-                buffer.truncate(start);
                 return stop(buffer, cutoff.into());
             }
         };
 
-        buffer.truncate(start + n);
         if n == 0 {
             tracing::trace!("I/O peek(grow): break loop: no new data read...");
             return stop(buffer, PeekStopReason::Eof);
@@ -1462,6 +1462,41 @@ mod tests {
 
         assert_eq!(data, Some(5));
         assert_eq!(buffer, b"hello");
+    }
+
+    #[tokio::test]
+    async fn verdict_growing_uses_spare_capacity_and_preserves_prefix_on_error() {
+        struct SpareReader;
+
+        impl AsyncRead for SpareReader {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                assert!(
+                    buf.initialized().is_empty(),
+                    "peek initialized spare capacity"
+                );
+                assert_eq!(buf.remaining(), 3);
+                Poll::Ready(Err(io::Error::other("read failed")))
+            }
+        }
+
+        let mut buffer = Vec::with_capacity(32);
+        buffer.extend_from_slice(b"prefix");
+        let output = peek_input_until_verdict_growing_with_output(
+            &mut SpareReader,
+            &mut buffer,
+            9,
+            NonZeroUsize::new(8).unwrap(),
+            &mut PeekWaiter::new(None),
+            |_| PeekVerdict::<()>::NeedMore,
+        )
+        .await;
+        assert_eq!(output.stop_reason, PeekStopReason::ReadError);
+        assert_eq!(output.peek_size, 6);
+        assert_eq!(buffer, b"prefix");
     }
 
     #[tokio::test]

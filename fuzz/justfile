@@ -134,7 +134,13 @@ ws-frame SECONDS="0": (_run "ws_frame" SECONDS "-max_len=65536 -timeout=10")
 socks5-codec SECONDS="0": (_run "socks5_codec" SECONDS "-max_len=1024")
 tls-client-hello SECONDS="0": (_run "tls_client_hello" SECONDS "-max_len=65536 -timeout=10")
 grpc-frames SECONDS="0": (_run "grpc_frames" SECONDS "-max_len=65536 -timeout=10")
-wire SECONDS="0": (http1-server SECONDS) (http1-client SECONDS) (proxy-protocol SECONDS) (ws-frame SECONDS) (socks5-codec SECONDS) (tls-client-hello SECONDS) (grpc-frames SECONDS)
+multipart-codec SECONDS="0": (_run "multipart_codec" SECONDS "-max_len=4096 -timeout=10")
+
+multipart-form-data SECONDS="0": (_run "multipart_form_data" SECONDS "-max_len=1024")
+
+multipart SECONDS="0": (multipart-codec SECONDS) (multipart-form-data SECONDS)
+
+wire SECONDS="0": (http1-server SECONDS) (http1-client SECONDS) (proxy-protocol SECONDS) (ws-frame SECONDS) (socks5-codec SECONDS) (tls-client-hello SECONDS) (grpc-frames SECONDS) (multipart SECONDS)
 
 # The pre-release smoke pass: a minute per target.
 all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (http-typed-headers "60") (http-structured-fields "60") (http-deadlines "60") (icap "60") (quic "60") (h3 "60") (masque "60") (wire "60")

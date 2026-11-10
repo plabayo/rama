@@ -3,7 +3,7 @@ use rama_core::futures::task;
 use rama_core::telemetry::tracing::trace;
 use std::sync::Arc;
 use std::{
-    io::{Read, Write},
+    io::{IoSlice, Read, Write},
     pin::Pin,
     task::{Context, Poll},
 };
@@ -196,6 +196,17 @@ where
         match self.with_context(ContextWaker::Write, |ctx, stream| {
             trace!("Write.with_context write -> poll_write",);
             stream.poll_write(ctx, buf)
+        }) {
+            Poll::Ready(r) => r,
+            Poll::Pending => Err(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
+        }
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+        trace!("Write.write_vectored");
+        match self.with_context(ContextWaker::Write, |ctx, stream| {
+            trace!("Write.with_context write_vectored -> poll_write_vectored",);
+            stream.poll_write_vectored(ctx, bufs)
         }) {
             Poll::Ready(r) => r,
             Poll::Pending => Err(std::io::Error::from(std::io::ErrorKind::WouldBlock)),

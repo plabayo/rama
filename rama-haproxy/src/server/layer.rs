@@ -2,7 +2,7 @@ use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
-    bytes::Bytes,
+    bytes::{BufMut, Bytes},
     error::{BoxError, ErrorContext, ErrorExt},
     extensions::{Extension, ExtensionsRef},
     io::{
@@ -572,10 +572,10 @@ where
             if next_cap > max_header_length {
                 next_cap = max_header_length;
             }
-            buffer.resize(next_cap, 0);
-
-            let n = stream.read(&mut buffer[old_len..]).await?;
-            buffer.truncate(old_len + n);
+            // Reads land in spare capacity: a slow sender costs no fill per read.
+            let room = next_cap - old_len;
+            buffer.reserve(room);
+            let n = stream.read_buf(&mut (&mut buffer).limit(room)).await?;
 
             if n == 0 {
                 return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)
@@ -1014,6 +1014,7 @@ mod test {
 
         struct Chunked {
             chunks: std::collections::VecDeque<Vec<u8>>,
+            check_spare: bool,
         }
         impl tokio::io::AsyncRead for Chunked {
             fn poll_read(
@@ -1021,6 +1022,12 @@ mod test {
                 _cx: &mut std::task::Context<'_>,
                 buf: &mut tokio::io::ReadBuf<'_>,
             ) -> std::task::Poll<std::io::Result<()>> {
+                if self.check_spare && !self.chunks.is_empty() {
+                    assert!(
+                        buf.initialized().is_empty(),
+                        "header read initialized spare capacity"
+                    );
+                }
                 if let Some(chunk) = self.chunks.pop_front() {
                     let n = chunk.len().min(buf.remaining());
                     buf.put_slice(&chunk[..n]);
@@ -1053,19 +1060,22 @@ mod test {
             }
         }
 
-        let chunked = Chunked {
-            chunks: vec![
-                DATA[..4].to_vec(),
-                DATA[4..12].to_vec(),
-                DATA[12..].to_vec(),
-            ]
-            .into(),
-        };
+        for peek in [false, true] {
+            let chunked = Chunked {
+                chunks: vec![
+                    DATA[..4].to_vec(),
+                    DATA[4..12].to_vec(),
+                    DATA[12..].to_vec(),
+                ]
+                .into(),
+                check_spare: !peek,
+            };
 
-        let input = ServiceInput::new(chunked);
-        let proxy_svc = HaProxyService::new(service_fn(echo)).with_peek(true);
-        let response = proxy_svc.serve(input).await.unwrap();
-        assert_eq!("bar", String::from_utf8(response).unwrap());
+            let input = ServiceInput::new(chunked);
+            let proxy_svc = HaProxyService::new(service_fn(echo)).with_peek(peek);
+            let response = proxy_svc.serve(input).await.unwrap();
+            assert_eq!("bar", String::from_utf8(response).unwrap());
+        }
     }
 
     /// Strict mode: `LOCAL` command is rejected.

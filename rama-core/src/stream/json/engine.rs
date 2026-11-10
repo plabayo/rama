@@ -5,6 +5,7 @@
 use crate::std::collections::VecDeque;
 use core::str;
 
+use memchr::memchr;
 use serde::Deserialize;
 use serde::de::Error as _;
 use serde_json::error::Result as JsonResult;
@@ -92,7 +93,7 @@ where
         let mut data = data.as_ref();
         let max_line_bytes = self.config.max_line_bytes.map(core::num::NonZeroUsize::get);
 
-        while let Some(newline_idx) = data.iter().position(|item| *item == NEW_LINE) {
+        while let Some(newline_idx) = memchr(NEW_LINE, data) {
             let data_until_split = &data[..newline_idx];
 
             if self.skipping_oversized_line {

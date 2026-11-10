@@ -226,6 +226,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "multipart_codec"
+path = "fuzz_targets/multipart_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "multipart_form_data"
+path = "fuzz_targets/multipart_form_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "http_capsule"
 path = "fuzz_targets/http_capsule.rs"
 test = false
@@ -410,7 +424,7 @@ bench = false
 [dependencies]
 arbitrary = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["dns", "ua", "http-backend", "net", "html", "icap", "js", "quic", "ring", "rustls", "fuzz-utils", "unstable", "masque", "haproxy", "socks5", "ws", "grpc"] }
+rama = { path = "../", features = ["dns", "ua", "http-backend", "net", "html", "icap", "js", "quic", "ring", "rustls", "fuzz-utils", "unstable", "masque", "haproxy", "socks5", "ws", "grpc", "multipart"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

@@ -93,7 +93,7 @@ impl TryIntoRamaHttp for &http::HeaderMap {
     type Error = rama_http_types::Error;
 
     /// Borrowing variant, for boundaries that only hand out a `&http::HeaderMap`
-    /// (e.g. a `multer` multipart field). Iterating by reference already repeats
+    /// (e.g. the headers of a third-party parser). Iterating by reference already repeats
     /// the name per value, so no multi-value bookkeeping is needed.
     fn try_into_rama_http(self) -> Result<HeaderMap, rama_http_types::Error> {
         let mut out = HeaderMap::with_capacity(self.len());
