@@ -814,6 +814,7 @@ impl Uri {
     /// It is mostly used for where you need a string representation,
     /// but wish to borrow if possible and only allocate to a string if
     /// you must, as a possibly cheaper alternative compared to `to_string`.
+    #[inline]
     pub fn as_str(&self) -> Cow<'_, str> {
         match &self.inner {
             UriInner::Asterisk => Cow::Borrowed("*"),
@@ -847,6 +848,7 @@ impl Uri {
 
     /// Returns `true` if this is the OPTIONS-`*` request-target.
     #[must_use]
+    #[inline]
     pub fn is_asterisk(&self) -> bool {
         matches!(self.inner, UriInner::Asterisk)
     }
@@ -855,6 +857,7 @@ impl Uri {
     /// case is a URI-reference without a scheme (relative reference,
     /// origin-form path, or the asterisk).
     #[must_use]
+    #[inline]
     pub fn is_absolute(&self) -> bool {
         self.scheme().is_some()
     }
@@ -862,6 +865,7 @@ impl Uri {
     /// Returns the scheme component, or `None` if the URI has none
     /// (origin-form URIs and the asterisk-form).
     #[must_use]
+    #[inline]
     pub fn scheme(&self) -> Option<&crate::Protocol> {
         match &self.inner {
             UriInner::Asterisk => None,
@@ -877,6 +881,7 @@ impl Uri {
     /// a path is always present per RFC 3986 §3.3 — possibly empty
     /// (e.g. `http://example.com` has an empty path-abempty).
     #[must_use]
+    #[inline]
     pub fn path(&self) -> Option<PathRef<'_>> {
         match &self.inner {
             UriInner::Asterisk => None,
@@ -895,6 +900,7 @@ impl Uri {
     /// distinct from no `?` at all (RFC 3986 §3.4); request signatures
     /// (SigV4), cache keys and proxy forwarding depend on it.
     #[must_use]
+    #[inline]
     pub fn query(&self) -> Option<QueryRef<'_>> {
         match &self.inner {
             UriInner::Asterisk => None,
@@ -914,6 +920,7 @@ impl Uri {
     /// fragment per RFC 9110 §7.1. This accessor returns it for
     /// inspection / logging / preservation purposes.
     #[must_use]
+    #[inline]
     pub fn fragment(&self) -> Option<FragmentRef<'_>> {
         match &self.inner {
             UriInner::Asterisk => None,
@@ -933,6 +940,7 @@ impl Uri {
     /// [`Uri::authority`](Self::authority) gives the full bundle
     /// (host + port + userinfo).
     #[must_use]
+    #[inline]
     pub fn host(&self) -> Option<crate::address::HostRef<'_>> {
         match &self.inner {
             UriInner::Asterisk => None,
@@ -976,6 +984,7 @@ impl Uri {
     /// canonicalization policy decision the caller makes (e.g.
     /// `Protocol::default_port()` if the URI's scheme is known).
     #[must_use]
+    #[inline]
     pub fn port(&self) -> crate::address::OptPort {
         match &self.inner {
             UriInner::Asterisk => crate::address::OptPort::Unset,
@@ -1007,6 +1016,7 @@ impl Uri {
     /// `Some("")` (the `@host` form — empty userinfo before `@`) is
     /// distinct from `None` (no `@` at all). Wire fidelity preserved.
     #[must_use]
+    #[inline]
     pub fn userinfo(&self) -> Option<crate::address::UserInfoRef<'_>> {
         match &self.inner {
             UriInner::Asterisk => None,
@@ -1030,6 +1040,7 @@ impl Uri {
     /// For just the host or just the port, [`Uri::host`] and
     /// [`Uri::port`] are slightly cheaper shortcuts (no extra struct).
     #[must_use]
+    #[inline]
     pub fn authority(&self) -> Option<crate::address::AuthorityRef<'_>> {
         match &self.inner {
             UriInner::Asterisk => None,
@@ -1104,6 +1115,7 @@ impl Uri {
     /// The scheme as a `&str`, or `None`. Shortcut for
     /// `uri.scheme().map(|p| p.as_str())`.
     #[must_use]
+    #[inline]
     pub fn scheme_str(&self) -> Option<&str> {
         self.scheme().map(crate::Protocol::as_str)
     }

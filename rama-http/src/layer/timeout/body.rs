@@ -1,4 +1,4 @@
-use crate::body::{Frame, StreamingBody};
+use crate::body::{Frame, SizeHint, StreamingBody};
 use pin_project_lite::pin_project;
 use rama_core::error::{BoxError, ErrorContext as _};
 use std::{
@@ -107,6 +107,16 @@ where
 
         Poll::Ready(frame.transpose().into_box_error().transpose())
     }
+
+    #[inline]
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    #[inline]
+    fn size_hint(&self) -> SizeHint {
+        self.body.size_hint()
+    }
 }
 
 /// Error for [`TimeoutBody`] and [`DeadlineBody`][super::DeadlineBody].
@@ -191,5 +201,16 @@ mod tests {
         let timeout_body = TimeoutBody::new(timeout_sleep, mock_body);
 
         timeout_body.boxed().frame().await.unwrap().unwrap_err();
+    }
+
+    #[test]
+    fn test_body_size_is_the_inner_body_size() {
+        let body = TimeoutBody::new(Duration::from_secs(1), crate::Body::from("hello"));
+        assert_eq!(body.size_hint().exact(), Some(5));
+        assert!(!body.is_end_stream());
+
+        let body = TimeoutBody::new(Duration::from_secs(1), crate::Body::empty());
+        assert_eq!(body.size_hint().exact(), Some(0));
+        assert!(body.is_end_stream());
     }
 }

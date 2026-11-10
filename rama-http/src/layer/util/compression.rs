@@ -57,6 +57,9 @@ pub(crate) use compressed_body_poll_frame;
 /// supplied as a closure-shaped block.
 macro_rules! impl_decorate_async_read {
     ($codec:ident: |$input:pat_param, $quality:pat_param| $apply:block) => {
+        impl_decorate_async_read!($codec: |$input, $quality, _| $apply);
+    };
+    ($codec:ident: |$input:pat_param, $quality:pat_param, $body_len:pat_param| $apply:block) => {
         impl<B> DecorateAsyncRead for $codec<B>
         where
             B: StreamingBody,
@@ -64,7 +67,11 @@ macro_rules! impl_decorate_async_read {
             type Input = AsyncReadBody<B>;
             type Output = $codec<Self::Input>;
 
-            fn apply($input: Self::Input, $quality: CompressionLevel) -> Self::Output $apply
+            fn apply(
+                $input: Self::Input,
+                $quality: CompressionLevel,
+                $body_len: Option<u64>,
+            ) -> Self::Output $apply
 
             fn get_pin_mut(pinned: Pin<&mut Self::Output>) -> Pin<&mut Self::Input> {
                 pinned.get_pin_mut()
@@ -85,8 +92,8 @@ pub(crate) trait DecorateAsyncRead {
     type Input: AsyncRead;
     type Output: AsyncRead;
 
-    /// Apply the decorator
-    fn apply(input: Self::Input, quality: CompressionLevel) -> Self::Output;
+    /// Apply the decorator; `body_len` is the exact length of the input, when known.
+    fn apply(input: Self::Input, quality: CompressionLevel, body_len: Option<u64>) -> Self::Output;
 
     /// Get a pinned mutable reference to the original input.
     ///
@@ -123,6 +130,8 @@ impl<M: DecorateAsyncRead> WrapBody<M> {
         B: StreamingBody,
         M: DecorateAsyncRead<Input = AsyncReadBody<B>>,
     {
+        let body_len = body.size_hint().exact();
+
         // convert `Body` into a `Stream`
         let stream = BodyIntoStream::new(body);
 
@@ -134,7 +143,7 @@ impl<M: DecorateAsyncRead> WrapBody<M> {
         let read = StreamReader::new(stream);
 
         // apply decorator to `AsyncRead` yielding another `AsyncRead`
-        let read = M::apply(read, quality);
+        let read = M::apply(read, quality, body_len);
 
         Self {
             read,

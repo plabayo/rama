@@ -11,7 +11,6 @@ use crate::{
     Body, HeaderValue, Request, Response, StatusCode, StreamingBody,
     body::util::BodyExt,
     header::{self, ALLOW},
-    service::fs::AsyncReadBody,
     service::web::response::IntoResponse,
 };
 
@@ -161,15 +160,7 @@ fn build_response(output: FileOpened) -> Response {
 
     match output.maybe_range {
         Some(Ok(range)) => {
-            let range_size = range.end() - range.start() + 1;
-            let body = if let Some(reader) = output.extent.into_reader() {
-                Body::new(
-                    AsyncReadBody::with_capacity_limited(reader, output.chunk_size, range_size)
-                        .boxed(),
-                )
-            } else {
-                Body::empty()
-            };
+            let body = output.extent.into_body(Some(&range), output.chunk_size);
 
             let content_length = if size == 0 {
                 0
@@ -223,11 +214,7 @@ fn build_response(output: FileOpened) -> Response {
 
         // Not a range request
         None => {
-            let body = if let Some(reader) = output.extent.into_reader() {
-                Body::new(AsyncReadBody::with_capacity(reader, output.chunk_size).boxed())
-            } else {
-                Body::empty()
-            };
+            let body = output.extent.into_body(None, output.chunk_size);
 
             builder
                 .header(header::CONTENT_LENGTH, size)

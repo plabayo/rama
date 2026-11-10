@@ -169,7 +169,10 @@ const DATAGRAM_TYS: RangeInclusive<u64> = RangeInclusive::new(0x30, 0x31);
 
 #[derive(Debug)]
 pub enum Frame {
-    Padding,
+    /// A run of `len` consecutive PADDING frames.
+    Padding {
+        len: usize,
+    },
     Ping,
     Ack(Ack),
     ResetStream(ResetStream),
@@ -178,13 +181,29 @@ pub enum Frame {
     NewToken(NewToken),
     Stream(Stream),
     MaxData(VarInt),
-    MaxStreamData { id: StreamId, offset: u64 },
-    MaxStreams { dir: Dir, count: u64 },
-    DataBlocked { offset: u64 },
-    StreamDataBlocked { id: StreamId, offset: u64 },
-    StreamsBlocked { dir: Dir, limit: u64 },
+    MaxStreamData {
+        id: StreamId,
+        offset: u64,
+    },
+    MaxStreams {
+        dir: Dir,
+        count: u64,
+    },
+    DataBlocked {
+        offset: u64,
+    },
+    StreamDataBlocked {
+        id: StreamId,
+        offset: u64,
+    },
+    StreamsBlocked {
+        dir: Dir,
+        limit: u64,
+    },
     NewConnectionId(NewConnectionId),
-    RetireConnectionId { sequence: u64 },
+    RetireConnectionId {
+        sequence: u64,
+    },
     PathChallenge(u64),
     PathResponse(u64),
     Close(Close),
@@ -205,7 +224,7 @@ impl Frame {
     #[must_use]
     pub fn is_allowed_in_0rtt(&self) -> bool {
         match self {
-            Self::Padding
+            Self::Padding { .. }
             | Self::Ping
             | Self::ResetStream(_)
             | Self::StopSending(_)
@@ -233,7 +252,7 @@ impl Frame {
 
     pub fn ty(&self) -> FrameType {
         match *self {
-            Self::Padding => FrameType::PADDING,
+            Self::Padding { .. } => FrameType::PADDING,
             Self::ResetStream(_) => FrameType::RESET_STREAM,
             Self::Close(self::Close::Connection(_)) => FrameType::CONNECTION_CLOSE,
             Self::Close(self::Close::Application(_)) => FrameType::APPLICATION_CLOSE,
@@ -272,7 +291,7 @@ impl Frame {
     }
 
     pub fn is_ack_eliciting(&self) -> bool {
-        !matches!(*self, Self::Ack(_) | Self::Padding | Self::Close(_))
+        !matches!(*self, Self::Ack(_) | Self::Padding { .. } | Self::Close(_))
     }
 }
 
@@ -718,7 +737,12 @@ impl Iter {
         let ty = self.bytes.get::<FrameType>()?;
         self.last_ty = Some(ty);
         Ok(match ty {
-            FrameType::PADDING => Frame::Padding,
+            FrameType::PADDING => {
+                // Padding fills whole datagrams, so the run is taken as one frame.
+                let run = zero_run(&self.bytes);
+                self.bytes.advance(run);
+                Frame::Padding { len: run + 1 }
+            }
             FrameType::RESET_STREAM => Frame::ResetStream(ResetStream {
                 id: self.bytes.get()?,
                 error_code: self.bytes.get()?,
@@ -869,6 +893,19 @@ impl Iter {
     fn take_remaining(&mut self) -> Bytes {
         mem::take(&mut self.bytes)
     }
+}
+
+/// Length of the run of zero bytes `bytes` starts with.
+fn zero_run(bytes: &[u8]) -> usize {
+    const BLOCK: usize = 16;
+    let whole = bytes
+        .as_chunks::<BLOCK>()
+        .0
+        .iter()
+        .take_while(|block| block.iter().all(|&b| b == 0))
+        .count()
+        * BLOCK;
+    whole + bytes[whole..].iter().take_while(|&&b| b == 0).count()
 }
 
 impl Iterator for Iter {
@@ -1166,6 +1203,40 @@ mod test {
 
     use crate::coding::Codec;
     use std::assert_matches;
+
+    #[test]
+    fn padding_runs_are_one_frame_of_their_length() {
+        for run in (1..70).chain([1162, 1200]) {
+            // PING, the run, PING, then a run ending the packet.
+            let mut wire = vec![1];
+            wire.resize(1 + run, 0);
+            wire.push(1);
+            wire.resize(2 + 2 * run, 0);
+            let lens: Vec<Option<usize>> = frames(wire)
+                .iter()
+                .map(|frame| match frame {
+                    Frame::Padding { len } => Some(*len),
+                    Frame::Ping => None,
+                    other => panic!("unexpected frame: {other:?}"),
+                })
+                .collect();
+            assert_eq!(lens, [None, Some(run), None, Some(run)], "run={run}");
+        }
+    }
+
+    #[test]
+    fn padding_run_stops_at_the_next_frame_type() {
+        // A PADDING type in a 2-byte varint is one frame, as is each zero byte after it.
+        let decoded = frames(vec![0x40, 0x00, 0, 0, 1, 0]);
+        assert_matches!(
+            decoded.as_slice(),
+            [
+                Frame::Padding { len: 3 },
+                Frame::Ping,
+                Frame::Padding { len: 1 }
+            ]
+        );
+    }
 
     fn frames(buf: Vec<u8>) -> Vec<Frame> {
         Iter::new(Bytes::from(buf))

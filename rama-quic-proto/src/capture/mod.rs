@@ -461,9 +461,9 @@ pub enum ObservedFrame {
 /// Retain one native frame's structural facts without copying its body.
 pub(crate) fn record_frame(frames: &mut Vec<ObservedFrame>, frame: &Frame) {
     match frame {
-        Frame::Padding => match frames.last_mut() {
-            Some(ObservedFrame::Padding { len }) => *len += 1,
-            _ => frames.push(ObservedFrame::Padding { len: 1 }),
+        Frame::Padding { len: run } => match frames.last_mut() {
+            Some(ObservedFrame::Padding { len }) => *len += run,
+            _ => frames.push(ObservedFrame::Padding { len: *run }),
         },
         Frame::Ping => frames.push(ObservedFrame::Ping),
         Frame::Ack(_) => frames.push(ObservedFrame::Ack),
@@ -557,7 +557,7 @@ impl ObservedDatagram {
                 .map_err(|_error| CaptureError::Malformed("empty Initial payload"))?;
             for item in iter {
                 let item = item.map_err(|_error| CaptureError::Malformed("frame"))?;
-                if !matches!(item, Frame::Padding)
+                if !matches!(item, Frame::Padding { .. })
                     || !matches!(frames.last(), Some(ObservedFrame::Padding { .. }))
                 {
                     frame_count = frame_count.saturating_add(1);

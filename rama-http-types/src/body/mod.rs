@@ -147,7 +147,14 @@ where
 /// The body type used in rama requests and responses.
 #[must_use]
 #[derive(Debug)]
-pub struct Body(BoxBody);
+pub struct Body(BodyInner);
+
+/// Buffered bodies are stored inline, so they cost no allocation.
+#[derive(Debug)]
+enum BodyInner {
+    Full(util::Full<Bytes>),
+    Boxed(BoxBody),
+}
 
 impl Body {
     /// Create a new `Body` that wraps another [`Body`].
@@ -155,7 +162,13 @@ impl Body {
     where
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
-        try_downcast(body).unwrap_or_else(|body| Self(boxed(body)))
+        try_downcast(body).unwrap_or_else(|body| {
+            try_downcast(body).map_or_else(|body| Self(BodyInner::Boxed(boxed(body))), Self::full)
+        })
+    }
+
+    fn full(body: util::Full<Bytes>) -> Self {
+        Self(BodyInner::Full(body))
     }
 
     /// Create a new `Body` with a maximum size limit.
@@ -168,7 +181,7 @@ impl Body {
 
     /// Create an empty body.
     pub fn empty() -> Self {
-        Self::new(util::Empty::new())
+        Self::full(util::Full::default())
     }
 
     /// Create a new `Body` from a [`Stream`].
@@ -199,7 +212,7 @@ impl Body {
 
     /// Create a new [`Body`] from a [`Stream`] with a maximum size limit.
     pub fn limited(self, limit: usize) -> Self {
-        Self::new(util::Limited::new(self.0, limit))
+        Self::new(util::Limited::new(self, limit))
     }
 
     /// Wrap this body so that `on_drop` is called if the body is dropped before
@@ -211,7 +224,7 @@ impl Body {
     where
         F: FnOnce() + Send + Sync + 'static,
     {
-        Self::new(OnDropBody::new(self.0, on_drop))
+        Self::new(OnDropBody::new(self, on_drop))
     }
 
     /// Wrap this body so that `on_incomplete` is called as soon as it is known
@@ -224,7 +237,7 @@ impl Body {
     where
         F: FnOnce() + Send + Sync + 'static,
     {
-        Self::new(OnIncompleteBody::new(self.0, on_incomplete))
+        Self::new(OnIncompleteBody::new(self, on_incomplete))
     }
 
     /// Forward this body while asynchronously sending owned frame copies to a sink.
@@ -232,7 +245,7 @@ impl Body {
     where
         S: BodyCaptureSink,
     {
-        Self::new(CaptureBody::new(self.0, sink))
+        Self::new(CaptureBody::new(self, sink))
     }
 
     /// Forward this body while retaining a bounded or unlimited copy in memory.
@@ -255,7 +268,7 @@ impl Body {
     /// # }
     /// ```
     pub fn capture_buffered(self, limit: CaptureLimit) -> (Self, CaptureHandle) {
-        let (body, handle) = CaptureBody::buffered(self.0, limit);
+        let (body, handle) = CaptureBody::buffered(self, limit);
         (Self::new(body), handle)
     }
 
@@ -266,7 +279,7 @@ impl Body {
     /// a [`Future`] with as output an option of a result of a headermap.
     /// This method is a shortcut of that function.
     pub fn with_trailer_headers(self, headers: crate::HeaderMap) -> Self {
-        Self::new(self.0.with_trailers(std::future::ready(Some(Ok(headers)))))
+        Self::new(self.with_trailers(std::future::ready(Some(Ok(headers)))))
     }
 
     /// Convert the body into a [`Stream`] of data frames.
@@ -351,7 +364,7 @@ macro_rules! body_from_impl {
     ($ty:ty) => {
         impl From<$ty> for Body {
             fn from(buf: $ty) -> Self {
-                Self::new(crate::body::util::Full::from(buf))
+                Self::full(crate::body::util::Full::from(buf))
             }
         }
     };
@@ -367,7 +380,7 @@ body_from_impl!(String);
 
 impl From<&ArcStr> for Body {
     fn from(buf: &ArcStr) -> Self {
-        Self::new(if let Some(s) = ArcStr::as_static(buf) {
+        Self::full(if let Some(s) = ArcStr::as_static(buf) {
             crate::body::util::Full::from(s)
         } else {
             crate::body::util::Full::from(buf.to_string())
@@ -393,17 +406,28 @@ impl StreamingBody for Body {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.0).poll_frame(cx)
+        match &mut self.0 {
+            BodyInner::Full(body) => Pin::new(body)
+                .poll_frame(cx)
+                .map(|frame| frame.map(|frame| frame.map_err(|never| match never {}))),
+            BodyInner::Boxed(body) => Pin::new(body).poll_frame(cx),
+        }
     }
 
     #[inline]
     fn size_hint(&self) -> SizeHint {
-        self.0.size_hint()
+        match &self.0 {
+            BodyInner::Full(body) => body.size_hint(),
+            BodyInner::Boxed(body) => body.size_hint(),
+        }
     }
 
     #[inline]
     fn is_end_stream(&self) -> bool {
-        self.0.is_end_stream()
+        match &self.0 {
+            BodyInner::Full(body) => body.is_end_stream(),
+            BodyInner::Boxed(body) => body.is_end_stream(),
+        }
     }
 }
 
@@ -509,6 +533,32 @@ where
             None => Poll::Ready(None),
         }
     }
+}
+
+#[tokio::test]
+async fn buffered_bodies_stay_inline() {
+    let bodies = [
+        Body::from("inline"),
+        Body::new(util::Full::new(Bytes::from_static(b"inline"))),
+        Body::new(Body::from("inline")),
+    ];
+    for body in bodies {
+        assert_matches!(body.0, BodyInner::Full(_));
+        assert_eq!(body.size_hint().exact(), Some(6));
+        assert_eq!(
+            body.collect().await.unwrap().to_bytes(),
+            Bytes::from_static(b"inline")
+        );
+    }
+
+    let empty = Body::empty();
+    assert!(empty.is_end_stream());
+    assert_matches!(empty.0, BodyInner::Full(_));
+
+    let streamed = Body::from_stream(rama_core::futures::stream::iter([Ok::<_, BoxError>(
+        Bytes::from_static(b"boxed"),
+    )]));
+    assert_matches!(streamed.0, BodyInner::Boxed(_));
 }
 
 #[test]

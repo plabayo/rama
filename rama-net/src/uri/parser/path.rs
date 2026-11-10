@@ -6,6 +6,8 @@
 //! - track section transitions on `?` and `#`
 //! - in strict mode, validate per-section byte set + percent-escapes
 
+use memchr::memchr;
+
 use super::ParserMode;
 use super::{check_pct_encoded, check_utf8_sequence};
 use crate::byte_sets::{is_control_byte, is_path_byte, is_query_fragment_byte};
@@ -43,6 +45,10 @@ pub(super) fn scan_path_query_fragment(
     let mut path_end = len;
     let mut query_start: Option<usize> = None;
     let mut fragment_start: Option<usize> = None;
+
+    if !strict && let Some(parts) = scan_plain_ascii(bytes, start) {
+        return Ok(parts);
+    }
 
     let mut i = start;
     while i < len {
@@ -127,5 +133,29 @@ pub(super) fn scan_path_query_fragment(
         path_end: path_end as u16,
         query: query_range,
         fragment: fragment_range,
+    })
+}
+
+/// The graceful scan of a tail holding only ASCII bytes that are no control bytes (`0x20..=0x7E`),
+/// where the first `?` and the first `#` are all there is to find.
+fn scan_plain_ascii(bytes: &[u8], start: usize) -> Option<PathQueryFragment> {
+    let tail = &bytes[start..];
+    // Folded without an early exit so the pass over the tail vectorizes.
+    if tail
+        .iter()
+        .fold(false, |found, &b| found | !(0x20..0x7F).contains(&b))
+    {
+        return None;
+    }
+
+    let len = bytes.len();
+    let fragment_start = memchr(b'#', tail).map(|at| start + at + 1);
+    let before_fragment = fragment_start.map_or(len, |fs| fs - 1);
+    let query_start = memchr(b'?', &bytes[start..before_fragment]).map(|at| start + at + 1);
+
+    Some(PathQueryFragment {
+        path_end: query_start.map_or(before_fragment, |qs| qs - 1) as u16,
+        query: query_start.map(|qs| (qs as u16, before_fragment as u16)),
+        fragment: fragment_start.map(|fs| (fs as u16, len as u16)),
     })
 }

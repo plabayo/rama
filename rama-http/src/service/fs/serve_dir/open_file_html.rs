@@ -10,95 +10,95 @@
 //! bytes inside filenames are percent-encoded by the URI builder rather
 //! than spliced into the attribute raw.
 
-use crate::service::fs::serve_dir::{DirSource, HiddenPathFilter, open_file::OpenFileOutput};
+use crate::service::fs::serve_dir::{HiddenPathFilter, open_file::OpenFileOutput};
 use jiff::{Timestamp, tz::TimeZone};
 use rama_net::uri::Uri;
 use rama_utils::include_dir;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt as _;
-use std::{fmt, path::PathBuf, time::SystemTime};
+use std::{fmt, path::Path, time::SystemTime};
 
-/// Handle a directory request under
-/// [`DirectoryServeMode::HtmlFileList`](crate::service::fs::serve_dir::DirectoryServeMode::HtmlFileList):
-/// collect the directory's entries (filesystem or embedded), then render
-/// them into an [`OpenFileOutput::Html`] response body. Hidden entries are omitted.
-pub(super) async fn serve_html_listing(
-    path_to_file: &PathBuf,
+/// Render a filesystem directory under
+/// [`DirectoryServeMode::HtmlFileList`](crate::service::fs::serve_dir::DirectoryServeMode::HtmlFileList)
+/// into an [`OpenFileOutput::Html`] response body; hidden entries are omitted.
+///
+/// Blocking: called from the blocking task that resolves the request.
+pub(super) fn list_filesystem_dir(
+    path_to_file: &Path,
     uri: &Uri,
-    source: &DirSource,
     hidden: &HiddenPathFilter,
-) -> std::io::Result<Option<OpenFileOutput>> {
+) -> std::io::Result<OpenFileOutput> {
     let mut entries = vec![];
-
-    match source {
-        DirSource::Filesystem(_) => {
-            let mut dir = tokio::fs::read_dir(path_to_file).await?;
-            while let Some(entry) = dir.next_entry().await? {
-                let file_name = entry.file_name();
-                if hidden.hides_name(&file_name) {
-                    continue;
-                }
-                let file_name_str = file_name.to_string_lossy().to_string();
-
-                let metadata = entry.metadata().await?;
-                #[cfg(windows)]
-                if hidden.hides_attributes(&file_name, metadata.file_attributes()) {
-                    continue;
-                }
-                let is_dir = metadata.is_dir();
-                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let size = if is_dir { 0 } else { metadata.len() };
-
-                entries.push(DirEntry::new(file_name_str, is_dir, modified, size));
-            }
+    for entry in std::fs::read_dir(path_to_file)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        if hidden.hides_name(&file_name) {
+            continue;
         }
-        DirSource::Embedded(base) => {
-            // the empty path is the embedded root itself, which is not one of its entries
-            let dir = if path_to_file.as_os_str().is_empty() {
-                base
-            } else {
-                match base.get_dir(path_to_file) {
-                    Some(dir) => dir,
-                    None => return Ok(Some(OpenFileOutput::FileNotFound)),
-                }
-            };
+        let file_name_str = file_name.to_string_lossy().to_string();
 
-            // Process all entries (directories and files)
-            for entry in dir.entries() {
-                let file_name = entry.path().file_name();
-                if file_name.is_some_and(|name| hidden.hides_name(name)) {
-                    continue;
-                }
-                let file_name_str = file_name
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
+        let metadata = entry.metadata()?;
+        #[cfg(windows)]
+        if hidden.hides_attributes(&file_name, metadata.file_attributes()) {
+            continue;
+        }
+        let is_dir = metadata.is_dir();
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let size = if is_dir { 0 } else { metadata.len() };
 
-                match entry {
-                    include_dir::DirEntry::Dir(_) => {
-                        let modified = SystemTime::UNIX_EPOCH;
-                        entries.push(DirEntry::new(file_name_str, true, modified, 0));
-                    }
-                    include_dir::DirEntry::File(file) => {
-                        let modified = file
-                            .metadata()
-                            .map(|m| m.modified())
-                            .unwrap_or(SystemTime::UNIX_EPOCH);
+        entries.push(DirEntry::new(file_name_str, is_dir, modified, size));
+    }
+    Ok(OpenFileOutput::Html(generate_directory_html(entries, uri)))
+}
 
-                        entries.push(DirEntry::new(
-                            file_name_str,
-                            false,
-                            modified,
-                            file.contents().len() as u64,
-                        ));
-                    }
-                }
+/// Render an embedded directory like [`list_filesystem_dir`].
+pub(super) fn list_embedded_dir(
+    base: &include_dir::Dir<'_>,
+    path_to_file: &Path,
+    uri: &Uri,
+    hidden: &HiddenPathFilter,
+) -> OpenFileOutput {
+    // the empty path is the embedded root itself, which is not one of its entries
+    let dir = if path_to_file.as_os_str().is_empty() {
+        base
+    } else {
+        match base.get_dir(path_to_file) {
+            Some(dir) => dir,
+            None => return OpenFileOutput::FileNotFound,
+        }
+    };
+
+    let mut entries = vec![];
+    for entry in dir.entries() {
+        let file_name = entry.path().file_name();
+        if file_name.is_some_and(|name| hidden.hides_name(name)) {
+            continue;
+        }
+        let file_name_str = file_name
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        match entry {
+            include_dir::DirEntry::Dir(_) => {
+                let modified = SystemTime::UNIX_EPOCH;
+                entries.push(DirEntry::new(file_name_str, true, modified, 0));
+            }
+            include_dir::DirEntry::File(file) => {
+                let modified = file
+                    .metadata()
+                    .map(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+
+                entries.push(DirEntry::new(
+                    file_name_str,
+                    false,
+                    modified,
+                    file.contents().len() as u64,
+                ));
             }
         }
     }
-
-    Ok(Some(OpenFileOutput::Html(generate_directory_html(
-        entries, uri,
-    ))))
+    OpenFileOutput::Html(generate_directory_html(entries, uri))
 }
 
 /// Human-readable file size representation.

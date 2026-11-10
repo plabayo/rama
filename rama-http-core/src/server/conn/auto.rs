@@ -191,6 +191,7 @@ impl Builder {
                 read_version: read_version(io, self.detection_timer()),
                 builder: Cow::Borrowed(self),
                 service: Some(service),
+                upgrade_guard: None,
             },
         }
     }
@@ -497,6 +498,7 @@ pin_project! {
             read_version: ReadVersion<I>,
             builder: Cow<'a, Builder>,
             service: Option<S>,
+            upgrade_guard: Option<http1::UpgradeGuard>,
         },
         H1 {
             #[pin]
@@ -514,6 +516,21 @@ where
     S: Service<Request<Incoming>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
 {
+    /// Bind `guard` to the transport an HTTP/1 upgrade hands out, so it is released when
+    /// the upgraded connection closes; otherwise it is dropped with this connection.
+    ///
+    /// An HTTP/2 connection drops it at protocol detection: its upgraded streams
+    /// live within the connection itself.
+    pub fn with_upgrade_guard<G>(mut self, guard: G) -> Self
+    where
+        G: Send + Sync + 'static,
+    {
+        if let UpgradeableConnState::ReadVersion { upgrade_guard, .. } = &mut self.state {
+            *upgrade_guard = Some(Box::new(guard));
+        }
+        self
+    }
+
     /// Start a graceful shutdown process for this connection.
     ///
     /// This `UpgradeableConnection` should continue to be polled until shutdown can finish.
@@ -541,10 +558,12 @@ where
                     read_version,
                     builder,
                     service,
+                    upgrade_guard,
                 } => UpgradeableConnState::ReadVersion {
                     read_version,
                     service,
                     builder: Cow::Owned(builder.clone()),
+                    upgrade_guard,
                 },
                 UpgradeableConnState::H1 { conn } => UpgradeableConnState::H1 { conn },
                 UpgradeableConnState::H2 { conn } => UpgradeableConnState::H2 { conn },
@@ -569,6 +588,7 @@ where
                     read_version,
                     builder,
                     service,
+                    upgrade_guard,
                 } => {
                     let (version, io, timer) = ready!(read_version.poll(cx))?;
                     let Some(service) = service.take() else {
@@ -581,7 +601,8 @@ where
                             let conn = builder
                                 .http1
                                 .serve_connection_with_timer(io, service, timer)
-                                .with_upgrades();
+                                .with_upgrades()
+                                .with_boxed_upgrade_guard(upgrade_guard.take());
                             this.state.set(UpgradeableConnState::H1 { conn });
                         }
                         Version::H2 => {

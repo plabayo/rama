@@ -32,7 +32,7 @@ impl<'a> File<'a> {
 
     /// The file's raw contents.
     #[must_use]
-    pub fn contents(&self) -> &[u8] {
+    pub fn contents(&self) -> &'a [u8] {
         self.contents
     }
 

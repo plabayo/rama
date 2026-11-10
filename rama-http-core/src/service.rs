@@ -5,7 +5,7 @@ use rama_core::{Service, error::BoxError};
 use rama_http::StreamingBody;
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http::service::web::response::IntoResponse;
-use rama_http_types::{Body, BodyLimit, Request, Response, body::util::Limited};
+use rama_http_types::{Body, BodyLimit, Request, Response, Version, body::util::Limited};
 use std::{convert::Infallible, fmt};
 
 #[derive(Clone, fmt::Debug, ExtensionsRef)]
@@ -34,7 +34,13 @@ where
             .get_ref::<Ingress<Extensions>>()
             .and_then(|ingress| ingress.get_ref::<BodyLimit>())
             .copied();
+        // A finished empty body holds nothing worth boxing; an HTTP/3 body is kept as it holds
+        // the request's admission permit.
+        let finished_empty = req.version() != Version::HTTP_3
+            && req.body().is_end_stream()
+            && req.body().size_hint().exact() == Some(0);
         let req = req.map(|body| match body_limit.and_then(|limit| limit.request()) {
+            _ if finished_empty => Body::empty(),
             Some(limit) => Body::new(Limited::new(body, limit)),
             None => Body::new(body),
         });

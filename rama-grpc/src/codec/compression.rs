@@ -281,15 +281,14 @@ pub(crate) fn compress(
     Ok(())
 }
 
-/// Decompress `len` bytes from `compressed_buf` into `out_buf`.
+/// Decompress `compressed` into `out_buf`.
 pub(crate) fn decompress(
     settings: CompressionSettings,
-    compressed_buf: &mut BytesMut,
+    compressed: &[u8],
     mut out_buf: bytes::buf::Limit<&mut BytesMut>,
-    len: usize,
 ) -> Result<(), std::io::Error> {
     let buffer_growth_interval = settings.buffer_growth_interval;
-    let estimate_decompressed_len = len * 2;
+    let estimate_decompressed_len = compressed.len() * 2;
     let capacity = std::cmp::min(
         bytes::buf::Limit::limit(&out_buf),
         ((estimate_decompressed_len / buffer_growth_interval) + 1) * buffer_growth_interval,
@@ -303,20 +302,18 @@ pub(crate) fn decompress(
     #[cfg(feature = "compression")]
     match settings.encoding {
         CompressionEncoding::Gzip => {
-            let mut gzip_decoder = GzDecoder::new(&compressed_buf[0..len]);
+            let mut gzip_decoder = GzDecoder::new(compressed);
             std::io::copy(&mut gzip_decoder, &mut out_writer)?;
         }
         CompressionEncoding::Deflate => {
-            let mut deflate_decoder = ZlibDecoder::new(&compressed_buf[0..len]);
+            let mut deflate_decoder = ZlibDecoder::new(compressed);
             std::io::copy(&mut deflate_decoder, &mut out_writer)?;
         }
         CompressionEncoding::Zstd => {
-            let mut zstd_decoder = Decoder::new(&compressed_buf[0..len])?;
+            let mut zstd_decoder = Decoder::new(compressed)?;
             std::io::copy(&mut zstd_decoder, &mut out_writer)?;
         }
     }
-
-    compressed_buf.advance(len);
 
     Ok(())
 }

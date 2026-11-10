@@ -60,7 +60,7 @@ fn unanswered_preferred_validation_preserves_limits_and_fallback() {
                                 .iter()
                                 .all(|f| matches!(
                                     f,
-                                    frame::Frame::Padding
+                                    frame::Frame::Padding { .. }
                                         | frame::Frame::PathChallenge(_)
                                         | frame::Frame::PathResponse(_)
                                 ))
@@ -165,7 +165,7 @@ fn preferred_address_validation_survives_reused_cid_ack_traffic() {
                 assert!(
                     frames.iter().all(|f| matches!(
                         f,
-                        frame::Frame::Padding
+                        frame::Frame::Padding { .. }
                             | frame::Frame::PathChallenge(_)
                             | frame::Frame::PathResponse(_)
                     )),

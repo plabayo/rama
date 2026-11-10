@@ -31,7 +31,7 @@ use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
 use super::{
     Error,
     connection::Shared,
-    qpack::{EncodeField, FieldPair},
+    qpack::{EncodeField, FieldPair, LowercaseName},
 };
 use crate::proto::target::{
     AsteriskHostError, OutgoingHost, asterisk_host, host_is_wire_authority, normalize_received,
@@ -687,7 +687,7 @@ pub(crate) fn encode_request_fields<B>(
             .find(|field| field.as_ref().is_some_and(|(key, _)| *key == name))
             .and_then(Option::take)
             .map(|(name, value)| EncodeField {
-                name: std::borrow::Cow::Borrowed(name.as_bytes()),
+                name: LowercaseName::lowercase(name.as_bytes()),
                 value,
                 preferences: preferences.and_then(|choices| choices.pseudo_headers.get(&name)),
                 // Userinfo, kept only outside the HTTP family, is never indexed.
@@ -742,7 +742,7 @@ pub(crate) fn encode_response<B>(
     shared.encode(
         id,
         std::iter::once(EncodeField {
-            name: std::borrow::Cow::Borrowed(PseudoHeader::Status.as_bytes()),
+            name: LowercaseName::lowercase(PseudoHeader::Status.as_bytes()),
             value: response.status().as_str().as_bytes(),
             preferences: preferences
                 .and_then(|choices| choices.pseudo_headers.get(&PseudoHeader::Status)),

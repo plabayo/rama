@@ -2862,3 +2862,43 @@ async fn windows_short_name_does_not_alias_hidden_entries() {
         assert!(!body.contains("secret"), "uri: {uri}");
     }
 }
+
+#[tokio::test]
+async fn small_and_large_files_serve_whole_and_ranged() {
+    let dir = rama_utils::fs::tempdir().unwrap();
+    for (name, len) in [("small.bin", 1000_usize), ("large.bin", 200_000)] {
+        let contents: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        std::fs::write(dir.path().join(name), &contents).unwrap();
+        let svc = ServeDir::new(dir.path());
+
+        let req = Request::builder()
+            .uri(format!("/{name}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{name}");
+        assert_eq!(
+            res.headers()[header::CONTENT_LENGTH],
+            len.to_string(),
+            "{name}"
+        );
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, contents, "{name}");
+
+        let (start, end) = (len - 10, len - 1);
+        let req = Request::builder()
+            .uri(format!("/{name}"))
+            .header(header::RANGE, format!("bytes={start}-{end}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT, "{name}");
+        assert_eq!(
+            res.headers()[header::CONTENT_RANGE],
+            format!("bytes {start}-{end}/{len}"),
+            "{name}"
+        );
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, contents[start..=end], "{name}");
+    }
+}

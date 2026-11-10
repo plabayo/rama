@@ -7,6 +7,7 @@ use std::error::Error;
 use std::fmt::{self, Write as _};
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
+use std::ops::Range;
 use std::str::FromStr;
 
 /// Represents an HTTP header field name
@@ -87,6 +88,8 @@ struct CaseMask(u64);
 
 impl CaseMask {
     const LOWER: Self = Self(0);
+    /// Longest name whose case the mask can record.
+    const BITS: usize = u64::BITS as usize;
 
     #[inline]
     const fn is_upper(self, index: usize) -> bool {
@@ -96,7 +99,7 @@ impl CaseMask {
     const fn from_original(lower: &[u8], original: &[u8]) -> Self {
         let mut mask = 0u64;
         let mut i = 0;
-        while i < lower.len() && i < 64 {
+        while i < lower.len() && i < Self::BITS {
             if original[i] != lower[i] {
                 mask |= 1 << i;
             }
@@ -1250,19 +1253,30 @@ impl StandardName {
         self.header.as_str()
     }
 
+    /// Writes the name with its original case into `buf`.
+    fn original_bytes<'b>(&self, buf: &'b mut [u8; CaseMask::BITS]) -> &'b [u8] {
+        let lower = self.as_str().as_bytes();
+        let original = &mut buf[..lower.len()];
+        original.copy_from_slice(lower);
+        let mut upper = self.case.0;
+        while upper != 0 {
+            original[upper.trailing_zeros() as usize].make_ascii_uppercase();
+            upper &= upper - 1;
+        }
+        original
+    }
+
     fn as_original_str(&self) -> Cow<'static, str> {
         if self.case == CaseMask::LOWER {
             return Cow::Borrowed(self.as_str());
         }
 
-        let mut value = String::with_capacity(self.as_str().len());
-        for (i, b) in self.as_str().bytes().enumerate() {
-            let b = if self.case.is_upper(i) {
-                b.to_ascii_uppercase()
-            } else {
-                b
-            };
-            value.push(char::from(b));
+        let mut value = String::from(self.as_str());
+        let mut upper = self.case.0;
+        while upper != 0 {
+            let i = upper.trailing_zeros() as usize;
+            value[i..=i].make_ascii_uppercase();
+            upper &= upper - 1;
         }
         Cow::Owned(value)
     }
@@ -1271,30 +1285,19 @@ impl StandardName {
         if self.case == CaseMask::LOWER {
             return f.write_str(self.as_str());
         }
-        for (i, b) in self.as_str().bytes().enumerate() {
-            let b = if self.case.is_upper(i) {
-                b.to_ascii_uppercase()
-            } else {
-                b
-            };
-            f.write_char(char::from(b))?;
-        }
-        Ok(())
+        let mut buf = [0; CaseMask::BITS];
+        let original = str::from_utf8(self.original_bytes(&mut buf)).map_err(|_e| fmt::Error)?;
+        f.write_str(original)
     }
 
+    #[inline]
     fn write_original<B: bytes::BufMut>(&self, dst: &mut B) {
         if self.case == CaseMask::LOWER {
             dst.put_slice(self.as_str().as_bytes());
             return;
         }
-        for (i, b) in self.as_str().bytes().enumerate() {
-            let b = if self.case.is_upper(i) {
-                b.to_ascii_uppercase()
-            } else {
-                b
-            };
-            dst.put_u8(b);
-        }
+        let mut buf = [0; CaseMask::BITS];
+        dst.put_slice(self.original_bytes(&mut buf));
     }
 }
 
@@ -1526,8 +1529,44 @@ impl HeaderName {
     /// Standard names use their static representation. Custom names take ownership
     /// of `src` without copying; invalid or uppercase bytes are rejected.
     pub fn from_lowercase_bytes(src: Bytes) -> Result<Self, InvalidHeaderName> {
+        Self::from_shared(src, NameTable::Lowercase)
+    }
+
+    /// Parse an HTTP/1 name, retaining its shared storage and original spelling.
+    ///
+    /// Standard names use their static representation. Custom names take ownership
+    /// of `src` without copying; invalid bytes are rejected.
+    pub fn from_shared_bytes(src: Bytes) -> Result<Self, InvalidHeaderName> {
+        Self::from_shared(src, NameTable::Http1)
+    }
+
+    /// Same as [`Self::from_shared_bytes`] for the name at `range` within `src`,
+    /// which is only shared when the name is a custom one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `range` is out of bounds for `src`.
+    pub fn from_shared_bytes_range(
+        src: &Bytes,
+        range: Range<usize>,
+    ) -> Result<Self, InvalidHeaderName> {
         let mut scratch = uninit_u8_array();
-        match parse_hdr(&src, &mut scratch, NameTable::Lowercase)?.inner {
+        match parse_hdr(&src[range.clone()], &mut scratch, NameTable::Http1)?.inner {
+            Repr::Standard(standard) => Ok(standard.into()),
+            Repr::Custom(_) => {
+                // SAFETY: `ByteStr::from_utf8_unchecked` requires valid UTF-8.
+                // `parse_hdr` returned a custom name for `src[range]`, so by its
+                // safety-usable invariant every byte of `src[range]` is ASCII, and
+                // `src.slice(range)` holds exactly those bytes.
+                let name = unsafe { ByteStr::from_utf8_unchecked(src.slice(range)) };
+                Ok(Custom(name).into())
+            }
+        }
+    }
+
+    fn from_shared(src: Bytes, table: NameTable) -> Result<Self, InvalidHeaderName> {
+        let mut scratch = uninit_u8_array();
+        match parse_hdr(&src, &mut scratch, table)?.inner {
             Repr::Standard(standard) => Ok(standard.into()),
             Repr::Custom(_) => {
                 // SAFETY: `ByteStr::from_utf8_unchecked` requires valid UTF-8.
@@ -2662,6 +2701,82 @@ mod tests {
             CONTENT_LENGTH
         );
         HeaderName::from_lowercase_bytes(Bytes::new()).unwrap_err();
+    }
+
+    #[test]
+    fn standard_names_restore_every_case_pattern() {
+        for &(_, lower) in TEST_HEADERS {
+            let upper = lower.to_ascii_uppercase();
+            let alternating: Vec<u8> = lower
+                .iter()
+                .enumerate()
+                .map(|(i, b)| {
+                    if i % 2 == 0 {
+                        b.to_ascii_uppercase()
+                    } else {
+                        *b
+                    }
+                })
+                .collect();
+            for original in [lower, upper.as_slice(), alternating.as_slice()] {
+                let original = str::from_utf8(original).unwrap();
+                let name = HeaderName::from_bytes(original.as_bytes()).unwrap();
+                assert_eq!(name.as_original_str(), original);
+                assert_eq!(name.display_original().to_string(), original);
+                let mut written = Vec::new();
+                name.write_original(&mut written);
+                assert_eq!(written, original.as_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn shared_name_matches_the_copying_parser() {
+        let long = "X-Long-".repeat(12);
+        let names = [
+            "Content-Length",
+            "content-length",
+            "cOnTeNt-TyPe",
+            "X-Shared-Custom-Header",
+            "x-shared-custom-header",
+            "x",
+            long.as_str(),
+        ];
+        for original in names {
+            let head = Bytes::from(format!("GET / HTTP/1.1\r\n{original}: v\r\n\r\n"));
+            let range = 16..16 + original.len();
+            let expected = HeaderName::from_bytes(original.as_bytes()).unwrap();
+
+            let ranged = HeaderName::from_shared_bytes_range(&head, range.clone()).unwrap();
+            let owned = HeaderName::from_shared_bytes(head.slice(range.clone())).unwrap();
+            for name in [&ranged, &owned] {
+                assert_eq!(*name, expected, "{original}");
+                assert_eq!(name.as_original_str(), original);
+                assert_eq!(name.as_lower_str(), expected.as_lower_str());
+            }
+            if StandardHeader::from_bytes(original.to_ascii_lowercase().as_bytes()).is_none() {
+                let stored = ranged.as_original_str();
+                assert_eq!(stored.as_ptr(), head[range].as_ptr(), "{original}");
+            }
+        }
+    }
+
+    #[test]
+    fn shared_name_rejects_what_the_copying_parser_rejects() {
+        let too_long = "a".repeat(crate::header::MAX_HEADER_NAME_LEN + 1);
+        for invalid in [
+            "",
+            "bad name",
+            "bad\0name",
+            "na\u{e9}me",
+            "a:b",
+            too_long.as_str(),
+        ] {
+            let bytes = Bytes::copy_from_slice(invalid.as_bytes());
+            HeaderName::from_bytes(&bytes).unwrap_err();
+            HeaderName::from_shared_bytes(bytes.clone()).unwrap_err();
+            HeaderName::from_shared_bytes_range(&bytes, 0..bytes.len()).unwrap_err();
+        }
     }
 
     #[test]

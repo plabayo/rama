@@ -67,16 +67,13 @@ pub enum Role {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct WebSocketConfig {
-    /// Read buffer capacity. This buffer is eagerly allocated and used for receiving
-    /// messages.
+    /// Initial read buffer capacity, allocated on the first read.
     ///
-    /// For high read load scenarios a larger buffer, e.g. 128 KiB, improves performance.
+    /// The buffer doubles with the data that arrives, up to 128 KiB per read (or this
+    /// size, if larger), so a busy connection reads in large chunks while an idle one
+    /// keeps a small buffer.
     ///
-    /// For scenarios where you expect a lot of connections and don't need high read load
-    /// performance a smaller buffer, e.g. 4 KiB, would be appropriate to lower total
-    /// memory usage.
-    ///
-    /// The default value is 128 KiB.
+    /// The default value is 4 KiB.
     pub read_buffer_size: usize,
 
     /// The target minimum size of the write buffer to reach before writing the data
@@ -275,7 +272,7 @@ impl Default for PerMessageDeflateConfig {
 impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
-            read_buffer_size: kib(128),
+            read_buffer_size: kib(4),
             write_buffer_size: kib(128),
             max_write_buffer_size: usize::MAX,
             max_message_size: Some(64 << 20),

@@ -147,12 +147,8 @@ impl FrameHeader {
                 Err(err) => return Err(err.into()),
                 Ok(()) => (),
             }
-            trace!("Parsed headers {:?}", head);
             (head[0], head[1])
         };
-
-        trace!("First: {:b}", first);
-        trace!("Second: {:b}", second);
 
         let is_final = first & 0x80 != 0;
 
@@ -161,10 +157,9 @@ impl FrameHeader {
         let rsv3 = first & 0x10 != 0;
 
         let opcode = OpCode::try_from(first & 0x0F)?;
-        trace!("Opcode: {:?}", opcode);
 
         let masked = second & 0x80 != 0;
-        trace!("Masked: {:?}", masked);
+        trace!("parsed frame head {first:08b} {second:08b}: opcode {opcode:?}, masked {masked}");
 
         let length = {
             let length_byte = second & 0x7F;
@@ -383,7 +378,10 @@ impl Frame {
     }
 
     pub(crate) fn format_into_buf(mut self, buf: &mut BytesMut) {
-        self.header.format_buf(self.payload.len() as u64, buf);
+        let payload_len = self.payload.len() as u64;
+        let mut header = [0; FrameHeader::MAX_SIZE];
+        self.header.format_buf(payload_len, &mut &mut header[..]);
+        buf.extend_from_slice(&header[..self.header.len(payload_len)]);
 
         let len = buf.len();
         buf.extend_from_slice(&self.payload);

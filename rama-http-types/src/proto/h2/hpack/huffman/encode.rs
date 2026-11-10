@@ -19,20 +19,26 @@ pub(crate) fn encode_lowercase_ascii(src: &[u8], dst: &mut BytesMut) {
 }
 
 fn encode_bytes<B: BufMut>(bytes: impl IntoIterator<Item = u8>, dst: &mut B) {
+    // Codes are packed here first, so `dst` checks its capacity once per block.
+    let mut block = [0u8; 64];
+    let mut block_len = 0;
     let mut bits = 0u64;
     let mut bits_len = 0;
 
     for b in bytes {
         let nbits = usize::from(ENCODE_CODE_LENGTHS[b as usize]);
         let code = u64::from(ENCODE_CODES[b as usize]);
-
         bits = (bits << nbits) | code;
         bits_len += nbits;
-
         if bits_len >= 32 {
             let remaining = bits_len - 32;
-            dst.put_u32((bits >> remaining) as u32);
-
+            block[block_len..block_len + 4]
+                .copy_from_slice(&((bits >> remaining) as u32).to_be_bytes());
+            block_len += 4;
+            if block_len == block.len() {
+                dst.put_slice(&block);
+                block_len = 0;
+            }
             bits_len = remaining;
             if remaining == 0 {
                 bits = 0;
@@ -47,12 +53,14 @@ fn encode_bytes<B: BufMut>(bytes: impl IntoIterator<Item = u8>, dst: &mut B) {
         let padding = (8 - (bits_len % 8)) % 8;
         bits = (bits << padding) | ((1 << padding) - 1);
         bits_len += padding;
-
+        // Fewer than 32 bits are left, which fit the block: it is flushed when full.
         while bits_len != 0 {
             bits_len -= 8;
-            dst.put_u8((bits >> bits_len) as u8);
+            block[block_len] = (bits >> bits_len) as u8;
+            block_len += 1;
         }
     }
+    dst.put_slice(&block[..block_len]);
 }
 
 #[cfg(test)]

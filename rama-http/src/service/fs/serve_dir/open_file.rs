@@ -4,27 +4,26 @@ use super::{
 };
 use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch, IfRange};
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
-use crate::{HeaderValue, Method, Request, header};
+use crate::service::fs::AsyncReadBody;
+use crate::{Body, HeaderValue, Method, Request, body::util::BodyExt as _, header};
 use http_range_header::{RangeInvalid, RangeUnsatisfiableError};
-use rama_core::combinators::Either;
+use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing;
 use rama_http_types::mime::Mime;
 use rama_net::uri::Uri;
 use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
-use std::io::Cursor;
+use rama_utils::octets::kib_u64;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt as _;
 #[cfg(windows)]
 use std::path::Component;
 use std::{
     ffi::OsStr,
-    fs::Metadata,
-    io::{self, ErrorKind, SeekFrom},
+    fs::{File, Metadata},
+    io::{self, ErrorKind, Read as _, Seek as _, SeekFrom},
     ops::RangeInclusive,
     path::{Path, PathBuf},
 };
-use tokio::io::AsyncRead;
-use tokio::{fs::File, io::AsyncSeekExt};
 
 // All html-only state (DirEntry, HumanSize, generate_directory_html, the
 // emoji/size helpers, the per-helper unit tests) lives in a sibling
@@ -32,6 +31,9 @@ use tokio::{fs::File, io::AsyncSeekExt};
 #[cfg(feature = "html")]
 #[path = "open_file_html.rs"]
 mod html;
+
+/// Files up to this size are read whole by the blocking call that opens them.
+const READ_WHOLE_MAX_LEN: u64 = kib_u64(128);
 
 /// Which request-supplied filesystem paths may be served.
 #[derive(Debug, Clone, Copy)]
@@ -110,29 +112,107 @@ pub(super) struct FileOpened {
 
 /// Represents different ways a file can be accessed for serving.
 pub(super) enum FileRequestExtent {
-    Full(File, Metadata),
-    Head(Metadata),
-    Embedded(Vec<u8>, u64), // Content, original file size
-    EmbeddedHead(u64),      // Content length for HEAD requests on embedded files
+    /// A file streamed from disk, positioned at the start of the served range.
+    Stream(tokio::fs::File, u64),
+    /// A file held in memory: read whole, or embedded.
+    Loaded(Bytes),
+    /// A HEAD request for a file of this size.
+    Head(u64),
 }
 
 impl FileRequestExtent {
-    /// Convert the file extent into an async reader if possible.
-    pub(super) fn into_reader(self) -> Option<impl AsyncRead + Send + Sync + Unpin> {
+    pub(super) fn file_size(&self) -> u64 {
         match self {
-            Self::Head(_) | Self::EmbeddedHead(_) => None,
-            Self::Full(file, _) => Some(Either::A(file)),
-            Self::Embedded(content, _) => Some(Either::B(Cursor::new(content))),
+            Self::Stream(_, size) | Self::Head(size) => *size,
+            Self::Loaded(contents) => contents.len() as u64,
         }
     }
 
-    pub(super) fn file_size(&self) -> u64 {
-        match self {
-            Self::Head(meta) | Self::Full(_, meta) => meta.len(),
-            Self::Embedded(_, original_size) => *original_size,
-            Self::EmbeddedHead(size) => *size,
+    /// The response body serving `range`, or the whole file.
+    pub(super) fn into_body(self, range: Option<&RangeInclusive<u64>>, chunk_size: usize) -> Body {
+        match (self, range) {
+            (Self::Head(_), _) => Body::empty(),
+            (Self::Loaded(contents), None) => Body::from(contents),
+            (Self::Loaded(contents), Some(range)) => {
+                Body::from(contents.slice(*range.start() as usize..=*range.end() as usize))
+            }
+            (Self::Stream(file, size), None) => {
+                Body::new(AsyncReadBody::with_capacity_limited(file, chunk_size, size).boxed())
+            }
+            (Self::Stream(file, _), Some(range)) => Body::new(
+                AsyncReadBody::with_capacity_limited(
+                    file,
+                    chunk_size,
+                    range.end() - range.start() + 1,
+                )
+                .boxed(),
+            ),
         }
     }
+}
+
+/// What a request asks of the file it resolves to.
+struct FileRequest {
+    preconditions: Preconditions,
+    range_header: Option<Box<str>>,
+    is_head: bool,
+    ignore_multi_range_requests: bool,
+    buf_chunk_size: usize,
+    precompression_configured: bool,
+    negotiated_encodings: Vec<QualityValue<Encoding>>,
+}
+
+impl FileRequest {
+    /// Evaluates preconditions and the range of a file with the given validators and size.
+    fn decide(
+        &self,
+        size: u64,
+        modified: Option<std::time::SystemTime>,
+    ) -> Result<Decided, OpenFileOutput> {
+        let last_modified = modified.and_then(LastModified::try_from_system_time);
+        let etag = modified.and_then(|mtime| etag_from_metadata(size, mtime));
+        if let Some(output) = self
+            .preconditions
+            .check(etag.as_ref(), last_modified.as_ref())
+        {
+            return Err(output);
+        }
+        let range_header = self
+            .preconditions
+            .applicable_range(self.range_header.as_deref(), etag.as_ref());
+        let range = try_parse_range(range_header, size, self.ignore_multi_range_requests);
+        Ok(Decided {
+            last_modified,
+            etag,
+            range,
+        })
+    }
+
+    fn opened(
+        &self,
+        extent: FileRequestExtent,
+        mime: Mime,
+        encoding: Option<Encoding>,
+        decided: Decided,
+    ) -> OpenFileOutput {
+        OpenFileOutput::new_file_opened(
+            extent,
+            self.buf_chunk_size,
+            mime,
+            encoding,
+            decided.range,
+            decided.last_modified,
+            self.precompression_configured,
+            decided.etag,
+        )
+    }
+}
+
+/// Validators and range of a file that passed its preconditions.
+struct Decided {
+    last_modified: Option<LastModified>,
+    etag: Option<ETag>,
+    range: Option<Result<RangeInclusive<u64>, RangeError>>,
 }
 
 /// Open a file for serving, handling both filesystem and embedded sources.
@@ -143,7 +223,7 @@ impl FileRequestExtent {
 )]
 pub(super) async fn open_file(
     variant: ServeVariant,
-    mut path_to_file: PathBuf,
+    path_to_file: PathBuf,
     req: Request,
     negotiated_encodings: Vec<QualityValue<Encoding>>,
     range_header: Option<&str>,
@@ -153,215 +233,466 @@ pub(super) async fn open_file(
     precompression_configured: bool,
     access: PathAccess<'_>,
 ) -> io::Result<OpenFileOutput> {
+    let request = FileRequest {
+        preconditions: Preconditions::from_request(&req),
+        range_header: range_header.map(Into::into),
+        is_head: req.method() == Method::HEAD,
+        ignore_multi_range_requests,
+        buf_chunk_size,
+        precompression_configured,
+        negotiated_encodings,
+    };
+    match source {
+        DirSource::Filesystem(root) => {
+            let lookup = FilesystemLookup {
+                root: root.clone(),
+                symlink_policy: access.symlink_policy,
+                hidden: access.hidden.clone(),
+            };
+            let (parts, _) = req.into_parts();
+            // One blocking call resolves, opens and, when small, reads the file.
+            tokio::task::spawn_blocking(move || {
+                lookup.open(variant, path_to_file, &parts.uri, &request)
+            })
+            .await
+            .map_err(io::Error::other)?
+        }
+        DirSource::Embedded(base) => open_embedded(
+            base,
+            variant,
+            path_to_file,
+            req.uri(),
+            &request,
+            access.hidden,
+        ),
+    }
+}
+
+/// The next step for a request path, once it is known whether it names a directory.
+enum DirectoryStep {
+    Serve,
+    Respond(OpenFileOutput),
+    #[cfg(feature = "html")]
+    List,
+}
+
+/// Handle directory requests based on the configured directory serve mode.
+/// Can append index.html, return 404, or ask for an HTML file listing.
+///
+/// `is_directory`: `Some(true)` => directory, `Some(false)` => file, `None` => does not exist.
+fn directory_step(
+    is_directory: Option<bool>,
+    path_to_file: &mut PathBuf,
+    uri: &Uri,
+    mode: DirectoryServeMode,
+    redirect_to_trailing_slash: bool,
+    html_as_default_extension: bool,
+) -> io::Result<DirectoryStep> {
+    let uri_path = uri.path_or_root();
+
+    // A trailing slash means the client is referring to a directory.
+    // If the path resolves to something other than an existing directory
+    // (a file, or nothing at all), we must NOT silently strip the slash
+    // and serve a file. Root `/` is exempted: it always means "this dir".
+    if uri_path.ends_with('/') && uri_path != "/" && is_directory != Some(true) {
+        return Ok(DirectoryStep::Respond(OpenFileOutput::FileNotFound));
+    }
+
+    // Bare-name requests (`/about`) — if nothing exists at that path AND
+    // the path has no extension yet, try appending `.html`.
+    if html_as_default_extension && is_directory.is_none() && path_to_file.extension().is_none() {
+        path_to_file.set_extension("html");
+        return Ok(DirectoryStep::Serve);
+    }
+
+    if is_directory != Some(true) {
+        return Ok(DirectoryStep::Serve);
+    }
+
+    match mode {
+        DirectoryServeMode::AppendIndexHtml => {
+            if uri_path.ends_with('/') || !redirect_to_trailing_slash {
+                path_to_file.push("index.html");
+                Ok(DirectoryStep::Serve)
+            } else {
+                let uri = match append_slash_on_path(uri.clone()) {
+                    Ok(uri) => uri,
+                    Err(err) => return Ok(DirectoryStep::Respond(err)),
+                };
+                let location = HeaderValue::try_from(uri.to_string())
+                    .inspect_err(|err| {
+                        tracing::debug!("failed to parse uri as header value for loc: {err}");
+                    })
+                    .map_err(io::Error::other)?;
+                Ok(DirectoryStep::Respond(OpenFileOutput::Redirect {
+                    location,
+                }))
+            }
+        }
+        DirectoryServeMode::NotFound => Ok(DirectoryStep::Respond(OpenFileOutput::FileNotFound)),
+        #[cfg(feature = "html")]
+        DirectoryServeMode::HtmlFileList => Ok(DirectoryStep::List),
+    }
+}
+
+fn open_embedded(
+    base: &Dir<'static>,
+    variant: ServeVariant,
+    mut path_to_file: PathBuf,
+    uri: &Uri,
+    request: &FileRequest,
+    hidden: &HiddenPathFilter,
+) -> io::Result<OpenFileOutput> {
     let mime = match variant {
         ServeVariant::Directory {
             serve_mode,
             redirect_to_trailing_slash,
             html_as_default_extension,
         } => {
-            // Might already at this point know a redirect or not found result should be
-            // returned which corresponds to a Some(output). Otherwise the path might be
-            // modified and proceed to the open file/metadata future.
-            if let Some(output) = maybe_serve_directory(
+            let is_directory = is_dir_embedded(&path_to_file, base);
+            match directory_step(
+                is_directory,
                 &mut path_to_file,
-                req.uri(),
+                uri,
                 serve_mode,
                 redirect_to_trailing_slash,
                 html_as_default_extension,
-                source,
-                access,
-            )
-            .await?
-            {
-                return Ok(output);
+            )? {
+                DirectoryStep::Serve => {}
+                DirectoryStep::Respond(output) => return Ok(output),
+                #[cfg(feature = "html")]
+                DirectoryStep::List => {
+                    return Ok(html::list_embedded_dir(base, &path_to_file, uri, hidden));
+                }
             }
-
             guess_mime_type(&path_to_file)
         }
-
         ServeVariant::SingleFile { mime } => mime,
     };
+    #[cfg(not(feature = "html"))]
+    let _ = hidden;
 
-    let preconditions = Preconditions::from_request(&req);
+    let (contents, metadata, maybe_encoding) =
+        match open_embedded_file_with_fallback(base, path_to_file, &request.negotiated_encodings) {
+            Ok(result) => result,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Ok(OpenFileOutput::FileNotFound);
+            }
+            Err(err) => return Err(err),
+        };
 
-    if req.method() == Method::HEAD {
-        match source {
-            DirSource::Filesystem(_) => {
-                let (meta, maybe_encoding) = match file_metadata_with_fallback(
-                    source,
-                    path_to_file,
-                    negotiated_encodings,
-                    access,
-                )
-                .await
-                {
+    let content_length = contents.len() as u64;
+    let decided = match request.decide(content_length, metadata.map(|meta| meta.modified())) {
+        Ok(decided) => decided,
+        Err(output) => return Ok(output),
+    };
+    let extent = if request.is_head {
+        FileRequestExtent::Head(content_length)
+    } else {
+        FileRequestExtent::Loaded(Bytes::from_static(contents))
+    };
+    Ok(request.opened(extent, mime, maybe_encoding, decided))
+}
+
+/// Attempt to open an embedded file with any of the negotiated encodings.
+/// Falls back to uncompressed file if no precompressed variants are found.
+fn open_embedded_file_with_fallback(
+    base: &Dir<'static>,
+    mut path: PathBuf,
+    negotiated_encoding: &[QualityValue<Encoding>],
+) -> io::Result<(&'static [u8], Option<EmbeddedMetadata>, Option<Encoding>)> {
+    let mut negotiated_encoding = negotiated_encoding.to_vec();
+    let (file, encoding) = loop {
+        // Get the preferred encoding among the negotiated ones.
+        let encoding = preferred_encoding(&mut path, &negotiated_encoding);
+        match (base.get_file(&path), encoding) {
+            (Some(file), maybe_encoding) => break (file, maybe_encoding),
+            (None, Some(encoding)) if encoding != Encoding::Identity => {
+                // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
+                // to reset the path before the next iteration.
+                path.set_extension(OsStr::new(""));
+                // Remove the encoding from the negotiated_encodings since the file doesn't exist
+                negotiated_encoding.retain(|qv| qv.value != encoding);
+            }
+            (None, Some(_) | None) => {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "file not found"));
+            }
+        };
+    };
+
+    Ok((file.contents(), file.metadata().copied(), encoding))
+}
+
+fn is_dir_embedded(path_to_file: &Path, base: &Dir<'_>) -> Option<bool> {
+    // Empty path corresponds to the root directory, which is always a directory
+    if path_to_file.as_os_str().is_empty() {
+        return Some(true);
+    }
+    if base.get_dir(path_to_file).is_some() {
+        Some(true)
+    } else if base.get_file(path_to_file).is_some() {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Resolves request paths below a filesystem root; every method blocks.
+struct FilesystemLookup {
+    root: PathBuf,
+    symlink_policy: ServeDirSymlinkPolicy,
+    hidden: HiddenPathFilter,
+}
+
+impl FilesystemLookup {
+    fn open(
+        &self,
+        variant: ServeVariant,
+        mut path_to_file: PathBuf,
+        uri: &Uri,
+        request: &FileRequest,
+    ) -> io::Result<OpenFileOutput> {
+        let mime = match variant {
+            ServeVariant::Directory {
+                serve_mode,
+                redirect_to_trailing_slash,
+                html_as_default_extension,
+            } => {
+                let is_directory = match self.metadata(&path_to_file) {
+                    Ok(metadata) => Some(metadata.is_dir()),
+                    Err(err) if is_missing_file_error(&err) => None,
+                    Err(err) => return Err(err),
+                };
+                match directory_step(
+                    is_directory,
+                    &mut path_to_file,
+                    uri,
+                    serve_mode,
+                    redirect_to_trailing_slash,
+                    html_as_default_extension,
+                )? {
+                    DirectoryStep::Serve => {}
+                    DirectoryStep::Respond(output) => return Ok(output),
+                    #[cfg(feature = "html")]
+                    DirectoryStep::List => {
+                        return html::list_filesystem_dir(&path_to_file, uri, &self.hidden);
+                    }
+                }
+                guess_mime_type(&path_to_file)
+            }
+            ServeVariant::SingleFile { mime } => mime,
+        };
+
+        if request.is_head {
+            let (meta, maybe_encoding) =
+                match Self::with_fallback(path_to_file, request, |path| self.metadata(path)) {
                     Ok(result) => result,
                     Err(err) if is_invalid_filename_error(&err) => {
                         return Ok(OpenFileOutput::InvalidFilename);
                     }
                     Err(err) => return Err(err),
                 };
+            let decided = match request.decide(meta.len(), meta.modified().ok()) {
+                Ok(decided) => decided,
+                Err(output) => return Ok(output),
+            };
+            let extent = FileRequestExtent::Head(meta.len());
+            return Ok(request.opened(extent, mime, maybe_encoding, decided));
+        }
 
-                let last_modified = meta
-                    .modified()
-                    .ok()
-                    .and_then(LastModified::try_from_system_time);
-                let etag = meta
-                    .modified()
-                    .ok()
-                    .and_then(|mtime| etag_from_metadata(meta.len(), mtime));
-                if let Some(output) = preconditions.check(etag.as_ref(), last_modified.as_ref()) {
-                    return Ok(output);
+        let (mut file, maybe_encoding) =
+            match Self::with_fallback(path_to_file, request, |path| self.open_file(path)) {
+                Ok(result) => result,
+                Err(err) if is_invalid_filename_error(&err) => {
+                    return Ok(OpenFileOutput::InvalidFilename);
                 }
-
-                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
-                let maybe_range =
-                    try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
-
-                Ok(OpenFileOutput::new_file_opened(
-                    FileRequestExtent::Head(meta),
-                    buf_chunk_size,
-                    mime,
-                    maybe_encoding,
-                    maybe_range,
-                    last_modified,
-                    precompression_configured,
-                    etag,
-                ))
+                Err(err) => return Err(err),
+            };
+        let meta = file.metadata()?;
+        if meta.len() > READ_WHOLE_MAX_LEN {
+            let decided = match request.decide(meta.len(), meta.modified().ok()) {
+                Ok(decided) => decided,
+                Err(output) => return Ok(output),
+            };
+            if let Some(Ok(range)) = decided.range.as_ref() {
+                file.seek(SeekFrom::Start(*range.start()))?;
             }
-            DirSource::Embedded(base) => {
-                let (contents, metadata, maybe_encoding) = match open_embedded_file_with_fallback(
-                    base,
-                    path_to_file,
-                    negotiated_encodings,
-                ) {
-                    Ok(result) => result,
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                        return Ok(OpenFileOutput::FileNotFound);
-                    }
-                    Err(err) => return Err(err),
-                };
+            let extent = FileRequestExtent::Stream(tokio::fs::File::from_std(file), meta.len());
+            return Ok(request.opened(extent, mime, maybe_encoding, decided));
+        }
 
-                let content_length = contents.len() as u64;
-                let last_modified = metadata
-                    .and_then(|metadata| LastModified::try_from_system_time(metadata.modified()));
-                let etag = metadata
-                    .and_then(|metadata| etag_from_metadata(content_length, metadata.modified()));
+        // Validators come from the metadata, so a not-modified file is never read.
+        if let Err(output) = request.decide(meta.len(), meta.modified().ok()) {
+            return Ok(output);
+        }
+        let mut contents = Vec::with_capacity(meta.len() as usize);
+        file.take(meta.len()).read_to_end(&mut contents)?;
+        // The size read is the size served, even if the file changed since its metadata.
+        let decided = match request.decide(contents.len() as u64, meta.modified().ok()) {
+            Ok(decided) => decided,
+            Err(output) => return Ok(output),
+        };
+        let extent = FileRequestExtent::Loaded(Bytes::from(contents));
+        Ok(request.opened(extent, mime, maybe_encoding, decided))
+    }
 
-                if let Some(output) = preconditions.check(etag.as_ref(), last_modified.as_ref()) {
-                    return Ok(output);
+    /// Runs `lookup` on the preferred precompressed variant of `path`, falling back
+    /// through the negotiated encodings to the uncompressed file.
+    fn with_fallback<T>(
+        mut path: PathBuf,
+        request: &FileRequest,
+        lookup: impl Fn(&Path) -> io::Result<T>,
+    ) -> io::Result<(T, Option<Encoding>)> {
+        let mut negotiated_encoding = request.negotiated_encodings.clone();
+        loop {
+            // Get the preferred encoding among the negotiated ones.
+            let encoding = preferred_encoding(&mut path, &negotiated_encoding);
+            match (lookup(&path), encoding) {
+                (Ok(found), maybe_encoding) => return Ok((found, maybe_encoding)),
+                // Identity has no file extension to strip, so falling through to
+                // the strip-and-retry path would clobber the originally requested
+                // extension (e.g. `/foo.foobar` would become `/foo`). Only strip
+                // when the preferred encoding actually appended an extension.
+                // Regression test: see `identity_encoding_does_not_strip_extension`.
+                (Err(err), Some(encoding))
+                    if is_missing_file_error(&err) && encoding != Encoding::Identity =>
+                {
+                    // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
+                    // to reset the path before the next iteration.
+                    path.set_extension(OsStr::new(""));
+                    // Remove the encoding from the negotiated_encodings since the file doesn't exist
+                    negotiated_encoding.retain(|qv| qv.value != encoding);
                 }
-
-                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
-                let maybe_range =
-                    try_parse_range(range_header, content_length, ignore_multi_range_requests);
-
-                Ok(OpenFileOutput::new_file_opened(
-                    FileRequestExtent::EmbeddedHead(content_length),
-                    buf_chunk_size,
-                    mime,
-                    maybe_encoding,
-                    maybe_range,
-                    last_modified,
-                    precompression_configured,
-                    etag,
-                ))
+                (Err(err), _) => return Err(err),
             }
+        }
+    }
+
+    fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        self.check_access(path)?;
+        std::fs::metadata(path)
+    }
+
+    fn open_file(&self, path: &Path) -> io::Result<File> {
+        self.check_access(path)?;
+        File::open(path)
+    }
+
+    /// Enforces the symlink and hidden-entry policies on a request-supplied path.
+    fn check_access(&self, path: &Path) -> io::Result<()> {
+        let root = if path.strip_prefix(&self.root).is_ok() {
+            self.root.as_path()
+        } else {
+            self.root
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."))
+        };
+
+        if self.symlink_policy != ServeDirSymlinkPolicy::AllowAll {
+            reject_symlinks_below_root(root, path, self.symlink_policy)?;
+        }
+        reject_hidden_resolved(root, path, &self.hidden)
+    }
+}
+
+fn reject_symlinks_below_root(
+    root: &Path,
+    path: &Path,
+    symlink_policy: ServeDirSymlinkPolicy,
+) -> io::Result<()> {
+    // The configured root (or single-file target) is operator-trusted and may
+    // legitimately be a symlink — e.g. a blue-green `current -> releases/N`
+    // deploy, or `ServeFile` pointed at `latest.log -> 2026-06-19.log`. The
+    // policy therefore governs only the *request-supplied* components below the
+    // root, which are the path-traversal escape vector; the root itself is not
+    // policed.
+    if let Ok(relative_path) = path.strip_prefix(root) {
+        let mut current_path = root.to_path_buf();
+        let mut components = relative_path.components().peekable();
+        while let Some(component) = components.next() {
+            current_path.push(component);
+            if symlink_policy == ServeDirSymlinkPolicy::AllowFinalComponent
+                && components.peek().is_none()
+            {
+                break;
+            }
+            reject_symlink(&current_path)?;
         }
     } else {
-        match source {
-            DirSource::Filesystem(_) => {
-                let (mut file, maybe_encoding) = match open_file_with_fallback(
-                    source,
-                    path_to_file,
-                    negotiated_encodings,
-                    access,
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(err) if is_invalid_filename_error(&err) => {
-                        return Ok(OpenFileOutput::InvalidFilename);
-                    }
-                    Err(err) => return Err(err),
-                };
-                let meta = file.metadata().await?;
-                let last_modified = meta
-                    .modified()
-                    .ok()
-                    .and_then(LastModified::try_from_system_time);
-                let etag = meta
-                    .modified()
-                    .ok()
-                    .and_then(|mtime| etag_from_metadata(meta.len(), mtime));
-                if let Some(output) = preconditions.check(etag.as_ref(), last_modified.as_ref()) {
-                    return Ok(output);
-                }
+        // Path is not under the configured root (unexpected); police it
+        // defensively rather than trusting it.
+        reject_symlink(path)?;
+    }
 
-                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
-                let maybe_range =
-                    try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
-                if let Some(Ok(range)) = maybe_range.as_ref() {
-                    file.seek(SeekFrom::Start(*range.start())).await?;
-                }
+    Ok(())
+}
 
-                Ok(OpenFileOutput::new_file_opened(
-                    FileRequestExtent::Full(file, meta),
-                    buf_chunk_size,
-                    mime,
-                    maybe_encoding,
-                    maybe_range,
-                    last_modified,
-                    precompression_configured,
-                    etag,
-                ))
-            }
-            DirSource::Embedded(base) => {
-                let (contents, metadata, maybe_encoding) = match open_embedded_file_with_fallback(
-                    base,
-                    path_to_file,
-                    negotiated_encodings,
-                ) {
-                    Ok(result) => result,
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                        return Ok(OpenFileOutput::FileNotFound);
-                    }
-                    Err(err) => return Err(err),
-                };
+/// Request names are checked before any lookup; only Windows can alias a
+/// hidden entry under another name (8.3 short names such as `GIT~1`).
+#[cfg(not(windows))]
+fn reject_hidden_resolved(
+    _root: &Path,
+    _path: &Path,
+    _hidden: &HiddenPathFilter,
+) -> io::Result<()> {
+    Ok(())
+}
 
-                let content_length = contents.len() as u64;
-                let last_modified = metadata
-                    .as_ref()
-                    .and_then(|meta| LastModified::try_from_system_time(meta.modified()));
-                let etag =
-                    metadata.and_then(|meta| etag_from_metadata(content_length, meta.modified()));
+/// Check the resolved on-disk names, as a short name (`GIT~1`) can alias a hidden entry.
+#[cfg(windows)]
+fn reject_hidden_resolved(root: &Path, path: &Path, hidden: &HiddenPathFilter) -> io::Result<()> {
+    if hidden.allows_all() {
+        return Ok(());
+    }
 
-                if let Some(output) = preconditions.check(etag.as_ref(), last_modified.as_ref()) {
-                    return Ok(output);
-                }
+    let resolved_root = std::fs::canonicalize(root)?;
+    let resolved = std::fs::canonicalize(path)?;
 
-                let range_header = preconditions.applicable_range(range_header, etag.as_ref());
-                let maybe_range =
-                    try_parse_range(range_header, content_length, ignore_multi_range_requests);
+    let Ok(relative) = resolved.strip_prefix(&resolved_root) else {
+        // a permitted symlink left the root: police every resolved name
+        return if hidden.hides_path(&resolved) {
+            Err(hidden_entry_error())
+        } else {
+            Ok(())
+        };
+    };
 
-                let mut content = contents;
-                if let Some(Ok(range)) = maybe_range.as_ref() {
-                    let start = *range.start() as usize;
-                    content.drain(0..start.min(content.len()));
-                }
-
-                Ok(OpenFileOutput::new_file_opened(
-                    FileRequestExtent::Embedded(content, content_length),
-                    buf_chunk_size,
-                    mime,
-                    maybe_encoding,
-                    maybe_range,
-                    last_modified,
-                    precompression_configured,
-                    etag,
-                ))
+    let mut current = resolved_root.clone();
+    for component in relative.components() {
+        current.push(component);
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        if hidden.hides_name(name) {
+            return Err(hidden_entry_error());
+        }
+        if hidden.checks_attributes() {
+            let meta = std::fs::symlink_metadata(&current)?;
+            if hidden.hides_attributes(name, meta.file_attributes()) {
+                return Err(hidden_entry_error());
             }
         }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn hidden_entry_error() -> io::Error {
+    // reported as missing so a hidden entry is indistinguishable from an absent one
+    io::Error::new(io::ErrorKind::NotFound, "hidden entries are not served")
+}
+
+fn reject_symlink(path: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if is_symlink_like(&meta) {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "symlink paths are not served",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -524,243 +855,6 @@ fn preferred_encoding(
     preferred_encoding
 }
 
-// Attempts to open the file with any of the possible negotiated_encodings in the
-// preferred order. If none of the negotiated_encodings have a corresponding precompressed
-// file the uncompressed file is used as a fallback.
-/// Attempt to open a file with any of the negotiated encodings in preferred order.
-/// Falls back to uncompressed file if no precompressed variants are found.
-async fn open_file_with_fallback(
-    source: &DirSource,
-    mut path: PathBuf,
-    mut negotiated_encoding: Vec<QualityValue<Encoding>>,
-    access: PathAccess<'_>,
-) -> io::Result<(File, Option<Encoding>)> {
-    let (file, encoding) = loop {
-        // Get the preferred encoding among the negotiated ones.
-        let encoding = preferred_encoding(&mut path, &negotiated_encoding);
-        match (filesystem_metadata(source, &path, access).await, encoding) {
-            (Ok(_), maybe_encoding) => break (File::open(&path).await?, maybe_encoding),
-            // Identity has no file extension to strip, so falling through to
-            // the strip-and-retry path would clobber the originally requested
-            // extension (e.g. `/foo.foobar` would become `/foo`). Only strip
-            // when the preferred encoding actually appended an extension.
-            // Regression test: see `identity_encoding_does_not_strip_extension`.
-            (Err(err), Some(encoding))
-                if is_missing_file_error(&err) && encoding != Encoding::Identity =>
-            {
-                // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
-                // to reset the path before the next iteration.
-                path.set_extension(OsStr::new(""));
-                // Remove the encoding from the negotiated_encodings since the file doesn't exist
-                negotiated_encoding.retain(|qv| qv.value != encoding);
-            }
-            (Err(err), _) => return Err(err),
-        };
-    };
-    Ok((file, encoding))
-}
-
-/// Attempt to open an embedded file with any of the negotiated encodings.
-/// Falls back to uncompressed file if no precompressed variants are found.
-fn open_embedded_file_with_fallback(
-    base: &Dir<'_>,
-    mut path: PathBuf,
-    mut negotiated_encoding: Vec<QualityValue<Encoding>>,
-) -> io::Result<(Vec<u8>, Option<EmbeddedMetadata>, Option<Encoding>)> {
-    let (file, encoding) = loop {
-        // Get the preferred encoding among the negotiated ones.
-        let encoding = preferred_encoding(&mut path, &negotiated_encoding);
-        match (base.get_file(&path), encoding) {
-            (Some(file), maybe_encoding) => break (file, maybe_encoding),
-            (None, Some(encoding)) if encoding != Encoding::Identity => {
-                // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
-                // to reset the path before the next iteration.
-                path.set_extension(OsStr::new(""));
-                // Remove the encoding from the negotiated_encodings since the file doesn't exist
-                negotiated_encoding.retain(|qv| qv.value != encoding);
-            }
-            (None, Some(_) | None) => {
-                return Err(io::Error::new(io::ErrorKind::NotFound, "file not found"));
-            }
-        };
-    };
-
-    let content = file.contents().to_vec();
-    let metadata = file.metadata().copied();
-
-    Ok((content, metadata, encoding))
-}
-
-// Attempts to get the file metadata with any of the possible negotiated_encodings in the
-// preferred order. If none of the negotiated_encodings have a corresponding precompressed
-// file the uncompressed file is used as a fallback.
-/// Get file metadata with fallback for different encodings.
-async fn file_metadata_with_fallback(
-    source: &DirSource,
-    mut path: PathBuf,
-    mut negotiated_encoding: Vec<QualityValue<Encoding>>,
-    access: PathAccess<'_>,
-) -> io::Result<(Metadata, Option<Encoding>)> {
-    let (file, encoding) = loop {
-        // Get the preferred encoding among the negotiated ones.
-        let encoding = preferred_encoding(&mut path, &negotiated_encoding);
-        match (filesystem_metadata(source, &path, access).await, encoding) {
-            (Ok(file), maybe_encoding) => break (file, maybe_encoding),
-            // See `open_file_with_fallback` for why Identity is skipped here.
-            (Err(err), Some(encoding))
-                if is_missing_file_error(&err) && encoding != Encoding::Identity =>
-            {
-                // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
-                // to reset the path before the next iteration.
-                path.set_extension(OsStr::new(""));
-                // Remove the encoding from the negotiated_encodings since the file doesn't exist
-                negotiated_encoding.retain(|qv| qv.value != encoding);
-            }
-            (Err(err), _) => return Err(err),
-        };
-    };
-    Ok((file, encoding))
-}
-
-async fn filesystem_metadata(
-    source: &DirSource,
-    path: &Path,
-    access: PathAccess<'_>,
-) -> io::Result<Metadata> {
-    match source {
-        DirSource::Filesystem(root) => filesystem_metadata_from_root(root, path, access).await,
-        DirSource::Embedded(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "embedded sources do not use filesystem metadata",
-        )),
-    }
-}
-
-async fn filesystem_metadata_from_root(
-    root: &Path,
-    path: &Path,
-    access: PathAccess<'_>,
-) -> io::Result<Metadata> {
-    let root = if path.strip_prefix(root).is_ok() {
-        root
-    } else {
-        root.parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-    };
-
-    if access.symlink_policy != ServeDirSymlinkPolicy::AllowAll {
-        reject_symlinks_below_root(root, path, access.symlink_policy).await?;
-    }
-    reject_hidden_resolved(root, path, access.hidden).await?;
-
-    tokio::fs::metadata(path).await
-}
-
-async fn reject_symlinks_below_root(
-    root: &Path,
-    path: &Path,
-    symlink_policy: ServeDirSymlinkPolicy,
-) -> io::Result<()> {
-    // The configured root (or single-file target) is operator-trusted and may
-    // legitimately be a symlink — e.g. a blue-green `current -> releases/N`
-    // deploy, or `ServeFile` pointed at `latest.log -> 2026-06-19.log`. The
-    // policy therefore governs only the *request-supplied* components below the
-    // root, which are the path-traversal escape vector; the root itself is not
-    // policed.
-    if let Ok(relative_path) = path.strip_prefix(root) {
-        let mut current_path = root.to_path_buf();
-        let mut components = relative_path.components().peekable();
-        while let Some(component) = components.next() {
-            current_path.push(component);
-            if symlink_policy == ServeDirSymlinkPolicy::AllowFinalComponent
-                && components.peek().is_none()
-            {
-                break;
-            }
-            reject_symlink(&current_path).await?;
-        }
-    } else {
-        // Path is not under the configured root (unexpected); police it
-        // defensively rather than trusting it.
-        reject_symlink(path).await?;
-    }
-
-    Ok(())
-}
-
-/// Request names are checked before any lookup; only Windows can alias a
-/// hidden entry under another name (8.3 short names such as `GIT~1`).
-#[cfg(not(windows))]
-async fn reject_hidden_resolved(
-    _root: &Path,
-    _path: &Path,
-    _hidden: &HiddenPathFilter,
-) -> io::Result<()> {
-    Ok(())
-}
-
-/// Check the resolved on-disk names, as a short name (`GIT~1`) can alias a hidden entry.
-#[cfg(windows)]
-async fn reject_hidden_resolved(
-    root: &Path,
-    path: &Path,
-    hidden: &HiddenPathFilter,
-) -> io::Result<()> {
-    if hidden.allows_all() {
-        return Ok(());
-    }
-
-    let resolved_root = tokio::fs::canonicalize(root).await?;
-    let resolved = tokio::fs::canonicalize(path).await?;
-
-    let Ok(relative) = resolved.strip_prefix(&resolved_root) else {
-        // a permitted symlink left the root: police every resolved name
-        return if hidden.hides_path(&resolved) {
-            Err(hidden_entry_error())
-        } else {
-            Ok(())
-        };
-    };
-
-    let mut current = resolved_root.clone();
-    for component in relative.components() {
-        current.push(component);
-        let Component::Normal(name) = component else {
-            continue;
-        };
-        if hidden.hides_name(name) {
-            return Err(hidden_entry_error());
-        }
-        if hidden.checks_attributes() {
-            let meta = tokio::fs::symlink_metadata(&current).await?;
-            if hidden.hides_attributes(name, meta.file_attributes()) {
-                return Err(hidden_entry_error());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn hidden_entry_error() -> io::Error {
-    // reported as missing so a hidden entry is indistinguishable from an absent one
-    io::Error::new(io::ErrorKind::NotFound, "hidden entries are not served")
-}
-
-async fn reject_symlink(path: &Path) -> io::Result<()> {
-    let meta = tokio::fs::symlink_metadata(path).await?;
-    if is_symlink_like(&meta) {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "symlink paths are not served",
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 /// Whether `meta` describes a symlink that should be rejected.
 #[cfg(not(windows))]
 fn is_symlink_like(meta: &Metadata) -> bool {
@@ -774,70 +868,6 @@ fn is_symlink_like(meta: &Metadata) -> bool {
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
     meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-/// Handle directory requests based on the configured directory serve mode.
-/// Can append index.html, return 404, or generate HTML file listing.
-async fn maybe_serve_directory(
-    path_to_file: &mut PathBuf,
-    uri: &Uri,
-    mode: DirectoryServeMode,
-    redirect_to_trailing_slash: bool,
-    html_as_default_extension: bool,
-    source: &DirSource,
-    access: PathAccess<'_>,
-) -> Result<Option<OpenFileOutput>, std::io::Error> {
-    let uri_path = uri.path_or_root();
-
-    // `Some(true)` => directory, `Some(false)` => file, `None` => does not exist.
-    let is_directory: Option<bool> = match source {
-        DirSource::Filesystem(_) => is_dir(source, path_to_file, access).await?,
-        DirSource::Embedded(base) => is_dir_embedded(path_to_file, base).await,
-    };
-
-    // A trailing slash means the client is referring to a directory.
-    // If the path resolves to something other than an existing directory
-    // (a file, or nothing at all), we must NOT silently strip the slash
-    // and serve a file. Root `/` is exempted: it always means "this dir".
-    if uri_path.ends_with('/') && uri_path != "/" && is_directory != Some(true) {
-        return Ok(Some(OpenFileOutput::FileNotFound));
-    }
-
-    // Bare-name requests (`/about`) — if nothing exists at that path AND
-    // the path has no extension yet, try appending `.html`.
-    if html_as_default_extension && is_directory.is_none() && path_to_file.extension().is_none() {
-        path_to_file.set_extension("html");
-        return Ok(None);
-    }
-
-    if is_directory != Some(true) {
-        return Ok(None);
-    }
-
-    match mode {
-        DirectoryServeMode::AppendIndexHtml => {
-            if uri_path.ends_with('/') || !redirect_to_trailing_slash {
-                path_to_file.push("index.html");
-                Ok(None)
-            } else {
-                let uri = match append_slash_on_path(uri.clone()) {
-                    Ok(uri) => uri,
-                    Err(err) => return Ok(Some(err)),
-                };
-                let location = HeaderValue::try_from(uri.to_string())
-                    .inspect_err(|err| {
-                        tracing::debug!("failed to parse uri as header value for loc: {err}");
-                    })
-                    .map_err(std::io::Error::other)?;
-                Ok(Some(OpenFileOutput::Redirect { location }))
-            }
-        }
-        DirectoryServeMode::NotFound => Ok(Some(OpenFileOutput::FileNotFound)),
-        #[cfg(feature = "html")]
-        DirectoryServeMode::HtmlFileList => {
-            html::serve_html_listing(path_to_file, uri, source, access.hidden).await
-        }
-    }
 }
 
 /// Parse and validate HTTP Range header.
@@ -874,36 +904,6 @@ fn try_parse_range(
         // Empty only for a zero-length file whose non-empty suffix is the whole file (RFC 9110 §14.1.1).
         Ok(mut ranges) => ranges.pop().map(Ok),
         Err(_err) => Some(Err(RangeError::Unsatisfiable)),
-    }
-}
-
-/// `Some(true)` => exists and is a directory. `Some(false)` => exists and is
-/// not a directory (i.e. file). `None` => does not exist. Distinguishing
-/// "missing" from "is a file" is what lets us decide whether to apply
-/// `html_as_default_extension` or reject a trailing slash as a 404.
-async fn is_dir(
-    source: &DirSource,
-    path_to_file: &Path,
-    access: PathAccess<'_>,
-) -> io::Result<Option<bool>> {
-    match filesystem_metadata(source, path_to_file, access).await {
-        Ok(metadata) => Ok(Some(metadata.is_dir())),
-        Err(err) if is_missing_file_error(&err) => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
-async fn is_dir_embedded(path_to_file: &Path, base: &Dir<'_>) -> Option<bool> {
-    // Empty path corresponds to the root directory, which is always a directory
-    if path_to_file.as_os_str().is_empty() {
-        return Some(true);
-    }
-    if base.get_dir(path_to_file).is_some() {
-        Some(true)
-    } else if base.get_file(path_to_file).is_some() {
-        Some(false)
-    } else {
-        None
     }
 }
 

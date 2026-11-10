@@ -60,22 +60,47 @@ impl From<Status> for StreamFrame<Response<()>> {
     }
 }
 
-impl<Msg: Message + Encodeable> Encodeable for Frame<Msg> {
-    fn encode_raw(&self, mut buf: &mut impl BufMut) -> Result<(), InvalidInput> {
-        let length = self.message.encoded_len();
+impl<Msg: Message + Encodeable> Frame<Msg> {
+    /// Writes the frame around a message of `length` encoded bytes.
+    fn encode_with_length(
+        &self,
+        length: usize,
+        mut buf: &mut impl BufMut,
+    ) -> Result<(), InvalidInput> {
+        let Ok(wire_length) = u32::try_from(length) else {
+            return Err(oversized_payload(length));
+        };
         if length > MAX_DATA_LENGTH {
-            let msg = format!("Oversized payload: {length} bytes > {MAX_DATA_LENGTH} bytes");
-            return Err(msg.into());
+            return Err(oversized_payload(length));
         }
 
-        #[expect(clippy::cast_possible_truncation)]
-        buf.put_u32(length as u32);
-        buf.put_u32(self.id);
-        buf.put_u8(u8::from(Msg::TYPE_ID));
-        buf.put_u8(self.flags.bits());
-        self.message.encode_raw(&mut buf)?;
+        let [l0, l1, l2, l3] = wire_length.to_be_bytes();
+        let [i0, i1, i2, i3] = self.id.to_be_bytes();
+        let header: [u8; HEADER_LENGTH] = [
+            l0,
+            l1,
+            l2,
+            l3,
+            i0,
+            i1,
+            i2,
+            i3,
+            u8::from(Msg::TYPE_ID),
+            self.flags.bits(),
+        ];
+        buf.put_slice(&header);
+        self.message.encode_raw(&mut buf)
+    }
+}
 
-        Ok(())
+#[cold]
+fn oversized_payload(length: usize) -> InvalidInput {
+    format!("Oversized payload: {length} bytes > {MAX_DATA_LENGTH} bytes").into()
+}
+
+impl<Msg: Message + Encodeable> Encodeable for Frame<Msg> {
+    fn encode_raw(&self, buf: &mut impl BufMut) -> Result<(), InvalidInput> {
+        self.encode_with_length(self.message.encoded_len(), buf)
     }
 
     fn encoded_len(&self) -> usize {
@@ -85,14 +110,11 @@ impl<Msg: Message + Encodeable> Encodeable for Frame<Msg> {
     fn encode_to_bytes(&self) -> Result<Bytes, InvalidInput> {
         let data_length = self.message.encoded_len();
         if data_length > MAX_DATA_LENGTH {
-            return Err(format!(
-                "Oversized payload: {data_length} bytes > {MAX_DATA_LENGTH} bytes"
-            )
-            .into());
+            return Err(oversized_payload(data_length));
         }
 
         let mut buf = BytesMut::with_capacity(HEADER_LENGTH + data_length);
-        self.encode_raw(&mut buf)?;
+        self.encode_with_length(data_length, &mut buf)?;
         Ok(buf.freeze())
     }
 }

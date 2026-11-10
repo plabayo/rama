@@ -226,7 +226,7 @@ fn rewrite_initial(wire: &mut BytesMut, reverse: bool, token: bool) -> usize {
                         .encode(&mut output);
                     }
                 }
-                Frame::Padding => (),
+                Frame::Padding { .. } => (),
                 other => panic!("unexpected first-flight frame: {other:?}"),
             }
         }

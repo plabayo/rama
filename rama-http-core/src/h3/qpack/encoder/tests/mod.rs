@@ -278,13 +278,40 @@ fn blocking_budget_and_same_stream_multiple_sections() {
 }
 
 #[test]
+fn header_names_reach_the_wire_lowercase_at_every_length() {
+    let value = rama_http_types::HeaderValue::from_static("v");
+    for len in [1, 2, 21, 22, 23, 64, 255, 256, 300] {
+        for upper in [false, true] {
+            let spelled: String = (0..len)
+                .map(|i| match (i % 3, upper) {
+                    (0, true) => 'X',
+                    (0, false) => 'x',
+                    (1, _) => '-',
+                    _ => 'q',
+                })
+                .collect();
+            let name = rama_http_types::HeaderName::from_bytes(spelled.as_bytes()).unwrap();
+            assert_eq!(name.as_str(), spelled);
+            let field = EncodeField::from_header(&name, &value);
+            assert_eq!(field.name.as_ref(), spelled.to_ascii_lowercase().as_bytes());
+            assert_eq!(field.name.is_borrowed(), !upper, "len={len}");
+        }
+    }
+    // a standard name is lowercase however it was spelled
+    let name = rama_http_types::HeaderName::from_bytes(b"Content-Type").unwrap();
+    let field = EncodeField::from_header(&name, &value);
+    assert_eq!(field.name.as_ref(), b"content-type");
+    assert!(field.name.is_borrowed());
+}
+
+#[test]
 fn native_header_sensitivity_is_preserved() {
     let name = rama_http_types::header::AUTHORIZATION;
     let mut value = rama_http_types::HeaderValue::from_static("secret");
     value.set_sensitive(true);
     let mut enc = Encoder::new(EncoderConfig::default());
     let field = EncodeField::from_header(&name, &value);
-    assert_matches!(field.name, std::borrow::Cow::Borrowed(_));
+    assert!(field.name.is_borrowed());
     assert_eq!(field.value.as_ptr(), value.as_bytes().as_ptr());
     let bytes = enc.encode(0, [field]).unwrap();
     assert_eq!(enc.insert_count(), 0);

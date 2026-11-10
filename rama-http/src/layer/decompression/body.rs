@@ -258,7 +258,11 @@ where
     type Input = AsyncReadBody<B>;
     type Output = BrotliDecoder<BrotliWindowGuard<Self::Input>>;
 
-    fn apply(input: Self::Input, _quality: CompressionLevel) -> Self::Output {
+    fn apply(
+        input: Self::Input,
+        _quality: CompressionLevel,
+        _body_len: Option<u64>,
+    ) -> Self::Output {
         BrotliDecoder::new(BrotliWindowGuard {
             inner: input,
             checked: false,
