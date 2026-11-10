@@ -709,7 +709,10 @@ where
         ) {
             Ok(encoder) => {
                 self.state.on_informational = head.extensions.get_ref::<OnInformational>().cloned();
-                self.state.encoded_request_extensions = Some(head.extensions);
+                // Only a client reads them back, as the parent of its response extensions.
+                if T::is_client() {
+                    self.state.encoded_request_extensions = Some(head.extensions);
+                }
                 Some(encoder)
             }
             Err(err) => {

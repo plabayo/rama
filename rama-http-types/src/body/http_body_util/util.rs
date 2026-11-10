@@ -29,7 +29,8 @@ impl<T: Buf> Buf for BufList<T> {
 
     #[inline]
     fn has_remaining(&self) -> bool {
-        self.bufs.iter().any(|buf| buf.has_remaining())
+        // `push` takes no empty buffer and `advance` pops each one it drains.
+        !self.bufs.is_empty()
     }
 
     #[inline]
@@ -114,6 +115,20 @@ mod tests {
     fn hello_world_buf() -> BufList<Bytes> {
         BufList {
             bufs: vec![Bytes::from("Hello"), Bytes::from(" "), Bytes::from("World")].into(),
+        }
+    }
+
+    #[test]
+    fn has_remaining_tracks_remaining_through_every_advance() {
+        let total = hello_world_buf().remaining();
+        for first in 0..=total {
+            for second in 0..=total - first {
+                let mut bufs = hello_world_buf();
+                for step in [first, second] {
+                    bufs.advance(step);
+                    assert_eq!(bufs.has_remaining(), bufs.remaining() > 0);
+                }
+            }
         }
     }
 

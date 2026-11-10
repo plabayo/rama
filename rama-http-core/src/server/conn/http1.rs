@@ -199,7 +199,10 @@ where
     where
         I: Send,
     {
-        UpgradeableConnection { inner: Some(self) }
+        UpgradeableConnection {
+            inner: Some(self),
+            upgrade_guard: None,
+        }
     }
 }
 
@@ -564,13 +567,32 @@ where
     S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
 {
     pub(super) inner: Option<Connection<T, S>>,
+    upgrade_guard: Option<UpgradeGuard>,
 }
+
+/// A resource the upgraded transport holds for as long as it lives.
+pub(super) type UpgradeGuard = Box<dyn Send + Sync>;
 
 impl<I, S> UpgradeableConnection<I, S>
 where
     S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
     I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
 {
+    /// Bind `guard` to the transport an upgrade hands out, so it is released when the
+    /// upgraded connection closes; without an upgrade it is dropped with this connection.
+    pub fn with_upgrade_guard<G>(mut self, guard: G) -> Self
+    where
+        G: Send + Sync + 'static,
+    {
+        self.upgrade_guard = Some(Box::new(guard));
+        self
+    }
+
+    pub(super) fn with_boxed_upgrade_guard(mut self, guard: Option<UpgradeGuard>) -> Self {
+        self.upgrade_guard = guard;
+        self
+    }
+
     /// Start a graceful shutdown process for this connection.
     ///
     /// This `Connection` should continue to be polled until shutdown
@@ -609,7 +631,11 @@ where
                             )));
                     };
                     let (io, buf, _) = conn.into_inner();
-                    pending.fulfill(Upgraded::new(io, buf));
+                    let mut upgraded = Upgraded::new(io, buf);
+                    if let Some(guard) = self.upgrade_guard.take() {
+                        upgraded = upgraded.with_guard(guard);
+                    }
+                    pending.fulfill(upgraded);
                     Poll::Ready(Ok(()))
                 }
                 Err(e) => Poll::Ready(Err(e)),

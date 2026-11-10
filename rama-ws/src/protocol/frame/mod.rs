@@ -2,7 +2,7 @@
 
 use crate::protocol::{error::ProtocolError, frame::mask::apply_mask, message::Message};
 use rama_core::{
-    bytes::{self, BytesMut},
+    bytes::{self, Bytes, BytesMut},
     telemetry::tracing::trace,
 };
 use rama_utils::octets::kib;
@@ -20,7 +20,13 @@ pub use self::{
 };
 
 /// Read buffer size used for `FrameSocket`.
-const READ_BUF_LEN: usize = kib(128);
+const READ_BUF_LEN: usize = kib(4);
+
+/// Upper bound of one read; the buffer only grows to it as data arrives.
+const MAX_READ_LEN: usize = kib(128);
+
+/// Payloads up to this size are copied out, so a kept message never pins the read buffer.
+const COPIED_PAYLOAD_MAX_LEN: usize = kib(4);
 
 /// A reader and writer for WebSocket frames.
 #[derive(Debug)]
@@ -49,7 +55,8 @@ impl<Stream> FrameSocket<Stream> {
     }
 
     /// Extract a stream from the socket.
-    pub fn into_inner(self) -> (Stream, BytesMut) {
+    pub fn into_inner(mut self) -> (Stream, BytesMut) {
+        self.codec.in_buffer.truncate(self.codec.filled);
         (self.stream, self.codec.in_buffer)
     }
 
@@ -107,9 +114,14 @@ where
 /// A codec for WebSocket frames.
 #[derive(Debug)]
 pub(super) struct FrameCodec {
-    /// Buffer to read data from the stream.
+    /// Buffer to read data from the stream: received bytes up to `filled`, then spare room
+    /// that is zeroed once per allocation.
     in_buffer: BytesMut,
-    in_buf_max_read: usize,
+    filled: usize,
+    /// Smallest room offered to a read.
+    min_read_len: usize,
+    /// Room offered to the next read; it follows what the reads return.
+    read_len: usize,
     /// Buffer to send packets to the network.
     out_buffer: BytesMut,
     /// Capacity limit for `out_buffer`.
@@ -128,8 +140,10 @@ impl FrameCodec {
     /// Create a new frame codec.
     pub(super) fn new(in_buf_len: usize) -> Self {
         Self {
-            in_buffer: BytesMut::with_capacity(in_buf_len),
-            in_buf_max_read: in_buf_len.max(FrameHeader::MAX_SIZE),
+            in_buffer: BytesMut::new(),
+            filled: 0,
+            min_read_len: in_buf_len.max(FrameHeader::MAX_SIZE),
+            read_len: in_buf_len.max(FrameHeader::MAX_SIZE),
             out_buffer: <_>::default(),
             max_out_buffer_len: usize::MAX,
             out_buffer_write_len: 0,
@@ -139,11 +153,11 @@ impl FrameCodec {
 
     /// Create a new frame codec from partially read data.
     pub(super) fn from_partially_read(part: Vec<u8>, min_in_buf_len: usize) -> Self {
-        let mut in_buffer = BytesMut::from_iter(part);
-        in_buffer.reserve(min_in_buf_len.saturating_sub(in_buffer.len()));
         Self {
-            in_buffer,
-            in_buf_max_read: min_in_buf_len.max(FrameHeader::MAX_SIZE),
+            filled: part.len(),
+            in_buffer: BytesMut::from(Bytes::from(part)),
+            min_read_len: min_in_buf_len.max(FrameHeader::MAX_SIZE),
+            read_len: min_in_buf_len.max(FrameHeader::MAX_SIZE),
             out_buffer: <_>::default(),
             max_out_buffer_len: usize::MAX,
             out_buffer_write_len: 0,
@@ -172,12 +186,13 @@ impl FrameCodec {
     ) -> Result<Option<Frame>, ProtocolError> {
         let max_size = max_size.unwrap_or(usize::MAX);
 
-        let mut payload = loop {
+        let len = loop {
             if self.header.is_none() {
-                let mut cursor = Cursor::new(&mut self.in_buffer);
+                let mut cursor = Cursor::new(&self.in_buffer[..self.filled]);
                 self.header = FrameHeader::parse(&mut cursor)?;
-                let advanced = cursor.position();
-                bytes::Buf::advance(&mut self.in_buffer, advanced as _);
+                let advanced = cursor.position() as usize;
+                bytes::Buf::advance(&mut self.in_buffer, advanced);
+                self.filled -= advanced;
 
                 if let Some((_, len)) = &self.header {
                     // Enforce frame size limit early. Compare in u64 before
@@ -189,15 +204,13 @@ impl FrameCodec {
                             max_size,
                         });
                     }
-                } else {
-                    self.in_buffer.reserve(FrameHeader::MAX_SIZE);
                 }
             }
 
             if let Some((_, len)) = &self.header {
                 let len = *len as usize;
-                if len <= self.in_buffer.len() {
-                    break self.in_buffer.split_to(len);
+                if len <= self.filled {
+                    break len;
                 }
             }
 
@@ -213,41 +226,65 @@ impl FrameCodec {
             reason = "we can only reach here in case header is Some (see payload loop)"
         )]
         let (mut header, length) = self.header.take().expect("Bug: no frame header");
-        debug_assert_eq!(payload.len() as u64, length);
+        debug_assert_eq!(len as u64, length);
 
-        if unmask {
-            if let Some(mask) = header.mask.take() {
+        let mask = if unmask {
+            let mask = header.mask.take();
+            // The server MUST close the connection upon receiving a
+            // frame that is not masked. (RFC 6455)
+            // The only exception here is if the user explicitly accepts given
+            // stream by setting WebSocketConfig.accept_unmasked_frames to true
+            if mask.is_none() && !accept_unmasked {
+                return Err(ProtocolError::UnmaskedFrameFromClient);
+            }
+            mask
+        } else {
+            None
+        };
+
+        let payload = if len <= COPIED_PAYLOAD_MAX_LEN {
+            let mut payload = self.in_buffer[..len].to_vec();
+            bytes::Buf::advance(&mut self.in_buffer, len);
+            if let Some(mask) = mask {
+                apply_mask(&mut payload, mask);
+            }
+            Bytes::from(payload)
+        } else {
+            let mut payload = self.in_buffer.split_to(len);
+            if let Some(mask) = mask {
                 // A server MUST remove masking for data frames received from a client
                 // as described in Section 5.3. (RFC 6455)
                 apply_mask(&mut payload, mask);
-            } else if !accept_unmasked {
-                // The server MUST close the connection upon receiving a
-                // frame that is not masked. (RFC 6455)
-                // The only exception here is if the user explicitly accepts given
-                // stream by setting WebSocketConfig.accept_unmasked_frames to true
-                return Err(ProtocolError::UnmaskedFrameFromClient);
             }
-        }
+            payload.freeze()
+        };
+        self.filled -= len;
 
-        let frame = Frame::from_payload(header, payload.freeze());
+        let frame = Frame::from_payload(header, payload);
         trace!("received frame {frame}");
         Ok(Some(frame))
     }
 
-    /// Read into available `in_buffer` capacity.
+    /// Read into the spare room of `in_buffer`, adding room first when it ran out.
     fn read_in(&mut self, stream: &mut impl Read) -> io::Result<usize> {
-        let len = self.in_buffer.len();
-        if self.in_buffer.capacity() == len {
-            // Doubles with what arrived: a declared frame length alone never sizes the buffer.
-            self.in_buffer.reserve(len.max(self.in_buf_max_read));
+        if self.filled == self.in_buffer.len() {
+            if self.in_buffer.capacity() == self.filled {
+                // Doubles with what arrived: a declared frame length alone never sizes it.
+                self.in_buffer.reserve(self.filled.max(self.read_len));
+            }
+            let len = self.in_buffer.capacity().min(self.filled + self.read_len);
+            self.in_buffer.resize(len, 0);
         }
-        debug_assert!(self.in_buffer.capacity() > len);
-        self.in_buffer
-            .resize(self.in_buffer.capacity().min(len + self.in_buf_max_read), 0);
-        let size = stream.read(&mut self.in_buffer[len..]);
-        self.in_buffer
-            .truncate(len + size.as_ref().copied().unwrap_or(0));
-        size
+        let room = self.in_buffer.len() - self.filled;
+        let size = stream.read(&mut self.in_buffer[self.filled..])?;
+        self.filled += size;
+        // A full read doubles the room, a short one halves it.
+        if size == room {
+            self.read_len = (self.read_len * 2).min(MAX_READ_LEN.max(self.min_read_len));
+        } else if size < room / 4 {
+            self.read_len = (self.read_len / 2).max(self.min_read_len);
+        }
+        Ok(size)
     }
 
     /// Writes a frame into the `out_buffer`.
@@ -325,7 +362,7 @@ mod tests {
     use std::assert_matches;
 
     use super::{
-        Frame, FrameSocket,
+        Frame, FrameCodec, FrameSocket,
         coding::{OpCode, OpCodeData},
     };
 
@@ -387,6 +424,115 @@ mod tests {
         assert!(sock.read(None).unwrap().is_none());
         let capacity = sock.codec.in_buffer.capacity();
         assert!(capacity < 1 << 20, "{capacity}");
+    }
+
+    /// Hands out at most `step` bytes per read.
+    struct TrickleRead {
+        wire: Cursor<Vec<u8>>,
+        step: usize,
+    }
+
+    impl io::Read for TrickleRead {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let len = buf.len().min(self.step);
+            self.wire.read(&mut buf[..len])
+        }
+    }
+
+    fn masked_frame(payload: &[u8], mask: [u8; 4]) -> Vec<u8> {
+        let mut frame = vec![0x82];
+        match payload.len() {
+            len if len < 126 => frame.push(0x80 | len as u8),
+            len if len <= 0xffff => {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&(len as u16).to_be_bytes());
+            }
+            len => {
+                frame.push(0x80 | 127);
+                frame.extend_from_slice(&(len as u64).to_be_bytes());
+            }
+        }
+        frame.extend_from_slice(&mask);
+        frame.extend(payload.iter().zip(mask.iter().cycle()).map(|(b, m)| b ^ m));
+        frame
+    }
+
+    fn payloads() -> Vec<Vec<u8>> {
+        [0, 1, 125, 126, 4095, 4096, 4097, 70_000, 300_000]
+            .into_iter()
+            .map(|len| (0..len).map(|i| (i % 251) as u8).collect())
+            .collect()
+    }
+
+    #[test]
+    fn masked_frames_survive_any_read_size() {
+        let payloads = payloads();
+        let wire: Vec<u8> = payloads
+            .iter()
+            .flat_map(|payload| masked_frame(payload, [0x6d, 0xb6, 0xb2, 0x80]))
+            .collect();
+        for step in [1, 7, 4096, 1 << 20] {
+            let mut stream = TrickleRead {
+                wire: Cursor::new(wire.clone()),
+                step,
+            };
+            let mut codec = FrameCodec::new(super::READ_BUF_LEN);
+            for payload in &payloads {
+                let frame = loop {
+                    if let Some(frame) = codec.read_frame(&mut stream, None, true, false).unwrap() {
+                        break frame;
+                    }
+                };
+                assert_eq!(frame.payload(), &payload[..], "step {step}");
+            }
+            assert!(
+                codec
+                    .read_frame(&mut stream, None, true, false)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn small_payloads_do_not_pin_the_read_buffer() {
+        let wire = [
+            masked_frame(b"small", [1, 2, 3, 4]),
+            masked_frame(&[7; 70_000], [1, 2, 3, 4]),
+        ]
+        .concat();
+        let mut stream = Cursor::new(wire);
+        let mut codec = FrameCodec::new(super::READ_BUF_LEN);
+        let small = codec
+            .read_frame(&mut stream, None, true, false)
+            .unwrap()
+            .unwrap();
+        let buffer = codec.in_buffer.as_ptr_range();
+        assert!(!buffer.contains(&small.payload().as_ptr()));
+        assert_eq!(small.payload(), b"small");
+
+        let large = loop {
+            if let Some(frame) = codec.read_frame(&mut stream, None, true, false).unwrap() {
+                break frame;
+            }
+        };
+        // large payloads are handed out without a copy
+        assert!(codec.in_buffer.capacity() < 70_000);
+        assert_eq!(large.payload(), &[7; 70_000][..]);
+    }
+
+    #[test]
+    fn idle_codec_allocates_nothing_and_reads_small() {
+        let mut codec = FrameCodec::new(super::READ_BUF_LEN);
+        assert_eq!(codec.in_buffer.capacity(), 0);
+        let mut stream = Cursor::new(masked_frame(b"hi", [1, 2, 3, 4]));
+        assert!(
+            codec
+                .read_frame(&mut stream, None, true, false)
+                .unwrap()
+                .is_some()
+        );
+        assert!(codec.in_buffer.capacity() <= super::READ_BUF_LEN);
     }
 
     #[test]

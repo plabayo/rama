@@ -180,7 +180,7 @@ impl super::Connection {
         assert!(
             frames
                 .iter()
-                .all(|f| matches!(f, frame::Frame::Ack(_) | frame::Frame::Padding))
+                .all(|f| matches!(f, frame::Frame::Ack(_) | frame::Frame::Padding { .. }))
         );
         assert_eq!(self.stats.frame_tx.crypto, before.crypto);
         assert_eq!(self.stats.frame_tx.stream, before.stream);
@@ -781,7 +781,7 @@ mod ack_history {
             match frame.unwrap() {
                 frame::Frame::Ping => ping = true,
                 frame::Frame::Ack(_) => ack = true,
-                frame::Frame::Padding => {}
+                frame::Frame::Padding { .. } => {}
                 other => panic!("unexpected ACK-history frame: {other:?}"),
             }
         }

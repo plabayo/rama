@@ -80,7 +80,7 @@ mod private {
 
     use std::convert::Infallible;
     use std::pin::pin;
-    use tokio::select;
+    use tokio::{select, sync::oneshot};
 
     pub trait Sealed {
         fn http_core_serve_connection<IO, S, Response>(
@@ -121,6 +121,15 @@ mod private {
         }};
     }
 
+    /// Waits until the transport an upgrade handed out closes, so the layers serving this
+    /// connection, such as a concurrency limit, keep their resources while it lives.
+    async fn upgrade_closed(released: oneshot::Receiver<()>, scope: &Scope) {
+        select! {
+            _ = released => {}
+            () = scope.aborted() => {}
+        }
+    }
+
     impl Sealed for super::Http1Builder {
         #[inline]
         async fn http_core_serve_connection<IO, S, Response>(
@@ -136,8 +145,18 @@ mod private {
         {
             let service = RamaHttpService::new(service);
             let stream = Box::pin(io);
-            let mut conn = pin!(self.serve_connection(stream, service).with_upgrades());
-            serve_scoped!(conn, scope, map_http_core_result)
+            let (guard, released) = oneshot::channel::<()>();
+            let result = async {
+                let mut conn = pin!(
+                    self.serve_connection(stream, service)
+                        .with_upgrades()
+                        .with_upgrade_guard(guard)
+                );
+                serve_scoped!(conn, scope, map_http_core_result)
+            }
+            .await;
+            upgrade_closed(released, &scope).await;
+            result
         }
     }
 
@@ -176,8 +195,17 @@ mod private {
         {
             let service = RamaHttpService::new(service);
             let stream = Box::pin(io);
-            let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
-            serve_scoped!(conn, scope, map_boxed_http_core_result)
+            let (guard, released) = oneshot::channel::<()>();
+            let result = async {
+                let mut conn = pin!(
+                    self.serve_connection_with_upgrades(stream, service)
+                        .with_upgrade_guard(guard)
+                );
+                serve_scoped!(conn, scope, map_boxed_http_core_result)
+            }
+            .await;
+            upgrade_closed(released, &scope).await;
+            result
         }
     }
 }

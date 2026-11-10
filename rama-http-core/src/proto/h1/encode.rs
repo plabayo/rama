@@ -336,18 +336,24 @@ struct ChunkSize {
 
 impl ChunkSize {
     fn new(len: usize) -> Self {
-        use std::fmt::Write;
-        let mut size = Self {
-            bytes: [0; CHUNK_SIZE_MAX_BYTES + 2],
-            pos: 0,
-            len: 0,
-        };
-        let _write_result = write!(&mut size, "{len:X}\r\n");
-        debug_assert!(
-            _write_result.is_ok(),
-            "CHUNK_SIZE_MAX_BYTES should fit any usize: {_write_result:?}",
-        );
-        size
+        // Written back to front, so the digits end where the CRLF starts.
+        let mut bytes = [0; CHUNK_SIZE_MAX_BYTES + 2];
+        bytes[CHUNK_SIZE_MAX_BYTES..].copy_from_slice(b"\r\n");
+        let mut pos = CHUNK_SIZE_MAX_BYTES;
+        let mut rest = len;
+        loop {
+            pos -= 1;
+            bytes[pos] = b"0123456789ABCDEF"[rest & 0xF];
+            rest >>= 4;
+            if rest == 0 {
+                break;
+            }
+        }
+        Self {
+            bytes,
+            pos: pos as u8,
+            len: (CHUNK_SIZE_MAX_BYTES + 2) as u8,
+        }
     }
 }
 
@@ -375,15 +381,6 @@ impl fmt::Debug for ChunkSize {
             .field("bytes", &&self.bytes[..self.len.into()])
             .field("pos", &self.pos)
             .finish()
-    }
-}
-
-impl fmt::Write for ChunkSize {
-    fn write_str(&mut self, num: &str) -> fmt::Result {
-        use std::io::Write;
-        _ = (&mut self.bytes[self.len.into()..]).write_all(num.as_bytes());
-        self.len += num.len() as u8; // safe because bytes is never bigger than 256
-        Ok(())
     }
 }
 
@@ -423,7 +420,7 @@ impl std::error::Error for NotEof {}
 mod tests {
     use std::sync::Arc;
 
-    use rama_core::bytes::BufMut;
+    use rama_core::bytes::{Buf, BufMut};
     use rama_http_types::{
         HeaderMap, HeaderName, HeaderValue,
         header::{
@@ -433,8 +430,19 @@ mod tests {
         },
     };
 
-    use super::Encoder;
+    use super::{ChunkSize, Encoder};
     use crate::proto::h1::io::Cursor;
+
+    #[test]
+    fn chunk_size_is_upper_hex_and_crlf() {
+        let mut sizes = vec![0, 1, 9, 10, 15, 16, 255, 256, 0xABCDEF, usize::MAX];
+        sizes.extend((0..usize::BITS).map(|shift| 1usize << shift));
+        for len in sizes {
+            let size = ChunkSize::new(len);
+            assert_eq!(size.chunk(), format!("{len:X}\r\n").as_bytes());
+            assert_eq!(size.remaining(), size.chunk().len());
+        }
+    }
 
     #[test]
     fn chunked() {

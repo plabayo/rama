@@ -79,10 +79,19 @@ impl Head {
     pub fn encode<T: BufMut>(&self, payload_len: usize, dst: &mut T) {
         debug_assert!(self.encode_len() <= dst.remaining_mut());
 
-        dst.put_uint(payload_len as u64, 3);
-        dst.put_u8(self.kind as u8);
-        dst.put_u8(self.flag);
-        dst.put_u32(self.stream_id.into());
+        let len = (payload_len as u32).to_be_bytes();
+        let id = u32::from(self.stream_id).to_be_bytes();
+        dst.put_slice(&[
+            len[1],
+            len[2],
+            len[3],
+            self.kind as u8,
+            self.flag,
+            id[0],
+            id[1],
+            id[2],
+            id[3],
+        ]);
     }
 }
 
@@ -120,5 +129,18 @@ mod tests {
             Err(Error::ShortBuffer { needed, got })
                 if needed == crate::proto::h2::frame::HEADER_LEN && got == crate::proto::h2::frame::HEADER_LEN - 1,
         );
+    }
+
+    #[test]
+    fn encode_lays_out_length_kind_flag_and_stream_id() {
+        let head = Head::new(Kind::Headers, 0x25, StreamId::from(0x7654_3210));
+        let mut wire = Vec::new();
+        head.encode(0x00AB_CDEF, &mut wire);
+        assert_eq!(wire, [0xAB, 0xCD, 0xEF, 1, 0x25, 0x76, 0x54, 0x32, 0x10]);
+
+        let parsed = Head::parse(&wire).unwrap();
+        assert_eq!(parsed.kind(), Kind::Headers);
+        assert_eq!(parsed.flag(), 0x25);
+        assert_eq!(parsed.stream_id(), head.stream_id());
     }
 }

@@ -126,7 +126,17 @@ qpack-stateful SECONDS="0": (_run "qpack_stateful" SECONDS "-max_len=257 -timeou
 
 h3 SECONDS="0": (http-capsule SECONDS) (h3-frame SECONDS) (h3-settings SECONDS) (h3-state SECONDS) (h3-datagram-demux SECONDS) (h3-request-head SECONDS) (qpack-field-section SECONDS) (qpack-encoder-stream SECONDS) (qpack-instruction SECONDS) (qpack-stateful SECONDS)
 
+# Wire parsers of HTTP/1, PROXY protocol, WebSocket, SOCKS5, TLS ClientHello and gRPC.
+http1-server SECONDS="0": (_run "http1_server" SECONDS "-max_len=65536 -timeout=10")
+http1-client SECONDS="0": (_run "http1_client" SECONDS "-max_len=65536 -timeout=10")
+proxy-protocol SECONDS="0": (_run "proxy_protocol" SECONDS "-max_len=1024")
+ws-frame SECONDS="0": (_run "ws_frame" SECONDS "-max_len=65536 -timeout=10")
+socks5-codec SECONDS="0": (_run "socks5_codec" SECONDS "-max_len=1024")
+tls-client-hello SECONDS="0": (_run "tls_client_hello" SECONDS "-max_len=65536 -timeout=10")
+grpc-frames SECONDS="0": (_run "grpc_frames" SECONDS "-max_len=65536 -timeout=10")
+wire SECONDS="0": (http1-server SECONDS) (http1-client SECONDS) (proxy-protocol SECONDS) (ws-frame SECONDS) (socks5-codec SECONDS) (tls-client-hello SECONDS) (grpc-frames SECONDS)
+
 # The pre-release smoke pass: a minute per target.
-all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (http-typed-headers "60") (http-structured-fields "60") (http-deadlines "60") (icap "60") (quic "60") (h3 "60") (masque "60")
+all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (http-typed-headers "60") (http-structured-fields "60") (http-deadlines "60") (icap "60") (quic "60") (h3 "60") (masque "60") (wire "60")
 
 full: all-60s h2-main

@@ -76,7 +76,11 @@ pin_project! {
     pub struct GrpcWebCall<B> {
         #[pin]
         inner: B,
+        // Base64 text short of a whole 4-byte group, kept for the next data frame.
         buf: BytesMut,
+        // Unread bytes of the last data frame; whole frames are split off it.
+        chunk: Bytes,
+        // Assembles a frame received across data frames.
         decoded: BytesMut,
         direction: Direction,
         encoding: Encoding,
@@ -91,6 +95,7 @@ impl<B: Default> Default for GrpcWebCall<B> {
         Self {
             inner: Default::default(),
             buf: Default::default(),
+            chunk: Bytes::new(),
             decoded: Default::default(),
             direction: Direction::Empty,
             encoding: Encoding::None,
@@ -125,10 +130,8 @@ impl<B> GrpcWebCall<B> {
                 (Direction::Encode, Encoding::Base64) => BUFFER_SIZE,
                 _ => 0,
             }),
-            decoded: BytesMut::with_capacity(match direction {
-                Direction::Decode => BUFFER_SIZE,
-                _ => 0,
-            }),
+            chunk: Bytes::new(),
+            decoded: BytesMut::new(),
             direction,
             encoding,
             client: true,
@@ -144,7 +147,8 @@ impl<B> GrpcWebCall<B> {
                 (Direction::Encode, Encoding::Base64) => BUFFER_SIZE,
                 _ => 0,
             }),
-            decoded: BytesMut::with_capacity(0),
+            chunk: Bytes::new(),
+            decoded: BytesMut::new(),
             direction,
             encoding,
             client: false,
@@ -153,27 +157,91 @@ impl<B> GrpcWebCall<B> {
         }
     }
 
-    // This is to avoid passing a slice of bytes with a length that the base64
-    // decoder would consider invalid.
-    #[inline]
-    fn max_decodable(&self) -> usize {
-        (self.buf.len() / 4) * 4
+    /// Decodes the whole 4-byte base64 groups of `data`, completing the group left in `buf`
+    /// first; the text is decoded where it was received, only a split group is copied.
+    fn decode_base64(buf: &mut BytesMut, data: &[u8]) -> Result<Bytes, Status> {
+        let mut data = data;
+        let mut decoded = Vec::with_capacity((buf.len() + data.len()) / 4 * 3);
+        if !buf.is_empty() {
+            let take = (4 - buf.len()).min(data.len());
+            buf.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            if buf.len() < 4 {
+                return Ok(Bytes::new());
+            }
+            crate::util::base64::STANDARD
+                .decode_vec(&buf[..], &mut decoded)
+                .map_err(internal_error)?;
+            buf.clear();
+        }
+        // a length that is not a multiple of 4 is invalid base64
+        let whole = data.len() / 4 * 4;
+        crate::util::base64::STANDARD
+            .decode_vec(&data[..whole], &mut decoded)
+            .map_err(internal_error)?;
+        buf.extend_from_slice(&data[whole..]);
+        Ok(Bytes::from(decoded))
     }
 
-    fn decode_chunk(mut self: Pin<&mut Self>) -> Result<Option<Bytes>, Status> {
-        // not enough bytes to decode
-        if self.buf.is_empty() || self.buf.len() < 4 {
+    /// The next whole frames received by a client, or `None` when more data is needed;
+    /// the trailers frame, once complete, is stored and ends the decoding.
+    fn client_frames(self: Pin<&mut Self>) -> Result<Option<Bytes>, Status> {
+        let this = self.project();
+        if !this.decoded.is_empty() {
+            // complete the frame started in an earlier data frame
+            let take_to = |decoded: &mut BytesMut, chunk: &mut Bytes, len: usize| {
+                let take = len.saturating_sub(decoded.len()).min(chunk.len());
+                decoded.extend_from_slice(&chunk[..take]);
+                chunk.advance(take);
+                decoded.len() >= len
+            };
+            if !take_to(this.decoded, this.chunk, GRPC_HEADER_SIZE) {
+                return Ok(None);
+            }
+            let flag = this.decoded[0];
+            if !matches!(flag, 0 | 1 | GRPC_WEB_TRAILERS_BIT) {
+                return Err(internal_error(format!("invalid frame flag {flag}")));
+            }
+            let payload_len = u32::from_be_bytes([
+                this.decoded[1],
+                this.decoded[2],
+                this.decoded[3],
+                this.decoded[4],
+            ]);
+            if !take_to(
+                this.decoded,
+                this.chunk,
+                GRPC_HEADER_SIZE + payload_len as usize,
+            ) {
+                return Ok(None);
+            }
+            let frame = std::mem::take(this.decoded).freeze();
+            if flag != GRPC_WEB_TRAILERS_BIT {
+                return Ok(Some(frame));
+            }
+            if !this.chunk.is_empty() {
+                return Err(internal_error("unexpected data after gRPC-Web trailers"));
+            }
+            *this.trailers = decode_trailers_frame(frame)?;
+            *this.client_done = true;
             return Ok(None);
         }
 
-        // Split `buf` at the largest index that is multiple of 4. Decode the
-        // returned `Bytes`, keeping the rest for the next attempt to decode.
-        let index = self.max_decodable();
-
-        crate::util::base64::STANDARD
-            .decode(self.as_mut().project().buf.split_to(index))
-            .map(|decoded| Some(Bytes::from(decoded)))
-            .map_err(internal_error)
+        match find_trailers(this.chunk)? {
+            FindTrailers::Trailer(len) => {
+                let messages = this.chunk.split_to(len);
+                *this.trailers = decode_trailers_frame(std::mem::take(this.chunk))?;
+                *this.client_done = true;
+                Ok((!messages.is_empty()).then_some(messages))
+            }
+            FindTrailers::Done(len) if len > 0 => Ok(Some(this.chunk.split_to(len))),
+            FindTrailers::IncompleteBuf | FindTrailers::Done(_) => {
+                // only the start of a frame is left, copy it out to be completed
+                this.decoded.extend_from_slice(this.chunk);
+                *this.chunk = Bytes::new();
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -190,16 +258,17 @@ where
     ) -> Poll<Option<Result<Frame<Bytes>, Status>>> {
         match self.encoding {
             Encoding::Base64 => loop {
-                if let Some(bytes) = self.as_mut().decode_chunk()? {
-                    return Poll::Ready(Some(Ok(Frame::data(bytes))));
-                }
-
                 let this = self.as_mut().project();
 
                 match ready!(this.inner.poll_frame(cx)) {
-                    Some(Ok(frame)) if frame.is_data() => this
-                        .buf
-                        .put(frame.into_data().unwrap_or_else(|_| unreachable!())),
+                    Some(Ok(frame)) if frame.is_data() => {
+                        let mut data = frame.into_data().unwrap_or_else(|_| unreachable!());
+                        let data = data.copy_to_bytes(data.remaining());
+                        let decoded = Self::decode_base64(this.buf, &data)?;
+                        if !decoded.is_empty() {
+                            return Poll::Ready(Some(Ok(Frame::data(decoded))));
+                        }
+                    }
                     Some(Ok(frame)) if frame.is_trailers() => {
                         return Poll::Ready(Some(Err(internal_error(
                             "malformed base64 request has unencoded trailers",
@@ -288,29 +357,18 @@ where
                 }
 
                 // Drain complete buffered frames before polling the transport again.
-                match find_trailers(&self.decoded)? {
-                    FindTrailers::Trailer(len) => {
-                        let this = self.as_mut().project();
-                        let messages = this.decoded.split_to(len).freeze();
-                        *this.trailers = decode_trailers_frame(this.decoded.split().freeze())?;
-                        *this.client_done = true;
-                        if !messages.is_empty() {
-                            return Poll::Ready(Some(Ok(Frame::data(messages))));
-                        }
-                        continue;
-                    }
-                    FindTrailers::Done(len) if len > 0 => {
-                        let messages = self.as_mut().project().decoded.split_to(len).freeze();
-                        return Poll::Ready(Some(Ok(Frame::data(messages))));
-                    }
-                    FindTrailers::IncompleteBuf | FindTrailers::Done(_) => {}
+                if let Some(messages) = self.as_mut().client_frames()? {
+                    return Poll::Ready(Some(Ok(Frame::data(messages))));
+                }
+                if self.client_done {
+                    continue;
                 }
 
                 // Empty DATA and incomplete headers are not EOF; only the inner
                 // body ending (or a complete trailers frame) ends this decoder.
                 match ready!(self.as_mut().poll_decode(cx)) {
                     Some(Ok(frame)) => match frame.into_data() {
-                        Ok(data) => self.as_mut().project().decoded.put(data),
+                        Ok(data) => *self.as_mut().project().chunk = data,
                         Err(frame) => {
                             let trailers = frame
                                 .into_trailers()
@@ -1009,6 +1067,57 @@ mod client_response_tests {
             Pin::new(&mut body).poll_frame(&mut Context::from_waker(std::task::Waker::noop())),
             Poll::Ready(Some(Err(_))),
         );
+    }
+
+    #[test]
+    fn whole_frames_share_the_received_bytes() {
+        let mut wire = BytesMut::from(message().as_ref());
+        wire.extend_from_slice(&message());
+        wire.extend_from_slice(&make_trailers_frame(trailers()));
+        let wire = wire.freeze();
+        let mut body =
+            GrpcWebCall::client_response(Frames(VecDeque::from([Frame::data(wire.clone())])));
+        let messages = poll(&mut body).unwrap().into_data().unwrap();
+        assert_eq!(messages.len(), 2 * message().len());
+        assert_eq!(messages.as_ptr(), wire.as_ptr());
+        assert_eq!(
+            poll(&mut body).unwrap().into_trailers().unwrap(),
+            trailers()
+        );
+    }
+
+    #[tokio::test]
+    async fn base64_request_decodes_at_any_split() {
+        use rama_http_types::body::util::BodyExt;
+
+        let mut plain = BytesMut::from(message().as_ref());
+        plain.extend_from_slice(&[0, 0, 0, 0, 3, b'x', b'y', b'z']);
+        let text = Bytes::from(crate::util::base64::STANDARD.encode(&plain));
+        for first in 0..=text.len() {
+            for second in first..=text.len() {
+                let frames = Frames(VecDeque::from([
+                    Frame::data(text.slice(..first)),
+                    Frame::data(text.slice(first..second)),
+                    Frame::data(text.slice(second..)),
+                ]));
+                let body = GrpcWebCall::request(frames, Encoding::Base64);
+                let decoded = body.collect().await.unwrap().to_bytes();
+                assert_eq!(decoded, plain, "splits {first} {second}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn base64_request_with_a_partial_group_is_an_error() {
+        use rama_http_types::body::util::BodyExt;
+
+        let body = GrpcWebCall::request(
+            Frames(VecDeque::from([Frame::data(Bytes::from_static(
+                b"AAAAAAE",
+            ))])),
+            Encoding::Base64,
+        );
+        body.collect().await.unwrap_err();
     }
 
     #[test]

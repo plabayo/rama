@@ -614,6 +614,8 @@ jobs:
         run: just fuzz/http-structured-fields 60
       - name: fuzz — masque
         run: just fuzz/masque 30
+      - name: fuzz — wire parsers
+        run: just fuzz/wire 30
       - name: Upload QUIC, H3, QPACK and MASQUE fuzz corpus and failures
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -628,6 +630,12 @@ jobs:
             fuzz/corpus/http_structured_fields
             fuzz/corpus/masque_*
             fuzz/corpus/uri_template
+            fuzz/corpus/http1_*
+            fuzz/corpus/proxy_protocol
+            fuzz/corpus/ws_frame
+            fuzz/corpus/socks5_codec
+            fuzz/corpus/tls_client_hello
+            fuzz/corpus/grpc_frames
             fuzz/artifacts/quic_*
             fuzz/artifacts/http_capsule
             fuzz/artifacts/h3_*
@@ -635,6 +643,12 @@ jobs:
             fuzz/artifacts/http_structured_fields
             fuzz/artifacts/masque_*
             fuzz/artifacts/uri_template
+            fuzz/artifacts/http1_*
+            fuzz/artifacts/proxy_protocol
+            fuzz/artifacts/ws_frame
+            fuzz/artifacts/socks5_codec
+            fuzz/artifacts/tls_client_hello
+            fuzz/artifacts/grpc_frames
 
   docsrs-emulation:
     permissions:

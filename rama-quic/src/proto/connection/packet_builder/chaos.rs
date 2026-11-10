@@ -46,7 +46,7 @@ pub(super) fn scramble(payload: &mut [u8], rng: &mut impl Rng) -> bool {
                 data: crypto.data,
             }),
             Ok(Frame::Ping) => pings += 1,
-            Ok(Frame::Padding) => {}
+            Ok(Frame::Padding { .. }) => {}
             _ => return false,
         }
     }

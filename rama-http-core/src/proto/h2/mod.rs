@@ -43,6 +43,14 @@ enum MessageKind {
 }
 
 fn strip_connection_headers(headers: &mut HeaderMap, kind: MessageKind) {
+    // Most messages carry none of these, and comparing names is cheaper than hashed removals.
+    if !headers
+        .keys()
+        .any(|name| name == TE || CONNECTION_SPECIFIC_HEADERS.contains(&name))
+    {
+        return;
+    }
+
     for header in CONNECTION_SPECIFIC_HEADERS {
         // Consume Connection last: its nominations are needed below.
         if *header == CONNECTION {

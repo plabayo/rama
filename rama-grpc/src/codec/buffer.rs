@@ -4,8 +4,15 @@ use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 /// A specialized buffer to decode gRPC messages from.
 #[derive(Debug)]
 pub struct DecodeBuf<'a> {
-    buf: &'a mut BytesMut,
+    buf: Source<'a>,
     len: usize,
+}
+
+/// A message received in one piece is decoded straight from the received bytes.
+#[derive(Debug)]
+enum Source<'a> {
+    Assembled(&'a mut BytesMut),
+    Received(&'a mut Bytes),
 }
 
 /// A specialized buffer to encode gRPC messages into.
@@ -26,7 +33,18 @@ impl<'a> DecodeBuf<'a> {
     /// `len` is trusted: it is reported as [`Buf::remaining`] and must not
     /// exceed the number of bytes actually available in `buf`.
     pub fn new(buf: &'a mut BytesMut, len: usize) -> Self {
-        DecodeBuf { buf, len }
+        DecodeBuf {
+            buf: Source::Assembled(buf),
+            len,
+        }
+    }
+
+    /// Create a [`DecodeBuf`] exposing the first `len` bytes of `buf`, without copying them.
+    pub(crate) fn from_bytes(buf: &'a mut Bytes, len: usize) -> Self {
+        DecodeBuf {
+            buf: Source::Received(buf),
+            len,
+        }
     }
 }
 
@@ -38,7 +56,10 @@ impl Buf for DecodeBuf<'_> {
 
     #[inline]
     fn chunk(&self) -> &[u8] {
-        let ret = self.buf.chunk();
+        let ret = match &self.buf {
+            Source::Assembled(buf) => buf.chunk(),
+            Source::Received(buf) => buf.chunk(),
+        };
 
         if ret.len() > self.len {
             &ret[..self.len]
@@ -50,7 +71,10 @@ impl Buf for DecodeBuf<'_> {
     #[inline]
     fn advance(&mut self, cnt: usize) {
         assert!(cnt <= self.len);
-        self.buf.advance(cnt);
+        match &mut self.buf {
+            Source::Assembled(buf) => buf.advance(cnt),
+            Source::Received(buf) => buf.advance(cnt),
+        }
         self.len -= cnt;
     }
 
@@ -58,7 +82,10 @@ impl Buf for DecodeBuf<'_> {
     fn copy_to_bytes(&mut self, len: usize) -> Bytes {
         assert!(len <= self.len);
         self.len -= len;
-        self.buf.copy_to_bytes(len)
+        match &mut self.buf {
+            Source::Assembled(buf) => buf.copy_to_bytes(len),
+            Source::Received(buf) => buf.split_to(len),
+        }
     }
 }
 
@@ -150,6 +177,23 @@ mod tests {
 
         assert_eq!(buf.copy_to_bytes(5).len(), 5);
         assert!(!buf.has_remaining());
+    }
+
+    #[test]
+    fn decode_buf_from_bytes_shares_the_received_bytes() {
+        let mut payload = Bytes::from_static(b"0123456789abcdef");
+        let mut buf = DecodeBuf::from_bytes(&mut payload, 10);
+
+        assert_eq!(buf.chunk(), b"0123456789");
+        buf.advance(2);
+        let message = buf.copy_to_bytes(8);
+        assert_eq!(message, &b"23456789"[..]);
+        assert_eq!(
+            message.as_ptr(),
+            Bytes::from_static(b"0123456789abcdef")[2..].as_ptr()
+        );
+        assert!(!buf.has_remaining());
+        assert_eq!(payload, &b"abcdef"[..]);
     }
 
     #[test]

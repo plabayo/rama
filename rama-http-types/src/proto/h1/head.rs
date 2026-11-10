@@ -7,6 +7,7 @@
 
 use core::fmt;
 
+use memchr::memchr2;
 use rama_core::{
     bytes::{BufMut, Bytes},
     extensions::{Extensions, ExtensionsRef as _},
@@ -192,15 +193,14 @@ fn complete<T>(status: httparse::Status<T>) -> Result<T, HeadError> {
 }
 
 fn validate_crlf(input: &[u8]) -> Result<(), HeadError> {
-    for (index, byte) in input.iter().copied().enumerate() {
-        let valid = match byte {
-            b'\r' => input.get(index + 1) == Some(&b'\n'),
-            b'\n' => index > 0 && input[index - 1] == b'\r',
-            _ => true,
-        };
-        if !valid {
+    let mut at = 0;
+    while let Some(found) = memchr2(b'\r', b'\n', &input[at..]) {
+        let index = at + found;
+        // A line feed is only reached here when no carriage return came right before it.
+        if input[index] == b'\n' || input.get(index + 1) != Some(&b'\n') {
             return Err(HeadError::new(HeadErrorKind::InvalidSyntax));
         }
+        at = index + 2;
     }
     Ok(())
 }

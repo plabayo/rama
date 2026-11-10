@@ -164,7 +164,7 @@ impl_decorate_async_read!(ZlibEncoder: |input, quality| {
     ZlibEncoder::with_quality(input, quality.into_async_compression())
 });
 
-impl_decorate_async_read!(BrotliEncoder: |input, quality| {
+impl_decorate_async_read!(BrotliEncoder: |input, quality, body_len| {
     // The brotli crate used under the hood here has a default compression level of 11,
     // which is the max for brotli. This causes extremely slow compression times, so we
     // manually set a default of 4 here.
@@ -174,8 +174,19 @@ impl_decorate_async_read!(BrotliEncoder: |input, quality| {
         CompressionLevel::Default => async_compression::Level::Precise(4),
         other => other.into_async_compression(),
     };
-    BrotliEncoder::with_quality(input, level)
+    let params = async_compression::brotli::EncoderParams::default().quality(level);
+    let params = match body_len.and_then(brotli_window_bits) {
+        Some(bits) => params.window_size(bits),
+        None => params,
+    };
+    BrotliEncoder::with_params(input, params)
 });
+
+/// Smallest brotli window (RFC 7932 §9.1: `2^WBITS - 16` bytes) holding a body of `len`
+/// bytes; a larger window gains no ratio and costs both peers memory.
+fn brotli_window_bits(len: u64) -> Option<i32> {
+    (10..22).find(|bits| (1_u64 << bits) - 16 >= len)
+}
 
 impl_decorate_async_read!(ZstdEncoder: |input, quality| {
     // See https://issues.chromium.org/issues/41493659:

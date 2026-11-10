@@ -88,7 +88,7 @@ pub struct FrameStats {
 impl FrameStats {
     pub(crate) fn record(&mut self, frame: &Frame) {
         match frame {
-            Frame::Padding => {}
+            Frame::Padding { .. } => {}
             Frame::Ping => self.ping += 1,
             Frame::Ack(_) => self.acks += 1,
             Frame::ResetStream(_) => self.reset_stream += 1,

@@ -266,7 +266,7 @@ impl Http1Transaction for Server {
             // `headers_indices[..headers_len]` is initialized (its
             // safety-usable invariant), and nothing wrote to it since.
             let header = unsafe { header.assume_init_ref() };
-            let name = HeaderName::from_bytes(&slice[header.name.0..header.name.1])
+            let name = HeaderName::from_shared_bytes_range(&slice, header.name.0..header.name.1)
                 .inspect_err(|err| {
                     debug!("invalid http1 header: {err:?}");
                 })
@@ -480,7 +480,6 @@ impl Http1Transaction for Server {
         }
 
         let allowed_trailers = msg.head.extensions.get_arc::<ForbiddenTrailers>();
-        let _extensions = std::mem::take(msg.head.extensions);
         let encoder = Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len)?
             .maybe_with_allowed_trailers(allowed_trailers);
         ret.map(|()| encoder)
@@ -1079,11 +1078,12 @@ impl Http1Transaction for Client {
                 // As above, `headers_indices[..headers_len]` is initialized,
                 // and `obs_fold_line` only rewrote entries in place.
                 let header = unsafe { header.assume_init_ref() };
-                let name = HeaderName::from_bytes(&slice[header.name.0..header.name.1])
-                    .inspect_err(|err| {
-                        debug!("invalid http1 header: {err:?}");
-                    })
-                    .map_err(|_e| crate::error::Parse::Internal)?;
+                let name =
+                    HeaderName::from_shared_bytes_range(&slice, header.name.0..header.name.1)
+                        .inspect_err(|err| {
+                            debug!("invalid http1 header: {err:?}");
+                        })
+                        .map_err(|_e| crate::error::Parse::Internal)?;
                 let mut value = header_value!(slice.slice(header.value.0..header.value.1));
                 if name.is_sensitive() {
                     value.set_sensitive(true);

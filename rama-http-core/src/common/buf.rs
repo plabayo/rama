@@ -17,7 +17,10 @@ impl<T: Buf> BufList<T> {
     #[inline]
     pub(crate) fn push(&mut self, buf: T) {
         debug_assert!(buf.has_remaining());
-        self.bufs.push_back(buf);
+        // Holding no empty buffer is what makes a non-empty list one with bytes left.
+        if buf.has_remaining() {
+            self.bufs.push_back(buf);
+        }
     }
 
     #[inline]
@@ -30,6 +33,11 @@ impl<T: Buf> Buf for BufList<T> {
     #[inline]
     fn remaining(&self) -> usize {
         self.bufs.iter().map(Buf::remaining).sum()
+    }
+
+    #[inline]
+    fn has_remaining(&self) -> bool {
+        !self.bufs.is_empty()
     }
 
     #[inline]
@@ -82,9 +90,15 @@ impl<T: Buf> Buf for BufList<T> {
             }
             Some(front) if front.remaining() > len => front.copy_to_bytes(len),
             _ => {
-                assert!(len <= self.remaining(), "`len` greater than remaining");
+                let rem = self.remaining();
+                assert!(len <= rem, "`len` greater than remaining");
                 let mut bm = BytesMut::with_capacity(len);
-                bm.put(self.take(len));
+                if rem == len {
+                    // `take` adds a limit check to every copied chunk.
+                    bm.put(self);
+                } else {
+                    bm.put(self.take(len));
+                }
                 bm.freeze()
             }
         }
@@ -101,6 +115,30 @@ mod tests {
         BufList {
             bufs: vec![Bytes::from("Hello"), Bytes::from(" "), Bytes::from("World")].into(),
         }
+    }
+
+    #[test]
+    fn has_remaining_tracks_remaining_through_every_advance() {
+        let total = hello_world_buf().remaining();
+        for first in 0..=total {
+            for second in 0..=total - first {
+                let mut bufs = hello_world_buf();
+                for step in [first, second] {
+                    bufs.advance(step);
+                    assert_eq!(bufs.has_remaining(), bufs.remaining() > 0);
+                }
+                let rest = bufs.remaining();
+                assert_eq!(bufs.copy_to_bytes(rest).len(), rest);
+                assert!(!bufs.has_remaining());
+            }
+        }
+    }
+
+    #[test]
+    fn to_bytes_of_everything_joins_all_buffers() {
+        let mut bufs = hello_world_buf();
+        assert_eq!(bufs.copy_to_bytes(11), "Hello World");
+        assert!(!bufs.has_remaining());
     }
 
     #[test]

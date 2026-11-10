@@ -517,7 +517,7 @@ impl Connection {
                         }
                     };
 
-                    if matches!(frame, Frame::Padding) {
+                    if matches!(frame, Frame::Padding { .. }) {
                         continue;
                     };
 
@@ -767,7 +767,7 @@ impl Connection {
         for result in frame::Iter::new(packet.payload.freeze())? {
             let frame = result?;
             let span = match frame {
-                Frame::Padding => continue,
+                Frame::Padding { .. } => continue,
                 _ => Some(trace_span!("frame", ty = %frame.ty())),
             };
 
@@ -778,7 +778,7 @@ impl Connection {
 
             // Process frames
             match frame {
-                Frame::Padding | Frame::Ping => {}
+                Frame::Padding { .. } | Frame::Ping => {}
                 Frame::Crypto(frame) => {
                     self.read_crypto(packet.header.space(), &frame, allocated)?;
                 }
