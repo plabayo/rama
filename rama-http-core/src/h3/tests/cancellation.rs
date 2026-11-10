@@ -548,6 +548,7 @@ async fn a_request_that_crossed_the_shutdown_notice_is_served() {
             client = returned;
         }
         // The client that read the notice starts no further request.
+        client.closed_or_draining().await;
         let error = client.send_request(get()).await.unwrap_err();
         assert_eq!(error.code(), Code::H3_REQUEST_REJECTED);
         server.shutdown().unwrap();
