@@ -1,4 +1,5 @@
 use super::*;
+use crate::profile::capture::joint::normalize_stored_structure;
 
 #[test]
 fn tls_structure_bounds_ten_thousand_orders_without_changing_samples() {
@@ -374,4 +375,35 @@ fn ten_thousand_connection_and_destination_lengths_share_one_tls_structure() {
     for value in snapshot.values.iter() {
         TlsCapture::from_canonical(value, limits).unwrap();
     }
+}
+
+#[test]
+fn shuffled_trust_anchor_lists_share_one_tls_structure() {
+    let limits = TlsCaptureLimits::default();
+    let listed = |entries: &[&[u8]]| {
+        let mut body = Vec::new();
+        for entry in entries {
+            body.push(u8::try_from(entry.len()).unwrap());
+            body.extend_from_slice(entry);
+        }
+        let mut value = u16::try_from(body.len()).unwrap().to_be_bytes().to_vec();
+        value.extend(body);
+        capture(&hello(vec![opaque(0xca34, value)]))
+    };
+    let anchors: [&[u8]; 3] = [&[4, 214, 121, 9, 1], &[5, 130, 223, 19, 2, 6], &[8, 131]];
+    let shared = listed(&anchors).structural(limits).unwrap();
+    let reversed: Vec<&[u8]> = anchors.iter().rev().copied().collect();
+    let shuffled = listed(&reversed);
+    assert_eq!(shuffled.structural(limits).unwrap().id, shared.id);
+
+    // A structure stored in handshake order still reads and merges into the shared one.
+    let stored = shuffled.structure(limits, false).unwrap();
+    assert_ne!(stored.id, shared.id);
+    stored.validated_domain(limits.bytes).unwrap();
+    assert_eq!(
+        normalize_stored_structure(&stored, limits.bytes)
+            .unwrap()
+            .id,
+        shared.id
+    );
 }
