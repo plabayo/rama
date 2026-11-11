@@ -49,10 +49,13 @@ async fn emitted_native_hello(marker: Option<EmulationContext>) -> TlsCapture {
         drop(connector.serve(request).await.unwrap_err());
     };
     let server = async {
-        let (_, hello) =
-            peek_client_hello_from_input(ServiceInput::new(server), Some(Duration::from_secs(5)))
-                .await
-                .unwrap();
+        let (_, hello) = tokio::time::timeout(
+            Duration::from_secs(5),
+            peek_client_hello_from_input(ServiceInput::new(server)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         TlsCapture::capture(
             ProfileCaptureCompleteness::Complete,
             TlsCaptureTransport::Tcp,

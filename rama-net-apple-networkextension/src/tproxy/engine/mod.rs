@@ -28,7 +28,7 @@ use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,
     futures::FutureExt,
-    graceful::{Cause, Scope, WeakScope},
+    graceful::{Cause, Scope, WeakScope, attach_scope},
     io::BridgeIo,
     rt::OwnedRuntimeHandle,
     service::Service,
@@ -1169,7 +1169,9 @@ impl TransparentProxyTcpSession {
             );
             return;
         };
-        let ingress_stream = TcpFlow::new(ingress_inner, Some(WeakScope::from(flow_scope)));
+        let ingress_stream = TcpFlow::new(ingress_inner, Some(flow_scope.clone_weak()));
+        // the flow runs in its scope, as inputs of the TCP and QUIC servers do
+        attach_scope(ingress_stream.extensions(), &flow_scope);
         ingress_stream.extensions().insert_arc(meta_arc);
         if let Some(remote) = remote_endpoint {
             ingress_stream.extensions().insert(ConnectorTarget(remote));

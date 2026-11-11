@@ -64,10 +64,13 @@ async fn caller_tls_ceiling_lowers_the_selected_tcp_tls_recipe() {
         .await
         .expect("the CLI dials despite the profile's TLS 1.3 recipe")
         .unwrap();
-    let (_, hello) =
-        peek_client_hello_from_input(ServiceInput::new(stream), Some(Duration::from_secs(2)))
-            .await
-            .unwrap();
+    let (_, hello) = tokio::time::timeout(
+        Duration::from_secs(2),
+        peek_client_hello_from_input(ServiceInput::new(stream)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let hello = hello.expect("client hello");
     assert!(
         !hello
@@ -104,10 +107,13 @@ async fn native_tls13_capture() -> TlsCapture {
         drop(connector.serve(input).await.unwrap_err());
     };
     let peer = async {
-        let (_, hello) =
-            peek_client_hello_from_input(ServiceInput::new(peer), Some(Duration::from_secs(2)))
-                .await
-                .unwrap();
+        let (_, hello) = tokio::time::timeout(
+            Duration::from_secs(2),
+            peek_client_hello_from_input(ServiceInput::new(peer)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         TlsCapture::capture(
             ProfileCaptureCompleteness::Complete,
             TlsCaptureTransport::Tcp,

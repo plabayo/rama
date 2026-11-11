@@ -30,7 +30,7 @@ use rama::{
     },
     io::{
         BridgeIo, Io,
-        peek::{PeekAction, PeekEgressFirstByteLayer, PeekPolicy},
+        peek::{PeekAction, PeekPolicy},
     },
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutput, MapOutputLayer},
     net::{
@@ -59,7 +59,6 @@ const HIJACK_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
 #[derive(Clone)]
 pub(super) struct DemoTcpMitmService {
     state: SharedState,
-    peek_duration_s: f64,
 }
 
 impl DemoTcpMitmService {
@@ -122,7 +121,7 @@ impl DemoTcpMitmService {
             server_auth,
             html_badge_enabled: demo_config.html_badge_enabled,
             html_badge_label: demo_config.html_badge_label.clone(),
-            exclude_domains: demo_config.exclude_domains.clone(),
+            exclude_domains: demo_config.exclude_domains,
             ca_crt_pem,
             tls_mitm_relay,
             tls_keylog_toggle,
@@ -131,7 +130,6 @@ impl DemoTcpMitmService {
 
         let service = Self {
             state: state.clone(),
-            peek_duration_s: demo_config.peek_duration_s,
         };
 
         Ok((service, state))
@@ -157,10 +155,9 @@ impl DemoTcpMitmService {
         Egress: Io + Unpin + ExtensionsRef,
     {
         let settings = self.state.load_full();
-        let peek_duration = Duration::from_secs_f64(self.peek_duration_s.max(0.5));
-        // Idle flows still fall back after the peek duration, but a started
-        // protocol message is never passed through unseen because it is slow.
-        let peek_policy = PeekPolicy::FAIL_OPEN.with_timeout_partial(PeekAction::Wait);
+        // A cancelled flow scope ends idle peeks, but a started protocol
+        // message is never passed through unseen because the flow is closing.
+        let peek_policy = PeekPolicy::FAIL_OPEN.with_cancelled_partial(PeekAction::Wait);
 
         let http_mitm_svc = HttpMitmRelay::new(scope.clone()).with_http_middleware(
             self.http_relay_middleware(scope.clone(), within_connect_tunnel, settings.clone()),
@@ -179,12 +176,10 @@ impl DemoTcpMitmService {
 
         let inner_http_router = HttpPeekRouter::new(http_mitm_svc.clone())
             .with_known_non_http_protocol_methods()
-            .with_peek_timeout(peek_duration)
             .with_peek_policy(peek_policy)
             .with_fallback(plain_passthrough);
         let outer_http_router = HttpPeekRouter::new(http_mitm_svc)
             .with_known_non_http_protocol_methods()
-            .with_peek_timeout(peek_duration)
             .with_peek_policy(peek_policy)
             .with_fallback(promote_passthrough.clone());
 
@@ -197,34 +192,20 @@ impl DemoTcpMitmService {
         let app_mitm_layer = PeekTlsClientHelloService::new(
             (tls_mitm_relay_policy, settings.tls_mitm_relay.clone()).into_layer(inner_http_router),
         )
-        .with_peek_timeout(peek_duration)
         .with_peek_policy(peek_policy)
         .with_fallback(outer_http_router);
 
-        // A server speaking first ends the ingress peeks without waiting for the peek duration.
+        // Peekers judge what a server-first peer sends; the flow scope bounds the wait.
         if within_connect_tunnel {
-            return Either::A(
-                (
-                    ConsumeErrLayer::trace_as_debug(),
-                    PeekEgressFirstByteLayer::new(),
-                )
-                    .into_layer(app_mitm_layer),
-            );
+            return Either::A(ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_layer));
         }
 
         let socks5_mitm_relay = Socks5MitmRelayService::new(scope, app_mitm_layer.clone());
         let mitm_svc = Socks5PeekRouter::new(socks5_mitm_relay)
-            .with_peek_timeout(peek_duration)
             .with_peek_policy(peek_policy)
             .with_fallback(app_mitm_layer);
 
-        Either::B(
-            (
-                ConsumeErrLayer::trace_as_debug(),
-                PeekEgressFirstByteLayer::new(),
-            )
-                .into_layer(mitm_svc),
-        )
+        Either::B(ConsumeErrLayer::trace_as_debug().into_layer(mitm_svc))
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -350,7 +331,6 @@ mod tests {
         };
         let mitm = DemoTcpMitmService {
             state: Arc::new(arc_swap::ArcSwap::from_pointee(settings)),
-            peek_duration_s: 0.5,
         };
 
         for within_connect_tunnel in [false, true] {

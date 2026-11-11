@@ -214,7 +214,7 @@ async fn each_rejection_reaches_the_fallback_only_when_its_class_is_admitted() {
                             Some(PeekStopReason::Rejected)
                         }
                         QuicPeekRejection::Budget => Some(PeekStopReason::MaxPeekSizeReached),
-                        QuicPeekRejection::Deadline => Some(PeekStopReason::Timeout),
+                        QuicPeekRejection::Deadline => Some(PeekStopReason::Cancelled),
                     };
                     assert_eq!(result.unwrap(), (Some(class), expected, flight), "{class}");
                 } else {
@@ -538,7 +538,7 @@ async fn shared_status_shadows_stale_failure_on_quic_and_non_quic_bridges() {
         let (egress, _peer) = association();
         let address = egress.local_addr().unwrap();
         ingress.extensions().insert(ClientHelloPeekStatus {
-            failure: Some(PeekStopReason::Timeout),
+            failure: Some(PeekStopReason::Cancelled),
         });
         let extensions = ingress.extensions().clone();
         for packet in &flight {

@@ -1,4 +1,10 @@
-use tokio::io::{AsyncRead, AsyncWrite};
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 mod read;
 #[doc(inline)]
@@ -52,32 +58,48 @@ impl<T> Io for T where T: AsyncRead + AsyncWrite + Send + 'static {}
 /// A higher level trait that can be used by services which
 /// wish to peek into I/O, often as part of Deep Protocol Inspections (DPI).
 ///
-/// It is implemented for any [`Io`], returning itself.
-/// [`BridgeIo`] also implements it, assuming that the first element
-/// is the ingress side that is ok to be peeked.
+/// It is implemented for any [`Io`], returning itself as ingress and
+/// reporting no egress. [`BridgeIo`] also implements it, exposing its first
+/// element as the ingress and its second element as the egress.
 pub trait PeekIoProvider: Send + 'static {
-    /// The type that can be peeked.
+    /// The ingress type that can be peeked.
     type PeekIo: Io;
 
-    /// The mapped `Self` type produced as a result of
-    /// mapping the `PeekIo` type.
-    type Mapped<PeekedIo: Io>: Send + 'static;
+    /// The egress type that can be peeked, [`NoPeekEgress`] when there is none.
+    type PeekEgressIo: Io;
 
-    /// Retrieve a mutable reference to the Peekable type.
+    /// The mapped `Self` type produced as a result of
+    /// mapping the `PeekIo` and `PeekEgressIo` types.
+    type Mapped<PeekedIo: Io, PeekedEgressIo: Io>: Send + 'static;
+
+    /// Retrieve a mutable reference to the peekable ingress.
     fn peek_io_mut(&mut self) -> &mut Self::PeekIo;
 
+    /// Retrieve mutable references to the peekable ingress and,
+    /// if there is one, the peekable egress.
+    fn peek_ios_mut(&mut self) -> (&mut Self::PeekIo, Option<&mut Self::PeekEgressIo>);
+
     /// Once peeking is finished one can reproduce `self`
-    /// by mapping the Peeked Io type and produce a new type,
-    /// usually with the peeked data in-memory as prefix.
-    fn map_peek_io<PeekedIo, F>(self, map: F) -> Self::Mapped<PeekedIo>
+    /// by mapping the peeked ingress and egress, usually with the
+    /// peeked data in-memory as prefix.
+    ///
+    /// `map_egress` is only called when there is an egress.
+    fn map_peek_io<PeekedIo, PeekedEgressIo, F, G>(
+        self,
+        map: F,
+        map_egress: G,
+    ) -> Self::Mapped<PeekedIo, PeekedEgressIo>
     where
         PeekedIo: Io,
-        F: FnOnce(Self::PeekIo) -> PeekedIo;
+        PeekedEgressIo: Io,
+        F: FnOnce(Self::PeekIo) -> PeekedIo,
+        G: FnOnce(Self::PeekEgressIo) -> PeekedEgressIo;
 }
 
 impl<T: Io> PeekIoProvider for T {
     type PeekIo = T;
-    type Mapped<PeekedIo: Io> = PeekedIo;
+    type PeekEgressIo = NoPeekEgress;
+    type Mapped<PeekedIo: Io, PeekedEgressIo: Io> = PeekedIo;
 
     #[inline(always)]
     fn peek_io_mut(&mut self) -> &mut Self::PeekIo {
@@ -85,11 +107,56 @@ impl<T: Io> PeekIoProvider for T {
     }
 
     #[inline(always)]
-    fn map_peek_io<PeekedIo, F>(self, map: F) -> Self::Mapped<PeekedIo>
+    fn peek_ios_mut(&mut self) -> (&mut Self::PeekIo, Option<&mut Self::PeekEgressIo>) {
+        (self, None)
+    }
+
+    #[inline(always)]
+    fn map_peek_io<PeekedIo, PeekedEgressIo, F, G>(
+        self,
+        map: F,
+        _map_egress: G,
+    ) -> Self::Mapped<PeekedIo, PeekedEgressIo>
     where
         PeekedIo: Io,
+        PeekedEgressIo: Io,
         F: FnOnce(Self::PeekIo) -> PeekedIo,
+        G: FnOnce(Self::PeekEgressIo) -> PeekedEgressIo,
     {
         map(self)
+    }
+}
+
+/// The egress of a [`PeekIoProvider`] that has none.
+///
+/// It cannot be constructed.
+#[derive(Debug)]
+pub enum NoPeekEgress {}
+
+impl AsyncRead for NoPeekEgress {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match *self {}
+    }
+}
+
+impl AsyncWrite for NoPeekEgress {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match *self {}
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match *self {}
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match *self {}
     }
 }

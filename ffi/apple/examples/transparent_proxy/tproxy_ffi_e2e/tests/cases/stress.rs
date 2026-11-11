@@ -20,9 +20,8 @@ use crate::shared::{
 };
 
 /// 8 sequential plain-TCP roundtrips. Bounded-time sentinel + ASan
-/// harness. Iteration count is small because the demo engine's
-/// 500ms peek floor makes each roundtrip slow; the cycle is what
-/// matters, not throughput.
+/// harness. Iteration count is small; the cycle is what matters,
+/// not throughput.
 #[tokio::test]
 #[serial]
 async fn ffi_stress_tcp_sequential_churn() {
@@ -50,7 +49,7 @@ async fn ffi_stress_tcp_sequential_churn() {
         );
     }
     let elapsed = started.elapsed();
-    // 8 iterations × ~500ms peek = ~4s; allow generous slack for CI.
+    // 8 short iterations; allow generous slack for CI.
     assert!(
         elapsed < Duration::from_secs(15),
         "{N} sequential tcp roundtrips took {elapsed:?} (>15s)",
@@ -128,8 +127,7 @@ async fn ffi_stress_tcp_concurrent_churn() {
         h.await.expect("stress task join");
     }
     let elapsed = started.elapsed();
-    // 4 tasks × 4 ops in parallel; the peek floor still serialises
-    // somewhat per-flow, so allow generous slack on CI.
+    // 4 tasks × 4 ops in parallel; allow generous slack on CI.
     assert!(
         elapsed < Duration::from_secs(15),
         "{TASKS}*{PER_TASK} concurrent tcp roundtrips took {elapsed:?} (>15s)",

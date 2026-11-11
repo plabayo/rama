@@ -78,6 +78,7 @@ final class CoreEdgeCaseTests: XCTestCase {
         guard let ctx = core.testInspectTcpContext(for: flow) else {
             XCTFail("no ctx for flow — cutover wait impossible"); return
         }
+        XCTAssertTrue(TestFixtures.greetFromServer(conn), "server greeting delivered")
         waitFor("cutover flips ctx.mode away from .viaRust", timeout: 3.0) {
             ctx.mode != .viaRust
         }

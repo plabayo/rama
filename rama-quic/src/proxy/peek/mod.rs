@@ -197,7 +197,8 @@ impl std::error::Error for QuicPeekRejectedError {}
 /// Both successful and fallback dispatch insert [`ClientHelloPeekStatus`], replacing
 /// any earlier status. Non-QUIC input has no inspection failure. Unsupported or
 /// malformed QUIC maps to `Rejected`, budget exhaustion to `MaxPeekSizeReached`,
-/// and deadline expiry to `Timeout`. Receive errors always fail the service.
+/// and its own inspection deadline, a bound on buffered datagrams, to `Cancelled`.
+/// Receive errors always fail the service.
 /// Strict routing should use [`QuicPeekFallbackPolicy::NOT_QUIC`].
 ///
 /// Routing sees the outer ClientHello only: with ECH that is the public name, never the
@@ -295,11 +296,12 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
         /// Defaults to [`PeekPolicy::FAIL_OPEN`]. This updates only the
         /// deadline class, independently of the malformed-TLS policy.
         ///
-        /// The first datagram is in hand, so the partial-input timeout action
-        /// applies. The deadline is a hard budget: [`PeekAction::Wait`] fails.
+        /// The deadline acts as a cancelled peek scope with the first datagram
+        /// in hand, so the partial cancel action applies. The deadline is a
+        /// hard budget: [`PeekAction::Wait`] fails.
         pub fn peek_policy(mut self, policy: PeekPolicy) -> Self {
             self.fallback_policy.deadline =
-                policy.action(PeekCutoff::Timeout, PeekProgress::Partial) == PeekAction::Fallback;
+                policy.action(PeekCutoff::Cancelled, PeekProgress::Partial) == PeekAction::Fallback;
             self
         }
     }
@@ -376,7 +378,7 @@ where
                     Some(PeekStopReason::Rejected)
                 }
                 QuicPeekRejection::Budget => Some(PeekStopReason::MaxPeekSizeReached),
-                QuicPeekRejection::Deadline => Some(PeekStopReason::Timeout),
+                QuicPeekRejection::Deadline => Some(PeekStopReason::Cancelled),
             });
             match peeked {
                 Ok(client_hello) => {

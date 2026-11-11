@@ -174,7 +174,6 @@ pub(crate) fn engine_with_udp_ingress_probe_lease_ms(
     let mut config = serde_json::json!({
         "html_badge_enabled": true,
         "html_badge_label": BADGE_LABEL,
-        "peek_duration_s": 0.5,
         "exclude_domains": [],
         "ca_cert_pem": cert_pem,
         "ca_key_pem": key_pem,
@@ -195,7 +194,6 @@ pub(crate) fn engine_with_udp_quic_ports(
     let mut config = serde_json::json!({
         "html_badge_enabled": true,
         "html_badge_label": BADGE_LABEL,
-        "peek_duration_s": 0.5,
         "exclude_domains": [],
         "ca_cert_pem": cert_pem,
         "ca_key_pem": key_pem,

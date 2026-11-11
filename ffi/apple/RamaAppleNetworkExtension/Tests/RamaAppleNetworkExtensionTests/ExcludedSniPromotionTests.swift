@@ -34,7 +34,6 @@ final class ExcludedSniPromotionTests: XCTestCase {
         guard let engine = RamaTransparentProxyEngineHandle(
             engineConfigJson: TestFixtures.engineConfigJson(
                 excludeDomains: [excludedPattern],
-                peekDurationSeconds: 10,
                 tcpWritePumpMaxPendingBytes: tcpWritePumpMaxPendingBytes
             )
         ) else {

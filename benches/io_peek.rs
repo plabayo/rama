@@ -79,7 +79,7 @@ fn prefix(input: &Bytes, width: usize) -> Vec<u8> {
         &mut buffer,
         len,
         NonZeroUsize::new(kib(8)).expect("nonzero read size"),
-        &mut PeekWaiter::new(None),
+        &mut PeekWaiter::new(),
         |data| {
             if data.len() == len {
                 PeekVerdict::Match(())

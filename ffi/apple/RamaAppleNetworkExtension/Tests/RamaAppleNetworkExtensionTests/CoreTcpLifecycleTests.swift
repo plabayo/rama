@@ -99,8 +99,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
     /// Drive a promote-aware clean teardown and wait for the flow
     /// to be removed from the registry.
     ///
-    /// After `peek_duration_s` (0.5s in TestFixtures) the demo's
-    /// in-Rust service falls through to the promote-aware
+    /// Once the server greets first (`TestFixtures.greetFromServer`) the
+    /// demo's in-Rust service falls through to the promote-aware
     /// passthrough fallback, calls `into_passthrough`, and Swift
     /// flips `ctx.mode` to `.promoted`. From that point on the
     /// kernel flow + NWConnection are owned by Swift's
@@ -126,8 +126,13 @@ final class CoreTcpLifecycleTests: XCTestCase {
         guard let ctx = core.testInspectTcpContext(for: flow) else {
             XCTFail("no ctx for flow — cutover wait impossible"); return
         }
+        XCTAssertTrue(TestFixtures.greetFromServer(conn), "server greeting delivered")
         waitFor("cutover flips ctx.mode away from .viaRust", timeout: 3.0) {
             ctx.mode != .viaRust
+        }
+        // the peekers replay the greeting they consumed to the client, once and first
+        waitFor("server greeting reaches the client", timeout: 3.0) {
+            flow.writes.reduce(Data(), +).starts(with: TestFixtures.serverGreeting)
         }
 
         // Drive every async completion the promote teardown needs on a
@@ -151,6 +156,17 @@ final class CoreTcpLifecycleTests: XCTestCase {
         defer { completer.store(true) }
 
         waitFor(description, timeout: timeout) { core.tcpFlowCount == 0 }
+
+        // after teardown: the greeting reached the client exactly once
+        let written = flow.writes.reduce(Data(), +)
+        if let first = written.range(of: TestFixtures.serverGreeting) {
+            XCTAssertNil(
+                written[first.upperBound...].range(of: TestFixtures.serverGreeting),
+                "greeting replayed exactly once"
+            )
+        } else {
+            XCTFail("greeting never reached the client")
+        }
     }
 
     // MARK: - Happy path
@@ -178,8 +194,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
         waitFor("client read pump issued first read") { flow.pendingReadCount > 0 }
 
         // Demo `tproxy_rs` wraps its passthrough fallback with
-        // `PromoteLayer`, so after the in-Rust service peek-times
-        // out the cutover fires and the kernel flow + NWConnection
+        // `PromoteLayer`, so once a server greeting sends the flow
+        // there the cutover fires and the kernel flow + NWConnection
         // are owned by Swift's `TcpDirectForwarder`. Drive both
         // directions to EOF (via the carryover sinks) and run a
         // send-completer for the FIN drain — see helper docstring.
@@ -792,6 +808,9 @@ final class CoreTcpLifecycleTests: XCTestCase {
             fx.core.testInspectTcpContext(for: $0)
         }
         XCTAssertEqual(contexts.count, flows.count, "every flow must have a ctx")
+        for conn in connections {
+            XCTAssertTrue(TestFixtures.greetFromServer(conn), "server greeting delivered")
+        }
         waitFor("all \(flowCount) flows cutover", timeout: 5.0) {
             contexts.allSatisfy { $0.mode != .viaRust }
         }
