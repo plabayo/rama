@@ -19,6 +19,18 @@ runs:
           echo "apt-install: no packages given" >&2
           exit 1
         fi
+        missing=()
+        for package in "${package_list[@]}"; do
+          status="$(dpkg-query --show --showformat='${db:Status-Status}' "$package" 2>/dev/null || true)"
+          if [[ "$status" != installed ]]; then
+            missing+=("$package")
+          fi
+        done
+        if [[ ${#missing[@]} -eq 0 ]]; then
+          echo "apt-install: all packages already installed"
+          exit 0
+        fi
+        package_list=("${missing[@]}")
         # A stalled mirror connection errors after 30s instead of waiting forever.
         apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
         apt_get() {

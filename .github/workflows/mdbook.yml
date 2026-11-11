@@ -174,9 +174,23 @@ jobs:
         with:
           packages: graphviz
       - name: Install mdBook
+        timeout-minutes: 20
         run: |
-          cargo install --version "${MDBOOK_VERSION}" mdbook 2>/dev/null || true
-          cargo install --version "${MDBOOK_GRAPHVIZ_VERSION}" mdbook-graphviz 2>/dev/null || true
+          install_book_tool() {
+            local tool=$1 version=$2
+            if command -v "$tool" >/dev/null; then
+              return 0
+            fi
+            for attempt in 1 2 3; do
+              if cargo install --version "$version" "$tool"; then
+                return 0
+              fi
+              if [[ "$attempt" -lt 3 ]]; then sleep 5; fi
+            done
+            return 1
+          }
+          install_book_tool mdbook "$MDBOOK_VERSION"
+          install_book_tool mdbook-graphviz "$MDBOOK_GRAPHVIZ_VERSION"
       - name: Build with mdBook
         working-directory: ./docs/book
         run: mdbook build

@@ -301,9 +301,21 @@ jobs:
     - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
     - name: Install GNU tar
       if: runner.os == 'macOS'
+      timeout-minutes: 15
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: '1'
       run: |
-        brew install gnu-tar
-        echo "/usr/local/opt/gnu-tar/libexec/gnubin" >> "$GITHUB_PATH"
+        # The checkout can be an older release without the local brew action.
+        if ! command -v gtar >/dev/null; then
+          for attempt in 1 2 3; do
+            if brew install gnu-tar; then break; fi
+            if [[ "$attempt" == 3 ]]; then exit 1; fi
+            sleep 5
+          done
+        fi
+        mkdir "$RUNNER_TEMP/gnu-tar-bin"
+        ln -s "$(command -v gtar)" "$RUNNER_TEMP/gnu-tar-bin/tar"
+        echo "$RUNNER_TEMP/gnu-tar-bin" >> "$GITHUB_PATH"
     - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{env.RUST_TOOLCHAIN}}

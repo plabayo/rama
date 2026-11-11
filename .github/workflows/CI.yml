@@ -159,9 +159,14 @@ jobs:
       - name: cargo sort (dependencies)
         run: cargo sort --workspace --grouped --check
       - name: Install actionlint
+        timeout-minutes: 10
         run: |
+          if command -v actionlint >/dev/null; then
+            actionlint --version
+            exit 0
+          fi
           archive="$RUNNER_TEMP/actionlint.tar.gz"
-          curl --fail --location --retry 3 \
+          curl --fail --location --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 \
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
             --output "$archive"
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $archive" | sha256sum --check
@@ -496,7 +501,10 @@ jobs:
         with:
           prune-cache: true
       - name: Install Apple example build and lint tools
-        run: brew install xcodegen shellcheck
+        uses: ./.github/actions/brew-install
+        timeout-minutes: 15
+        with:
+          tools: xcodegen shellcheck
       # Checks below keep going after a failed check, but never after a failed setup.
       - name: Setup complete
         id: setup

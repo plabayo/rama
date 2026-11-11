@@ -161,7 +161,10 @@ jobs:
           # v2.1.4 assets were replaced upstream; keep checksum verification intact.
           tool: just,nextest,cargo-sort@2.1.3
       - name: Install Apple build and lint tools
-        run: brew install xcodegen shellcheck
+        uses: ./.github/actions/brew-install
+        timeout-minutes: 15
+        with:
+          tools: xcodegen shellcheck
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           prune-cache: true
@@ -503,7 +506,10 @@ jobs:
             ffi/apple/examples/transparent_proxy/tproxy_rs -> target/asan
             ffi/apple/examples/transparent_proxy/tproxy_ffi_e2e -> target/asan
       - name: Install just
-        run: brew install just
+        uses: ./.github/actions/brew-install
+        timeout-minutes: 15
+        with:
+          tools: just
       - name: Run transparent proxy FFI stress tests under ASan and Swift TSan
         working-directory: ./ffi/apple/examples/transparent_proxy
         run: just test-e2e-sanitizers
@@ -530,7 +536,10 @@ jobs:
           components: miri, rust-src
       # Never persist Miri output: it can contain build-time environment data.
       - name: Install just
-        run: brew install just
+        uses: ./.github/actions/brew-install
+        timeout-minutes: 15
+        with:
+          tools: just
       - name: Run targeted Apple NetworkExtension Miri checks
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/miri-target
