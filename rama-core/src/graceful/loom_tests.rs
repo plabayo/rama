@@ -230,6 +230,54 @@ fn every_ancestor_wake_reaches_a_deep_waiter() {
     });
 }
 
+// A graced chain stays on the quick path until a level is cancelled. No waiter here outlives
+// a cancel pending: its timer would need a runtime.
+#[test]
+fn an_ancestor_end_reaches_a_waiter_below_a_graced_root() {
+    for abort in [false, true] {
+        loom::model(move || {
+            let root = Scope::new().with_grace(std::time::Duration::from_secs(3600));
+            let leaf = root.child().child();
+            let ender = {
+                let root = root.clone_weak();
+                thread::spawn(move || {
+                    if abort {
+                        root.abort(Cause::Owner);
+                    } else {
+                        root.cancel(Cause::Owner);
+                    }
+                })
+            };
+            if abort {
+                block_on(leaf.aborted());
+            } else {
+                block_on(leaf.cancelled());
+            }
+            ender.join().unwrap();
+            assert!(leaf.is_cancelled());
+        });
+    }
+}
+
+#[test]
+fn a_grace_set_while_a_waiter_registers_loses_no_cancel() {
+    loom::model(|| {
+        let root = Scope::new();
+        let leaf = root.child();
+        let ender = {
+            let root = root.clone();
+            thread::spawn(move || {
+                let root = root.with_grace(std::time::Duration::from_secs(3600));
+                root.cancel(Cause::Owner);
+            })
+        };
+        block_on(leaf.cancelled());
+        ender.join().unwrap();
+        assert!(leaf.is_cancelled());
+        assert!(!leaf.is_aborted());
+    });
+}
+
 #[test]
 fn concurrent_ancestor_wakes_both_reach_a_deep_waiter() {
     loom::model(|| {

@@ -23,8 +23,12 @@ use super::{
 
 const CANCELLED: u8 = 1 << 0;
 const ABORTED: u8 = 1 << 1;
+// A deadline or hard deadline is set: a phase is reached by the clock alone.
 const TIMED: u8 = 1 << 2;
 const SIGNALS: u8 = 1 << 3;
+// A grace is set. It counts from a cancel, so it schedules nothing while no
+// level is cancelled or timed, and such a chain stays on the quick path.
+const GRACE: u8 = 1 << 4;
 
 /// Offset value for "not set".
 const UNSET: u64 = u64::MAX;
@@ -415,7 +419,7 @@ impl Node {
             .unwrap_or(UNSET - 1)
             .min(UNSET - 1);
         self.grace.fetch_min(nanos, Ordering::Release);
-        self.flags.fetch_or(TIMED, Ordering::Release);
+        self.flags.fetch_or(GRACE, Ordering::Release);
         self.waiters.wake_all();
     }
 
@@ -505,6 +509,7 @@ impl Node {
         let own = self.flags.load(Ordering::Acquire);
         let mut quick = own & (TIMED | ABORTED) == 0;
         let mut flags = own;
+        let mut seen = own;
         let mut node = self;
         loop {
             // The pending flag is read here too: an idle signal costs no call.
@@ -519,11 +524,12 @@ impl Node {
             };
             node = parent;
             flags = node.flags.load(Ordering::Acquire);
+            seen |= flags;
             if flags & (TIMED | ABORTED) != 0 || (flags & CANCELLED != 0 && own & CANCELLED == 0) {
                 quick = false;
             }
         }
-        if quick {
+        if quick && !grace_counts(own, seen) {
             Phase::settled(own & CANCELLED != 0)
         } else {
             self.phase()
@@ -533,7 +539,7 @@ impl Node {
     /// The times of this node, given those of its parent.
     fn own_times(&self, parent: Times) -> Times {
         let flags = self.flags.load(Ordering::Acquire);
-        let timed = flags & TIMED != 0;
+        let timed = flags & (TIMED | GRACE) != 0;
         let mut times = Times::default();
 
         // A published phase is fixed; otherwise it is the earliest scheduled candidate.
@@ -655,6 +661,7 @@ impl Node {
         if own & TIMED != 0 {
             return None;
         }
+        let mut seen = own;
         let mut node = self.parent();
         while let Some(current) = node {
             #[cfg(all(test, not(rama_loom)))]
@@ -663,7 +670,11 @@ impl Node {
             if flags & (TIMED | ABORTED) != 0 || (flags & CANCELLED != 0 && own & CANCELLED == 0) {
                 return None;
             }
+            seen |= flags;
             node = current.parent();
+        }
+        if grace_counts(own, seen) {
+            return None;
         }
         Some(Phase::settled(own & CANCELLED != 0))
     }
@@ -746,7 +757,7 @@ impl Node {
     fn own_candidates(&self, causes: &Causes, parent: Candidates) -> Candidates {
         let (parent_graceful, parent_hard) = parent;
         let flags = self.flags.load(Ordering::Acquire);
-        let timed = flags & TIMED != 0;
+        let timed = flags & (TIMED | GRACE) != 0;
 
         let published_graceful = match (&causes.cancel, self.instant(&self.cancelled_at)) {
             (Some(cause), Some(at)) if flags & CANCELLED != 0 => Some(Candidate {
@@ -988,6 +999,14 @@ impl Drop for Node {
             }
         }
     }
+}
+
+/// Whether a grace somewhere in a chain (`seen`: the flags of every level) may schedule the
+/// hard phase of the node with flags `own`: only once that node is cancelled. The callers
+/// leave the quick path before this for a cancel above a node that is not.
+#[inline]
+const fn grace_counts(own: u8, seen: u8) -> bool {
+    own & CANCELLED != 0 && seen & GRACE != 0
 }
 
 /// Graceful and hard candidates of a node.

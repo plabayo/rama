@@ -51,6 +51,8 @@ pub enum DrawDomain {
     TlsExtensions = 5,
     /// Independent request-scoped network quality hint values.
     NetworkHints = 6,
+    /// Independent connection-scoped reserved identifiers a client generates.
+    ReservedIdentifiers = 7,
 }
 
 /// Every logical draw is independent of scheduling and other draw consumption.

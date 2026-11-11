@@ -3,14 +3,21 @@ use crate::profile::{
     analysis::order::AnalyzedOrderWeight,
     capture::{
         CAPTURE_REVISION,
-        headers::{HeaderCapturePolicy, HeaderValueSource},
+        headers::{HeaderCapture, HeaderCapturePolicy, HeaderValueSource},
         http2::{H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting},
+        pseudo_headers::{PseudoHeaderCapture, PseudoHeaderOccurrence},
     },
     evidence::{ProfileScopeEvidence, counts::ObservationWeight, ingestion::ObservationId},
     format::{archive::ProfileArchiveEntry, canonical::CanonicalWriter},
     model::identity::{ConnectionContext, ResumptionContext},
 };
-use rama_http::{HeaderMap, HeaderValue, Method};
+use rama_http::{
+    HeaderMap, HeaderValue, Method,
+    proto::{
+        h2::PseudoHeader,
+        h3::observation::{FieldRepresentation, ObservedFieldRepresentation},
+    },
+};
 use std::collections::BTreeMap;
 
 fn setting(number: u64) -> CanonicalValue {
@@ -1077,3 +1084,135 @@ fn scope_bound_keeps_the_first_listed_scopes_and_reports_the_rest() {
 
 #[cfg(feature = "embed-profiles")]
 mod bootstrap;
+
+/// One HTTP/3 request per index, each naming its path by that dynamic table index.
+fn dynamic_path_evidence(indexes: impl IntoIterator<Item = u64>) -> ProfileEvidence {
+    let limits = JointCaptureLimits::default();
+    let flow = FlowKey::Http {
+        version: Version::HTTP_3,
+        method: Method::GET,
+        initiator: None,
+        fetch: None,
+        connection: ConnectionContext::default(),
+    };
+    let mut identity = None;
+    let mut windows = BTreeMap::new();
+    for (sequence, index) in indexes.into_iter().enumerate() {
+        let pseudo = PseudoHeaderCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            version: Version::HTTP_3,
+            fields: [
+                PseudoHeader::Method,
+                PseudoHeader::Scheme,
+                PseudoHeader::Authority,
+                PseudoHeader::Path,
+            ]
+            .into_iter()
+            .map(|name| PseudoHeaderOccurrence {
+                name,
+                representation: Some(ObservedFieldRepresentation {
+                    representation: if name == PseudoHeader::Path {
+                        FieldRepresentation::DynamicIndex
+                    } else {
+                        FieldRepresentation::LiteralName
+                    },
+                    index: (name == PseudoHeader::Path).then_some(index),
+                    name_huffman: false,
+                    value_huffman: false,
+                    never_index: false,
+                }),
+            })
+            .collect(),
+        };
+        let prepared = ProfileCapture {
+            revision: CAPTURE_REVISION,
+            profile: ProfileKey::new("indexing-browser"),
+            flow: Some(flow.clone()),
+            connection: ConnectionContext::default(),
+            joint: JointCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
+                level: CaptureLevel::Request,
+                slots: Box::new([
+                    CapturedSlot {
+                        kind: CapturedSlotKind::Headers,
+                        value: HeaderCapture {
+                            completeness: ProfileCaptureCompleteness::Complete,
+                            version: Version::HTTP_3,
+                            fields: Box::default(),
+                        }
+                        .canonical(&HeaderCapturePolicy::default())
+                        .unwrap(),
+                    },
+                    CapturedSlot {
+                        kind: CapturedSlotKind::PseudoHeaders,
+                        value: pseudo.canonical(4096).unwrap(),
+                    },
+                ]),
+            },
+        }
+        .prepare(false, limits)
+        .unwrap();
+        identity = Some(prepared.profile);
+        for input in prepared.buckets.into_vec() {
+            let (_, window) = windows.entry(input.scope.id).or_insert_with(|| {
+                let window = RetainedBucketWindow::new(
+                    input.value.validated_domain(limits.bytes).unwrap(),
+                    input.scope.id,
+                    [3; 32],
+                    ProfileWindowLimits::default(),
+                )
+                .unwrap();
+                let evidence = ProfileScopeEvidence {
+                    scope: input.scope.clone(),
+                    flow: prepared.flow.clone(),
+                    structure: input.structure.clone(),
+                    window: window.snapshot(),
+                };
+                (evidence, window)
+            });
+            window
+                .observe(
+                    100,
+                    100,
+                    ObservationId {
+                        run: [1; 16],
+                        sequence: sequence as u64 + 1,
+                    },
+                    &input.value,
+                )
+                .unwrap();
+        }
+    }
+    ProfileEvidence {
+        format_version: 1,
+        profile: identity.unwrap(),
+        scopes: windows
+            .into_values()
+            .map(|(mut evidence, window)| {
+                evidence.window = window.snapshot();
+                evidence
+            })
+            .collect(),
+    }
+}
+
+fn request_values(evidence: &ProfileEvidence) -> BTreeSet<ValueId> {
+    evidence
+        .scopes
+        .iter()
+        .filter(|scope| scope.window.domain == CanonicalDomain::Joint)
+        .flat_map(|scope| &scope.window.buckets)
+        .flat_map(|day| &day.bucket.values)
+        .map(|value| value.id)
+        .collect()
+}
+
+#[test]
+fn requests_differing_only_in_dynamic_table_indexes_read_as_one_value() {
+    let input = dynamic_path_evidence(0..6);
+    assert_eq!(request_values(&input).len(), 6);
+    let read = normalize_profile_evidence(&input, false, [3; 32], ProfileAnalysisLimits::default())
+        .unwrap()
+        .evidence;
+    assert_eq!(request_values(&read).len(), 1);
+}

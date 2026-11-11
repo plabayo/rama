@@ -168,9 +168,8 @@ impl ComparisonMode {
     }
 }
 
-// Only the comparison copy is changed. Zero is a valid dynamic index placeholder;
-// stored bytes and reported identities retain the actual wire indexes.
-fn project_dynamic_indexes<'a>(
+// Zero is a valid dynamic index placeholder; stored bytes retain the wire indexes.
+pub(in crate::profile) fn project_dynamic_indexes<'a>(
     fields: impl Iterator<Item = &'a mut Option<ObservedFieldRepresentation>>,
 ) -> bool {
     let mut changed = false;
