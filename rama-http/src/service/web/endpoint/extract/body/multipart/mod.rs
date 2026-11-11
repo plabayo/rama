@@ -1759,6 +1759,11 @@ mod test {
             text.replace("\r\n", "\n"),
             text.replacen("\r\n", " junk\r\n", 1),
             text.replacen("Content-Disposition:", "Content-Disposition :", 1),
+            text.replacen("\r\n\r\n", "\r\nX: \rvalue\r\n\r\n", 1),
+            text.replacen("\r\n\r\n", "\r\nX: value\x0b\r\n\r\n", 1),
+            text.replacen("\r\n\r\n", "\r\nX: \x0cvalue\r\n\r\n", 1),
+            format!("{}junk", text.trim_end_matches("\r\n")),
+            format!("{}\r", text.trim_end_matches("\r\n")),
             text.replacen("\r\n\r\n", "\r\n folded\r\n\r\n", 1),
             text.replacen("\r\n\r\n", "\r\nX: a\0b\r\n\r\n", 1),
             text.replacen(

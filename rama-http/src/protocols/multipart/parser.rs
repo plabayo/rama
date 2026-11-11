@@ -6,8 +6,8 @@
 //!
 //! Framing is strict where leniency would let two parsers disagree on where a
 //! part ends: lines end in CRLF only, a delimiter is followed by nothing but
-//! `--` or transport padding and CRLF, and a body that ends before its close
-//! delimiter is an error.
+//! `--` and optional transport padding followed by CRLF or EOF, or transport
+//! padding and CRLF. A body that ends before its close delimiter is an error.
 
 use super::Boundary;
 use memchr::{memchr, memmem, memrchr};
@@ -63,7 +63,7 @@ pub enum Event {
     Data(Bytes),
     /// The open part is complete.
     PartEnd,
-    /// The close delimiter was read, whatever follows it is never looked at.
+    /// The closing delimiter line ended; any epilogue is ignored.
     End,
 }
 
@@ -82,6 +82,8 @@ enum State {
 enum Tail {
     Start,
     Dash,
+    Closing,
+    ClosingCr,
     Padding,
     Cr,
 }
@@ -143,7 +145,7 @@ impl Parser {
     }
 
     /// Whether more input would be put to use: false once the close delimiter
-    /// is read or parsing failed.
+    /// line has ended or parsing failed.
     #[must_use]
     pub fn wants_input(&self) -> bool {
         !matches!(self.state, State::End | State::Failed(_))
@@ -285,7 +287,9 @@ impl Parser {
             used += 1;
             tail = match (tail, byte) {
                 (Tail::Start, b'-') => Tail::Dash,
-                (Tail::Dash, b'-') => {
+                (Tail::Dash, b'-') | (Tail::Closing, b' ' | b'\t') => Tail::Closing,
+                (Tail::Closing, b'\r') => Tail::ClosingCr,
+                (Tail::ClosingCr, b'\n') => {
                     next = Some(State::End);
                     break;
                 }
@@ -297,6 +301,11 @@ impl Parser {
                 }
                 _ => return Err(ParseError::InvalidDelimiter),
             };
+        }
+        // A closing delimiter needs no final CRLF, but only EOF makes that
+        // decision: a later chunk could still carry an invalid suffix.
+        if next.is_none() && self.eof && matches!(tail, Tail::Closing) {
+            next = Some(State::End);
         }
         match next {
             Some(State::End) => self.chunk = Bytes::new(),
@@ -370,8 +379,18 @@ fn parse_headers(mut block: &[u8]) -> Result<HeaderMap, ParseError> {
         let colon = memchr(b':', line).ok_or(ParseError::InvalidHeaders)?;
         let name =
             HeaderName::from_bytes(&line[..colon]).map_err(|_e| ParseError::InvalidHeaders)?;
-        let value = HeaderValue::from_bytes(line[colon + 1..].trim_ascii())
-            .map_err(|_e| ParseError::InvalidHeaders)?;
+        // Only SP/HTAB are padding; keep other controls for validation.
+        let value = &line[colon + 1..];
+        let start = value
+            .iter()
+            .position(|byte| !matches!(byte, b' ' | b'\t'))
+            .unwrap_or(value.len());
+        let end = value
+            .iter()
+            .rposition(|byte| !matches!(byte, b' ' | b'\t'))
+            .map_or(start, |at| at + 1);
+        let value =
+            HeaderValue::from_bytes(&value[start..end]).map_err(|_e| ParseError::InvalidHeaders)?;
         headers.append(name, value);
     }
     Ok(headers)
@@ -736,6 +755,60 @@ mod tests {
     }
 
     #[test]
+    fn header_value_controls_are_not_trimmed_away() {
+        for control in *b"\r\x0b\x0c" {
+            for value in [
+                vec![control, b'v'],
+                vec![b'v', control],
+                vec![b' ', b'\t', control, b'v', b'\t'],
+                vec![b' ', b'v', control, b'\t', b' '],
+                vec![control],
+            ] {
+                let body = [b"--b\r\nX: ", &value[..], b"\r\n\r\ndata\r\n--b--\r\n"].concat();
+                assert_eq!(
+                    assert_every_split("b", &body),
+                    Err(ParseError::InvalidHeaders)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn closing_delimiter_suffix_is_validated() {
+        for prefix in ["--b", "--b\r\nX: value\r\n\r\ndata\r\n--b"] {
+            for suffix in ["--junk", "---", "-- x", "--\n", "--\rX", "--\x0b", "--\x0c"] {
+                let body = format!("{prefix}{suffix}");
+                assert_eq!(
+                    assert_every_split("b", body.as_bytes()),
+                    Err(ParseError::InvalidDelimiter),
+                    "{body:?}"
+                );
+            }
+            for suffix in ["--\r", "-- \t\r"] {
+                let body = format!("{prefix}{suffix}");
+                assert_eq!(
+                    assert_every_split("b", body.as_bytes()),
+                    Err(ParseError::Incomplete),
+                    "{body:?}"
+                );
+            }
+            for suffix in ["--", "-- \t", "--\r\n", "-- \t\r\nepilogue\0\r\n--b"] {
+                let body = format!("{prefix}{suffix}");
+                let expected = if prefix == "--b" {
+                    vec![]
+                } else {
+                    vec![part(&[("X", "value")], b"data")]
+                };
+                assert_eq!(
+                    assert_every_split("b", body.as_bytes()),
+                    Ok(expected),
+                    "{body:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn invalid_header_lines() {
         for line in [
             "no colon",
@@ -840,15 +913,26 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_consumed_past_the_close_delimiter() {
+    fn closing_delimiter_waits_for_eof_or_crlf() {
         let mut parser = Parser::new(&Boundary::new("b").unwrap());
         assert!(matches!(parser.step(), Ok(Event::NeedInput)));
         assert!(parser.wants_input());
         parser.feed(Bytes::from_static(b"--b--"));
-        assert!(matches!(parser.step(), Ok(Event::End)));
-        assert!(!parser.wants_input());
+        assert!(matches!(parser.step(), Ok(Event::NeedInput)));
+        assert!(parser.wants_input());
+        // Empty body chunks do not terminate the closing delimiter line.
+        parser.feed(Bytes::new());
+        assert!(matches!(parser.step(), Ok(Event::NeedInput)));
         parser.set_eof();
         assert!(matches!(parser.step(), Ok(Event::End)));
+        assert!(!parser.wants_input());
+
+        let mut parser = Parser::new(&Boundary::new("b").unwrap());
+        parser.feed(Bytes::from_static(b"--b-- \t\r"));
+        assert!(matches!(parser.step(), Ok(Event::NeedInput)));
+        parser.feed(Bytes::from_static(b"\nepilogue"));
+        assert!(matches!(parser.step(), Ok(Event::End)));
+        assert!(!parser.wants_input());
     }
 
     /// Carriage returns that never complete a delimiter cost one pass, not one per chunk.
