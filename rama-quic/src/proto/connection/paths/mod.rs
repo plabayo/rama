@@ -276,7 +276,9 @@ impl PathData {
         generation: u64,
         now: Instant,
     ) -> Self {
-        let congestion = prev.congestion.clone_box();
+        let mut congestion = prev.congestion.clone_box();
+        // The packets a reduction on the previous path waits for are not carried over.
+        congestion.on_loss_confirmed();
         let smoothed_rtt = prev.rtt.get();
         let mut mtud = prev.mtud.clone();
         mtud.reset_for_new_path();

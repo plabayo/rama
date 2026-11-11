@@ -138,6 +138,26 @@ fn only_a_reduction_for_late_packets_is_undone() {
 }
 
 #[test]
+fn a_reduction_for_a_lost_padded_ack_is_not_undone_by_late_packets() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_a_reduction_for_a_lost_padded_ack_is_not_undone_by_late_packets(now);
+}
+
+#[test]
+fn a_reduction_on_the_previous_path_is_not_undone_after_rebinding() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_a_reduction_on_the_previous_path_is_not_undone_after_rebinding(now);
+}
+
+#[test]
 fn a_burst_of_more_losses_than_are_remembered_is_not_undone() {
     let mut pair = Pair::default();
     let (_, server) = pair.connect();

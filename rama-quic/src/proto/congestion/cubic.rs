@@ -1,5 +1,4 @@
-use std::cmp;
-use std::sync::Arc;
+use std::{cmp, mem, sync::Arc};
 
 use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
 use crate::proto::connection::RttEstimator;
@@ -101,6 +100,8 @@ pub(crate) struct Cubic {
     current_mtu: u64,
     /// When the previous acknowledgement was processed.
     last_ack: Option<Instant>,
+    /// Whether the previous acknowledgement found the sender with nothing more to send.
+    idle: bool,
     /// What a loss reduced, kept until that loss is known to be real or reported in error
     /// (RFC 9438 section 4.9).
     undo: Option<Undo>,
@@ -126,6 +127,7 @@ impl Cubic {
             cubic_state: Default::default(),
             current_mtu: current_mtu as u64,
             last_ack: None,
+            idle: false,
             undo: None,
         }
     }
@@ -148,8 +150,10 @@ impl Controller for Cubic {
             .last_ack
             .replace(now)
             .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
-        // A silence longer than a probe timeout means nothing was in flight to acknowledge.
-        if app_limited || gap > rtt.pto_base() {
+        // After an acknowledgement that found nothing more to send, the wait for the next one
+        // is idle time as well.
+        let was_idle = mem::replace(&mut self.idle, app_limited);
+        if app_limited || was_idle {
             self.cubic_state.unused = self.cubic_state.unused.saturating_add(gap);
         }
 
@@ -486,6 +490,32 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_sender_acknowledged_a_flight_at_a_time_keeps_growing() {
+        let start = Instant::now();
+        let mtu = BASE_DATAGRAM_SIZE;
+        let rtt = RttEstimator::new(Duration::from_millis(1));
+        let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+        cubic.window = 10 * mtu;
+        cubic.ssthresh = cubic.window;
+        cubic.cubic_state.w_max = cubic.window as f64;
+        cubic.on_congestion_event(start, start + Duration::from_millis(1), false, mtu);
+        let reduced = cubic.window;
+
+        // The receiver holds each flight for its acknowledgement delay, far longer than the
+        // round trip.
+        let mut now = start;
+        cubic.on_ack(now, start, mtu, false, &rtt);
+        for _ in 0..200 {
+            let sent = now + Duration::from_millis(25);
+            now += Duration::from_millis(26);
+            for _ in 0..cubic.window / mtu {
+                cubic.on_ack(now, sent, mtu, false, &rtt);
+            }
+        }
+        assert!(cubic.window > reduced, "{} <= {reduced}", cubic.window);
+    }
+
+    #[test]
     fn time_the_window_went_unused_does_not_count_towards_its_growth() {
         let mtu = BASE_DATAGRAM_SIZE;
         let rtt = RttEstimator::new(Duration::from_millis(50));
@@ -504,6 +534,7 @@ mod tests {
                     cubic.on_ack(now, start, mtu, true, &rtt);
                 }
             } else {
+                cubic.on_ack(now, start, mtu, true, &rtt);
                 now += Duration::from_secs(30);
             }
             let sent = now;

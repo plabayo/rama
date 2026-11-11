@@ -479,7 +479,7 @@ impl Connection {
                 if info.path_generation == generation && pn_space == SpaceId::Data {
                     self.path.mtud.on_non_probe_lost(packet, info.size);
                 }
-                if info.path_generation == generation && info.ack_eliciting {
+                if info.path_generation == generation && info.size != 0 {
                     declared.push((packet, info.time_sent));
                 }
             }
