@@ -215,6 +215,12 @@ pub struct PeekCutoffError {
 }
 
 impl PeekCutoffError {
+    /// A peek failed by `cutoff`, for a peeker that waits without a [`PeekWaiter`].
+    #[must_use]
+    pub const fn new(cutoff: PeekCutoff, cause: Option<Cause>) -> Self {
+        Self { cutoff, cause }
+    }
+
     /// The cutoff that failed the peek.
     #[must_use]
     pub const fn cutoff(&self) -> PeekCutoff {

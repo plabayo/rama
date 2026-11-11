@@ -1,16 +1,17 @@
 //! Peek at a QUIC client's Initial flight before choosing how to handle the association.
 
 use rama_utils::macros::define_inner_service_accessors;
-use std::{fmt, time::Duration};
+use std::{fmt, future::pending, time::Duration};
 
 use rama_core::{
     Service,
     bytes::Bytes,
     error::BoxError,
     extensions::{Extension, ExtensionsRef},
+    graceful::{WeakScope, scope_context},
     io::{
         BridgeIo,
-        peek::{PeekAction, PeekCutoff, PeekPolicy, PeekProgress, PeekStopReason},
+        peek::{PeekAction, PeekCutoff, PeekCutoffError, PeekPolicy, PeekProgress, PeekStopReason},
     },
     service::RejectService,
     telemetry::tracing,
@@ -98,6 +99,9 @@ pub enum QuicPeekRejection {
     Budget,
     /// No complete ClientHello arrived before the deadline.
     Deadline,
+    /// The scope the association runs in was cancelled before a complete ClientHello,
+    /// and the [`PeekPolicy`] selected the fallback.
+    Cancelled,
 }
 
 impl fmt::Display for QuicPeekRejection {
@@ -108,6 +112,7 @@ impl fmt::Display for QuicPeekRejection {
             Self::Malformed => "malformed QUIC client flight",
             Self::Budget => "QUIC peek limits exhausted",
             Self::Deadline => "QUIC peek deadline exceeded",
+            Self::Cancelled => "QUIC peek scope cancelled",
         })
     }
 }
@@ -156,6 +161,8 @@ impl QuicPeekFallbackPolicy {
             QuicPeekRejection::Malformed => self.malformed,
             QuicPeekRejection::Budget => self.budget,
             QuicPeekRejection::Deadline => self.deadline,
+            // the PeekPolicy already selected the fallback
+            QuicPeekRejection::Cancelled => true,
         }
     }
 }
@@ -199,6 +206,11 @@ impl std::error::Error for QuicPeekRejectedError {}
 /// malformed QUIC maps to `Rejected`, budget exhaustion to `MaxPeekSizeReached`,
 /// and its own inspection deadline, a bound on buffered datagrams, to `Cancelled`.
 /// Receive errors always fail the service.
+///
+/// Like the TCP peekers, it waits within the scope the association runs in: once
+/// that scope is cancelled the [`PeekPolicy`] decides by the progress made
+/// (fallback with [`QuicPeekRejection::Cancelled`], fail, or keep waiting), and
+/// once it is aborted the peek fails with [`PeekCutoffError`].
 /// Strict routing should use [`QuicPeekFallbackPolicy::NOT_QUIC`].
 ///
 /// Routing sees the outer ClientHello only: with ECH that is the public name, never the
@@ -214,6 +226,7 @@ pub struct PeekQuicClientHelloService<K, S, F = RejectService<(), NoQuicRejectEr
     fallback: F,
     limits: CaptureLimits,
     peek_timeout: Duration,
+    peek_policy: PeekPolicy,
     fallback_policy: QuicPeekFallbackPolicy,
     retain_first_flight: bool,
 }
@@ -230,6 +243,7 @@ impl<K, S> PeekQuicClientHelloService<K, S> {
             fallback: RejectService::new(NoQuicRejectError),
             limits: DEFAULT_QUIC_PEEK_LIMITS,
             peek_timeout: DEFAULT_QUIC_PEEK_TIMEOUT,
+            peek_policy: PeekPolicy::FAIL_OPEN,
             fallback_policy: QuicPeekFallbackPolicy::default(),
             retain_first_flight: true,
         }
@@ -245,6 +259,7 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
             fallback,
             limits: self.limits,
             peek_timeout: self.peek_timeout,
+            peek_policy: self.peek_policy,
             fallback_policy: self.fallback_policy,
             retain_first_flight: self.retain_first_flight,
         }
@@ -292,14 +307,15 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Whether an inconclusive inspection deadline selects fallback.
-        /// Defaults to [`PeekPolicy::FAIL_OPEN`]. This updates only the
-        /// deadline class, independently of the malformed-TLS policy.
+        /// How a cancelled scope and the inspection deadline are handled.
+        /// Defaults to [`PeekPolicy::FAIL_OPEN`], independently of the malformed-TLS policy.
         ///
-        /// The deadline acts as a cancelled peek scope with the first datagram
-        /// in hand, so the partial cancel action applies. The deadline is a
-        /// hard budget: [`PeekAction::Wait`] fails.
+        /// A cancelled scope the association runs in applies the cancel action for
+        /// the progress made; an aborted scope always fails. The inspection
+        /// deadline, a bound on buffered datagrams, follows the partial cancel
+        /// action, as the first datagram is in hand; there [`PeekAction::Wait`] fails.
         pub fn peek_policy(mut self, policy: PeekPolicy) -> Self {
+            self.peek_policy = policy;
             self.fallback_policy.deadline =
                 policy.action(PeekCutoff::Cancelled, PeekProgress::Partial) == PeekAction::Fallback;
             self
@@ -326,6 +342,7 @@ impl<K: fmt::Debug, S: fmt::Debug, F: fmt::Debug> fmt::Debug
             .field("fallback", &self.fallback)
             .field("limits", &self.limits)
             .field("peek_timeout", &self.peek_timeout)
+            .field("peek_policy", &self.peek_policy)
             .field("fallback_policy", &self.fallback_policy)
             .field("retain_first_flight", &self.retain_first_flight)
             .finish()
@@ -340,6 +357,7 @@ impl<K: Clone, S: Clone, F: Clone> Clone for PeekQuicClientHelloService<K, S, F>
             fallback: self.fallback.clone(),
             limits: self.limits,
             peek_timeout: self.peek_timeout,
+            peek_policy: self.peek_policy,
             fallback_policy: self.fallback_policy,
             retain_first_flight: self.retain_first_flight,
         }
@@ -348,7 +366,7 @@ impl<K: Clone, S: Clone, F: Clone> Clone for PeekQuicClientHelloService<K, S, F>
 
 impl<I, K, S, F, O> Service<I> for PeekQuicClientHelloService<K, S, F>
 where
-    I: DatagramPeekInput,
+    I: DatagramPeekInput + ExtensionsRef,
     I::Mapped<PrefixedDatagramSocket<I::Socket>>: ExtensionsRef,
     K: KeyProvider + Send + Sync + 'static,
     S: Service<
@@ -365,10 +383,16 @@ where
     fn serve(&self, mut input: I) -> impl Future<Output = Result<O, BoxError>> + Send + '_ {
         // Fixed when the association is handed over, so a late first poll gains no time.
         let deadline = Instant::now() + self.peek_timeout;
+        let scope = scope_context(input.extensions());
         async move {
             let mut retained = Vec::new();
             let peeked = self
-                .peek(input.peek_socket_mut(), deadline, &mut retained)
+                .peek(
+                    input.peek_socket_mut(),
+                    deadline,
+                    scope.as_ref(),
+                    &mut retained,
+                )
                 .await?;
             let input =
                 input.map_peek_socket(|socket| PrefixedDatagramSocket::new(socket, retained));
@@ -378,7 +402,9 @@ where
                     Some(PeekStopReason::Rejected)
                 }
                 QuicPeekRejection::Budget => Some(PeekStopReason::MaxPeekSizeReached),
-                QuicPeekRejection::Deadline => Some(PeekStopReason::Cancelled),
+                QuicPeekRejection::Deadline | QuicPeekRejection::Cancelled => {
+                    Some(PeekStopReason::Cancelled)
+                }
             });
             match peeked {
                 Ok(client_hello) => {
@@ -407,6 +433,7 @@ impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
         &self,
         socket: &mut Socket,
         deadline: Instant,
+        scope: Option<&WeakScope>,
         retained: &mut Vec<RetainedDatagram>,
     ) -> Result<Result<PeekedClientHello, QuicPeekRejection>, BoxError> {
         let mut inspector = if self.retain_first_flight {
@@ -415,8 +442,32 @@ impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
             InitialPeek::new(self.limits, deadline.into_std())
         };
         let mut buffer = vec![0; RECEIVE_BUFFER];
+        let mut cancel_waived = None;
         loop {
-            let metadata = match timeout_at(deadline, socket.recv(&mut buffer)).await {
+            let progress = PeekProgress::from_peeked(retained.len());
+            let cancel = scope.filter(|_| cancel_waived != Some(progress));
+            let received = tokio::select! {
+                biased;
+                received = timeout_at(deadline, socket.recv(&mut buffer)) => received,
+                () = aborted(scope) => {
+                    let cause = scope.and_then(WeakScope::abort_cause);
+                    return Err(PeekCutoffError::new(PeekCutoff::Aborted, cause).into());
+                }
+                () = cancelled(cancel) => {
+                    match self.peek_policy.action(PeekCutoff::Cancelled, progress) {
+                        PeekAction::Wait => {
+                            cancel_waived = Some(progress);
+                            continue;
+                        }
+                        PeekAction::Fallback => return Ok(Err(QuicPeekRejection::Cancelled)),
+                        PeekAction::Fail => {
+                            let cause = scope.and_then(WeakScope::cause);
+                            return Err(PeekCutoffError::new(PeekCutoff::Cancelled, cause).into());
+                        }
+                    }
+                }
+            };
+            let metadata = match received {
                 Ok(received) => received?,
                 Err(_elapsed) => return Ok(Err(QuicPeekRejection::Deadline)),
             };
@@ -441,6 +492,20 @@ impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
                 }
             }
         }
+    }
+}
+
+async fn aborted(scope: Option<&WeakScope>) {
+    match scope {
+        Some(scope) => scope.aborted().await,
+        None => pending().await,
+    }
+}
+
+async fn cancelled(scope: Option<&WeakScope>) {
+    match scope {
+        Some(scope) => scope.cancelled().await,
+        None => pending().await,
     }
 }
 

@@ -154,6 +154,7 @@ pub struct AdmissionStats {
     pub rejected_malformed: u64,
     pub rejected_budget: u64,
     pub rejected_deadline: u64,
+    pub rejected_cancelled: u64,
     /// Datagrams a producer dropped instead of queueing them for an association.
     pub dropped_datagrams: u64,
 }
@@ -161,7 +162,7 @@ pub struct AdmissionStats {
 #[derive(Debug, Default)]
 struct Counters {
     refused: [AtomicU64; 6],
-    rejected: [AtomicU64; 5],
+    rejected: [AtomicU64; 6],
     dropped: AtomicU64,
 }
 
@@ -186,6 +187,7 @@ impl Counters {
             QuicPeekRejection::Malformed => 2,
             QuicPeekRejection::Budget => 3,
             QuicPeekRejection::Deadline => 4,
+            QuicPeekRejection::Cancelled => 5,
         };
         self.rejected[index].fetch_add(1, Ordering::Relaxed);
     }
@@ -339,6 +341,7 @@ impl QuicAssociationAdmission {
             rejected_malformed: rejected(2),
             rejected_budget: rejected(3),
             rejected_deadline: rejected(4),
+            rejected_cancelled: rejected(5),
             dropped_datagrams: counters.dropped.load(Ordering::Relaxed),
         }
     }
