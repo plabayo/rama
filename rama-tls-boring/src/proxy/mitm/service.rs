@@ -1107,11 +1107,12 @@ mod tests {
                 ServiceInput::new(client_io),
                 Some(connector_data),
             ));
-            let (peeked_io, emitted_hello) = peek_client_hello_from_input(
-                ServiceInput::new(server_io),
-                Some(std::time::Duration::from_secs(5)),
+            let (peeked_io, emitted_hello) = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                peek_client_hello_from_input(ServiceInput::new(server_io)),
             )
             .await
+            .expect("peek generated egress ClientHello in time")
             .expect("peek generated egress ClientHello");
             drop(peeked_io);
             assert!(

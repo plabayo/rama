@@ -88,7 +88,7 @@ use rama::{
         proto::{MethodKind as IcapMethodKind, Preview},
     },
     inspect as inspection,
-    io::{peek::PeekEgressFirstByteLayer, timeout::TimeoutIo},
+    io::{peek::PeekPolicy, timeout::TimeoutIo},
     layer::{
         ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
@@ -874,14 +874,13 @@ impl<Body> rama::matcher::Matcher<Request<Body>> for MitmPortalMatcher {
 }
 
 macro_rules! build_mitm_service {
-    ($scope:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_policy:expr, $icap:expr) => {{
+    ($scope:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $mitm_policy:expr, $icap:expr) => {{
         let capture = $capture;
         let capture_control = capture.control();
         let inspection = $inspection;
         let har = $har;
         let scope = $scope;
         let portal = $portal;
-        let peek_timeout = $peek_timeout;
         let mitm_policy = $mitm_policy;
         let icap = $icap;
         let error_level = if icap.is_some() {
@@ -944,9 +943,10 @@ macro_rules! build_mitm_service {
             inspect: http_mitm_relay,
             passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),
         };
+        // a flow starting while the proxy shuts down fails instead of passing uninspected
         let maybe_http = HttpPeekRouter::new(http_mitm_relay)
             .with_known_non_http_protocol_methods()
-            .maybe_with_peek_timeout(peek_timeout)
+            .with_peek_policy(PeekPolicy::FAIL_CLOSED)
             .with_fallback(ObservePassthroughService {
                 inner: MapOutputLayer::new(drop).into_layer(IoForwardService::new(scope.clone())),
                 control: capture_control.clone(),
@@ -970,12 +970,12 @@ macro_rules! build_mitm_service {
             control: Some(capture_control.clone()),
         };
         let application = PeekTlsClientHelloService::new(tls)
-            .maybe_with_peek_timeout(peek_timeout)
+            .with_peek_policy(PeekPolicy::FAIL_CLOSED)
             .with_fallback(non_tls);
         let inspect = ConsumeErrLayer::trace_as(error_level).into_layer(application);
-        // a server speaking first ends the ingress peeks without waiting for their timeout
+        // peekers judge what a server-first peer sends; the flow scope bounds the wait
         Arc::new(
-            PeekEgressFirstByteLayer::new().into_layer(MitmTargetPolicyService {
+            (MitmTargetPolicyService {
                 inspect,
                 passthrough,
                 policy: mitm_policy,
@@ -1186,10 +1186,6 @@ pub struct CliCommandProxy {
     #[arg(long, default_value_t = 10_000)]
     capture_websocket_messages: usize,
 
-    /// Maximum time spent classifying shared-port protocols (0 = no timeout).
-    #[arg(long, default_value_t = 5_000)]
-    peek_timeout_ms: u64,
-
     /// Maximum HTTP request body size accepted by the proxy (0 = no limit).
     #[arg(long, default_value_t = 0)]
     body_limit: usize,
@@ -1205,7 +1201,8 @@ pub struct CliCommandProxy {
 
     /// Age in seconds at which each proxy connection starts draining, give or take a
     /// tenth; it is dropped `--timeout-grace` later (0 = no limit). Disabled by default so
-    /// long-lived WebSocket and inspector streams remain persistent.
+    /// long-lived WebSocket and inspector streams remain persistent. On a port serving
+    /// several protocols it is also what bounds a client that never speaks.
     #[arg(long, short = 't', default_value_t = 0)]
     timeout: u64,
 
@@ -1567,8 +1564,6 @@ async fn run_with_dashboard_token(
     let mitm_policy = MitmPolicy::try_new(&cfg.mitm_allow, &cfg.mitm_deny)?;
     mitm_policy.update_scope(cfg.mitm_scope, &[], &[])?;
     let inspection = InspectionState::default();
-    let peek_timeout =
-        (cfg.peek_timeout_ms > 0).then(|| Duration::from_millis(cfg.peek_timeout_ms));
 
     let ua_db = mitm_enabled
         .then(|| UserAgentDatabase::try_embedded().context("load embedded user-agent profiles"))
@@ -1822,7 +1817,6 @@ async fn run_with_dashboard_token(
                     portal.clone(),
                     certificate.clone(),
                     private_key.clone(),
-                    peek_timeout,
                     mitm_policy.clone(),
                     icap.clone()
                 ))
@@ -1956,7 +1950,6 @@ async fn run_with_dashboard_token(
                     portal.clone(),
                     certificate.clone(),
                     private_key.clone(),
-                    peek_timeout,
                     mitm_policy.clone(),
                     icap.clone()
                 ))
@@ -2022,30 +2015,20 @@ async fn run_with_dashboard_token(
                 (false, true, false) => listener.serve(tcp_layers.into_layer(https)).await,
                 (false, false, true) => listener.serve(tcp_layers.into_layer(socks5)).await,
                 (true, true, false) => {
-                    let service = TlsPeekRouter::new(https)
-                        .maybe_with_peek_timeout(peek_timeout)
-                        .with_fallback(http);
+                    let service = TlsPeekRouter::new(https).with_fallback(http);
                     listener.serve(tcp_layers.into_layer(service)).await;
                 }
                 (true, false, true) => {
-                    let service = Socks5PeekRouter::new(socks5)
-                        .maybe_with_peek_timeout(peek_timeout)
-                        .with_fallback(http);
+                    let service = Socks5PeekRouter::new(socks5).with_fallback(http);
                     listener.serve(tcp_layers.into_layer(service)).await;
                 }
                 (false, true, true) => {
-                    let service = Socks5PeekRouter::new(socks5)
-                        .maybe_with_peek_timeout(peek_timeout)
-                        .with_fallback(https);
+                    let service = Socks5PeekRouter::new(socks5).with_fallback(https);
                     listener.serve(tcp_layers.into_layer(service)).await;
                 }
                 (true, true, true) => {
-                    let tls_or_http = TlsPeekRouter::new(https)
-                        .maybe_with_peek_timeout(peek_timeout)
-                        .with_fallback(http);
-                    let service = Socks5PeekRouter::new(socks5)
-                        .maybe_with_peek_timeout(peek_timeout)
-                        .with_fallback(tls_or_http);
+                    let tls_or_http = TlsPeekRouter::new(https).with_fallback(http);
+                    let service = Socks5PeekRouter::new(socks5).with_fallback(tls_or_http);
                     listener.serve(tcp_layers.into_layer(service)).await;
                 }
                 (false, false, false) => {

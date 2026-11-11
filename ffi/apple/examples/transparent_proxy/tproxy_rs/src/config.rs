@@ -21,7 +21,6 @@ pub struct DemoProxyConfig {
     pub upstream_test_ca_pem: Option<String>,
     pub html_badge_enabled: bool,
     pub html_badge_label: String,
-    pub peek_duration_s: f64,
     // Egress connect timeout (ms); applied via `egress_tcp_connect_options`.
     // `None`/`0` keeps the platform default.
     pub tcp_connect_timeout_ms: Option<u64>,
@@ -86,7 +85,6 @@ impl Default for DemoProxyConfig {
             upstream_test_ca_pem: None,
             html_badge_enabled: true,
             html_badge_label: "proxied by rama".to_owned(),
-            peek_duration_s: 8.,
             tcp_connect_timeout_ms: None,
             tcp_write_pump_max_pending_bytes: None,
             tcp_payload_view_max_bytes: None,

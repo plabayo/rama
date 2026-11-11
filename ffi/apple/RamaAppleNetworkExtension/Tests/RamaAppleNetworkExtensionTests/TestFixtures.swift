@@ -67,7 +67,6 @@ enum TestFixtures {
     /// keychain or the Secure Enclave.
     static func engineConfigJson(
         excludeDomains: [String] = [],
-        peekDurationSeconds: Double = 0.5,
         udpIngressProbeLeaseMs: UInt64? = nil,
         tcpWritePumpMaxPendingBytes: Int? = nil,
         tcpPayloadViewMaxBytes: Int? = nil
@@ -75,7 +74,6 @@ enum TestFixtures {
         var payload: [String: Any] = [
             "html_badge_enabled": false,
             "html_badge_label": "rama-swift-ffi-test",
-            "peek_duration_s": peekDurationSeconds,
             "exclude_domains": excludeDomains,
             "ca_cert_pem": caCertPem,
             "ca_key_pem": caKeyPem,
@@ -90,6 +88,23 @@ enum TestFixtures {
             payload["tcp_write_pump_max_pending_bytes"] = tcpWritePumpMaxPendingBytes
         }
         return try! JSONSerialization.data(withJSONObject: payload)
+    }
+
+    /// A server-first greeting none of the demo's peekers accepts.
+    static let serverGreeting = Data("220 ready\r\n".utf8)
+
+    /// Sends ``serverGreeting`` on `conn` once its read pump has a receive
+    /// pending: the demo's peekers reject it at once, so the flow falls back
+    /// to its promote-aware passthrough without any timeout.
+    static func greetFromServer(_ conn: MockNwConnection, timeout: TimeInterval = 5.0) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if conn.completePendingReceive(data: serverGreeting, isComplete: false) {
+                return true
+            }
+            usleep(1_000)
+        } while Date() < deadline
+        return false
     }
 
     static func tlsClientHello(serverName: String) -> Data {

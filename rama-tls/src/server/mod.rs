@@ -15,7 +15,7 @@ pub use hello::{ServerHello, parse_encrypted_extensions};
 
 mod peek;
 #[doc(inline)]
-pub use peek::{NoTlsRejectError, TlsPeekRouter, TlsPrefixedIo};
+pub use peek::{NoTlsRejectError, TlsEgressPredicate, TlsPeekRouter, TlsPrefixedIo};
 
 #[doc(inline)]
 pub use crate::client::{ClientHelloPeekStatus, MalformedTlsPolicy};

@@ -178,6 +178,8 @@ final class PromoteFFIBindingTests: XCTestCase {
             }
         }
         activate(session)
+        // a server greeting no demo peeker accepts sends the flow to its promote passthrough
+        XCTAssertEqual(session.onEgressBytes(TestFixtures.serverGreeting), .accepted)
 
         XCTAssertEqual(
             callbackEntered.wait(timeout: .now() + 5), .success,
@@ -250,6 +252,8 @@ final class PromoteFFIBindingTests: XCTestCase {
                 allowCallbackReturn.wait()
             }
             activate(session)
+        // a server greeting no demo peeker accepts sends the flow to its promote passthrough
+        XCTAssertEqual(session.onEgressBytes(TestFixtures.serverGreeting), .accepted)
             sessionOwner.set(session)
             sessionForTestHooks = session
         }

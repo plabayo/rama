@@ -1,14 +1,16 @@
-use std::time::Duration;
+use std::num::NonZeroUsize;
 
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
+    graceful::scope_context,
     io::{
-        PeekIoProvider, PrefixedIo, StackReader,
+        PeekIoProvider, PrefixedIo, ReplayReader, StackReader,
         peek::{
-            PeekOutput, PeekPolicy, PeekPolicyProvider, PeekRead, PeekStopReason, PeekVerdict,
-            PeekWaiter,
+            PeekEgressPredicate, PeekMapped, PeekOptions, PeekOutput, PeekPolicy,
+            PeekPolicyProvider, PeekRead, PeekStopReason, PeekVerdict, PeekWaiter,
+            default_egress_peek_max_size,
         },
     },
     service::RejectService,
@@ -26,9 +28,12 @@ use crate::proto::ProtocolVersion;
 /// The SOCKS5 service is selected only for a complete greeting with at least
 /// one advertised method and without `0xff`, which is reserved for the server's
 /// `NO ACCEPTABLE METHODS` response. A definitive non-SOCKS5 prefix or malformed
-/// greeting invokes the fallback under any policy; an inconclusive timeout or
-/// interrupt is handled by the [`PeekPolicy`], see
-/// [`Socks5PeekRouter::with_peek_policy`].
+/// greeting invokes the fallback under any policy; an inconclusive cutoff is
+/// handled by the [`PeekPolicy`], see [`Socks5PeekRouter::with_peek_policy`].
+///
+/// On a [`BridgeIo`] the server's first bytes are judged by [`Socks5EgressPredicate`].
+///
+/// [`BridgeIo`]: rama_core::io::BridgeIo
 ///
 /// This kind of router can be useful in case you want to have a proxy
 /// which supports for example both HTTP proxy requests as well socks5 proxy requests.
@@ -36,8 +41,8 @@ use crate::proto::ProtocolVersion;
 pub struct Socks5PeekRouter<T, F = RejectService<(), NoSocks5RejectError>, Pol = PeekPolicy> {
     socks5_acceptor: T,
     fallback: F,
-    peek_timeout: Option<Duration>,
     peek_policy: Pol,
+    max_egress_peek_size: NonZeroUsize,
 }
 
 rama_utils::macros::error::static_str_error! {
@@ -51,8 +56,8 @@ impl<T> Socks5PeekRouter<T> {
         Self {
             socks5_acceptor,
             fallback: RejectService::new(NoSocks5RejectError),
-            peek_timeout: None,
             peek_policy: PeekPolicy::FAIL_OPEN,
+            max_egress_peek_size: default_egress_peek_max_size(),
         }
     }
 }
@@ -63,42 +68,32 @@ impl<T, Pol> Socks5PeekRouter<T, RejectService<(), NoSocks5RejectError>, Pol> {
         Socks5PeekRouter {
             socks5_acceptor: self.socks5_acceptor,
             fallback,
-            peek_timeout: self.peek_timeout,
             peek_policy: self.peek_policy,
+            max_egress_peek_size: self.max_egress_peek_size,
         }
     }
 }
 
 impl<T, F, Pol> Socks5PeekRouter<T, F, Pol> {
     rama_utils::macros::generate_set_and_with! {
-        /// Set the maximum time spent peeking for a SOCKS5 greeting.
-        ///
-        /// The timeout covers the complete greeting, including up to 255
-        /// advertised method octets. Values previously sized for a two-byte
-        /// prefix may need to be increased for slow or highly fragmented peers.
-        ///
-        /// A timeout is inconclusive. Use [`Socks5PeekRouter::with_peek_policy`]
-        /// to choose whether it invokes the fallback, rejects the connection
-        /// or keeps waiting.
-        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
-            self.peek_timeout = peek_timeout;
+        /// Set the byte limit for peeking the egress.
+        pub fn max_egress_peek_size(mut self, max_egress_peek_size: NonZeroUsize) -> Self {
+            self.max_egress_peek_size = max_egress_peek_size;
             self
         }
     }
 
-    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
+    /// Set how a peek cutoff is handled, using a
     /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
     ///
     /// Defaults to [`PeekPolicy::FAIL_OPEN`]. A definitive non-SOCKS5
     /// prefix invokes the fallback under any policy.
-    ///
-    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
     pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> Socks5PeekRouter<T, F, Pol2> {
         Socks5PeekRouter {
             socks5_acceptor: self.socks5_acceptor,
             fallback: self.fallback,
-            peek_timeout: self.peek_timeout,
             peek_policy,
+            max_egress_peek_size: self.max_egress_peek_size,
         }
     }
 }
@@ -106,7 +101,7 @@ impl<T, F, Pol> Socks5PeekRouter<T, F, Pol> {
 async fn peek_socks5_greeting<R>(
     reader: &mut R,
     buffer: &mut [u8; SOCKS5_GREETING_PEEK_LEN],
-    waiter: &mut PeekWaiter,
+    waiter: &mut PeekWaiter<'_>,
 ) -> PeekOutput<()>
 where
     R: AsyncRead + Unpin,
@@ -198,16 +193,16 @@ fn socks5_greeting_verdict(buffer: &[u8]) -> PeekVerdict<()> {
 
 impl<PeekableInput, Output, T, F, Pol> Service<PeekableInput> for Socks5PeekRouter<T, F, Pol>
 where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin, PeekEgressIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
     Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
-            PeekableInput::Mapped<Socks5PrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, Socks5PrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
     F: Service<
-            PeekableInput::Mapped<Socks5PrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, Socks5PrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
@@ -216,11 +211,13 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut input: PeekableInput) -> Result<Self::Output, Self::Error> {
-        let mut waiter = PeekWaiter::new(self.peek_timeout)
+        let options = PeekOptions::new()
             .with_policy(self.peek_policy.peek_policy(&input))
-            .maybe_with_interrupt(input.extensions().get_arc());
+            .maybe_with_scope(scope_context(input.extensions()))
+            .with_max_egress_peek_size(self.max_egress_peek_size);
         let mut peek_buf = [0u8; SOCKS5_GREETING_PEEK_LEN];
-        let peekable_io = input.peek_io_mut();
+        let (peekable_io, egress) = input.peek_ios_mut();
+        let mut waiter = options.waiter(egress, &Socks5EgressPredicate);
 
         let PeekOutput {
             data: socks5_prefix,
@@ -230,6 +227,7 @@ where
         waiter.check::<BoxError>()?;
 
         let is_socks5 = socks5_prefix.is_some();
+        let egress_prefix = waiter.into_egress_prefix();
 
         tracing::trace!("socks5 prefix header read (is socks5: {is_socks5})");
 
@@ -240,7 +238,10 @@ where
         let mut peek = StackReader::new(peek_buf);
         peek.skip(offset);
 
-        let peeked_input = input.map_peek_io(|io| PrefixedIo::new(peek, io));
+        let peeked_input = input.map_peek_io(
+            |io| PrefixedIo::new(peek, io),
+            |io| PrefixedIo::new(ReplayReader::new(egress_prefix), io),
+        );
 
         if is_socks5 {
             // Boxed so a full SOCKS5 server stack does not size the future
@@ -251,6 +252,27 @@ where
         } else {
             self.fallback.serve(peeked_input).await.into_box_error()
         }
+    }
+}
+
+/// [`PeekEgressPredicate`] for SOCKS5, a client-first protocol: a server only
+/// replies to a client greeting (RFC 1928 section 3), so any byte it sends first
+/// means the flow is not SOCKS5 and falls through to the next peeker.
+///
+/// This is stricter than what a client tolerates: a client cannot tell a reply
+/// sent before its greeting from one sent after it, so a server pre-sending
+/// `05 00` steers the flow away from the SOCKS5 acceptor.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct Socks5EgressPredicate;
+
+impl PeekEgressPredicate for Socks5EgressPredicate {
+    fn egress(&self, _bytes: &[u8]) -> PeekVerdict<()> {
+        PeekVerdict::Reject
+    }
+
+    fn peeks_egress(&self) -> bool {
+        true
     }
 }
 
@@ -279,8 +301,21 @@ mod test {
     };
 
     use super::*;
-    use rama_core::io::peek::PeekTimeoutError;
+    use rama_core::{
+        extensions::ExtensionsRef,
+        graceful::{Scope, attach_scope},
+        io::peek::{PeekCutoff, PeekCutoffError},
+    };
+
     use tokio::io::AsyncReadExt as _;
+
+    fn scoped<I: ExtensionsRef>(input: I) -> I {
+        attach_scope(
+            input.extensions(),
+            &Scope::new().with_timeout(Duration::from_millis(10)),
+        );
+        input
+    }
 
     #[tokio::test]
     async fn test_peek_router() {
@@ -606,7 +641,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn partial_socks5_greeting_timeout_defaults_to_fail_open_and_replays() {
+    async fn partial_socks5_greeting_cancel_defaults_to_fail_open_and_replays() {
         async fn fallback_service_fn(
             mut stream: impl Io + Unpin,
         ) -> Result<&'static str, io::Error> {
@@ -617,9 +652,11 @@ mod test {
         }
 
         let router = Socks5PeekRouter::new(service_fn(async || Ok::<_, Infallible>("socks5")))
-            .with_peek_timeout(Duration::from_millis(10))
             .with_fallback(service_fn(fallback_service_fn));
-        let input = ServiceInput::new(ScriptedReader::new([b"\x05".as_slice()], true));
+        let input = scoped(ServiceInput::new(ScriptedReader::new(
+            [b"\x05".as_slice()],
+            true,
+        )));
 
         let response = tokio::time::timeout(Duration::from_secs(5), router.serve(input))
             .await
@@ -634,7 +671,6 @@ mod test {
     #[tokio::test]
     async fn peek_policy_is_selected_per_input() {
         let router = Socks5PeekRouter::new(service_fn(async || Ok::<_, Infallible>("socks5")))
-            .with_peek_timeout(Duration::from_millis(10))
             .with_peek_policy(|input: &ServiceInput<ScriptedReader>| {
                 if input.extensions().contains::<Strict>() {
                     PeekPolicy::FAIL_CLOSED
@@ -643,13 +679,23 @@ mod test {
                 }
             })
             .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
-        let partial = || ServiceInput::new(ScriptedReader::new([b"\x05".as_slice()], true));
+        let partial = || {
+            scoped(ServiceInput::new(ScriptedReader::new(
+                [b"\x05".as_slice()],
+                true,
+            )))
+        };
 
         assert_eq!("fallback", router.serve(partial()).await.unwrap());
         let strict = partial();
         strict.extensions().insert(Strict);
         let error = router.serve(strict).await.unwrap_err();
-        assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
+        assert_eq!(
+            Some(PeekCutoff::Cancelled),
+            error
+                .downcast_ref::<PeekCutoffError>()
+                .map(PeekCutoffError::cutoff)
+        );
     }
 
     #[tokio::test]
@@ -661,21 +707,27 @@ mod test {
             async { Ok::<_, Infallible>("fallback") }
         });
         let router = Socks5PeekRouter::new(service_fn(async || Ok::<_, Infallible>("socks5")))
-            .with_peek_timeout(Duration::from_millis(10))
             .with_peek_policy(PeekPolicy::FAIL_CLOSED)
             .with_fallback(fallback);
-        let input = ServiceInput::new(ScriptedReader::new([b"\x05".as_slice()], true));
+        let input = scoped(ServiceInput::new(ScriptedReader::new(
+            [b"\x05".as_slice()],
+            true,
+        )));
 
         let error = router.serve(input).await.unwrap_err();
-        assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
+        assert_eq!(
+            Some(PeekCutoff::Cancelled),
+            error
+                .downcast_ref::<PeekCutoffError>()
+                .map(PeekCutoffError::cutoff)
+        );
         assert_eq!(0, fallback_calls.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
-    async fn definitive_non_socks5_prefix_falls_back_under_both_timeout_policies() {
+    async fn definitive_non_socks5_prefix_falls_back_under_both_policies() {
         for policy in [PeekPolicy::FAIL_OPEN, PeekPolicy::FAIL_CLOSED] {
             let router = Socks5PeekRouter::new(service_fn(async || Ok::<_, Infallible>("socks5")))
-                .with_peek_timeout(Duration::from_millis(10))
                 .with_peek_policy(policy)
                 .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
 
@@ -738,6 +790,40 @@ mod test {
         }
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod egress_test {
+    use super::*;
+
+    fn verdict(bytes: &[u8]) -> PeekVerdict<()> {
+        Socks5EgressPredicate.egress(bytes)
+    }
+
+    #[test]
+    fn any_server_first_byte_is_a_mismatch() {
+        for reply in [&b"\x05"[..], b"\x05\x00", b"\x05\xff", b"\x04\x5a", b"\x00"] {
+            assert_eq!(PeekVerdict::Reject, verdict(reply), "{reply:x?}");
+        }
+    }
+
+    #[test]
+    fn other_server_first_protocols_reject() {
+        for greeting in [
+            &b"SSH-2.0-OpenSSH_9.6\r\n"[..],
+            b"220 mail.example.com ESMTP\r\n",
+            b"+OK POP3 ready\r\n",
+            b"* OK IMAP4rev1 ready\r\n",
+            b"\x4a\x00\x00\x00\x0a8.0.36\x00",
+            b"RFB 003.008\n",
+            b"\xff\xfd\x18",
+            b"\x00",
+            b"\x16\x03\x03\x00\x5a\x02",
+            b"HTTP/1.1 200 OK\r\n",
+        ] {
+            assert_eq!(PeekVerdict::Reject, verdict(greeting), "{greeting:x?}");
         }
     }
 }

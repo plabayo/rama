@@ -287,11 +287,12 @@ async fn established_with_store(
         connection.conn.extensions().clone()
     };
     let server = async {
-        let (peek, hello) = rama_tls::server::peek_client_hello_from_input(
-            ServiceInput::new(server_io),
-            Some(std::time::Duration::from_secs(5)),
+        let (peek, hello) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            rama_tls::server::peek_client_hello_from_input(ServiceInput::new(server_io)),
         )
         .await
+        .unwrap()
         .unwrap();
         let hello = hello.unwrap();
         let actual = TlsCapture::capture(

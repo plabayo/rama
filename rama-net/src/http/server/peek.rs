@@ -1,15 +1,19 @@
 //! types and logic for [`HttpPeekRouter`]
 
-use std::time::Duration;
+use std::num::NonZeroUsize;
 
 use rama_core::{
     Service,
     bytes::BytesMut,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
+    graceful::{WeakScope, scope_context},
     io::{
         PeekIoProvider, PrefixedIo, ReplayReader,
-        peek::{PeekPolicy, PeekPolicyProvider, PeekRead, PeekWaiter},
+        peek::{
+            PeekEgressPredicate, PeekMapped, PeekPolicy, PeekPolicyProvider, PeekRead, PeekVerdict,
+            PeekWaiter, default_egress_peek_max_size, peek_egress,
+        },
     },
     service::RejectService,
     telemetry::tracing,
@@ -104,15 +108,20 @@ impl HttpPeekConfig {
 /// By default non-http traffic is rejected using [`RejectService`].
 /// Use [`HttpPeekRouter::with_fallback`] to configure the fallback service.
 /// A definitive non-HTTP prefix invokes that fallback under any policy; an
-/// inconclusive timeout or interrupt is handled by the [`PeekPolicy`], see
+/// inconclusive cutoff is handled by the [`PeekPolicy`], see
 /// [`HttpPeekRouter::with_peek_policy`].
+///
+/// On a [`BridgeIo`] the server's first bytes are judged by
+/// [`HttpEgressPredicate`], following the versions the router accepts.
+///
+/// [`BridgeIo`]: rama_core::io::BridgeIo
 #[derive(Debug, Clone)]
 pub struct HttpPeekRouter<T, F = RejectService<(), NoHttpRejectError>, Pol = PeekPolicy> {
     http_acceptor: T,
     fallback: F,
     peek_config: HttpPeekConfig,
-    peek_timeout: Option<Duration>,
     peek_policy: Pol,
+    max_egress_peek_size: NonZeroUsize,
 }
 
 /// Type wrapper used by [`HttpPeekRouter::new_dual`]
@@ -151,8 +160,8 @@ impl<T> HttpPeekRouter<HttpAutoAcceptor<T>> {
             http_acceptor: HttpAutoAcceptor(auto_acceptor),
             fallback: RejectService::new(NoHttpRejectError),
             peek_config: HttpPeekConfig::default(),
-            peek_timeout: None,
             peek_policy: PeekPolicy::FAIL_OPEN,
+            max_egress_peek_size: default_egress_peek_max_size(),
         }
     }
 }
@@ -165,8 +174,8 @@ impl<T> HttpPeekRouter<Http1Acceptor<T>> {
             http_acceptor: Http1Acceptor(http1_acceptor),
             fallback: RejectService::new(NoHttpRejectError),
             peek_config: HttpPeekConfig::default(),
-            peek_timeout: None,
             peek_policy: PeekPolicy::FAIL_OPEN,
+            max_egress_peek_size: default_egress_peek_max_size(),
         }
     }
 }
@@ -179,8 +188,8 @@ impl<T> HttpPeekRouter<H2Acceptor<T>> {
             http_acceptor: H2Acceptor(h2_acceptor),
             fallback: RejectService::new(NoHttpRejectError),
             peek_config: HttpPeekConfig::default(),
-            peek_timeout: None,
             peek_policy: PeekPolicy::FAIL_OPEN,
+            max_egress_peek_size: default_egress_peek_max_size(),
         }
     }
 }
@@ -192,8 +201,8 @@ impl<T, Pol> HttpPeekRouter<T, RejectService<(), NoHttpRejectError>, Pol> {
             http_acceptor: self.http_acceptor,
             fallback,
             peek_config: self.peek_config,
-            peek_timeout: self.peek_timeout,
             peek_policy: self.peek_policy,
+            max_egress_peek_size: self.max_egress_peek_size,
         }
     }
 }
@@ -208,31 +217,25 @@ impl<T, F, Pol> HttpPeekRouter<T, F, Pol> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the maximum time spent peeking for HTTP.
-        ///
-        /// A timeout is inconclusive. Use [`HttpPeekRouter::with_peek_policy`]
-        /// to choose whether it invokes the fallback, rejects the connection
-        /// or keeps waiting.
-        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
-            self.peek_timeout = peek_timeout;
+        /// Set the byte limit for peeking the egress.
+        pub fn max_egress_peek_size(mut self, max_egress_peek_size: NonZeroUsize) -> Self {
+            self.max_egress_peek_size = max_egress_peek_size;
             self
         }
     }
 
-    /// Set how a peek timeout or [`PeekInterrupt`] is handled, using a
-    /// static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
+    /// Set how a peek cutoff is handled, using a static [`PeekPolicy`]
+    /// or a [`PeekPolicyProvider`] that selects one per input.
     ///
     /// Defaults to [`PeekPolicy::FAIL_OPEN`]. A definitive non-HTTP
     /// prefix invokes the fallback under any policy.
-    ///
-    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
     pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> HttpPeekRouter<T, F, Pol2> {
         HttpPeekRouter {
             http_acceptor: self.http_acceptor,
             fallback: self.fallback,
             peek_config: self.peek_config,
-            peek_timeout: self.peek_timeout,
             peek_policy,
+            max_egress_peek_size: self.max_egress_peek_size,
         }
     }
 
@@ -255,14 +258,18 @@ impl<T, F, Pol> HttpPeekRouter<T, F, Pol> {
         }
     }
 
-    fn waiter<Input>(&self, input: &Input) -> PeekWaiter
+    fn options<Input>(&self, input: &Input, egress: HttpEgressPredicate) -> HttpPeekOptions
     where
         Input: ExtensionsRef,
         Pol: PeekPolicyProvider<Input>,
     {
-        PeekWaiter::new(self.peek_timeout)
-            .with_policy(self.peek_policy.peek_policy(input))
-            .maybe_with_interrupt(input.extensions().get_arc())
+        HttpPeekOptions {
+            config: self.peek_config,
+            policy: self.peek_policy.peek_policy(input),
+            scope: scope_context(input.extensions()),
+            egress,
+            max_egress_peek_size: self.max_egress_peek_size,
+        }
     }
 }
 
@@ -277,8 +284,8 @@ impl<T, U> HttpPeekRouter<HttpDualAcceptor<T, U>> {
             },
             fallback: RejectService::new(NoHttpRejectError),
             peek_config: HttpPeekConfig::default(),
-            peek_timeout: None,
             peek_policy: PeekPolicy::FAIL_OPEN,
+            max_egress_peek_size: default_egress_peek_max_size(),
         }
     }
 }
@@ -286,16 +293,16 @@ impl<T, U> HttpPeekRouter<HttpDualAcceptor<T, U>> {
 impl<PeekableInput, Output, T, F, Pol> Service<PeekableInput>
     for HttpPeekRouter<HttpAutoAcceptor<T>, F, Pol>
 where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin, PeekEgressIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
     Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
-            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
     F: Service<
-            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
@@ -304,9 +311,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
-        let waiter = self.waiter(&input);
-        let (version, peek_input) =
-            peek_http_input_with_config(input, self.peek_config, waiter).await?;
+        let options = self.options(&input, HttpEgressPredicate::ANY);
+        let (version, peek_input) = peek_http_input_with_options(input, options).await?;
         if version.is_some() {
             tracing::debug!(
                 "http peek [auto]: HTTP detect: version = {version:?}; continue with http_acceptor svc"
@@ -326,16 +332,16 @@ where
 impl<PeekableInput, Output, T, F, Pol> Service<PeekableInput>
     for HttpPeekRouter<Http1Acceptor<T>, F, Pol>
 where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin, PeekEgressIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
     Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
-            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
     F: Service<
-            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
@@ -344,9 +350,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
-        let waiter = self.waiter(&input);
-        let (version, peek_input) =
-            peek_http_input_with_config(input, self.peek_config, waiter).await?;
+        let options = self.options(&input, HttpEgressPredicate::HTTP1);
+        let (version, peek_input) = peek_http_input_with_options(input, options).await?;
         if version == Some(HttpPeekVersion::Http1x) {
             tracing::debug!("http peek: serve[http1]: http/1x acceptor; version = {version:?}");
             self.http_acceptor
@@ -364,16 +369,16 @@ where
 impl<PeekableInput, Output, T, F, Pol> Service<PeekableInput>
     for HttpPeekRouter<H2Acceptor<T>, F, Pol>
 where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin, PeekEgressIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
     Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
-            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
     F: Service<
-            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
@@ -382,9 +387,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
-        let waiter = self.waiter(&input);
-        let (version, peek_input) =
-            peek_http_input_with_config(input, self.peek_config, waiter).await?;
+        let options = self.options(&input, HttpEgressPredicate::H2);
+        let (version, peek_input) = peek_http_input_with_options(input, options).await?;
         if version == Some(HttpPeekVersion::H2) {
             tracing::debug!("http peek: serve[h2]: http acceptor; version = {version:?}");
             self.http_acceptor
@@ -402,21 +406,21 @@ where
 impl<PeekableInput, Output, T, U, F, Pol> Service<PeekableInput>
     for HttpPeekRouter<HttpDualAcceptor<T, U>, F, Pol>
 where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin> + ExtensionsRef,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin, PeekEgressIo: Unpin> + ExtensionsRef,
     Output: Send + 'static,
     Pol: PeekPolicyProvider<PeekableInput>,
     T: Service<
-            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
     U: Service<
-            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
     F: Service<
-            PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+            PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
             Output = Output,
             Error: Into<BoxError>,
         >,
@@ -425,9 +429,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
-        let waiter = self.waiter(&input);
-        let (version, peek_input) =
-            peek_http_input_with_config(input, self.peek_config, waiter).await?;
+        let options = self.options(&input, HttpEgressPredicate::ANY);
+        let (version, peek_input) = peek_http_input_with_options(input, options).await?;
         match version {
             Some(HttpPeekVersion::H2) => {
                 tracing::trace!("http peek: serve[dual]: h2 acceptor; version = {version:?}");
@@ -827,29 +830,96 @@ fn is_http_request_target_prefix_byte(byte: u8) -> bool {
     byte != b' ' && !is_control_byte(byte)
 }
 
-/// Detect HTTP using [`HttpPeekConfig::default`] and return an input that
-/// replays every byte consumed during detection.
-///
-/// A timeout returns `Ok((None, input))`. Use [`peek_http_input_with_config`]
-/// to configure the [`PeekWaiter`].
+/// Options of [`peek_http_input_with_options`].
+#[derive(Debug, Clone)]
+pub struct HttpPeekOptions {
+    config: HttpPeekConfig,
+    policy: PeekPolicy,
+    scope: Option<WeakScope>,
+    egress: HttpEgressPredicate,
+    max_egress_peek_size: NonZeroUsize,
+}
+
+impl Default for HttpPeekOptions {
+    fn default() -> Self {
+        Self {
+            config: HttpPeekConfig::default(),
+            policy: PeekPolicy::FAIL_OPEN,
+            scope: None,
+            egress: HttpEgressPredicate::ANY,
+            max_egress_peek_size: default_egress_peek_max_size(),
+        }
+    }
+}
+
+impl HttpPeekOptions {
+    /// Options using the defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the resource limits of the ingress peek.
+        pub fn config(mut self, config: HttpPeekConfig) -> Self {
+            self.config = config;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`PeekPolicy`] applied to cutoffs.
+        pub fn policy(mut self, policy: PeekPolicy) -> Self {
+            self.policy = policy;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the scope that can cut the peek short, usually the scope the
+        /// input runs in, see [`scope_context`].
+        pub fn scope(mut self, scope: Option<WeakScope>) -> Self {
+            self.scope = scope;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the predicate judging what the server sends while the client is silent.
+        pub fn egress(mut self, egress: HttpEgressPredicate) -> Self {
+            self.egress = egress;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the byte limit for peeking the egress.
+        pub fn max_egress_peek_size(mut self, max_egress_peek_size: NonZeroUsize) -> Self {
+            self.max_egress_peek_size = max_egress_peek_size;
+            self
+        }
+    }
+}
+
+/// Detect HTTP using [`HttpPeekOptions::default`] and return an input that
+/// replays every byte consumed during detection, on both sides.
 pub async fn peek_http_input<PeekableInput>(
     input: PeekableInput,
-    timeout: Option<Duration>,
 ) -> Result<
     (
         Option<HttpPeekVersion>,
-        PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+        PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
     ),
     BoxError,
 >
 where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin, PeekEgressIo: Unpin>,
 {
-    peek_http_input_with_config(input, HttpPeekConfig::default(), PeekWaiter::new(timeout)).await
+    peek_http_input_with_options(input, HttpPeekOptions::default()).await
 }
 
-/// Detect HTTP using explicit resource limits and return an input that
-/// replays every byte consumed during detection.
+/// Detect HTTP using explicit options and return an input that
+/// replays every byte consumed during detection, on both sides.
 ///
 /// HTTP/1.0 and HTTP/1.1 are accepted only after a complete request-line
 /// containing a valid method token, request target, `HTTP/1.<digit>` version, and
@@ -861,22 +931,36 @@ where
 /// HTTP/2 is accepted only after its complete client preface, starting at
 /// the first byte.
 ///
-/// A definitive non-HTTP prefix returns `Ok((None, input))`. A cutoff of the
-/// `waiter` does the same, unless its [`PeekPolicy`] fails the peek.
-pub async fn peek_http_input_with_config<PeekableInput>(
+/// On a [`BridgeIo`] the egress is judged by [`HttpPeekOptions::with_egress`].
+/// A definitive non-HTTP prefix returns `Ok((None, input))`. A cutoff does
+/// the same, unless the [`PeekPolicy`] fails the peek.
+///
+/// [`BridgeIo`]: rama_core::io::BridgeIo
+pub async fn peek_http_input_with_options<PeekableInput>(
     mut input: PeekableInput,
-    config: HttpPeekConfig,
-    mut waiter: PeekWaiter,
+    options: HttpPeekOptions,
 ) -> Result<
     (
         Option<HttpPeekVersion>,
-        PeekableInput::Mapped<HttpPrefixedIo<PeekableInput::PeekIo>>,
+        PeekMapped<PeekableInput, HttpPrefixedIo<PeekableInput::PeekIo>>,
     ),
     BoxError,
 >
 where
-    PeekableInput: PeekIoProvider<PeekIo: Unpin>,
+    PeekableInput: PeekIoProvider<PeekIo: Unpin, PeekEgressIo: Unpin>,
 {
+    let HttpPeekOptions {
+        config,
+        policy,
+        scope,
+        egress,
+        max_egress_peek_size,
+    } = options;
+    let (ingress, egress_io) = input.peek_ios_mut();
+    let mut waiter = PeekWaiter::new()
+        .with_policy(policy)
+        .maybe_with_scope(scope)
+        .maybe_with_egress(peek_egress(egress_io, &egress, max_egress_peek_size));
     let mut state = HttpPeekState::new(
         config.max_http1_request_line_size,
         config.skipped_http1_methods,
@@ -900,7 +984,7 @@ where
         let read_start = buffer.len();
         buffer.resize(read_start + read_capacity, 0);
         let read = waiter
-            .read(input.peek_io_mut(), &mut buffer[read_start..], read_start)
+            .read(ingress, &mut buffer[read_start..], read_start)
             .await;
         let read_size = match read {
             PeekRead::Read(size) => size,
@@ -947,12 +1031,154 @@ where
         peek_size = buffer.len(),
         "HTTP peek read loop finished"
     );
-
+    let egress_prefix = waiter.into_egress_prefix();
     let peek = ReplayReader::new(buffer.freeze());
-    let peek_input = input.map_peek_io(|io| PrefixedIo::new(peek, io));
+    let peek_input = input.map_peek_io(
+        |io| PrefixedIo::new(peek, io),
+        |io| PrefixedIo::new(ReplayReader::new(egress_prefix), io),
+    );
 
     Ok((matched_version, peek_input))
 }
+
+/// [`PeekEgressPredicate`] for the first bytes of an HTTP server.
+///
+/// HTTP/1 servers open with a status line, matched once a case-insensitive
+/// `http` starts within a few bytes, as browsers locate it. HTTP/2 servers open
+/// with a SETTINGS frame: type `0x04`, stream 0, no ACK flag, and a length
+/// that is a multiple of 6 within the default frame size.
+///
+/// Being as lenient as browsers, an HTTP/1-accepting predicate never rejects
+/// a server-first opening of at most four bytes: the peek waits for more
+/// server bytes, the client, or the end of the scope the input runs in.
+/// Five or more bytes without `http` are rejected, although some clients read
+/// such a response as HTTP/0.9.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpEgressPredicate {
+    http1: bool,
+    h2: bool,
+}
+
+impl HttpEgressPredicate {
+    /// Accept an HTTP/1 or an HTTP/2 server.
+    pub const ANY: Self = Self {
+        http1: true,
+        h2: true,
+    };
+    /// Accept an HTTP/1 server only.
+    pub const HTTP1: Self = Self {
+        http1: true,
+        h2: false,
+    };
+    /// Accept an HTTP/2 server only.
+    pub const H2: Self = Self {
+        http1: false,
+        h2: true,
+    };
+}
+
+impl PeekEgressPredicate for HttpEgressPredicate {
+    fn egress(&self, bytes: &[u8]) -> PeekVerdict<()> {
+        let mut need_more = false;
+        for (enabled, verdict) in [
+            (
+                self.http1,
+                http1_status_line_verdict as fn(&[u8]) -> PeekVerdict<()>,
+            ),
+            (self.h2, h2_server_preface_verdict),
+        ] {
+            if !enabled {
+                continue;
+            }
+            match verdict(bytes) {
+                PeekVerdict::Match(()) => return PeekVerdict::Match(()),
+                PeekVerdict::NeedMore => need_more = true,
+                PeekVerdict::Reject => {}
+            }
+        }
+        if need_more {
+            PeekVerdict::NeedMore
+        } else {
+            PeekVerdict::Reject
+        }
+    }
+
+    fn peeks_egress(&self) -> bool {
+        self.http1 || self.h2
+    }
+}
+
+/// The start of an HTTP/1 status line, judged as leniently as clients read it:
+/// a case-insensitive `http` within [`MAX_STATUS_LINE_JUNK`] bytes of the start,
+/// or of the end of leading empty lines, which lenient HTTP/1 clients skip.
+fn http1_status_line_verdict(bytes: &[u8]) -> PeekVerdict<()> {
+    const HTTP: &[u8] = b"http";
+    let empty_lines = bytes
+        .iter()
+        .take_while(|&&b| matches!(b, b'\r' | b'\n'))
+        .count();
+    if empty_lines == bytes.len() {
+        return PeekVerdict::NeedMore;
+    }
+    let starts = (0..=MAX_STATUS_LINE_JUNK).chain(empty_lines..=empty_lines + MAX_STATUS_LINE_JUNK);
+    let mut need_more = false;
+    for start in starts {
+        let candidate = bytes.get(start..).unwrap_or_default();
+        let seen = candidate.len().min(HTTP.len());
+        if !candidate[..seen].eq_ignore_ascii_case(&HTTP[..seen]) {
+            continue;
+        }
+        if seen == HTTP.len() {
+            return PeekVerdict::Match(());
+        }
+        need_more = true;
+    }
+    if need_more {
+        PeekVerdict::NeedMore
+    } else {
+        PeekVerdict::Reject
+    }
+}
+
+/// A SETTINGS frame header as the first frame of an HTTP/2 server.
+fn h2_server_preface_verdict(bytes: &[u8]) -> PeekVerdict<()> {
+    const FRAME_HEADER_LEN: usize = 9;
+    const SETTINGS: u8 = 0x04;
+    const ACK: u8 = 0x01;
+    const DEFAULT_MAX_FRAME_SIZE: u32 = 16_384;
+
+    if bytes.len() >= 3 {
+        let len = u32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]);
+        if !len.is_multiple_of(6) || len > DEFAULT_MAX_FRAME_SIZE {
+            return PeekVerdict::Reject;
+        }
+    } else if bytes.first().is_some_and(|&b| b != 0) {
+        // a length above 0xFFFF exceeds the default frame size
+        return PeekVerdict::Reject;
+    }
+    if bytes.get(3).is_some_and(|&b| b != SETTINGS) {
+        return PeekVerdict::Reject;
+    }
+    if bytes.get(4).is_some_and(|&b| b & ACK != 0) {
+        return PeekVerdict::Reject;
+    }
+    // RFC 9113 4.1: receivers ignore the reserved bit of the stream identifier
+    if bytes.get(5).is_some_and(|&b| b & 0x7f != 0)
+        || bytes
+            .get(6..FRAME_HEADER_LEN.min(bytes.len()))
+            .is_some_and(|stream| stream.iter().any(|&b| b != 0))
+    {
+        return PeekVerdict::Reject;
+    }
+    if bytes.len() >= FRAME_HEADER_LEN {
+        PeekVerdict::Match(())
+    } else {
+        PeekVerdict::NeedMore
+    }
+}
+
+/// Bytes a client skips before the status line, as browsers do.
+const MAX_STATUS_LINE_JUNK: usize = 4;
 
 const H2_MAGIC_PREFIX: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -976,7 +1202,6 @@ mod test {
 
     use parking_lot::Mutex;
     use rama_core::io::Io;
-    use rama_core::io::peek::PeekTimeoutError;
     use rama_core::{
         ServiceInput,
         bytes::Bytes,
@@ -984,7 +1209,24 @@ mod test {
         service::{RejectError, service_fn},
         stream::io::StreamReader,
     };
+    use rama_core::{
+        graceful::{Scope, attach_scope},
+        io::peek::{PeekCutoff, PeekCutoffError},
+    };
+    use std::time::Duration;
     use tokio::io::{AsyncRead, AsyncReadExt as _, ReadBuf};
+
+    fn cancel_after(timeout: Duration) -> WeakScope {
+        Scope::new().with_timeout(timeout).into_weak_scope()
+    }
+
+    fn scoped<I: ExtensionsRef>(input: I) -> I {
+        attach_scope(
+            input.extensions(),
+            &Scope::new().with_timeout(Duration::from_millis(10)),
+        );
+        input
+    }
 
     async fn peek_bytes(
         content: &[u8],
@@ -992,7 +1234,7 @@ mod test {
     ) -> (Option<HttpPeekVersion>, Vec<u8>) {
         let input = ServiceInput::new(std::io::Cursor::new(content.to_vec()));
         let (version, mut input) =
-            peek_http_input_with_config(input, config, PeekWaiter::default())
+            peek_http_input_with_options(input, HttpPeekOptions::new().with_config(config))
                 .await
                 .unwrap();
         let mut replayed = Vec::new();
@@ -1007,7 +1249,7 @@ mod test {
                 .map(|&byte| Ok::<_, std::io::Error>(Bytes::copy_from_slice(&[byte]))),
         ));
         let io = Box::pin(tokio::io::join(reader, tokio::io::sink()));
-        let (version, mut io) = peek_http_input(io, None).await.unwrap();
+        let (version, mut io) = peek_http_input(io).await.unwrap();
         let mut replayed = Vec::new();
         io.read_to_end(&mut replayed).await.unwrap();
         (version, replayed)
@@ -1231,7 +1473,12 @@ mod test {
 
             let io = Box::pin(tokio::io::join(reader, writer));
 
-            let (http_version, _) = peek_http_input(io, timeout).await.unwrap();
+            let (http_version, _) = peek_http_input_with_options(
+                io,
+                HttpPeekOptions::new().maybe_with_scope(timeout.map(cancel_after)),
+            )
+            .await
+            .unwrap();
 
             assert_eq!(Some(HttpPeekVersion::Http1x), http_version);
         }
@@ -1397,7 +1644,7 @@ mod test {
         };
         let input = tokio::io::join(reader, tokio::io::sink());
 
-        let (version, _input) = peek_http_input(input, None).await.unwrap();
+        let (version, _input) = peek_http_input(input).await.unwrap();
         assert_eq!(Some(HttpPeekVersion::Http1x), version);
 
         let read_sizes = read_sizes.lock();
@@ -1429,7 +1676,7 @@ mod test {
         };
         let input = tokio::io::join(reader, tokio::io::sink());
 
-        let (version, _input) = peek_http_input(input, None).await.unwrap();
+        let (version, _input) = peek_http_input(input).await.unwrap();
         assert_eq!(Some(HttpPeekVersion::Http1x), version);
 
         let read_sizes = read_sizes.lock();
@@ -1457,10 +1704,10 @@ mod test {
         let router = HttpPeekRouter::new(http_service)
             .with_known_non_http_protocol_methods()
             .with_fallback(service_fn(fallback_service_fn));
-        let input = ServiceInput::new(tokio::io::join(
+        let input = scoped(ServiceInput::new(tokio::io::join(
             IdleAfterPrefix::new(b"PING"),
             tokio::io::sink(),
-        ));
+        )));
 
         let result = tokio::time::timeout(Duration::from_secs(1), router.serve(input))
             .await
@@ -1470,7 +1717,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_peek_http1_timeout_replays_partial_request_line() {
+    async fn test_peek_http1_cancelled_scope_replays_partial_request_line() {
         const PREFIX: &[u8] = b"GET /slow ";
         const SUFFIX: &[u8] = b"HTTP/1.1\r\n";
         let reader = StreamReader::new(
@@ -1483,9 +1730,12 @@ mod test {
         );
         let io = Box::pin(tokio::io::join(reader, tokio::io::sink()));
 
-        let (version, mut io) = peek_http_input(io, Some(Duration::from_millis(10)))
-            .await
-            .unwrap();
+        let (version, mut io) = peek_http_input_with_options(
+            io,
+            HttpPeekOptions::new().with_scope(cancel_after(Duration::from_millis(10))),
+        )
+        .await
+        .unwrap();
         assert_eq!(None, version);
 
         let mut replayed = Vec::new();
@@ -1507,12 +1757,11 @@ mod test {
         }
 
         let router = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>("http")))
-            .with_peek_timeout(Duration::from_millis(10))
             .with_fallback(service_fn(fallback_service_fn));
-        let input = ServiceInput::new(tokio::io::join(
+        let input = scoped(ServiceInput::new(tokio::io::join(
             IdleAfterPrefix::new(PREFIX),
             tokio::io::sink(),
-        ));
+        )));
 
         let result = router.serve(input).await.unwrap();
         assert_eq!("fallback", result);
@@ -1526,7 +1775,6 @@ mod test {
     async fn test_http_peek_policy_is_selected_per_input() {
         type Input = ServiceInput<tokio::io::Join<IdleAfterPrefix, tokio::io::Sink>>;
         let router = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>("http")))
-            .with_peek_timeout(Duration::from_millis(10))
             .with_peek_policy(|input: &Input| {
                 if input.extensions().contains::<Strict>() {
                     PeekPolicy::FAIL_CLOSED
@@ -1536,17 +1784,22 @@ mod test {
             })
             .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
         let partial = || {
-            ServiceInput::new(tokio::io::join(
+            scoped(ServiceInput::new(tokio::io::join(
                 IdleAfterPrefix::new(b"GET /slow "),
                 tokio::io::sink(),
-            ))
+            )))
         };
 
         assert_eq!("fallback", router.serve(partial()).await.unwrap());
         let strict = partial();
         strict.extensions().insert(Strict);
         let error = router.serve(strict).await.unwrap_err();
-        assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
+        assert_eq!(
+            Some(PeekCutoff::Cancelled),
+            error
+                .downcast_ref::<PeekCutoffError>()
+                .map(PeekCutoffError::cutoff)
+        );
     }
 
     #[tokio::test]
@@ -1561,16 +1814,20 @@ mod test {
                     async { Ok::<_, Infallible>("fallback") }
                 });
                 let router = $router
-                    .with_peek_timeout(Duration::from_millis(10))
                     .with_peek_policy(PeekPolicy::FAIL_CLOSED)
                     .with_fallback(fallback);
-                let input = ServiceInput::new(tokio::io::join(
+                let input = scoped(ServiceInput::new(tokio::io::join(
                     IdleAfterPrefix::new(b"GET /fragmented "),
                     tokio::io::sink(),
-                ));
+                )));
 
                 let error = router.serve(input).await.unwrap_err();
-                assert!(error.downcast_ref::<PeekTimeoutError>().is_some());
+                assert_eq!(
+                    Some(PeekCutoff::Cancelled),
+                    error
+                        .downcast_ref::<PeekCutoffError>()
+                        .map(PeekCutoffError::cutoff)
+                );
                 assert_eq!(0, fallback_calls.load(Ordering::SeqCst));
             }};
         }
@@ -1591,10 +1848,9 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_http_definitive_mismatch_falls_back_under_both_timeout_policies() {
+    async fn test_http_definitive_mismatch_falls_back_under_both_policies() {
         for policy in [PeekPolicy::FAIL_OPEN, PeekPolicy::FAIL_CLOSED] {
             let router = HttpPeekRouter::new(service_fn(async || Ok::<_, Infallible>("http")))
-                .with_peek_timeout(Duration::from_millis(10))
                 .with_peek_policy(policy)
                 .with_fallback(service_fn(async || Ok::<_, Infallible>("fallback")));
 
@@ -1874,6 +2130,145 @@ mod test {
                 Poll::Ready(Ok(()))
             } else {
                 Poll::Pending
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod egress_test {
+    use super::*;
+
+    fn any(bytes: &[u8]) -> PeekVerdict<()> {
+        HttpEgressPredicate::ANY.egress(bytes)
+    }
+
+    fn assert_opening(predicate: HttpEgressPredicate, opening: &[u8]) {
+        for end in 1..opening.len() {
+            assert_eq!(
+                PeekVerdict::NeedMore,
+                predicate.egress(&opening[..end]),
+                "{opening:x?}[..{end}]"
+            );
+        }
+        assert_eq!(
+            PeekVerdict::Match(()),
+            predicate.egress(opening),
+            "{opening:x?}"
+        );
+    }
+
+    const SETTINGS_EMPTY: &[u8] = b"\x00\x00\x00\x04\x00\x00\x00\x00\x00";
+    const SETTINGS_PARAMS: &[u8] = b"\x00\x00\x0c\x04\x00\x00\x00\x00\x00";
+
+    #[test]
+    fn valid_server_openings_match_and_their_prefixes_need_more() {
+        assert_opening(HttpEgressPredicate::HTTP1, b"HTTP");
+        assert_opening(HttpEgressPredicate::HTTP1, b"http");
+        assert_opening(HttpEgressPredicate::ANY, SETTINGS_EMPTY);
+        assert_opening(HttpEgressPredicate::H2, SETTINGS_PARAMS);
+        // reserved stream-id bit set
+        assert_opening(
+            HttpEgressPredicate::ANY,
+            b"\x00\x00\x00\x04\x00\x80\x00\x00\x00",
+        );
+        for opening in [&b"HTTP/1.0 200"[..], b"HTTP/1.1 101"] {
+            assert_eq!(PeekVerdict::Match(()), any(opening), "{opening:x?}");
+        }
+        // SETTINGS then WINDOW_UPDATE stays matched
+        let with_window_update = [SETTINGS_EMPTY, b"\x00\x00\x04\x08\x00\x00\x00\x00\x00"].concat();
+        assert_eq!(PeekVerdict::Match(()), any(&with_window_update));
+    }
+
+    #[test]
+    fn openings_clients_tolerate_are_not_rejected() {
+        // case-insensitive, up to four junk bytes, leading empty lines
+        for opening in [
+            &b"http/1.1 200"[..],
+            b"xHTTP/1.1 200",
+            b"\x00\x01\x02\x03HTTP/1.1 200",
+            b"\r\n\nHTTP/1.1 200",
+            b"\r\n\r\nxyHTTP/1.1 200",
+            b"HTTP/2.0 200",
+        ] {
+            assert_eq!(PeekVerdict::Match(()), any(opening), "{opening:x?}");
+        }
+        assert_eq!(PeekVerdict::NeedMore, any(b"\r\n\r\n"));
+        assert_eq!(PeekVerdict::NeedMore, any(b"xyz"));
+    }
+
+    #[test]
+    fn invalid_server_openings_reject() {
+        for bytes in [
+            &b"12345HTTP"[..],
+            b"ICY 200 OK",
+            b"\x00\x00\x00\x04\x01\x00\x00\x00\x00HTTP",
+            b"\x00\x00\x05\x04\x00",
+            b"\x00\x40\x06\x04\x00",
+        ] {
+            assert_eq!(PeekVerdict::Reject, any(bytes), "{bytes:x?}");
+        }
+        assert_eq!(
+            PeekVerdict::Reject,
+            HttpEgressPredicate::H2.egress(b"HTTP/1.1 200")
+        );
+        assert_eq!(
+            PeekVerdict::Reject,
+            HttpEgressPredicate::HTTP1.egress(b"\x00\x00\x00\x04\x00")
+        );
+    }
+
+    #[test]
+    fn decides_at_its_bound_and_one_byte_past_it() {
+        // the last possible start of `http` is offset four
+        assert_eq!(PeekVerdict::NeedMore, any(b"abcdhtt"));
+        assert_eq!(PeekVerdict::Match(()), any(b"abcdhttp"));
+        assert_eq!(PeekVerdict::Reject, any(b"abcdxyzw"));
+        assert_eq!(PeekVerdict::Reject, any(b"abcdxyzwh"));
+        assert_eq!(PeekVerdict::Match(()), any(SETTINGS_EMPTY));
+        assert_eq!(
+            PeekVerdict::Match(()),
+            any(&[SETTINGS_EMPTY, b"\x00"].concat())
+        );
+    }
+
+    #[test]
+    fn other_server_first_protocols_reject() {
+        for greeting in [
+            &b"SSH-2.0-OpenSSH_9.6\r\n"[..],
+            b"220 mail.example.com ESMTP\r\n",
+            b"220 FTP server ready\r\n",
+            b"+OK POP3 ready\r\n",
+            b"* OK IMAP4rev1 ready\r\n",
+            b"\x4a\x00\x00\x00\x0a8.0.36\x00",
+            b"RFB 003.008\n",
+            b"\xff\xfd\x18\xff\xfd\x20",
+            b"\x16\x03\x03\x00\x5a\x02",
+        ] {
+            assert_eq!(PeekVerdict::Reject, any(greeting), "{greeting:x?}");
+        }
+        // a lone 0x00 is a valid prefix of an HTTP/2 SETTINGS frame
+        assert_eq!(PeekVerdict::NeedMore, any(b"\x00"));
+    }
+
+    #[test]
+    fn verdicts_are_prefix_closed() {
+        let alphabet = b"HTtp/1.0 2\x00\x04\x06\r\nx";
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for _ in 0..4096 {
+            let mut bytes = Vec::new();
+            let mut settled = None;
+            for _ in 0..20 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.push(alphabet[(state >> 16) as usize % alphabet.len()]);
+                let now = any(&bytes);
+                if let Some(settled) = settled {
+                    assert_eq!(settled, now, "{bytes:x?}");
+                } else if now != PeekVerdict::NeedMore {
+                    settled = Some(now);
+                }
             }
         }
     }

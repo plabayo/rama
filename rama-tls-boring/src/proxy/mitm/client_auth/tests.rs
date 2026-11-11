@@ -1164,11 +1164,12 @@ async fn peeked_client_hello_service_preserves_policy_context_and_negotiated_alp
         let ingress = ServiceInput::new(ingress);
         ingress.extensions().insert(policy);
         let bridge = async {
-            let (input, hello) = peek_client_hello_from_input(
-                BridgeIo(ingress, ServiceInput::new(egress)),
-                Some(Duration::from_secs(3)),
+            let (input, hello) = tokio::time::timeout(
+                Duration::from_secs(3),
+                peek_client_hello_from_input(BridgeIo(ingress, ServiceInput::new(egress))),
             )
             .await
+            .unwrap()
             .unwrap();
             let inner = service_fn(
                 |BridgeIo(mut ingress, mut egress): BridgeIo<
@@ -1178,7 +1179,12 @@ async fn peeked_client_hello_service_preserves_policy_context_and_negotiated_alp
                             ServiceInput<tokio::io::DuplexStream>,
                         >,
                     >,
-                    TlsStream<ServiceInput<tokio::io::DuplexStream>>,
+                    TlsStream<
+                        PrefixedIo<
+                            rama_core::io::ReplayReader,
+                            ServiceInput<tokio::io::DuplexStream>,
+                        >,
+                    >,
                 >| async move {
                     for stream in [ingress.extensions(), egress.extensions()] {
                         assert_eq!(

@@ -3,7 +3,6 @@ use std::{
     io::{IoSlice, Read, Write},
     pin::Pin,
     task::{Context as TaskContext, Poll},
-    time::Duration,
 };
 
 use pin_project_lite::pin_project;
@@ -11,9 +10,10 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
+    graceful::scope_context,
     io::{
         HeapReader, PrefixedIo,
-        peek::{PeekPolicy, PeekPolicyProvider, PeekWaiter},
+        peek::{PeekOptions, PeekPolicy, PeekPolicyProvider},
     },
     service::RejectService,
 };
@@ -39,7 +39,7 @@ use crate::client::ClientHelloReassemblyConfig;
 /// EOF-truncated TLS also invokes it, with a [`super::ClientHelloPeekStatus`]
 /// extension identifying the failure. Use [`SniRouter::with_malformed_tls_policy`]
 /// to opt into rejection. With the default [`PeekPolicy::FAIL_OPEN`], a
-/// timed-out prefix also invokes the fallback. Strict SNI routing should select
+/// prefix cut off by a cancelled scope also invokes the fallback. Strict SNI routing should select
 /// [`MalformedTlsPolicy::Reject`] and a [`PeekPolicy`] that never falls back on
 /// partial input, see [`SniRouter::with_peek_policy`].
 ///
@@ -48,7 +48,6 @@ use crate::client::ClientHelloReassemblyConfig;
 pub struct SniRouter<S, F = RejectService<(), NoTlsRejectError>, Pol = PeekPolicy> {
     service: S,
     fallback: F,
-    peek_timeout: Option<Duration>,
     peek_policy: Pol,
     reassembly_config: ClientHelloReassemblyConfig,
     malformed_tls_policy: MalformedTlsPolicy,
@@ -60,7 +59,6 @@ impl<S> SniRouter<S> {
         Self {
             service,
             fallback: RejectService::new(NoTlsRejectError),
-            peek_timeout: None,
             peek_policy: PeekPolicy::FAIL_OPEN,
             reassembly_config: ClientHelloReassemblyConfig::default(),
             malformed_tls_policy: MalformedTlsPolicy::default(),
@@ -76,7 +74,6 @@ impl<S, Pol> SniRouter<S, RejectService<(), NoTlsRejectError>, Pol> {
         SniRouter {
             service: self.service,
             fallback,
-            peek_timeout: self.peek_timeout,
             peek_policy: self.peek_policy,
             reassembly_config: self.reassembly_config,
             malformed_tls_policy: self.malformed_tls_policy,
@@ -105,32 +102,15 @@ impl<S, F, Pol> SniRouter<S, F, Pol> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set an optional timeout on the ClientHello peek.
-        ///
-        /// Defaults to `None` (no timeout). A valid-but-partial ClientHello from
-        /// an idle peer otherwise blocks until EOF; set a timeout for untrusted
-        /// ingress. Use [`SniRouter::with_peek_policy`] to choose whether an
-        /// inconclusive timeout invokes the fallback, rejects the connection or
-        /// keeps waiting.
-        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
-            self.peek_timeout = peek_timeout;
-            self
-        }
-    }
-
-    /// Set how a ClientHello peek timeout or [`PeekInterrupt`] is handled, using
+    /// Set how a ClientHello peek cutoff is handled, using
     /// a static [`PeekPolicy`] or a [`PeekPolicyProvider`] that selects one per input.
     ///
     /// Defaults to [`PeekPolicy::FAIL_OPEN`]. Non-TLS traffic invokes
     /// the fallback; malformed TLS follows the separate malformed-TLS policy.
-    ///
-    /// [`PeekInterrupt`]: rama_core::io::peek::PeekInterrupt
     pub fn with_peek_policy<Pol2>(self, peek_policy: Pol2) -> SniRouter<S, F, Pol2> {
         SniRouter {
             service: self.service,
             fallback: self.fallback,
-            peek_timeout: self.peek_timeout,
             peek_policy,
             reassembly_config: self.reassembly_config,
             malformed_tls_policy: self.malformed_tls_policy,
@@ -153,12 +133,12 @@ where
         // The shared peeker validates and reassembles TLS before SNI routing,
         // while preserving all original wire bytes for the selected service.
         let extensions = stream.extensions().clone();
-        let waiter = PeekWaiter::new(self.peek_timeout)
+        let options = PeekOptions::new()
             .with_policy(self.peek_policy.peek_policy(&stream))
-            .maybe_with_interrupt(extensions.get_arc());
+            .maybe_with_scope(scope_context(&extensions));
         let (peeked, maybe_client_hello, status) = peek_client_hello_from_input_with_policies(
             stream,
-            waiter,
+            options,
             self.malformed_tls_policy,
             self.reassembly_config,
         )
@@ -343,7 +323,9 @@ mod test {
     use rama_core::{
         ServiceInput,
         error::error_chain,
-        io::peek::PeekTimeoutError,
+        extensions::ExtensionsRef,
+        graceful::{Scope, attach_scope},
+        io::peek::{PeekCutoff, PeekCutoffError},
         service::{RejectError, service_fn},
     };
     use std::{
@@ -353,6 +335,7 @@ mod test {
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
+        time::Duration,
     };
     use tokio::io::AsyncReadExt as _;
 
@@ -641,7 +624,6 @@ mod test {
         let router = SniRouter::new(service_fn(async || {
             Ok::<_, Infallible>(Some("tls".to_owned()))
         }))
-        .with_peek_timeout(Duration::from_millis(10))
         .with_peek_policy(|input: &ServiceInput<ScriptedReader>| {
             if input.extensions().contains::<Strict>() {
                 PeekPolicy::FAIL_CLOSED
@@ -653,10 +635,10 @@ mod test {
             Ok::<_, Infallible>(Some("fallback".to_owned()))
         }));
         let partial = || {
-            ServiceInput::new(ScriptedReader::one_byte_per_read(
+            scoped(ServiceInput::new(ScriptedReader::one_byte_per_read(
                 &CH_ONE_ONE_ONE_ONE[..64],
                 true,
-            ))
+            )))
         };
 
         let response = router.serve(partial()).await.unwrap();
@@ -664,7 +646,7 @@ mod test {
         let strict = partial();
         strict.extensions().insert(Strict);
         let error = router.serve(strict).await.unwrap_err();
-        assert!(error_chain_has_peek_timeout(error.as_ref()));
+        assert!(error_chain_has_cancelled_peek(error.as_ref()));
     }
 
     #[tokio::test]
@@ -680,14 +662,16 @@ mod test {
         let router = SniRouter::new(service_fn(async || {
             Ok::<_, Infallible>(Some("tls".to_owned()))
         }))
-        .with_peek_timeout(Duration::from_millis(10))
         .with_peek_policy(PeekPolicy::FAIL_CLOSED)
         .with_fallback(fallback);
         let stream = ScriptedReader::one_byte_per_read(&CH_ONE_ONE_ONE_ONE[..SPLIT_AT], true);
 
-        let error = router.serve(ServiceInput::new(stream)).await.unwrap_err();
+        let error = router
+            .serve(scoped(ServiceInput::new(stream)))
+            .await
+            .unwrap_err();
 
-        assert!(error_chain_has_peek_timeout(error.as_ref()));
+        assert!(error_chain_has_cancelled_peek(error.as_ref()));
         assert_eq!(0, fallback_calls.load(Ordering::SeqCst));
     }
 
@@ -702,7 +686,6 @@ mod test {
                 service_fn(async |_req: SniRequest<_>| Ok::<_, Infallible>(Some("tls".to_owned())));
             let plain_service = service_fn(async || Ok::<_, Infallible>(Some("plain".to_owned())));
             let peek_tls_svc = SniRouter::new(tls_service)
-                .with_peek_timeout(Duration::from_millis(10))
                 .with_peek_policy(policy)
                 .with_malformed_tls_policy(MalformedTlsPolicy::Reject)
                 .with_fallback(plain_service);
@@ -768,12 +751,24 @@ mod test {
         }
     }
 
-    fn error_chain_has_peek_timeout(error: &(dyn std::error::Error + 'static)) -> bool {
+    fn scoped<I: ExtensionsRef>(input: I) -> I {
+        attach_scope(
+            input.extensions(),
+            &Scope::new().with_timeout(Duration::from_millis(10)),
+        );
+        input
+    }
+
+    fn error_chain_has_cancelled_peek(error: &(dyn std::error::Error + 'static)) -> bool {
         error_chain(error).any(|error| {
-            error.is::<PeekTimeoutError>()
+            error
+                .downcast_ref::<PeekCutoffError>()
+                .is_some_and(|error| error.cutoff() == PeekCutoff::Cancelled)
                 || error
                     .downcast_ref::<std::io::Error>()
-                    .is_some_and(|error| error.kind() == std::io::ErrorKind::TimedOut)
+                    .and_then(std::io::Error::get_ref)
+                    .and_then(|error| error.downcast_ref::<PeekCutoffError>())
+                    .is_some_and(|error| error.cutoff() == PeekCutoff::Cancelled)
         })
     }
 

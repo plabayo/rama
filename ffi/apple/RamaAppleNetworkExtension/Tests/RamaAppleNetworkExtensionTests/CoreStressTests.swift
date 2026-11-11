@@ -98,6 +98,9 @@ final class CoreStressTests: XCTestCase {
             contexts.count, flows.count,
             "every flow must have a ctx for cutover-wait"
         )
+        for conn in conns {
+            XCTAssertTrue(TestFixtures.greetFromServer(conn), "server greeting delivered")
+        }
         waitFor(
             "all \(flows.count) flows cutover away from .viaRust",
             timeout: 30.0
@@ -180,8 +183,8 @@ final class CoreStressTests: XCTestCase {
         }
 
         // Phase 3: drive a promote-aware teardown for the whole
-        // batch. The demo's `PromoteLayer`-wrapped passthrough
-        // fires the cutover after `peek_duration_s`; from that
+        // batch. A server greeting sends each flow to the demo's
+        // `PromoteLayer`-wrapped passthrough, which fires the cutover; from that
         // point on the kernel flow + NWConnection are owned by
         // Swift's `TcpDirectForwarder`, and the FIN-drain path
         // needs a send-completer to progress (the mock doesn't
@@ -264,8 +267,8 @@ final class CoreStressTests: XCTestCase {
 
         // happyPath: drive promote-aware teardown. The failure
         // arms (.preReadyFailed / .postReadyFailed / .flowOpenError)
-        // tear down via dedicated state-machine arms BEFORE the
-        // peek timeout fires the cutover, so they don't need this
+        // tear down via dedicated state-machine arms BEFORE a server
+        // greeting fires the cutover, so they don't need this
         // treatment; the happy-path arm DOES because its flows
         // sit through peek and transition to `.promoted` mode.
         let happyPairs = pairs.filter { entry, _ in entry.1 == .happyPath }

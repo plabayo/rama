@@ -30,7 +30,9 @@ where
     Egress: super::Io,
 {
     type PeekIo = Ingress;
-    type Mapped<PeekedIngress: super::Io> = BridgeIo<PeekedIngress, Egress>;
+    type PeekEgressIo = Egress;
+    type Mapped<PeekedIngress: super::Io, PeekedEgress: super::Io> =
+        BridgeIo<PeekedIngress, PeekedEgress>;
 
     #[inline(always)]
     fn peek_io_mut(&mut self) -> &mut Self::PeekIo {
@@ -39,13 +41,24 @@ where
     }
 
     #[inline(always)]
-    fn map_peek_io<PeekedIngress, F>(self, map: F) -> Self::Mapped<PeekedIngress>
+    fn peek_ios_mut(&mut self) -> (&mut Self::PeekIo, Option<&mut Self::PeekEgressIo>) {
+        let Self(ingress, egress) = self;
+        (ingress, Some(egress))
+    }
+
+    #[inline(always)]
+    fn map_peek_io<PeekedIngress, PeekedEgress, F, G>(
+        self,
+        map: F,
+        map_egress: G,
+    ) -> Self::Mapped<PeekedIngress, PeekedEgress>
     where
         PeekedIngress: super::Io,
+        PeekedEgress: super::Io,
         F: FnOnce(Self::PeekIo) -> PeekedIngress,
+        G: FnOnce(Self::PeekEgressIo) -> PeekedEgress,
     {
         let Self(ingress, egress) = self;
-        let peek_ingress = map(ingress);
-        BridgeIo(peek_ingress, egress)
+        BridgeIo(map(ingress), map_egress(egress))
     }
 }

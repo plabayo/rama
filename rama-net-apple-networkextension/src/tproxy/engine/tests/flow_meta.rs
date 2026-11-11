@@ -6,7 +6,8 @@ use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use parking_lot::Mutex;
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::graceful::{Cause, WeakScope, scope_context};
 use rama_core::io::BridgeIo;
 use rama_core::service::service_fn;
 use std::sync::Arc;
@@ -206,4 +207,95 @@ fn bound_interface_index_requires_an_explicit_bind() {
     // bound but no usable index
     assert_eq!(meta(Some(true), None).bound_interface_index(), None);
     assert_eq!(meta(Some(true), Some(0)).bound_interface_index(), None);
+}
+
+/// The scope found through the flow's extensions is the flow scope itself.
+fn runs_in_flow_scope(extensions: &Extensions, flow: Option<&WeakScope>) -> bool {
+    let Some(attached) = scope_context(extensions) else {
+        return false;
+    };
+    attached.cancel(Cause::Owner);
+    flow.is_some_and(WeakScope::is_cancelled)
+}
+
+#[test]
+fn tcp_flow_runs_in_its_flow_scope() {
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<bool>();
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let notify_tx = notify_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                        let notify_tx = notify_tx.clone();
+                        async move {
+                            let BridgeIo(stream, _egress) = bridge;
+                            _ = notify_tx
+                                .send(runs_in_flow_scope(stream.extensions(), stream.scope()));
+                            Ok(())
+                        }
+                    },
+                )
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    let runs_in_flow_scope = notify_rx.recv_timeout(Duration::from_secs(5));
+    engine.stop(0);
+    assert_eq!(Ok(true), runs_in_flow_scope);
+}
+
+#[test]
+fn udp_flow_runs_in_its_flow_scope() {
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<bool>();
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let notify_tx = notify_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |flow: crate::UdpFlow| {
+                    let notify_tx = notify_tx.clone();
+                    async move {
+                        _ = notify_tx.send(runs_in_flow_scope(flow.extensions(), flow.scope()));
+                        Ok(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        |_| {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+    let runs_in_flow_scope = notify_rx.recv_timeout(Duration::from_secs(5));
+    engine.stop(0);
+    assert_eq!(Ok(true), runs_in_flow_scope);
 }

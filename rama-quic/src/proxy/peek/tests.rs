@@ -3,6 +3,7 @@ use std::{num::NonZeroUsize, time::Duration};
 use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _},
+    graceful::{Cause, Scope, attach_scope},
     io::BridgeIo,
     service::service_fn,
 };
@@ -151,7 +152,7 @@ fn flight_ending_in(class: QuicPeekRejection) -> (Vec<Vec<u8>>, CaptureLimits) {
                 ..limits
             },
         ),
-        QuicPeekRejection::Deadline => (vec![first], limits),
+        QuicPeekRejection::Deadline | QuicPeekRejection::Cancelled => (vec![first], limits),
     }
 }
 
@@ -214,7 +215,9 @@ async fn each_rejection_reaches_the_fallback_only_when_its_class_is_admitted() {
                             Some(PeekStopReason::Rejected)
                         }
                         QuicPeekRejection::Budget => Some(PeekStopReason::MaxPeekSizeReached),
-                        QuicPeekRejection::Deadline => Some(PeekStopReason::Timeout),
+                        QuicPeekRejection::Deadline | QuicPeekRejection::Cancelled => {
+                            Some(PeekStopReason::Cancelled)
+                        }
                     };
                     assert_eq!(result.unwrap(), (Some(class), expected, flight), "{class}");
                 } else {
@@ -538,7 +541,7 @@ async fn shared_status_shadows_stale_failure_on_quic_and_non_quic_bridges() {
         let (egress, _peer) = association();
         let address = egress.local_addr().unwrap();
         ingress.extensions().insert(ClientHelloPeekStatus {
-            failure: Some(PeekStopReason::Timeout),
+            failure: Some(PeekStopReason::Cancelled),
         });
         let extensions = ingress.extensions().clone();
         for packet in &flight {
@@ -706,4 +709,105 @@ async fn relaxed_limits_inspect_large_reordered_flights_and_configured_caps_fall
         assert_eq!(inspected, relaxed);
         assert_eq!(replay, flight);
     }
+}
+
+/// A peek over the first of two Initials (so the ClientHello stays incomplete), in `scope`.
+async fn peek_partial_flight_in(
+    scope: &Scope,
+    policy: PeekPolicy,
+) -> Result<Option<QuicPeekRejection>, BoxError> {
+    let (client, ingress) = association();
+    attach_scope(ingress.extensions(), scope);
+    deliver(&ingress, &client, &chrome_initials()[0]);
+    let service = PeekQuicClientHelloService::new(
+        keys(),
+        service_fn(async |_: InputWithQuicClientHello<_>| {
+            Err::<Option<QuicPeekRejection>, _>(BoxError::from_static_str(
+                "unexpected complete hello",
+            ))
+        }),
+    )
+    .with_peek_timeout(Duration::from_secs(30))
+    .with_peek_policy(policy)
+    .with_fallback(service_fn(
+        async |input: PrefixedDatagramSocket<MemoryDatagramSocket>| {
+            Ok::<_, BoxError>(input.extensions().get_ref::<QuicPeekRejection>().copied())
+        },
+    ));
+    let result = service.serve(ingress).await;
+    drop(client);
+    result
+}
+
+fn cutoff_of(error: &BoxError) -> Option<(PeekCutoff, Option<Cause>)> {
+    error
+        .downcast_ref::<PeekCutoffError>()
+        .map(|error| (error.cutoff(), error.cause().cloned()))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_scope_follows_the_peek_policy() {
+    let scope = Scope::new().with_timeout(Duration::from_secs(1));
+    let fallback = peek_partial_flight_in(&scope, PeekPolicy::FAIL_OPEN).await;
+    assert_eq!(Some(QuicPeekRejection::Cancelled), fallback.unwrap());
+
+    let scope = Scope::new().with_timeout(Duration::from_secs(1));
+    let error = peek_partial_flight_in(&scope, PeekPolicy::FAIL_CLOSED)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        cutoff_of(&error),
+        Some((PeekCutoff::Cancelled, Some(Cause::Deadline)))
+    ));
+
+    // waived: the cancel does not end the peek, the inspection deadline does
+    let scope = Scope::new().with_timeout(Duration::from_secs(1));
+    let start = Instant::now();
+    let error = peek_partial_flight_in(
+        &scope,
+        PeekPolicy::FAIL_OPEN.with_cancelled_partial(PeekAction::Wait),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(Duration::from_secs(30), start.elapsed());
+    assert_eq!(
+        Some(&QuicPeekRejectedError(QuicPeekRejection::Deadline)),
+        error.downcast_ref::<QuicPeekRejectedError>()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_aborted_scope_fails_the_peek_with_its_cause() {
+    for policy in [PeekPolicy::FAIL_OPEN, PeekPolicy::FAIL_CLOSED] {
+        let scope = Scope::new().with_hard_timeout(Duration::from_secs(1));
+        let start = Instant::now();
+        let error = peek_partial_flight_in(&scope, policy).await.unwrap_err();
+        assert_eq!(Duration::from_secs(1), start.elapsed());
+        assert!(matches!(
+            cutoff_of(&error),
+            Some((PeekCutoff::Aborted, Some(Cause::Deadline)))
+        ));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn without_a_scope_only_the_inspection_deadline_ends_the_peek() {
+    let (client, ingress) = association();
+    deliver(&ingress, &client, &chrome_initials()[0]);
+    let start = Instant::now();
+    let result = PeekQuicClientHelloService::new(
+        keys(),
+        service_fn(async |_: InputWithQuicClientHello<_>| Ok::<_, BoxError>(None)),
+    )
+    .with_peek_timeout(Duration::from_secs(30))
+    .with_fallback(service_fn(
+        async |input: PrefixedDatagramSocket<MemoryDatagramSocket>| {
+            Ok::<_, BoxError>(input.extensions().get_ref::<QuicPeekRejection>().copied())
+        },
+    ))
+    .serve(ingress)
+    .await;
+    assert_eq!(Some(QuicPeekRejection::Deadline), result.unwrap());
+    assert_eq!(Duration::from_secs(30), start.elapsed());
+    drop(client);
 }

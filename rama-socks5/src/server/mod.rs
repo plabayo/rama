@@ -34,7 +34,7 @@ use std::{fmt, sync::Arc};
 
 mod peek;
 #[doc(inline)]
-pub use peek::{NoSocks5RejectError, Socks5PeekRouter, Socks5PrefixedIo};
+pub use peek::{NoSocks5RejectError, Socks5EgressPredicate, Socks5PeekRouter, Socks5PrefixedIo};
 
 mod connect;
 pub use connect::{Connector, DefaultConnector, LazyConnector, Socks5Connector};
