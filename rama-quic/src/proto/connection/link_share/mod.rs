@@ -13,13 +13,15 @@ use std::{
     ops::Range,
 };
 
+use rama_quic_proto::packet::SpaceId;
+
 use rand::prelude::*;
 use rand_pcg::Pcg32;
 
 use crate::proto::{
     CongestionControl, Duration, Instant, TIMER_GRANULARITY, TransportConfig,
     congestion::{Controller, window_in_use},
-    connection::{RttEstimator, pacing::Pacer},
+    connection::{RttEstimator, pacing::Pacer, recovery::lost::DeclaredLost},
 };
 
 mod tests;
@@ -55,7 +57,7 @@ pub(super) enum Rival {
 }
 
 /// Late delivery of some of the measured flow's packets, behind the ones sent after them.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct Reordering {
     /// Fraction of the packets held back.
     pub(super) fraction: f64,
@@ -106,6 +108,8 @@ pub(super) struct Outcome {
     pub(super) spurious: u64,
     /// Times the measured flow's congestion window was reduced.
     pub(super) reductions: u64,
+    /// Times it was put back after the losses that reduced it were acknowledged.
+    pub(super) restored: u64,
     /// Mean number of packets the measured flow released per wake-up that sent anything.
     pub(super) mean_burst: f64,
     /// Time from the measured flow's start until its receiver held the whole transfer.
@@ -176,6 +180,7 @@ impl Scenario {
             lost: sender.lost,
             spurious: sender.spurious,
             reductions: sender.reductions,
+            restored: sender.restored,
             mean_burst: sender.released as f64 / sender.bursts.max(1) as f64,
             completion,
         }
@@ -553,8 +558,8 @@ struct Sender {
     transfer: Option<Transfer>,
     /// Send times of the packets neither acknowledged nor declared lost.
     sent: BTreeMap<u64, Instant>,
-    /// Packets declared lost and not acknowledged since.
-    declared_lost: BTreeSet<u64>,
+    /// Packets declared lost that may yet be acknowledged, as the connection keeps them.
+    declared_lost: DeclaredLost,
     next_packet: u64,
     in_flight: u64,
     app_limited: bool,
@@ -571,6 +576,7 @@ struct Sender {
     lost: u64,
     spurious: u64,
     reductions: u64,
+    restored: u64,
     bursts: u64,
     released: u64,
 }
@@ -631,7 +637,7 @@ impl Sender {
             peer_max_ack_delay,
             transfer: None,
             sent: BTreeMap::new(),
-            declared_lost: BTreeSet::new(),
+            declared_lost: DeclaredLost::default(),
             next_packet: 0,
             in_flight: 0,
             app_limited: false,
@@ -647,6 +653,7 @@ impl Sender {
             lost: 0,
             spurious: 0,
             reductions: 0,
+            restored: 0,
             bursts: 0,
             released: 0,
         }
@@ -750,6 +757,19 @@ impl Sender {
             }
         }
 
+        let window = self.controller.window();
+        self.spurious += self.declared_lost.on_ack(
+            now,
+            self.pto(),
+            SpaceId::Data,
+            self.largest_acked.unwrap_or(ack.largest),
+            ack.packets.iter().map(|&packet| packet..=packet),
+            self.controller.as_mut(),
+        );
+        if self.controller.window() > window {
+            self.restored += 1;
+        }
+
         let mut largest_newly_acked = None;
         for &packet in &ack.packets {
             if let Some(sent) = self.sent.remove(&packet) {
@@ -762,10 +782,6 @@ impl Sender {
                     &self.rtt,
                 );
                 largest_newly_acked = Some(packet);
-            } else if self.declared_lost.remove(&packet) {
-                self.spurious += 1;
-            } else {
-                continue;
             }
             if let Some(transfer) = &mut self.transfer {
                 transfer.on_acknowledged(packet);
@@ -800,7 +816,9 @@ impl Sender {
         let Some(largest_acked) = self.largest_acked else {
             return;
         };
-        let scaled = self.rtt.conservative().as_secs_f64() * f64::from(self.time_threshold);
+        let time_threshold = self.declared_lost.time_threshold(self.time_threshold);
+        let packet_threshold = self.declared_lost.packet_threshold(self.packet_threshold);
+        let scaled = self.rtt.conservative().as_secs_f64() * f64::from(time_threshold);
         let loss_delay = Duration::from_secs_f64(scaled).max(TIMER_GRANULARITY);
         let congestion_period = self.pto() * self.persistent_congestion_threshold;
 
@@ -815,8 +833,8 @@ impl Sender {
                 persistent_congestion_start = None;
             }
             let too_old = now.saturating_duration_since(sent) >= loss_delay;
-            if too_old || largest_acked >= packet + self.packet_threshold {
-                lost.push(packet);
+            if too_old || largest_acked >= packet + packet_threshold {
+                lost.push((packet, sent));
                 largest_lost_sent = Some(sent);
                 if due_to_ack {
                     match persistent_congestion_start {
@@ -844,10 +862,9 @@ impl Sender {
             return;
         };
         let size = u64::from(self.packet_size);
-        for &packet in &lost {
+        for &(packet, _) in &lost {
             self.sent.remove(&packet);
             self.in_flight -= size;
-            self.declared_lost.insert(packet);
             if let Some(transfer) = &mut self.transfer {
                 transfer.on_lost(packet);
             }
@@ -862,6 +879,10 @@ impl Sender {
         );
         if self.controller.window() < window {
             self.reductions += 1;
+        }
+        for (packet, sent) in lost {
+            self.declared_lost
+                .on_lost(SpaceId::Data, packet, sent, self.controller.as_mut());
         }
     }
 
@@ -1012,6 +1033,11 @@ impl Controller for ReferenceCubic {
             self.recovery_start = None;
         }
     }
+
+    // The competing flow's packets arrive in order, so none of its losses is reported in error.
+    fn on_spurious_congestion_event(&mut self) {}
+
+    fn on_loss_confirmed(&mut self) {}
 
     fn on_mtu_update(&mut self, new_mtu: u16) {
         self.segment = f64::from(new_mtu);

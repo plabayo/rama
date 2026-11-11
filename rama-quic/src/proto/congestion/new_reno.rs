@@ -19,6 +19,17 @@ pub(crate) struct NewReno {
     recovery_start_time: Instant,
     /// Bytes which had been acked by the peer since leaving slow start
     bytes_acked: u64,
+    /// What a loss reduced, kept until that loss is known to be real or reported in error.
+    undo: Option<Undo>,
+}
+
+/// The state a congestion event changes, as it was before one.
+#[derive(Debug, Clone)]
+struct Undo {
+    window: u64,
+    ssthresh: u64,
+    recovery_start_time: Instant,
+    bytes_acked: u64,
 }
 
 impl NewReno {
@@ -31,6 +42,7 @@ impl NewReno {
             current_mtu: current_mtu as u64,
             config,
             bytes_acked: 0,
+            undo: None,
         }
     }
 
@@ -86,12 +98,25 @@ impl Controller for NewReno {
         now: Instant,
         sent: Instant,
         is_persistent_congestion: bool,
-        _lost_bytes: u64,
+        lost_bytes: u64,
     ) {
+        // A congestion mark or a silent path is no loss that a late acknowledgement takes back.
+        let undoable = lost_bytes > 0 && !is_persistent_congestion;
+        if !undoable {
+            self.undo = None;
+        }
         if sent <= self.recovery_start_time {
             return;
         }
 
+        if undoable && self.undo.is_none() {
+            self.undo = Some(Undo {
+                window: self.window,
+                ssthresh: self.ssthresh,
+                recovery_start_time: self.recovery_start_time,
+                bytes_acked: self.bytes_acked,
+            });
+        }
         self.recovery_start_time = now;
         self.window = (self.window as f32 * self.config.loss_reduction_factor) as u64;
         self.window = self.window.max(self.minimum_window());
@@ -100,6 +125,21 @@ impl Controller for NewReno {
         if is_persistent_congestion {
             self.window = self.minimum_window();
         }
+    }
+
+    fn on_spurious_congestion_event(&mut self) {
+        if let Some(undo) = self.undo.take()
+            && self.window < undo.window
+        {
+            self.window = undo.window;
+            self.ssthresh = undo.ssthresh;
+            self.recovery_start_time = undo.recovery_start_time;
+            self.bytes_acked = undo.bytes_acked;
+        }
+    }
+
+    fn on_loss_confirmed(&mut self) {
+        self.undo = None;
     }
 
     fn on_mtu_update(&mut self, new_mtu: u16) {

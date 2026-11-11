@@ -128,6 +128,36 @@ fn a_pacer_pause_uses_the_window_only_when_most_of_it_is_in_flight() {
 }
 
 #[test]
+fn only_a_reduction_for_late_packets_is_undone() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_only_a_reduction_for_late_packets_is_undone(now);
+}
+
+#[test]
+fn a_burst_of_more_losses_than_are_remembered_is_not_undone() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_a_burst_of_more_losses_than_are_remembered_is_not_undone(now);
+}
+
+#[test]
+fn late_packets_make_loss_detection_wait_for_more() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_late_packets_make_loss_detection_wait_for_more(now);
+}
+
+#[test]
 fn mtu_discovery_progresses_with_a_full_window_and_busy_streams() {
     for gso in [false, true] {
         let mut config = server_config();

@@ -63,6 +63,18 @@ impl Connection {
             self.packet_number_filter.check_ack(space, range.clone())?;
             ranges.push(range);
         }
+        // Before anything else: an acknowledgement of nothing but packets declared lost counts.
+        let pto = self.pto(SpaceId::Data);
+        self.path.lost.on_ack(
+            now,
+            pto,
+            space,
+            self.spaces[space]
+                .largest_acked_packet
+                .unwrap_or(ack.largest),
+            ranges.iter().cloned(),
+            self.path.congestion.as_mut(),
+        );
         let mut newly_acked = Vec::new();
         for range in ranges.into_iter().rev() {
             newly_acked.extend(
@@ -345,14 +357,20 @@ impl Connection {
         let mut current_lost_bytes = 0;
         let mut current_non_probe_lost = false;
         let rtt = self.path.rtt.conservative();
-        let loss_delay = loss_delay(rtt, self.config.time_threshold);
+        let loss_delay = loss_delay(
+            rtt,
+            self.path.lost.time_threshold(self.config.time_threshold),
+        );
 
         #[expect(
             clippy::unwrap_used,
             reason = "`detect_lost_packets` runs from `on_ack_received` after setting `largest_acked_packet`, and the loss timer is only armed once a packet of the space was acknowledged"
         )]
         let largest_acked_packet = self.spaces[pn_space].largest_acked_packet.unwrap();
-        let packet_threshold = self.config.packet_threshold as u64;
+        let packet_threshold = self
+            .path
+            .lost
+            .packet_threshold(u64::from(self.config.packet_threshold));
         let mut size_of_lost_packets = 0u64;
 
         // InPersistentCongestion: Determine if all packets in the time period before the newest
@@ -438,6 +456,7 @@ impl Connection {
                 lost_packets, size_of_lost_packets
             );
 
+            let mut declared = Vec::new();
             for &packet in &lost_packets {
                 #[expect(
                     clippy::unwrap_used,
@@ -459,6 +478,9 @@ impl Connection {
                 self.spaces[pn_space].pending |= info.retransmits;
                 if info.path_generation == generation && pn_space == SpaceId::Data {
                     self.path.mtud.on_non_probe_lost(packet, info.size);
+                }
+                if info.path_generation == generation && info.ack_eliciting {
+                    declared.push((packet, info.time_sent));
                 }
             }
             self.spaces[pn_space].deduplicate_crypto();
@@ -495,6 +517,12 @@ impl Connection {
                     in_persistent_congestion,
                     current_lost_bytes,
                 );
+            }
+            // After the event, so what the controller keeps to return to covers each of them.
+            for (packet, sent) in declared {
+                self.path
+                    .lost
+                    .on_lost(pn_space, packet, sent, self.path.congestion.as_mut());
             }
         }
 
@@ -689,6 +717,8 @@ fn loss_delay(rtt: Duration, factor: f32) -> Duration {
         Duration::try_from_secs_f64(rtt.as_secs_f64() * f64::from(factor)).unwrap_or(Duration::MAX);
     cmp::max(scaled, TIMER_GRANULARITY)
 }
+
+pub(super) mod lost;
 
 #[cfg(test)]
 mod tests;

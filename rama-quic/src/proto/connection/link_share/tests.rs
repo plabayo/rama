@@ -293,6 +293,64 @@ fn packets_overtaken_by_several_others_are_declared_lost_and_acknowledged_later(
 }
 
 #[test]
+fn a_flow_alone_keeps_its_throughput_when_packets_arrive_late() {
+    let plain = reordered(3, None, None);
+    for extra in [5, 20].map(Duration::from_millis) {
+        for fraction in [0.01, 0.05] {
+            let late = Reordering { fraction, extra };
+            let outcome = reordered(3, None, Some(late));
+            assert!(outcome.spurious > 0, "{late:?}: {outcome:?}");
+            // Later than loss detection waits however far it adapts, so the undoing carries it.
+            if extra == Duration::from_millis(20) {
+                assert!(2 * outcome.restored > outcome.spurious, "{outcome:?}");
+            }
+            assert!(
+                outcome.kbps >= 0.95 * plain.kbps,
+                "{late:?}: {outcome:?} against {plain:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn packets_a_few_others_overtake_stop_being_declared_lost() {
+    // Late by about four packets of the link, more than the three loss detection starts at.
+    let late = Reordering {
+        fraction: 0.05,
+        extra: Duration::from_millis(5),
+    };
+    let outcome = Scenario {
+        reordering: Some(late),
+        ..scenario(3)
+    }
+    .run();
+    assert!(outcome.spurious > 0, "{outcome:?}");
+    // Thousands arrive late; the first few teach loss detection to wait for them.
+    assert!(outcome.spurious < 20, "{outcome:?}");
+}
+
+#[test]
+fn a_flow_keeps_its_share_of_the_link_when_packets_arrive_late() {
+    let late = Reordering {
+        fraction: 0.05,
+        extra: Duration::from_millis(5),
+    };
+    let outcomes: Vec<Outcome> = (0..5)
+        .map(|seed| {
+            Scenario {
+                competitor: Some(2),
+                reordering: Some(late),
+                ..scenario(seed)
+            }
+            .run()
+        })
+        .collect();
+    let share = mean(&outcomes, share);
+    // The floor of the same flow with its packets in order.
+    assert!(share >= 0.48, "a share of {share:.3}");
+}
+
+#[test]
 #[ignore = "a wider sweep to read, not to assert on; run with --ignored --nocapture"]
 #[expect(
     clippy::print_stdout,
@@ -346,7 +404,7 @@ fn table_of_losses_declared_in_error_when_packets_arrive_late() {
                     .collect();
                 println!(
                     "{label:<6} late {:>2}ms {:4.1}%: kbps {:5.0} share {:5.1}% lost {:6.1} \
-                     spurious {:6.1} reductions {:5.1}",
+                     spurious {:6.1} reductions {:5.1} restored {:5.1}",
                     extra.as_millis(),
                     100.0 * fraction,
                     mean(&outcomes, |o| o.kbps),
@@ -354,6 +412,7 @@ fn table_of_losses_declared_in_error_when_packets_arrive_late() {
                     mean(&outcomes, |o| o.lost as f64),
                     mean(&outcomes, |o| o.spurious as f64),
                     mean(&outcomes, |o| o.reductions as f64),
+                    mean(&outcomes, |o| o.restored as f64),
                 );
             }
         }

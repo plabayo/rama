@@ -101,6 +101,18 @@ pub(crate) struct Cubic {
     current_mtu: u64,
     /// When the previous acknowledgement was processed.
     last_ack: Option<Instant>,
+    /// What a loss reduced, kept until that loss is known to be real or reported in error
+    /// (RFC 9438 section 4.9).
+    undo: Option<Undo>,
+}
+
+/// The state a congestion event changes, as it was before one.
+#[derive(Debug, Clone)]
+struct Undo {
+    window: u64,
+    ssthresh: u64,
+    recovery_start_time: Option<Instant>,
+    cubic_state: State,
 }
 
 impl Cubic {
@@ -114,6 +126,7 @@ impl Cubic {
             cubic_state: Default::default(),
             current_mtu: current_mtu as u64,
             last_ack: None,
+            undo: None,
         }
     }
 
@@ -216,8 +229,13 @@ impl Controller for Cubic {
         now: Instant,
         sent: Instant,
         is_persistent_congestion: bool,
-        _lost_bytes: u64,
+        lost_bytes: u64,
     ) {
+        // A congestion mark or a silent path is no loss that a late acknowledgement takes back.
+        let undoable = lost_bytes > 0 && !is_persistent_congestion;
+        if !undoable {
+            self.undo = None;
+        }
         if self
             .recovery_start_time
             .map(|recovery_start_time| sent <= recovery_start_time)
@@ -226,6 +244,14 @@ impl Controller for Cubic {
             return;
         }
 
+        if undoable && self.undo.is_none() {
+            self.undo = Some(Undo {
+                window: self.window,
+                ssthresh: self.ssthresh,
+                recovery_start_time: self.recovery_start_time,
+                cubic_state: self.cubic_state.clone(),
+            });
+        }
         self.recovery_start_time = Some(now);
         let window = self.window as f64;
 
@@ -256,6 +282,21 @@ impl Controller for Cubic {
 
             self.window = self.minimum_window();
         }
+    }
+
+    fn on_spurious_congestion_event(&mut self) {
+        if let Some(undo) = self.undo.take()
+            && self.window < undo.window
+        {
+            self.window = undo.window;
+            self.ssthresh = undo.ssthresh;
+            self.recovery_start_time = undo.recovery_start_time;
+            self.cubic_state = undo.cubic_state;
+        }
+    }
+
+    fn on_loss_confirmed(&mut self) {
+        self.undo = None;
     }
 
     fn on_mtu_update(&mut self, new_mtu: u16) {
@@ -473,6 +514,37 @@ mod tests {
                 (cubic.window - before) / mtu
             );
         }
+    }
+
+    #[test]
+    fn after_a_reduction_made_in_error_the_window_grows_as_if_never_reduced() {
+        let start = Instant::now();
+        let mtu = BASE_DATAGRAM_SIZE;
+        let rtt = RttEstimator::new(Duration::from_millis(50));
+        let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+        cubic.window = 60 * mtu;
+        cubic.ssthresh = cubic.window;
+        cubic.cubic_state.w_max = 80.0 * mtu as f64;
+        // A real loss first, so the stage the window grows in has a shape to return to.
+        let sent = start + Duration::from_millis(1);
+        cubic.on_congestion_event(start, sent, false, mtu);
+        cubic.on_loss_confirmed();
+        let mut now = start;
+        acknowledge_rounds(&mut cubic, &mut now, sent, &rtt, 20);
+
+        let mut undisturbed = cubic.clone();
+        let lost = now;
+        now += Duration::from_millis(1);
+        let mut undisturbed_now = now;
+        cubic.on_congestion_event(now, lost, false, mtu);
+        assert!(cubic.window < undisturbed.window);
+        cubic.on_spurious_congestion_event();
+
+        // Both acknowledge packets sent before the reduction, as late packets leave behind.
+        acknowledge_rounds(&mut cubic, &mut now, sent, &rtt, 20);
+        acknowledge_rounds(&mut undisturbed, &mut undisturbed_now, sent, &rtt, 20);
+        assert!(undisturbed.window > 60 * mtu);
+        assert_eq!(cubic.window, undisturbed.window);
     }
 
     #[test]
