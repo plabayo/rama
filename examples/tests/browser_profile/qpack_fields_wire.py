@@ -186,9 +186,12 @@ def policy_key(metadata):
 
 
 def matching_representations(
-    capture, headers, representations, *, fresh_table=False, scope=None
+    capture, headers, representations, *, fresh_table=False, scope=None, preserved=False
 ):
-    """Keep pseudo/regular metadata in the same joint as its actual HTTP fields."""
+    """Keep pseudo/regular metadata in the same joint as its actual HTTP fields.
+
+    A `preserved` capture is one a Bootstrap capture references: it keeps its wire indexes.
+    """
     if (
         len(headers) != len(representations)
         or matching_fields(capture, headers, scope=scope) is None
@@ -207,16 +210,28 @@ def matching_representations(
             ]
             if retained != [policy_key(field) for field in raw]:
                 return False
-        elif [field["representation"] for field in slots[kind]["fields"]] != raw:
+        elif [field["representation"] for field in slots[kind]["fields"]] not in (
+            (raw,) if preserved else (raw, [read_form(field) for field in raw])
+        ):
             return False
     return True
+
+
+def read_form(metadata):
+    """A profile's read form holds zero for a connection-local dynamic index."""
+    if metadata["representation"] in DYNAMIC_REFERENCES:
+        index = metadata["index"]
+        if type(index) is not int or not 0 <= index < 1 << 62:
+            raise ValueError("invalid dynamic reference index")
+        return {**metadata, "index": 0}
+    return metadata
 
 
 def _bootstrap_fields(inspected, blocks, sections, connection_joints, *, fresh_table):
     """Check initial HEADERS against its exact native joint's request reference.
 
     These heads can be internal navigation probes or bootstrap --next segments. They
-    do not replace any of the six ordinary operations required below.
+    do not replace any of the ordinary operations required below.
     """
     has_bootstrap = any(
         slot["kind"] == "Http3Bootstrap"
@@ -276,7 +291,11 @@ def _bootstrap_fields(inspected, blocks, sections, connection_joints, *, fresh_t
         if section is None:
             raise ValueError("Bootstrap request lacks raw QPACK metadata")
         if not matching_representations(
-            request_capture, initial.headers, section.fields, fresh_table=fresh_table
+            request_capture,
+            initial.headers,
+            section.fields,
+            fresh_table=fresh_table,
+            preserved=True,
         ):
             raise ValueError(
                 "Bootstrap raw QPACK metadata differs from referenced request joint"

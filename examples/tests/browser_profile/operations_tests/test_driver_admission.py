@@ -5,7 +5,7 @@ from dataclasses import replace
 import unittest
 import xml.etree.ElementTree as ET
 
-from flows import FLOWS
+from flows import FLOWS, UNECHOED_FLOWS
 from admission import admit, complete_responses, peer_socket, request_info
 from operations_tests.admission_fixtures import ORIGIN, admission_fixture
 
@@ -14,7 +14,8 @@ class DriverAdmissionTests(unittest.TestCase):
     def test_driver_native_peer_response_completion_and_probe_bind_all_six(self):
         raw, frames, page = admission_fixture()
         result = admit(raw, frames, page, ORIGIN)
-        self.assertEqual(set(result["flows"]), set(FLOWS))
+        # Without a ledger only natively bound operations are admitted.
+        self.assertEqual(set(result["flows"]), set(FLOWS) - set(UNECHOED_FLOWS))
         self.assertIn("redacted", result["limits"])
         for change in (
             lambda p: p["page_results"]["fetch"]["fp"]["request_info"].update(

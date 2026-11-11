@@ -1,7 +1,7 @@
 import copy
 import unittest
 from capture_fields import compare_capture_fields, matching_fields
-from flows import FLOWS
+from flows import ASSET_FLOWS, FLOWS, flow_initiator
 from types import SimpleNamespace
 from wire import h1_header_blocks
 from wire_fixtures import wire_flows_fixture as h1_fixture
@@ -79,6 +79,8 @@ class CaptureFieldTests(unittest.TestCase):
             ("ws", "CONNECT", "/api/ws"),
             ("form", "POST", "/form"),
             ("form_get", "GET", "/form?source=web&turtles=yes"),
+            ("link", "GET", "/landing"),
+            *((flow, "GET", path) for flow, path in ASSET_FLOWS.items()),
         ]
         scopes, blocks = [], []
         for flow, method, path in operations:
@@ -117,7 +119,7 @@ class CaptureFieldTests(unittest.TestCase):
                         "Http": {
                             "version": "HTTP/3.0",
                             "method": method,
-                            "initiator": "form" if flow == "form_get" else flow,
+                            "initiator": flow_initiator(flow),
                             "fetch": None,
                         }
                     },
@@ -138,7 +140,8 @@ class CaptureFieldTests(unittest.TestCase):
             "profiles": [{"key": {"user_agent": "fixture"}, "scopes": scopes}],
         }
         self.assertEqual(
-            compare_capture_fields(inspected, blocks)["requests_checked"], 6
+            compare_capture_fields(inspected, blocks)["requests_checked"],
+            len(FLOWS),
         )
         with self.assertRaisesRegex(ValueError, "incomplete"):
             compare_capture_fields(inspected, blocks[:-1])
@@ -193,7 +196,7 @@ class CaptureFieldTests(unittest.TestCase):
             scopes.append({
                 "flow": {"Http": {
                     "version": "HTTP/1.1", "method": dict(block.headers)[":method"],
-                    "initiator": "form" if flow == "form_get" else flow, "fetch": None,
+                    "initiator": flow_initiator(flow), "fetch": None,
                 }},
                 "variants": [{"capture": {"version": "HTTP/1.1", "fields": fields}}],
             })
@@ -202,8 +205,8 @@ class CaptureFieldTests(unittest.TestCase):
             "profiles": [{"key": {"user_agent": "fixture"}, "scopes": scopes}],
         }
         report = compare_capture_fields(inspected, blocks)
-        self.assertEqual(report["requests_checked"], 6)
-        self.assertEqual(report["request_bound_values_not_retained"], 6)
+        self.assertEqual(report["requests_checked"], len(FLOWS))
+        self.assertEqual(report["request_bound_values_not_retained"], len(FLOWS))
         self.assertEqual(set(report["flows"]), set(FLOWS))
         for change in ("agent", "version", "initiator", "literal"):
             bad = copy.deepcopy(inspected)

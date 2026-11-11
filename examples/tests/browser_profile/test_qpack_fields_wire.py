@@ -9,6 +9,7 @@ from qpack_fields_wire import (
     compare_field_metadata,
     compare_replay_policy,
     decode_section,
+    matching_representations,
     sections_from_wire,
 )
 from unittest.mock import patch
@@ -88,6 +89,41 @@ class QpackFieldWireTests(unittest.TestCase):
         packet.append(copy.deepcopy(packet.find("field[@name='http3.frame']")))
         with self.assertRaisesRegex(ValueError, "ambiguous HEADERS"):
             sections_from_wire(ET.tostring(root), 443)
+
+    def test_read_form_drops_dynamic_indexes_unless_the_capture_is_preserved(self):
+        headers = ((":method", "GET"), ("user-agent", "fixture"))
+        wire = (Representation("StaticIndex", 17), Representation("DynamicIndex", 5))
+
+        def capture(index, static=17):
+            regular = {
+                "name": "user-agent",
+                "occurrence": 0,
+                "value": {"Profile": list(b"fixture")},
+                "representation": asdict(Representation("DynamicIndex", index)),
+            }
+            pseudo = {
+                "name": ":method",
+                "representation": asdict(Representation("StaticIndex", static)),
+            }
+            return {
+                "slots": [
+                    {"kind": "Headers", "capture": {"fields": [regular]}},
+                    {"kind": "PseudoHeaders", "capture": {"fields": [pseudo]}},
+                ]
+            }
+
+        # A read form holds zero; a preserved capture holds the wire index.
+        self.assertTrue(matching_representations(capture(0), headers, wire))
+        self.assertTrue(matching_representations(capture(5), headers, wire))
+        self.assertFalse(matching_representations(capture(4), headers, wire))
+        self.assertFalse(
+            matching_representations(capture(0), headers, wire, preserved=True)
+        )
+        self.assertTrue(
+            matching_representations(capture(5), headers, wire, preserved=True)
+        )
+        # Static indexes are never dropped.
+        self.assertFalse(matching_representations(capture(0, static=0), headers, wire))
 
     @patch("qpack_fields_wire.FLOW_NAMES", {"navigate"})
     def test_metadata_requires_the_same_joint_scope_and_client(self):

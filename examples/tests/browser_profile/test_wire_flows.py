@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from dataclasses import replace
-from flows import ReplayTarget, compare_requests as compare, replay_args
+from flows import FLOWS, ReplayTarget, compare_requests as compare, replay_args
 from pathlib import Path
 from unittest.mock import patch
 from wire import (
@@ -70,6 +70,33 @@ class FlowWireTests(unittest.TestCase):
         )
         self.assertIn("a,b", ws_args)
 
+    def test_referer_is_a_request_binding_and_only_the_report_counts_subresources(self):
+        requests, responses = fixture()
+        style = next(row for row in requests if row["http.request.uri"] == "/assets/style.css")
+        # The form page requests the stylesheet again, and the report an unmeasured image.
+        extra = []
+        for number, (uri, page) in enumerate(
+            (("/assets/style.css", "/form"), ("/assets/banner.jpeg", "/report")), 50
+        ):
+            row = dict(style, **{"frame.number": str(number), "http.request.uri": uri})
+            row["http.request.line"] = row["http.request.line"].replace("/report", page)
+            extra.append(row)
+            responses.append(
+                {"http.request_in": str(number), "http.response.code": "200",
+                 "http.response.line": ""}
+            )
+        flows = decode_rows(requests + extra, responses, 1234, True)
+        self.assertEqual(len(flows["style"]), 1)
+        self.assertIn("Referer: http://<authority>/report", flows["style"][0].headers)
+        self.assertEqual(
+            flows["style"][0].bindings["referer"], "http://127.0.0.1:1234/report"
+        )
+        style["http.request.line"] = style["http.request.line"].replace(
+            "127.0.0.1:1234/report", "elsewhere.test/report"
+        )
+        with self.assertRaisesRegex(ValueError, "complete operation coverage"):
+            decode_rows(requests, responses, 1234, True)
+
     def test_https_uses_its_owned_authority_origin_and_wss_replay(self):
         requests, responses = fixture()
         for row in requests:
@@ -124,7 +151,7 @@ class FlowWireTests(unittest.TestCase):
             "frame.number": "2", "tcp.stream": "7", "http.user_agent": "fixture",
             "http.request.uri": "/report",
         }
-        asset = dict(row, **{"tcp.stream": "99", "http.request.uri": "/assets/script.js"})
+        asset = dict(row, **{"tcp.stream": "99", "http.request.uri": "/favicon.ico"})
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             capture, keylog = root / "wire.pcapng", root / "fixture.keys"
@@ -168,7 +195,7 @@ class FlowWireTests(unittest.TestCase):
         for index, row in enumerate(rows):
             row["tcp.stream"] = str(index % 2)
         blocks = h1_header_blocks(rows)
-        self.assertEqual(len(blocks), 6)
+        self.assertEqual(len(blocks), len(FLOWS))
         self.assertEqual(blocks[0].connection, 0)
         self.assertEqual(blocks[1].connection, 1)
         self.assertEqual(blocks[0].stream, 1)

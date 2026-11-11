@@ -3,7 +3,7 @@
 import unittest
 import xml.etree.ElementTree as ET
 from admission import admit
-from flows import FLOWS
+from flows import DRIVER_FLOWS
 from quic_stream_wire import quic_exclusions, requestless_connections
 from wire_fixtures import computed, document, scalar, stream_packet
 
@@ -195,7 +195,7 @@ class RequestlessQuicTests(unittest.TestCase):
             self.assertIn("without a connection number", quic_exclusions(data, 443)[2])
 
     def test_admission_names_a_stray_client_packet_without_a_connection(self):
-        page = {"protocols": dict.fromkeys(FLOWS, "h3"), "page_results": {}, "user_agent": "test"}
+        page = {"protocols": dict.fromkeys(DRIVER_FLOWS, "h3"), "page_results": {}, "user_agent": "test"}
         for native in (False, True):
             packet = ET.Element("packet")
             for name, show in (

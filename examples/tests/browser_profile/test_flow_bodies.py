@@ -2,6 +2,7 @@ import math
 import unittest
 from dataclasses import replace
 from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, json_object
+from flows import FLOWS
 from wire_fixtures import flow_fixture as fixture
 
 
@@ -15,7 +16,8 @@ class FlowBodyTests(unittest.TestCase):
             rows[7] = replace(rows[7], websocket_text=(greeting, probe))
             with self.subTest(protocol=protocol):
                 self.assertEqual(
-                    len(check_flow_bodies(rows, websocket_probe=probe)["flows"]), 6
+                    len(check_flow_bodies(rows, websocket_probe=probe)["flows"]),
+                    len(FLOWS),
                 )
                 with self.assertRaisesRegex(ValueError, "round trip"):
                     check_flow_bodies(rows, websocket_probe=probe + "other")
@@ -33,11 +35,13 @@ class FlowBodyTests(unittest.TestCase):
     def test_tcp_and_quic_stream_numbers_are_independent(self):
         # Tshark numbers TCP and QUIC connections separately. Both may start at 0.
         rows = fixture("h2") + fixture("h3")
-        self.assertEqual(len(check_flow_bodies(rows)["flows"]), 6)
+        self.assertEqual(len(check_flow_bodies(rows)["flows"]), len(FLOWS))
 
     def test_all_operations_and_greeting(self):
         for protocol in ("h2", "h3"):
-            self.assertEqual(len(check_flow_bodies(fixture(protocol))["flows"]), 6)
+            self.assertEqual(
+                len(check_flow_bodies(fixture(protocol))["flows"]), len(FLOWS)
+            )
 
     def test_negative_zero_is_preserved_without_changing_unsigned_zero(self):
         self.assertIs(type(json_object('{"number":0}')["number"]), int)

@@ -896,9 +896,9 @@ jobs:
           else
             cargo build --locked -p rama-cli --all-features --bin rama
           fi
-      - name: Capture and verify all six operations
+      - name: Capture and verify every operation
         run: |
-          # TLS cells replay every retained connection variant for all six flows.
+          # TLS cells replay every retained connection variant for every flow.
           tls_args=()
           if [ "$PROTOCOL" = h1 ] && [ "$TRANSPORT" = tls ]; then
             tls_args+=(--tls)

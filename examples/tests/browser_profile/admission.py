@@ -3,7 +3,7 @@
 import ipaddress
 from collections import Counter, defaultdict
 from flow_bodies import json_object
-from flows import FLOWS, flow_name, operation_flow, request_authority
+from flows import DRIVER_FLOWS, FLOWS, flow_name, operation_flow, request_authority
 from native_h3_response import native_view, response_data
 from operations import DISCOVERIES
 from page_info import request_info, response_object
@@ -120,7 +120,9 @@ def admit(data, frames, page, origin, *, operations=None, independent_connection
     Native JSON redacts raw CIDs. We bind peer/request streams, while the ordinary
     QUIC verifier establishes its own wire CID/connection continuity separately.
     """
-    if not isinstance(page, dict) or set(page.get("protocols", {})) != set(FLOWS):
+    if not isinstance(page, dict) or set(page.get("protocols", {})) != set(
+        DRIVER_FLOWS
+    ):
         raise ValueError("complete driver protocols required")
     protocols = page["protocols"]
     results = page.get("page_results")
@@ -290,6 +292,18 @@ def admit(data, frames, page, origin, *, operations=None, independent_connection
                     raise ValueError("discovery native H3 response stream differs")
             keys.add(key)
             selected[operation.name] = key
+        # The link target and the subresources render no Request Info to bind
+        # natively; their declared streams still need a completed response.
+        for operation in operations.operations:
+            if operation.name in selected or operation.name == "ws":
+                continue
+            if operation.key in keys or operation.key not in completed:
+                raise ValueError(
+                    "declared response missing or shares a measured stream: "
+                    + operation.name
+                )
+            keys.add(operation.key)
+            selected[operation.name] = operation.key
     try:
         probe = results["websocket"]["probe"]
         greeting = results["websocket"]["greeting"]
@@ -340,6 +354,9 @@ def admit(data, frames, page, origin, *, operations=None, independent_connection
         if fields.get(":method") != "GET" or path not in {
             "/assets/style.css",
             "/assets/script.js",
+            "/assets/site.js",
+            "/assets/llama.svg",
+            "/assets/banner.jpeg",
             "/favicon.ico",
             "/report?h3_probe=1",
             "/",

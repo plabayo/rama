@@ -2,7 +2,7 @@
 
 import json
 import xml.etree.ElementTree as ET
-from flows import FLOWS
+from flows import DRIVER_FLOWS, FLOWS, UNECHOED_FLOWS
 from operations_tests.admission_fixtures import html_info
 from wire_fixtures import (
     flow_fixture as fixture,
@@ -37,7 +37,7 @@ def journey():
         field(packet, "ip.src", "198.51.100.7")
     page = dict(
         user_agent="fixture",
-        protocols=dict.fromkeys(FLOWS, "h1"),
+        protocols=dict.fromkeys(DRIVER_FLOWS, "h1"),
         report_url=ORIGIN + "/report",
         page_results={},
     )
@@ -60,6 +60,8 @@ def journey():
             value = dict(fp=dict(request_info=info), number=7 if flow == "fetch" else 8)
             body = json.dumps(value).encode()
             page["page_results"][flow] = value
+        elif flow in UNECHOED_FLOWS:
+            body = b"ok"
         else:
             value = html_info(info)
             body = value.encode()

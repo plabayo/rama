@@ -3,7 +3,7 @@
 import unittest
 from connection_fields import compare_connection_fields, h2_prefixes
 from copy import deepcopy
-from flows import FLOWS
+from flows import ASSET_FLOWS, FLOWS
 from types import SimpleNamespace
 from wire_fixtures import (
     connection_fields_document as document,
@@ -202,6 +202,8 @@ class ConnectionFieldTests(unittest.TestCase):
             ((":method", "CONNECT"), (":path", "/api/ws"), (":protocol", "websocket")),
             ((":method", "POST"), (":path", "/form")),
             ((":method", "GET"), (":path", "/form?source=web&turtles=yes")),
+            ((":method", "GET"), (":path", "/landing")),
+            *(((":method", "GET"), (":path", path)) for path in ASSET_FLOWS.values()),
         ]
 
         def observations(crossed):
@@ -209,7 +211,7 @@ class ConnectionFieldTests(unittest.TestCase):
             for variant in range(2):
                 for flow, operation in enumerate(operations):
                     connection = variant * len(FLOWS) + flow
-                    selected = variant if crossed else int(flow >= 3)
+                    selected = variant if crossed else int(flow >= len(FLOWS) // 2)
                     captured = variants[selected]["capture"]["slots"][0]["capture"]
                     hellos.append(
                         SimpleNamespace(connection=connection, capture=captured)

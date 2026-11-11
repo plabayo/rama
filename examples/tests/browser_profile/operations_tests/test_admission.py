@@ -6,11 +6,12 @@ import xml.etree.ElementTree as ET
 
 from operations import DISCOVERY, OperationLedger
 from admission import admit
+from flows import FLOWS
 from operations_tests.admission_fixtures import ORIGIN, admission_fixture
 
 
 def discovery_fixture():
-    raw, frames, page = admission_fixture()
+    raw, frames, page = admission_fixture(ORIGIN + "/report?h3_probe=1")
     tree = ET.fromstring(raw)
     frames = [
         replace(
@@ -76,7 +77,7 @@ class DiscoveryAdmissionTests(unittest.TestCase):
     def test_discovery_response_is_independently_admitted(self):
         raw, frames, page, planned = discovery_fixture()
         result = admit(raw, frames, page, ORIGIN, operations=planned)
-        self.assertEqual(set(result["flows"]), set(page["protocols"]))
+        self.assertEqual(set(result["flows"]), set(FLOWS))
         self.assertEqual(set(result["declared_operations"]), set(planned.names))
         self.assertIn(DISCOVERY, result["declared_operations"])
         changed = list(frames)

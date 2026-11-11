@@ -270,6 +270,30 @@ def h2_frame_bytes(frame):
             "http2.body.fragments",
         }
     ]
+    data = next(
+        (child for child in source if child.get("name") == "http2.data.data"), None
+    )
+    start, size = int(frame.get("pos")), int(frame.get("size", "-1"))
+    if (
+        data is not None
+        and any(child.get("name") == "http2.body.fragments" for child in frame)
+        and int(data.get("size", "-1")) > size - 9
+    ):
+        # tshark shows the frame completing a reassembled body with the whole body,
+        # in the reassembly's own data source. The frame carried the body's tail.
+        source.remove(data)
+        header = copy(source)
+        header.set("size", "9")
+        header = byte_span(header)
+        body = bytes.fromhex(data.get("value", ""))
+        payload = body[len(body) - (size - 9) :]
+        require(
+            len(body) == int(data.get("size"))
+            and int.from_bytes(header[:3], "big") == len(payload) == size - 9
+            and not header[4] & 0x08,
+            "reassembled H2 body does not end in this DATA frame",
+        )
+        return header + payload
     return byte_span(source)
 
 

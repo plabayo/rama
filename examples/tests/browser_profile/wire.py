@@ -19,7 +19,14 @@ from capture_health import require_quic_decoding
 from collections import Counter
 from dataclasses import dataclass
 from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, check_websocket_messages
-from flows import FLOWS, compare_requests, flow_counts, flow_name, operation_flow
+from flows import (
+    ASSET_FLOWS,
+    FLOWS,
+    compare_requests,
+    flow_counts,
+    flow_name,
+    operation_flow,
+)
 from pathlib import Path
 from pdml import MAX_CAPTURE_BYTES, MAX_PDML_BYTES, one, pdml_packets, values
 from qpack_decode_wire import resolve_blocked_headers
@@ -799,33 +806,20 @@ def decode_rows(
     output = {}
     for row in requests:
         method, uri = row["http.request.method"], row["http.request.uri"]
-        if (
-            reference
-            and method == "GET"
-            and (uri.startswith("/assets/") or uri == "/favicon.ico")
+        flow = flow_name(((":method", method), (":path", uri)), protocol="h1")
+        scheme = "https" if secure else "http"
+        if reference and method == "GET" and (
+            uri.startswith("/assets/") or uri == "/favicon.ico"
         ):
-            continue
-        flow = (
-            "navigate"
-            if uri == "/report" and method == "GET"
-            else (
-                "fetch"
-                if re.fullmatch(r"/api/fetch/number/[0-9]+", uri) and method == "POST"
-                else (
-                    "xhr"
-                    if re.fullmatch(r"/api/xml/number/[0-9]+", uri) and method == "POST"
-                    else (
-                        "form"
-                        if uri == "/form" and method == "POST"
-                        else (
-                            "form_get"
-                            if uri == "/form?source=web&turtles=yes" and method == "GET"
-                            else "ws" if uri == "/api/ws" and method == "GET" else None
-                        )
-                    )
-                )
-            )
-        )
+            # Every page requests the subresources; the measured report's own count.
+            referers = [
+                line.split(":", 1)[1].strip()
+                for line in header_lines(row["http.request.line"])
+                if line.split(":", 1)[0].lower() == "referer"
+            ]
+            page = f"{scheme}://{authority or row['http.host']}/report"
+            if flow not in ASSET_FLOWS or referers != [page] or flow in output:
+                continue
         require(flow is not None, f"unexpected request: {method} {uri}")
         require(row["http.request.version"] == "HTTP/1.1", "wire protocol")
         authority = authority or (
@@ -857,6 +851,7 @@ def decode_rows(
                 "content-type",
                 "content-length",
                 "origin",
+                "referer",
                 "sec-websocket-protocol",
                 "sec-websocket-extensions",
                 "x-rama-custom-header-marker",
@@ -868,9 +863,12 @@ def decode_rows(
                 require(value == authority, "Host binding")
                 value = "<authority>"
             elif lower == "origin" and value != "null":
-                scheme = "https" if secure else "http"
                 require(value == scheme + "://" + authority, "Origin binding")
                 value = scheme + "://<authority>"
+            elif lower == "referer":
+                page = scheme + "://" + authority + "/"
+                require(value.startswith(page), "Referer binding")
+                value = scheme + "://<authority>/" + value[len(page) :]
             elif lower == "sec-websocket-key":
                 require(flow == "ws" and key is None, "unexpected WebSocket key")
                 key = value
@@ -912,7 +910,7 @@ def decode_rows(
     require(
         set(output) == set(expected_flows),
         (
-            "six-operation coverage"
+            "complete operation coverage"
             if set(expected_flows) == set(FLOWS)
             else "expected H1 operation coverage"
         ),
@@ -970,7 +968,11 @@ def h1_header_blocks(rows):
     blocks = []
     for row in rows:
         uri = row["http.request.uri"]
-        if uri.startswith("/assets/") or uri == "/favicon.ico":
+        head = ((":method", row["http.request.method"]), (":path", uri))
+        # Subresources outside the measured ones create no declared operation.
+        if flow_name(head, protocol="h1") is None and (
+            uri.startswith("/assets/") or uri == "/favicon.ico"
+        ):
             continue
         require(row["http.request.version"] == "HTTP/1.1", "wire protocol")
         require(row["frame.number"].isdecimal(), "ambiguous request frame")
@@ -1151,10 +1153,10 @@ def read_h1_websocket_evidence(
 
 
 def h1_tls_evidence(capture, keylog, port, output, inspected):
-    """Check TCP TLS on streams carrying the six profiled fixture operations.
+    """Check TCP TLS on every stream carrying a profiled request.
 
-    Static assets can use separate browser connections without creating profile
-    observations. Exclude only those known asset requests, as read_capture does.
+    Subresources can use separate browser connections, which the profile retains
+    too. Only the favicon request creates no profile observation.
     """
     # tls_wire shares the bounded PDML parser above; defer to avoid an import cycle.
     from tls_wire import client_hellos, compare_tls_captures
@@ -1188,7 +1190,7 @@ def h1_tls_evidence(capture, keylog, port, output, inspected):
     for row in rows:
         uri = row["http.request.uri"]
         require(uri and "\x1f" not in uri, "missing or ambiguous request URI")
-        if uri.startswith("/assets/") or uri == "/favicon.ico":
+        if uri == "/favicon.ico":
             asset_requests += 1
             continue
         require(row["frame.number"].isdecimal(), "ambiguous request frame")
@@ -1232,7 +1234,7 @@ def verify_h1_flows(root, reference_port, replay_port, *, secure=False, variants
         expected_per_flow=variants,
     )
     report = {
-        "scope": "HTTP/1 six-operation request header tuples and bodies",
+        "scope": "HTTP/1 per-operation request header tuples and bodies",
         "normalization": "validated Host/Origin authorities and WebSocket nonce with checked response accept",
         "transport": "TLS" if secure else "plaintext",
         "limits": "credential-free same-origin H1 fixture; TLS shape checks are separate; no H2/H3 or distribution claim",
@@ -1241,7 +1243,7 @@ def verify_h1_flows(root, reference_port, replay_port, *, secure=False, variants
     (root / "wire-comparison.json").write_text(json.dumps(report, indent=2) + "\n")
     require(
         all(item["match"] for item in reports),
-        "six-operation wire mismatch; see wire-comparison.json",
+        "operation wire mismatch; see wire-comparison.json",
     )
     print(
         json.dumps({"result": "PASS", "flows": list(FLOWS), "scope": report["scope"]})

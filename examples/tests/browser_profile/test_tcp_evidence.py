@@ -227,6 +227,25 @@ class CaptureAccounting(unittest.TestCase):
         )
         self.assertEqual(h2_frame_bytes(node), b"\0")
 
+    def test_frame_completing_a_reassembled_body_keeps_its_own_tail(self):
+        frame = (
+            '<field name="http2.stream" pos="0" size="11">'
+            '<field name="http2.length" pos="0" size="3" value="000002"/>'
+            '<field name="http2.type" pos="3" size="1" value="00"/>'
+            '<field name="http2.flags" pos="4" size="1" value="{flags}"/>'
+            '<field name="http2.streamid" pos="5" size="4" value="00000003"/>'
+            '<field name="http2.body.fragments" pos="0" size="5"/>'
+            '<field name="http2.data.data" pos="0" size="5" value="0102030405"/>'
+            "</field>"
+        )
+        self.assertEqual(
+            h2_frame_bytes(ET.fromstring(frame.format(flags="01"))),
+            b"\0\0\x02\0\x01\0\0\0\x03\x04\x05",
+        )
+        # Padding would make the frame's payload differ from the body's tail.
+        with self.assertRaisesRegex(ValueError, "does not end in this DATA frame"):
+            h2_frame_bytes(ET.fromstring(frame.format(flags="09")))
+
     def test_unknown_stream_zero_frame_never_grants_requestless_admission(self):
         root, evidence = fixture()
         frame = root[5].find("proto[@name='http2']/field[2]")

@@ -1,9 +1,50 @@
 import unittest
 from types import SimpleNamespace
-from flows import scope_matches, flow_name
+from flows import (
+    ASSET_FLOWS,
+    ReplayTarget,
+    flow_initiator,
+    flow_name,
+    replay_args,
+    scope_matches,
+)
+from wire import Request
 
 
 class FlowContextTests(unittest.TestCase):
+    def test_link_and_measured_subresources_are_operations_without_new_initiators(self):
+        self.assertEqual(flow_name(((":method", "GET"), (":path", "/landing"))), "link")
+        self.assertEqual(flow_initiator("link"), "navigate")
+        for flow, path in ASSET_FLOWS.items():
+            with self.subTest(flow=flow):
+                self.assertEqual(flow_name(((":method", "GET"), (":path", path))), flow)
+                self.assertIsNone(flow_name(((":method", "POST"), (":path", path))))
+                self.assertIsNone(flow_initiator(flow))
+        # Other subresources stay outside the measured journey.
+        self.assertIsNone(
+            flow_name(((":method", "GET"), (":path", "/assets/banner.jpeg")))
+        )
+
+    def test_subresource_replay_has_no_initiator_and_a_current_referer(self):
+        request = Request(
+            "GET",
+            "/assets/style.css",
+            (),
+            b"",
+            {"referer": "https://localhost:1111/form?source=web&turtles=yes"},
+        )
+        target = ReplayTarget("h1", "https://localhost:2222")
+        args = replay_args("rama", "archive", "output", target, "style", request)
+        self.assertNotIn("--emulate-initiator", args)
+        self.assertIn(
+            "--header=referer: https://localhost:2222/form?source=web&turtles=yes", args
+        )
+        link = replay_args("rama", "archive", "output", target, "link", request)
+        self.assertEqual(link[link.index("--emulate-initiator") + 1], "navigate")
+        outside = Request("GET", "/landing", (), b"", {"referer": "about:blank"})
+        with self.assertRaisesRegex(ValueError, "Referer"):
+            replay_args("rama", "archive", "output", target, "link", outside)
+
     def test_post_and_get_forms_are_distinct_operations(self):
         self.assertEqual(flow_name(((":method", "POST"), (":path", "/form"))), "form")
         self.assertEqual(

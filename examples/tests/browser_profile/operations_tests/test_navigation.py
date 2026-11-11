@@ -23,7 +23,7 @@ def header_page(headers):
 
 
 def hint_fixture():
-    _raw, rows, page = admission_fixture()
+    _raw, rows, page = admission_fixture(ORIGIN + "/report")
     rows = [replace(row, packet=row.packet + 20) for row in rows]
     first = next(
         row
