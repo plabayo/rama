@@ -72,6 +72,8 @@ mod frames;
 mod handshake;
 mod initial_replay;
 mod lifecycle;
+#[cfg(test)]
+mod link_share;
 mod migration;
 mod mtud;
 mod pacing;
