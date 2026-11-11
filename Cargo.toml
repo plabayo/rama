@@ -844,6 +844,11 @@ required-features = ["std"]
 harness = false
 
 [[bench]]
+name = "graceful_scope_poll"
+required-features = ["std"]
+harness = false
+
+[[bench]]
 name = "uri_wire"
 required-features = ["net"]
 harness = false
