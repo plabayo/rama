@@ -196,7 +196,9 @@ pub async fn run(
         .with_get("/multipart", endpoint::multipart::get_form)
         .with_post("/multipart", endpoint::multipart::post_service())
         .with_post("/octet-stream", endpoint::octet_stream::service())
-        .with_post("/sink", endpoint::sink::service());
+        .with_post("/sink", endpoint::sink::service())
+        .with_get("/celebrate/curl30", endpoint::celebrate_curl30::service())
+        .with_head("/celebrate/curl30", endpoint::celebrate_curl30::service());
 
     let http_service = Arc::new(middlewares.into_layer(router));
 

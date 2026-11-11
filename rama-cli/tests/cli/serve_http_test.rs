@@ -10,7 +10,7 @@ use rama::{
         Body, BodyExtractExt, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt,
         client::{EasyHttpWebClient, Http3Connector},
-        header::{ACCEPT_ENCODING, CONTENT_ENCODING},
+        header::{ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE, VARY},
         headers::{ContentLength, HeaderMapExt, encoding::AcceptEncoding},
         layer::decompression::DecompressionLayer,
         service::client::{HttpClientExt, multipart},
@@ -115,6 +115,7 @@ async fn run_http_tests(base_uri: &str, versions: &[Version]) {
         run_http_test_endpoint_multipart(client.clone(), base_uri, http_version).await;
         run_http_test_endpoint_bytes(client.clone(), base_uri, http_version).await;
         run_http_test_endpoint_sink(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_celebrate_curl30(client.clone(), base_uri, http_version).await;
     }
 }
 
@@ -554,4 +555,39 @@ async fn run_http_test_endpoint_sink(
     assert_eq!(StatusCode::OK, resp.status());
     let body: serde_json::Value = resp.try_into_json().await.unwrap();
     assert_eq!(body["bytes"].as_u64(), Some(big.len() as u64));
+}
+
+async fn run_http_test_endpoint_celebrate_curl30(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &str,
+    http_version: Version,
+) {
+    let uri = format!("{base_uri}/celebrate/curl30");
+    for (accept, content_type, needle) in [
+        (None, "text/plain; charset=utf-8", "curl turns 30!"),
+        (Some("*/*"), "text/plain; charset=utf-8", "curl turns 30!"),
+        (Some("text/html"), "text/html; charset=utf-8", "<h1>"),
+        (
+            Some("application/json"),
+            "application/json; charset=utf-8",
+            "\"protocols\"",
+        ),
+    ] {
+        for method in [Method::GET, Method::HEAD] {
+            let mut req = client.request(method.clone(), &uri).version(http_version);
+            if let Some(accept) = accept {
+                req = req.header(ACCEPT, accept);
+            }
+            let resp = req.send().await.unwrap();
+            assert_eq!(StatusCode::OK, resp.status());
+            assert_eq!(content_type, resp.headers()[CONTENT_TYPE]);
+            assert_eq!("accept", resp.headers()[VARY]);
+            let body = resp.try_into_string().await.unwrap();
+            if method == Method::HEAD {
+                assert!(body.is_empty());
+            } else {
+                assert!(body.contains(needle), "{accept:?}: {body}");
+            }
+        }
+    }
 }

@@ -1,4 +1,5 @@
 pub(super) mod bytes;
+pub(super) mod celebrate_curl30;
 pub(super) mod index;
 pub(super) mod method;
 pub(super) mod multipart;
