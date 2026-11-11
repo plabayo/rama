@@ -337,6 +337,31 @@ mod tests {
     }
 
     #[test]
+    fn the_window_grows_again_within_two_round_trips_of_a_fast_convergence_reduction() {
+        let start = Instant::now();
+        let mtu = BASE_DATAGRAM_SIZE;
+        let round = Duration::from_millis(50);
+        let rtt = RttEstimator::new(round);
+        let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+        cubic.window = 30 * mtu;
+        cubic.ssthresh = cubic.window;
+        cubic.cubic_state.w_max = 40.0 * mtu as f64;
+
+        cubic.on_congestion_event(start, start + Duration::from_millis(1), false, mtu);
+        let reduced = cubic.window;
+        assert!(reduced < 30 * mtu);
+
+        let mut now = start;
+        for _ in 0..2 {
+            now += round;
+            for _ in 0..reduced / mtu {
+                cubic.on_ack(now, start + Duration::from_millis(1), mtu, false, &rtt);
+            }
+        }
+        assert!(cubic.window > reduced, "{} <= {reduced}", cubic.window);
+    }
+
+    #[test]
     fn congestion_avoidance_does_not_overflow_after_long_lossless_period() {
         let now = Instant::now();
         let rtt = RttEstimator::new(Duration::from_millis(100));
