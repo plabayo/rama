@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use super::{LINK_BITS_PER_SECOND, Outcome, Rival, Scenario};
+use super::{LINK_BITS_PER_SECOND, Outcome, Reordering, Rival, Scenario};
 use crate::proto::Duration;
 
 /// Scheduling delays of a sender's task: one well below the link's packet time, one above it.
@@ -11,6 +11,27 @@ const ACK_RATES: [usize; 3] = [1, 2, 8];
 const SHALLOW_QUEUE: usize = 25;
 /// A queue of about one round trip of the link's traffic, as sized for bulk transfers.
 const DEEP_QUEUE: usize = 100;
+/// Propagation delay of a short path in each direction.
+const LINK_DELAY: Duration = Duration::from_millis(15);
+/// The same for a path across a continent, where slow start has more to overshoot.
+const LONG_LINK_DELAY: Duration = Duration::from_millis(50);
+const KIB: u64 = 1024;
+
+/// The measured flow alone on the short, shallow link with a never-ending stream.
+fn scenario(seed: u64) -> Scenario {
+    Scenario {
+        seed,
+        competitor: None,
+        rival: Rival::Cubic,
+        queue: SHALLOW_QUEUE,
+        ack_every: 2,
+        jitter: JITTERS[0],
+        delay: LINK_DELAY,
+        transfer: None,
+        reordering: None,
+        duration: Duration::from_secs(60),
+    }
+}
 
 fn outcomes(
     seeds: Range<u64>,
@@ -39,13 +60,12 @@ fn outcomes_on(
     seeds
         .map(|seed| {
             Scenario {
-                seed,
                 competitor,
                 rival,
                 queue,
                 ack_every,
                 jitter,
-                duration: Duration::from_secs(60),
+                ..scenario(seed)
             }
             .run()
         })
@@ -101,13 +121,10 @@ fn a_flow_alone_on_the_link_uses_nearly_all_of_it() {
 #[test]
 fn equal_scenarios_measure_the_same() {
     let scenario = Scenario {
-        seed: 7,
         competitor: Some(2),
-        rival: Rival::Cubic,
-        queue: SHALLOW_QUEUE,
-        ack_every: 2,
         jitter: Duration::from_millis(2),
         duration: Duration::from_secs(10),
+        ..scenario(7)
     };
     assert_eq!(scenario.run(), scenario.run());
     assert_ne!(
@@ -166,6 +183,178 @@ fn table_of_link_shares_on_a_deep_queue_and_beside_a_reno_flow() {
             for ack_every in ACK_RATES {
                 let outcomes = outcomes_on(0..20, Some(2), rival, queue, ack_every, jitter);
                 report(label, ack_every, jitter, &outcomes);
+            }
+        }
+    }
+}
+
+/// The time the link itself needs for a transfer: its bytes at the link's rate and one round
+/// trip for the last of them to be asked for and to arrive.
+fn link_time(bytes: u64, delay: Duration) -> Duration {
+    Duration::from_secs_f64(bytes as f64 * 8.0 / LINK_BITS_PER_SECOND as f64) + 2 * delay
+}
+
+fn transfers(
+    seeds: Range<u64>,
+    bytes: u64,
+    competitor: Option<usize>,
+    queue: usize,
+    delay: Duration,
+) -> Vec<Outcome> {
+    seeds
+        .map(|seed| {
+            Scenario {
+                competitor,
+                queue,
+                delay,
+                transfer: Some(bytes),
+                ..scenario(seed)
+            }
+            .run()
+        })
+        .collect()
+}
+
+fn millis(outcome: &Outcome) -> f64 {
+    outcome
+        .completion
+        .map_or(f64::INFINITY, |time| time.as_secs_f64() * 1000.0)
+}
+
+#[test]
+fn a_transfer_alone_on_the_link_takes_little_longer_than_the_link_needs() {
+    for delay in [LINK_DELAY, LONG_LINK_DELAY] {
+        for queue in [SHALLOW_QUEUE, DEEP_QUEUE] {
+            for bytes in [100 * KIB, 1024 * KIB] {
+                let ideal = link_time(bytes, delay);
+                for outcome in transfers(0..2, bytes, None, queue, delay) {
+                    let taken = outcome.completion.expect("the transfer completes");
+                    assert!(taken >= ideal, "{taken:?} is less than the link needs");
+                    // Slow start from a small window costs round trips the link does not.
+                    assert!(
+                        taken <= 3 * ideal,
+                        "{bytes} bytes, {delay:?}, queue {queue}: {taken:?} against {ideal:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_transfer_completes_beside_a_competing_flow_and_after_losing_packets() {
+    let alone = transfers(0..1, 1024 * KIB, None, SHALLOW_QUEUE, LONG_LINK_DELAY)[0];
+    let shared = transfers(0..1, 1024 * KIB, Some(2), SHALLOW_QUEUE, LINK_DELAY)[0];
+    for outcome in [alone, shared] {
+        assert!(outcome.lost > 0, "{outcome:?}");
+        assert!(outcome.completion.is_some(), "{outcome:?}");
+    }
+}
+
+fn reordered(seed: u64, competitor: Option<usize>, reordering: Option<Reordering>) -> Outcome {
+    Scenario {
+        competitor,
+        reordering,
+        duration: Duration::from_secs(10),
+        ..scenario(seed)
+    }
+    .run()
+}
+
+#[test]
+fn packets_that_arrive_in_order_are_not_declared_lost_in_error() {
+    let plain = reordered(3, Some(2), None);
+    assert_eq!(plain.spurious, 0);
+    let none_late = Reordering {
+        fraction: 0.0,
+        extra: Duration::from_millis(20),
+    };
+    assert_eq!(reordered(3, Some(2), Some(none_late)), plain);
+    // Late by less than the link spends on one packet, so still ahead of the next one.
+    let barely_late = Reordering {
+        fraction: 0.05,
+        extra: Duration::from_micros(500),
+    };
+    assert_eq!(reordered(3, Some(2), Some(barely_late)).spurious, 0);
+}
+
+#[test]
+fn packets_overtaken_by_several_others_are_declared_lost_and_acknowledged_later() {
+    let late = Reordering {
+        fraction: 0.01,
+        extra: Duration::from_millis(8),
+    };
+    let plain = reordered(3, None, None);
+    let outcome = reordered(3, None, Some(late));
+    assert!(outcome.spurious > 0, "{outcome:?}");
+    assert!(outcome.spurious <= outcome.lost, "{outcome:?}");
+    assert!(outcome.reductions > plain.reductions, "{outcome:?}");
+    assert_eq!(outcome, reordered(3, None, Some(late)));
+}
+
+#[test]
+#[ignore = "a wider sweep to read, not to assert on; run with --ignored --nocapture"]
+#[expect(
+    clippy::print_stdout,
+    reason = "the measurements are the output of these tests"
+)]
+fn table_of_transfer_times() {
+    for delay in [LINK_DELAY, LONG_LINK_DELAY] {
+        for (depth, queue) in [("shallow", SHALLOW_QUEUE), ("deep", DEEP_QUEUE)] {
+            for (label, competitor) in [("alone", None), ("shared", Some(2))] {
+                for bytes in [100 * KIB, 1024 * KIB, 5 * 1024 * KIB] {
+                    let outcomes = transfers(0..40, bytes, competitor, queue, delay);
+                    let fastest = outcomes.iter().map(millis).fold(f64::MAX, f64::min);
+                    let slowest = outcomes.iter().map(millis).fold(0.0, f64::max);
+                    println!(
+                        "delay {:>2}ms {depth:<7} {label:<6} {:>4}KiB: ms {:6.0} \
+                         [{fastest:6.0}..{slowest:6.0}] link {:5.0} lost {:5.1} spurious {:4.1} \
+                         reductions {:4.1}",
+                        delay.as_millis(),
+                        bytes / KIB,
+                        mean(&outcomes, millis),
+                        link_time(bytes, delay).as_secs_f64() * 1000.0,
+                        mean(&outcomes, |o| o.lost as f64),
+                        mean(&outcomes, |o| o.spurious as f64),
+                        mean(&outcomes, |o| o.reductions as f64),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "a wider sweep to read, not to assert on; run with --ignored --nocapture"]
+#[expect(
+    clippy::print_stdout,
+    reason = "the measurements are the output of these tests"
+)]
+fn table_of_losses_declared_in_error_when_packets_arrive_late() {
+    for (label, competitor) in [("alone", None), ("shared", Some(2))] {
+        for extra in [2, 5, 20].map(Duration::from_millis) {
+            for fraction in [0.0, 0.001, 0.01, 0.05] {
+                let outcomes: Vec<Outcome> = (0..10)
+                    .map(|seed| {
+                        Scenario {
+                            competitor,
+                            reordering: Some(Reordering { fraction, extra }),
+                            ..scenario(seed)
+                        }
+                        .run()
+                    })
+                    .collect();
+                println!(
+                    "{label:<6} late {:>2}ms {:4.1}%: kbps {:5.0} share {:5.1}% lost {:6.1} \
+                     spurious {:6.1} reductions {:5.1}",
+                    extra.as_millis(),
+                    100.0 * fraction,
+                    mean(&outcomes, |o| o.kbps),
+                    100.0 * mean(&outcomes, share),
+                    mean(&outcomes, |o| o.lost as f64),
+                    mean(&outcomes, |o| o.spurious as f64),
+                    mean(&outcomes, |o| o.reductions as f64),
+                );
             }
         }
     }

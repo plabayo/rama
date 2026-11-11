@@ -4,9 +4,12 @@
 //! The first flow runs the configured [`Controller`] and the connection's [`Pacer`], called in
 //! the order and with the arguments `poll_transmit` and loss recovery use. The second is a
 //! reference CUBIC sender without pacing, standing in for a bulk TCP transfer.
+//!
+//! The measured flow sends either without end, for its share of the link, or a transfer of
+//! fixed length, for the time that takes; the link can deliver some of its packets late.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     ops::Range,
 };
 
@@ -23,8 +26,6 @@ mod tests;
 
 /// Rate of the shared link in bits per second.
 const LINK_BITS_PER_SECOND: u64 = 10_000_000;
-/// Propagation delay of the shared link in each direction.
-const LINK_DELAY: Duration = Duration::from_millis(15);
 /// Spacing of the packets of one burst on the sender's own, much faster, access link.
 const ACCESS_SPACING: Duration = Duration::from_micros(12);
 /// IPv4 and UDP headers around a QUIC datagram.
@@ -53,6 +54,15 @@ pub(super) enum Rival {
     Reno,
 }
 
+/// Late delivery of some of the measured flow's packets, behind the ones sent after them.
+#[derive(Clone, Copy)]
+pub(super) struct Reordering {
+    /// Fraction of the packets held back.
+    pub(super) fraction: f64,
+    /// Time a held back packet arrives after it would have.
+    pub(super) extra: Duration,
+}
+
 /// One measurement: who shares the link, how the measured flow is acknowledged, and for how long.
 #[derive(Clone, Copy)]
 pub(super) struct Scenario {
@@ -70,6 +80,13 @@ pub(super) struct Scenario {
     pub(super) ack_every: usize,
     /// Upper bound of the scheduling delay added to every sender wake-up.
     pub(super) jitter: Duration,
+    /// Propagation delay of the link in each direction.
+    pub(super) delay: Duration,
+    /// Bytes the measured flow has to send, after which the measurement ends; `None` gives it
+    /// a never-ending stream.
+    pub(super) transfer: Option<u64>,
+    /// Which of the measured flow's packets arrive late; `None` keeps them in order.
+    pub(super) reordering: Option<Reordering>,
     /// Time measured, starting when the measured flow starts.
     pub(super) duration: Duration,
 }
@@ -83,10 +100,16 @@ pub(super) struct Outcome {
     pub(super) competitor_kbps: f64,
     /// Fraction of the measured flow's packets it declared lost.
     pub(super) loss_rate: f64,
+    /// Packets the measured flow declared lost.
+    pub(super) lost: u64,
+    /// Packets it declared lost and saw acknowledged afterwards.
+    pub(super) spurious: u64,
     /// Times the measured flow's congestion window was reduced.
     pub(super) reductions: u64,
     /// Mean number of packets the measured flow released per wake-up that sent anything.
     pub(super) mean_burst: f64,
+    /// Time from the measured flow's start until its receiver held the whole transfer.
+    pub(super) completion: Option<Duration>,
 }
 
 impl Scenario {
@@ -102,8 +125,12 @@ impl Scenario {
             Duration::ZERO
         };
         let measured_start = start + lead + random_delay(&mut rng, Duration::from_millis(100));
+        let mut sender = Sender::measured(&config, start);
+        sender.transfer = self
+            .transfer
+            .map(|bytes| Transfer::new(bytes, DATAGRAM_SIZE));
         let measured = Flow::new(
-            Sender::measured(&config, start),
+            sender,
             Receiver::new(self.ack_every, 1, QUIC_MAX_ACK_DELAY, true),
             u64::from(DATAGRAM_SIZE) + UDP_OVERHEAD,
             start,
@@ -112,7 +139,12 @@ impl Scenario {
             events: BTreeMap::new(),
             scheduled: 0,
             rng,
+            // Its own sequence, so the choice of late packets leaves every other choice as it is.
+            reorder_rng: Pcg32::seed_from_u64(!self.seed),
             jitter: self.jitter,
+            delay: self.delay,
+            reordering: self.reordering,
+            completed: None,
             queue: self.queue,
             link: Link::default(),
             flows: vec![measured],
@@ -132,7 +164,8 @@ impl Scenario {
         }
         world.run();
 
-        let seconds = self.duration.as_secs_f64();
+        let completion = world.completed.map(|at| at - measured_start);
+        let seconds = completion.unwrap_or(self.duration).as_secs_f64();
         let kbps = |flow: &Flow| flow.receiver.delivered as f64 * 8.0 / seconds / 1000.0;
         let measured = &world.flows[0];
         let sender = &measured.sender;
@@ -140,8 +173,11 @@ impl Scenario {
             kbps: kbps(measured),
             competitor_kbps: world.flows.get(1).map_or(0.0, kbps),
             loss_rate: sender.lost as f64 / sender.next_packet.max(1) as f64,
+            lost: sender.lost,
+            spurious: sender.spurious,
             reductions: sender.reductions,
             mean_burst: sender.released as f64 / sender.bursts.max(1) as f64,
+            completion,
         }
     }
 }
@@ -208,7 +244,12 @@ struct World {
     events: BTreeMap<(Instant, u64), Event>,
     scheduled: u64,
     rng: Pcg32,
+    reorder_rng: Pcg32,
     jitter: Duration,
+    delay: Duration,
+    reordering: Option<Reordering>,
+    /// When the measured flow's receiver held the whole transfer.
+    completed: Option<Instant>,
     queue: usize,
     link: Link,
     flows: Vec<Flow>,
@@ -223,7 +264,7 @@ impl World {
 
     fn run(&mut self) {
         while let Some(((now, _), event)) = self.events.pop_first() {
-            if now >= self.measure.end {
+            if now >= self.measure.end || self.completed.is_some() {
                 break;
             }
             match event {
@@ -237,7 +278,8 @@ impl World {
                 }
                 Event::Arrive { flow, packet } => self.arrive(flow, packet, now),
                 Event::Serialised { flow, packet } => {
-                    self.schedule(now + LINK_DELAY, Event::Deliver { flow, packet });
+                    let late = self.lateness(flow);
+                    self.schedule(now + self.delay + late, Event::Deliver { flow, packet });
                     match self.link.queue.pop_front() {
                         Some((flow, packet)) => self.serialise(flow, packet, now),
                         None => self.link.busy = false,
@@ -248,6 +290,11 @@ impl World {
                     let state = &mut self.flows[flow];
                     if counted {
                         state.receiver.delivered += u64::from(state.sender.packet_size);
+                    }
+                    if let Some(transfer) = &mut state.sender.transfer
+                        && transfer.on_delivered(packet)
+                    {
+                        self.completed = Some(now);
                     }
                     match state.receiver.on_packet(packet, now) {
                         Response::Acknowledge(ack) => self.acknowledge(flow, ack, now),
@@ -265,6 +312,16 @@ impl World {
                     self.transmit(flow, now);
                 }
             }
+        }
+    }
+
+    /// How long after its turn a packet leaving the link reaches the receiver.
+    fn lateness(&mut self, flow: usize) -> Duration {
+        match self.reordering {
+            Some(reordering) if flow == 0 && self.reorder_rng.random_bool(reordering.fraction) => {
+                reordering.extra
+            }
+            _ => Duration::ZERO,
         }
     }
 
@@ -289,7 +346,7 @@ impl World {
     fn acknowledge(&mut self, flow: usize, ack: Ack, now: Instant) {
         let late = random_delay(&mut self.rng, self.jitter);
         let state = &mut self.flows[flow];
-        let at = (now + LINK_DELAY + late).max(state.last_handled);
+        let at = (now + self.delay + late).max(state.last_handled);
         state.last_handled = at;
         self.schedule(at, Event::Acknowledge { flow, ack });
     }
@@ -363,6 +420,9 @@ impl Receiver {
         let expected = self.largest.map_or(0, |(largest, _)| largest + 1);
         if packet > expected {
             self.prompt = self.prompt_after_gap;
+        } else if packet < expected {
+            // A late packet changes what the sender may still declare lost.
+            self.prompt = self.prompt.max(1);
         }
         if packet >= expected {
             self.largest = Some((packet, now));
@@ -407,8 +467,79 @@ impl Receiver {
     }
 }
 
-/// The sending half of a connection with a never-ending stream to send: the congestion
-/// controller, the pacer and loss recovery, driven as the connection drives them.
+/// A stream of fixed length, cut into the units one packet carries.
+struct Transfer {
+    units: u64,
+    /// The first unit not sent yet.
+    next: u64,
+    /// Units of packets declared lost, to send again.
+    resend: VecDeque<u64>,
+    /// The unit each packet carried.
+    carried: BTreeMap<u64, u64>,
+    acknowledged: BTreeSet<u64>,
+    delivered: BTreeSet<u64>,
+}
+
+impl Transfer {
+    fn new(bytes: u64, packet_size: u16) -> Self {
+        Self {
+            units: bytes.div_ceil(u64::from(packet_size)),
+            next: 0,
+            resend: VecDeque::new(),
+            carried: BTreeMap::new(),
+            acknowledged: BTreeSet::new(),
+            delivered: BTreeSet::new(),
+        }
+    }
+
+    /// Whether anything is left to send, new or again.
+    fn has_pending(&mut self) -> bool {
+        while let Some(unit) = self.resend.front()
+            && self.acknowledged.contains(unit)
+        {
+            self.resend.pop_front();
+        }
+        !self.resend.is_empty() || self.next < self.units
+    }
+
+    /// The unit the next packet carries; one declared lost goes before new ones.
+    fn take(&mut self) -> Option<u64> {
+        if !self.has_pending() {
+            return None;
+        }
+        self.resend.pop_front().or_else(|| {
+            self.next += 1;
+            Some(self.next - 1)
+        })
+    }
+
+    fn on_acknowledged(&mut self, packet: u64) {
+        if let Some(&unit) = self.carried.get(&packet) {
+            self.acknowledged.insert(unit);
+        }
+    }
+
+    fn on_lost(&mut self, packet: u64) {
+        if let Some(unit) = self.carried.get(&packet)
+            && !self.acknowledged.contains(unit)
+            && !self.resend.contains(unit)
+        {
+            self.resend.push_back(*unit);
+        }
+    }
+
+    /// Records a packet reaching the receiver; whether the receiver then holds every unit.
+    fn on_delivered(&mut self, packet: u64) -> bool {
+        if let Some(&unit) = self.carried.get(&packet) {
+            self.delivered.insert(unit);
+        }
+        self.delivered.len() as u64 == self.units
+    }
+}
+
+/// The sending half of a connection: the congestion controller, the pacer and loss recovery,
+/// driven as the connection drives them, with a never-ending stream to send unless it is
+/// given a [`Transfer`].
 struct Sender {
     controller: Box<dyn Controller>,
     pacer: Option<Pacer>,
@@ -419,8 +550,11 @@ struct Sender {
     persistent_congestion_threshold: u32,
     peer_max_ack_delay: Duration,
 
+    transfer: Option<Transfer>,
     /// Send times of the packets neither acknowledged nor declared lost.
     sent: BTreeMap<u64, Instant>,
+    /// Packets declared lost and not acknowledged since.
+    declared_lost: BTreeSet<u64>,
     next_packet: u64,
     in_flight: u64,
     app_limited: bool,
@@ -435,6 +569,7 @@ struct Sender {
     loss_probes: u32,
 
     lost: u64,
+    spurious: u64,
     reductions: u64,
     bursts: u64,
     released: u64,
@@ -494,7 +629,9 @@ impl Sender {
             time_threshold: config.time_threshold,
             persistent_congestion_threshold: config.persistent_congestion_threshold,
             peer_max_ack_delay,
+            transfer: None,
             sent: BTreeMap::new(),
+            declared_lost: BTreeSet::new(),
             next_packet: 0,
             in_flight: 0,
             app_limited: false,
@@ -508,6 +645,7 @@ impl Sender {
             pto_count: 0,
             loss_probes: 0,
             lost: 0,
+            spurious: 0,
             reductions: 0,
             bursts: 0,
             released: 0,
@@ -526,6 +664,9 @@ impl Sender {
             let mut untracked = 0;
             while datagrams < SEGMENTS_PER_TRANSMIT {
                 if self.loss_probes == 0 {
+                    if self.transfer.as_mut().is_some_and(|t| !t.has_pending()) {
+                        break;
+                    }
                     let window = self.controller.window();
                     let bytes_to_send = size + untracked;
                     if self.in_flight + bytes_to_send > window {
@@ -577,6 +718,14 @@ impl Sender {
     fn finish_packet(&mut self, now: Instant) -> u64 {
         let packet = self.next_packet;
         self.next_packet += 1;
+        if let Some(transfer) = &mut self.transfer {
+            // A probe with nothing left to send repeats the oldest unit still in flight.
+            let oldest = self.sent.keys().next();
+            let repeated = oldest.and_then(|packet| transfer.carried.get(packet).copied());
+            if let Some(unit) = transfer.take().or(repeated) {
+                transfer.carried.insert(packet, unit);
+            }
+        }
         self.sent.insert(packet, now);
         self.in_flight += u64::from(self.packet_size);
         self.last_sent = now;
@@ -608,6 +757,13 @@ impl Sender {
                     &self.rtt,
                 );
                 largest_newly_acked = Some(packet);
+            } else if self.declared_lost.remove(&packet) {
+                self.spurious += 1;
+            } else {
+                continue;
+            }
+            if let Some(transfer) = &mut self.transfer {
+                transfer.on_acknowledged(packet);
             }
         }
         if largest_newly_acked.is_none() {
@@ -683,9 +839,13 @@ impl Sender {
             return;
         };
         let size = u64::from(self.packet_size);
-        for packet in &lost {
-            self.sent.remove(packet);
+        for &packet in &lost {
+            self.sent.remove(&packet);
             self.in_flight -= size;
+            self.declared_lost.insert(packet);
+            if let Some(transfer) = &mut self.transfer {
+                transfer.on_lost(packet);
+            }
         }
         self.lost += lost.len() as u64;
         let window = self.controller.window();
