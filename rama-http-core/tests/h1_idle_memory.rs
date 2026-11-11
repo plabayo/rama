@@ -1,5 +1,5 @@
-//! An idle HTTP/1 keep-alive connection must not keep the buffers a large message grew,
-//! with or without vectored writes on the transport.
+//! An idle HTTP/1 keep-alive connection releases large message buffers after its
+//! brief reuse window, with or without vectored writes on the transport.
 
 #![expect(
     clippy::unwrap_used,
@@ -14,6 +14,7 @@ use std::{
     pin::Pin,
     sync::atomic::{AtomicUsize, Ordering},
     task::{Context, Poll, ready},
+    time::Duration,
 };
 
 use rama_core::{
@@ -62,6 +63,7 @@ static ALLOC: CountingAlloc = CountingAlloc;
 const IDLE_GROWTH_LIMIT: usize = kib(64);
 const RESPONSE_SIZE: usize = mib(4);
 const UPLOAD_SIZE: usize = mib(8);
+const SMALL_REQUEST: &[u8] = b"POST /small HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\n\r\nhi";
 
 /// Server side transport: requests arrive as whole chunks, like a fast socket hands over
 /// full reads; responses go out over a duplex; vectored-write support is configurable.
@@ -155,7 +157,7 @@ async fn settle() {
     }
 }
 
-async fn idle_growth_after(vectored: bool, request: &[Bytes]) -> usize {
+async fn idle_growth_after(vectored: bool, request: &[Bytes]) -> (usize, usize) {
     let big = Bytes::from(vec![b'x'; RESPONSE_SIZE]);
     let (requests, rx) = mpsc::unbounded_channel();
     let (mut client, server) = tokio::io::duplex(kib(16));
@@ -182,11 +184,7 @@ async fn idle_growth_after(vectored: bool, request: &[Bytes]) -> usize {
     ));
 
     let mut scratch = vec![0u8; kib(16)];
-    requests
-        .send(Bytes::from_static(
-            b"POST /warmup HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\n\r\nhi",
-        ))
-        .unwrap();
+    requests.send(Bytes::from_static(SMALL_REQUEST)).unwrap();
     read_response(&mut client, &mut scratch).await;
     settle().await;
     let baseline = LIVE_BYTES.load(Ordering::Relaxed);
@@ -196,14 +194,24 @@ async fn idle_growth_after(vectored: bool, request: &[Bytes]) -> usize {
     }
     read_response(&mut client, &mut scratch).await;
     settle().await;
-    let growth = LIVE_BYTES.load(Ordering::Relaxed).saturating_sub(baseline);
+    let warm_growth = LIVE_BYTES.load(Ordering::Relaxed).saturating_sub(baseline);
+
+    // No new traffic: the connection must wake itself to release its warm
+    // allocation. Keep the original long-idle memory bound unchanged.
+    tokio::time::advance(Duration::from_millis(150)).await;
+    settle().await;
+    let expired_growth = LIVE_BYTES.load(Ordering::Relaxed).saturating_sub(baseline);
+
+    requests.send(Bytes::from_static(SMALL_REQUEST)).unwrap();
+    read_response(&mut client, &mut scratch).await;
 
     connection.abort();
-    growth
+    assert!(connection.await.unwrap_err().is_cancelled());
+    (warm_growth, expired_growth)
 }
 
 // One test so no other test allocates while the counter is read.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn idle_connection_releases_large_message_buffers() {
     let download = [Bytes::from_static(b"GET /big HTTP/1.1\r\nHost: a\r\n\r\n")];
     let upload_body = Bytes::from(vec![b'u'; UPLOAD_SIZE]);
@@ -217,13 +225,21 @@ async fn idle_connection_releases_large_message_buffers() {
     );
 
     for vectored in [false, true] {
-        let growth = idle_growth_after(vectored, &download).await;
+        let (warm_growth, growth) = idle_growth_after(vectored, &download).await;
+        assert!(
+            warm_growth < IDLE_GROWTH_LIMIT,
+            "vectored={vectored}: write buffers retained {warm_growth} bytes after flush"
+        );
         assert!(
             growth < IDLE_GROWTH_LIMIT,
             "vectored={vectored}: idle connection kept {growth} bytes after a large response"
         );
 
-        let growth = idle_growth_after(vectored, &upload).await;
+        let (warm_growth, growth) = idle_growth_after(vectored, &upload).await;
+        assert!(
+            (IDLE_GROWTH_LIMIT..kib(512) + IDLE_GROWTH_LIMIT).contains(&warm_growth),
+            "vectored={vectored}: unexpected warm read-buffer growth of {warm_growth} bytes"
+        );
         assert!(
             growth < IDLE_GROWTH_LIMIT,
             "vectored={vectored}: idle connection kept {growth} bytes after a large upload"
