@@ -184,11 +184,11 @@ impl Controller for Cubic {
                 cubic_cwnd = cmp::max(cubic_cwnd, w_est as u64);
             } else if cubic_cwnd < w_cubic as u64 {
                 // Concave region or convex region use same increment.
+                // At most half a window ahead, so growth stays below slow start's (RFC 9438 4.2).
+                let target = w_cubic.min(1.5 * cubic_cwnd as f64);
                 let cubic_inc =
-                    (w_cubic - cubic_cwnd as f64) / cubic_cwnd as f64 * self.current_mtu as f64;
+                    (target - cubic_cwnd as f64) / cubic_cwnd as f64 * self.current_mtu as f64;
 
-                // w_cubic grows cubically with the time since the last congestion
-                // event and can exceed `u64::MAX` after a long lossless period.
                 cubic_cwnd = cubic_cwnd.saturating_add(cubic_inc as u64);
             }
 
@@ -484,11 +484,45 @@ mod tests {
         let window = cubic.window;
 
         // After ten days without a congestion event, w_cubic exceeds u64::MAX.
-        // Before this fix, computing the window increment overflowed.
         let later = now + Duration::from_secs(10 * 24 * 60 * 60);
-        cubic.on_ack(later, later, BASE_DATAGRAM_SIZE, false, &rtt);
+        for _ in 0..window / BASE_DATAGRAM_SIZE {
+            cubic.on_ack(later, later, BASE_DATAGRAM_SIZE, false, &rtt);
+        }
 
-        assert_eq!(cubic.window, window + BASE_DATAGRAM_SIZE);
+        assert!(cubic.window > window);
+        assert!(cubic.window <= 2 * window);
+    }
+
+    #[test]
+    fn the_window_grows_by_at_most_half_per_round_trip_however_long_since_the_last_reduction() {
+        let start = Instant::now();
+        let mtu = BASE_DATAGRAM_SIZE;
+        let rtt = RttEstimator::new(Duration::from_millis(50));
+        let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+        cubic.window = 100 * mtu;
+        cubic.ssthresh = cubic.window;
+        cubic.cubic_state.w_max = cubic.window as f64;
+        cubic.on_congestion_event(start, start + Duration::from_millis(1), false, mtu);
+
+        // Far into the convex region the cubic function is many windows ahead.
+        let mut now = start + Duration::from_secs(60);
+        for _ in 0..3 {
+            let before = cubic.window;
+            acknowledge_rounds(
+                &mut cubic,
+                &mut now,
+                start + Duration::from_secs(1),
+                &rtt,
+                1,
+            );
+            assert!(cubic.window > before);
+            assert!(
+                cubic.window <= before + before / 2 + mtu,
+                "{} segments became {}",
+                before / mtu,
+                cubic.window / mtu
+            );
+        }
     }
 
     #[test]
