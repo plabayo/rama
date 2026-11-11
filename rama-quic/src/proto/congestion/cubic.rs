@@ -267,6 +267,10 @@ impl Controller for Cubic {
         self.window
     }
 
+    fn in_slow_start(&self) -> bool {
+        self.window < self.ssthresh
+    }
+
     fn metrics(&self) -> super::ControllerMetrics {
         super::ControllerMetrics {
             congestion_window: self.window(),

@@ -18,7 +18,7 @@ use rand_pcg::Pcg32;
 
 use crate::proto::{
     CongestionControl, Duration, Instant, TIMER_GRANULARITY, TransportConfig,
-    congestion::Controller,
+    congestion::{Controller, window_in_use},
     connection::{RttEstimator, pacing::Pacer},
 };
 
@@ -697,7 +697,12 @@ impl Sender {
             if untracked > 0 {
                 packets.push(self.finish_packet(now));
             }
-            self.app_limited = datagrams == 0 && !blocked;
+            // A blocked transmit is followed by one that builds nothing and decides this.
+            self.app_limited = if blocked {
+                !window_in_use(self.controller.as_ref(), self.in_flight, self.packet_size)
+            } else {
+                datagrams == 0
+            };
             if datagrams == 0 {
                 break;
             }
@@ -1014,6 +1019,10 @@ impl Controller for ReferenceCubic {
 
     fn window(&self) -> u64 {
         (self.cwnd * self.segment) as u64
+    }
+
+    fn in_slow_start(&self) -> bool {
+        self.cwnd < self.ssthresh
     }
 
     fn clone_box(&self) -> Box<dyn Controller> {

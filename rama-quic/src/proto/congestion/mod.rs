@@ -73,6 +73,9 @@ pub(crate) trait Controller: Send + Sync {
     /// Number of ack-eliciting bytes that may be in flight
     fn window(&self) -> u64;
 
+    /// Whether every acknowledged byte adds one to the window, doubling it each round trip
+    fn in_slow_start(&self) -> bool;
+
     /// Retrieve implementation-specific metrics used to populate `qlog` traces when they are enabled
     fn metrics(&self) -> ControllerMetrics {
         ControllerMetrics {
@@ -108,6 +111,17 @@ pub(crate) trait ControllerFactory {
 }
 
 pub(crate) const BASE_DATAGRAM_SIZE: u64 = 1200;
+
+/// Datagrams of spare window a sender held back by its pacer may leave and still be using it.
+const SPARE_DATAGRAMS_IN_USE: u64 = 3;
+
+/// Whether a sender that cannot send more right now is using its window: slow start doubles it
+/// ahead of the paced flight, and after that the flight is within a few datagrams of it.
+pub(crate) fn window_in_use(controller: &dyn Controller, in_flight: u64, mtu: u16) -> bool {
+    let window = controller.window();
+    let spare = SPARE_DATAGRAMS_IN_USE * u64::from(mtu);
+    controller.in_slow_start() || in_flight.saturating_add(spare) >= window
+}
 
 #[cfg(test)]
 mod tests {

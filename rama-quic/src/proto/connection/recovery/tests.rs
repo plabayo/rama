@@ -1,6 +1,9 @@
 use crate::proto::{
     Duration, Instant,
-    connection::{recovery::persistent_congestion_period, spaces::SentPacket},
+    connection::{
+        pacing::Pacer, paths::RttEstimator, recovery::persistent_congestion_period,
+        spaces::SentPacket,
+    },
 };
 use rama_core::bytes::Bytes;
 use rama_quic_proto::{
@@ -8,6 +11,45 @@ use rama_quic_proto::{
     packet::SpaceId,
     range_set::ArrayRangeSet,
 };
+
+impl super::Connection {
+    /// Whether a transmit the pacer holds back with `in_flight` bytes outstanding leaves the
+    /// connection limited by something other than its window.
+    fn is_app_limited_when_paced_with(&mut self, now: Instant, in_flight: u64) -> bool {
+        let rtt = Duration::from_millis(100);
+        self.path.rtt = RttEstimator::new(rtt);
+        self.path.in_flight.bytes = in_flight;
+        let window = self.path.congestion.window();
+        self.path.pacing = Pacer::new(rtt, window, self.path.current_mtu(), now);
+        self.path.pacing.on_transmit(u16::MAX);
+        let mut buf = Vec::new();
+        assert!(
+            self.poll_transmit(now, 10, &mut buf).is_none(),
+            "the pacer holds the queued data back"
+        );
+        self.app_limited
+    }
+
+    pub(crate) fn assert_a_pacer_pause_uses_the_window_only_when_most_of_it_is_in_flight(
+        &mut self,
+        now: Instant,
+    ) {
+        assert!(self.streams.can_send_stream_data());
+        let mtu = u64::from(self.path.current_mtu());
+        let window = self.path.congestion.window();
+        assert!(window > 20 * mtu);
+        assert!(self.path.congestion.in_slow_start());
+        // Slow start doubles the window while the paced flight follows behind it.
+        assert!(!self.is_app_limited_when_paced_with(now, window / 4));
+
+        self.path.congestion.on_congestion_event(now, now, false, 0);
+        assert!(!self.path.congestion.in_slow_start());
+        let window = self.path.congestion.window();
+        assert!(window > 20 * mtu);
+        assert!(self.is_app_limited_when_paced_with(now, window / 2 + mtu));
+        assert!(!self.is_app_limited_when_paced_with(now, window - mtu));
+    }
+}
 
 #[test]
 fn persistent_congestion_period_saturates() {
@@ -499,6 +541,10 @@ impl crate::proto::congestion::Controller for LossRecorder {
 
     fn window(&self) -> u64 {
         12000
+    }
+
+    fn in_slow_start(&self) -> bool {
+        false
     }
 
     fn initial_window(&self) -> u64 {

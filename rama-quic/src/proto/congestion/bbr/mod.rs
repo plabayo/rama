@@ -495,6 +495,11 @@ impl Controller for Bbr {
         self.cwnd
     }
 
+    fn in_slow_start(&self) -> bool {
+        // Until the bandwidth stops growing the window adds every acknowledged byte.
+        !self.is_at_full_bandwidth
+    }
+
     fn metrics(&self) -> ControllerMetrics {
         ControllerMetrics {
             congestion_window: self.window(),
