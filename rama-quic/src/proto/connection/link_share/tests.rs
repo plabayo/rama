@@ -200,6 +200,7 @@ fn transfers(
     competitor: Option<usize>,
     queue: usize,
     delay: Duration,
+    jitter: Duration,
 ) -> Vec<Outcome> {
     seeds
         .map(|seed| {
@@ -207,6 +208,7 @@ fn transfers(
                 competitor,
                 queue,
                 delay,
+                jitter,
                 transfer: Some(bytes),
                 ..scenario(seed)
             }
@@ -227,7 +229,7 @@ fn a_transfer_alone_on_the_link_takes_little_longer_than_the_link_needs() {
         for queue in [SHALLOW_QUEUE, DEEP_QUEUE] {
             for bytes in [100 * KIB, 1024 * KIB] {
                 let ideal = link_time(bytes, delay);
-                for outcome in transfers(0..2, bytes, None, queue, delay) {
+                for outcome in transfers(0..2, bytes, None, queue, delay, JITTERS[0]) {
                     let taken = outcome.completion.expect("the transfer completes");
                     assert!(taken >= ideal, "{taken:?} is less than the link needs");
                     // Slow start from a small window costs round trips the link does not.
@@ -243,8 +245,16 @@ fn a_transfer_alone_on_the_link_takes_little_longer_than_the_link_needs() {
 
 #[test]
 fn a_transfer_completes_beside_a_competing_flow_and_after_losing_packets() {
-    let alone = transfers(0..1, 1024 * KIB, None, SHALLOW_QUEUE, LONG_LINK_DELAY)[0];
-    let shared = transfers(0..1, 1024 * KIB, Some(2), SHALLOW_QUEUE, LINK_DELAY)[0];
+    let jitter = JITTERS[0];
+    let alone = transfers(
+        0..1,
+        1024 * KIB,
+        None,
+        SHALLOW_QUEUE,
+        LONG_LINK_DELAY,
+        jitter,
+    )[0];
+    let shared = transfers(0..1, 1024 * KIB, Some(2), SHALLOW_QUEUE, LINK_DELAY, jitter)[0];
     for outcome in [alone, shared] {
         assert!(outcome.lost > 0, "{outcome:?}");
         assert!(outcome.completion.is_some(), "{outcome:?}");
@@ -357,25 +367,28 @@ fn a_flow_keeps_its_share_of_the_link_when_packets_arrive_late() {
     reason = "the measurements are the output of these tests"
 )]
 fn table_of_transfer_times() {
-    for delay in [LINK_DELAY, LONG_LINK_DELAY] {
-        for (depth, queue) in [("shallow", SHALLOW_QUEUE), ("deep", DEEP_QUEUE)] {
-            for (label, competitor) in [("alone", None), ("shared", Some(2))] {
-                for bytes in [100 * KIB, 1024 * KIB, 5 * 1024 * KIB] {
-                    let outcomes = transfers(0..40, bytes, competitor, queue, delay);
-                    let fastest = outcomes.iter().map(millis).fold(f64::MAX, f64::min);
-                    let slowest = outcomes.iter().map(millis).fold(0.0, f64::max);
-                    println!(
-                        "delay {:>2}ms {depth:<7} {label:<6} {:>4}KiB: ms {:6.0} \
-                         [{fastest:6.0}..{slowest:6.0}] link {:5.0} lost {:5.1} spurious {:4.1} \
-                         reductions {:4.1}",
-                        delay.as_millis(),
-                        bytes / KIB,
-                        mean(&outcomes, millis),
-                        link_time(bytes, delay).as_secs_f64() * 1000.0,
-                        mean(&outcomes, |o| o.lost as f64),
-                        mean(&outcomes, |o| o.spurious as f64),
-                        mean(&outcomes, |o| o.reductions as f64),
-                    );
+    for jitter in JITTERS {
+        for delay in [LINK_DELAY, LONG_LINK_DELAY] {
+            for (depth, queue) in [("shallow", SHALLOW_QUEUE), ("deep", DEEP_QUEUE)] {
+                for (label, competitor) in [("alone", None), ("shared", Some(2))] {
+                    for bytes in [100 * KIB, 1024 * KIB, 5 * 1024 * KIB] {
+                        let outcomes = transfers(0..40, bytes, competitor, queue, delay, jitter);
+                        let fastest = outcomes.iter().map(millis).fold(f64::MAX, f64::min);
+                        let slowest = outcomes.iter().map(millis).fold(0.0, f64::max);
+                        println!(
+                            "delay {:>2}ms jitter {:>4}us {depth:<7} {label:<6} {:>4}KiB: \
+                             ms {:6.0} [{fastest:6.0}..{slowest:6.0}] link {:5.0} lost {:5.1} \
+                             spurious {:4.1} reductions {:4.1}",
+                            delay.as_millis(),
+                            jitter.as_micros(),
+                            bytes / KIB,
+                            mean(&outcomes, millis),
+                            link_time(bytes, delay).as_secs_f64() * 1000.0,
+                            mean(&outcomes, |o| o.lost as f64),
+                            mean(&outcomes, |o| o.spurious as f64),
+                            mean(&outcomes, |o| o.reductions as f64),
+                        );
+                    }
                 }
             }
         }
