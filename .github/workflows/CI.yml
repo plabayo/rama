@@ -1095,7 +1095,20 @@ jobs:
       - name: Prepare packet capture
         run: |
           sudo modprobe ip6table_filter
+          # Ubuntu 26 confines tshark; retained captures and TLS keys live outside /tmp.
+          if [[ -f /etc/apparmor.d/tshark ]]; then
+            printf '"%s/quic-interop/{,**}" r,\n' "$RUNNER_TEMP" \
+              | sudo tee -a /etc/apparmor.d/local/tshark >/dev/null
+            sudo apparmor_parser --replace /etc/apparmor.d/tshark
+          fi
           tshark --version
+          # Exercise the exact retained-capture location before building the endpoints.
+          mkdir "$RUNNER_TEMP/quic-interop"
+          python3 -c 'import struct, sys; open(sys.argv[1], "wb").write(struct.pack("<IHHIIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))' \
+            "$RUNNER_TEMP/quic-interop/read-probe.pcap"
+          tshark -r "$RUNNER_TEMP/quic-interop/read-probe.pcap" -c 1
+          rm "$RUNNER_TEMP/quic-interop/read-probe.pcap"
+          rmdir "$RUNNER_TEMP/quic-interop"
           docker compose version
       # The engine's built-in builder runs the image build, so no buildx builder
       # image is pulled; Docker Hub pulls fall back to it when the mirror misses.
