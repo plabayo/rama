@@ -99,7 +99,7 @@ fn equal_scenarios_measure_the_same() {
 #[test]
 fn a_flow_keeps_its_share_of_the_link_beside_a_cubic_flow() {
     for jitter in JITTERS {
-        for (ack_every, floor) in ACK_RATES.into_iter().zip([0.55, 0.44, 0.35]) {
+        for (ack_every, floor) in ACK_RATES.into_iter().zip([0.58, 0.48, 0.38]) {
             let outcomes = outcomes(0..5, Some(2), ack_every, jitter);
             report("shared", ack_every, jitter, &outcomes);
             let share = mean(&outcomes, share);

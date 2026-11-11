@@ -22,6 +22,9 @@ pub(super) struct State {
 
     w_max: f64,
 
+    // cwnd at the start of the current congestion avoidance stage (RFC 9438 section 4.1.2).
+    cwnd_epoch: f64,
+
     // Store cwnd increment during congestion avoidance.
     cwnd_inc: u64,
 }
@@ -32,10 +35,10 @@ pub(super) struct State {
 /// not packets.
 /// Unit of t (duration) and RTT are based on seconds (f64).
 impl State {
-    // K = cbrt(w_max * (1 - beta_cubic) / C) (Eq. 2)
+    // K = cbrt((w_max - cwnd_epoch) / C) (RFC 9438 Figure 2)
     fn cubic_k(&self, max_datagram_size: u64) -> f64 {
-        let w_max = self.w_max / max_datagram_size as f64;
-        (w_max * (1.0 - BETA_CUBIC) / C).cbrt()
+        let climb = (self.w_max - self.cwnd_epoch).max(0.0) / max_datagram_size as f64;
+        (climb / C).cbrt()
     }
 
     // W_cubic(t) = C * (t - K)^3 - w_max (Eq. 1)
@@ -49,15 +52,10 @@ impl State {
         (C * (t.as_secs_f64() - self.k).powi(3) + w_max) * max_datagram_size as f64
     }
 
-    // W_est(t) = w_max * beta_cubic + 3 * (1 - beta_cubic) / (1 + beta_cubic) *
-    // (t / RTT) (Eq. 4)
-    #[expect(
-        clippy::suboptimal_flops,
-        reason = "written as RFC 8312 states the equation; fusing the multiply and add rounds differently from the reference"
-    )]
+    // W_est(t) = cwnd_epoch + 3 * (1 - beta_cubic) / (1 + beta_cubic) * (t / RTT) (RFC 9438 section 4.3)
     fn w_est(&self, t: Duration, rtt: Duration, max_datagram_size: u64) -> f64 {
-        let w_max = self.w_max / max_datagram_size as f64;
-        (w_max * BETA_CUBIC
+        let cwnd_epoch = self.cwnd_epoch / max_datagram_size as f64;
+        (cwnd_epoch
             + 3.0 * (1.0 - BETA_CUBIC) / (1.0 + BETA_CUBIC) * t.as_secs_f64() / rtt.as_secs_f64())
             * max_datagram_size as f64
     }
@@ -131,6 +129,7 @@ impl Controller for Cubic {
                 self.recovery_start_time = Some(now);
 
                 self.cubic_state.w_max = self.window as f64;
+                self.cubic_state.cwnd_epoch = self.window as f64;
                 self.cubic_state.k = 0.0;
             }
 
@@ -206,6 +205,7 @@ impl Controller for Cubic {
 
         self.ssthresh = cmp::max((window * BETA_CUBIC) as u64, self.minimum_window());
         self.window = self.ssthresh;
+        self.cubic_state.cwnd_epoch = self.window as f64;
         self.cubic_state.k = self.cubic_state.cubic_k(self.current_mtu);
 
         self.cubic_state.cwnd_inc = (self.cubic_state.cwnd_inc as f64 * BETA_CUBIC) as u64;
