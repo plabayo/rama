@@ -473,7 +473,7 @@ async fn a_wedged_worker_refuses_later_jobs_instead_of_queueing() {
     assert!(worker.is_abandoned());
 
     // later callers must not queue behind a job that may never return
-    let mut later = Box::pin(worker.eval("2"));
+    let mut later = std::pin::pin!(worker.eval("2"));
     let err = match poll_once(later.as_mut()) {
         Poll::Ready(Err(err)) => err,
         Poll::Ready(Ok(value)) => panic!("abandoned worker returned {value:?}"),

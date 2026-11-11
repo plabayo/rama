@@ -962,6 +962,41 @@ impl From<Code> for i32 {
     }
 }
 
+/// Error returned if a request didn't complete within the configured timeout.
+///
+/// Timeouts can be supported via [`GrpcTimeout`](crate::service::GrpcTimeout)
+/// and make use of the [`grpc-timeout` metadata value][spec].
+///
+/// [spec]: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md
+#[derive(Debug)]
+pub struct TimeoutExpired(pub ());
+
+impl fmt::Display for TimeoutExpired {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Timeout expired")
+    }
+}
+
+// std::error::Error only requires a type to impl Debug and Display
+impl std::error::Error for TimeoutExpired {}
+
+/// Wrapper type to indicate that an error occurs during the connection
+/// process, so that the appropriate gRPC Status can be inferred.
+#[derive(Debug)]
+pub struct ConnectError(pub BoxError);
+
+impl fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for ConnectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rama_core::error::BoxError;
@@ -1105,40 +1140,5 @@ mod tests {
         let status = Status::from_header_map(&header_map).unwrap();
 
         assert_eq!(status.details(), DETAILS);
-    }
-}
-
-/// Error returned if a request didn't complete within the configured timeout.
-///
-/// Timeouts can be supported via [`GrpcTimeout`](crate::service::GrpcTimeout)
-/// and make use of the [`grpc-timeout` metadata value][spec].
-///
-/// [spec]: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md
-#[derive(Debug)]
-pub struct TimeoutExpired(pub ());
-
-impl fmt::Display for TimeoutExpired {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Timeout expired")
-    }
-}
-
-// std::error::Error only requires a type to impl Debug and Display
-impl std::error::Error for TimeoutExpired {}
-
-/// Wrapper type to indicate that an error occurs during the connection
-/// process, so that the appropriate gRPC Status can be inferred.
-#[derive(Debug)]
-pub struct ConnectError(pub BoxError);
-
-impl fmt::Display for ConnectError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl std::error::Error for ConnectError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.0.as_ref())
     }
 }

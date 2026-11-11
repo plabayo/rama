@@ -1789,209 +1789,6 @@ fn cid_space_exhausted(cid_len: usize, in_use: usize) -> bool {
     in_use as u64 > space - reserve
 }
 
-#[cfg(test)]
-mod tests {
-    use std::net::SocketAddr;
-
-    use super::{
-        ConnectionHandle, ConnectionId, ConnectionIndex, ConnectionMeta, FourTuple, FxHashMap,
-        Installed, RESET_TOKEN_SIZE, ResetToken, Side, UsedResetTokens, cid_space_exhausted,
-    };
-
-    #[test]
-    fn retiring_connection_removes_only_its_own_address_routes() {
-        for side in [Side::Client, Side::Server] {
-            for replaced in [false, true] {
-                let mut index = ConnectionIndex::default();
-                let addresses = FourTuple {
-                    remote: "127.0.0.1:1234".parse().unwrap(),
-                    local: Some("127.0.0.1:5678".parse().unwrap()),
-                };
-                let cid = ConnectionId::new(&[]);
-                let old = ConnectionHandle(0);
-                let replacement = ConnectionHandle(1);
-                index.insert_conn(addresses, cid, old, side);
-                if replaced {
-                    index.insert_conn(addresses, cid, replacement, side);
-                }
-                let meta = ConnectionMeta {
-                    init_cid: cid,
-                    cids_issued: 0,
-                    loc_cids: FxHashMap::default(),
-                    addresses,
-                    side,
-                    reset_tokens: UsedResetTokens::default(),
-                };
-                index.remove_routes(old, &meta);
-                let remaining = if side.is_server() {
-                    index.incoming_connection_remotes.get(&addresses)
-                } else {
-                    index.outgoing_connection_remotes.get(&addresses.remote)
-                };
-                assert_eq!(remaining.copied(), replaced.then_some(replacement));
-            }
-        }
-    }
-
-    fn addr(last: u8) -> SocketAddr {
-        SocketAddr::from(([127, 0, 0, last], 4433))
-    }
-
-    fn token(n: u8) -> ResetToken {
-        ResetToken::from([n; RESET_TOKEN_SIZE])
-    }
-
-    /// The routing table follows the engine: a release frees the slot it took, an installation of
-    /// a pair already held is not a second route, and a release still naming an older
-    /// installation cannot take away the one that replaced it.
-    #[test]
-    fn a_route_is_released_only_by_the_installation_that_owns_it() {
-        let mut routes = UsedResetTokens::default();
-        assert_eq!(
-            routes.insert(1, addr(1), token(1), 10),
-            Installed::New,
-            "a new route"
-        );
-        assert_eq!(
-            routes.insert(1, addr(1), token(1), 11),
-            Installed::Refreshed,
-            "the same pair again is not a second route"
-        );
-        assert!(
-            !routes.release(1, addr(1), 10),
-            "a release naming the installation that was replaced does nothing"
-        );
-        assert_eq!(routes.iter().count(), 1, "so the live route is still there");
-        assert!(
-            routes.release(1, addr(1), 11),
-            "the installation that owns it can release it"
-        );
-        assert_eq!(routes.iter().count(), 0);
-        assert!(
-            !routes.release(1, addr(1), 11),
-            "and releasing it twice is not a route"
-        );
-
-        // The same identifier at two addresses is two routes, and one does not remove the other.
-        assert_eq!(routes.insert(2, addr(1), token(2), 20), Installed::New);
-        assert_eq!(routes.insert(2, addr(2), token(2), 21), Installed::New);
-        assert_eq!(routes.iter().count(), 2);
-        assert!(routes.release(2, addr(1), 20));
-        assert_eq!(routes.iter().count(), 1);
-        assert!(
-            routes.iter().any(|(remote, _)| remote == addr(2)),
-            "the other address keeps its route"
-        );
-
-        // Retirement takes every route the identifier had, at every address.
-        assert_eq!(routes.insert(3, addr(3), token(3), 30), Installed::New);
-        assert_eq!(routes.insert(3, addr(4), token(3), 31), Installed::New);
-        let removed = routes.remove_range(3..4).count();
-        assert_eq!(removed, 2, "both of the retired identifier's routes go");
-        assert_eq!(routes.iter().count(), 1);
-    }
-
-    /// A table with no room reports it, so the caller can refuse rather than acknowledge a route
-    /// that is not there. This is the `Full` the endpoint turns into a refusal.
-    #[test]
-    fn a_full_table_reports_that_it_installed_nothing() {
-        for limit in [2, 5, 8, 64] {
-            assert!(!UsedResetTokens::new(limit).entries.spilled());
-        }
-        let mut routes = UsedResetTokens::default();
-        assert!(
-            std::mem::size_of::<UsedResetTokens>()
-                <= 57 * std::mem::size_of::<Option<super::Association>>() + 32
-        );
-        let slots = super::CidQueue::INLINE_PRESENT * super::RemCid::REMOTES;
-        for step in 0..slots {
-            assert_eq!(
-                routes.insert(step as u64, addr(1), token(step as u8), step as u64),
-                Installed::New,
-                "slot {step} of {slots}"
-            );
-        }
-        assert_eq!(routes.iter().count(), slots, "the table is full");
-        assert_eq!(
-            routes.insert(9_999, addr(2), token(7), 9_999),
-            Installed::Full,
-            "one more route is refused, not squeezed in"
-        );
-        assert_eq!(
-            routes.iter().count(),
-            slots,
-            "and nothing live was evicted to make room"
-        );
-        // Releasing one makes room again, so a refusal is about the moment, not the connection.
-        assert!(routes.release(0, addr(1), 0));
-        assert_eq!(
-            routes.insert(9_999, addr(2), token(7), 9_999),
-            Installed::New
-        );
-    }
-
-    /// The engine releases what it displaces, so far more moves than this table has slots still
-    /// leave it holding only what is live. This is the endpoint half of the accumulation the
-    /// review reproduced: a queue invariant alone cannot show it.
-    #[test]
-    fn releasing_before_installing_keeps_the_table_from_filling() {
-        let mut routes = UsedResetTokens::default();
-        let slots = super::CidQueue::INLINE_PRESENT * super::RemCid::REMOTES;
-        let home = addr(1);
-        assert_eq!(routes.insert(1, home, token(1), 0), Installed::New);
-        // One identifier, forty different addresses, two of them always live.
-        let mut previous: Option<(SocketAddr, u64)> = None;
-        for step in 0..40u64 {
-            let remote = addr(10 + step as u8);
-            let generation = step + 1;
-            assert_eq!(
-                routes.insert(1, remote, token(1), generation),
-                Installed::New,
-                "step {step} installs"
-            );
-            if let Some((old, old_generation)) = previous.replace((remote, generation)) {
-                assert!(
-                    routes.release(1, old, old_generation),
-                    "step {step} releases the one it displaced"
-                );
-            }
-            assert!(
-                routes.iter().count() <= 3,
-                "step {step} left {} routes in a table of {slots}",
-                routes.iter().count()
-            );
-        }
-        assert!(routes.iter().any(|(remote, _)| remote == home));
-    }
-
-    #[test]
-    fn cid_space_exhaustion_thresholds() {
-        // A quarter of the space is always kept in reserve so `new_cid` stays fast
-        for (len, threshold) in [
-            (1usize, 192usize),
-            (2, 49_152),
-            (3, 12_582_912),
-            (4, 3_221_225_472),
-        ] {
-            assert!(!cid_space_exhausted(len, 0));
-            assert!(
-                !cid_space_exhausted(len, threshold),
-                "{len}-byte IDs: {threshold} in use still fit"
-            );
-            assert!(
-                cid_space_exhausted(len, threshold + 1),
-                "{len}-byte IDs: {} exhaust the space",
-                threshold + 1
-            );
-        }
-        // Zero-length and longer IDs are never exhausted, whatever the count
-        for len in [0usize, 5, 8, 20] {
-            assert!(!cid_space_exhausted(len, 0));
-            assert!(!cid_space_exhausted(len, usize::MAX));
-        }
-    }
-}
-
 impl fmt::Debug for Endpoint {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Endpoint")
@@ -3014,4 +2811,207 @@ struct FourTuple {
     remote: SocketAddr,
     /// The receiving local socket address (ip and port); an endpoint may own several sockets.
     local: Option<SocketAddr>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use super::{
+        ConnectionHandle, ConnectionId, ConnectionIndex, ConnectionMeta, FourTuple, FxHashMap,
+        Installed, RESET_TOKEN_SIZE, ResetToken, Side, UsedResetTokens, cid_space_exhausted,
+    };
+
+    #[test]
+    fn retiring_connection_removes_only_its_own_address_routes() {
+        for side in [Side::Client, Side::Server] {
+            for replaced in [false, true] {
+                let mut index = ConnectionIndex::default();
+                let addresses = FourTuple {
+                    remote: "127.0.0.1:1234".parse().unwrap(),
+                    local: Some("127.0.0.1:5678".parse().unwrap()),
+                };
+                let cid = ConnectionId::new(&[]);
+                let old = ConnectionHandle(0);
+                let replacement = ConnectionHandle(1);
+                index.insert_conn(addresses, cid, old, side);
+                if replaced {
+                    index.insert_conn(addresses, cid, replacement, side);
+                }
+                let meta = ConnectionMeta {
+                    init_cid: cid,
+                    cids_issued: 0,
+                    loc_cids: FxHashMap::default(),
+                    addresses,
+                    side,
+                    reset_tokens: UsedResetTokens::default(),
+                };
+                index.remove_routes(old, &meta);
+                let remaining = if side.is_server() {
+                    index.incoming_connection_remotes.get(&addresses)
+                } else {
+                    index.outgoing_connection_remotes.get(&addresses.remote)
+                };
+                assert_eq!(remaining.copied(), replaced.then_some(replacement));
+            }
+        }
+    }
+
+    fn addr(last: u8) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, last], 4433))
+    }
+
+    fn token(n: u8) -> ResetToken {
+        ResetToken::from([n; RESET_TOKEN_SIZE])
+    }
+
+    /// The routing table follows the engine: a release frees the slot it took, an installation of
+    /// a pair already held is not a second route, and a release still naming an older
+    /// installation cannot take away the one that replaced it.
+    #[test]
+    fn a_route_is_released_only_by_the_installation_that_owns_it() {
+        let mut routes = UsedResetTokens::default();
+        assert_eq!(
+            routes.insert(1, addr(1), token(1), 10),
+            Installed::New,
+            "a new route"
+        );
+        assert_eq!(
+            routes.insert(1, addr(1), token(1), 11),
+            Installed::Refreshed,
+            "the same pair again is not a second route"
+        );
+        assert!(
+            !routes.release(1, addr(1), 10),
+            "a release naming the installation that was replaced does nothing"
+        );
+        assert_eq!(routes.iter().count(), 1, "so the live route is still there");
+        assert!(
+            routes.release(1, addr(1), 11),
+            "the installation that owns it can release it"
+        );
+        assert_eq!(routes.iter().count(), 0);
+        assert!(
+            !routes.release(1, addr(1), 11),
+            "and releasing it twice is not a route"
+        );
+
+        // The same identifier at two addresses is two routes, and one does not remove the other.
+        assert_eq!(routes.insert(2, addr(1), token(2), 20), Installed::New);
+        assert_eq!(routes.insert(2, addr(2), token(2), 21), Installed::New);
+        assert_eq!(routes.iter().count(), 2);
+        assert!(routes.release(2, addr(1), 20));
+        assert_eq!(routes.iter().count(), 1);
+        assert!(
+            routes.iter().any(|(remote, _)| remote == addr(2)),
+            "the other address keeps its route"
+        );
+
+        // Retirement takes every route the identifier had, at every address.
+        assert_eq!(routes.insert(3, addr(3), token(3), 30), Installed::New);
+        assert_eq!(routes.insert(3, addr(4), token(3), 31), Installed::New);
+        let removed = routes.remove_range(3..4).count();
+        assert_eq!(removed, 2, "both of the retired identifier's routes go");
+        assert_eq!(routes.iter().count(), 1);
+    }
+
+    /// A table with no room reports it, so the caller can refuse rather than acknowledge a route
+    /// that is not there. This is the `Full` the endpoint turns into a refusal.
+    #[test]
+    fn a_full_table_reports_that_it_installed_nothing() {
+        for limit in [2, 5, 8, 64] {
+            assert!(!UsedResetTokens::new(limit).entries.spilled());
+        }
+        let mut routes = UsedResetTokens::default();
+        assert!(
+            std::mem::size_of::<UsedResetTokens>()
+                <= 57 * std::mem::size_of::<Option<super::Association>>() + 32
+        );
+        let slots = super::CidQueue::INLINE_PRESENT * super::RemCid::REMOTES;
+        for step in 0..slots {
+            assert_eq!(
+                routes.insert(step as u64, addr(1), token(step as u8), step as u64),
+                Installed::New,
+                "slot {step} of {slots}"
+            );
+        }
+        assert_eq!(routes.iter().count(), slots, "the table is full");
+        assert_eq!(
+            routes.insert(9_999, addr(2), token(7), 9_999),
+            Installed::Full,
+            "one more route is refused, not squeezed in"
+        );
+        assert_eq!(
+            routes.iter().count(),
+            slots,
+            "and nothing live was evicted to make room"
+        );
+        // Releasing one makes room again, so a refusal is about the moment, not the connection.
+        assert!(routes.release(0, addr(1), 0));
+        assert_eq!(
+            routes.insert(9_999, addr(2), token(7), 9_999),
+            Installed::New
+        );
+    }
+
+    /// The engine releases what it displaces, so far more moves than this table has slots still
+    /// leave it holding only what is live. This is the endpoint half of the accumulation the
+    /// review reproduced: a queue invariant alone cannot show it.
+    #[test]
+    fn releasing_before_installing_keeps_the_table_from_filling() {
+        let mut routes = UsedResetTokens::default();
+        let slots = super::CidQueue::INLINE_PRESENT * super::RemCid::REMOTES;
+        let home = addr(1);
+        assert_eq!(routes.insert(1, home, token(1), 0), Installed::New);
+        // One identifier, forty different addresses, two of them always live.
+        let mut previous: Option<(SocketAddr, u64)> = None;
+        for step in 0..40u64 {
+            let remote = addr(10 + step as u8);
+            let generation = step + 1;
+            assert_eq!(
+                routes.insert(1, remote, token(1), generation),
+                Installed::New,
+                "step {step} installs"
+            );
+            if let Some((old, old_generation)) = previous.replace((remote, generation)) {
+                assert!(
+                    routes.release(1, old, old_generation),
+                    "step {step} releases the one it displaced"
+                );
+            }
+            assert!(
+                routes.iter().count() <= 3,
+                "step {step} left {} routes in a table of {slots}",
+                routes.iter().count()
+            );
+        }
+        assert!(routes.iter().any(|(remote, _)| remote == home));
+    }
+
+    #[test]
+    fn cid_space_exhaustion_thresholds() {
+        // A quarter of the space is always kept in reserve so `new_cid` stays fast
+        for (len, threshold) in [
+            (1usize, 192usize),
+            (2, 49_152),
+            (3, 12_582_912),
+            (4, 3_221_225_472),
+        ] {
+            assert!(!cid_space_exhausted(len, 0));
+            assert!(
+                !cid_space_exhausted(len, threshold),
+                "{len}-byte IDs: {threshold} in use still fit"
+            );
+            assert!(
+                cid_space_exhausted(len, threshold + 1),
+                "{len}-byte IDs: {} exhaust the space",
+                threshold + 1
+            );
+        }
+        // Zero-length and longer IDs are never exhausted, whatever the count
+        for len in [0usize, 5, 8, 20] {
+            assert!(!cid_space_exhausted(len, 0));
+            assert!(!cid_space_exhausted(len, usize::MAX));
+        }
+    }
 }

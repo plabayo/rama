@@ -247,7 +247,7 @@ async fn recreating_accept_keeps_the_running_idle_window() {
     earn(&pair, &mut server).await;
     pause();
     for _ in 0..4 {
-        let mut accept = Box::pin(server.accept());
+        let mut accept = std::pin::pin!(server.accept());
         assert!(accept.as_mut().now_or_never().is_none());
         advance(Duration::from_millis(100)).await;
         assert!(accept.as_mut().now_or_never().is_none());
