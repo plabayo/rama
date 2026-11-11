@@ -642,10 +642,10 @@ mod tests {
         let actual = encode(response_layers(HtmlBadgeLayer::new()).0).await;
         let quality_four =
             encode(response_compression_layer().with_quality(CompressionLevel::Precise(4))).await;
-        let default_quality =
-            encode(response_compression_layer().with_quality(CompressionLevel::Default)).await;
+        let quality_five =
+            encode(response_compression_layer().with_quality(CompressionLevel::Precise(5))).await;
         assert_eq!(actual, quality_four);
-        assert_ne!(actual, default_quality);
+        assert_ne!(actual, quality_five);
     }
 
     #[tokio::test]

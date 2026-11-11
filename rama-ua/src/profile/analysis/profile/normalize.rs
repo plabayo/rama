@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::profile::{
     analysis::profile::{
         ProfileAnalysisLimits,
-        read_form::{ReadLimits, bootstrap_requests, read_window},
+        read_form::{ReadLimits, bootstrap_requests, read_window, reserved_slots},
     },
     capture::joint::normalize_stored_structure,
     evidence::{ProfileEvidence, ProfileScopeEvidence, window::RetainedBucketWindow},
@@ -58,6 +58,7 @@ pub fn normalize_profile_evidence(
     }
     let read_limits = ReadLimits::for_analysis(&limits);
     let preserved = bootstrap_requests(input, read_limits)?;
+    let slots = reserved_slots(input, read_limits, &preserved)?;
     let mut merged: Vec<MergedScope> = Vec::new();
     let mut index = BTreeMap::<ValueId, usize>::new();
     let mut dropped = BTreeMap::<ValueId, usize>::new();
@@ -93,7 +94,7 @@ pub fn normalize_profile_evidence(
                 charge(value.bytes.len())?;
             }
         }
-        let read = read_window(&evidence.window, read_limits, &preserved)?;
+        let read = read_window(&evidence.window, read_limits, &preserved, &slots)?;
         let mut window = RetainedBucketWindow::from_snapshot(
             &read,
             evidence.window.domain,
