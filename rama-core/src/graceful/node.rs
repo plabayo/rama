@@ -17,7 +17,8 @@ use tokio::time::Instant;
 use super::{
     cause::Cause,
     sync::{
-        Arc, AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Mutex, Ordering, fence, thread_local,
+        Arc, AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Mutex, Ordering, Sleep, fence,
+        sleep_until, thread_local,
     },
 };
 
@@ -64,8 +65,8 @@ pub(super) struct Node {
     signals: Mutex<Signals>,
     // Added here, moved into `signals` by the driver, so a signal can add signals while polled.
     incoming: Mutex<Signals>,
+    // Shared with the relays of the children, and with this node's signals as their waker.
     waiters: std::sync::Arc<Waiters>,
-    notify: std::sync::Arc<SignalNotify>,
     // Forwards the parent's wakes to `waiters`; made by the first waiter, see `Relay`.
     relay: Mutex<Option<std::sync::Arc<Relay>>>,
     // Set once this node and every ancestor forward their parent's wakes.
@@ -84,11 +85,12 @@ struct Signals {
     hard: Vec<Signal>,
 }
 
-/// Scheduled phase instants of a node; they may lie in the future.
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct Times {
-    graceful: Option<Instant>,
-    hard: Option<Instant>,
+/// Scheduled phase instants of a node, as offsets (`UNSET` without one); they may lie in
+/// the future.
+#[derive(Debug, Clone, Copy)]
+struct Times {
+    graceful: u64,
+    hard: u64,
     // Reached without consulting the clock.
     cancelled: bool,
     aborted: bool,
@@ -110,11 +112,6 @@ pub(super) struct Phase {
 }
 
 impl Phase {
-    const OPEN: Self = Self {
-        stage: Stage::Open,
-        next: None,
-    };
-
     const HARD: Self = Self {
         stage: Stage::Hard,
         next: None,
@@ -129,6 +126,16 @@ impl Phase {
                 Stage::Open
             },
             next: None,
+        }
+    }
+
+    /// The phase of a node [settled](is_settled) by its flags `own`.
+    #[inline]
+    const fn settled_by(own: u8) -> Self {
+        if own & ABORTED != 0 {
+            Self::HARD
+        } else {
+            Self::settled(own & CANCELLED != 0)
         }
     }
 
@@ -169,7 +176,6 @@ impl Node {
             }
             None => Instant::now(),
         };
-        let waiters = std::sync::Arc::new(Waiters::default());
         let relayed = AtomicBool::new(parent.is_none());
         Self {
             parent,
@@ -184,11 +190,7 @@ impl Node {
             causes: Mutex::new(Causes::default()),
             signals: Mutex::new(Signals::default()),
             incoming: Mutex::new(Signals::default()),
-            waiters: waiters.clone(),
-            notify: std::sync::Arc::new(SignalNotify {
-                pending: AtomicBool::new(false),
-                waiters,
-            }),
+            waiters: std::sync::Arc::new(Waiters::default()),
             relay: Mutex::new(None),
             relayed,
         }
@@ -382,7 +384,7 @@ impl Node {
         }
         let Some(mut signals) = self.signals.try_lock() else {
             // Release: the driver holding the lock sees this and clears them next round.
-            self.notify.pending.store(true, Ordering::Release);
+            self.waiters.signalled.store(true, Ordering::Release);
             return;
         };
         let mut settled = Signals::default();
@@ -433,7 +435,7 @@ impl Node {
             }
         }
         self.flags.fetch_or(SIGNALS, Ordering::Release);
-        self.notify.notify();
+        self.waiters.signal();
     }
 
     /// Polls this node's signals with the node-owned fan-out waker.
@@ -441,12 +443,14 @@ impl Node {
     /// One driver at a time; a driver that finds the lock taken returns, and the holder
     /// repeats after unlocking when a wake arrived meanwhile. Returns whether it polled: a
     /// polled signal may change any phase, also without completing.
+    #[cold]
+    #[inline(never)]
     fn drive_signals(&self) -> bool {
         let mut polled = false;
         for _round in 0..DRIVE_ROUNDS {
             // A signal only progresses after its waker fired or after it was added.
             if self.flags.load(Ordering::Acquire) & SIGNALS == 0
-                || !self.notify.pending.load(Ordering::Acquire)
+                || !self.waiters.signalled.load(Ordering::Acquire)
             {
                 return polled;
             }
@@ -455,7 +459,7 @@ impl Node {
             let Some(mut signals) = self.signals.try_lock() else {
                 return polled;
             };
-            self.notify.pending.store(false, Ordering::Relaxed);
+            self.waiters.signalled.store(false, Ordering::Relaxed);
             polled = true;
             {
                 let mut incoming = self.incoming.lock();
@@ -471,7 +475,7 @@ impl Node {
                 signals.hard.clear();
             }
 
-            let waker = Waker::from(self.notify.clone());
+            let waker = Waker::from(self.waiters.clone());
             let mut cx = Context::from_waker(&waker);
             let graceful = poll_any(&mut signals.graceful, &mut cx);
             let hard = poll_any(&mut signals.hard, &mut cx);
@@ -491,8 +495,8 @@ impl Node {
             if graceful {
                 self.cancel(Cause::Signal);
             }
-            // Acquire: pairs with the store in `SignalNotify::notify`, made before a skipped driver's attempt.
-            if !self.notify.pending.load(Ordering::Acquire) {
+            // Acquire: pairs with the store in `Waiters::signal`, made before a skipped driver's attempt.
+            if !self.waiters.signalled.load(Ordering::Acquire) {
                 return polled;
             }
         }
@@ -503,21 +507,25 @@ impl Node {
 
     /// Drives the signals of this node and every ancestor, then returns the phase.
     ///
-    /// One walk when no level is timed or past the own phase and no signal is polled; the flags
-    /// read on the way stay valid, as a later change wakes the waiter registered before.
+    /// One walk when no signal is polled and no level has a phase to publish; the flags read
+    /// on the way stay valid, as a later change wakes the waiter registered before.
     pub(super) fn driven_phase(&self) -> Phase {
         let own = self.flags.load(Ordering::Acquire);
-        let mut quick = own & (TIMED | ABORTED) == 0;
-        let mut flags = own;
         let mut seen = own;
+        let mut earliest = UNSET;
+        let mut polled = false;
+        let mut flags = own;
         let mut node = self;
         loop {
-            // The pending flag is read here too: an idle signal costs no call.
-            if flags & SIGNALS != 0
-                && node.notify.pending.load(Ordering::Acquire)
-                && node.drive_signals()
-            {
-                quick = false;
+            if flags & (SIGNALS | TIMED | GRACE) != 0 {
+                // The pending flag is read here too: an idle signal costs no call.
+                if flags & SIGNALS != 0
+                    && node.waiters.signalled.load(Ordering::Acquire)
+                    && node.drive_signals()
+                {
+                    polled = true;
+                }
+                earliest = node.earliest_deadline(flags, earliest);
             }
             let Some(parent) = node.parent() else {
                 break;
@@ -525,53 +533,100 @@ impl Node {
             node = parent;
             flags = node.flags.load(Ordering::Acquire);
             seen |= flags;
-            if flags & (TIMED | ABORTED) != 0 || (flags & CANCELLED != 0 && own & CANCELLED == 0) {
-                quick = false;
-            }
         }
-        if quick && !grace_counts(own, seen) {
-            Phase::settled(own & CANCELLED != 0)
-        } else {
+        if polled {
+            // A polled signal may have changed any level.
             self.phase()
+        } else if is_settled(own, seen) {
+            Phase::settled_by(own)
+        } else if seen & (CANCELLED | ABORTED) != 0 {
+            self.phase_slow()
+        } else {
+            match self.open_until(earliest) {
+                Some(phase) => phase,
+                None => self.phase_slow(),
+            }
         }
     }
 
-    /// The times of this node, given those of its parent.
-    fn own_times(&self, parent: Times) -> Times {
+    /// The earlier of `earliest` and the deadlines of this node, whose flags are `flags`.
+    #[inline]
+    fn earliest_deadline(&self, flags: u8, earliest: u64) -> u64 {
+        // The levels whose deadlines count, as for `Self::own_times`.
+        if flags & (TIMED | GRACE) == 0 {
+            return earliest;
+        }
+        earliest
+            .min(self.deadline.load(Ordering::Acquire))
+            .min(self.hard_deadline.load(Ordering::Acquire))
+    }
+
+    /// The phase of a chain without a cancelled level, whose earliest deadline is at the
+    /// offset `earliest`: every level is open until then, as a grace only counts from a
+    /// cancel. `None` without a deadline, or once it is reached.
+    fn open_until(&self, earliest: u64) -> Option<Phase> {
+        if earliest == UNSET {
+            return None;
+        }
+        let at = self.base + Duration::from_nanos(earliest);
+        (Instant::now() < at).then_some(Phase {
+            stage: Stage::Open,
+            next: Some(at),
+        })
+    }
+
+    /// The own flags, when the phase follows from them alone and no signal of this node or
+    /// an ancestor waits to be driven: what [`Self::driven_phase`] then returns without a call.
+    #[inline]
+    fn settled_flags(&self) -> Option<u8> {
+        let own = self.flags.load(Ordering::Acquire);
+        let mut seen = own;
+        let mut flags = own;
+        let mut node = self;
+        loop {
+            if flags & SIGNALS != 0 && node.waiters.signalled.load(Ordering::Acquire) {
+                return None;
+            }
+            let Some(parent) = node.parent() else {
+                break;
+            };
+            node = parent;
+            flags = node.flags.load(Ordering::Acquire);
+            seen |= flags;
+        }
+        is_settled(own, seen).then_some(own)
+    }
+
+    /// The times of this node, given those of its parent, and the flags they were read with.
+    #[inline]
+    fn own_times(&self, parent: Times) -> (Times, u8) {
         let flags = self.flags.load(Ordering::Acquire);
         let timed = flags & (TIMED | GRACE) != 0;
-        let mut times = Times::default();
+        let mut times = parent;
 
         // A published phase is fixed; otherwise it is the earliest scheduled candidate.
         if flags & CANCELLED != 0 {
             times.cancelled = true;
-            times.graceful = self.instant(&self.cancelled_at);
-        } else {
-            times.cancelled = parent.cancelled;
-            times.graceful = parent.graceful;
-            if timed {
-                times.graceful = earliest(times.graceful, self.instant(&self.deadline));
-            }
+            times.graceful = self.cancelled_at.load(Ordering::Acquire);
+        } else if timed {
+            times.graceful = times.graceful.min(self.deadline.load(Ordering::Acquire));
         }
         if flags & ABORTED != 0 {
             times.aborted = true;
-            times.hard = self.instant(&self.aborted_at);
-        } else {
-            times.aborted = parent.aborted;
-            times.hard = parent.hard;
-            if timed {
-                times.hard = earliest(times.hard, self.instant(&self.hard_deadline));
-                if let Some(grace) = self.grace() {
-                    let start = earliest(times.graceful, times.hard);
-                    times.hard = earliest(times.hard, start.map(|at| at + grace));
-                }
+            times.hard = self.aborted_at.load(Ordering::Acquire);
+        } else if timed {
+            times.hard = times.hard.min(self.hard_deadline.load(Ordering::Acquire));
+            let grace = self.grace.load(Ordering::Acquire);
+            let start = times.graceful.min(times.hard);
+            if grace != UNSET && start != UNSET {
+                times.hard = times.hard.min(start.saturating_add(grace).min(UNSET - 1));
             }
         }
         if flags & CANCELLED == 0 {
-            times.graceful = earliest(times.graceful, times.hard);
+            times.graceful = times.graceful.min(times.hard);
             times.cancelled |= times.aborted;
         }
-        times
+        (times, flags)
     }
 
     fn grace(&self) -> Option<Duration> {
@@ -584,19 +639,64 @@ impl Node {
     /// Current phase; publishes a phase reached by time or through an ancestor.
     #[inline]
     pub(super) fn phase(&self) -> Phase {
-        let flags = self.flags.load(Ordering::Acquire);
-        if let Some(phase) = self.quick_phase(flags) {
-            return phase;
+        let own = self.flags.load(Ordering::Acquire);
+        if own & ABORTED != 0 {
+            return Phase::HARD;
         }
-        self.phase_slow()
+        let seen = self.seen_flags(own);
+        if is_settled(own, seen) {
+            Phase::settled_by(own)
+        } else {
+            self.unsettled_phase(seen)
+        }
     }
 
     /// As [`Self::phase`], and whether the walk up published every phase reached on the way.
+    #[inline]
     pub(super) fn phase_walked(&self) -> (Phase, bool) {
-        let flags = self.flags.load(Ordering::Acquire);
-        match self.quick_phase(flags) {
+        let own = self.flags.load(Ordering::Acquire);
+        if own & ABORTED != 0 {
+            return (Phase::HARD, false);
+        }
+        let seen = self.seen_flags(own);
+        if is_settled(own, seen) {
+            return (Phase::settled_by(own), false);
+        }
+        self.unsettled_phase_walked(seen)
+    }
+
+    /// As [`Self::unsettled_phase`], and whether it walked up to publish.
+    #[inline(never)]
+    fn unsettled_phase_walked(&self, seen: u8) -> (Phase, bool) {
+        match self.timed_phase(seen) {
             Some(phase) => (phase, false),
             None => (self.phase_slow(), true),
+        }
+    }
+
+    /// The flags of every level of the chain of this node, whose own are `own`.
+    #[inline]
+    fn seen_flags(&self, own: u8) -> u8 {
+        let mut seen = own;
+        let mut node = self.parent();
+        while let Some(current) = node {
+            #[cfg(all(test, not(rama_loom)))]
+            walk_steps::add(1);
+            seen |= current.flags.load(Ordering::Acquire);
+            node = current.parent();
+        }
+        seen
+    }
+
+    /// The phase of a chain that is not settled by its flags, which were `seen`.
+    #[inline(never)]
+    fn unsettled_phase(&self, seen: u8) -> Phase {
+        if seen & (CANCELLED | ABORTED) != 0 {
+            return self.phase_slow();
+        }
+        match self.timed_phase(seen) {
+            Some(phase) => phase,
+            None => self.phase_slow(),
         }
     }
 
@@ -604,79 +704,146 @@ impl Node {
     #[cold]
     #[inline(never)]
     fn phase_slow(&self) -> Phase {
-        // Root first: an ancestor publishes before its children, so a cause taken from it
-        // stays its own.
-        let chain = self.chain();
-        let mut times = Times::default();
-        let mut phases: SmallVec<[Phase; 8]> = SmallVec::with_capacity(chain.len());
-        for node in chain.iter().rev() {
-            times = node.own_times(times);
-            phases.push(times.phase());
-        }
-        let unpublished = |node: &Self, phase: &Phase| {
-            let flags = node.flags.load(Ordering::Acquire);
-            if phase.hard() && flags & ABORTED == 0 {
-                ABORTED
-            } else if phase.graceful() && flags & CANCELLED == 0 {
-                CANCELLED
-            } else {
-                0
-            }
-        };
-        if chain
-            .iter()
-            .rev()
-            .zip(&phases)
-            .any(|(node, phase)| unpublished(node, phase) != 0)
-        {
-            let mut candidates = (None, None);
-            let mut topmost = None;
-            for (depth, (node, phase)) in chain.iter().rev().zip(&phases).enumerate() {
-                let flag = unpublished(node, phase);
-                let children = depth + 1 < chain.len();
-                if flag == 0 && !children {
-                    break;
-                }
-                let (own, published) = node.publish_with(flag, None, candidates, children, false);
-                candidates = as_parent(own);
-                if published && topmost.is_none() {
-                    topmost = Some(*node);
-                }
-            }
-            // Once, at the topmost level that changed: every waiter below has relays up to
-            // it, so a wake per level would reach the same waiters once per ancestor.
-            if let Some(node) = topmost {
-                node.waiters.wake_all();
-            }
-        }
-        phases.last().copied().unwrap_or(Phase::OPEN)
-    }
-
-    /// Phase from flags alone, when no clock is involved and nothing needs publishing.
-    #[inline]
-    fn quick_phase(&self, own: u8) -> Option<Phase> {
-        if own & ABORTED != 0 {
-            return Some(Phase::HARD);
-        }
-        if own & TIMED != 0 {
-            return None;
-        }
-        let mut seen = own;
-        let mut node = self.parent();
+        // A chain of a few levels is walked from a buffer on the stack.
+        let mut levels = [self; 8];
+        let mut len = 0;
+        let mut node = Some(self);
         while let Some(current) = node {
-            #[cfg(all(test, not(rama_loom)))]
-            walk_steps::add(1);
-            let flags = current.flags.load(Ordering::Acquire);
-            if flags & (TIMED | ABORTED) != 0 || (flags & CANCELLED != 0 && own & CANCELLED == 0) {
-                return None;
-            }
-            seen |= flags;
+            let Some(level) = levels.get_mut(len) else {
+                return self.chain_phase(&self.chain());
+            };
+            *level = current;
+            len += 1;
             node = current.parent();
         }
-        if grace_counts(own, seen) {
+        #[cfg(all(test, not(rama_loom)))]
+        walk_steps::add(len);
+        self.chain_phase(levels.get(..len).unwrap_or_default())
+    }
+
+    /// The phase of this node, whose chain is `chain`, publishing what is reached on it.
+    #[inline]
+    fn chain_phase(&self, chain: &[&Self]) -> Phase {
+        let mut times = Times::NONE;
+        // Whether a level is in a phase it has yet to publish, and the earliest offset at
+        // which a level gets to a phase by time.
+        let mut unpublished = false;
+        let mut pending = UNSET;
+        // Root first: the times of a level follow from those above it.
+        for node in chain.iter().rev() {
+            let flags;
+            (times, flags) = node.own_times(times);
+            if times.aborted {
+                unpublished |= flags & (CANCELLED | ABORTED) != CANCELLED | ABORTED;
+                continue;
+            }
+            pending = pending.min(times.hard);
+            if times.cancelled {
+                unpublished |= flags & CANCELLED == 0;
+            } else {
+                pending = pending.min(times.graceful);
+            }
+        }
+        let (stage, next) = if times.aborted {
+            (Stage::Hard, UNSET)
+        } else if times.cancelled {
+            (Stage::Graceful, times.hard)
+        } else {
+            (Stage::Open, times.graceful)
+        };
+        // One conversion in the common case: what is pending is what this node waits for.
+        let next_at = self.instant_at(next);
+        let pending_at = if pending == next {
+            next_at
+        } else {
+            self.instant_at(pending)
+        };
+        if unpublished || pending_at.is_some_and(|at| at <= Instant::now()) {
+            return self.publish_reached(chain);
+        }
+        Phase {
+            stage,
+            next: next_at,
+        }
+    }
+
+    /// The instant at `offset`, if it is one.
+    fn instant_at(&self, offset: u64) -> Option<Instant> {
+        match offset {
+            UNSET => None,
+            offset => Some(self.base + Duration::from_nanos(offset)),
+        }
+    }
+
+    /// The flag of the phase that this node has not published, though it got to `stage`.
+    #[inline]
+    fn unpublished(&self, stage: Stage) -> u8 {
+        let flags = self.flags.load(Ordering::Acquire);
+        if stage == Stage::Hard && flags & ABORTED == 0 {
+            ABORTED
+        } else if stage >= Stage::Graceful && flags & CANCELLED == 0 {
+            CANCELLED
+        } else {
+            0
+        }
+    }
+
+    /// Publishes every phase reached on `chain`, which is that of this node, and returns the
+    /// phase of this node, all at one instant.
+    #[cold]
+    #[inline(never)]
+    fn publish_reached(&self, chain: &[&Self]) -> Phase {
+        let now = self.offset(Instant::now());
+        let mut times = Times::NONE;
+        let mut stage = Stage::Open;
+        let mut candidates = (None, None);
+        let mut topmost = None;
+        // Root first: an ancestor publishes before its children, so a cause taken from it
+        // stays its own.
+        for (depth, node) in chain.iter().rev().enumerate() {
+            (times, _) = node.own_times(times);
+            stage = times.stage(now);
+            let flag = node.unpublished(stage);
+            let children = depth + 1 < chain.len();
+            if flag == 0 && !children {
+                break;
+            }
+            let (own, published) = node.publish_with(flag, None, candidates, children, false);
+            candidates = as_parent(own);
+            if published && topmost.is_none() {
+                topmost = Some(*node);
+            }
+        }
+        // Once, at the topmost level that changed: every waiter below has relays up to
+        // it, so a wake per level would reach the same waiters once per ancestor.
+        if let Some(node) = topmost {
+            node.waiters.wake_all();
+        }
+        Phase {
+            stage,
+            next: self.instant_at(times.next(stage)),
+        }
+    }
+
+    /// The phase of a chain that, by the flags `seen` on it, has a deadline and no cancelled
+    /// level, when that still holds and the deadline is not reached.
+    #[inline]
+    fn timed_phase(&self, seen: u8) -> Option<Phase> {
+        if seen & (CANCELLED | ABORTED) != 0 {
             return None;
         }
-        Some(Phase::settled(own & CANCELLED != 0))
+        // Read by a walk of its own, so the chains that have none pay nothing for it.
+        let mut earliest = UNSET;
+        let mut node = Some(self);
+        while let Some(current) = node {
+            let flags = current.flags.load(Ordering::Acquire);
+            if flags & (CANCELLED | ABORTED) != 0 {
+                return None;
+            }
+            earliest = current.earliest_deadline(flags, earliest);
+            node = current.parent();
+        }
+        self.open_until(earliest)
     }
 
     /// Published graceful and hard causes.
@@ -1001,6 +1168,17 @@ impl Drop for Node {
     }
 }
 
+/// Whether the phase of a node with flags `own` follows from them alone, given the flags
+/// `seen` on its whole chain: it is aborted, or no level has a deadline, a phase the node has
+/// yet to publish as its own, or a grace that counts.
+#[inline]
+const fn is_settled(own: u8, seen: u8) -> bool {
+    own & ABORTED != 0
+        || (seen & (TIMED | ABORTED) == 0
+            && (seen & CANCELLED == 0 || own & CANCELLED != 0)
+            && !grace_counts(own, seen))
+}
+
 /// Whether a grace somewhere in a chain (`seen`: the flags of every level) may schedule the
 /// hard phase of the node with flags `own`: only once that node is cancelled. The callers
 /// leave the quick path before this for a cancel above a node that is not.
@@ -1028,40 +1206,34 @@ enum Retain<'a> {
 }
 
 impl Times {
-    pub(super) fn phase(&self) -> Phase {
-        if self.aborted {
-            return Phase::HARD;
-        }
-        let needs_clock = (!self.cancelled && self.graceful.is_some()) || self.hard.is_some();
-        if !needs_clock {
-            return Phase::settled(self.cancelled);
-        }
-        let now = Instant::now();
-        let hard = self.hard.is_some_and(|at| at <= now);
-        let graceful = hard || self.cancelled || self.graceful.is_some_and(|at| at <= now);
-        let next = if !graceful {
-            self.graceful
-        } else if !hard {
-            self.hard
-        } else {
-            None
-        };
-        let stage = if hard {
+    const NONE: Self = Self {
+        graceful: UNSET,
+        hard: UNSET,
+        cancelled: false,
+        aborted: false,
+    };
+
+    /// How far a node with these times got at the offset `now`.
+    fn stage(&self, now: u64) -> Stage {
+        // No offset of the clock gets to `UNSET`, so a time that is not there is not reached.
+        if self.aborted || self.hard <= now {
             Stage::Hard
-        } else if graceful {
+        } else if self.cancelled || self.graceful <= now {
             Stage::Graceful
         } else {
             Stage::Open
-        };
-        Phase { stage, next }
+        }
     }
-}
 
-fn earliest(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, None) => a,
-        (None, b) => b,
+    /// The offset at which a node with these times leaves `stage` by time alone, if it does.
+    #[inline]
+    fn next(&self, stage: Stage) -> u64 {
+        match stage {
+            _ if self.aborted => UNSET,
+            Stage::Open => self.graceful,
+            Stage::Graceful => self.hard,
+            Stage::Hard => UNSET,
+        }
     }
 }
 
@@ -1123,7 +1295,7 @@ struct RearmOnPanic<'a>(&'a Node);
 impl Drop for RearmOnPanic<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            self.0.notify.notify();
+            self.0.waiters.signal();
         }
     }
 }
@@ -1138,29 +1310,6 @@ impl Drop for DropOnPanic<'_> {
         if std::thread::panicking() && self.index < self.signals.len() {
             drop(self.signals.remove(self.index));
         }
-    }
-}
-
-/// Waker handed to a node's signals: marks a drive as needed and wakes every waiter.
-pub(super) struct SignalNotify {
-    pending: AtomicBool,
-    waiters: std::sync::Arc<Waiters>,
-}
-
-impl SignalNotify {
-    fn notify(&self) {
-        self.pending.store(true, Ordering::Release);
-        self.waiters.wake_all();
-    }
-}
-
-impl Wake for SignalNotify {
-    fn wake(self: std::sync::Arc<Self>) {
-        self.notify();
-    }
-
-    fn wake_by_ref(self: &std::sync::Arc<Self>) {
-        self.notify();
     }
 }
 
@@ -1280,6 +1429,8 @@ pub(super) struct Waiters {
     slots: Mutex<Slab<Waker>>,
     // Starts at one, so a registration's generation is never zero and fits its niche.
     generation: AtomicU64,
+    // Set once a signal of the node asked for a poll, until a driver takes it up.
+    signalled: AtomicBool,
 }
 
 impl Default for Waiters {
@@ -1287,7 +1438,19 @@ impl Default for Waiters {
         Self {
             slots: Mutex::default(),
             generation: AtomicU64::new(1),
+            signalled: AtomicBool::new(false),
         }
+    }
+}
+
+/// As the waker handed to a node's signals: marks a drive as needed and wakes every waiter.
+impl Wake for Waiters {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.signal();
+    }
+
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        self.signal();
     }
 }
 
@@ -1356,6 +1519,12 @@ impl Waiters {
         drop(removed);
     }
 
+    /// Marks the signals of the node as needing a drive and wakes every waiter.
+    fn signal(&self) {
+        self.signalled.store(true, Ordering::Release);
+        self.wake_all();
+    }
+
     pub(super) fn wake_all(&self) {
         let mut wakers = {
             let mut slots = self.slots.lock();
@@ -1409,9 +1578,61 @@ struct WaitState {
     // compared while its registration is current, and that clone keeps its data alive until
     // then, so its address cannot be reused.
     waker: Option<WakerKey>,
-    // Released by `WaitState::clear_sleep`, so a wait without a timer never calls into its drop.
-    sleep: ManuallyDrop<Option<Pin<Box<tokio::time::Sleep>>>>,
+    // Released by `WaitState::clear_timer`, so a wait without a timer never calls into its drop.
+    timer: ManuallyDrop<Option<Pin<Box<Timer>>>>,
     done: bool,
+}
+
+pin_project_lite::pin_project! {
+    /// The timer of a wait. Once polled again it is polled with a waker of its own, so that
+    /// the wait can tell whether the timer asked for a poll, and leaves it alone until it does.
+    struct Timer {
+        #[pin]
+        sleep: Sleep,
+        own: Option<TimerWaker>,
+        // Whether the last poll of `sleep` with `own` left it pending.
+        pending: bool,
+    }
+}
+
+/// The waker a wait polls its timer with.
+struct TimerWaker {
+    // Made from `wake`.
+    waker: Waker,
+    wake: std::sync::Arc<TimerWake>,
+}
+
+impl TimerWaker {
+    /// A timer waker that wakes the task of `task`.
+    fn of(task: &Waker) -> Self {
+        let wake = std::sync::Arc::new(TimerWake {
+            asked: AtomicBool::new(false),
+            task: task.clone(),
+        });
+        Self {
+            waker: Waker::from(wake.clone()),
+            wake,
+        }
+    }
+}
+
+/// Notes that the timer asked for a poll, then wakes the task.
+struct TimerWake {
+    asked: AtomicBool,
+    task: Waker,
+}
+
+impl Wake for TimerWake {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        // Set before the task is woken: the poll that wake leads to sees it. Release: pairs
+        // with the load in `WaitState::poll_timer`.
+        self.asked.store(true, Ordering::Release);
+        self.task.wake_by_ref();
+    }
 }
 
 impl Wait {
@@ -1423,7 +1644,7 @@ impl Wait {
                 target,
                 registration: None,
                 waker: None,
-                sleep: ManuallyDrop::new(None),
+                timer: ManuallyDrop::new(None),
                 done: false,
             },
         }
@@ -1442,6 +1663,16 @@ impl WaitState {
             Target::Hard => phase.hard(),
         };
         if done { Ok(()) } else { Err(phase.next) }
+    }
+
+    /// As [`Self::check`] of [`Node::driven_phase`], without a call when the flags say it all.
+    #[inline]
+    fn check_driven(&self, node: &Node) -> Result<(), Option<Instant>> {
+        match node.settled_flags() {
+            Some(own) if self.reached(node, own) => Ok(()),
+            Some(_) => Err(None),
+            None => self.check(node, node.driven_phase()),
+        }
     }
 
     fn published(&self, node: &Node) -> bool {
@@ -1465,14 +1696,14 @@ impl WaitState {
     }
 
     #[inline]
-    fn clear_sleep(&mut self) {
-        if self.sleep.is_some() {
-            self.drop_sleep();
+    fn clear_timer(&mut self) {
+        if self.timer.is_some() {
+            self.drop_timer();
         }
     }
 
-    fn drop_sleep(&mut self) {
-        drop(self.sleep.take());
+    fn drop_timer(&mut self) {
+        drop(self.timer.take());
     }
 
     #[inline]
@@ -1482,53 +1713,163 @@ impl WaitState {
         }
     }
 
+    /// Whether this wait is registered on `node` with a waker that wakes the same task as
+    /// `waker`, so that only the state is left to check.
+    #[inline]
+    fn is_registered(&self, node: &Node, waker: &Waker) -> bool {
+        self.waker == Some(WakerKey::of(waker))
+            && self
+                .registration
+                .is_some_and(|registration| node.waiters.is_current(registration))
+    }
+
+    /// Whether a node settled by its flags `own` is where this wait ends.
+    #[inline]
+    fn reached(&self, node: &Node, own: u8) -> bool {
+        match self.target {
+            Target::Drained => node.strong_count() == 0,
+            Target::Graceful => own & (CANCELLED | ABORTED) != 0,
+            Target::Hard => own & ABORTED != 0,
+        }
+    }
+
     fn poll_node(&mut self, node: &Node, cx: &mut Context<'_>) -> Poll<()> {
+        if !self.is_registered(node, cx.waker()) {
+            return self.poll_unregistered(node, cx);
+        }
+        // No signal to drive and no timer to look after: the flags say it all.
+        if self.timer.is_none()
+            && let Some(own) = node.settled_flags()
+            && !self.reached(node, own)
+        {
+            return Poll::Pending;
+        }
+        self.poll_registered(node, cx)
+    }
+
+    /// The poll of a registered wait that ends, or has signals or a timer to look after.
+    #[inline(never)]
+    fn poll_registered(&mut self, node: &Node, cx: &mut Context<'_>) -> Poll<()> {
+        // Nothing to register, and the relays are in place since it registered.
+        match self.check(node, node.driven_phase()) {
+            Ok(()) => return self.finish(node),
+            Err(None) => {
+                self.clear_timer();
+                return Poll::Pending;
+            }
+            Err(Some(at)) => {
+                if self.poll_timer(at, cx).is_pending() {
+                    return Poll::Pending;
+                }
+            }
+        }
+        self.poll_elapsed(node, cx)
+    }
+
+    /// The poll of a wait whose timer elapsed: around again, as a wait that registers does.
+    #[cold]
+    #[inline(never)]
+    fn poll_elapsed(&mut self, node: &Node, cx: &mut Context<'_>) -> Poll<()> {
+        self.poll_registering(node, cx)
+    }
+
+    /// The poll of a wait that is not registered, or not with this waker.
+    #[inline(never)]
+    fn poll_unregistered(&mut self, node: &Node, cx: &mut Context<'_>) -> Poll<()> {
         // Checked before registering: a woken waiter completes without touching any lock. A
-        // first poll only looks at the published flags, and a waiter still registered with
-        // this waker leaves it to the check after registering, which is complete.
+        // first poll only looks at the published flags.
         let ready = match self.registration {
             None => self.published(node),
-            Some(registration)
-                if self.waker == Some(WakerKey::of(cx.waker()))
-                    && node.waiters.is_current(registration) =>
-            {
-                false
-            }
             Some(_) => self.check(node, node.phase()).is_ok(),
         };
         if ready {
-            return Poll::Ready(());
+            return self.finish(node);
         }
+        self.poll_registering(node, cx)
+    }
+
+    /// Registers, checks and arms the timer, until the wait is over or left pending.
+    #[inline(always)]
+    fn poll_registering(&mut self, node: &Node, cx: &mut Context<'_>) -> Poll<()> {
         loop {
             // Registered before driving: a signal that completes later wakes this waiter.
             self.register(node, cx.waker());
-            let next = match self.check(node, node.driven_phase()) {
-                Ok(()) => return Poll::Ready(()),
+            let next = match self.check_driven(node) {
+                Ok(()) => return self.finish(node),
                 Err(next) => next,
             };
             let Some(at) = next else {
-                self.clear_sleep();
+                self.clear_timer();
                 return Poll::Pending;
             };
-            let sleep = match &mut *self.sleep {
-                Some(sleep) => {
-                    if sleep.deadline() != at {
-                        sleep.as_mut().reset(at);
-                    }
-                    sleep
-                }
-                None => self.sleep.insert(Box::pin(tokio::time::sleep_until(at))),
-            };
-            if sleep.as_mut().poll(cx).is_pending() {
+            if self.poll_timer(at, cx).is_pending() {
                 return Poll::Pending;
             }
         }
+    }
+
+    /// Polls the timer for `at`, the instant the phase changes at by time alone, unless it is
+    /// set for `at` and did not ask for a poll since it was left pending.
+    fn poll_timer(&mut self, at: Instant, cx: &mut Context<'_>) -> Poll<()> {
+        let Some(timer) = &mut *self.timer else {
+            // Polled as the task itself: a wait polled once makes no waker for its timer.
+            let timer = self.timer.insert(Box::pin(Timer {
+                sleep: sleep_until(at),
+                own: None,
+                pending: false,
+            }));
+            return timer.as_mut().project().sleep.poll(cx);
+        };
+        let mut this = timer.as_mut().project();
+        match this.own {
+            Some(own) if own.wake.task.will_wake(cx.waker()) => {
+                // Acquire: pairs with the store in `TimerWake::wake_by_ref`.
+                if *this.pending
+                    && this.sleep.deadline() == at
+                    && !own.wake.asked.load(Ordering::Acquire)
+                {
+                    return Poll::Pending;
+                }
+            }
+            _ => {
+                let own = TimerWaker::of(cx.waker());
+                *this.pending = false;
+                let replaced = this.own.replace(own);
+                // Dropped once the timer holds the new one: a waker's drop may panic.
+                drop(replaced);
+            }
+        }
+        if this.sleep.deadline() != at {
+            this.sleep.as_mut().reset(at);
+        }
+        let Some(own) = this.own else {
+            return this.sleep.poll(cx);
+        };
+        // Cleared before the poll: a timer that asked before is answered by this poll, one
+        // that asks from here on sets it again.
+        own.wake.asked.store(false, Ordering::Release);
+        // Not left pending by a poll that panics.
+        *this.pending = false;
+        let poll = this.sleep.poll(&mut Context::from_waker(&own.waker));
+        *this.pending = poll.is_pending();
+        poll
+    }
+
+    /// Ends a wait that completed.
+    #[inline(always)]
+    fn finish(&mut self, node: &Node) -> Poll<()> {
+        self.deregister(node);
+        self.waker = None;
+        self.clear_timer();
+        self.done = true;
+        Poll::Ready(())
     }
 }
 
 impl Future for Wait {
     type Output = ();
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let Self { node, state } = self.get_mut();
         if state.done {
@@ -1541,14 +1882,7 @@ impl Future for Wait {
                 Target::Graceful | Target::Hard => Poll::Pending,
             };
         };
-        if state.poll_node(node, cx).is_pending() {
-            return Poll::Pending;
-        }
-        state.deregister(node);
-        state.waker = None;
-        state.clear_sleep();
-        state.done = true;
-        Poll::Ready(())
+        state.poll_node(node, cx)
     }
 }
 
@@ -1558,7 +1892,7 @@ impl Drop for Wait {
         if let Some(node) = self.node.as_deref() {
             self.state.deregister(node);
         }
-        self.state.clear_sleep();
+        self.state.clear_timer();
     }
 }
 

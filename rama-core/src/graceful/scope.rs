@@ -688,7 +688,7 @@ impl Nodes {
         match self {
             Self::Detached => false,
             Self::One(node) => node.phase().graceful(),
-            Self::Many(composite) => composite.fact(false).is_some(),
+            Self::Many(composite) => composite.reached(false),
         }
     }
 
@@ -697,7 +697,7 @@ impl Nodes {
         match self {
             Self::Detached => false,
             Self::One(node) => node.phase().hard(),
-            Self::Many(composite) => composite.fact(true).is_some(),
+            Self::Many(composite) => composite.reached(true),
         }
     }
 
@@ -748,11 +748,17 @@ impl Composite {
     /// The cause of the earliest phase of any part or inherited from a parent composite,
     /// fixed once seen; an inherited fact wins a tie, then the first part.
     fn fact(&self, hard: bool) -> Option<Cause> {
-        if let Some((_, cause)) = self.fixed(hard) {
-            return Some(cause);
-        }
-        self.fix_lineage(hard);
-        self.fixed(hard).map(|(_, cause)| cause)
+        self.reached(hard)
+            .then(|| self.fixed(hard))
+            .flatten()
+            .map(|(_, cause)| cause)
+    }
+
+    /// Whether the graceful (or `hard`) phase is reached, which fixes its fact; no lock is
+    /// taken while it is not.
+    fn reached(&self, hard: bool) -> bool {
+        // A fact is stored before its bit is set, and a pass that fixes one sets the bit.
+        self.is_fixed(hard) || (self.fix_lineage(hard) && self.is_fixed(hard))
     }
 
     fn fixed(&self, hard: bool) -> Option<(Instant, Cause)> {
@@ -764,8 +770,8 @@ impl Composite {
     /// read of their parts taken children first. An ancestor publishes before its descendants,
     /// so a phase a part inherited is also seen on the parts of the composite above it, which
     /// is fixed first and handed down. A `hard` pass fixes the graceful facts too, first and
-    /// from the same read: aborted implies cancelled.
-    fn fix_lineage(&self, hard: bool) {
+    /// from the same read: aborted implies cancelled. Returns whether a part reached the phase.
+    fn fix_lineage(&self, hard: bool) -> bool {
         // Read outside the facts lock: publishing a phase may run signal destructors. The parts
         // inherit every phase above them, so nothing is fixed before one of them reached it.
         let mut reached = false;
@@ -777,8 +783,17 @@ impl Composite {
             yield_point();
         }
         if !reached {
-            return;
+            return false;
         }
+        self.fix_reached(hard, walked);
+        true
+    }
+
+    /// The rest of [`Self::fix_lineage`] once a part reached the phase; `walked` says, part
+    /// by part, whether observing it published every phase above it.
+    #[cold]
+    #[inline(never)]
+    fn fix_reached(&self, hard: bool, walked: SmallVec<[bool; 8]>) {
         let read = |node: &Arc<Node>| {
             if hard {
                 node.published_both_at()
