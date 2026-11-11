@@ -162,7 +162,9 @@ class Probe:
             # Fresh hosted-runner devices can spend over five minutes in
             # CoreLocation's first-boot data migration after a runtime download.
             self.run("xcrun", "simctl", "bootstatus", udid, "-b", timeout=900)
-            return probe_result(self.run("xcrun", "simctl", "spawn", udid, binary), "ios-simulator")
+            # The first spawn on a fresh device can still wait on launchd services.
+            output = self.run("xcrun", "simctl", "spawn", udid, binary, timeout=600)
+            return probe_result(output, "ios-simulator")
         finally:
             # Keep cleanup failures separate, so they cannot hide the probe error.
             self.check("simulator-shutdown", lambda: self.run("xcrun", "simctl", "shutdown", udid))
