@@ -660,6 +660,60 @@ mod tests {
         g::<Connection<TcpStream, VoidHttpService>>();
         g::<UpgradeableConnection<TcpStream, VoidHttpService>>();
     }
+
+    #[test]
+    fn large_keep_alive_uploads_work_without_a_time_driver() {
+        use rama_core::{ServiceInput, service::service_fn};
+        use rama_http_types::body::util::BodyExt as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (mut client, server_io) = tokio::io::duplex(1024 * 1024);
+                let server = tokio::spawn(async move {
+                    Builder::new()
+                        .maybe_with_header_read_timeout(None)
+                        .maybe_with_idle_timeout(None)
+                        .serve_connection(
+                            ServiceInput::new(server_io),
+                            service_fn(|request: Request<IncomingBody>| async move {
+                                let mut body = request.into_body();
+                                let mut received = 0;
+                                while let Some(frame) = body.frame().await {
+                                    if let Ok(data) = frame.unwrap().into_data() {
+                                        received += data.len();
+                                    }
+                                }
+                                assert_eq!(received, 256 * 1024);
+                                Ok::<_, Infallible>(Response::new(Body::empty()))
+                            }),
+                        )
+                        .await
+                        .unwrap();
+                });
+                for _ in 0..2 {
+                    client
+                        .write_all(
+                            b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 262144\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    client.write_all(&vec![0x5a; 256 * 1024]).await.unwrap();
+                    let mut response = Vec::new();
+                    while !response.ends_with(b"\r\n\r\n") {
+                        let mut buf = [0; 128];
+                        let n = client.read(&mut buf).await.unwrap();
+                        assert_ne!(n, 0);
+                        response.extend_from_slice(&buf[..n]);
+                    }
+                    assert!(response.starts_with(b"HTTP/1.1 200"));
+                }
+                drop(client);
+                server.await.unwrap();
+            });
+    }
 }
 
 /// Lingering close over real sockets: the server rejects an upload without
