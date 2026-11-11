@@ -853,11 +853,15 @@ jobs:
         with:
           key: browser-profiles-${{ matrix.mode }}
           shared-key: linux-stable-browser-profiles-${{ matrix.mode }}
+      - name: Configure Wireshark packaging
+        run: echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
       - name: Install packet tools and shared browser dependencies
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: tshark ethtool libcap2-bin libclang-dev cmake ninja-build libnss3-tools
+      - name: Configure shared browser packet capture
         run: |
-          echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark ethtool libcap2-bin libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           # Allow only this fixture's evidence and its WebSocket dissector.
           if [ -f /etc/apparmor.d/tshark ]; then
@@ -878,7 +882,18 @@ jobs:
             sudo journalctl -k --since '-2 minutes' --no-pager | tail -80
             exit 1
           fi
-          docker pull postgres:17-alpine
+      - name: Prepare PostgreSQL image
+        timeout-minutes: 10
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 180 docker pull postgres:17-alpine; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              exit 1
+            fi
+            sleep 5
+          done
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: just
@@ -985,9 +1000,14 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: just
+      - name: Install Safari dependencies
+        uses: ./.github/actions/brew-install
+        timeout-minutes: 15
+        with:
+          tools: wireshark=tshark
+          formulae: openssl@3 postgresql@17
       - name: Prepare desktop Safari
         run: |
-          brew install openssl@3 postgresql@17 wireshark
           echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
           sudo chown "$(id -un)" /dev/bpf*
           echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
@@ -1070,9 +1090,10 @@ jobs:
         with:
           tool: just
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libclang-dev cmake ninja-build
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: libclang-dev cmake ninja-build
       - name: Build the CLI
         run: cargo build --locked --release -p rama-cli --all-features --bin rama
       - name: Emulate every embedded profile against a local echo service
@@ -1131,11 +1152,15 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: just
+      - name: Configure Wireshark packaging
+        run: echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
       - name: Install local packet and native build tools
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: tshark ethtool libcap2-bin libclang-dev cmake ninja-build
+      - name: Configure native packet capture
         run: |
-          echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark ethtool libcap2-bin libclang-dev cmake ninja-build
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           # Ubuntu's tshark profile does not include the runner's evidence directory.
           if [ -f /etc/apparmor.d/tshark ]; then

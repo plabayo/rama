@@ -24,7 +24,7 @@ use loom::{
     thread,
 };
 
-use super::{Cause, Scope, node::COUNT_CLOSED};
+use super::{Cause, Scope, node::COUNT_CLOSED, sync::timer};
 
 #[test]
 fn cancel_wakes_a_registering_waiter() {
@@ -480,7 +480,8 @@ fn race_an_abort_observation(of_child: bool) {
                     let handle = runtime.handle().clone();
                     thread::spawn(move || {
                         let _entered = handle.enter();
-                        for _ in 0..=racer_yields {
+                        // From none on: the observation takes no lock before its first step.
+                        for _ in 0..racer_yields {
                             thread::yield_now();
                         }
                         b.abort(Cause::Reason("b"));
@@ -569,4 +570,59 @@ fn reason(cause: Option<&Cause>) -> Option<&'static str> {
         Some(Cause::Reason(reason)) => Some(reason),
         _ => None,
     }
+}
+
+// The wait leaves its timer alone until the timer asks for a poll. However the asks of two
+// threads fall around its polls, the last one is answered by a poll of the timer.
+#[test]
+fn a_timer_that_asks_for_a_poll_gets_one() {
+    loom::model(|| {
+        let scope = Scope::new().with_timeout(std::time::Duration::from_secs(3600));
+        let mut wait = Box::pin(scope.aborted());
+        let mut cx = Context::from_waker(Waker::noop());
+        // The second poll gives the timer its own waker.
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        let timer = Arc::new(timer::last().expect("a timer is set"));
+        let askers = [(); 2].map(|()| {
+            let timer = timer.clone();
+            thread::spawn(move || timer.ask())
+        });
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        for asker in askers {
+            asker.join().unwrap();
+        }
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        assert!(
+            !timer.is_waiting(),
+            "the timer asked for a poll it never got"
+        );
+    });
+}
+
+// The same with a task behind the wait, which loom also polls at moments of its own: only
+// the wake of the ask is sure to come, and the poll it leads to has to answer the ask. A
+// lost wake leaves the model stuck.
+#[test]
+fn a_timer_that_asks_for_a_poll_wakes_the_task() {
+    loom::model(|| {
+        let scope = Scope::new().with_timeout(std::time::Duration::from_secs(3600));
+        let mut wait = Box::pin(scope.aborted());
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        let mut asker = None;
+        block_on(std::future::poll_fn(|cx| {
+            assert!(wait.as_mut().poll(cx).is_pending());
+            let timer = timer::last().expect("a timer is set");
+            if timer.was_answered() {
+                return Poll::Ready(());
+            }
+            if asker.is_none() {
+                // Asked once the timer was polled with the waker the wait made for it.
+                asker = Some(thread::spawn(move || timer.ask()));
+            }
+            Poll::Pending
+        }));
+        asker.take().expect("asked").join().unwrap();
+    });
 }

@@ -54,10 +54,12 @@ class MigrationEvidenceTests(unittest.TestCase):
             (directory / "client").mkdir(parents=True)
             (directory / "output.txt").write_text("First server packet did not contain a PATH_CHALLENGE frame")
             (directory / "client/keys.log").write_text("test keys")
-            with patch("check_migration.subprocess.run", side_effect=subprocess.CalledProcessError(1, "tshark")):
+            failure = subprocess.CalledProcessError(3, "tshark", stderr="tshark: capture.pcap: Permission denied")
+            with patch("check_migration.subprocess.run", side_effect=failure):
                 verified, proofs = migration_classifications(root, "client", report, evidence, PINNED_PEERS)
             self.assertEqual(verified, {})
             self.assertIn("could not be decoded", proofs[0]["error"])
+            self.assertIn("capture.pcap: Permission denied", proofs[0]["error"])
             with self.assertRaisesRegex(InvalidResults, "connectionmigration: 'failed'"):
                 gate(report, clients=["rama"], servers=["ngtcp2"], cases=["connectionmigration"],
                      verified_migrations=verified)

@@ -159,9 +159,14 @@ jobs:
       - name: cargo sort (dependencies)
         run: cargo sort --workspace --grouped --check
       - name: Install actionlint
+        timeout-minutes: 10
         run: |
+          if command -v actionlint >/dev/null; then
+            actionlint --version
+            exit 0
+          fi
           archive="$RUNNER_TEMP/actionlint.tar.gz"
-          curl --fail --location --retry 3 \
+          curl --fail --location --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 \
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
             --output "$archive"
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $archive" | sha256sum --check
@@ -496,7 +501,10 @@ jobs:
         with:
           prune-cache: true
       - name: Install Apple example build and lint tools
-        run: brew install xcodegen shellcheck
+        uses: ./.github/actions/brew-install
+        timeout-minutes: 15
+        with:
+          tools: xcodegen shellcheck
       # Checks below keep going after a failed check, but never after a failed setup.
       - name: Setup complete
         id: setup
@@ -1075,7 +1083,8 @@ jobs:
       matrix:
         backend: [boring, rustls-ring, rustls-aws-lc]
         group: [core, paths, loss]
-    runs-on: ubuntu-24.04
+    # The distro provides tshark >=4.5, without depending on a Launchpad PPA.
+    runs-on: ubuntu-26.04
     timeout-minutes: 130
     needs:
       - precheck-rust
@@ -1086,19 +1095,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Add the Wireshark package source
-        run: |
-          # Launchpad metadata requests can time out before apt runs. Retry only
-          # package setup; test failures below must still fail the job.
-          for attempt in 1 2 3; do
-            if sudo timeout 180s add-apt-repository --yes --no-update ppa:wireshark-dev/stable; then
-              break
-            fi
-            if [[ "$attempt" == 3 ]]; then
-              exit 1
-            fi
-            sleep 5
-          done
       - name: Install packet analysis tools
         uses: ./.github/actions/apt-install
         timeout-minutes: 15
@@ -1107,7 +1103,20 @@ jobs:
       - name: Prepare packet capture
         run: |
           sudo modprobe ip6table_filter
+          # Ubuntu 26 confines tshark; retained captures and TLS keys live outside /tmp.
+          if [[ -f /etc/apparmor.d/tshark ]]; then
+            printf '"%s/quic-interop/{,**}" r,\n' "$RUNNER_TEMP" \
+              | sudo tee -a /etc/apparmor.d/local/tshark >/dev/null
+            sudo apparmor_parser --replace /etc/apparmor.d/tshark
+          fi
           tshark --version
+          # Exercise the exact retained-capture location before building the endpoints.
+          mkdir "$RUNNER_TEMP/quic-interop"
+          python3 -c 'import struct, sys; open(sys.argv[1], "wb").write(struct.pack("<IHHIIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))' \
+            "$RUNNER_TEMP/quic-interop/read-probe.pcap"
+          tshark -r "$RUNNER_TEMP/quic-interop/read-probe.pcap" -c 1
+          rm "$RUNNER_TEMP/quic-interop/read-probe.pcap"
+          rmdir "$RUNNER_TEMP/quic-interop"
           docker compose version
       # The engine's built-in builder runs the image build, so no buildx builder
       # image is pulled; Docker Hub pulls fall back to it when the mirror misses.

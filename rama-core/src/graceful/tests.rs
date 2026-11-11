@@ -2824,3 +2824,370 @@ fn a_task_below_a_graced_root_runs_through_the_grace_and_stops_at_its_end() {
         assert!(matches!(leaf.abort_cause(), Some(Cause::GraceElapsed)));
     });
 }
+
+/// Shapes a wait is polled on again and again: the scope, and what ends it from above
+/// (itself for a root).
+fn polled_shapes() -> Vec<(&'static str, Scope, Scope)> {
+    let (root, above) = (Scope::new(), Scope::new());
+    let signalled = Scope::new().with_signal(std::future::pending::<()>());
+    let graced = Scope::new().with_grace(SEC);
+    let timed = Scope::new().with_timeout(1000 * SEC);
+    let (part_a, part_b) = (Scope::new(), Scope::new());
+    vec![
+        ("root", root.clone(), root),
+        ("grandchild", above.child().child(), above),
+        ("below a signal", signalled.child(), signalled),
+        ("below a grace", graced.child().child(), graced),
+        ("below a deadline", timed.child(), timed),
+        ("composite", Scope::child_of([&part_a, &part_b]), part_b),
+    ]
+}
+
+/// Polls `wait` a few times with one waker: it stays pending and nothing wakes it.
+fn stays_pending<F: Future<Output = ()> + Unpin>(wait: &mut F, flag: &Flag, waker: &Waker) {
+    for round in 0..4 {
+        assert!(poll(wait, waker).is_pending(), "poll {round}");
+        assert!(!flag.woken(), "poll {round}");
+    }
+}
+
+#[test]
+fn a_wait_polled_again_with_its_waker_sees_the_cancel() {
+    rt().block_on(async {
+        for (shape, scope, above) in polled_shapes() {
+            let (flag, waker) = Flag::waker();
+            let mut cancelled = scope.cancelled();
+            let mut aborted = scope.aborted();
+            stays_pending(&mut cancelled, &flag, &waker);
+            stays_pending(&mut aborted, &flag, &waker);
+
+            above.cancel(Cause::Owner);
+            assert!(flag.woken(), "{shape}: woken by the cancel");
+            assert!(poll(&mut cancelled, &waker).is_ready(), "{shape}");
+            // The hard wait registers again, with the same waker.
+            stays_pending(&mut aborted, &flag, &waker);
+
+            above.abort(Cause::Owner);
+            assert!(flag.woken(), "{shape}: woken by the abort");
+            assert!(poll(&mut aborted, &waker).is_ready(), "{shape}");
+        }
+    });
+}
+
+#[test]
+fn a_wait_polled_again_with_its_waker_sees_the_last_holder_go() {
+    rt().block_on(async {
+        for (shape, scope, above) in polled_shapes() {
+            let (flag, waker) = Flag::waker();
+            let weak = scope.clone_weak();
+            let holder = scope;
+            drop(above);
+            let mut drained = weak.drained();
+            stays_pending(&mut drained, &flag, &waker);
+            drop(holder);
+            assert!(flag.woken(), "{shape}: woken by the drain");
+            assert!(poll(&mut drained, &waker).is_ready(), "{shape}");
+        }
+    });
+}
+
+#[test]
+fn a_wait_polled_again_with_another_waker_wakes_that_one() {
+    rt().block_on(async {
+        for (shape, scope, above) in polled_shapes() {
+            let (first, first_waker) = Flag::waker();
+            let (second, second_waker) = Flag::waker();
+            let mut aborted = scope.aborted();
+            stays_pending(&mut aborted, &first, &first_waker);
+            stays_pending(&mut aborted, &second, &second_waker);
+            above.abort(Cause::Owner);
+            assert!(second.woken(), "{shape}: the latest waker");
+            assert!(!first.woken(), "{shape}: not the one it replaced");
+            assert!(poll(&mut aborted, &second_waker).is_ready(), "{shape}");
+        }
+    });
+}
+
+#[test]
+fn a_wait_polled_again_with_its_waker_sees_a_signal_complete() {
+    let (trigger, signal) = oneshot::channel::<()>();
+    let root = Scope::new().with_signal(signal);
+    let leaf = root.child().child();
+    let (flag, waker) = Flag::waker();
+    let mut cancelled = leaf.cancelled();
+    stays_pending(&mut cancelled, &flag, &waker);
+    trigger.send(()).unwrap();
+    assert!(flag.woken(), "woken by the signal");
+    assert!(!root.is_cancelled(), "not observed yet");
+    assert!(poll(&mut cancelled, &waker).is_ready());
+    assert!(matches!(leaf.cause(), Some(Cause::Signal)));
+}
+
+const DEADLINE_SHAPES: usize = 5;
+
+/// One of the scopes whose deadline is `after` from now: the scope a wait is on, and what
+/// keeps its chain.
+fn deadline_shape(index: usize, after: Duration, hard: bool) -> (&'static str, Scope, Vec<Scope>) {
+    let mut shapes = deadline_shapes(after, hard);
+    assert_eq!(shapes.len(), DEADLINE_SHAPES);
+    shapes.swap_remove(index)
+}
+
+fn deadline_shapes(after: Duration, hard: bool) -> Vec<(&'static str, Scope, Vec<Scope>)> {
+    let limit = |scope: Scope| {
+        if hard {
+            scope.with_hard_timeout(after)
+        } else {
+            scope.with_timeout(after)
+        }
+    };
+    let above = limit(Scope::new());
+    let plain = Scope::new();
+    let graced = Scope::new().with_grace(1000 * SEC);
+    let (part_a, part_b) = (limit(Scope::new()), Scope::new());
+    vec![
+        ("root", limit(Scope::new()), vec![]),
+        ("grandchild of it", above.child().child(), vec![above]),
+        ("child with it", limit(plain.child()), vec![plain]),
+        ("below a grace", limit(graced.child()).child(), vec![graced]),
+        (
+            "composite",
+            Scope::child_of([&part_a, &part_b]),
+            vec![part_a, part_b],
+        ),
+    ]
+}
+
+#[test]
+fn a_wait_polled_again_with_its_waker_sees_the_deadline_on_time() {
+    rt().block_on(async {
+        for hard in [false, true] {
+            for index in 0..DEADLINE_SHAPES {
+                let (shape, scope, _keep) = deadline_shape(index, 10 * SEC, hard);
+                let (flag, waker) = Flag::waker();
+                let mut cancelled = scope.cancelled();
+                let mut aborted = scope.aborted();
+                stays_pending(&mut cancelled, &flag, &waker);
+                stays_pending(&mut aborted, &flag, &waker);
+
+                advance(Duration::from_millis(9_999)).await;
+                assert!(!flag.woken(), "{shape}: not before the deadline");
+                assert!(!scope.is_cancelled(), "{shape}");
+                stays_pending(&mut cancelled, &flag, &waker);
+                stays_pending(&mut aborted, &flag, &waker);
+
+                advance(Duration::from_millis(1)).await;
+                assert!(flag.woken(), "{shape}: woken at the deadline");
+                assert!(poll(&mut cancelled, &waker).is_ready(), "{shape}");
+                assert_eq!(poll(&mut aborted, &waker).is_ready(), hard, "{shape}");
+                assert_eq!(scope.is_aborted(), hard, "{shape}");
+                let cause = if hard {
+                    scope.abort_cause()
+                } else {
+                    scope.cause()
+                };
+                assert!(matches!(cause, Some(Cause::Deadline)), "{shape}");
+            }
+        }
+    });
+}
+
+// The clock decides, not the timer: its wake only comes with the next millisecond.
+#[test]
+fn a_wait_polled_again_sees_a_deadline_between_two_timer_ticks() {
+    rt().block_on(async {
+        let scope = Scope::new().with_timeout(Duration::from_micros(1500));
+        let (flag, waker) = Flag::waker();
+        let mut cancelled = scope.cancelled();
+        stays_pending(&mut cancelled, &flag, &waker);
+        advance(Duration::from_micros(1400)).await;
+        stays_pending(&mut cancelled, &flag, &waker);
+        advance(Duration::from_micros(200)).await;
+        assert!(!flag.woken(), "its timer is still to come");
+        assert!(poll(&mut cancelled, &waker).is_ready());
+        assert!(scope.is_cancelled());
+    });
+}
+
+#[test]
+fn a_wait_polled_again_follows_its_timer_to_the_latest_waker() {
+    rt().block_on(async {
+        let scope = Scope::new().with_timeout(10 * SEC);
+        let (first, first_waker) = Flag::waker();
+        let (second, second_waker) = Flag::waker();
+        let mut cancelled = scope.cancelled();
+        stays_pending(&mut cancelled, &first, &first_waker);
+        stays_pending(&mut cancelled, &second, &second_waker);
+        advance(10 * SEC).await;
+        assert!(second.woken(), "the latest waker");
+        assert!(!first.woken(), "not the one it replaced");
+        assert!(poll(&mut cancelled, &second_waker).is_ready());
+    });
+}
+
+#[test]
+fn a_wait_polled_again_follows_a_deadline_moved_earlier() {
+    rt().block_on(async {
+        let start = Instant::now();
+        let root = Scope::new().with_timeout(100 * SEC);
+        let leaf = root.child().child();
+        let (flag, waker) = Flag::waker();
+        let mut cancelled = leaf.cancelled();
+        stays_pending(&mut cancelled, &flag, &waker);
+
+        let _root = root.clone().with_timeout(10 * SEC);
+        assert!(flag.woken(), "woken by the new deadline");
+        stays_pending(&mut cancelled, &flag, &waker);
+        advance(Duration::from_millis(9_999)).await;
+        stays_pending(&mut cancelled, &flag, &waker);
+        advance(Duration::from_millis(1)).await;
+        assert!(flag.woken(), "woken at the new deadline");
+        assert!(poll(&mut cancelled, &waker).is_ready());
+        assert_eq!(start.elapsed(), 10 * SEC);
+    });
+}
+
+#[test]
+fn a_wait_polled_again_while_draining_sees_the_grace_end_on_time() {
+    rt().block_on(async {
+        let root = Scope::new()
+            .with_signal(std::future::pending::<()>())
+            .with_grace(5 * SEC);
+        let leaf = root.child().child();
+        let (flag, waker) = Flag::waker();
+        let mut aborted = leaf.aborted();
+        stays_pending(&mut aborted, &flag, &waker);
+
+        root.cancel(Cause::Owner);
+        assert!(flag.woken(), "woken by the cancel");
+        stays_pending(&mut aborted, &flag, &waker);
+        advance(Duration::from_millis(4_999)).await;
+        stays_pending(&mut aborted, &flag, &waker);
+        assert!(!leaf.is_aborted());
+
+        advance(Duration::from_millis(1)).await;
+        assert!(flag.woken(), "woken as the grace ends");
+        assert!(poll(&mut aborted, &waker).is_ready());
+        assert!(matches!(leaf.abort_cause(), Some(Cause::GraceElapsed)));
+    });
+}
+
+// A timer may leave a poll pending without setting itself up, as tokio's does for a task out
+// of budget: it asks for another poll, which it has to get.
+#[test]
+fn a_timer_polled_out_of_budget_still_wakes_at_the_deadline() {
+    rt().block_on(async {
+        let start = Instant::now();
+        let scope = Scope::new().with_timeout(10 * SEC);
+        let task = tokio::spawn(async move {
+            let mut cancelled = scope.cancelled();
+            let mut polls = 0;
+            std::future::poll_fn(|cx| {
+                polls += 1;
+                if polls <= 2 {
+                    // Out of budget for the rest of this poll, and woken for another one.
+                    while std::pin::pin!(tokio::task::consume_budget())
+                        .poll(cx)
+                        .is_ready()
+                    {}
+                }
+                Pin::new(&mut cancelled).poll(cx)
+            })
+            .await;
+            polls
+        });
+        let polls = tokio::time::timeout(100 * SEC, task)
+            .await
+            .expect("woken at the deadline")
+            .unwrap();
+        assert!(polls >= 3, "{polls} polls");
+        assert_eq!(start.elapsed(), 10 * SEC);
+    });
+}
+
+#[test]
+fn run_until_polled_again_never_polls_its_future_once_the_phase_is_there() {
+    rt().block_on(async {
+        for hard in [false, true] {
+            let ended_from_above = polled_shapes()
+                .into_iter()
+                .map(|(shape, scope, above)| (shape, scope, Some(above), vec![]));
+            let ended_by_time = (0..DEADLINE_SHAPES).map(|index| {
+                let (shape, scope, keep) = deadline_shape(index, 10 * SEC, hard);
+                (shape, scope, None, keep)
+            });
+            // Made one by one: a deadline counts from the moment its shape is made.
+            for (shape, scope, above, _keep) in ended_from_above.chain(ended_by_time) {
+                let polls = Arc::new(AtomicUsize::new(0));
+                let counted = polls.clone();
+                let work = std::future::poll_fn(move |_cx| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    Poll::<()>::Pending
+                });
+                let mut run: Pin<Box<dyn Future<Output = Option<()>>>> = if hard {
+                    Box::pin(scope.run_until_aborted(work))
+                } else {
+                    Box::pin(scope.run_until_cancelled(work))
+                };
+                let (_flag, waker) = Flag::waker();
+                for _ in 0..4 {
+                    assert!(poll(&mut run, &waker).is_pending());
+                }
+                assert_eq!(polls.load(Ordering::SeqCst), 4, "{shape}");
+
+                match above {
+                    Some(above) if hard => above.abort(Cause::Owner),
+                    Some(above) => above.cancel(Cause::Owner),
+                    None => advance(10 * SEC).await,
+                }
+                assert_eq!(poll(&mut run, &waker), Poll::Ready(None), "{shape}");
+                assert_eq!(polls.load(Ordering::SeqCst), 4, "{shape}: not polled again");
+            }
+        }
+    });
+}
+
+#[test]
+fn a_composite_reports_a_phase_only_once_a_part_is_in_it() {
+    let (part_a, part_b) = (Scope::new(), Scope::new());
+    let composite = Scope::child_of([&part_a, &part_b]);
+    let weak = composite.clone_weak();
+    for _ in 0..4 {
+        assert!(!weak.is_cancelled());
+        assert!(!weak.is_aborted());
+        assert!(weak.cause().is_none());
+        assert!(weak.abort_cause().is_none());
+    }
+    part_b.cancel(Cause::Reason("b"));
+    for _ in 0..4 {
+        assert!(weak.is_cancelled());
+        assert!(!weak.is_aborted());
+        assert_eq!(reason(weak.cause().as_ref()), Some("b"));
+    }
+    part_a.abort(Cause::Reason("a"));
+    for _ in 0..4 {
+        assert!(weak.is_aborted());
+        assert_eq!(reason(weak.abort_cause().as_ref()), Some("a"));
+        assert_eq!(reason(weak.cause().as_ref()), Some("b"), "fixed before");
+    }
+}
+
+#[test]
+fn every_level_of_a_chain_is_judged_at_one_instant() {
+    rt().block_on(async {
+        let root = Scope::new().with_timeout(10 * SEC).with_grace(5 * SEC);
+        let child = root.child().with_grace(2 * SEC);
+        let leaf = child.child().with_hard_timeout(30 * SEC);
+        advance(10 * SEC).await;
+        assert!(leaf.is_cancelled());
+        assert!(!leaf.is_aborted());
+        assert!(matches!(root.cause(), Some(Cause::Deadline)));
+        advance(2 * SEC).await;
+        assert!(leaf.is_aborted());
+        assert!(matches!(leaf.abort_cause(), Some(Cause::GraceElapsed)));
+        assert!(child.is_aborted());
+        assert!(!root.is_aborted(), "its own grace is longer");
+        advance(3 * SEC).await;
+        assert!(root.is_aborted());
+    });
+}

@@ -12,23 +12,25 @@ permissions: {}
 
 jobs:
   retry-infra-failures:
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       actions: write
       checks: read
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt == 1
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt <= 2
     steps:
       - name: Retry when all failed jobs died on runner infrastructure
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           run_url="repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}"
 
           # The aggregate gate also fails after an infrastructure loss. Classify
           # the underlying jobs so its synthetic failure does not prevent retry.
-          mapfile -t failed_jobs < <(gh api "${run_url}/jobs?per_page=100" \
+          mapfile -t failed_jobs < <(gh api --paginate "${run_url}/jobs?per_page=100" \
             --jq '.jobs[] | select(.conclusion == "failure" and .name != "CI success" and .name != "Daily platforms success") | "\(.id)\t\(.name)"')
 
           if [[ ${#failed_jobs[@]} -eq 0 ]]; then
@@ -36,16 +38,31 @@ jobs:
             exit 0
           fi
 
+          apt_failure=false
           for job in "${failed_jobs[@]}"; do
             id="${job%%$'\t'*}"
             name="${job#*$'\t'}"
-            if ! gh api "repos/${GITHUB_REPOSITORY}/check-runs/${id}/annotations" \
-                --jq '.[].message' | grep -qiE 'lost communication|shutdown signal|apt-install: could not fetch packages|unexpected http response: 5[0-9]{2}|failed to download archive'; then
+            annotations=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/check-runs/${id}/annotations" --jq '.[].message')
+            if ! grep -qiE 'lost communication|shutdown signal|apt-install: could not fetch packages|unexpected http response: 5[0-9]{2}|failed to download archive' <<< "$annotations"; then
               echo "job '${name}' failed on its own (not runner infra); not retrying"
               exit 0
             fi
-            echo "job '${name}' was killed by runner infra"
+            if grep -qiF 'apt-install: could not fetch packages' <<< "$annotations"; then
+              apt_failure=true
+            fi
+            echo "job '${name}' failed on infrastructure"
           done
 
+          if [[ "$apt_failure" == true ]]; then
+            echo "waiting 10 minutes for the package archive to recover"
+            sleep 600
+          fi
+          # A delayed retry must not supersede a newer run on this branch.
+          branch=$(jq -nr --arg branch "$HEAD_BRANCH" '$branch | @uri')
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?branch=${branch}&per_page=1" --jq '.workflow_runs[0].id')
+          if [[ "$latest" != "$RUN_ID" ]]; then
+            echo "a newer workflow run exists; not retrying ${RUN_ID}"
+            exit 0
+          fi
           echo "retrying run ${RUN_ID}"
           gh api -X POST "${run_url}/rerun-failed-jobs"

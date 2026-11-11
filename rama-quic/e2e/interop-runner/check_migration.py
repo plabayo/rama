@@ -50,6 +50,9 @@ def read_packets(capture, keys):
     try:
         result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=60)
         return parse_packets(result.stdout)
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or str(error)).strip()
+        raise InvalidResults(f"preferred-address capture could not be decoded: {detail}") from error
     except (subprocess.SubprocessError, ValueError) as error:
         raise InvalidResults(f"preferred-address capture could not be decoded: {error}") from error
 

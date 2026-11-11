@@ -8,6 +8,7 @@ pub(super) use {
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence},
     },
     std::thread_local,
+    tokio::time::{Sleep, sleep_until},
 };
 
 #[cfg(all(rama_loom, test))]
@@ -43,6 +44,106 @@ impl<T> Mutex<T> {
 impl<T: Default> Default for Mutex<T> {
     fn default() -> Self {
         Self::new(T::default())
+    }
+}
+
+#[cfg(all(rama_loom, test))]
+pub(super) use timer::{Sleep, sleep_until};
+
+/// A timer for loom models, in place of tokio's: it never elapses, and a model makes it ask
+/// for a poll by hand, as any future may at any time.
+#[cfg(all(rama_loom, test))]
+pub(super) mod timer {
+    use std::{
+        cell::RefCell,
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll, Waker},
+    };
+
+    use tokio::time::Instant;
+
+    use super::Mutex;
+
+    pub(in super::super) struct Sleep {
+        deadline: Instant,
+        shared: std::sync::Arc<Mutex<Shared>>,
+    }
+
+    // Behind a lock: the model explores the wait, not this stand-in.
+    #[derive(Default)]
+    struct Shared {
+        asked: bool,
+        answered: bool,
+        waker: Option<Waker>,
+    }
+
+    /// The timer a model asks for a poll.
+    pub(in super::super) struct Handle(std::sync::Arc<Mutex<Shared>>);
+
+    super::thread_local! {
+        static LAST: RefCell<Option<std::sync::Arc<Mutex<Shared>>>> = RefCell::new(None);
+    }
+
+    pub(in super::super) fn sleep_until(deadline: Instant) -> Sleep {
+        let shared = std::sync::Arc::new(Mutex::new(Shared::default()));
+        LAST.with(|last| *last.borrow_mut() = Some(shared.clone()));
+        Sleep { deadline, shared }
+    }
+
+    /// The timer made last on this thread.
+    pub(in super::super) fn last() -> Option<Handle> {
+        LAST.with(|last| last.borrow().clone()).map(Handle)
+    }
+
+    impl Sleep {
+        pub(in super::super) fn deadline(&self) -> Instant {
+            self.deadline
+        }
+
+        pub(in super::super) fn reset(mut self: Pin<&mut Self>, deadline: Instant) {
+            self.deadline = deadline;
+        }
+    }
+
+    impl Future for Sleep {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            let waker = cx.waker().clone();
+            let replaced = {
+                let mut shared = self.shared.lock();
+                // Answered by this poll; it has nothing to report, so it stays pending.
+                shared.answered |= std::mem::take(&mut shared.asked);
+                shared.waker.replace(waker)
+            };
+            drop(replaced);
+            Poll::Pending
+        }
+    }
+
+    impl Handle {
+        /// Asks for a poll, as a timer that elapsed does: once per waker it was polled with.
+        pub(in super::super) fn ask(&self) {
+            let waker = {
+                let mut shared = self.0.lock();
+                shared.asked = true;
+                shared.waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
+
+        /// Whether it asked for a poll that it did not get yet.
+        pub(in super::super) fn is_waiting(&self) -> bool {
+            self.0.lock().asked
+        }
+
+        /// Whether it ever got a poll it asked for.
+        pub(in super::super) fn was_answered(&self) -> bool {
+            self.0.lock().answered
+        }
     }
 }
 

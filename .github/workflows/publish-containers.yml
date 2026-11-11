@@ -121,6 +121,10 @@ jobs:
       timeout-minutes: 15
       shell: bash
       run: |
+        if command -v skopeo >/dev/null; then
+          skopeo --version
+          exit 0
+        fi
         apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
         apt_get() {
           local seconds=$1
@@ -128,13 +132,23 @@ jobs:
           sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=10 "$seconds" apt-get "${apt_opts[@]}" "$@"
         }
         for attempt in 1 2 3 4; do
-          if apt_get 60 update && apt_get 90 install --yes --no-install-recommends --download-only skopeo; then
+          if apt_get 60 update --error-on=any && apt_get 90 install --yes --no-install-recommends --download-only skopeo; then
             apt_get 120 install --yes --no-install-recommends skopeo
             exit 0
           fi
           echo "::warning::apt-install: attempt $attempt of 4 failed"
           if [[ -f /etc/apt/apt-mirrors.txt ]]; then
-            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+            if [[ "$attempt" == 1 ]]; then
+              # Try Canonical over HTTPS after the runner's Azure mirror.
+              sudo sed -i -e '/azure\.archive\.ubuntu\.com/d' -e 's|http://|https://|g' /etc/apt/apt-mirrors.txt
+            elif [[ "$attempt" -lt 4 && "$(dpkg --print-architecture)" == amd64 ]]; then
+              # An archive outage can affect both Canonical hosts. Rotate to
+              # independent mirrors, retaining the sources' Ubuntu signing keys
+              # and apt's signature, freshness and complete-index checks.
+              # These are archive mirrors; do not redirect arm64 ports sources.
+              mirrors=(https://mirrors.edge.kernel.org/ubuntu https://mirror.math.princeton.edu/pub/ubuntu)
+              printf '%s\n' "${mirrors[attempt - 2]}" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            fi
           fi
           sleep 5
         done

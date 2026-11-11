@@ -1,0 +1,22 @@
+name: brew install
+description: Use installed tools and formulae, otherwise retry Homebrew without auto-update. Callers set a step timeout.
+
+inputs:
+  tools:
+    description: Space-separated formula names, optionally formula=command when the executable differs
+    default: ''
+  formulae:
+    description: Space-separated required formulae, including libraries and versioned dependencies
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install missing Homebrew dependencies
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        TOOLS: ${{ inputs.tools }}
+        FORMULAE: ${{ inputs.formulae }}
+        HOMEBREW_NO_AUTO_UPDATE: '1'
+      run: bash "$ACTION_PATH/install.sh"
