@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the shared browser journey, capture profiles, and verify packet evidence.
 
-All protocols replay admitted components through the same six operations.
+All protocols replay admitted components through the same operations.
 Unsupported H3 startup patterns fail admission. Protocol-specific wire decoders
 live behind this common local/CI entry point.
 """
@@ -57,9 +57,9 @@ def parse_args(argv=None):
         )
     if args.protocol != "h1":
         if args.flows != "all":
-            parser.error("H2/H3 verification requires all six operations")
+            parser.error("H2/H3 verification requires every operation")
     if args.tls and args.flows != "all":
-        parser.error("TLS verification requires all six operations")
+        parser.error("TLS verification requires every operation")
     args.rama = args.rama.resolve(strict=True)
     args.output = args.output.resolve()
     if args.browser_binary is not None:

@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from capture_fields import matching_fields
 from flow_bodies import json_object
-from flows import request_authority, require
+from flows import UNECHOED_FLOWS, request_authority, require
 from native_h3_response import native_view, response_evidence
 from page_info import request_headers, request_info, response_object
 from qpack_fields_wire import matching_representations, sections_from_wire
@@ -82,6 +82,10 @@ def main_head(run, frames, peers, completed, websocket_probe):
         group = [frame for frame in frames if key(frame) == key(head)]
         encoded = b"".join(frame.data for frame in group if frame.from_server)
         if encoded != output:
+            continue
+        if run["flow"] in UNECHOED_FLOWS:
+            # Nothing is echoed: the exact output bytes on the request's own stream bind it.
+            matches.append(head)
             continue
         # The CLI writes encoded bytes unless explicitly asked to decompress.
         # Bind those exact bytes first; only this response's headers choose decoding.
@@ -219,6 +223,8 @@ class PreliminaryInventory:
                     attribution=(
                         "caller-known WebSocket probe"
                         if run["flow"] == "ws"
+                        else "exact output on the request's own stream"
+                        if run["flow"] in UNECHOED_FLOWS
                         else "exact output plus echoed headers/native peer and request stream"
                     ),
                 )

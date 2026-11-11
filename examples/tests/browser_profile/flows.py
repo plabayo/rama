@@ -1,4 +1,4 @@
-"""Match the six browser operations to captured HTTP flow contexts."""
+"""Match the browser journey's operations to captured HTTP flow contexts."""
 
 import difflib
 from dataclasses import dataclass
@@ -8,8 +8,33 @@ from urllib.parse import urlsplit
 
 from read_form import is_network_hint
 
-FLOWS = ("navigate", "fetch", "xhr", "ws", "form", "form_get")
+# The report page's own subresources: one request per captured destination.
+ASSET_FLOWS = {
+    "style": "/assets/style.css",
+    "script": "/assets/script.js",
+    "image": "/assets/llama.svg",
+}
+# The operations the browser driver performs and reports a protocol for.
+DRIVER_FLOWS = ("navigate", "fetch", "xhr", "ws", "form", "form_get", "link")
+FLOWS = (*DRIVER_FLOWS, *ASSET_FLOWS)
+# Icon requests a browser makes by itself. The service redirects each to its
+# consent page, which the browser then requests too.
+BROWSER_PROBES = (
+    "/favicon.ico",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+    "/consent",
+)
+# Their responses render no Request Info or native view of the request.
+UNECHOED_FLOWS = ("link", *ASSET_FLOWS)
 FLOW_NAMES = set(FLOWS)
+
+
+def flow_initiator(flow):
+    """The captured initiator of an operation; a subresource has none."""
+    if flow in ASSET_FLOWS:
+        return None
+    return {"form_get": "form", "link": "navigate"}.get(flow, flow)
 
 # These safe request facts select the same captured operation, not a new draw
 # across automatic navigation, user activation and cross-origin contexts.
@@ -39,6 +64,10 @@ def flow_name(headers, *, protocol=None):
         return "form"
     if method == "GET" and path == "/form?source=web&turtles=yes":
         return "form_get"
+    if method == "GET" and path == "/landing":
+        return "link"
+    if method == "GET":
+        return next((flow for flow, uri in ASSET_FLOWS.items() if uri == path), None)
     return None
 
 
@@ -67,9 +96,9 @@ def scope_matches(scope, block, flow):
     versions = {"h1": "HTTP/1.1", "h2": "HTTP/2.0", "h3": "HTTP/3.0"}
     if context["version"] != versions[block.protocol]:
         return False
-    if context["method"] != headers[":method"] or context["initiator"] != (
-        "form" if flow == "form_get" else flow
-    ):
+    if context["method"] != headers[":method"] or context[
+        "initiator"
+    ] != flow_initiator(flow):
         return False
     fetch = context["fetch"] or {}
     return all(
@@ -172,12 +201,10 @@ def replay_args(
         # The runner reads only the operation's response.
         args.append("--last-response-only")
 
-    main = [
-        "--emulate-initiator",
-        "form" if flow == "form_get" else flow,
-        "--request",
-        request.method,
-    ]
+    # A subresource has no initiator: its Fetch metadata selects the captured flow.
+    initiator = flow_initiator(flow)
+    main = ["--emulate-initiator", initiator] if initiator is not None else []
+    main += ["--request", request.method]
     if connection_variant is not None:
         main += ["--emulate-connection-variant", connection_variant]
     if request_variant is not None:
@@ -304,6 +331,14 @@ def replay_headers(target, request):
         value = request.bindings[name]
         if name == "origin" and value != "null":
             value = target.origin
+        if name == "referer":
+            # The fixture is same-origin: the page that sent the request lives on the target.
+            page = urlsplit(value)
+            require(
+                page.scheme in ("http", "https") and page.path.startswith("/"),
+                "replay Referer must be a page URL",
+            )
+            value = target.origin + page.path + ("?" + page.query if page.query else "")
         headers.append((name, value))
     return tuple(headers)
 
@@ -311,7 +346,7 @@ def replay_headers(target, request):
 def flow_counts(expected):
     """Require an explicit positive count for every shared browser operation."""
     counts = dict.fromkeys(FLOWS, expected) if type(expected) is int else dict(expected)
-    require(set(counts) == FLOW_NAMES, "six-operation expected count coverage")
+    require(set(counts) == FLOW_NAMES, "complete expected count coverage")
     require(
         all(type(count) is int and count > 0 for count in counts.values()),
         "positive replay count required for every flow",
@@ -322,7 +357,7 @@ def flow_counts(expected):
 def flow_protocols(blocks, *, operations=None):
     """Record actual per-operation protocols, without forcing WebSocket upgrades.
 
-    A journey must still cover all six operations. Multiple observations of an
+    A journey must still cover every operation. Multiple observations of an
     operation may share a protocol, but silently mixing two protocols is invalid.
     """
     if operations is not None:
@@ -336,7 +371,7 @@ def flow_protocols(blocks, *, operations=None):
             protocols[flow].add(block.protocol)
     require(
         all(len(values) == 1 for values in protocols.values()),
-        "six-operation unambiguous protocol coverage",
+        "unambiguous protocol coverage of every operation",
     )
     return {flow: next(iter(values)) for flow, values in protocols.items()}
 

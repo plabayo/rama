@@ -239,9 +239,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    #![expect(
+    #![allow(
         clippy::allow_attributes,
-        reason = "test macros use `#[allow(unused_mut)]` because the binding is mutated only by some variadic arms — `#[expect]` would warn unfulfilled when no arm fires"
+        reason = "test macros use `#[allow(unused_mut)]` as only some variadic arms mutate; not every toolchain lints local macro expansions"
     )]
 
     use crate::sse::{JsonEventData, test_event as event};

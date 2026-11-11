@@ -457,6 +457,8 @@ def capture_http1(args):
             time.sleep(0.05)
         stop(capture)
         require(capture.returncode == 0, "capture failed")
+        if not secure:
+            wire.require_cleartext(root / (label + ".pcapng"), port)
 
     variants = [None]
     marker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

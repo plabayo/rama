@@ -26,7 +26,7 @@ remain separate coverage.
 
 ## Responsibilities
 
-- `workflow.py`: the shared six-operation journey and per-flow protocol assertions.
+- `workflow.py`: the shared browser journey and per-flow protocol assertions.
 - `drivers.py`: local/remote session ownership and guaranteed `quit()` after a
   workflow failure. Selenium Manager discovers executables; pinned installations
   may pass a binary explicitly. No macOS application path is embedded here.
@@ -64,8 +64,8 @@ runs are labeled configured conformance evidence, not default-browser profiles.
 
 The shared journey runs in BrowserStack and the common local/CI
 `examples/tests/browser_profile/run.py` entry point. The local runner supports
-plaintext/TLS H1 and TLS H2/H3 capture and CLI replay. All six operations must
-complete. The five HTTP flows must use the requested version; WebSocket uses
+plaintext/TLS H1 and TLS H2/H3 capture and CLI replay. Every operation must
+complete. The HTTP flows must use the requested version; WebSocket uses
 its actual negotiated transport, which may differ from the page's version.
 
 Independent packet checks cover request fields/bodies, retained TLS/QUIC facts,

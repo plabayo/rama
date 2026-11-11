@@ -4,6 +4,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from flow_bodies import check_flow_bodies
+from flows import FLOWS
 from operations_tests.http_fixtures import field, journey
 from wire import h1_message_body, parse_pdml
 
@@ -12,7 +13,7 @@ class HttpWireTests(unittest.TestCase):
     def test_full_mixed_decoder_preserves_h1_fields_bodies_and_upgrade(self):
         document, _page = journey()
         blocks = parse_pdml(ET.tostring(document), "mixed", 65320, include_data=True)
-        self.assertEqual(len(check_flow_bodies(blocks)["flows"]), 6)
+        self.assertEqual(len(check_flow_bodies(blocks)["flows"]), len(FLOWS))
         head = next(
             block for block in blocks if not block.from_server and block.stream == 10
         )
@@ -88,7 +89,7 @@ class HttpWireTests(unittest.TestCase):
         field(response, "http.chunk_data", body, raw=True)
         terminal = field(response, "http.chunk_size", b"0\r\n", raw=True)
         blocks = parse_pdml(ET.tostring(document), "mixed", 65320, include_data=True)
-        self.assertEqual(len(check_flow_bodies(blocks)["flows"]), 6)
+        self.assertEqual(len(check_flow_bodies(blocks)["flows"]), len(FLOWS))
         response.remove(terminal)
         with self.assertRaisesRegex(ValueError, "terminal chunk"):
             parse_pdml(ET.tostring(document), "mixed", 65320, include_data=True)

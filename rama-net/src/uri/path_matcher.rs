@@ -737,66 +737,6 @@ fn best_route<'a, T>(
     }
 }
 
-#[cfg(test)]
-mod path_router_candidate_tests {
-    use super::*;
-
-    fn test_route(pattern: &str, value: &'static str) -> PathRoute<&'static str> {
-        let pattern = PathPattern::new_prefix(pattern);
-        let specificity = path_router_specificity(&pattern).into_boxed_slice();
-        PathRoute {
-            pattern,
-            specificity,
-            has_captures: false,
-            value,
-        }
-    }
-
-    #[test]
-    fn best_route_prefers_fewer_skipped_optional_segments_when_consumed_ties() {
-        let skipped = test_route("/root/{name}?", "skipped");
-        let direct = test_route("/root", "direct");
-
-        let best = best_route(
-            Some(PathRouteCandidate {
-                route: &skipped,
-                consumed: 1,
-                skipped_optional_segments: 1,
-            }),
-            PathRouteCandidate {
-                route: &direct,
-                consumed: 1,
-                skipped_optional_segments: 0,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(best.route.value, "direct");
-    }
-
-    #[test]
-    fn best_route_uses_specificity_after_consumed_and_skipped_tie() {
-        let dynamic = test_route("/{tenant}/settings", "dynamic");
-        let literal = test_route("/acme/{section}", "literal");
-
-        let best = best_route(
-            Some(PathRouteCandidate {
-                route: &dynamic,
-                consumed: 2,
-                skipped_optional_segments: 0,
-            }),
-            PathRouteCandidate {
-                route: &literal,
-                consumed: 2,
-                skipped_optional_segments: 0,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(best.route.value, "literal");
-    }
-}
-
 fn prefix_content_segments<'s, 'p>(segments: &'s [EncodedSegment<'p>]) -> &'s [EncodedSegment<'p>] {
     match segments {
         [only] if only.is_empty() => &segments[..0],
@@ -2028,4 +1968,64 @@ fn join_decoded<'p>(segs: &[EncodedSegment<'p>], decode: bool) -> Cow<'p, str> {
 /// (reachable: a decoded `%ff` is byte `0xFF`) with U+FFFD.
 fn decoded_owned<'p>(bytes: &[u8]) -> Cow<'p, str> {
     Cow::Owned(String::from_utf8_lossy(bytes).into_owned())
+}
+
+#[cfg(test)]
+mod path_router_candidate_tests {
+    use super::*;
+
+    fn test_route(pattern: &str, value: &'static str) -> PathRoute<&'static str> {
+        let pattern = PathPattern::new_prefix(pattern);
+        let specificity = path_router_specificity(&pattern).into_boxed_slice();
+        PathRoute {
+            pattern,
+            specificity,
+            has_captures: false,
+            value,
+        }
+    }
+
+    #[test]
+    fn best_route_prefers_fewer_skipped_optional_segments_when_consumed_ties() {
+        let skipped = test_route("/root/{name}?", "skipped");
+        let direct = test_route("/root", "direct");
+
+        let best = best_route(
+            Some(PathRouteCandidate {
+                route: &skipped,
+                consumed: 1,
+                skipped_optional_segments: 1,
+            }),
+            PathRouteCandidate {
+                route: &direct,
+                consumed: 1,
+                skipped_optional_segments: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(best.route.value, "direct");
+    }
+
+    #[test]
+    fn best_route_uses_specificity_after_consumed_and_skipped_tie() {
+        let dynamic = test_route("/{tenant}/settings", "dynamic");
+        let literal = test_route("/acme/{section}", "literal");
+
+        let best = best_route(
+            Some(PathRouteCandidate {
+                route: &dynamic,
+                consumed: 2,
+                skipped_optional_segments: 0,
+            }),
+            PathRouteCandidate {
+                route: &literal,
+                consumed: 2,
+                skipped_optional_segments: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(best.route.value, "literal");
+    }
 }

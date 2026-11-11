@@ -2,7 +2,7 @@
 //!
 //! See [`Asn`] and its methods for more information.
 
-use core::fmt;
+use core::{fmt, str::FromStr};
 
 use crate::std::string::String;
 
@@ -89,12 +89,21 @@ impl TryFrom<u32> for Asn {
     }
 }
 
+impl FromStr for Asn {
+    type Err = InvalidAsn;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value: u32 = value.parse().map_err(|_e| InvalidAsn)?;
+        value.try_into()
+    }
+}
+
 impl TryFrom<&str> for Asn {
     type Error = InvalidAsn;
 
+    #[inline]
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let value: u32 = value.parse().map_err(|_e| InvalidAsn)?;
-        value.try_into()
+        value.parse()
     }
 }
 

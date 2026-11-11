@@ -2,7 +2,7 @@
 
 from collections import Counter
 from dataclasses import asdict, replace
-from flows import FETCH_CONTEXT_FIELDS, FLOWS
+from flows import DRIVER_FLOWS, FETCH_CONTEXT_FIELDS, flow_initiator
 from operations import OperationLedger
 from qpack_fields_wire import Representation, Section
 from wire_fixtures import flow_fixture as fixture
@@ -33,6 +33,11 @@ def frames():
                     ("sec-fetch-mode", "navigate"),
                     ("sec-fetch-dest", "document"),
                 ]
+            if ordinal > 6:
+                headers += [
+                    ("referer", FINAL),
+                    ("sec-fetch-dest", ("style", "script", "image")[ordinal - 7]),
+                ]
         rows.append(
             replace(
                 block,
@@ -60,7 +65,7 @@ def frames():
 
 def ledger(rows=None):
     rows = frames() if rows is None else rows
-    protocols = dict.fromkeys(FLOWS, "h3")
+    protocols = dict.fromkeys(DRIVER_FLOWS, "h3")
     protocols["ws"] = "h2"
     return OperationLedger.from_driver(rows, protocols, ORIGIN, FINAL)
 
@@ -134,9 +139,7 @@ def inspected(rows=None, *, bootstrap=False):
                     "Http": {
                         "version": "HTTP/3.0" if block.protocol == "h3" else "HTTP/2.0",
                         "method": operation.method,
-                        "initiator": (
-                            "form" if operation.flow == "form_get" else operation.flow
-                        ),
+                        "initiator": flow_initiator(operation.flow),
                         "fetch": {
                             key: fields[header]
                             for key, header in FETCH_CONTEXT_FIELDS

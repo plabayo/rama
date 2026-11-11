@@ -1131,6 +1131,205 @@ impl Default for TransparentProxyConfig {
     }
 }
 
+/// Per-flow transparent proxy metadata.
+///
+/// This metadata is specific to one intercepted flow and is injected into the
+/// flow input extensions for user services.
+///
+/// `flow_id` and `opened_at` are populated automatically by [`Self::new`] using
+/// a monotonic per-process counter and the current instant. `intercept_decision`
+/// is set by the engine after the flow handler returns its decision; user code
+/// observing the meta as a service input may see `None` until the engine has
+/// recorded the decision.
+#[derive(Clone, Debug, Extension)]
+pub struct TransparentProxyFlowMeta {
+    /// Transport protocol for this flow.
+    pub protocol: TransparentProxyFlowProtocol,
+    /// Monotonic per-process flow id. Useful for correlating engine-emitted
+    /// trace events (open / decision / close) for the same flow.
+    pub flow_id: u64,
+    /// When the meta was constructed; used as the opened-at timestamp for
+    /// computing flow age in close events.
+    pub opened_at: Instant,
+    /// Decision recorded by the engine after the flow handler returned.
+    /// `None` until the handler has been invoked.
+    pub intercept_decision: Option<TransparentProxyFlowAction>,
+    /// Remote endpoint for this flow, if known.
+    pub remote_endpoint: Option<HostWithPort>,
+    /// Local endpoint for this flow, if known.
+    pub local_endpoint: Option<HostWithPort>,
+    /// Signing identifier of the source app, if available.
+    pub source_app_signing_identifier: Option<NonEmptyStr>,
+    /// Bundle identifier of the source app, if available.
+    pub source_app_bundle_identifier: Option<NonEmptyStr>,
+    /// Raw audit token of the source app, if available.
+    pub source_app_audit_token: Option<AuditToken>,
+    /// Process identifier resolved from the source-app audit token, if available.
+    pub source_app_pid: Option<i32>,
+    /// Remote hostname the originating app connected to (DNS name, not the
+    /// resolved IP), if the OS exposed it for this flow.
+    pub remote_hostname: Option<Box<str>>,
+    /// Name of the network interface this flow egresses on (e.g. `en0`,
+    /// `utun4`), if known. The primary signal for detecting VPN/tunnel egress.
+    pub local_interface_name: Option<Box<str>>,
+    /// Type of the egress interface (wifi / wired / cellular / loopback /
+    /// other), if known.
+    pub local_interface_type: Option<NwInterfaceType>,
+    /// Index of the egress interface, if known.
+    pub local_interface_index: Option<u32>,
+    /// Whether the originating app bound this flow to a specific interface, if
+    /// known.
+    pub is_bound: Option<bool>,
+}
+
+impl TransparentProxyFlowMeta {
+    /// Create flow metadata from strongly typed fields.
+    ///
+    /// `flow_id` is generated from a monotonic per-process counter; `opened_at`
+    /// is set to [`Instant::now`]. `intercept_decision` starts as `None` and is
+    /// populated by the engine once a flow decision is reached.
+    #[must_use]
+    pub fn new(protocol: TransparentProxyFlowProtocol) -> Self {
+        Self {
+            protocol,
+            flow_id: next_flow_id(),
+            opened_at: Instant::now(),
+            intercept_decision: None,
+            remote_endpoint: None,
+            local_endpoint: None,
+            source_app_signing_identifier: None,
+            source_app_bundle_identifier: None,
+            source_app_audit_token: None,
+            source_app_pid: None,
+            remote_hostname: None,
+            local_interface_name: None,
+            local_interface_type: None,
+            local_interface_index: None,
+            is_bound: None,
+        }
+    }
+
+    /// Age since the meta was constructed (i.e. since the flow was first seen).
+    #[must_use]
+    pub fn age(&self) -> Duration {
+        self.opened_at.elapsed()
+    }
+
+    /// Index of the interface the originating app explicitly bound
+    /// this flow to, `None` when unbound or unknown.
+    ///
+    /// Services that dial their own egress (e.g. a UDP relay) should
+    /// bind it to this interface (`IP_BOUND_IF` / `IPV6_BOUND_IF`),
+    /// as the kernel would without the proxy in the path. TCP egress
+    /// dialed by the Swift provider already does so.
+    ///
+    /// For unbound flows `local_interface_index` is only the kernel's
+    /// current pick; pinning to it would break normal failover.
+    #[must_use]
+    pub fn bound_interface_index(&self) -> Option<NonZeroU32> {
+        if self.is_bound != Some(true) {
+            return None;
+        }
+        self.local_interface_index.and_then(NonZeroU32::new)
+    }
+
+    generate_set_and_with! {
+        /// Set remote endpoint.
+        pub fn remote_endpoint(mut self, endpoint: Option<HostWithPort>) -> Self {
+            self.remote_endpoint = endpoint;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set local endpoint.
+        pub fn local_endpoint(mut self, endpoint: Option<HostWithPort>) -> Self {
+            self.local_endpoint = endpoint;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set source app signing identifier.
+        pub fn source_app_signing_identifier(mut self, value: Option<NonEmptyStr>) -> Self {
+            self.source_app_signing_identifier = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set source app bundle identifier.
+        pub fn source_app_bundle_identifier(mut self, value: Option<NonEmptyStr>) -> Self {
+            self.source_app_bundle_identifier = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set source app audit token.
+        pub fn source_app_audit_token(mut self, value: Option<AuditToken>) -> Self {
+            self.source_app_audit_token = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set source app pid.
+        pub fn source_app_pid(mut self, value: Option<i32>) -> Self {
+            self.source_app_pid = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the remote hostname the originating app connected to.
+        pub fn remote_hostname(mut self, value: Option<Box<str>>) -> Self {
+            self.remote_hostname = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the egress interface name.
+        pub fn local_interface_name(mut self, value: Option<Box<str>>) -> Self {
+            self.local_interface_name = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the egress interface type.
+        pub fn local_interface_type(mut self, value: Option<NwInterfaceType>) -> Self {
+            self.local_interface_type = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the egress interface index.
+        pub fn local_interface_index(mut self, value: Option<u32>) -> Self {
+            self.local_interface_index = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set whether the originating app bound this flow to a specific interface.
+        pub fn is_bound(mut self, value: Option<bool>) -> Self {
+            self.is_bound = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the decision recorded by the engine after the flow handler returned.
+        pub fn intercept_decision(mut self, value: Option<TransparentProxyFlowAction>) -> Self {
+            self.intercept_decision = value;
+            self
+        }
+    }
+}
+
 #[cfg(test)]
 mod transparent_proxy_config_tests {
     use super::*;
@@ -1512,204 +1711,5 @@ mod transparent_proxy_config_tests {
              decision-maker in the path (flipping this re-introduces \
              delayed-ACK TTFB stalls on every intercepted flow)"
         );
-    }
-}
-
-/// Per-flow transparent proxy metadata.
-///
-/// This metadata is specific to one intercepted flow and is injected into the
-/// flow input extensions for user services.
-///
-/// `flow_id` and `opened_at` are populated automatically by [`Self::new`] using
-/// a monotonic per-process counter and the current instant. `intercept_decision`
-/// is set by the engine after the flow handler returns its decision; user code
-/// observing the meta as a service input may see `None` until the engine has
-/// recorded the decision.
-#[derive(Clone, Debug, Extension)]
-pub struct TransparentProxyFlowMeta {
-    /// Transport protocol for this flow.
-    pub protocol: TransparentProxyFlowProtocol,
-    /// Monotonic per-process flow id. Useful for correlating engine-emitted
-    /// trace events (open / decision / close) for the same flow.
-    pub flow_id: u64,
-    /// When the meta was constructed; used as the opened-at timestamp for
-    /// computing flow age in close events.
-    pub opened_at: Instant,
-    /// Decision recorded by the engine after the flow handler returned.
-    /// `None` until the handler has been invoked.
-    pub intercept_decision: Option<TransparentProxyFlowAction>,
-    /// Remote endpoint for this flow, if known.
-    pub remote_endpoint: Option<HostWithPort>,
-    /// Local endpoint for this flow, if known.
-    pub local_endpoint: Option<HostWithPort>,
-    /// Signing identifier of the source app, if available.
-    pub source_app_signing_identifier: Option<NonEmptyStr>,
-    /// Bundle identifier of the source app, if available.
-    pub source_app_bundle_identifier: Option<NonEmptyStr>,
-    /// Raw audit token of the source app, if available.
-    pub source_app_audit_token: Option<AuditToken>,
-    /// Process identifier resolved from the source-app audit token, if available.
-    pub source_app_pid: Option<i32>,
-    /// Remote hostname the originating app connected to (DNS name, not the
-    /// resolved IP), if the OS exposed it for this flow.
-    pub remote_hostname: Option<Box<str>>,
-    /// Name of the network interface this flow egresses on (e.g. `en0`,
-    /// `utun4`), if known. The primary signal for detecting VPN/tunnel egress.
-    pub local_interface_name: Option<Box<str>>,
-    /// Type of the egress interface (wifi / wired / cellular / loopback /
-    /// other), if known.
-    pub local_interface_type: Option<NwInterfaceType>,
-    /// Index of the egress interface, if known.
-    pub local_interface_index: Option<u32>,
-    /// Whether the originating app bound this flow to a specific interface, if
-    /// known.
-    pub is_bound: Option<bool>,
-}
-
-impl TransparentProxyFlowMeta {
-    /// Create flow metadata from strongly typed fields.
-    ///
-    /// `flow_id` is generated from a monotonic per-process counter; `opened_at`
-    /// is set to [`Instant::now`]. `intercept_decision` starts as `None` and is
-    /// populated by the engine once a flow decision is reached.
-    #[must_use]
-    pub fn new(protocol: TransparentProxyFlowProtocol) -> Self {
-        Self {
-            protocol,
-            flow_id: next_flow_id(),
-            opened_at: Instant::now(),
-            intercept_decision: None,
-            remote_endpoint: None,
-            local_endpoint: None,
-            source_app_signing_identifier: None,
-            source_app_bundle_identifier: None,
-            source_app_audit_token: None,
-            source_app_pid: None,
-            remote_hostname: None,
-            local_interface_name: None,
-            local_interface_type: None,
-            local_interface_index: None,
-            is_bound: None,
-        }
-    }
-
-    /// Age since the meta was constructed (i.e. since the flow was first seen).
-    #[must_use]
-    pub fn age(&self) -> Duration {
-        self.opened_at.elapsed()
-    }
-
-    /// Index of the interface the originating app explicitly bound
-    /// this flow to, `None` when unbound or unknown.
-    ///
-    /// Services that dial their own egress (e.g. a UDP relay) should
-    /// bind it to this interface (`IP_BOUND_IF` / `IPV6_BOUND_IF`),
-    /// as the kernel would without the proxy in the path. TCP egress
-    /// dialed by the Swift provider already does so.
-    ///
-    /// For unbound flows `local_interface_index` is only the kernel's
-    /// current pick; pinning to it would break normal failover.
-    #[must_use]
-    pub fn bound_interface_index(&self) -> Option<NonZeroU32> {
-        if self.is_bound != Some(true) {
-            return None;
-        }
-        self.local_interface_index.and_then(NonZeroU32::new)
-    }
-
-    generate_set_and_with! {
-        /// Set remote endpoint.
-        pub fn remote_endpoint(mut self, endpoint: Option<HostWithPort>) -> Self {
-            self.remote_endpoint = endpoint;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set local endpoint.
-        pub fn local_endpoint(mut self, endpoint: Option<HostWithPort>) -> Self {
-            self.local_endpoint = endpoint;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set source app signing identifier.
-        pub fn source_app_signing_identifier(mut self, value: Option<NonEmptyStr>) -> Self {
-            self.source_app_signing_identifier = value;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set source app bundle identifier.
-        pub fn source_app_bundle_identifier(mut self, value: Option<NonEmptyStr>) -> Self {
-            self.source_app_bundle_identifier = value;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set source app audit token.
-        pub fn source_app_audit_token(mut self, value: Option<AuditToken>) -> Self {
-            self.source_app_audit_token = value;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set source app pid.
-        pub fn source_app_pid(mut self, value: Option<i32>) -> Self {
-            self.source_app_pid = value;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set the remote hostname the originating app connected to.
-        pub fn remote_hostname(mut self, value: Option<Box<str>>) -> Self {
-            self.remote_hostname = value;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set the egress interface name.
-        pub fn local_interface_name(mut self, value: Option<Box<str>>) -> Self {
-            self.local_interface_name = value;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set the egress interface type.
-        pub fn local_interface_type(mut self, value: Option<NwInterfaceType>) -> Self {
-            self.local_interface_type = value;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set the egress interface index.
-        pub fn local_interface_index(mut self, value: Option<u32>) -> Self {
-            self.local_interface_index = value;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set whether the originating app bound this flow to a specific interface.
-        pub fn is_bound(mut self, value: Option<bool>) -> Self {
-            self.is_bound = value;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set the decision recorded by the engine after the flow handler returned.
-        pub fn intercept_decision(mut self, value: Option<TransparentProxyFlowAction>) -> Self {
-            self.intercept_decision = value;
-            self
-        }
     }
 }

@@ -468,5 +468,3 @@ mod tests {
         assert_eq!(parsed, sts);
     }
 }
-
-//bench_header!(bench, StrictTransportSecurity, { vec![b"max-age=15768000 ; includeSubDomains".to_vec()] });

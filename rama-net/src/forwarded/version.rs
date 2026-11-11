@@ -1,5 +1,6 @@
 use crate::std::string::String;
 use crate::std::vec::Vec;
+use core::str::FromStr;
 
 #[derive(Debug, PartialEq, PartialOrd, Copy, Clone, Eq, Ord, Hash)]
 /// Version of the forwarded protocol.
@@ -34,6 +35,15 @@ impl ForwardedVersion {
 rama_utils::macros::error::static_str_error! {
     #[doc = "invalid forwarded version"]
     pub struct InvalidForwardedVersion;
+}
+
+impl FromStr for ForwardedVersion {
+    type Err = InvalidForwardedVersion;
+
+    #[inline]
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.as_bytes().try_into()
+    }
 }
 
 impl TryFrom<&str> for ForwardedVersion {

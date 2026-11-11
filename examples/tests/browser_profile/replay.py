@@ -387,7 +387,7 @@ def verify_tls_replay(
     websocket_probe=WEBSOCKET_PROBE,
     operations,
 ):
-    """Run all six operations against fresh storage and require independent matches."""
+    """Run every operation against fresh storage and require independent matches."""
     root = args.output
     source_operation_args = {"operations": operations}
     replay_operations = operations.for_replay()
@@ -583,7 +583,7 @@ def verify_tls_replay(
         **replay_operation_args,
     )
     wire_report = {
-        "scope": "six-operation exact protocol/method/path/ordered headers/body tuples",
+        "scope": "per-operation exact protocol/method/path/ordered headers/body tuples",
         "flow_protocols": plan,
         "comparisons": comparisons,
         "limits": "same-origin credential-free fixture; WebSocket DATA framing is checked separately",
@@ -708,5 +708,5 @@ def verify_tls_replay(
         "tls": tls,
         "bodies": replay.bodies,
         "preliminary": replay.preliminary_report,
-        "scope": "six CLI operations, independent retained TLS/header membership and body semantics, separate replay-projection archive comparison",
+        "scope": "every CLI operation, independent retained TLS/header membership and body semantics, separate replay-projection archive comparison",
     }

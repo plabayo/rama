@@ -137,11 +137,11 @@ def run(args):
                         'protocol: performance.getEntriesByType("navigation")[0]?.nextHopProtocol}')
                     report_path.write_text(json.dumps(report, indent=2) + "\n")
                     raise
-                report.update(success=True, coverage="six browser operations and compressed GET/POST responses",
+                report.update(success=True, coverage="every browser operation and compressed GET/POST responses",
                               user_agent=result.user_agent, protocols=result.protocols,
                               page_results=result.page_results)
                 report_path.write_text(json.dumps(report, indent=2) + "\n")
-                print(f"Safari {result.browser_version}: {args.protocol}, all six flows and twelve compressed responses passed")
+                print(f"Safari {result.browser_version}: {args.protocol}, every flow and twelve compressed responses passed")
 
 
 def main(argv=None):

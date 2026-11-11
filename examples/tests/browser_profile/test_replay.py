@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from flows import ReplayTarget, compare_requests, replay_args
+from flows import FLOWS, ReplayTarget, compare_requests, replay_args
 from pathlib import Path
 from replay import (
     check_missing_tls_bindings,
@@ -307,7 +307,7 @@ class ReplayTests(unittest.TestCase):
     def test_replay_inputs_keep_tcp_and_quic_streams_separate(self):
         frames = fixture("h2") + fixture("h3")
         requests = requests_from_wire(frames)
-        self.assertEqual(len(requests), 6)
+        self.assertEqual(len(requests), len(FLOWS))
         for flow, observations in requests.items():
             with self.subTest(flow=flow):
                 self.assertEqual(len(observations), 2)
@@ -326,7 +326,7 @@ class ReplayTests(unittest.TestCase):
             requests = requests_from_wire(frames)
             self.assertEqual(requests["fetch"][0].body, expected)
             self.assertEqual(requests["ws"][0].body, b"")
-            self.assertEqual(len(requests), 6)
+            self.assertEqual(len(requests), len(FLOWS))
             with self.assertRaisesRegex(ValueError, "coverage"):
                 requests_from_wire(frames[2:])
 

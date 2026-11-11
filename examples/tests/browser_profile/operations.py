@@ -1,6 +1,6 @@
 """Declare actual browser operations without changing their URIs or protocols.
 
-The six measured flows remain mandatory. H3 discovery and a witnessed Client
+The measured flows remain mandatory. H3 discovery and a witnessed Client
 Hints retry remain separate operations with their original URIs and protocols.
 Native and packet oracles still verify each declared stream independently.
 """
@@ -11,7 +11,15 @@ from urllib.parse import urlsplit
 
 from capture_fields import matching_fields
 from navigation import client_hint_pair, final_report
-from flows import FLOWS, flow_name, require, request_authority, scope_matches
+from flows import (
+    ASSET_FLOWS,
+    DRIVER_FLOWS,
+    FLOWS,
+    flow_name,
+    require,
+    request_authority,
+    scope_matches,
+)
 from qpack_bootstrap_wire import _same_connection, bootstrap_request
 from qpack_fields_wire import matching_representations
 
@@ -60,7 +68,7 @@ class OperationLedger:
         require(len(names) == len(set(names)), "duplicate declared operation")
         require(
             set(FLOWS) <= set(names) <= set(FLOWS) | DISCOVERIES,
-            "six measured operations and bounded explicit discovery required",
+            "every measured operation and bounded explicit discovery required",
         )
         require(
             len({operation.key for operation in self.operations}) == len(names),
@@ -113,7 +121,8 @@ class OperationLedger:
         cls, frames, protocols, origin, report_url, *, report_html=None, completed=None
     ):
         require(
-            set(protocols) == set(FLOWS), "complete measured browser protocols required"
+            set(protocols) == set(DRIVER_FLOWS),
+            "complete measured browser protocols required",
         )
         require(
             report_url in (origin + "/report", origin + "/report?h3_probe=1"),
@@ -123,7 +132,7 @@ class OperationLedger:
         authority = urlsplit(origin).netloc
         heads = [frame for frame in frames if frame.headers and not frame.from_server]
         operations, discoveries = [], []
-        for flow in FLOWS:
+        for flow in DRIVER_FLOWS:
             candidates = [
                 frame
                 for frame in heads
@@ -150,6 +159,21 @@ class OperationLedger:
                 "measured operation has no unique source stream: " + flow,
             )
             operations.append(cls.observed(flow, flow, candidates[0]))
+        for flow in ASSET_FLOWS:
+            # Every page of the journey requests these; the measured report's own count.
+            candidates = [
+                frame
+                for frame in heads
+                if flow_name(frame.headers, protocol=frame.protocol) == flow
+                and request_authority(frame) == authority
+                and dict(frame.headers).get("referer") == report_url
+            ]
+            require(candidates, "measured report requested no subresource: " + flow)
+            operations.append(
+                cls.observed(
+                    flow, flow, min(candidates, key=lambda block: block.packet)
+                )
+            )
         if path != "/report":
             candidates = [
                 frame
@@ -206,7 +230,7 @@ class OperationLedger:
         return {
             operation.name: operation.protocol
             for operation in self.operations
-            if operation.name in FLOWS
+            if operation.name in DRIVER_FLOWS
         }
 
     def roles(self, protocol):
@@ -262,8 +286,9 @@ class OperationLedger:
                 "declared stream changed method or URI",
             )
             return operation.name
+        # Other pages of the journey request the same subresources again.
         require(
-            flow_name(block.headers, protocol=block.protocol) is None
+            flow_name(block.headers, protocol=block.protocol) in (None, *ASSET_FLOWS)
             and fields.get(":path") != "/report?h3_probe=1",
             "undeclared or duplicated journey operation",
         )

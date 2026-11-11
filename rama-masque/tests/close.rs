@@ -97,13 +97,14 @@ async fn failed_reply(native: bool, filed_first: bool) {
         request
             .extensions()
             .insert(Protocol::from_static("connect-udp"));
-        let (client_io, server_io) = tokio::select! {
+        let sessions = tokio::select! {
             sessions = async {
                 let response = client.send_request(request).await.unwrap();
                 (handle_upgrade(&response).await.unwrap(), upgraded.recv().await.unwrap())
-            } => sessions,
-            result = &mut serving => panic!("server ended during setup: {result:?}"),
+            } => Ok(sessions),
+            result = &mut serving => Err(result),
         };
+        let (client_io, server_io) = sessions.expect("server ended during setup");
         let local = SocketAddress::local_ipv4(9);
         let peer = SocketAddress::local_ipv4(10);
         let mut socket = ConnectUdpSocket::new(

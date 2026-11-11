@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 import unittest
 
-from flows import ReplayTarget
+from flows import DRIVER_FLOWS, ReplayTarget
 from operations_tests.fixtures import CONTEXT, JOINTS, bound, request_capture
 from operations_tests.preliminary_fixtures import segment_fields
 from preliminary import source_preliminary
@@ -108,7 +108,7 @@ class InitialRequestPlanningTests(unittest.TestCase):
         self.assertIsNone(ledger.name(head))
         self.assertEqual(
             set(ledger.measured_protocols),
-            {"navigate", "fetch", "xhr", "ws", "form", "form_get"},
+            set(DRIVER_FLOWS),
         )
 
     def test_missing_reference_or_missing_recipe_never_falls_back_to_declared_request(

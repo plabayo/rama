@@ -9,7 +9,7 @@ import zstandard
 from collections import defaultdict
 from dataclasses import dataclass
 from flow_bodies import json_object
-from flows import operation_flow
+from flows import UNECHOED_FLOWS, operation_flow
 from h3_sequence_wire import (
     FIRST_RESERVED_FRAME,
     PRIORITY_UPDATE_PUSH,
@@ -196,6 +196,8 @@ def decoded_body(payload, encoding):
 
 
 NATIVE_DATA_ID = "rama-h3-observation"
+# A WebSocket greeting carries no native view either.
+NO_NATIVE_VIEW = ("ws", *UNECHOED_FLOWS)
 
 
 class ObservationData(HTMLParser):
@@ -402,8 +404,8 @@ def response_sequences(data, server_port, *, operations=None):
                 ):
                     raise ValueError("invalid native response startup redirect")
             continue
-        if flow == "ws":
-            continue  # A WS greeting has no native view; ambiguity still fails.
+        if flow in NO_NATIVE_VIEW:
+            continue  # These responses render no native view; ambiguity still fails.
         responses = [block for block in frames if block.headers and block.from_server]
         if len(heads) != 1 or len(responses) != 1 or key not in bodies:
             raise ValueError("missing or ambiguous complete native response")

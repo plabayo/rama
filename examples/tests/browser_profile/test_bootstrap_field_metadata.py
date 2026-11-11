@@ -2,7 +2,7 @@
 
 import unittest
 from dataclasses import asdict, replace
-from flows import FLOWS
+from flows import ASSET_FLOWS, FLOWS, flow_initiator
 from qpack_bootstrap_wire import prefixed
 from qpack_fields_wire import (
     Representation,
@@ -70,6 +70,8 @@ def field_fixture():
         ("CONNECT", "/api/ws"),
         ("POST", "/form"),
         ("GET", "/form?source=web&turtles=yes"),
+        ("GET", "/landing"),
+        *(("GET", path) for path in ASSET_FLOWS.values()),
     )
     for index, (flow, (method, path)) in enumerate(zip(FLOWS, operations), 1):
         headers = ((":method", method), (":path", path), ("user-agent", "fixture"))
@@ -95,7 +97,7 @@ def field_fixture():
                     "Http": {
                         "version": "HTTP/3.0",
                         "method": method,
-                        "initiator": "form" if flow == "form_get" else flow,
+                        "initiator": flow_initiator(flow),
                         "fetch": None,
                     }
                 },
@@ -117,7 +119,7 @@ class BootstrapFieldMetadataTests(unittest.TestCase):
 
     def test_internal_initial_head_is_checked_without_becoming_navigation(self):
         report = self.compare(field_fixture())
-        self.assertEqual(report["requests_checked"], 6)
+        self.assertEqual(report["requests_checked"], len(FLOWS))
         self.assertEqual(report["flows"], sorted(FLOWS))
         self.assertEqual(report["bootstrap_requests_checked"], 1)
         self.assertEqual(report["bootstrap_fields_checked"], 7)
@@ -135,7 +137,8 @@ class BootstrapFieldMetadataTests(unittest.TestCase):
             expected_flows=set(FLOWS) - {"ws"},
         )
         self.assertEqual(
-            (report["requests_checked"], report["bootstrap_requests_checked"]), (5, 1)
+            (report["requests_checked"], report["bootstrap_requests_checked"]),
+            (len(FLOWS) - 1, 1),
         )
         rows = field_fixture()
         # The real profiled navigation cannot be replaced by the auxiliary head.

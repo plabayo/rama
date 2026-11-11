@@ -19,7 +19,32 @@ class OperationPlanningTests(unittest.TestCase):
         requests = requests_from_wire(rows, operations=planned)
         self.assertEqual(requests[DISCOVERY][0].uri, "/report")
         self.assertEqual(requests["navigate"][0].uri, "/report?h3_probe=1")
-        self.assertEqual(len(planned.check_matrix(rows, reports())), 7)
+        self.assertEqual(len(planned.check_matrix(rows, reports())), len(FLOWS) + 1)
+
+    def test_subresources_belong_to_the_measured_report_and_may_repeat(self):
+        rows, planned, _inspected, _sections = bound()
+        style = next(
+            row
+            for row in rows
+            if not row.from_server
+            and dict(row.headers).get(":path") == "/assets/style.css"
+        )
+        # Another page of the journey requests the same stylesheet again.
+        other = replace(
+            style,
+            packet=90,
+            stream=400,
+            headers=tuple(
+                (name, ORIGIN + "/form" if name == "referer" else value)
+                for name, value in style.headers
+            ),
+        )
+        again = ledger(rows + [other])
+        self.assertEqual(again.operations, ledger(rows).operations)
+        self.assertIsNone(again.name(other))
+        self.assertEqual(planned.name(style), "style")
+        with self.assertRaisesRegex(ValueError, "requested no subresource: style"):
+            ledger([row for row in rows if row.stream != style.stream])
 
     def test_driver_final_url_cannot_be_guessed_or_normalized(self):
         planned = ledger()
@@ -95,7 +120,9 @@ class OperationPlanningTests(unittest.TestCase):
             }
             for protocol, report in reports().items()
         }
-        self.assertEqual(len(replay.check_matrix(actual, actual_reports)), 7)
+        self.assertEqual(
+            len(replay.check_matrix(actual, actual_reports)), len(FLOWS) + 1
+        )
         actual_reports["h2"]["connection_joints"][103] = "34" * 32
         with self.assertRaisesRegex(ValueError, "swapped"):
             replay.check_matrix(actual, actual_reports)

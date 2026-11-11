@@ -3,7 +3,7 @@
 import json
 import xml.etree.ElementTree as ET
 
-from flows import FLOWS
+from flows import ASSET_FLOWS, DRIVER_FLOWS
 from wire import HeaderBlock
 
 ORIGIN = "https://h3.fp.ramaproxy.org:32543"
@@ -28,12 +28,40 @@ def html_info(info):
     )
 
 
-def admission_fixture():
-    """Six operations, native driver responses and independently framed H2 completion."""
+def packets(raw, number, stream):
+    """A request packet and the packet completing its response stream."""
+    packet = ET.SubElement(raw, "packet")
+    for name, value in (
+        ("frame.number", number),
+        ("tcp.stream", 0),
+        ("tcp.dstport", 32543),
+        ("tcp.srcport", 52442),
+        ("ip.src", "198.51.100.7"),
+    ):
+        ET.SubElement(packet, "field", name=name, show=str(value))
+    packet = ET.SubElement(raw, "packet")
+    for name, value in (
+        ("frame.number", number + 100),
+        ("tcp.srcport", 32543),
+        ("tcp.stream", 0),
+    ):
+        ET.SubElement(packet, "field", name=name, show=str(value))
+    stream_node = ET.SubElement(packet, "field", name="http2.stream")
+    ET.SubElement(
+        stream_node, "field", name="http2.flags", value="01", size="1", pos="0"
+    )
+    ET.SubElement(stream_node, "field", name="http2.streamid", show=str(stream))
+
+
+def admission_fixture(report_url=None):
+    """Natively bound operations, driver responses and independently framed H2 completion.
+
+    `report_url` adds the link target and the subresources that page requested.
+    """
     raw = ET.Element("pdml")
     frames = []
     page = dict(
-        protocols={flow: "h2" for flow in FLOWS},
+        protocols={flow: "h2" for flow in DRIVER_FLOWS},
         page_results={},
         user_agent="ordinary-browser",
     )
@@ -83,27 +111,24 @@ def admission_fixture():
                 "h2", number + 100, 0, stream, True, ((":status", "200"),), body
             )
         )
-        packet = ET.SubElement(raw, "packet")
-        for name, value in (
-            ("frame.number", number),
-            ("tcp.stream", 0),
-            ("tcp.dstport", 32543),
-            ("tcp.srcport", 52442),
-            ("ip.src", "198.51.100.7"),
-        ):
-            ET.SubElement(packet, "field", name=name, show=str(value))
-        packet = ET.SubElement(raw, "packet")
-        for name, value in (
-            ("frame.number", number + 100),
-            ("tcp.srcport", 32543),
-            ("tcp.stream", 0),
-        ):
-            ET.SubElement(packet, "field", name=name, show=str(value))
-        stream_node = ET.SubElement(packet, "field", name="http2.stream")
-        ET.SubElement(
-            stream_node, "field", name="http2.flags", value="01", size="1", pos="0"
-        )
-        ET.SubElement(stream_node, "field", name="http2.streamid", show=str(stream))
+        packets(raw, number, stream)
+    if report_url is not None:
+        for number, path in enumerate(("/landing", *ASSET_FLOWS.values()), 20):
+            stream = number + 11
+            fields = (
+                (":method", "GET"),
+                (":path", path),
+                (":authority", "h3.fp.ramaproxy.org:32543"),
+                ("user-agent", "ordinary-browser"),
+                ("referer", report_url),
+            )
+            frames += [
+                HeaderBlock("h2", number, 0, stream, False, fields),
+                HeaderBlock(
+                    "h2", number + 100, 0, stream, True, ((":status", "200"),), b"ok"
+                ),
+            ]
+            packets(raw, number, stream)
     probe = "driver-known-unique-probe"
     greeting = {"version": "HTTP/2.0", "message": "hello"}
     page["page_results"]["websocket"] = dict(probe=probe, greeting=greeting)

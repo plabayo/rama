@@ -40,13 +40,15 @@ just examples/tests/browser-profile /absolute/path/to/new-evidence h1 chrome
 just examples/tests/browser-profile /absolute/path/to/another-new-evidence h1 firefox
 ```
 
-The recipe runs all six operations by default. Use `examples/tests/browser-profile-release`
+The recipe runs every operation by default: the navigation, fetch, XHR, WebSocket,
+both form submissions, the same-origin link, and one stylesheet, script and image
+request of the report page. Use `examples/tests/browser-profile-release`
 for the optimized CLI. The fourth argument `navigate` explicitly limits H1
 coverage to navigation. All recipes and CI use `run.py --browser chrome|firefox|edge --protocol h1|h2|h3`.
 Custom installations can pass `--browser-binary`; no application path is hardcoded.
 H1 uses plaintext by default. Pass `--tls` to `run.py`, or `true` as the fifth
-recipe argument, for HTTPS/WSS. H2/H3 always use TLS. TLS runs require all six
-operations and the same fixture-local certificate trust as H2/H3:
+recipe argument, for HTTPS/WSS. H2/H3 always use TLS. TLS runs require every
+operation and the same fixture-local certificate trust as H2/H3:
 
 ```sh
 just examples/tests/browser-profile /absolute/path/to/new-tls-evidence h1 chrome all true
@@ -165,7 +167,7 @@ These checks establish retained capture dimensions, not native H3 replay support
 or every possible wire property. The exact recorder cutoff remains unverified
 for both control frames and encoder instructions.
 
-HTTP/2 also replays all six operations for every retained connection variant.
+HTTP/2 also replays every operation for every retained connection variant.
 Each CLI process uses the fixture CA through `--cacert`. Trust anchor IDs the
 browser advertised are retained and replayed as captured; they do not configure
 certificate verification. Negative probes require a missing CA binding to fail. Every replay request must match one complete original method,
@@ -204,7 +206,7 @@ in a profile.
 legitimate peer-ACK timing difference.
 
 HTTP/3 capture and native replay are under acceptance testing. The local runner
-exercises TLS, QUIC first flights/parameters, startup controls and all six flows;
+exercises TLS, QUIC first flights/parameters, startup controls and every flow;
 this does not by itself close the full protocol/browser/platform matrix. Later
 critical-stream allocation evidence, independent relay transparency and long-lived
 compression/session behavior still require their own checks.
@@ -337,8 +339,9 @@ kernel cannot produce segmented UDP. No unsupported-kernel fallback is inferred.
 ## Desktop Safari regression job
 
 Daily CI runs real Safari via `safaridriver` on `macos-26` in debug and release.
-H1, H2 and H3 must complete the same six page operations used by the shared
-BrowserStack collector. Every protocol also requires twelve complete compressed
+H1, H2 and H3 must complete the same page operations used by the shared
+BrowserStack collector; H1 runs both over TLS and in plaintext against a server
+without TLS, where a ClientHello on the fixture port fails the capture. Every protocol also requires twelve complete compressed
 responses across consent GET, XHR endpoint POST and form POST requests. The H3-only
 fixture uses the CLI's TCP bootstrap; TCP fallback fails the response check.
 The separate full H3 journey seeds Alt-Svc through that TCP bootstrap, then uses

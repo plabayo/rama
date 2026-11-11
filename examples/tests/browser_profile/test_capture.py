@@ -6,6 +6,7 @@ from browser_automation.workflow import FlowResult
 from dataclasses import replace
 from driver_receipt import MAX_DRIVER_BYTES, write_driver_result
 from flow_bodies import WEBSOCKET_PROBE
+from flows import FLOWS
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -37,7 +38,7 @@ class PageProbeCaptureTests(unittest.TestCase):
                         "flows"
                     ]
                 ),
-                6,
+                len(FLOWS),
             )
             self.assertEqual(decoded.call_args.kwargs.get("websocket_probe"), probe)
             with self.assertRaisesRegex(
@@ -87,8 +88,8 @@ class TlsCaptureTests(unittest.TestCase):
                 server_port=443,
                 output=root / "headers.pdml",
             )
-            self.assertEqual(len(traffic.bodies["flows"]), 6)
-            self.assertEqual(len(traffic.headers), 12)
+            self.assertEqual(len(traffic.bodies["flows"]), len(FLOWS))
+            self.assertEqual(len(traffic.headers), 2 * len(FLOWS))
             self.assertEqual(read.call_count, 2)
 
     def test_drain_waits_for_all_pinned_variants_even_after_six_flows_are_visible(self):
@@ -112,7 +113,7 @@ class TlsCaptureTests(unittest.TestCase):
                 expected_per_flow=2,
             )
             self.assertEqual(read.call_count, 2)
-            self.assertEqual(len(traffic.headers), 24)
+            self.assertEqual(len(traffic.headers), 4 * len(FLOWS))
 
     def test_drain_allows_only_the_exact_declared_root_warmups(self):
         warmup = HeaderBlock(
@@ -155,7 +156,7 @@ class TlsCaptureTests(unittest.TestCase):
                     )
                     if accepted:
                         traffic = drain_capture(process, **arguments)
-                        self.assertEqual(len(traffic.headers), 13)
+                        self.assertEqual(len(traffic.headers), 2 * len(FLOWS) + 1)
                     else:
                         with self.assertRaisesRegex(
                             RuntimeError, "incomplete independently"

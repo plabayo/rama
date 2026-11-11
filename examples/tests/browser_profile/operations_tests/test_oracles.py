@@ -5,6 +5,7 @@ import unittest
 
 from capture_fields import compare_capture_fields
 from flow_bodies import check_flow_bodies
+from flows import FLOWS
 from operations_tests.fixtures import JOINTS, bound
 from qpack_fields_wire import compare_field_metadata
 
@@ -14,9 +15,11 @@ class OperationOracleTests(unittest.TestCase):
         rows, planned, value, sections = bound(bootstrap=True)
         self.assertEqual(
             compare_capture_fields(value, rows, operations=planned)["requests_checked"],
-            7,
+            len(FLOWS) + 1,
         )
-        self.assertEqual(len(check_flow_bodies(rows, operations=planned)["flows"]), 6)
+        self.assertEqual(
+            len(check_flow_bodies(rows, operations=planned)["flows"]), len(FLOWS)
+        )
         result = compare_field_metadata(
             value,
             rows,
@@ -25,7 +28,7 @@ class OperationOracleTests(unittest.TestCase):
             connection_joints={7: JOINTS["h3"]},
             operations=planned,
         )
-        self.assertEqual(result["requests_checked"], 5)
+        self.assertEqual(result["requests_checked"], len(FLOWS) - 1)
         self.assertEqual(result["bootstrap_requests_checked"], 1)
         broken = [
             (

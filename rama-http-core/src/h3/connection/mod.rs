@@ -3007,7 +3007,7 @@ mod tests {
                         .receive(&FrameEvent::Settings(Settings::new()))
                         .unwrap();
                 }
-                let mut settings = Box::pin(shared.peer_settings());
+                let mut settings = std::pin::pin!(shared.peer_settings());
                 assert!(
                     settings
                         .as_mut()
@@ -3028,7 +3028,8 @@ mod tests {
                 }
                 let extensions = Extensions::new();
                 extensions.insert(preferences);
-                let mut ready = Box::pin(headers::wait_for_header_admission(&shared, &extensions));
+                let mut ready =
+                    std::pin::pin!(headers::wait_for_header_admission(&shared, &extensions));
                 let mut cx = Context::from_waker(Waker::noop());
                 assert!(
                     ready.as_mut().poll(&mut cx).is_pending(),
@@ -3056,7 +3057,7 @@ mod tests {
             let wakes = Arc::new(CountWakes(AtomicUsize::new(0)));
             let waker = Waker::from(wakes.clone());
             let mut cx = Context::from_waker(&waker);
-            let mut ready = Box::pin(shared.encoder_ready());
+            let mut ready = std::pin::pin!(shared.encoder_ready());
             if fail_before_poll {
                 shared.fail(error);
             } else {
@@ -3112,7 +3113,7 @@ mod tests {
                 let wakes = Arc::new(CountWakes(AtomicUsize::new(0)));
                 let waker = Waker::from(wakes.clone());
                 let mut cx = Context::from_waker(&waker);
-                let mut ready = Box::pin(shared.encoder_ready());
+                let mut ready = std::pin::pin!(shared.encoder_ready());
                 assert!(ready.as_mut().poll(&mut cx).is_pending());
                 let stream = pair.client.open_uni().await.unwrap();
                 let task = critical_streams::encoder_task(shared.clone(), stream, false).unwrap();

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from dataclasses import replace
-from flows import ReplayTarget, compare_requests as compare, replay_args
+from flows import FLOWS, ReplayTarget, compare_requests as compare, replay_args
 from pathlib import Path
 from unittest.mock import patch
 from wire import (
@@ -14,6 +14,7 @@ from wire import (
     decode_rows,
     h1_header_blocks,
     h1_tls_evidence,
+    require_cleartext,
 )
 from wire_fixtures import wire_flows_fixture as fixture
 
@@ -70,6 +71,57 @@ class FlowWireTests(unittest.TestCase):
         )
         self.assertIn("a,b", ws_args)
 
+    def test_measured_subresources_from_any_page_are_candidates_bound_to_the_report(self):
+        requests, responses = fixture()
+        style = next(row for row in requests if row["http.request.uri"] == "/assets/style.css")
+        # The form page requests the stylesheet again with its own priority, and
+        # the report an unmeasured image.
+        extra = []
+        for number, (uri, page) in enumerate(
+            (("/assets/style.css", "/form"), ("/assets/banner.jpeg", "/report")), 50
+        ):
+            row = dict(style, **{"frame.number": str(number), "http.request.uri": uri})
+            row["http.request.line"] = (
+                row["http.request.line"].replace("/report", page) + "\x1fPriority: u=2"
+            )
+            extra.append(row)
+            responses.append(
+                {"http.request_in": str(number), "http.response.code": "200",
+                 "http.response.line": ""}
+            )
+        # A browser's own icon probe and the consent page it is redirected to.
+        for number, uri in enumerate(("/apple-touch-icon.png", "/consent"), 60):
+            extra.append(dict(style, **{"frame.number": str(number), "http.request.uri": uri}))
+        flows = decode_rows(requests + extra, responses, 1234, True)
+        self.assertNotIn("/assets/banner.jpeg", [row.uri for row in flows["image"]])
+        first, second = flows["style"]
+        self.assertEqual(second.headers, first.headers + ("Priority: u=2",))
+        for candidate in (first, second):
+            self.assertIn("Referer: http://<authority>/report", candidate.headers)
+            self.assertEqual(
+                candidate.bindings["referer"], "http://127.0.0.1:1234/report"
+            )
+        # A replay that sent the form page's variant matches that candidate.
+        replay = dict(flows, style=[second])
+        self.assertTrue(all(row["match"] for row in compare(flows, replay)))
+        style["http.request.line"] = style["http.request.line"].replace(
+            "127.0.0.1:1234/report", "elsewhere.test/report"
+        )
+        with self.assertRaisesRegex(ValueError, "Referer binding"):
+            decode_rows(requests, responses, 1234, True)
+
+    def test_plaintext_capture_rejects_any_tls_attempt_on_its_port(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            capture = Path(temporary) / "wire.pcapng"
+            capture.touch()
+            with patch("wire.subprocess.check_output", return_value="\n") as decoded:
+                require_cleartext(capture, 1234)
+            self.assertIn("tcp.port==1234,tls", decoded.call_args.args[0])
+            with patch("wire.subprocess.check_output", return_value="7\n"), (
+                self.assertRaisesRegex(ValueError, "TLS ClientHello")
+            ):
+                require_cleartext(capture, 1234)
+
     def test_https_uses_its_owned_authority_origin_and_wss_replay(self):
         requests, responses = fixture()
         for row in requests:
@@ -124,7 +176,7 @@ class FlowWireTests(unittest.TestCase):
             "frame.number": "2", "tcp.stream": "7", "http.user_agent": "fixture",
             "http.request.uri": "/report",
         }
-        asset = dict(row, **{"tcp.stream": "99", "http.request.uri": "/assets/script.js"})
+        asset = dict(row, **{"tcp.stream": "99", "http.request.uri": "/favicon.ico"})
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             capture, keylog = root / "wire.pcapng", root / "fixture.keys"
@@ -168,7 +220,7 @@ class FlowWireTests(unittest.TestCase):
         for index, row in enumerate(rows):
             row["tcp.stream"] = str(index % 2)
         blocks = h1_header_blocks(rows)
-        self.assertEqual(len(blocks), 6)
+        self.assertEqual(len(blocks), len(FLOWS))
         self.assertEqual(blocks[0].connection, 0)
         self.assertEqual(blocks[1].connection, 1)
         self.assertEqual(blocks[0].stream, 1)

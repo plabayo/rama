@@ -1,5 +1,5 @@
 use rama_http_types::HeaderValue;
-use std::convert::TryFrom;
+use std::{convert::TryFrom, str::FromStr};
 
 use super::origin::Origin;
 use crate::Error;
@@ -87,13 +87,22 @@ impl AccessControlAllowOrigin {
     }
 }
 
-impl TryFrom<&str> for AccessControlAllowOrigin {
-    type Error = Error;
+impl FromStr for AccessControlAllowOrigin {
+    type Err = Error;
 
-    fn try_from(s: &str) -> Result<Self, Error> {
+    fn from_str(s: &str) -> Result<Self, Error> {
         let header_value = HeaderValue::from_str(s).map_err(|_e| Error::invalid())?;
         let origin = OriginOrAny::try_from(&header_value)?;
         Ok(Self(origin))
+    }
+}
+
+impl TryFrom<&str> for AccessControlAllowOrigin {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(s: &str) -> Result<Self, Error> {
+        s.parse()
     }
 }
 

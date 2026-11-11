@@ -1,4 +1,4 @@
-"""Shared packet builders and six-flow fixtures for the independent wire oracles."""
+"""Shared packet builders and full-journey fixtures for the independent wire oracles."""
 
 
 import base64
@@ -12,7 +12,7 @@ from connection_fields import h2_prefixes
 from copy import deepcopy
 from dataclasses import asdict, replace
 from flow_bodies import WEBSOCKET_PROBE
-from flows import FLOWS
+from flows import ASSET_FLOWS, FLOWS
 from h3_sequence_wire import SequenceEvidence, stream_prefixes
 from pathlib import Path
 from qpack_fields_wire import Representation
@@ -37,6 +37,10 @@ def flow_fixture(protocol):
             ("CONNECT", "/api/ws", b""),
             ("POST", "/form", b"source=web&rating=3"),
             ("GET", "/form?source=web&turtles=yes", b""),
+            ("GET", "/landing", b""),
+            ("GET", "/assets/style.css", b""),
+            ("GET", "/assets/script.js", b""),
+            ("GET", "/assets/llama.svg", b""),
         ]
     ):
         headers = ((":method", method), (":path", path), ("user-agent", "fixture"))
@@ -578,7 +582,7 @@ MIXED_JOURNEY_HERE = Path(__file__).parent
 
 
 def mixed_journey_mixed_frames(websocket_protocol):
-    """A real six-flow body fixture, with only WS using the browser's fallback."""
+    """A real full-journey body fixture, with only WS using the browser's fallback."""
     frames = [frame for frame in flow_fixture("h3") if frame.stream != 3]
     for frame in flow_fixture("h2"):
         if frame.stream != 3:
@@ -945,12 +949,16 @@ def wire_flows_fixture():
                 "/api/ws",
                 "/form",
                 "/form?source=web&turtles=yes",
+                "/landing",
+                *ASSET_FLOWS.values(),
             ),
         ),
         1,
     ):
         body = b"hello" if flow in ("fetch", "xhr", "form") else b""
         headers = ["Host: 127.0.0.1:1234", "Connection: keep-alive"]
+        if flow in ASSET_FLOWS:
+            headers.append("Referer: http://127.0.0.1:1234/report")
         if body:
             headers += [
                 "Content-Type: text/plain;charset=UTF-8",

@@ -927,7 +927,7 @@ impl TestEndpoint {
     }
 
     pub(super) fn finish_delay(&mut self) {
-        self.outbound.extend(self.delayed.drain(..));
+        self.outbound.append(&mut self.delayed);
     }
 
     pub(super) fn try_accept(
