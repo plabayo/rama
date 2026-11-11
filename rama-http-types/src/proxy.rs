@@ -35,6 +35,36 @@ impl PlaintextHttpProxyMode {
     }
 }
 
+/// Returns true if the provided request is an ordinary (proxy) CONNECT request.
+///
+/// On HTTP/2 and HTTP/3 a CONNECT carrying a [`Protocol`] is Extended CONNECT
+/// (RFC 8441, RFC 9220), which targets an origin resource rather than a tunnel.
+pub fn is_req_http_proxy_connect<Body>(req: &Request<Body>) -> bool {
+    req.method() == Method::CONNECT
+        && (req.version() <= Version::HTTP_11 || !req.extensions().contains::<Protocol>())
+}
+
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+/// [`Matcher`] implementation which uses [`is_req_http_proxy_connect`].
+pub struct HttpProxyConnectMatcher;
+
+impl HttpProxyConnectMatcher {
+    #[inline(always)]
+    #[must_use]
+    /// Create a new [`HttpProxyConnectMatcher`].
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<Body> Matcher<Request<Body>> for HttpProxyConnectMatcher {
+    #[inline(always)]
+    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
+        is_req_http_proxy_connect(req)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PlaintextHttpProxyMode, is_req_http_proxy_connect};
@@ -86,35 +116,5 @@ mod tests {
             );
             assert!(!PlaintextHttpProxyMode::Tunnel.should_forward(protocol.as_ref()));
         }
-    }
-}
-
-/// Returns true if the provided request is an ordinary (proxy) CONNECT request.
-///
-/// On HTTP/2 and HTTP/3 a CONNECT carrying a [`Protocol`] is Extended CONNECT
-/// (RFC 8441, RFC 9220), which targets an origin resource rather than a tunnel.
-pub fn is_req_http_proxy_connect<Body>(req: &Request<Body>) -> bool {
-    req.method() == Method::CONNECT
-        && (req.version() <= Version::HTTP_11 || !req.extensions().contains::<Protocol>())
-}
-
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-/// [`Matcher`] implementation which uses [`is_req_http_proxy_connect`].
-pub struct HttpProxyConnectMatcher;
-
-impl HttpProxyConnectMatcher {
-    #[inline(always)]
-    #[must_use]
-    /// Create a new [`HttpProxyConnectMatcher`].
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl<Body> Matcher<Request<Body>> for HttpProxyConnectMatcher {
-    #[inline(always)]
-    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
-        is_req_http_proxy_connect(req)
     }
 }

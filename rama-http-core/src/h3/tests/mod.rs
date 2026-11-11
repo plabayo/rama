@@ -725,7 +725,7 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
                     future::Future as _,
                     task::{Context, Poll, Waker},
                 };
-                let mut drained = Box::pin(server.drained());
+                let mut drained = std::pin::pin!(server.drained());
                 assert_matches!(
                     drained
                         .as_mut()

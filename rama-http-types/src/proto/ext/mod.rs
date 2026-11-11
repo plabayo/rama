@@ -7,7 +7,7 @@ use crate::{header::is_token, proto::h2::hpack::BytesStr};
 
 use rama_core::bytes::Bytes;
 use rama_core::extensions::Extension;
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 /// An HTTP upgrade token: the `:protocol` pseudo-header of
 /// [Extended CONNECT](https://datatracker.ietf.org/doc/html/rfc8441#section-4) on HTTP/2
@@ -109,11 +109,20 @@ impl TryFrom<Bytes> for Protocol {
     }
 }
 
+impl FromStr for Protocol {
+    type Err = InvalidProtocol;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_from_bytes(Bytes::copy_from_slice(value.as_bytes()))
+    }
+}
+
 impl<'a> TryFrom<&'a str> for Protocol {
     type Error = InvalidProtocol;
 
+    #[inline]
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(Bytes::copy_from_slice(value.as_bytes()))
+        value.parse()
     }
 }
 

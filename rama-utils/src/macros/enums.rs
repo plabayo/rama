@@ -710,10 +710,10 @@ pub use crate::std::string::ToString as __ToString;
 pub use crate::std::{Cow as __Cow, String as __String, Vec as __Vec};
 
 #[cfg(test)]
-// NOTE(expect) the generated helpers carry `#[allow(dead_code)]` for callers
-// that never use them. Expanding the macro inside its own crate is the one
-// place where that is not an external macro, so the lint sees it here.
-#[expect(clippy::allow_attributes)]
+#[allow(
+    clippy::allow_attributes,
+    reason = "generated helpers carry `#[allow(dead_code)]`; only some toolchains lint local macro expansions"
+)]
 mod tests {
     use std::assert_matches;
     use std::borrow::Cow;

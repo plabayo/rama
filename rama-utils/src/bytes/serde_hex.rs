@@ -115,8 +115,12 @@ pub use serde as __serde;
 macro_rules! __hex_serde_with {
     ($(#[$attr:meta])* $vis:vis $name:ident, $format:expr $(,)?) => {
         $(#[$attr])*
-        #[expect(clippy::allow_attributes, reason = "these lints depend on the macro invocation scope and expression")]
-        #[allow(unused_imports, unreachable_pub)]
+        #[allow(
+            unused_imports,
+            unreachable_pub,
+            clippy::allow_attributes,
+            reason = "these lints depend on the macro invocation scope and expression"
+        )]
         $vis mod $name {
             // Make enclosing names available to the configuration expression.
             use super::*;

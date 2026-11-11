@@ -611,8 +611,8 @@ where
             ));
         }
         self.update_original_body_state();
-        let offset_is_invalid = self.original_body_len.map_or_else(
-            || use_original_body >= self.original_body_bytes_received,
+        let offset_is_invalid = self.original_body_len.map_or(
+            use_original_body >= self.original_body_bytes_received,
             |len| use_original_body >= len,
         );
         if offset_is_invalid {

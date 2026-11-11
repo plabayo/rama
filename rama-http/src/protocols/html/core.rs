@@ -8,7 +8,7 @@
 //! available and `rama-http` already provides richer ways of plugging in
 //! arbitrary values.
 
-#![expect(
+#![allow(
     clippy::allow_attributes,
     reason = "vendored from `vy-core`: macro-internal `#[allow(non_snake_case)]` attrs whose underlying lint fires only for some tuple-arity expansions"
 )]

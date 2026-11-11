@@ -733,12 +733,4 @@ mod tests {
         );
         "invalid-mimetype".parse::<ContentType>().unwrap_err();
     }
-
-    bench_header!(bench_plain, ContentType, "text/plain");
-    bench_header!(bench_json, ContentType, "application/json");
-    bench_header!(
-        bench_formdata,
-        ContentType,
-        "multipart/form-data; boundary=---------------abcd"
-    );
 }

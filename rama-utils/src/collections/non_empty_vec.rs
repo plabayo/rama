@@ -148,10 +148,8 @@ impl<T> DoubleEndedIterator for NonEmptyVecIter<'_, T> {
         if let Some((last, rest)) = self.tail.split_last() {
             self.tail = rest;
             Some(last)
-        } else if let Some(first_value) = self.head.take() {
-            Some(first_value)
         } else {
-            None
+            self.head.take()
         }
     }
 }

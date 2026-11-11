@@ -421,7 +421,7 @@ mod tests {
             ("speculaas", "loos"),
         ] {
             assert!(
-                !super::any_submatch_ignore_ascii_case(s, &[sub]),
+                !super::any_submatch_ignore_ascii_case(s, [sub]),
                 "{sub:?} in {s:?}",
             );
         }
@@ -496,12 +496,12 @@ mod tests {
             ("Ho-HaHa-Hi", "hi", 8),
         ] {
             assert_eq!(
-                super::any_contains_ignore_ascii_case(s, &[sub]),
+                super::any_contains_ignore_ascii_case(s, [sub]),
                 Some(index),
                 "{sub:?} in {s:?}",
             );
             assert!(
-                super::any_submatch_ignore_ascii_case(s, &[sub]),
+                super::any_submatch_ignore_ascii_case(s, [sub]),
                 "{sub:?} in {s:?}",
             );
         }
