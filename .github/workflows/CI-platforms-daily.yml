@@ -1003,9 +1003,14 @@ jobs:
           build_args=()
           if [ "$MODE" = release ]; then build_args+=(--release); fi
           cargo build --locked "${build_args[@]}" -p rama-cli --all-features --bin rama
-      - name: Safari full HTTPS, H2 and H3 capture and replay
+      - name: Safari full HTTP, HTTPS, H2 and H3 capture and replay
         run: |
           result=0
+          # Plaintext H1 runs against a server without TLS; the capture fails on any ClientHello.
+          just examples/tests/browser-profile-capture \
+            --rama "target/$MODE/rama" --browser safari --protocol h1 \
+            --flows all --interface lo0 --postgres-backend native \
+            --output "$RUNNER_TEMP/safari-full-h1-plaintext" || result=1
           for protocol in h1 h2 h3; do
             just examples/tests/browser-profile-capture \
               --rama "target/$MODE/rama" --browser safari --protocol "$protocol" --tls \

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, check_websocket_messages
 from flows import (
     ASSET_FLOWS,
+    BROWSER_PROBES,
     FLOWS,
     compare_requests,
     flow_counts,
@@ -783,6 +784,29 @@ def field_rows(path, port, display_filter, fields, *, keylog=None, output=None):
     return rows
 
 
+def require_cleartext(path, port):
+    """A plaintext run must not even attempt TLS on the fixture's port."""
+    require(path.stat().st_size <= 40 * 1024 * 1024, "capture byte limit")
+    hellos = subprocess.check_output(
+        [
+            "tshark",
+            "-r",
+            str(path),
+            "-d",
+            f"tcp.port=={port},tls",
+            "-Y",
+            "tls.handshake.type == 1",
+            "-T",
+            "fields",
+            "-e",
+            "frame.number",
+        ],
+        text=True,
+        timeout=15,
+    )
+    require(not hellos.strip(), "plaintext capture contains a TLS ClientHello")
+
+
 def header_lines(value):
     return [line.removesuffix(r"\r\n") for line in value.split("\x1f") if line]
 
@@ -812,7 +836,7 @@ def decode_rows(
             reference
             and flow not in ASSET_FLOWS
             and method == "GET"
-            and (uri.startswith("/assets/") or uri == "/favicon.ico")
+            and (uri.startswith("/assets/") or uri in BROWSER_PROBES)
         ):
             # Subresources outside the measured ones create no operation.
             continue
@@ -978,7 +1002,7 @@ def h1_header_blocks(rows):
         head = ((":method", row["http.request.method"]), (":path", uri))
         # Subresources outside the measured ones create no declared operation.
         if flow_name(head, protocol="h1") is None and (
-            uri.startswith("/assets/") or uri == "/favicon.ico"
+            uri.startswith("/assets/") or uri in BROWSER_PROBES
         ):
             continue
         require(row["http.request.version"] == "HTTP/1.1", "wire protocol")

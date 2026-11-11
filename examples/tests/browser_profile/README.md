@@ -340,7 +340,8 @@ kernel cannot produce segmented UDP. No unsupported-kernel fallback is inferred.
 
 Daily CI runs real Safari via `safaridriver` on `macos-26` in debug and release.
 H1, H2 and H3 must complete the same page operations used by the shared
-BrowserStack collector. Every protocol also requires twelve complete compressed
+BrowserStack collector; H1 runs both over TLS and in plaintext against a server
+without TLS, where a ClientHello on the fixture port fails the capture. Every protocol also requires twelve complete compressed
 responses across consent GET, XHR endpoint POST and form POST requests. The H3-only
 fixture uses the CLI's TCP bootstrap; TCP fallback fails the response check.
 The separate full H3 journey seeds Alt-Svc through that TCP bootstrap, then uses

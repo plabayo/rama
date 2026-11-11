@@ -17,6 +17,14 @@ ASSET_FLOWS = {
 # The operations the browser driver performs and reports a protocol for.
 DRIVER_FLOWS = ("navigate", "fetch", "xhr", "ws", "form", "form_get", "link")
 FLOWS = (*DRIVER_FLOWS, *ASSET_FLOWS)
+# Icon requests a browser makes by itself. The service redirects each to its
+# consent page, which the browser then requests too.
+BROWSER_PROBES = (
+    "/favicon.ico",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+    "/consent",
+)
 # Their responses render no Request Info or native view of the request.
 UNECHOED_FLOWS = ("link", *ASSET_FLOWS)
 FLOW_NAMES = set(FLOWS)

@@ -14,6 +14,7 @@ from wire import (
     decode_rows,
     h1_header_blocks,
     h1_tls_evidence,
+    require_cleartext,
 )
 from wire_fixtures import wire_flows_fixture as fixture
 
@@ -88,6 +89,9 @@ class FlowWireTests(unittest.TestCase):
                 {"http.request_in": str(number), "http.response.code": "200",
                  "http.response.line": ""}
             )
+        # A browser's own icon probe and the consent page it is redirected to.
+        for number, uri in enumerate(("/apple-touch-icon.png", "/consent"), 60):
+            extra.append(dict(style, **{"frame.number": str(number), "http.request.uri": uri}))
         flows = decode_rows(requests + extra, responses, 1234, True)
         self.assertNotIn("/assets/banner.jpeg", [row.uri for row in flows["image"]])
         first, second = flows["style"]
@@ -105,6 +109,18 @@ class FlowWireTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "Referer binding"):
             decode_rows(requests, responses, 1234, True)
+
+    def test_plaintext_capture_rejects_any_tls_attempt_on_its_port(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            capture = Path(temporary) / "wire.pcapng"
+            capture.touch()
+            with patch("wire.subprocess.check_output", return_value="\n") as decoded:
+                require_cleartext(capture, 1234)
+            self.assertIn("tcp.port==1234,tls", decoded.call_args.args[0])
+            with patch("wire.subprocess.check_output", return_value="7\n"), (
+                self.assertRaisesRegex(ValueError, "TLS ClientHello")
+            ):
+                require_cleartext(capture, 1234)
 
     def test_https_uses_its_owned_authority_origin_and_wss_replay(self):
         requests, responses = fixture()
