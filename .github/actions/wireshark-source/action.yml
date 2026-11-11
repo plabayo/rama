@@ -1,0 +1,11 @@
+name: Wireshark package source
+description: Configure the signed Wireshark PPA without Launchpad API or keyserver requests. Install packages separately with apt-install.
+
+runs:
+  using: composite
+  steps:
+    - name: Configure the Wireshark package source
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/setup.sh"

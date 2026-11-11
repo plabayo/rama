@@ -1087,18 +1087,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Add the Wireshark package source
-        run: |
-          # Launchpad metadata requests can time out before apt runs. Retry only
-          # package setup; test failures below must still fail the job.
-          for attempt in 1 2 3; do
-            if sudo timeout 180s add-apt-repository --yes --no-update ppa:wireshark-dev/stable; then
-              break
-            fi
-            if [[ "$attempt" == 3 ]]; then
-              exit 1
-            fi
-            sleep 5
-          done
+        uses: ./.github/actions/wireshark-source
       - name: Install packet analysis tools
         uses: ./.github/actions/apt-install
         timeout-minutes: 15
