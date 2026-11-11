@@ -477,9 +477,14 @@ mod tests {
             });
 
             let mut closing = std::pin::pin!(SinkExt::close(&mut client));
-            tokio::time::timeout(Duration::from_millis(100), closing.as_mut())
-                .await
-                .expect_err("the server gets a chance to end its side first");
+            // Polling keeps this independent of how late a loaded runner fires timers.
+            for _ in 0..8 {
+                assert!(
+                    rama_core::futures::poll!(closing.as_mut()).is_pending(),
+                    "the server gets a chance to end its side first"
+                );
+                tokio::task::yield_now().await;
+            }
             tokio::time::timeout(Duration::from_secs(10), closing)
                 .await
                 .expect("client close must not wait forever for the server's end")
