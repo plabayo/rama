@@ -37,9 +37,18 @@ runs:
             exit 0
           fi
           echo "::warning::apt-install: attempt $attempt of 4 failed"
-          # Retry against the runner's fallback archive in case the Azure mirror is the slow one.
           if [[ -f /etc/apt/apt-mirrors.txt ]]; then
-            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+            if [[ "$attempt" == 1 ]]; then
+              # Try Canonical over HTTPS after the runner's Azure mirror.
+              sudo sed -i -e '/azure\.archive\.ubuntu\.com/d' -e 's|http://|https://|g' /etc/apt/apt-mirrors.txt
+            elif [[ "$attempt" -lt 4 && "$(dpkg --print-architecture)" == amd64 ]]; then
+              # An archive outage can affect both Canonical hosts. Rotate to
+              # independent mirrors, retaining the sources' Ubuntu signing keys
+              # and apt's signature, freshness and complete-index checks.
+              # These are archive mirrors; do not redirect arm64 ports sources.
+              mirrors=(https://mirrors.edge.kernel.org/ubuntu https://mirror.math.princeton.edu/pub/ubuntu)
+              printf '%s\n' "${mirrors[attempt - 2]}" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            fi
           fi
           sleep 5
         done
