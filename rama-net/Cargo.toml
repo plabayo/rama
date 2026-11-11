@@ -37,6 +37,7 @@ std = [
     "ipnet/std",
     "dep:csv",
     "dep:parking_lot",
+    "dep:lru-slab",
     "dep:serde_html_form",
     "dep:socket2",
     "dep:tokio",
@@ -88,6 +89,7 @@ ipnet = { workspace = true, features = ["serde"] }
 itertools = { workspace = true, default-features = false, features = ["use_alloc"] }
 itoa = { workspace = true }
 jiff = { workspace = true, optional = true }
+lru-slab = { workspace = true, optional = true }
 # Keep default features (std) off for no_std builds.
 memchr = { workspace = true, default-features = false }
 memmap2 = { workspace = true, optional = true }
