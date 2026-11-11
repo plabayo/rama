@@ -1075,7 +1075,8 @@ jobs:
       matrix:
         backend: [boring, rustls-ring, rustls-aws-lc]
         group: [core, paths, loss]
-    runs-on: ubuntu-24.04
+    # The distro provides tshark >=4.5, without depending on a Launchpad PPA.
+    runs-on: ubuntu-26.04
     timeout-minutes: 130
     needs:
       - precheck-rust
@@ -1086,8 +1087,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Add the Wireshark package source
-        uses: ./.github/actions/wireshark-source
       - name: Install packet analysis tools
         uses: ./.github/actions/apt-install
         timeout-minutes: 15
