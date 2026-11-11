@@ -14,7 +14,7 @@ use rand::prelude::*;
 use rand_pcg::Pcg32;
 
 use crate::proto::{
-    Duration, Instant, TIMER_GRANULARITY, TransportConfig,
+    CongestionControl, Duration, Instant, TIMER_GRANULARITY, TransportConfig,
     congestion::Controller,
     connection::{RttEstimator, pacing::Pacer},
 };
@@ -25,8 +25,6 @@ mod tests;
 const LINK_BITS_PER_SECOND: u64 = 10_000_000;
 /// Propagation delay of the shared link in each direction.
 const LINK_DELAY: Duration = Duration::from_millis(15);
-/// Packets the link holds behind the one it is serialising; an arrival beyond that is dropped.
-const LINK_QUEUE_PACKETS: usize = 25;
 /// Spacing of the packets of one burst on the sender's own, much faster, access link.
 const ACCESS_SPACING: Duration = Duration::from_micros(12);
 /// IPv4 and UDP headers around a QUIC datagram.
@@ -46,6 +44,15 @@ const TCP_MAX_ACK_DELAY: Duration = Duration::from_millis(40);
 /// Head start of the competing flow, so the measured one joins a link already in use.
 const COMPETITOR_HEAD_START: Duration = Duration::from_secs(5);
 
+/// The congestion controller of the competing flow.
+#[derive(Clone, Copy)]
+pub(super) enum Rival {
+    /// The reference CUBIC sender.
+    Cubic,
+    /// The crate's NewReno controller, which halves its window on loss.
+    Reno,
+}
+
 /// One measurement: who shares the link, how the measured flow is acknowledged, and for how long.
 #[derive(Clone, Copy)]
 pub(super) struct Scenario {
@@ -54,6 +61,11 @@ pub(super) struct Scenario {
     /// Packets the competing flow's receiver collects before it acknowledges; `None` leaves
     /// the measured flow alone on the link.
     pub(super) competitor: Option<usize>,
+    /// The competing flow's congestion controller.
+    pub(super) rival: Rival,
+    /// Packets the link holds behind the one it is serialising; an arrival beyond that is
+    /// dropped.
+    pub(super) queue: usize,
     /// Packets the measured flow's receiver collects before it acknowledges.
     pub(super) ack_every: usize,
     /// Upper bound of the scheduling delay added to every sender wake-up.
@@ -101,6 +113,7 @@ impl Scenario {
             scheduled: 0,
             rng,
             jitter: self.jitter,
+            queue: self.queue,
             link: Link::default(),
             flows: vec![measured],
             measure: measured_start..measured_start + self.duration,
@@ -108,7 +121,7 @@ impl Scenario {
         world.schedule(measured_start, Event::Wake { flow: 0 });
         if let Some(ack_every) = self.competitor {
             world.flows.push(Flow::new(
-                Sender::competitor(&config, start),
+                Sender::competitor(&config, self.rival, start),
                 // Three prompt acknowledgements above a hole are a TCP sender's duplicate threshold.
                 Receiver::new(ack_every, 3, TCP_MAX_ACK_DELAY, false),
                 u64::from(SEGMENT_SIZE) + TCP_OVERHEAD,
@@ -196,6 +209,7 @@ struct World {
     scheduled: u64,
     rng: Pcg32,
     jitter: Duration,
+    queue: usize,
     link: Link,
     flows: Vec<Flow>,
     measure: Range<Instant>,
@@ -258,7 +272,7 @@ impl World {
         if !self.link.busy {
             self.link.busy = true;
             self.serialise(flow, packet, now);
-        } else if self.link.queue.len() < LINK_QUEUE_PACKETS {
+        } else if self.link.queue.len() < self.queue {
             self.link.queue.push_back((flow, packet));
         }
     }
@@ -450,17 +464,17 @@ impl Sender {
         )
     }
 
-    /// An unpaced reference CUBIC sender, because that is what a bulk TCP transfer on the
-    /// same link is.
-    fn competitor(config: &TransportConfig, now: Instant) -> Self {
-        Self::new(
-            Box::new(ReferenceCubic::new(SEGMENT_SIZE)),
-            None,
-            SEGMENT_SIZE,
-            Duration::ZERO,
-            config,
-            now,
-        )
+    /// An unpaced loss-based sender, because that is what a bulk TCP transfer on the same link
+    /// is.
+    fn competitor(config: &TransportConfig, rival: Rival, now: Instant) -> Self {
+        let controller: Box<dyn Controller> = match rival {
+            Rival::Cubic => Box::new(ReferenceCubic::new(SEGMENT_SIZE)),
+            Rival::Reno => TransportConfig::default()
+                .with_congestion_control(CongestionControl::NewReno)
+                .congestion_factory()
+                .build(now, SEGMENT_SIZE),
+        };
+        Self::new(controller, None, SEGMENT_SIZE, Duration::ZERO, config, now)
     }
 
     fn new(

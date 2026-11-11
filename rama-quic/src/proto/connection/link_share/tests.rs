@@ -1,16 +1,38 @@
 use std::ops::Range;
 
-use super::{LINK_BITS_PER_SECOND, Outcome, Scenario};
+use super::{LINK_BITS_PER_SECOND, Outcome, Rival, Scenario};
 use crate::proto::Duration;
 
 /// Scheduling delays of a sender's task: one well below the link's packet time, one above it.
 const JITTERS: [Duration; 2] = [Duration::from_micros(200), Duration::from_millis(2)];
 /// Packets per acknowledgement of the receivers the sender meets in practice.
 const ACK_RATES: [usize; 3] = [1, 2, 8];
+/// The queue of the interop simulator's link, a fraction of the packets in flight over it.
+const SHALLOW_QUEUE: usize = 25;
+/// A queue of about one round trip of the link's traffic, as sized for bulk transfers.
+const DEEP_QUEUE: usize = 100;
 
 fn outcomes(
     seeds: Range<u64>,
     competitor: Option<usize>,
+    ack_every: usize,
+    jitter: Duration,
+) -> Vec<Outcome> {
+    outcomes_on(
+        seeds,
+        competitor,
+        Rival::Cubic,
+        SHALLOW_QUEUE,
+        ack_every,
+        jitter,
+    )
+}
+
+fn outcomes_on(
+    seeds: Range<u64>,
+    competitor: Option<usize>,
+    rival: Rival,
+    queue: usize,
     ack_every: usize,
     jitter: Duration,
 ) -> Vec<Outcome> {
@@ -19,6 +41,8 @@ fn outcomes(
             Scenario {
                 seed,
                 competitor,
+                rival,
+                queue,
                 ack_every,
                 jitter,
                 duration: Duration::from_secs(60),
@@ -79,6 +103,8 @@ fn equal_scenarios_measure_the_same() {
     let scenario = Scenario {
         seed: 7,
         competitor: Some(2),
+        rival: Rival::Cubic,
+        queue: SHALLOW_QUEUE,
         ack_every: 2,
         jitter: Duration::from_millis(2),
         duration: Duration::from_secs(10),
@@ -120,6 +146,25 @@ fn table_of_link_shares_over_more_seeds_and_a_competitor_acknowledged_per_packet
         for (label, competitor) in [("shared", 2), ("vs-ack/1", 1)] {
             for ack_every in ACK_RATES {
                 let outcomes = outcomes(0..40, Some(competitor), ack_every, jitter);
+                report(label, ack_every, jitter, &outcomes);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "a wider sweep to read, not to assert on; run with --ignored --nocapture"]
+fn table_of_link_shares_on_a_deep_queue_and_beside_a_reno_flow() {
+    for jitter in JITTERS {
+        for (label, rival, queue) in [
+            ("deep", Rival::Cubic, DEEP_QUEUE),
+            ("reno", Rival::Reno, SHALLOW_QUEUE),
+            ("renodeep", Rival::Reno, DEEP_QUEUE),
+        ] {
+            let alone = outcomes_on(0..2, None, rival, queue, 2, jitter);
+            report("alone", 2, jitter, &alone);
+            for ack_every in ACK_RATES {
+                let outcomes = outcomes_on(0..20, Some(2), rival, queue, ack_every, jitter);
                 report(label, ack_every, jitter, &outcomes);
             }
         }
