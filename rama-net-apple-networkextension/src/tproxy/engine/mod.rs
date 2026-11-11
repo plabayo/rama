@@ -2193,6 +2193,8 @@ where
         Some(Arc::new(move || closed_control.close())),
         Some(flow_scope.clone_weak()),
     );
+    // the flow runs in its scope, as inputs of the TCP and QUIC servers do
+    attach_scope(flow.extensions(), &flow_scope);
     flow.extensions().insert_arc(meta_arc.clone());
     if let Some(remote) = meta_arc.remote_endpoint.clone() {
         flow.extensions().insert(ConnectorTarget(remote));
