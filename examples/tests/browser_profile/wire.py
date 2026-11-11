@@ -808,18 +808,14 @@ def decode_rows(
         method, uri = row["http.request.method"], row["http.request.uri"]
         flow = flow_name(((":method", method), (":path", uri)), protocol="h1")
         scheme = "https" if secure else "http"
-        if reference and method == "GET" and (
-            uri.startswith("/assets/") or uri == "/favicon.ico"
+        if (
+            reference
+            and flow not in ASSET_FLOWS
+            and method == "GET"
+            and (uri.startswith("/assets/") or uri == "/favicon.ico")
         ):
-            # Every page requests the subresources; the measured report's own count.
-            referers = [
-                line.split(":", 1)[1].strip()
-                for line in header_lines(row["http.request.line"])
-                if line.split(":", 1)[0].lower() == "referer"
-            ]
-            page = f"{scheme}://{authority or row['http.host']}/report"
-            if flow not in ASSET_FLOWS or referers != [page] or flow in output:
-                continue
+            # Subresources outside the measured ones create no operation.
+            continue
         require(flow is not None, f"unexpected request: {method} {uri}")
         require(row["http.request.version"] == "HTTP/1.1", "wire protocol")
         authority = authority or (
@@ -868,6 +864,11 @@ def decode_rows(
             elif lower == "referer":
                 page = scheme + "://" + authority + "/"
                 require(value.startswith(page), "Referer binding")
+                if reference and flow in ASSET_FLOWS:
+                    # Every page requests the measured subresources, and a profile
+                    # keeps them in one flow: the replay names the report page.
+                    bindings[lower] = page + "report"
+                    value = page + "report"
                 value = scheme + "://<authority>/" + value[len(page) :]
             elif lower == "sec-websocket-key":
                 require(flow == "ws" and key is None, "unexpected WebSocket key")
@@ -917,7 +918,13 @@ def decode_rows(
     )
     for flow, rows in output.items():
         require(
-            (reference and (len(rows) == 1 or (flow == "navigate" and len(rows) <= 8)))
+            (
+                reference
+                and (
+                    len(rows) == 1
+                    or (flow in ("navigate", *ASSET_FLOWS) and len(rows) <= 8)
+                )
+            )
             or (not reference and len(rows) == expected_per_flow),
             "ambiguous repeated flow",
         )

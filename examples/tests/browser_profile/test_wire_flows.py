@@ -70,31 +70,40 @@ class FlowWireTests(unittest.TestCase):
         )
         self.assertIn("a,b", ws_args)
 
-    def test_referer_is_a_request_binding_and_only_the_report_counts_subresources(self):
+    def test_measured_subresources_from_any_page_are_candidates_bound_to_the_report(self):
         requests, responses = fixture()
         style = next(row for row in requests if row["http.request.uri"] == "/assets/style.css")
-        # The form page requests the stylesheet again, and the report an unmeasured image.
+        # The form page requests the stylesheet again with its own priority, and
+        # the report an unmeasured image.
         extra = []
         for number, (uri, page) in enumerate(
             (("/assets/style.css", "/form"), ("/assets/banner.jpeg", "/report")), 50
         ):
             row = dict(style, **{"frame.number": str(number), "http.request.uri": uri})
-            row["http.request.line"] = row["http.request.line"].replace("/report", page)
+            row["http.request.line"] = (
+                row["http.request.line"].replace("/report", page) + "\x1fPriority: u=2"
+            )
             extra.append(row)
             responses.append(
                 {"http.request_in": str(number), "http.response.code": "200",
                  "http.response.line": ""}
             )
         flows = decode_rows(requests + extra, responses, 1234, True)
-        self.assertEqual(len(flows["style"]), 1)
-        self.assertIn("Referer: http://<authority>/report", flows["style"][0].headers)
-        self.assertEqual(
-            flows["style"][0].bindings["referer"], "http://127.0.0.1:1234/report"
-        )
+        self.assertNotIn("/assets/banner.jpeg", [row.uri for row in flows["image"]])
+        first, second = flows["style"]
+        self.assertEqual(second.headers, first.headers + ("Priority: u=2",))
+        for candidate in (first, second):
+            self.assertIn("Referer: http://<authority>/report", candidate.headers)
+            self.assertEqual(
+                candidate.bindings["referer"], "http://127.0.0.1:1234/report"
+            )
+        # A replay that sent the form page's variant matches that candidate.
+        replay = dict(flows, style=[second])
+        self.assertTrue(all(row["match"] for row in compare(flows, replay)))
         style["http.request.line"] = style["http.request.line"].replace(
             "127.0.0.1:1234/report", "elsewhere.test/report"
         )
-        with self.assertRaisesRegex(ValueError, "complete operation coverage"):
+        with self.assertRaisesRegex(ValueError, "Referer binding"):
             decode_rows(requests, responses, 1234, True)
 
     def test_https_uses_its_owned_authority_origin_and_wss_replay(self):
