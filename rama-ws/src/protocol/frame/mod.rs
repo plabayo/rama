@@ -669,6 +669,45 @@ mod tests {
     }
 
     #[test]
+    fn retained_frames_survive_alternating_large_and_small_reads() {
+        let payloads: Vec<Vec<u8>> = (0..8_u8)
+            .flat_map(|byte| [vec![byte; 1024], vec![byte; 256 * 1024]])
+            .collect();
+        let wire: Vec<u8> = payloads
+            .iter()
+            .flat_map(|payload| masked_frame(payload, [1, 2, 3, 4]))
+            .collect();
+        for step in [1024, usize::MAX] {
+            let mut stream = TrickleRead {
+                wire: Cursor::new(wire.clone()),
+                step,
+            };
+            let mut codec = FrameCodec::new(super::READ_BUF_LEN);
+            let mut held = Vec::new();
+            for expected in &payloads {
+                let frame = codec
+                    .read_frame(&mut stream, None, true, false)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(frame.payload(), expected.as_slice());
+                if expected.len() == 1024 {
+                    assert!(
+                        !codec
+                            .in_buffer
+                            .as_ptr_range()
+                            .contains(&frame.payload().as_ptr())
+                    );
+                }
+                held.push(frame);
+            }
+            drop(codec);
+            for (frame, expected) in held.iter().zip(&payloads) {
+                assert_eq!(frame.payload(), expected.as_slice(), "step {step}");
+            }
+        }
+    }
+
+    #[test]
     fn idle_codec_allocates_nothing_and_reads_small() {
         let mut codec = FrameCodec::new(super::READ_BUF_LEN);
         assert_eq!(codec.in_buffer.capacity(), 0);

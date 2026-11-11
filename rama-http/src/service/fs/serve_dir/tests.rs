@@ -2866,7 +2866,13 @@ async fn windows_short_name_does_not_alias_hidden_entries() {
 #[tokio::test]
 async fn small_and_large_files_serve_whole_and_ranged() {
     let dir = rama_utils::fs::tempdir().unwrap();
-    for (name, len) in [("small.bin", 1000_usize), ("large.bin", 200_000)] {
+    for (name, len) in [
+        ("small.bin", 1000_usize),
+        ("below-cutoff.bin", 128 * 1024 - 1),
+        ("at-cutoff.bin", 128 * 1024),
+        ("above-cutoff.bin", 128 * 1024 + 1),
+        ("large.bin", 200_000),
+    ] {
         let contents: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
         std::fs::write(dir.path().join(name), &contents).unwrap();
         let svc = ServeDir::new(dir.path());

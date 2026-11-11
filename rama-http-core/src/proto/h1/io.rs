@@ -1180,6 +1180,46 @@ mod tests {
         assert_eq!(buffered.read_buf_strategy.next(), INIT_BUFFER_SIZE);
     }
 
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn alternating_large_and_small_uploads_survive_idle_release() {
+        let chunk = vec![7u8; kib(512)];
+        let small = b"next small upload";
+        let mut mock = Mock::new();
+        for _ in 0..4 {
+            for _ in 0..16 {
+                mock.read(&chunk);
+            }
+            mock.read(small);
+        }
+        let mut buffered =
+            Buffered::<_, Cursor<Vec<u8>>>::new(rama_core::ServiceInput::new(mock.build()));
+        let mut retained = Vec::new();
+        for _ in 0..4 {
+            let mut total = 0;
+            while total < 16 * chunk.len() {
+                let data = std::future::poll_fn(|cx| buffered.read_mem(cx, usize::MAX))
+                    .await
+                    .unwrap();
+                assert!(!data.is_empty());
+                assert!(data.iter().all(|b| *b == 7));
+                total += data.len();
+            }
+            assert_eq!(total, 16 * chunk.len());
+            buffered.release_idle_read_buf();
+            assert_eq!(buffered.read_buf.capacity(), 0);
+            assert_eq!(buffered.read_buf_strategy.next(), INIT_BUFFER_SIZE);
+            let data = std::future::poll_fn(|cx| buffered.read_mem(cx, small.len()))
+                .await
+                .unwrap();
+            assert_eq!(data.as_ref(), small);
+            retained.push(data);
+            buffered.release_idle_read_buf();
+        }
+        // Consumer-held slices remain valid across later growth and releases.
+        assert!(retained.iter().all(|data| data.as_ref() == small));
+    }
+
     #[test]
     fn idle_read_buf_keeps_pipelined_bytes() {
         let mut buffered =
