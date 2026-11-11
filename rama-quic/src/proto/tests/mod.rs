@@ -48,6 +48,7 @@ mod loss_config;
 mod migration_interop;
 mod observation;
 mod packet_vectors;
+mod peer_deviations;
 mod profile_endpoint;
 mod qlog;
 mod qlog_drops;

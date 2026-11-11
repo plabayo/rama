@@ -13,7 +13,7 @@ use rama_quic_proto::{
 use std::net::SocketAddr;
 
 use rama_core::{
-    bytes::{Bytes, BytesMut},
+    bytes::BytesMut,
     telemetry::tracing::{debug, trace, trace_span, warn},
 };
 
@@ -285,19 +285,6 @@ impl Connection {
                 };
                 let _guard = span.enter();
 
-                if let Some(observation) = &mut self.observation
-                    && let Some(number) = number
-                {
-                    let token_valid = match (&packet.header, &self.state) {
-                        (Header::Initial(header), State::Handshake(hs)) => {
-                            header.token == hs.expected_token
-                        }
-                        _ => true,
-                    };
-                    if token_valid {
-                        observation.packet(&packet, number);
-                    }
-                }
                 let is_duplicate = |n| self.spaces[packet.header.space()].dedup.insert(n);
                 if number.is_some_and(is_duplicate) {
                     debug!("discarding possible duplicate packet");
@@ -307,11 +294,15 @@ impl Connection {
                     if let Header::Initial(InitialHeader { ref token, .. }) = packet.header
                         && let State::Handshake(ref hs) = self.state
                         && self.side.is_server()
-                        && token != &hs.expected_token
+                        && hs
+                            .expected_token
+                            .as_ref()
+                            .is_some_and(|expected| token != expected)
                     {
-                        // Clients must send the same retry token in every Initial. Initial
-                        // packets can be spoofed, so we discard rather than killing the
-                        // connection.
+                        // A Retry token is the address proof, so every Initial after a Retry
+                        // repeats it. Initial packets can be spoofed, so we discard rather than
+                        // killing the connection. Without a Retry the token is not compared:
+                        // some clients change it between Initials (RFC 9000 §8.1.3).
                         warn!("discarding Initial with invalid retry token");
                         self.qlog_packet_dropped(
                             now,
@@ -319,6 +310,11 @@ impl Connection {
                             DropReason::Invalid,
                         );
                         return;
+                    }
+                    if let Some(observation) = &mut self.observation
+                        && let Some(number) = number
+                    {
+                        observation.packet(&packet, number);
                     }
 
                     if packet.header.space() == SpaceId::Handshake && self.state.is_handshake() {
@@ -637,7 +633,7 @@ impl Connection {
                     TransportError::PROTOCOL_VIOLATION("Retry token exceeds retention limit")
                 })?;
                 self.state = State::Handshake(state::Handshake {
-                    expected_token: Bytes::new(),
+                    expected_token: None,
                     rem_cid_set: false,
                     client_hello: None,
                 });
@@ -655,6 +651,10 @@ impl Connection {
                     );
                     self.qlog_packet_dropped(now, info, DropReason::Invalid);
                     return Ok(());
+                }
+                // Handshake keys authenticate the server, so its CID is settled from here on.
+                if let State::Handshake(ref mut state) = self.state {
+                    state.rem_cid_set = true;
                 }
                 self.extend_handshake_deadline();
                 self.on_path_validated();
@@ -678,7 +678,10 @@ impl Connection {
                     self.qlog_remote_cid_updated(now, old_remote_cid);
                     self.rem_handshake_cid = rem_cid;
                     self.orig_rem_cid = rem_cid;
-                    state.rem_cid_set = true;
+                    // msquic answers from the client's own destination CID until it holds the whole
+                    // ClientHello, then moves to its own (microsoft/msquic#3762). Chrome tolerates
+                    // that, so an Initial echoing the CID in use leaves the server's CID open.
+                    state.rem_cid_set = rem_cid != old_remote_cid;
                     self.state = State::Handshake(state);
                 } else if rem_cid != self.rem_handshake_cid {
                     debug!(

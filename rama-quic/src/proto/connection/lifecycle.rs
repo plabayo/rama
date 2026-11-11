@@ -220,10 +220,10 @@ pub(super) mod state {
         ///
         /// Always set for servers
         pub(in crate::proto::connection) rem_cid_set: bool,
-        /// Stateless retry token received in the first Initial by a server.
+        /// Retry token a server received in the first Initial; every later Initial repeats it.
         ///
-        /// Must be present in every Initial. Always empty for clients.
-        pub(in crate::proto::connection) expected_token: Bytes,
+        /// `None` for clients, and for servers that sent no Retry.
+        pub(in crate::proto::connection) expected_token: Option<Bytes>,
         /// First cryptographic message
         ///
         /// Only set for clients

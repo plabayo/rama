@@ -44,8 +44,6 @@ pub(crate) mod benchmarks;
 
 use std::{collections::VecDeque, fmt, net::SocketAddr, sync::Arc};
 
-use rama_core::bytes::Bytes;
-
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use crate::proto::{
@@ -430,7 +428,7 @@ impl Connection {
         })?;
         let state = State::Handshake(state::Handshake {
             rem_cid_set: side.is_server(),
-            expected_token: Bytes::new(),
+            expected_token: None,
             client_hello: None,
         });
         let rem_cids = CidQueue::new(
