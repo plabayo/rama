@@ -10,6 +10,8 @@ use rama_core::{
 };
 use rama_utils::macros::generate_set_and_with;
 
+#[cfg(feature = "std")]
+use crate::stream::SocketInfo;
 use crate::{
     address::{SocketAddress, ip::ipnet::IpNet},
     std::{boxed::Box, string::String, sync::Arc, vec::Vec},
@@ -45,6 +47,12 @@ pub use version::ForwardedVersion;
 /// Elements whose `for` address is a [trusted proxy](Self::with_trusted_proxies) are skipped,
 /// then [`hops`](Self::with_hops) more are, counting from the [`side`](Self::with_side).
 /// Without a remaining element there is no client, and callers fall back to the connection.
+///
+/// With trusted proxies set, a chain is only relied on when the connection it arrived on
+/// comes from one of them (see [`trusts_peer`](Self::trusts_peer)): any other peer could
+/// have written the chain itself, so it has no forwarded client and is its own client.
+/// Without trusted proxies every peer is relied on, which fits a service only reachable
+/// through its proxies.
 ///
 /// It is an extension of its own, read by every consumer of [`Forwarded`] client information
 /// (see [`ForwardedClientExt`]); layers that record forwarding information can install it.
@@ -92,7 +100,8 @@ impl ForwardedSelectionPolicy {
     }
 
     generate_set_and_with! {
-        /// Skip the elements whose `for` address is one of these proxies.
+        /// Rely only on chains received from one of these proxies, and skip the elements
+        /// whose `for` address is one of them.
         pub fn trusted_proxies(mut self, proxies: impl IntoIterator<Item = IpNet>) -> Self {
             self.trusted_proxies = proxies.into_iter().collect();
             self
@@ -107,15 +116,54 @@ impl ForwardedSelectionPolicy {
         }
     }
 
+    /// Whether `ip` is one of the trusted proxies, IPv4-mapped IPv6 addresses being IPv4 ones.
+    #[must_use]
+    pub fn is_trusted_proxy(&self, ip: IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        // A network may be listed in either form of the same IPv4 range.
+        let mapped = match ip {
+            IpAddr::V4(ip) => Some(IpAddr::V6(ip.to_ipv6_mapped())),
+            IpAddr::V6(_) => None,
+        };
+        self.trusted_proxies.iter().any(|proxy| {
+            proxy.contains(&ip) || mapped.is_some_and(|mapped| proxy.contains(&mapped))
+        })
+    }
+
+    /// Whether forwarding information received over the (ingress) connection of `extensions`
+    /// can be relied on.
+    ///
+    /// Always without trusted proxies; with them only when the peer of that connection is
+    /// one, so not when the peer is unknown.
+    #[must_use]
+    pub fn trusts_peer(&self, extensions: &Extensions) -> bool {
+        if self.trusted_proxies.is_empty() {
+            return true;
+        }
+        #[cfg(feature = "std")]
+        {
+            SocketInfo::ingress(extensions)
+                .is_some_and(|info| self.is_trusted_proxy(info.peer_addr().ip_addr))
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            // No transport peer is known here, so none can be a trusted proxy.
+            let _ = extensions;
+            false
+        }
+    }
+
     /// The element of `forwarded` describing the client, if any remains.
+    ///
+    /// The peer the chain was received from is not considered here, see
+    /// [`trusts_peer`](Self::trusts_peer) and [`ForwardedClientExt`], which does.
     #[must_use]
     pub fn select<'a>(&self, forwarded: &'a Forwarded) -> Option<&'a ForwardedElement> {
         let trusted = |element: &ForwardedElement| {
-            !self.trusted_proxies.is_empty()
-                && element
-                    .forwarded_for()
-                    .and_then(NodeId::ip)
-                    .is_some_and(|ip| self.trusted_proxies.iter().any(|proxy| proxy.contains(&ip)))
+            element
+                .forwarded_for()
+                .and_then(NodeId::ip)
+                .is_some_and(|ip| self.is_trusted_proxy(ip))
         };
         let mut candidates = forwarded.iter().filter(|element| !trusted(element));
         match self.side {
@@ -128,14 +176,27 @@ impl ForwardedSelectionPolicy {
 /// The client of the [`Forwarded`] chain in these extensions, selected by their
 /// [`ForwardedSelectionPolicy`], else the default one (the rightmost element).
 ///
+/// A chain received from a peer the policy [does not trust](ForwardedSelectionPolicy::trusts_peer)
+/// has no client.
+///
 /// Implemented for every [`ExtensionsRef`]; sealed, as it only reads what the extensions hold.
 /// Unlike [`ClientIp`](crate::ClientIp) it never falls back to the connection's peer.
 pub trait ForwardedClientExt: ExtensionsRef + private::Sealed {
-    /// The element describing the client.
-    fn forwarded_client(&self) -> Option<&ForwardedElement> {
+    /// The chain as recorded, unless it came from a peer the policy does not trust: what may
+    /// be selected from, or passed on to the next hop as this connection's history.
+    fn trusted_forwarded(&self) -> Option<&Forwarded> {
         let extensions = self.extensions();
         let forwarded = extensions.get_ref::<Forwarded>()?;
         match extensions.get_ref::<ForwardedSelectionPolicy>() {
+            Some(policy) if !policy.trusts_peer(extensions) => None,
+            _ => Some(forwarded),
+        }
+    }
+
+    /// The element describing the client.
+    fn forwarded_client(&self) -> Option<&ForwardedElement> {
+        let forwarded = self.trusted_forwarded()?;
+        match self.extensions().get_ref::<ForwardedSelectionPolicy>() {
             Some(policy) => policy.select(forwarded),
             None => ForwardedSelectionPolicy::default().select(forwarded),
         }
@@ -425,6 +486,70 @@ mod tests {
             extensions.forwarded_client_ip(),
             Some(IpAddr::from([198, 51, 100, 7]))
         );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn a_chain_has_a_client_only_from_a_peer_the_policy_trusts() {
+        let policy =
+            ForwardedSelectionPolicy::new().with_trusted_proxies(["10.0.0.0/8".parse().unwrap()]);
+        for (peer, trusted) in [
+            (Some("10.0.0.1"), true),
+            (Some("::ffff:10.0.0.1"), true),
+            (Some("198.51.100.9"), false),
+            (Some("::ffff:198.51.100.9"), false),
+            (None, false),
+        ] {
+            let extensions = Extensions::new();
+            extensions.insert(policy.clone());
+            extensions.insert(chain(&["198.51.100.7", "10.0.0.1"]));
+            if let Some(peer) = peer {
+                extensions.insert(SocketInfo::new(
+                    None,
+                    SocketAddress::new(peer.parse().unwrap(), 0),
+                ));
+            }
+            assert_eq!(policy.trusts_peer(&extensions), trusted, "{peer:?}");
+            assert_eq!(
+                extensions.trusted_forwarded().is_some(),
+                trusted,
+                "{peer:?}"
+            );
+            assert_eq!(
+                extensions.forwarded_client_ip(),
+                trusted.then_some(IpAddr::from([198, 51, 100, 7])),
+                "{peer:?}"
+            );
+        }
+
+        // Without trusted proxies any peer is relied on, a missing one included.
+        let extensions = Extensions::new();
+        extensions.insert(ForwardedSelectionPolicy::new());
+        extensions.insert(chain(&["198.51.100.7"]));
+        assert_eq!(
+            extensions.forwarded_client_ip(),
+            Some(IpAddr::from([198, 51, 100, 7]))
+        );
+    }
+
+    #[test]
+    fn a_trusted_network_matches_either_form_of_an_ipv4_address() {
+        for network in ["10.0.0.0/8", "::ffff:10.0.0.0/104"] {
+            let policy =
+                ForwardedSelectionPolicy::new().with_trusted_proxies([network.parse().unwrap()]);
+            for (ip, trusted) in [
+                ("10.1.2.3", true),
+                ("::ffff:10.1.2.3", true),
+                ("11.0.0.1", false),
+                ("::ffff:11.0.0.1", false),
+            ] {
+                assert_eq!(
+                    policy.is_trusted_proxy(ip.parse().unwrap()),
+                    trusted,
+                    "{network} {ip}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,5 +1,9 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::{
+    pin::pin,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    task::Poll,
+    time::{Duration, Instant},
+};
 
 use crate::std::sync::Arc;
 
@@ -13,6 +17,7 @@ use rama_core::telemetry::tracing;
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
+    futures::poll,
     io::{AbortIo, BridgeIo, Io},
 };
 use rama_utils::macros::generate_set_and_with;
@@ -160,9 +165,10 @@ impl IoForwardService {
 
     generate_set_and_with! {
         /// Per-half cap on graceful shutdown. When the bridge unwinds it calls
-        /// `shutdown()` on each write half bounded by this duration; if the
-        /// inner type blocks (e.g. a TLS layer waiting for `close_notify`),
-        /// the shutdown is abandoned and the half is dropped.
+        /// `shutdown()` on each write half bounded by this duration and by the
+        /// hard phase of the bridge's scope; if the inner type blocks (e.g. a
+        /// TLS layer or an HTTP/3 tunnel waiting for its peer), the shutdown is
+        /// abandoned and the half is dropped.
         ///
         /// Default: 50ms.
         pub fn shutdown_grace(mut self, grace: Duration) -> Self {
@@ -460,6 +466,23 @@ impl Stop {
     async fn aborted(&self) {
         self.scope.aborted().await;
     }
+
+    /// Shut `writer` down in order: `None` once its peer held the close for `grace`, or at
+    /// the hard phase of the scope, whichever comes first.
+    async fn close<W>(&self, writer: &mut W, grace: Duration) -> Option<std::io::Result<()>>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        if self.scope.is_aborted() {
+            return None;
+        }
+        let mut shutdown = pin!(writer.shutdown());
+        // A close that needs no peer ends here, with nothing to bound.
+        if let Poll::Ready(closed) = poll!(shutdown.as_mut()) {
+            return Some(closed);
+        }
+        self.scope.run_until_aborted_within(grace, shutdown).await
+    }
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -529,7 +552,7 @@ where
             bytes_l_to_r.clone(),
             progress.clone(),
             buf_size,
-            shutdown_grace,
+            (&stop, shutdown_grace),
             right_w_shut.clone(),
             l_to_r_end.clone(),
             (aborts.clone(), Side::Right),
@@ -543,7 +566,7 @@ where
             bytes_r_to_l.clone(),
             progress.clone(),
             buf_size,
-            shutdown_grace,
+            (&stop, shutdown_grace),
             left_w_shut.clone(),
             r_to_l_end.clone(),
             (aborts.clone(), Side::Left),
@@ -585,16 +608,10 @@ where
     let left_pending_shutdown = !aborts.aborted(Side::Left) && !left_w_shut.load(Ordering::Acquire);
     let right_pending_shutdown =
         !aborts.aborted(Side::Right) && !right_w_shut.load(Ordering::Acquire);
-    let (left_err, right_err) = tokio::select! {
-        biased;
-        () = stop.aborted() => (None, None),
-        closed = async {
-            tokio::join!(
-                close_within(left_pending_shutdown, &mut left_w, shutdown_grace),
-                close_within(right_pending_shutdown, &mut right_w, shutdown_grace),
-            )
-        } => closed,
-    };
+    let (left_err, right_err) = tokio::join!(
+        close_within(left_pending_shutdown, &mut left_w, &stop, shutdown_grace),
+        close_within(right_pending_shutdown, &mut right_w, &stop, shutdown_grace),
+    );
     // A reset found by this last close is reflected too, unless an earlier one already was;
     // an expired grace window is not a reset.
     for (err, side_reason) in [
@@ -961,7 +978,7 @@ async fn copy_one_way<R, W>(
     bytes: Arc<AtomicU64>,
     progress: Arc<AtomicU64>,
     buf_size: usize,
-    shutdown_grace: Duration,
+    (stop, shutdown_grace): (&Stop, Duration),
     write_side_shut: Arc<AtomicBool>,
     end: Arc<DirectionEnd>,
     (aborts, writer_side): (Arc<Aborts>, Side),
@@ -1030,7 +1047,7 @@ where
     // dropped mid-shutdown, and a TLS writer must not be shut down twice.
     if !aborts.aborted(writer_side) {
         write_side_shut.store(true, Ordering::Release);
-        if let Ok(Err(err)) = tokio::time::timeout(shutdown_grace, writer.shutdown()).await
+        if let Some(Err(err)) = stop.close(writer, shutdown_grace).await
             && !copy_err.as_ref().is_some_and(AbortIo::reflects)
             && AbortIo::reflects(&err)
         {
@@ -1070,18 +1087,20 @@ where
 }
 
 /// Close `writer` in order within `grace`, if `pending`: the error it returns, if any. An
-/// expired grace window is no error.
-async fn close_within<W>(pending: bool, writer: &mut W, grace: Duration) -> Option<std::io::Error>
+/// expired grace window is no error, nor is the hard phase of `stop`.
+async fn close_within<W>(
+    pending: bool,
+    writer: &mut W,
+    stop: &Stop,
+    grace: Duration,
+) -> Option<std::io::Error>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     if !pending {
         return None;
     }
-    tokio::time::timeout(grace, writer.shutdown())
-        .await
-        .ok()
-        .and_then(Result::err)
+    stop.close(writer, grace).await.and_then(Result::err)
 }
 
 /// The [`AbortIo`] each side publishes in its own extensions, if any.
@@ -1255,7 +1274,10 @@ mod tests {
 
     use rama_core::{ServiceInput, graceful::attach_scope};
 
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex},
+        task::JoinHandle,
+    };
 
     /// A bridge of plain test I/O, given the extensions a bridge requires.
     fn bridge<S, T>(left: S, right: T) -> BridgeIo<ServiceInput<S>, ServiceInput<T>> {
@@ -1426,6 +1448,54 @@ mod tests {
         root.abort(Cause::Owner);
         task.await.unwrap();
         assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
+    /// A bridge that idled out and now closes a side whose peer never lets the close end.
+    fn held_close(
+        root: &Scope,
+        grace: Duration,
+    ) -> (JoinHandle<IoForwardOutcome>, [DuplexStream; 2]) {
+        let svc = IoForwardService::new(root.clone_weak())
+            .with_idle_timeout(HELD_CLOSE_IDLE)
+            .with_shutdown_grace(grace);
+        let (a_user, a_proxy) = duplex(64);
+        let (b_user, b_proxy) = duplex(64);
+        let a_proxy = PendingShutdownIo { inner: a_proxy };
+        let task = tokio::spawn(async move { svc.serve(bridge(a_proxy, b_proxy)).await.unwrap() });
+        (task, [a_user, b_user])
+    }
+
+    const HELD_CLOSE_IDLE: Duration = Duration::from_secs(1);
+
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_holding_the_close_is_released_at_the_grace() {
+        let root = Scope::new();
+        let grace = Duration::from_secs(30);
+        let start = tokio::time::Instant::now();
+        let (task, _users) = held_close(&root, grace);
+        let outcome = task.await.unwrap();
+        assert_eq!(start.elapsed(), HELD_CLOSE_IDLE + grace);
+        assert!(
+            matches!(outcome.reason, BridgeCloseReason::IdleTimeout),
+            "{outcome:?}"
+        );
+        assert!(!root.is_cancelled(), "the grace ends the close alone");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_hard_phase_releases_a_held_close_before_its_grace() {
+        let root = Scope::new();
+        let (task, _users) = held_close(&root, Duration::from_hours(1));
+        tokio::time::sleep(HELD_CLOSE_IDLE + Duration::from_secs(5)).await;
+        assert!(!task.is_finished(), "the close has its grace");
+        let start = tokio::time::Instant::now();
+        root.abort(Cause::Owner);
+        let outcome = task.await.unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
+        assert!(
+            matches!(outcome.reason, BridgeCloseReason::IdleTimeout),
+            "{outcome:?}"
+        );
     }
 
     /// The bridge holds the scope it runs in while it relays: a retained context alone does not.
@@ -1925,7 +1995,7 @@ mod tests {
             bytes,
             progress,
             64,
-            Duration::from_millis(50),
+            (&Stop::never(), Duration::from_millis(50)),
             write_side_shut.clone(),
             end.clone(),
             (

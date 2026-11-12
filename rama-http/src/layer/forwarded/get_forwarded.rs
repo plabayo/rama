@@ -43,6 +43,10 @@ use std::sync::Arc;
 /// protocol header. Which element is the client's is up to the [`ForwardedSelectionPolicy`]
 /// in the extensions, rightmost by default; the layer can install one.
 ///
+/// A policy with trusted proxies has the header recorded only for requests received from one
+/// of them, see [`ForwardedSelectionPolicy::trusts_peer`]; from any other peer it is ignored,
+/// and that peer is the client.
+///
 /// ## Example
 ///
 /// This example shows you can extract the client IP from the `X-Forwarded-For`
@@ -327,8 +331,12 @@ where
         if let Some(policy) = &self.selection_policy {
             policy.install(req.extensions(), self.keep_existing_selection_policy);
         }
-        if let Some(header) = req.headers().typed_get::<H>() {
-            rama_net::forwarded::Forwarded::record(req.extensions(), header);
+        let extensions = req.extensions();
+        let trusted = extensions
+            .get_ref::<ForwardedSelectionPolicy>()
+            .is_none_or(|policy| policy.trusts_peer(extensions));
+        if trusted && let Some(header) = req.headers().typed_get::<H>() {
+            rama_net::forwarded::Forwarded::record(extensions, header);
         }
 
         self.inner.serve(req)
@@ -343,7 +351,12 @@ mod tests {
     use rama_http_headers::forwarded::{TrueClientIp, XRealIp};
     use rama_net::forwarded::ForwardedClientExt as _;
     use rama_net::forwarded::{ForwardedProtocol, ForwardedVersion};
+    use rama_net::{address::SocketAddress, client_ip::client_ip, stream::SocketInfo};
     use std::{convert::Infallible, net::IpAddr};
+
+    fn peer(ip: &str) -> SocketInfo {
+        SocketInfo::new(None, SocketAddress::new(ip.parse().unwrap(), 0))
+    }
 
     /// The client element under the default selection policy.
     fn client_of(
@@ -488,6 +501,7 @@ mod tests {
                 .header("X-Forwarded-For", "12.23.34.45, 127.0.0.1")
                 .body(())
                 .unwrap();
+            req.extensions().insert(peer("127.0.0.1"));
             service.serve(req).await.unwrap();
         }
     }
@@ -510,6 +524,66 @@ mod tests {
                 .body(())
                 .unwrap();
             req.extensions().insert(ForwardedSelectionPolicy::new());
+            service.serve(req).await.unwrap();
+        }
+    }
+
+    /// With trusted proxies the header counts only when one of them sent the request; any
+    /// other peer is the client itself, whatever it claims.
+    #[tokio::test]
+    async fn the_header_is_honoured_only_from_a_trusted_proxy() {
+        let trusted = "10.0.0.0/8".parse().unwrap();
+        for (socket_peer, expected) in [
+            ("203.0.113.5", "203.0.113.5"),
+            ("::ffff:203.0.113.5", "::ffff:203.0.113.5"),
+            ("10.1.2.3", "12.23.34.45"),
+            ("::ffff:10.1.2.3", "12.23.34.45"),
+        ] {
+            let honoured = expected == "12.23.34.45";
+            let service = GetForwardedHeaderLayer::x_forwarded_for()
+                .with_forwarded_selection_policy(
+                    ForwardedSelectionPolicy::new().with_trusted_proxies([trusted]),
+                )
+                .into_layer(service_fn(move |req: Request<()>| async move {
+                    assert_eq!(
+                        client_ip(&req),
+                        Some(expected.parse().unwrap()),
+                        "{socket_peer}"
+                    );
+                    assert_eq!(
+                        req.extensions()
+                            .contains::<rama_net::forwarded::Forwarded>(),
+                        honoured,
+                        "{socket_peer}"
+                    );
+                    Ok::<_, Infallible>(())
+                }));
+            let req = Request::builder()
+                .header("X-Forwarded-For", "12.23.34.45")
+                .body(())
+                .unwrap();
+            req.extensions().insert(peer(socket_peer));
+            service.serve(req).await.unwrap();
+        }
+    }
+
+    /// Without trusted proxies the header of any peer is recorded.
+    #[tokio::test]
+    async fn the_header_of_any_peer_is_honoured_without_trusted_proxies() {
+        for policy in [None, Some(ForwardedSelectionPolicy::new())] {
+            let mut layer = GetForwardedHeaderLayer::x_forwarded_for();
+            if let Some(policy) = policy {
+                layer.set_forwarded_selection_policy(policy);
+            }
+            let service = layer.into_layer(service_fn(async |req: Request<()>| {
+                assert_eq!(client_ip(&req), Some(IpAddr::from([12, 23, 34, 45])));
+                Ok::<_, Infallible>(())
+            }));
+            let req = Request::builder()
+                .header("X-Forwarded-For", "12.23.34.45")
+                .body(())
+                .unwrap();
+            req.extensions().insert(peer("203.0.113.5"));
             service.serve(req).await.unwrap();
         }
     }

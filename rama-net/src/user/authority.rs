@@ -96,49 +96,96 @@ impl<C: PartialEq + Send + Sync + 'static> Authorizer<C> for StaticAuthorizer<C>
     }
 }
 
+/// `None` requires no authentication and authorizes all credentials;
+/// `Some` delegates to its [`Authorizer`].
+///
+/// Use it to express "no authorizer configured means open", as an empty list of
+/// authorizers rejects all credentials.
+impl<A: Authorizer<C>, C: Send + 'static> Authorizer<C> for Option<A> {
+    type Error = A::Error;
+
+    async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        match self {
+            Some(authorizer) => authorizer.authorize(credentials).await,
+            None => AuthorizeResult {
+                credentials,
+                result: Ok(None),
+            },
+        }
+    }
+}
+
+/// Returned by a list of authorizers in case the credentials are not authorized.
+#[derive(Debug, Clone)]
+pub enum AuthorizerListError<E> {
+    /// The list has no authorizers, so there is none to authorize the credentials.
+    NoAuthorizers,
+    /// No authorizer of the list authorized the credentials: the error of the last one.
+    Unauthorized(E),
+}
+
+impl<E: fmt::Display> fmt::Display for AuthorizerListError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAuthorizers => f.write_str("no authorizers to authorize credentials"),
+            Self::Unauthorized(err) => err.fmt(f),
+        }
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for AuthorizerListError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::NoAuthorizers => None,
+            Self::Unauthorized(err) => Some(err),
+        }
+    }
+}
+
 macro_rules! impl_authorizer_slice {
     () => {
+        type Error = AuthorizerListError<A::Error>;
+
         async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
             let mut iter = self.iter();
 
-            let mut last_authorize_result = match iter.next() {
-                Some(authorizer) => authorizer.authorize(credentials).await,
-                None => {
-                    tracing::debug!(
-                        "no authorizers in array found: assume all credentials are fine incl... this one... (fail-open)"
-                    );
-                    return AuthorizeResult {
-                        credentials,
-                        result: Ok(None),
-                    };
-                }
+            let Some(first) = iter.next() else {
+                tracing::debug!("no authorizers in list: credentials rejected");
+                return AuthorizeResult {
+                    credentials,
+                    result: Err(AuthorizerListError::NoAuthorizers),
+                };
             };
-            if last_authorize_result.result.is_ok() {
-                return last_authorize_result;
-            }
 
+            let mut last = first.authorize(credentials).await;
             for authorizer in iter {
-                last_authorize_result = authorizer
-                    .authorize(last_authorize_result.credentials)
-                    .await;
-
-                if last_authorize_result.result.is_ok() {
-                    return last_authorize_result;
+                if last.result.is_ok() {
+                    break;
                 }
+                last = authorizer.authorize(last.credentials).await;
             }
 
-            last_authorize_result
+            AuthorizeResult {
+                credentials: last.credentials,
+                result: last.result.map_err(AuthorizerListError::Unauthorized),
+            }
         }
     };
 }
 
+/// Authorizes the credentials which any of its authorizers authorizes.
+///
+/// An empty list rejects all credentials. Wrap an [`Authorizer`] in an [`Option`]
+/// for authentication that is not required when nothing is configured.
 impl<A: Authorizer<C>, C: Send + Sync + 'static> Authorizer<C> for Vec<A> {
-    type Error = A::Error;
     impl_authorizer_slice!();
 }
 
+/// Authorizes the credentials which any of its authorizers authorizes.
+///
+/// An empty list rejects all credentials. Wrap an [`Authorizer`] in an [`Option`]
+/// for authentication that is not required when nothing is configured.
 impl<const N: usize, A: Authorizer<C>, C: Send + Sync + 'static> Authorizer<C> for [A; N] {
-    type Error = A::Error;
     impl_authorizer_slice!();
 }
 
@@ -156,5 +203,71 @@ where
         credentials: C,
     ) -> impl Future<Output = AuthorizeResult<C, Self::Error>> + Send + '_ {
         (self)(credentials)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Token = StaticAuthorizer<&'static str>;
+
+    async fn is_authorized<A: Authorizer<&'static str>>(
+        authorizer: &A,
+        credentials: &'static str,
+    ) -> bool {
+        authorizer.authorize(credentials).await.result.is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_list_without_authorizers_rejects_all_credentials() {
+        assert!(!is_authorized(&Vec::<Token>::new(), "secret").await);
+        assert!(!is_authorized(&[] as &[Token; 0], "secret").await);
+        // What the absent authorizers would have authorized does not matter.
+        assert!(!is_authorized(&Vec::<bool>::new(), "secret").await);
+
+        let result = Vec::<Token>::new().authorize("secret").await;
+        assert_eq!(result.credentials, "secret");
+        assert!(matches!(
+            result.result,
+            Err(AuthorizerListError::NoAuthorizers)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_list_authorizes_what_any_of_its_authorizers_does() {
+        let list = vec![Token::new("first"), Token::new("second")];
+        let array = [Token::new("first"), Token::new("second")];
+        for (credentials, expected) in [("first", true), ("second", true), ("third", false)] {
+            assert_eq!(
+                is_authorized(&list, credentials).await,
+                expected,
+                "{credentials}"
+            );
+            assert_eq!(
+                is_authorized(&array, credentials).await,
+                expected,
+                "{credentials}"
+            );
+        }
+
+        let result = list.authorize("third").await;
+        assert_eq!(result.credentials, "third");
+        assert!(matches!(
+            result.result,
+            Err(AuthorizerListError::Unauthorized(Unauthorized))
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_authorizer_requires_no_authentication() {
+        assert!(is_authorized(&None::<Token>, "anything").await);
+        assert!(is_authorized(&None::<Vec<Token>>, "anything").await);
+
+        let authorizer = Some(Token::new("secret"));
+        assert!(is_authorized(&authorizer, "secret").await);
+        assert!(!is_authorized(&authorizer, "other").await);
+        // A configured list stays closed while empty.
+        assert!(!is_authorized(&Some(Vec::<Token>::new()), "secret").await);
     }
 }

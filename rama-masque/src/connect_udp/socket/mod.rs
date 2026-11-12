@@ -55,7 +55,7 @@ use super::{
     telemetry::TunnelEnd,
 };
 
-/// How long a closing tunnel may take to finish its direction before the carrier is dropped.
+/// The default [close grace](ConnectUdpSocketConfig::with_close_grace).
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
 
 /// Bytes of the Context ID prefix this socket sends: Context ID 0 encodes in one byte.
@@ -93,6 +93,8 @@ pub struct ConnectUdpSocketConfig {
     queue: NonZeroUsize,
     /// How long the tunnel may forward nothing in either direction before it closes.
     idle_timeout: Duration,
+    /// How long each step of a close may wait for the peer before the carrier is dropped.
+    close_grace: Duration,
     /// The smallest payload limit the tunnel's owner can work with.
     min_payload: Option<usize>,
 }
@@ -103,6 +105,7 @@ impl Default for ConnectUdpSocketConfig {
             queue: NonZeroUsize::new(256).unwrap_or(NonZeroUsize::MIN),
             // RFC 9298 §3.1: idle closes SHOULD NOT use less than two minutes.
             idle_timeout: Duration::from_mins(2),
+            close_grace: CLOSE_GRACE,
             min_payload: None,
         }
     }
@@ -132,6 +135,18 @@ impl ConnectUdpSocketConfig {
         /// never count as progress).
         pub fn idle_timeout(mut self, timeout: Duration) -> Self {
             self.idle_timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// How long a closing tunnel may wait for its peer, first to drain what a closed
+        /// destination still receives and then to end its own direction, before the carrier
+        /// is dropped. A peer that stopped reading holds the tunnel no longer than this, and
+        /// the hard phase of the tunnel's scope ends the wait at once. Defaults to five
+        /// seconds; zero drops the carrier without waiting.
+        pub fn close_grace(mut self, grace: Duration) -> Self {
+            self.close_grace = grace;
             self
         }
     }
@@ -408,14 +423,7 @@ where
         });
         let (tx, rx) = mpsc::channel(config.queue.get());
         // The pump observes the hard phase itself, so its close and wakeups always run.
-        let aborted = scope.clone_weak().aborted();
-        scope.spawn_task_to_completion(pump(
-            sender,
-            rx,
-            shared.clone(),
-            config.idle_timeout,
-            aborted,
-        ));
+        scope.spawn_task_to_completion(pump(sender, rx, shared.clone(), config, scope.clone()));
         Self {
             receiver,
             shared,
@@ -736,15 +744,14 @@ async fn pump<T: AsyncWrite + Send>(
     mut sender: SessionSender<T>,
     mut rx: mpsc::Receiver<Bytes>,
     shared: Arc<Shared>,
-    idle_timeout: Duration,
-    aborted: impl Future<Output = ()>,
+    config: ConnectUdpSocketConfig,
+    scope: Scope,
 ) {
-    let mut aborted = pin!(aborted);
-    let (end, mut hard) = tokio::select! {
-        biased;
-        () = &mut aborted => (PumpEnd::Tunnel(ConnectUdpClose::Closed), true),
-        end = forward(&mut sender, &mut rx, &shared, idle_timeout) => (end, false),
-    };
+    let idle_timeout = config.idle_timeout;
+    let end = scope
+        .run_until_aborted(forward(&mut sender, &mut rx, &shared, idle_timeout))
+        .await
+        .unwrap_or(PumpEnd::Tunnel(ConnectUdpClose::Closed));
     // Stop admitting output immediately, without hiding input already received or
     // still being filed by the carrier's driver. No outbound payload survives this point.
     shared.send_closed.store(true, Ordering::Release);
@@ -761,10 +768,6 @@ async fn pump<T: AsyncWrite + Send>(
             let drain = async {
                 loop {
                     tokio::select! {
-                        () = &mut aborted => {
-                            hard = true;
-                            break ConnectUdpClose::Closed;
-                        }
                         () = shared.wait_receive_end() => break ConnectUdpClose::Closed,
                         () = tokio::time::sleep_until(shared.idle_deadline(idle_timeout)) => {
                             if shared.idle_deadline(idle_timeout) <= Instant::now() {
@@ -774,22 +777,20 @@ async fn pump<T: AsyncWrite + Send>(
                     }
                 }
             };
-            let reason = tokio::time::timeout(CLOSE_GRACE, drain)
+            let reason = scope
+                .run_until_aborted_within(config.close_grace, drain)
                 .await
                 .unwrap_or(ConnectUdpClose::Closed);
             shared.close(reason);
         }
         PumpEnd::Tunnel(reason) => shared.close(reason),
     }
-    // A graceful end of our direction within a short grace, else the carrier is dropped:
-    // a peer that stopped reading must not hold the stream, nor may the hard phase wait on it.
-    let closed = !hard
-        && tokio::select! {
-            biased;
-            () = &mut aborted => false,
-            closed = tokio::time::timeout(CLOSE_GRACE, sender.close()) => matches!(closed, Ok(Ok(()))),
-        };
-    if !closed {
+    // A graceful end of our direction, else the carrier is dropped: a peer that stopped
+    // reading must not hold the stream, nor may the hard phase wait on it.
+    let closed = scope
+        .run_until_aborted_within(config.close_grace, sender.close())
+        .await;
+    if !matches!(closed, Some(Ok(()))) {
         sender.abort();
     }
 }

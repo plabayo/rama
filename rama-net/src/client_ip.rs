@@ -4,6 +4,10 @@
 //! [`Forwarded`](crate::forwarded::Forwarded) client IP (populated by forwarded-header / PROXY-protocol
 //! parsing) and falls back to the transport [`SocketInfo`] peer address.
 //!
+//! A [`ForwardedSelectionPolicy`](crate::forwarded::ForwardedSelectionPolicy) with trusted
+//! proxies limits the proxy-supplied client IP to connections from one of those proxies; any
+//! other peer is its own client.
+//!
 //! [`ClientIp`] is method sugar (`x.client_ip()`). It is intentionally a
 //! plain trait — **not** bounded on [`ExtensionsRef`] and **not** blanket-
 //! implemented — so each request/input type opts in with the behaviour that
@@ -20,8 +24,8 @@ use rama_core::extensions::ExtensionsRef;
 use crate::stream::SocketInfo;
 
 /// Best-effort client IP read from `ext`'s extensions: the [`Forwarded`](crate::forwarded::Forwarded)
-/// client IP when present, otherwise the [`SocketInfo`] peer IP, otherwise
-/// `None`.
+/// client IP when present and received from a peer its selection policy trusts, otherwise the
+/// [`SocketInfo`] peer IP, otherwise `None`.
 pub fn client_ip(ext: &impl ExtensionsRef) -> Option<IpAddr> {
     let extensions = ext.extensions();
     let forwarded = extensions.forwarded_client_ip();
@@ -59,7 +63,7 @@ mod tests {
     #[cfg(feature = "std")]
     use crate::address::SocketAddress;
     #[cfg(feature = "std")]
-    use crate::forwarded::{Forwarded, ForwardedElement, NodeId};
+    use crate::forwarded::{Forwarded, ForwardedElement, ForwardedSelectionPolicy, NodeId};
     #[cfg(feature = "std")]
     use crate::stream::SocketInfo;
 
@@ -118,6 +122,71 @@ mod tests {
         ext.insert(socket_info("203.0.113.5"));
         // obfuscated node -> no client IP from Forwarded
         ext.insert(forwarded_for("_hidden"));
+        assert_eq!(client_ip(&ext), Some("203.0.113.5".parse().unwrap()));
+    }
+
+    #[cfg(feature = "std")]
+    fn trusting(proxies: &str) -> ForwardedSelectionPolicy {
+        ForwardedSelectionPolicy::new().with_trusted_proxies([proxies.parse().unwrap()])
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn forwarded_from_an_untrusted_peer_is_ignored() {
+        let ext = Extensions::new();
+        ext.insert(trusting("10.0.0.0/8"));
+        ext.insert(socket_info("203.0.113.5"));
+        ext.insert(forwarded_for("192.0.2.43"));
+        assert_eq!(client_ip(&ext), Some("203.0.113.5".parse().unwrap()));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn forwarded_from_a_trusted_peer_is_honoured() {
+        for peer in ["10.1.2.3", "::ffff:10.1.2.3"] {
+            let ext = Extensions::new();
+            ext.insert(trusting("10.0.0.0/8"));
+            ext.insert(socket_info(peer));
+            ext.insert(forwarded_for("192.0.2.43"));
+            assert_eq!(
+                client_ip(&ext),
+                Some("192.0.2.43".parse().unwrap()),
+                "{peer}"
+            );
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn an_ipv4_mapped_untrusted_peer_is_not_mistaken_for_a_trusted_one() {
+        let ext = Extensions::new();
+        ext.insert(trusting("10.0.0.0/8"));
+        ext.insert(socket_info("::ffff:203.0.113.5"));
+        ext.insert(forwarded_for("192.0.2.43"));
+        assert_eq!(client_ip(&ext), Some("::ffff:203.0.113.5".parse().unwrap()));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn forwarded_without_a_known_peer_is_ignored_once_proxies_are_trusted() {
+        let ext = Extensions::new();
+        ext.insert(trusting("10.0.0.0/8"));
+        ext.insert(forwarded_for("192.0.2.43"));
+        assert_eq!(client_ip(&ext), None);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn the_trusted_peer_is_the_ingress_one() {
+        let ext = Extensions::new();
+        ext.insert(trusting("10.0.0.0/8"));
+        let ingress = Extensions::new();
+        ingress.insert(socket_info("203.0.113.5"));
+        ext.insert(Ingress(ingress));
+        let egress = Extensions::new();
+        egress.insert(socket_info("10.1.2.3"));
+        ext.insert(Egress(egress));
+        ext.insert(forwarded_for("192.0.2.43"));
         assert_eq!(client_ip(&ext), Some("203.0.113.5".parse().unwrap()));
     }
 }
