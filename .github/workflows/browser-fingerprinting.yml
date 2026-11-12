@@ -3,6 +3,11 @@ name: Browser Fingerprinting
 on:
   repository_dispatch:
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Job ids to run, space separated (what they need runs too); empty runs every job"
+        type: string
+        default: ""
   schedule:
     - cron: "00 18 * * *"
 
@@ -13,7 +18,8 @@ jobs:
     permissions:
       contents: read
     # These integration tests necessarily authenticate; never cache this job.
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ (inputs.only == '' || contains(format(' {0} ', inputs.only), ' browserstack ')) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
     timeout-minutes: 180
     runs-on: ubuntu-latest
     # Runs share the plan's parallel sessions; overlapping ones fail to start sessions.
@@ -53,7 +59,8 @@ jobs:
   safari-desktop:
     permissions:
       contents: read
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ (inputs.only == '' || contains(format(' {0} ', inputs.only), ' safari-desktop ')) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -91,7 +98,8 @@ jobs:
   ios-simulator:
     permissions:
       contents: read
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ (inputs.only == '' || contains(format(' {0} ', inputs.only), ' ios-simulator ')) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -130,7 +138,8 @@ jobs:
   firefox-android:
     permissions:
       contents: read
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ (inputs.only == '' || contains(format(' {0} ', inputs.only), ' firefox-android ')) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
     timeout-minutes: 90
     runs-on: ubuntu-latest
     steps:
