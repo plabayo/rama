@@ -12,6 +12,9 @@ from urllib.parse import urlencode
 
 
 ACTIVE = ("queued", "in_progress", "pending", "waiting", "requested")
+# A run still queued without a single job after this long was never scheduled: GitHub will
+# neither start, cancel nor delete it, so a sweep reports it and carries on.
+PHANTOM_AFTER = timedelta(minutes=15)
 
 
 def api(path, method="GET", paginate=False):
@@ -99,7 +102,7 @@ class Reaper:
         if run["status"] != "queued":
             return False
         updated = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
-        if datetime.now(timezone.utc) - updated < timedelta(days=1):
+        if datetime.now(timezone.utc) - updated < PHANTOM_AFTER:
             return False
         jobs = self.request(f"{self.runs_url}/{run_id}/jobs?per_page=1")
         if jobs["total_count"] != 0 or jobs["jobs"]:
