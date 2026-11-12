@@ -318,3 +318,70 @@ fn deflate_bomb_fragmented_rejected() {
         result => panic!("expected compressed payload to exceed decoded size limit: {result:?}"),
     }
 }
+
+/// Frames as a server sends them: `first` is the byte holding FIN, RSV1 and the opcode.
+#[cfg(feature = "compression")]
+fn server_frames(frames: &[(u8, &[u8])]) -> Cursor<Vec<u8>> {
+    let mut wire = Vec::new();
+    for (first, payload) in frames {
+        wire.push(*first);
+        wire.push(payload.len() as u8);
+        wire.extend_from_slice(payload);
+    }
+    Cursor::new(wire)
+}
+
+#[cfg(feature = "compression")]
+fn deflate_reader(incoming: Cursor<Vec<u8>>) -> WebSocket<WriteMoc<Cursor<Vec<u8>>>> {
+    let config = WebSocketConfig {
+        per_message_deflate: Some(PerMessageDeflateConfig::default()),
+        ..Default::default()
+    };
+    WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, Some(config))
+}
+
+/// A data frame may not start while a compressed message is still being continued, whether
+/// the newcomer is compressed or not: neither is delivered inside the other, nor replaces it.
+#[cfg(feature = "compression")]
+#[test]
+fn a_data_frame_inside_a_compressed_fragmented_message_is_refused() {
+    let compressed = raw_deflate_compress(b"compressed");
+    let (head, tail) = compressed.split_at(compressed.len() / 2);
+    // FIN text, then non-final compressed text, then a final continuation.
+    for interloper in [(0x81, b"plain".as_slice()), (0x41, head)] {
+        let mut socket = deflate_reader(server_frames(&[(0x41, head), interloper, (0x80, tail)]));
+        assert!(matches!(
+            socket.read(),
+            Err(ProtocolError::ExpectedFragment(_))
+        ));
+    }
+}
+
+/// A continuation with no message to continue is refused when it arrives, not once it ends.
+#[cfg(feature = "compression")]
+#[test]
+fn a_continuation_of_nothing_is_refused_before_it_is_buffered() {
+    for first in [0x00, 0x80] {
+        let mut socket = deflate_reader(server_frames(&[(first, b"orphan")]));
+        assert!(matches!(
+            socket.read(),
+            Err(ProtocolError::UnexpectedContinueFrame)
+        ));
+    }
+}
+
+/// RSV2 and RSV3 stay reserved on a compressed frame: only RSV1 was negotiated.
+#[cfg(feature = "compression")]
+#[test]
+fn reserved_bits_beside_the_compression_bit_are_refused() {
+    let compressed = raw_deflate_compress(b"compressed");
+    // FIN and RSV1 with RSV2, with RSV3, and without either.
+    for (first, refused) in [(0xE1, true), (0xD1, true), (0xC1, false)] {
+        let mut socket = deflate_reader(server_frames(&[(first, &compressed)]));
+        assert_eq!(
+            matches!(socket.read(), Err(ProtocolError::NonZeroReservedBits)),
+            refused,
+            "{first:#x}"
+        );
+    }
+}
