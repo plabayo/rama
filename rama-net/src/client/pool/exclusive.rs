@@ -16,6 +16,7 @@ use crate::address::SocketAddress;
 use crate::client::ConnectionError;
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use crate::stream::Socket;
+use lru_slab::LruSlab;
 use parking_lot::Mutex;
 use rama_core::Service;
 use rama_core::error::BoxErrorExt as _;
@@ -24,12 +25,11 @@ use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef}
 use rama_core::telemetry::tracing::trace;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::{guard::DropGuard, macros::generate_set_and_with};
-use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -114,6 +114,9 @@ struct PooledConnection<C, ID> {
     lane: Option<LaneKey>,
     /// The scope it runs in, if any: dropped once returned after its cancel.
     scope: Option<ConnScope>,
+    /// Current idle slot, shared with the scope watcher. Only accessed under
+    /// the storage lock; invalidated before any slot can be reused.
+    idle_slot: Option<Arc<AtomicU32>>,
 }
 
 impl<C, ID> PooledConnection<C, ID> {
@@ -129,6 +132,70 @@ impl<C, ID> PooledConnection<C, ID> {
     }
 }
 
+/// No idle slot: the connection is leased or has left the pool.
+const NO_IDLE_SLOT: u32 = u32::MAX;
+
+/// Indexed LRU storage: cancellation removes just its connection in O(1).
+/// Slot numbers can be reused, so every removal invalidates the old owner's
+/// shared slot before releasing the storage lock. Watchers read it under that
+/// same lock, including when a connection has since been checked out/returned.
+#[derive(Debug)]
+struct IdleStorage<C, ID> {
+    entries: LruSlab<PooledConnection<C, ID>>,
+}
+
+impl<C, ID> Default for IdleStorage<C, ID> {
+    fn default() -> Self {
+        Self {
+            entries: LruSlab::new(),
+        }
+    }
+}
+
+impl<C, ID> IdleStorage<C, ID> {
+    fn push_front(&mut self, conn: PooledConnection<C, ID>) {
+        let index = self.entries.insert(conn);
+        if let Some(slot) = &self.entries.peek(index).idle_slot {
+            slot.store(index, Ordering::Relaxed);
+        }
+    }
+
+    fn remove(&mut self, slot: u32) -> PooledConnection<C, ID> {
+        let conn = self.entries.remove(slot);
+        if let Some(slot) = &conn.idle_slot {
+            slot.store(NO_IDLE_SLOT, Ordering::Relaxed);
+        }
+        conn
+    }
+
+    fn pop_back(&mut self) -> Option<PooledConnection<C, ID>> {
+        Some(self.remove(self.entries.lru()?))
+    }
+
+    fn take_all(&mut self) -> Self {
+        for (_, conn) in &self.entries {
+            if let Some(slot) = &conn.idle_slot {
+                slot.store(NO_IDLE_SLOT, Ordering::Relaxed);
+            }
+        }
+        std::mem::take(self)
+    }
+
+    fn iter(&self) -> impl DoubleEndedIterator<Item = &PooledConnection<C, ID>> {
+        self.entries.iter().map(|(_, conn)| conn)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len() as usize
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Connections out of the pool, dropped once the storage lock is released: a socket's
 /// teardown and its scope's last reference both may run code.
 type Doomed<C> = Vec<(C, Option<ConnScope>)>;
@@ -141,7 +208,7 @@ type Doomed<C> = Vec<(C, Option<ConnScope>)>;
 ///
 /// [`scope_context`]: rama_core::graceful::scope_context
 pub struct LruDropPool<C, ID> {
-    storage: Arc<Mutex<VecDeque<PooledConnection<C, ID>>>>,
+    storage: Arc<Mutex<IdleStorage<C, ID>>>,
     retired: Arc<AtomicBool>,
     total_slots: Arc<Semaphore>,
     active_slots: Arc<Semaphore>,
@@ -162,7 +229,7 @@ pub enum ReuseStrategy {
 }
 
 struct ConnReturner<C, ID> {
-    weak_storage: Weak<Mutex<VecDeque<PooledConnection<C, ID>>>>,
+    weak_storage: Weak<Mutex<IdleStorage<C, ID>>>,
     retired: Arc<AtomicBool>,
 }
 
@@ -240,7 +307,7 @@ impl<C, ID> LruDropPool<C, ID> {
             .context_field("max_total", max_total));
         }
         // Grows with the connections stored, not with the limit.
-        let storage = Arc::new(Mutex::new(VecDeque::new()));
+        let storage = Arc::new(Mutex::new(IdleStorage::default()));
         let weak_storage = Arc::downgrade(&storage);
         let retired = Arc::new(AtomicBool::new(false));
         Ok(Self {
@@ -268,7 +335,7 @@ impl<C, ID> LruDropPool<C, ID> {
     pub fn retire(&self) {
         self.retired.store(true, Ordering::Release);
         // take, not clear: the sockets and scopes go after the lock is released
-        let idle = std::mem::take(&mut *self.storage.lock());
+        let idle = self.storage.lock().take_all();
         drop(idle);
     }
 
@@ -326,7 +393,7 @@ impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
         id: &ID,
         input: &Extensions,
         doomed: &mut Doomed<C>,
-    ) -> Option<(usize, PooledConnection<C, ID>)> {
+    ) -> Option<(u32, PooledConnection<C, ID>)> {
         if !id.is_reusable() {
             return None;
         }
@@ -338,7 +405,7 @@ impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
             }
             // The scan stops at the most preferred connection that fits, or
             // whose classifier has no derived key yet: the class to derive.
-            let decide = |(index, conn): (usize, &PooledConnection<C, ID>)| {
+            let decide = |(index, conn): (u32, &PooledConnection<C, ID>)| {
                 if &conn.id != id {
                     return None;
                 }
@@ -358,12 +425,12 @@ impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
                 }
             };
             let found = match self.reuse_strategy {
-                ReuseStrategy::FiFo => storage.iter().enumerate().find_map(decide),
-                ReuseStrategy::RoundRobin => storage.iter().enumerate().rev().find_map(decide),
+                ReuseStrategy::FiFo => storage.entries.iter().find_map(decide),
+                ReuseStrategy::RoundRobin => storage.entries.iter().rev().find_map(decide),
             };
             let class = match found? {
                 (index, None) => {
-                    let conn = storage.remove(index)?;
+                    let conn = storage.remove(index);
                     drop(storage);
                     if is_broken(&conn) || conn.observe_drain() {
                         park(conn, doomed);
@@ -435,24 +502,15 @@ where
 
         if let Some(timeout) = self.idle_timeout {
             let mut storage = self.storage.lock();
-            // Since new connections are always returned to the front of the
-            // queue, they are ordered from most to least recently used. To
-            // provide a stable predicate, we load `now` once and use it for all
-            // comparisons, rather than using `conn.last_used.elapsed()`, which
-            // would use an updated "current" time for every comparison. The
-            // `partition_point` method performs a binary search to find the
-            // index of the first element for which the predicate returns false,
-            // i.e. the first connection past the idle timeout. All connections
-            // from that index onwards are timed out and can be dropped.
+            // Returns are ordered under this lock. Walk only the expired
+            // tail: removing each entry is O(1), as is keeping the live prefix.
             let now = Instant::now();
-            let idx = storage.partition_point(|conn| now.duration_since(conn.last_used) <= timeout);
-            if idx < storage.len() {
-                trace!(
-                    "LRU connection pool: idle timeout was triggered, dropping connections with index {idx:?} and later"
-                );
-                for pooled_conn in storage.drain(idx..) {
-                    park(pooled_conn, &mut doomed);
+            while let Some(slot) = storage.entries.lru() {
+                if now.duration_since(storage.entries.peek(slot).last_used) <= timeout {
+                    break;
                 }
+                trace!("LRU connection pool: dropping idle connection past its timeout");
+                park(storage.remove(slot), &mut doomed);
             }
         }
 
@@ -580,10 +638,13 @@ where
         let reuse = conn.extensions().get_ref::<ConnectionReuse>();
         let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable());
         let (scope, watcher) = ConnScope::of(conn.extensions()).unzip();
-        if let Some(watcher) = watcher {
+        let idle_slot = watcher.map(|watcher| {
+            let slot = Arc::new(AtomicU32::new(NO_IDLE_SLOT));
+            let watched_slot = slot.clone();
             let storage = Arc::downgrade(&self.storage);
-            watcher.spawn(move || drain_idle(&storage));
-        }
+            watcher.spawn(move || drain_idle(&storage, &watched_slot));
+            slot
+        });
 
         Ok(LeasedConnection {
             admission,
@@ -596,6 +657,7 @@ where
                 pool_slot,
                 last_used: Instant::now(),
                 scope,
+                idle_slot,
             }),
             pooled_conn_taken: false,
             got_response: AtomicBool::new(false),
@@ -605,30 +667,21 @@ where
     }
 }
 
-/// Close the idle connections whose scope was seen cancelled: a leased one is dropped
-/// once returned instead.
-fn drain_idle<C, ID>(storage: &Weak<Mutex<VecDeque<PooledConnection<C, ID>>>>) {
+/// Close this watcher's idle connection; a leased one is dropped on return.
+fn drain_idle<C, ID>(storage: &Weak<Mutex<IdleStorage<C, ID>>>, slot: &AtomicU32) {
     let Some(storage) = storage.upgrade() else {
         return;
     };
-    let mut doomed = Vec::new();
-    {
+    let doomed = {
         let mut storage = storage.lock();
-        // One pass that keeps the LRU order of the rest.
-        let kept = std::mem::take(&mut *storage)
-            .into_iter()
-            .filter_map(|conn| {
-                if conn.is_drained() {
-                    trace!("LRU connection pool: dropping idle connection of a cancelled scope");
-                    park(conn, &mut doomed);
-                    None
-                } else {
-                    Some(conn)
-                }
-            })
-            .collect();
-        *storage = kept;
-    }
+        let slot = slot.load(Ordering::Relaxed);
+        let conn = (slot != NO_IDLE_SLOT).then(|| storage.remove(slot));
+        // A fully drained pool should not retain its high-water allocation.
+        // Ordinary checkout/return keeps its allocation for reuse.
+        let empty = storage.entries.is_empty().then(|| storage.take_all());
+        (conn, empty)
+    };
+    // Socket and scope destruction may run user code, including pool reentry.
     drop(doomed);
 }
 
@@ -843,13 +896,13 @@ where
 /// Implementing debug_list and debug_struct at the same time is not
 /// possible, so we have to split it up
 struct StorageDebugHelper<'a, C, ID: Debug> {
-    deque: &'a VecDeque<PooledConnection<C, ID>>,
+    storage: &'a IdleStorage<C, ID>,
 }
 
 impl<'a, C, ID: Debug> Debug for StorageDebugHelper<'a, C, ID> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
-            .entries(self.deque.iter().map(|item| &item.id))
+            .entries(self.storage.iter().map(|item| &item.id))
             .finish()
     }
 }
@@ -861,7 +914,7 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
         // Don't block on this, it's only for debugging
         match self.storage.try_lock() {
             Some(guard) => {
-                let storage_debugger = StorageDebugHelper { deque: &*guard };
+                let storage_debugger = StorageDebugHelper { storage: &*guard };
                 builder.field("storage", &storage_debugger);
             }
             None => {
@@ -1249,7 +1302,7 @@ mod tests {
     #[tokio::test]
     async fn reuse_policy_runs_outside_exclusive_storage_lock() {
         #[derive(Debug)]
-        struct LockProbe(Weak<Mutex<VecDeque<PooledConnection<Conn, usize>>>>);
+        struct LockProbe(Weak<Mutex<IdleStorage<Conn, usize>>>);
 
         impl ConnectionReusePolicy for LockProbe {
             fn classifier(&self) -> ReuseKey {
@@ -1917,6 +1970,101 @@ mod tests {
         assert!(is_closed(&mut closed));
         assert!(pool.retired.load(Ordering::Acquire));
         drop(scope);
+        watchers_end().await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_large_idle_pool_releases_every_slot() {
+        const CONNECTIONS: usize = 8192;
+        let pool = draining_pool(CONNECTIONS);
+        let scope = Scope::new();
+        let (counter, mut dropped) = watch::channel(0_usize);
+        let mut held = Vec::with_capacity(CONNECTIONS);
+        for _ in 0..CONNECTIONS {
+            let (conn, _) = conn_in(Some(&scope));
+            conn.extensions().insert(Counted(counter.clone()));
+            held.push(add(&pool, conn).await);
+        }
+        drop(held);
+        assert_eq!(pool.storage.lock().len(), CONNECTIONS);
+        scope.cancel(Cause::Owner);
+        timeout(LIMIT, dropped.wait_for(|n| *n == CONNECTIONS))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(pool.storage.lock().is_empty());
+        assert_eq!(pool.total_slots.available_permits(), CONNECTIONS);
+        assert_eq!(pool.storage.lock().entries.capacity(), 0);
+        watchers_end().await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_tracks_a_connection_returned_to_a_different_slot() {
+        let pool = draining_pool(2);
+        let scope = Scope::new();
+        let (conn, mut closed) = conn_in(Some(&scope));
+        let held = add(&pool, conn).await;
+        let watched_slot = held.pooled_conn.idle_slot.clone().unwrap();
+        drop(held);
+        let original_slot = watched_slot.load(Ordering::Relaxed);
+        let ConnectionResult::Connection(held) =
+            pool.get_conn(&0, &Extensions::new(), None).await.unwrap()
+        else {
+            panic!("reuse the scoped connection");
+        };
+        assert_eq!(watched_slot.load(Ordering::Relaxed), NO_IDLE_SLOT);
+        let (other, mut other_closed) = conn_in(None);
+        drop(add(&pool, other).await);
+        // The other connection reused the old slot. Returning the original
+        // connection must publish its new slot before its watcher runs.
+        drop(held);
+        assert_ne!(watched_slot.load(Ordering::Relaxed), original_slot);
+        scope.cancel(Cause::Owner);
+        closes(&mut closed).await;
+        watchers_end().await;
+        assert!(!is_closed(&mut other_closed));
+        assert_eq!(pool.storage.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_late_drain_cannot_remove_a_replacement_connection() {
+        let pool = draining_pool(1);
+        let scope = Scope::new();
+        let (conn, mut closed) = conn_in(Some(&scope));
+        let held = add(&pool, conn).await;
+        let old_slot = held.pooled_conn.idle_slot.clone().unwrap();
+        drop(held);
+        // A different id evicts the original; the new connection reuses its slot.
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&1, &Extensions::new(), None).await.unwrap()
+        else {
+            panic!("another id needs a new connection");
+        };
+        assert!(is_closed(&mut closed));
+        let (other, mut other_closed) = conn_in(None);
+        drop(
+            pool.create(1, other, permit, &Extensions::new())
+                .await
+                .unwrap(),
+        );
+        drain_idle(&Arc::downgrade(&pool.storage), &old_slot);
+        assert!(!is_closed(&mut other_closed));
+        assert_eq!(pool.storage.lock().len(), 1);
+        watchers_end().await;
+    }
+
+    #[tokio::test]
+    async fn a_late_drain_after_retirement_has_no_idle_slot() {
+        let pool = draining_pool(1);
+        let scope = Scope::new();
+        let (conn, mut closed) = conn_in(Some(&scope));
+        let held = add(&pool, conn).await;
+        let slot = held.pooled_conn.idle_slot.clone().unwrap();
+        drop(held);
+        pool.retire();
+        assert!(is_closed(&mut closed));
+        drain_idle(&Arc::downgrade(&pool.storage), &slot);
+        assert_eq!(slot.load(Ordering::Relaxed), NO_IDLE_SLOT);
         watchers_end().await;
     }
 

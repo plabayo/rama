@@ -2866,7 +2866,13 @@ async fn windows_short_name_does_not_alias_hidden_entries() {
 #[tokio::test]
 async fn small_and_large_files_serve_whole_and_ranged() {
     let dir = rama_utils::fs::tempdir().unwrap();
-    for (name, len) in [("small.bin", 1000_usize), ("large.bin", 200_000)] {
+    for (name, len) in [
+        ("small.bin", 1000_usize),
+        ("below-cutoff.bin", 128 * 1024 - 1),
+        ("at-cutoff.bin", 128 * 1024),
+        ("above-cutoff.bin", 128 * 1024 + 1),
+        ("large.bin", 200_000),
+    ] {
         let contents: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
         std::fs::write(dir.path().join(name), &contents).unwrap();
         let svc = ServeDir::new(dir.path());
@@ -2885,20 +2891,30 @@ async fn small_and_large_files_serve_whole_and_ranged() {
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, contents, "{name}");
 
-        let (start, end) = (len - 10, len - 1);
-        let req = Request::builder()
-            .uri(format!("/{name}"))
-            .header(header::RANGE, format!("bytes={start}-{end}"))
-            .body(Body::empty())
-            .unwrap();
-        let res = svc.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT, "{name}");
-        assert_eq!(
-            res.headers()[header::CONTENT_RANGE],
-            format!("bytes {start}-{end}/{len}"),
-            "{name}"
-        );
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, contents[start..=end], "{name}");
+        for (range, start, end) in [
+            ("bytes=0-9".to_owned(), 0, 9),
+            (
+                format!("bytes={}-{}", len / 2, len / 2 + 9),
+                len / 2,
+                len / 2 + 9,
+            ),
+            ("bytes=-10".to_owned(), len - 10, len - 1),
+            (format!("bytes={}-", len - 10), len - 10, len - 1),
+        ] {
+            let req = Request::builder()
+                .uri(format!("/{name}"))
+                .header(header::RANGE, &range)
+                .body(Body::empty())
+                .unwrap();
+            let res = svc.serve(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT, "{name}: {range}");
+            assert_eq!(res.headers()[header::CONTENT_LENGTH], "10");
+            assert_eq!(
+                res.headers()[header::CONTENT_RANGE],
+                format!("bytes {start}-{end}/{len}")
+            );
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, contents[start..=end], "{name}: {range}");
+        }
     }
 }

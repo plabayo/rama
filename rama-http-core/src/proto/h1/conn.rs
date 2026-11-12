@@ -615,7 +615,13 @@ where
     fn try_keep_alive(&mut self, cx: &mut Context<'_>) {
         self.state.try_keep_alive::<T>();
         if self.state.is_idle() {
-            self.io.release_idle_read_buf();
+            // Timed servers already require a Tokio time driver. Keep clients
+            // and servers with all deadlines disabled free of that requirement.
+            if T::should_read_first() && self.state.timer.is_enabled() {
+                self.io.retain_idle_read_buf(cx);
+            } else {
+                self.io.release_idle_read_buf();
+            }
         }
         self.maybe_notify(cx);
     }

@@ -695,3 +695,62 @@ fn multiplex_saturated_exclusive_evict_idle(
 fn multiplex_saturated_credit(bencher: divan::Bencher, ids: usize) {
     bench_saturated(bencher, 256, ids, 4, 16, 2, SaturationPolicy::default());
 }
+
+/// Cancelling one scope containing many idle exclusive connections. Setup is
+/// outside the measurement; timing includes cancellation, watchers and drops.
+/// Compare against exclusive_policy_hit to catch regressions in ordinary reuse.
+#[divan::bench(args = [128_usize, 1024, 8192], sample_count = 20)]
+fn exclusive_idle_cancel(bencher: divan::Bencher, resident: usize) {
+    use rama::graceful::{Cause, Scope, attach_scope};
+
+    struct CountDrop(Arc<AtomicUsize>);
+    impl Drop for CountDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    bencher
+        .counter(ItemsCount::new(resident))
+        .with_inputs(|| {
+            runtime.block_on(async {
+                let scope = Scope::new();
+                let dropped = Arc::new(AtomicUsize::new(0));
+                let pool = LruDropPool::try_new(resident, resident)
+                    .unwrap()
+                    .with_drop_connection_if_no_response(false);
+                let mut held = Vec::with_capacity(resident);
+                for _ in 0..resident {
+                    let ConnectionResult::CreatePermit(permit) = pool
+                        .get_conn(&BenchId(0), &EMPTY_INPUT, None)
+                        .await
+                        .unwrap()
+                    else {
+                        unreachable!("all previous connections are leased");
+                    };
+                    let conn = ServiceInput::new(CountDrop(dropped.clone()));
+                    attach_scope(conn.extensions(), &scope);
+                    held.push(
+                        pool.create(BenchId(0), conn, permit, &EMPTY_INPUT)
+                            .await
+                            .unwrap(),
+                    );
+                }
+                drop(held);
+                (pool, scope, dropped)
+            })
+        })
+        .bench_local_values(|(pool, scope, dropped)| {
+            runtime.block_on(async {
+                scope.cancel(Cause::Owner);
+                while dropped.load(Ordering::Relaxed) != resident {
+                    tokio::task::yield_now().await;
+                }
+                black_box(pool);
+            });
+        });
+}

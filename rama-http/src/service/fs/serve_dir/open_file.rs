@@ -116,6 +116,8 @@ pub(super) enum FileRequestExtent {
     Stream(tokio::fs::File, u64),
     /// A file held in memory: read whole, or embedded.
     Loaded(Bytes),
+    /// Only the selected range, with the full representation size for headers.
+    LoadedRange { contents: Bytes, file_size: u64 },
     /// A HEAD request for a file of this size.
     Head(u64),
 }
@@ -123,7 +125,11 @@ pub(super) enum FileRequestExtent {
 impl FileRequestExtent {
     pub(super) fn file_size(&self) -> u64 {
         match self {
-            Self::Stream(_, size) | Self::Head(size) => *size,
+            Self::Stream(_, size)
+            | Self::Head(size)
+            | Self::LoadedRange {
+                file_size: size, ..
+            } => *size,
             Self::Loaded(contents) => contents.len() as u64,
         }
     }
@@ -132,7 +138,9 @@ impl FileRequestExtent {
     pub(super) fn into_body(self, range: Option<&RangeInclusive<u64>>, chunk_size: usize) -> Body {
         match (self, range) {
             (Self::Head(_), _) => Body::empty(),
-            (Self::Loaded(contents), None) => Body::from(contents),
+            (Self::Loaded(contents), None) | (Self::LoadedRange { contents, .. }, _) => {
+                Body::from(contents)
+            }
             (Self::Loaded(contents), Some(range)) => {
                 Body::from(contents.slice(*range.start() as usize..=*range.end() as usize))
             }
@@ -266,6 +274,34 @@ pub(super) async fn open_file(
             access.hidden,
         ),
     }
+}
+
+/// Read only a validated small-file range when possible. If it is short,
+/// reread from the start so the caller can recompute suffix/open-ended ranges
+/// against the observed size instead of returning truncated or misplaced data.
+fn read_small_file(
+    file: &mut (impl io::Read + io::Seek),
+    size: u64,
+    range: Option<&RangeInclusive<u64>>,
+) -> io::Result<FileRequestExtent> {
+    if let Some(range) = range {
+        let len = range.end() - range.start() + 1;
+        if *range.start() != 0 {
+            file.seek(SeekFrom::Start(*range.start()))?;
+        }
+        let mut contents = Vec::with_capacity(len as usize);
+        (&mut *file).take(len).read_to_end(&mut contents)?;
+        if contents.len() as u64 == len {
+            return Ok(FileRequestExtent::LoadedRange {
+                contents: Bytes::from(contents),
+                file_size: size,
+            });
+        }
+        file.seek(SeekFrom::Start(0))?;
+    }
+    let mut contents = Vec::with_capacity(size as usize);
+    file.take(size).read_to_end(&mut contents)?;
+    Ok(FileRequestExtent::Loaded(Bytes::from(contents)))
 }
 
 /// The next step for a request path, once it is known whether it names a directory.
@@ -521,18 +557,21 @@ impl FilesystemLookup {
             return Ok(request.opened(extent, mime, maybe_encoding, decided));
         }
 
-        // Validators come from the metadata, so a not-modified file is never read.
-        if let Err(output) = request.decide(meta.len(), meta.modified().ok()) {
-            return Ok(output);
-        }
-        let mut contents = Vec::with_capacity(meta.len() as usize);
-        file.take(meta.len()).read_to_end(&mut contents)?;
-        // The size read is the size served, even if the file changed since its metadata.
-        let decided = match request.decide(contents.len() as u64, meta.modified().ok()) {
+        // Resolve validators before reading, including If-Range's whole-file fallback.
+        let mut decided = match request.decide(meta.len(), meta.modified().ok()) {
             Ok(decided) => decided,
             Err(output) => return Ok(output),
         };
-        let extent = FileRequestExtent::Loaded(Bytes::from(contents));
+        let range = decided.range.as_ref().and_then(|range| range.as_ref().ok());
+        let extent = read_small_file(&mut file, meta.len(), range)?;
+        if let FileRequestExtent::Loaded(contents) = &extent {
+            // Whole reads, including a short range's fallback, determine the
+            // actual served size when a file shrank after its metadata lookup.
+            decided = match request.decide(contents.len() as u64, meta.modified().ok()) {
+                Ok(decided) => decided,
+                Err(output) => return Ok(output),
+            };
+        }
         Ok(request.opened(extent, mime, maybe_encoding, decided))
     }
 
@@ -919,6 +958,107 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
+
+    struct CountRead {
+        bytes: std::io::Cursor<Vec<u8>>,
+        read: usize,
+    }
+
+    impl io::Read for CountRead {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = self.bytes.read(buf)?;
+            self.read += n;
+            Ok(n)
+        }
+    }
+
+    impl io::Seek for CountRead {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.bytes.seek(position)
+        }
+    }
+
+    #[tokio::test]
+    async fn small_range_reads_and_retains_only_the_requested_bytes() {
+        let contents: Vec<u8> = (0..128 * 1024).map(|i| (i % 251) as u8).collect();
+        for range in [0..=1023, 65536..=66559, 130048..=131071] {
+            let mut reader = CountRead {
+                bytes: io::Cursor::new(contents.clone()),
+                read: 0,
+            };
+            let extent = read_small_file(&mut reader, contents.len() as u64, Some(&range)).unwrap();
+            assert_eq!(reader.read, 1024);
+            assert_eq!(extent.file_size(), contents.len() as u64);
+            let FileRequestExtent::LoadedRange {
+                contents: selected, ..
+            } = &extent
+            else {
+                panic!("a complete range is buffered separately");
+            };
+            assert_eq!(selected.len(), 1024);
+            let body = extent
+                .into_body(Some(&range), 4096)
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes();
+            assert_eq!(
+                body,
+                &contents[*range.start() as usize..=*range.end() as usize]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_short_range_reloads_the_actual_file_before_recomputing_ranges() {
+        for actual in [0, 75, 95] {
+            let contents: Vec<u8> = (0..actual).collect();
+            // Metadata said 100 bytes; the selected suffix was 90..=99.
+            let mut reader = io::Cursor::new(contents.clone());
+            let extent = read_small_file(&mut reader, 100, Some(&(90..=99))).unwrap();
+            assert_eq!(extent.file_size(), u64::from(actual));
+            assert!(matches!(extent, FileRequestExtent::Loaded(_)));
+            let selected = try_parse_range(Some("bytes=-10"), extent.file_size(), false);
+            if actual == 0 {
+                // Preserve the existing empty-representation behavior.
+                assert!(selected.is_none());
+            } else {
+                let range = selected
+                    .unwrap()
+                    .unwrap_or_else(|_| panic!("suffix fits the smaller file"));
+                let body = extent
+                    .into_body(Some(&range), 4096)
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes();
+                assert_eq!(body, &contents[contents.len() - 10..]);
+            }
+        }
+    }
+
+    #[test]
+    fn range_read_errors_are_propagated() {
+        struct Fails(io::Cursor<Vec<u8>>);
+        impl io::Read for Fails {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(ErrorKind::PermissionDenied, "read failed"))
+            }
+        }
+        impl io::Seek for Fails {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+                self.0.seek(position)
+            }
+        }
+        let error = read_small_file(
+            &mut Fails(io::Cursor::new(vec![0; 100])),
+            100,
+            Some(&(10..=19)),
+        )
+        .err()
+        .expect("read failure is not a short successful read");
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+    }
 
     #[test]
     fn if_range_date_never_applies_a_range() {

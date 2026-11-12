@@ -2797,6 +2797,7 @@ dependencies = [
  "itoa",
  "jni",
  "libc",
+ "lru-slab",
  "memchr",
  "mime",
  "moka",

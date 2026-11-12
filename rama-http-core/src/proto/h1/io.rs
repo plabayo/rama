@@ -3,6 +3,8 @@ use std::fmt;
 use std::io::{self, IoSlice};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
+use tokio::time::Sleep;
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use rama_core::extensions::ExtensionsRef;
@@ -38,6 +40,9 @@ const FLATTEN_COPY_LIMIT: usize = kib(16);
 
 /// A drained buffer above this capacity is released instead of kept for the idle connection.
 const MAX_RETAINED_BUF_SIZE: usize = kib(128);
+/// Reuse moderately large buffers across a burst, then return to the idle cap.
+const MAX_WARM_READ_BUF_SIZE: usize = kib(512);
+const WARM_READ_BUF_IDLE: Duration = Duration::from_millis(100);
 
 /// The maximum number of distinct `Buf`s to hold in a list before requiring
 /// a flush. Only affects when the buffer strategy is to queue buffers.
@@ -59,6 +64,7 @@ pub(crate) struct Buffered<T, B> {
     read_failed: bool,
     read_buf: BytesMut,
     read_buf_strategy: ReadStrategy,
+    idle_read_timer: Option<Pin<Box<Sleep>>>,
     write_buf: WriteBuf<B>,
 }
 
@@ -95,6 +101,7 @@ where
             read_failed: false,
             read_buf: BytesMut::with_capacity(0),
             read_buf_strategy: ReadStrategy::default(),
+            idle_read_timer: None,
             write_buf,
         }
     }
@@ -155,6 +162,7 @@ where
         // Abandoned input cannot become another pipelined HTTP request.
         // Even if the byte limit leaves some buffered, flush the final response.
         self.flush_pipeline = false;
+        self.idle_read_timer = None;
         self.read_buf_strategy = ReadStrategy::Exact(DISCARD_BUF_SIZE);
         if self.read_buf.is_empty() && self.read_buf.capacity() > DISCARD_BUF_SIZE {
             self.read_buf = BytesMut::new();
@@ -163,10 +171,31 @@ where
 
     /// Between messages, drop a read buffer a large message grew so an idle connection holds little.
     pub(crate) fn release_idle_read_buf(&mut self) {
+        self.idle_read_timer = None;
         if self.read_buf.is_empty() && self.read_buf.capacity() > MAX_RETAINED_BUF_SIZE {
             self.read_buf = BytesMut::new();
         }
         self.read_buf_strategy.reset_next();
+    }
+
+    /// Keep a warm allocation briefly between requests, with a wakeup to
+    /// release it even if the peer sends nothing else. Buffered/pipelined data
+    /// is never discarded, and oversized allocations are released immediately.
+    pub(crate) fn retain_idle_read_buf(&mut self, cx: &mut Context<'_>) {
+        if self.read_buf.is_empty()
+            && self.read_buf.capacity() > MAX_RETAINED_BUF_SIZE
+            && self.read_buf.capacity() <= MAX_WARM_READ_BUF_SIZE
+        {
+            self.read_buf_strategy.reset_next();
+            let timer = self
+                .idle_read_timer
+                .get_or_insert_with(|| Box::pin(tokio::time::sleep(WARM_READ_BUF_IDLE)));
+            if timer.as_mut().poll(cx).is_ready() {
+                self.release_idle_read_buf();
+            }
+        } else {
+            self.release_idle_read_buf();
+        }
     }
 
     /// Whether the peer ended its stream or reading from it failed.
@@ -290,6 +319,13 @@ where
         max: usize,
     ) -> Poll<io::Result<usize>> {
         self.read_blocked = false;
+        if self
+            .idle_read_timer
+            .as_mut()
+            .is_some_and(|timer| timer.as_mut().poll(cx).is_ready())
+        {
+            self.release_idle_read_buf();
+        }
         // Get the next amount to allocate, but make sure we don't go over
         // the max read buf size configured.
         let next = cmp::min(
@@ -311,6 +347,8 @@ where
         let mut buf = ReadBuf::uninit(dst);
         match poll_read_limited(Pin::new(&mut self.io), cx, &mut buf, max) {
             Poll::Ready(Ok(n)) => {
+                // Once input resumes this is an active message, not idle memory.
+                self.idle_read_timer = None;
                 self.read_eof |= n == 0 && had_room;
                 trace!("received {n} bytes");
                 // SAFETY: `advance_mut(n)` needs the next `n` bytes of `chunk_mut()`
@@ -1178,6 +1216,126 @@ mod tests {
         buffered.release_idle_read_buf();
         assert_eq!(buffered.read_buf.capacity(), 0);
         assert_eq!(buffered.read_buf_strategy.next(), INIT_BUFFER_SIZE);
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn alternating_large_and_small_uploads_survive_idle_release() {
+        let chunk = vec![7u8; kib(512)];
+        let small = b"next small upload";
+        let mut mock = Mock::new();
+        for _ in 0..4 {
+            for _ in 0..16 {
+                mock.read(&chunk);
+            }
+            mock.read(small);
+        }
+        let mut buffered =
+            Buffered::<_, Cursor<Vec<u8>>>::new(rama_core::ServiceInput::new(mock.build()));
+        let mut retained = Vec::new();
+        for _ in 0..4 {
+            let mut total = 0;
+            while total < 16 * chunk.len() {
+                let data = std::future::poll_fn(|cx| buffered.read_mem(cx, usize::MAX))
+                    .await
+                    .unwrap();
+                assert!(!data.is_empty());
+                assert!(data.iter().all(|b| *b == 7));
+                total += data.len();
+            }
+            assert_eq!(total, 16 * chunk.len());
+            buffered.release_idle_read_buf();
+            assert_eq!(buffered.read_buf.capacity(), 0);
+            assert_eq!(buffered.read_buf_strategy.next(), INIT_BUFFER_SIZE);
+            let data = std::future::poll_fn(|cx| buffered.read_mem(cx, small.len()))
+                .await
+                .unwrap();
+            assert_eq!(data.as_ref(), small);
+            retained.push(data);
+            buffered.release_idle_read_buf();
+        }
+        // Consumer-held slices remain valid across later growth and releases.
+        assert!(retained.iter().all(|data| data.as_ref() == small));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn warm_read_buffer_expires_without_new_input() {
+        let (_peer, io) = tokio::io::duplex(1024);
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(rama_core::ServiceInput::new(io));
+        buffered.read_buf = BytesMut::with_capacity(kib(256));
+        let mut task = tokio_test::task::spawn(());
+        task.enter(|cx, _| buffered.retain_idle_read_buf(cx));
+        assert!(buffered.idle_read_timer.is_some());
+        assert!(buffered.read_buf.capacity() >= kib(256));
+        tokio::time::advance(Duration::from_millis(50)).await;
+        // Repeated idle observations must not postpone expiry.
+        task.enter(|cx, _| buffered.retain_idle_read_buf(cx));
+        tokio::time::advance(Duration::from_millis(51)).await;
+        assert!(task.is_woken());
+        task.enter(|cx, _| assert!(buffered.poll_read_from_io(cx).is_pending()));
+        assert!(buffered.idle_read_timer.is_none());
+        assert!(buffered.read_buf.capacity() <= MAX_RETAINED_BUF_SIZE);
+        assert!(!buffered.is_read_finished());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resumed_input_cancels_buffer_expiry_and_preserves_partial_heads() {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut peer, io) = tokio::io::duplex(1024);
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(rama_core::ServiceInput::new(io));
+        buffered.read_buf = BytesMut::with_capacity(kib(256));
+        let mut task = tokio_test::task::spawn(());
+        task.enter(|cx, _| buffered.retain_idle_read_buf(cx));
+        tokio::time::advance(Duration::from_millis(50)).await;
+        peer.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+        task.enter(|cx, _| {
+            assert!(matches!(
+                buffered.poll_read_from_io(cx),
+                Poll::Ready(Ok(16))
+            ))
+        });
+        assert!(buffered.idle_read_timer.is_none());
+        tokio::time::advance(Duration::from_millis(100)).await;
+        task.enter(|cx, _| assert!(buffered.poll_read_from_io(cx).is_pending()));
+        assert_eq!(buffered.read_buf(), b"GET / HTTP/1.1\r\n");
+        assert!(buffered.read_buf.capacity() >= kib(256));
+        buffered.read_buf.clear();
+        task.enter(|cx, _| buffered.retain_idle_read_buf(cx));
+        tokio::time::advance(Duration::from_millis(50)).await;
+        task.enter(|cx, _| assert!(buffered.poll_read_from_io(cx).is_pending()));
+        assert!(buffered.idle_read_timer.is_some());
+        tokio::time::advance(Duration::from_millis(51)).await;
+        task.enter(|cx, _| assert!(buffered.poll_read_from_io(cx).is_pending()));
+        assert!(buffered.idle_read_timer.is_none());
+        assert!(buffered.read_buf.capacity() <= MAX_RETAINED_BUF_SIZE);
+    }
+
+    #[tokio::test]
+    async fn small_and_oversized_idle_buffers_need_no_expiry_timer() {
+        for capacity in [
+            INIT_BUFFER_SIZE,
+            MAX_RETAINED_BUF_SIZE,
+            2 * MAX_WARM_READ_BUF_SIZE,
+        ] {
+            let (_peer, io) = tokio::io::duplex(1024);
+            let mut buffered =
+                Buffered::<_, Cursor<Vec<u8>>>::new(rama_core::ServiceInput::new(io));
+            buffered.read_buf = BytesMut::with_capacity(capacity);
+            tokio_test::task::spawn(()).enter(|cx, _| buffered.retain_idle_read_buf(cx));
+            assert!(buffered.idle_read_timer.is_none());
+            assert!(buffered.read_buf.capacity() <= MAX_RETAINED_BUF_SIZE);
+        }
+    }
+
+    #[tokio::test]
+    async fn pipelined_input_is_never_expired() {
+        let (_peer, io) = tokio::io::duplex(1024);
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(rama_core::ServiceInput::new(io));
+        buffered.read_buf = BytesMut::with_capacity(MAX_WARM_READ_BUF_SIZE);
+        buffered.read_buf.extend_from_slice(b"next request");
+        tokio_test::task::spawn(()).enter(|cx, _| buffered.retain_idle_read_buf(cx));
+        assert!(buffered.idle_read_timer.is_none());
+        assert_eq!(buffered.read_buf(), b"next request");
     }
 
     #[test]
