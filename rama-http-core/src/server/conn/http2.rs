@@ -17,7 +17,7 @@ use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{HeaderReadTimeout, IdleTimeout, timeout::ConnTimer};
-use crate::{body::Incoming as IncomingBody, proto};
+use crate::{body::Incoming as IncomingBody, h2::RateBudget, proto};
 
 pin_project! {
     /// A [`Future`] representing an HTTP/2 connection, bound to a
@@ -131,16 +131,22 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Configures the maximum number of local reset streams allowed before a GOAWAY will be sent.
+        /// Configures the budget of streams this endpoint refuses or resets for what the
+        /// peer sent on them: a protocol or message error of the peer, or a local limit it
+        /// ran into.
         ///
-        /// If not set, rama_http_core will use a default, currently of 1024.
+        /// Occasional ones leave the connection alone, a flood that outpaces the budget
+        /// closes it with a GOAWAY of `ENHANCE_YOUR_CALM`. A peer staying below the rate is
+        /// flagged in the logs as its lifetime total doubles; [`RateBudget::with_ceiling`]
+        /// ends it, and [`RateBudget::lifetime`] gives a plain count over the life of the
+        /// connection. See the documentation of
+        /// [`crate::h2::server::Builder::with_refused_stream_budget`] for more details.
         ///
-        /// If `None` is supplied, rama_http_core will not apply any limit.
-        /// This is not advised, as it can potentially expose servers to DOS vulnerabilities.
+        /// `None` never closes the connection for such streams, which is not advised.
         ///
-        /// See <https://rustsec.org/advisories/RUSTSEC-2024-0003.html> for more information.
-        pub fn max_local_error_reset_streams(mut self, max: Option<usize>) -> Self {
-            self.h2_builder.max_local_error_reset_streams = max;
+        /// The default is a burst of 1000 streams regained at 33 per second.
+        pub fn refused_stream_budget(mut self, budget: Option<RateBudget>) -> Self {
+            self.h2_builder.refused_stream_budget = budget;
             self
         }
     }

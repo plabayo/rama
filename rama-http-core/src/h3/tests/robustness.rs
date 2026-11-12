@@ -35,6 +35,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     task::Poll,
+    time::Duration,
 };
 use tokio::sync::{Barrier, oneshot};
 
@@ -2230,4 +2231,161 @@ async fn memory_rejected_connect_preserves_response_and_connection() {
     })
     .await
     .unwrap();
+}
+
+/// Open `count` unidirectional streams: each names a reserved type and ends, or stops inside
+/// its type and stays open.
+async fn reserved_uni_streams(
+    connection: &rama_quic::Connection,
+    count: u64,
+    finished: bool,
+) -> Vec<rama_quic::SendStream> {
+    let mut open = Vec::new();
+    for ordinal in 0..count {
+        let mut stream = connection.open_uni().await.unwrap();
+        if finished {
+            let mut bytes = Vec::new();
+            VarInt::from_u64(0x21 + 0x1f * ordinal)
+                .unwrap()
+                .encode(&mut bytes);
+            bytes.extend_from_slice(b"ignored");
+            stream.write_all(&bytes).await.unwrap();
+            // The receiver may already have refused the stream.
+            _ = stream.finish();
+        } else {
+            // The first byte of an eight-byte type.
+            stream.write_all(&[0xc0]).await.unwrap();
+            open.push(stream);
+        }
+    }
+    open
+}
+
+/// Reserved-type streams are refused and released as they arrive: a peer limited to the
+/// advertised stream credit can open any number of them and both ends keep serving.
+#[tokio::test(start_paused = true)]
+async fn memory_finished_reserved_uni_streams_are_released_as_they_arrive() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let serve = spawn(async move {
+            for _ in 0..2 {
+                let (_request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+                response
+                    .send_response(Response::new(Body::from("served")))
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut exchange = async || {
+            let request = Request::builder()
+                .uri("https://localhost/")
+                .body(Body::empty())
+                .unwrap();
+            let response = client.send_request(request).await.unwrap();
+            assert_eq!(
+                response.into_body().collect().await.unwrap().to_bytes(),
+                "served"
+            );
+        };
+        // Both ends hold their critical streams once a request was served.
+        exchange().await;
+        // Many times what may be open at once: every further stream needs credit that only
+        // the release of an earlier one returns.
+        let count = 20 * Config::default().max_pending_uni_streams as u64;
+        for connection in [&pair.client, &pair.server] {
+            reserved_uni_streams(connection, count, true).await;
+        }
+        exchange().await;
+        serve.await.unwrap();
+        assert!(pair.client.close_reason().is_none());
+        pair.client.close(Code::H3_NO_ERROR.value() as u32, b"done");
+        client_driver.await.unwrap().unwrap();
+        server_driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// A transport granting more stream credit than HTTP/3 keeps pending lets a peer deliver a
+/// burst at once. Streams that stay unclassified exceed the pending budget, which fails the
+/// connection closed; finished ones are released as they are taken up, unless the burst
+/// outruns that and fails it closed as well.
+#[tokio::test(start_paused = true)]
+async fn memory_burst_of_reserved_uni_streams_is_released_or_fails_closed() {
+    for finished in [true, false] {
+        tokio::time::timeout(LIMIT, async {
+            let burst = 16 * Config::default().max_pending_uni_streams as u64;
+            let mut transport = TransportConfig::default();
+            Config::default()
+                .configure_transport(&mut transport)
+                .unwrap();
+            transport.set_max_concurrent_uni_streams(VarInt::from_u64(burst + 3).unwrap());
+            let pair = Pair::in_memory(None, Some(transport)).await;
+            let (mut client, client_driver) = client::handshake::<Body, _>(
+                pair.client.clone(),
+                Config::default(),
+                WeakScope::detached(),
+            )
+            .unwrap();
+            spawn(client_driver.run());
+            let open = reserved_uni_streams(&pair.client, burst, finished).await;
+            // paused clock: elapses once the whole burst reached the server's transport
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let (mut server, server_driver) =
+                server::handshake(pair.server.clone(), Config::default()).unwrap();
+            let server_driver = spawn(server_driver.run());
+            let serve = spawn(async move {
+                // A server that failed closed accepts nothing.
+                let Ok(accepted) = server.accept().await else {
+                    return;
+                };
+                if let Ok((_request, response)) = accepted.resolve().await {
+                    _ = response
+                        .send_response(Response::new(Body::from("served")))
+                        .await;
+                }
+            });
+            let response = client
+                .send_request(
+                    Request::builder()
+                        .uri("https://localhost/after-burst")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+            if let Ok(response) = response {
+                assert!(finished, "unclassified streams past the budget were kept");
+                assert_eq!(
+                    response.into_body().collect().await.unwrap().to_bytes(),
+                    "served"
+                );
+                assert!(pair.client.close_reason().is_none());
+            } else {
+                assert_eq!(
+                    Error::from_transport(&pair.client.closed().await).code(),
+                    Code::H3_EXCESSIVE_LOAD
+                );
+                assert_eq!(
+                    server_driver.await.unwrap().unwrap_err().code(),
+                    Code::H3_EXCESSIVE_LOAD
+                );
+            }
+            drop(open);
+            serve.abort();
+            pair.close().await;
+        })
+        .await
+        .unwrap();
+    }
 }

@@ -55,6 +55,8 @@ pub(crate) struct Reader<R: RecvStream> {
     terminal: Option<Error>,
     push_cancelled: Option<Pin<Box<dyn Future<Output = Error> + Send + Sync>>>,
     promise: Option<Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>>,
+    // A stream costs the refused stream budget once, however many layers report its error.
+    refusal_charged: bool,
 }
 
 impl<R: RecvStream> Reader<R> {
@@ -97,6 +99,7 @@ impl<R: RecvStream> Reader<R> {
             push_id: None,
             promise: None,
             push_cancelled: None,
+            refusal_charged: false,
         }
     }
 
@@ -119,7 +122,22 @@ impl<R: RecvStream> Reader<R> {
         Ok(reader)
     }
 
-    pub(crate) fn reject(&mut self, error: Error) -> Error {
+    /// Count one interim response, refusing the stream once the peer sent more than allowed.
+    pub(crate) fn admit_informational(&mut self, seen: &mut usize) -> Result<(), Error> {
+        if *seen >= self.shared.config.max_informational_responses {
+            return Err(self.reject(
+                Error::stream(Code::H3_EXCESSIVE_LOAD, "too many informational responses").remote(),
+            ));
+        }
+        *seen += 1;
+        Ok(())
+    }
+
+    pub(crate) fn reject(&mut self, mut error: Error) -> Error {
+        if error.is_peer_stream_fault() && !self.refusal_charged {
+            self.refusal_charged = true;
+            error = self.shared.charge_refusal(error);
+        }
         self.cancel_code = error.code();
         if let Some(abort) = &self.abort
             && let Ok(code) = VarInt::from_u64(error.code().value())

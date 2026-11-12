@@ -79,6 +79,7 @@ pub(super) enum Parse {
     UriTooLong,
     Header(Header),
     TooLarge,
+    TooManyInformational,
     Status,
     Internal,
 }
@@ -449,6 +450,7 @@ impl Error {
                 "unexpected transfer-encoding parsed"
             }
             Kind::Parse(Parse::TooLarge) => "message head is too large",
+            Kind::Parse(Parse::TooManyInformational) => "too many informational responses",
             Kind::Parse(Parse::Status) => "invalid HTTP status-code parsed",
             Kind::Parse(Parse::Internal) => {
                 "internal error inside rama_http_core and/or its dependencies, please report"

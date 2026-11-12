@@ -115,6 +115,7 @@ pub use rama_http_types::proto::h2::hpack;
 pub mod fuzz_bridge;
 
 pub use crate::h2::error::{Error, Reason};
+pub use crate::h2::proto::RateBudget;
 pub use crate::h2::share::{FlowControl, Ping, PingPong, Pong, RecvStream, SendStream};
 
 /// Internal re-export of the shared per-connection peer-SETTINGS state

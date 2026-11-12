@@ -2,10 +2,10 @@ use h2_support::prelude::*;
 use rama_core::futures::{StreamExt, TryStreamExt};
 
 #[tokio::test]
-async fn refused_push_promises_count_toward_local_reset_limit() {
+async fn refused_push_promises_draw_on_the_refused_stream_budget() {
     h2_support::trace_init!();
 
-    for limit in [0, 2] {
+    for limit in [0u32, 2] {
         let (io, mut srv) = mock::new();
         let mock = async move {
             let settings = srv.assert_client_handshake().await;
@@ -18,7 +18,7 @@ async fn refused_push_promises_count_toward_local_reset_limit() {
             .await;
 
             for n in 0..=limit {
-                let id = 2 * (n + 1) as u32;
+                let id = 2 * (n + 1);
                 srv.send_frame(
                     frames::push_promise(1, id).request("GET", "https://example.com/pushed"),
                 )
@@ -26,7 +26,7 @@ async fn refused_push_promises_count_toward_local_reset_limit() {
                 if n < limit {
                     srv.recv_frame(frames::reset(id).refused()).await;
                 } else {
-                    srv.recv_frame(frames::go_away(0).calm().data("too_many_internal_resets"))
+                    srv.recv_frame(frames::go_away(0).calm().data("too_many_refused_streams"))
                         .await;
                 }
             }
@@ -34,7 +34,7 @@ async fn refused_push_promises_count_toward_local_reset_limit() {
         let client = async move {
             let (mut client, conn) = client::Builder::new()
                 .with_max_concurrent_streams(0)
-                .with_max_local_error_reset_streams(limit)
+                .with_refused_stream_budget(RateBudget::lifetime(limit))
                 .handshake::<_, Bytes>(io)
                 .await
                 .unwrap();

@@ -1,4 +1,9 @@
 //! Ordinary CONNECT uses Rama's existing upgrade API and bounded DATA framing.
+//!
+//! Shutting an upgraded stream down flushes it, finishes the QUIC stream and waits for the
+//! peer to acknowledge it, with no timer of its own: a peer can hold it open. Run the
+//! shutdown in a [`Scope`](rama_core::graceful::Scope) with a hard deadline, and abort the
+//! stream when that scope is aborted first.
 
 use super::{
     Error,

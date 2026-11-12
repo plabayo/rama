@@ -416,14 +416,14 @@ impl Push {
 
     /// Receive final response headers and the ordinary streaming body.
     pub async fn response(mut self) -> Result<Response<crate::body::Incoming>, Error> {
+        let mut informational_seen = 0;
         loop {
-            let response = headers::response_for_method(
-                self.reader.headers().await?,
-                false,
-                Extensions::new(),
-            )?;
+            let fields = self.reader.headers().await?;
+            let response = headers::response_for_method(fields, false, Extensions::new())
+                .map_err(|error| self.reader.reject(error.remote()))?;
             response.extensions().insert(self.priority_handle());
             if response.status().is_informational() {
+                self.reader.admit_informational(&mut informational_seen)?;
                 tokio::task::yield_now().await;
                 continue;
             }

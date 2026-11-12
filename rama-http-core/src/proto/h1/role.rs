@@ -984,7 +984,7 @@ impl Http1Transaction for Client {
     type Outgoing = RequestLine;
     const LOG: &'static str = "{role=client}";
 
-    fn parse(buf: &mut BytesMut, ctx: ParseContext<'_>) -> ParseResult<StatusCode> {
+    fn parse(buf: &mut BytesMut, mut ctx: ParseContext<'_>) -> ParseResult<StatusCode> {
         debug_assert!(!buf.is_empty(), "parse called with empty buf");
 
         // Loop to skip information status code headers (100 Continue, etc).
@@ -1169,9 +1169,15 @@ impl Http1Transaction for Client {
                 }));
             }
 
-            if head.subject.is_informational()
-                && let Some(callback) = ctx.on_informational
-            {
+            // Only an interim response is skipped, and a peer may not send them without end.
+            if let Some(left) = ctx.informational_left.as_deref_mut() {
+                let Some(remaining) = left.checked_sub(1) else {
+                    debug!("too many informational responses, closing");
+                    return Err(Parse::TooManyInformational);
+                };
+                *left = remaining;
+            }
+            if let Some(callback) = ctx.on_informational {
                 callback.call(head.into_response(()));
             }
 
@@ -1949,6 +1955,7 @@ mod tests {
                 h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                informational_left: None,
                 prepared_extensions: &mut Some(Extensions::default()),
             },
         )
@@ -2063,6 +2070,7 @@ mod tests {
                 h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                informational_left: None,
                 prepared_extensions: &mut Some(Extensions::default()),
             },
         )
@@ -2087,6 +2095,7 @@ mod tests {
             h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
+            informational_left: None,
             prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
@@ -2108,6 +2117,7 @@ mod tests {
             h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
+            informational_left: None,
             prepared_extensions: &mut Some(Extensions::default()),
         };
         Server::parse(&mut raw, ctx).unwrap_err();
@@ -2125,6 +2135,7 @@ mod tests {
             h1_max_header_size: None,
             h09_responses: true,
             on_informational: &mut None,
+            informational_left: None,
             prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
@@ -2144,6 +2155,7 @@ mod tests {
             h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
+            informational_left: None,
             prepared_extensions: &mut Some(Extensions::default()),
         };
         Client::parse(&mut raw, ctx).unwrap_err();
@@ -2167,6 +2179,7 @@ mod tests {
             h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
+            informational_left: None,
             prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
@@ -2187,6 +2200,7 @@ mod tests {
             h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
+            informational_left: None,
             prepared_extensions: &mut Some(Extensions::default()),
         };
         Client::parse(&mut raw, ctx).unwrap_err();
@@ -2208,6 +2222,7 @@ mod tests {
             h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
+            informational_left: None,
             prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Server::parse(&mut raw, ctx).unwrap().unwrap();
@@ -2230,6 +2245,7 @@ mod tests {
             h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
+            informational_left: None,
             prepared_extensions: &mut Some(Extensions::default()),
         };
         Server::parse(&mut raw, ctx).unwrap_err();
@@ -2246,6 +2262,7 @@ mod tests {
             h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
+            informational_left: None,
             prepared_extensions: &mut Some(Extensions::default()),
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
@@ -2267,6 +2284,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -2285,6 +2303,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -2521,6 +2540,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -2583,6 +2603,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -2614,6 +2635,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -2653,6 +2675,7 @@ mod tests {
                 h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                informational_left: None,
                 prepared_extensions: &mut Some(prepared),
             },
         )
@@ -2690,6 +2713,7 @@ mod tests {
                         h1_max_header_size: None,
                         h09_responses: false,
                         on_informational: &mut None,
+                        informational_left: None,
                         prepared_extensions: &mut Some(Extensions::default()),
                     }
                 )
@@ -2709,6 +2733,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -2727,6 +2752,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -3249,6 +3275,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -3271,6 +3298,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -3313,6 +3341,7 @@ mod tests {
                     h1_max_header_size: max_header_size,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 };
                 let mut bytes = BytesMut::from(head);
@@ -4076,6 +4105,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(inherited.fork()),
                 },
             )
@@ -4102,6 +4132,7 @@ mod tests {
                 h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                informational_left: None,
                 prepared_extensions: &mut None,
             },
         )
@@ -4126,6 +4157,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut None,
                 },
             );
@@ -4693,6 +4725,7 @@ mod tests {
                 h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                informational_left: None,
                 prepared_extensions: &mut Some(Extensions::default()),
             },
         )
@@ -4733,6 +4766,7 @@ mod tests {
                         h1_max_header_size: None,
                         h09_responses: false,
                         on_informational: &mut None,
+                        informational_left: None,
                         prepared_extensions: &mut Some(Extensions::default()),
                     },
                 );
@@ -4754,6 +4788,7 @@ mod tests {
                         h1_max_header_size: None,
                         h09_responses: false,
                         on_informational: &mut None,
+                        informational_left: None,
                         prepared_extensions: &mut Some(Extensions::default()),
                     },
                 );
@@ -4871,6 +4906,7 @@ mod tests {
                 h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                informational_left: None,
                 prepared_extensions: &mut prepared_extensions,
             },
         )
@@ -4922,6 +4958,7 @@ mod tests {
                     h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    informational_left: None,
                     prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
@@ -4980,6 +5017,7 @@ mod tests {
                 h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                informational_left: None,
                 prepared_extensions: &mut Some(Extensions::default()),
             },
         )

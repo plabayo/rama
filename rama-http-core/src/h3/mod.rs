@@ -58,6 +58,7 @@ pub mod qpack;
 mod control;
 mod cooperative;
 mod error;
+pub use crate::proto::rate_budget::RateBudget;
 pub use error::Error;
 
 mod quic;

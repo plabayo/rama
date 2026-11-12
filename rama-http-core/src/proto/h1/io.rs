@@ -253,11 +253,10 @@ where
         }
     }
 
-    #[expect(clippy::needless_pass_by_value)]
     pub(super) fn parse<S>(
         &mut self,
         cx: &mut Context<'_>,
-        parse_ctx: ParseContext<'_>,
+        mut parse_ctx: ParseContext<'_>,
     ) -> Poll<crate::Result<ParsedMessage<S::Incoming>>>
     where
         S: Http1Transaction,
@@ -273,6 +272,7 @@ where
                     h1_max_header_size: parse_ctx.h1_max_header_size,
                     h09_responses: parse_ctx.h09_responses,
                     on_informational: parse_ctx.on_informational,
+                    informational_left: parse_ctx.informational_left.as_deref_mut(),
                     prepared_extensions: parse_ctx.prepared_extensions,
                 },
             )? {
@@ -917,6 +917,7 @@ mod tests {
                 h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                informational_left: None,
                 prepared_extensions: &mut Some(Extensions::default()),
             };
             assert!(

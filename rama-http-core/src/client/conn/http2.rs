@@ -20,6 +20,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::body::Incoming as IncomingBody;
 use crate::client::dispatch::{self, TrySendError};
+use crate::h2::RateBudget;
 use crate::proto;
 
 /// In the extensions of an HTTP/2 client's I/O: the scope cancelled once the connection's
@@ -733,14 +734,37 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Configures the maximum number of local resets due to protocol errors made by the remote end.
+        /// Configures the maximum number of informational (1xx) responses accepted for one request.
         ///
-        /// See the documentation of [`crate::h2::client::Builder::with_max_local_error_reset_streams`] for more
-        /// details.
+        /// A stream that receives more is reset with `ENHANCE_YOUR_CALM` and its request fails.
         ///
-        /// The default value is 1024.
-        pub fn max_local_error_reset_streams(mut self, max: impl Into<Option<usize>>) -> Self {
-            self.h2_builder.max_local_error_reset_streams = max.into();
+        /// The default value is 1024, far above what servers send.
+        ///
+        /// Each stream reset this way draws on the budget of
+        /// [`Builder::with_refused_stream_budget`].
+        pub fn max_informational_responses(mut self, max: usize) -> Self {
+            self.h2_builder.max_informational_responses = max;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Configures the budget of streams this endpoint refuses or resets for what the
+        /// peer sent on them: a protocol or message error of the peer, or a local limit it
+        /// ran into.
+        ///
+        /// Occasional ones leave the connection alone, a flood that outpaces the budget
+        /// closes it with a GOAWAY of `ENHANCE_YOUR_CALM`. A peer staying below the rate is
+        /// flagged in the logs as its lifetime total doubles; [`RateBudget::with_ceiling`]
+        /// ends it, and [`RateBudget::lifetime`] gives a plain count over the life of the
+        /// connection. See the documentation of
+        /// [`crate::h2::client::Builder::with_refused_stream_budget`] for more details.
+        ///
+        /// `None` never closes the connection for such streams, which is not advised.
+        ///
+        /// The default is a burst of 1000 streams regained at 33 per second.
+        pub fn refused_stream_budget(mut self, budget: Option<RateBudget>) -> Self {
+            self.h2_builder.refused_stream_budget = budget;
             self
         }
     }

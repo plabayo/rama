@@ -48,11 +48,11 @@ use crate::{
     body::Incoming as IncomingBody,
     client::dispatch::{Callback, SendWhen, TrySendError},
     h2::{
-        SendStream,
+        RateBudget, SendStream,
         client::{Builder, Connection, ResponseFuture, SendRequest},
     },
     headers,
-    proto::Dispatched,
+    proto::{DEFAULT_MAX_INFORMATIONAL_RESPONSES, DEFAULT_REFUSED_STREAM_BUDGET, Dispatched},
 };
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
@@ -100,7 +100,8 @@ pub(crate) struct Config {
     pub(crate) max_concurrent_reset_streams: Option<usize>,
     pub(crate) max_send_buffer_size: u32,
     pub(crate) max_pending_accept_reset_streams: Option<usize>,
-    pub(crate) max_local_error_reset_streams: Option<usize>,
+    pub(crate) max_informational_responses: usize,
+    pub(crate) refused_stream_budget: Option<RateBudget>,
     pub(crate) data_frame_budget: Option<usize>,
     pub(crate) header_table_size: Option<u32>,
     pub(crate) max_concurrent_streams: Option<u32>,
@@ -129,7 +130,8 @@ impl Default for Config {
             max_concurrent_reset_streams: None,
             max_send_buffer_size: DEFAULT_MAX_SEND_BUF_SIZE,
             max_pending_accept_reset_streams: None,
-            max_local_error_reset_streams: Some(1024),
+            max_informational_responses: DEFAULT_MAX_INFORMATIONAL_RESPONSES,
+            refused_stream_budget: Some(DEFAULT_REFUSED_STREAM_BUDGET),
             data_frame_budget: None,
             header_table_size: None,
             max_concurrent_streams: None,
@@ -150,7 +152,8 @@ pub(crate) fn new_builder(config: &Config) -> Builder {
         .with_initial_connection_window_size(config.initial_conn_window_size)
         .with_max_header_list_size(config.max_header_list_size)
         .with_max_send_buffer_size(config.max_send_buffer_size)
-        .maybe_with_max_local_error_reset_streams(config.max_local_error_reset_streams)
+        .with_max_informational_responses(config.max_informational_responses)
+        .maybe_with_refused_stream_budget(config.refused_stream_budget)
         .maybe_with_data_frame_budget(config.data_frame_budget)
         .with_enable_push(config.enable_push);
 

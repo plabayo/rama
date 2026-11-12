@@ -11,6 +11,7 @@ use super::{
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
+use crate::proto::TOO_MANY_REFUSED_STREAMS;
 
 use parking_lot::Mutex;
 use rama_core::bytes::{Buf, Bytes};
@@ -204,17 +205,12 @@ where
         })
     }
 
-    /// Count a refused stream toward the local error reset limit.
+    /// Count a refused stream toward the refused stream budget.
     pub(crate) fn count_pending_refusal(&mut self) -> Result<(), Error> {
         let mut me = self.inner.lock();
-        if !me.counts.can_inc_num_local_error_resets() {
-            return Err(Error::library_go_away_data(
-                Reason::ENHANCE_YOUR_CALM,
-                "too_many_internal_resets",
-            ));
-        }
-        me.counts.inc_num_local_error_resets();
-        Ok(())
+        me.counts.refuse_stream().map_err(|_exhausted| {
+            Error::library_go_away_data(Reason::ENHANCE_YOUR_CALM, TOO_MANY_REFUSED_STREAMS)
+        })
     }
 
     /// Replays the next early frame. SETTINGS waits for any outstanding local
@@ -800,6 +796,10 @@ impl Inner {
                     Ok(()) => Ok(()),
                     Err(RecvHeaderBlockError::Oversize(resp)) => {
                         if let Some(resp) = resp {
+                            // The answer is ours to give, the refused head is the peer's doing.
+                            if counts.refuse_stream().is_err() {
+                                return Err(Actions::go_away_on_stream_err(stream));
+                            }
                             let mut send_buffer = send_buffer.inner.lock();
                             let sent = actions.send.send_headers(
                                 resp, &mut send_buffer, stream, counts, &mut actions.task);
@@ -1278,6 +1278,13 @@ impl Inner {
         id: StreamId,
         reason: Reason,
     ) -> Result<(), crate::h2::proto::error::GoAway> {
+        // A frame for a stream this side opened, reset and forgot is the peer's answer racing
+        // our own cancellation (RFC 9113 §5.1): refusing it is no fault of the peer's.
+        let raced_own_cancellation = reason == Reason::STREAM_CLOSED
+            && self.counts.peer().is_local_init(id)
+            && self
+                .actions
+                .may_have_forgotten_stream(self.counts.peer(), id);
         let key = match self.store.find_entry(id) {
             Entry::Occupied(e) => e.key(),
             Entry::Vacant(e) => {
@@ -1326,6 +1333,7 @@ impl Inner {
             stream,
             reason,
             Initiator::Library,
+            !raced_own_cancellation,
             &mut self.counts,
             send_buffer,
         )
@@ -1398,6 +1406,12 @@ where
     pub(crate) fn has_streams(&self) -> bool {
         let me = self.inner.lock();
         me.counts.has_streams()
+    }
+
+    #[cfg(feature = "unstable")]
+    pub(crate) fn num_refused_streams(&self) -> u64 {
+        let me = self.inner.lock();
+        me.counts.num_refused_streams()
     }
 
     pub(crate) fn has_streams_or_other_references(&self) -> bool {
@@ -1505,10 +1519,14 @@ impl<B> StreamRef<B> {
         let mut send_buffer = self.send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
-        match me
-            .actions
-            .send_reset(stream, reason, Initiator::User, &mut me.counts, send_buffer)
-        {
+        match me.actions.send_reset(
+            stream,
+            reason,
+            Initiator::User,
+            false,
+            &mut me.counts,
+            send_buffer,
+        ) {
             Ok(()) => (),
             Err(crate::h2::proto::error::GoAway { .. }) => {
                 // this should never happen, because Initiator::User resets do
@@ -2020,23 +2038,16 @@ impl Actions {
         stream: store::Ptr,
         reason: Reason,
         initiator: Initiator,
+        peer_fault: bool,
         counts: &mut Counts,
         send_buffer: &mut Buffer<Frame<B>>,
     ) -> Result<(), crate::h2::proto::error::GoAway> {
         counts.transition(stream, |counts, stream| {
-            if initiator.is_library() {
-                if counts.can_inc_num_local_error_resets() {
-                    counts.inc_num_local_error_resets();
-                } else {
-                    tracing::warn!(
-                        "locally-reset streams reached limit ({:?})",
-                        counts.max_local_error_resets(),
-                    );
-                    return Err(crate::h2::proto::error::GoAway {
-                        reason: Reason::ENHANCE_YOUR_CALM,
-                        debug_data: "too_many_internal_resets".into(),
-                    });
-                }
+            if peer_fault && counts.refuse_stream().is_err() {
+                return Err(crate::h2::proto::error::GoAway {
+                    reason: Reason::ENHANCE_YOUR_CALM,
+                    debug_data: TOO_MANY_REFUSED_STREAMS.into(),
+                });
             }
 
             self.send.send_reset(
@@ -2080,29 +2091,33 @@ impl Actions {
         if let Err(Error::Reset(stream_id, reason, initiator)) = res {
             debug_assert_eq!(stream_id, stream.id);
 
-            if counts.can_inc_num_local_error_resets() {
-                counts.inc_num_local_error_resets();
-
-                // Reset the stream.
-                self.send
-                    .send_reset(reason, initiator, buffer, stream, counts, &mut self.task);
-                self.recv.enqueue_reset_expiration(stream, counts);
-                // if a RecvStream is parked, ensure it's notified
-                stream.notify_recv();
-                Ok(())
-            } else {
-                tracing::warn!(
-                    "reset_on_recv_stream_err; locally-reset streams reached limit ({:?})",
-                    counts.max_local_error_resets(),
-                );
-                Err(Error::library_go_away_data(
-                    Reason::ENHANCE_YOUR_CALM,
-                    "too_many_internal_resets",
-                ))
+            // The budget refills, so only a flood of such resets ends the requests sharing
+            // this connection.
+            if counts.refuse_stream().is_err() {
+                return Err(Self::go_away_on_stream_err(stream));
             }
+
+            // Reset the stream.
+            self.send
+                .send_reset(reason, initiator, buffer, stream, counts, &mut self.task);
+            self.recv.enqueue_reset_expiration(stream, counts);
+            // if a RecvStream is parked, ensure it's notified
+            stream.notify_recv();
+            Ok(())
         } else {
             res
         }
+    }
+
+    /// The connection error for a stream error past its budget, which also fails that stream:
+    /// the frame in error may have closed it, and the connection error skips a closed stream.
+    fn go_away_on_stream_err(stream: &mut store::Ptr) -> Error {
+        let err = Error::library_go_away_data(Reason::ENHANCE_YOUR_CALM, TOO_MANY_REFUSED_STREAMS);
+        stream.state.set_error(&err);
+        stream.notify_send();
+        stream.notify_recv();
+        stream.notify_push();
+        err
     }
 
     fn ensure_not_idle(&mut self, peer: peer::Dyn, id: StreamId) -> Result<(), Reason> {

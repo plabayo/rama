@@ -68,10 +68,6 @@ impl Initiator {
             Self::Remote => false,
         }
     }
-
-    pub(crate) fn is_library(self) -> bool {
-        matches!(self, Self::Library)
-    }
 }
 
 impl fmt::Display for Error {

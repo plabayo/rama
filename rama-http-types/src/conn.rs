@@ -117,10 +117,6 @@ pub struct H2ClientContextParams {
     /// `GOAWAY` will be sent.
     pub max_pending_accept_reset_streams: Option<usize>,
 
-    /// The maximum number of local resets due to protocol errors made
-    /// by the remote peer.
-    pub max_local_error_reset_streams: Option<usize>,
-
     /// The duration to remember locally reset streams.
     pub reset_stream_duration: Option<Duration>,
 }

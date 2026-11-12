@@ -134,6 +134,9 @@ pub(super) struct Stream {
 
     /// Validate content-length headers
     pub content_length: ContentLength,
+
+    /// Interim (1xx) responses received on this stream.
+    pub informational_responses: usize,
 }
 
 impl fmt::Debug for Stream {
@@ -291,6 +294,7 @@ impl Stream {
             push_task: None,
             pending_push_promises: store::Queue::new(),
             content_length: ContentLength::Omitted,
+            informational_responses: 0,
         })
     }
 

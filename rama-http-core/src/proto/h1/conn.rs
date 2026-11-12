@@ -22,7 +22,7 @@ use super::{Decoder, Encode, EncodedBuf, Encoder, Http1Transaction, ParseContext
 use crate::{
     body::DecodedLength,
     headers,
-    proto::{BodyLength, MessageHead, h1::EncodeHead},
+    proto::{BodyLength, DEFAULT_MAX_INFORMATIONAL_RESPONSES, MessageHead, h1::EncodeHead},
     server::conn::timeout::{Activity, ConnTimer, Expired},
 };
 
@@ -69,6 +69,8 @@ where
                 title_case_headers: false,
                 h09_responses: false,
                 on_informational: None,
+                h1_max_informational: DEFAULT_MAX_INFORMATIONAL_RESPONSES,
+                informational_left: DEFAULT_MAX_INFORMATIONAL_RESPONSES,
                 notify_read: false,
                 reading: Reading::Init,
                 writing: Writing::Init,
@@ -118,6 +120,11 @@ where
 
     pub(crate) fn set_http1_max_headers(&mut self, val: usize) {
         self.state.h1_max_headers = Some(val);
+    }
+
+    pub(crate) fn set_http1_max_informational(&mut self, val: usize) {
+        self.state.h1_max_informational = val;
+        self.state.informational_left = val;
     }
 
     pub(crate) fn set_http1_max_header_size(&mut self, val: usize) {
@@ -283,6 +290,7 @@ where
                 h1_max_header_size: self.state.h1_max_header_size,
                 h09_responses: self.state.h09_responses,
                 on_informational: &mut self.state.on_informational,
+                informational_left: Some(&mut self.state.informational_left),
                 prepared_extensions: &mut prepared_extensions,
             },
         ) {
@@ -328,6 +336,7 @@ where
 
         // Drop any OnInformational callbacks, we're done there!
         self.state.on_informational = None;
+        self.state.informational_left = self.state.h1_max_informational;
 
         self.state.busy();
         self.state.keep_alive &= msg.keep_alive;
@@ -1034,6 +1043,10 @@ struct State {
     /// the current request. MUST be unset after a non-1xx response is
     /// received.
     on_informational: Option<OnInformational>,
+    /// Interim responses a client accepts for one request.
+    h1_max_informational: usize,
+    /// What is left of `h1_max_informational` for the current request.
+    informational_left: usize,
     /// Set to true when the Dispatcher should poll read operations
     /// again. See the `maybe_notify` method for more.
     notify_read: bool,

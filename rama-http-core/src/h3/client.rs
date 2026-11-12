@@ -201,6 +201,13 @@ impl<B, C: transport::Connection> SendRequest<B, C> {
         self.shared.datagram_drops()
     }
 
+    /// Request and push streams this connection ended for what its peer sent on them,
+    /// over its whole life.
+    #[must_use]
+    pub fn refused_streams(&self) -> u64 {
+        self.shared.refused_streams()
+    }
+
     #[cfg(test)]
     pub(crate) fn shared(&self) -> &Arc<Shared> {
         &self.shared
@@ -698,6 +705,7 @@ where
                 error = self.shared.rejected(Some(id)) => return Err(error),
                 result = std::future::poll_fn(|cx| writer.poll_flush(cx)) => result?,
             }
+            let mut informational_seen = 0;
             loop {
                 let fields = tokio::select! {
                     biased;
@@ -717,6 +725,7 @@ where
                     .extensions()
                     .insert(super::PriorityHandle::new(&self.shared, id, false));
                 if response.status().is_informational() {
+                    reader.admit_informational(&mut informational_seen)?;
                     if let Some(callback) = &informational {
                         callback.call(response);
                     }
@@ -800,6 +809,7 @@ where
             // require successful authentication and ALPN agreement.
             self.response_ready(id).await?;
         }
+        let mut informational_seen = 0;
         loop {
             let fields = {
                 let head = reader.headers();
@@ -838,6 +848,7 @@ where
                 response.extensions().insert(attempt);
             }
             if response.status().is_informational() {
+                reader.admit_informational(&mut informational_seen)?;
                 if let Some(callback) = &informational {
                     callback.call(response);
                 }

@@ -138,7 +138,6 @@ fn local_buffer_and_reset_budgets_do_not_become_wire_profile_overrides() {
         initial_max_send_streams: Some(8),
         max_concurrent_reset_streams: Some(8),
         max_pending_accept_reset_streams: Some(8),
-        max_local_error_reset_streams: Some(8),
         reset_stream_duration: Some(Duration::from_secs(5)),
         ..Default::default()
     });
@@ -150,5 +149,4 @@ fn local_buffer_and_reset_budgets_do_not_become_wire_profile_overrides() {
     assert_eq!(retained.initial_max_send_streams, Some(8));
     assert_eq!(retained.max_concurrent_reset_streams, Some(8));
     assert_eq!(retained.max_pending_accept_reset_streams, Some(8));
-    assert_eq!(retained.max_local_error_reset_streams, Some(8));
 }

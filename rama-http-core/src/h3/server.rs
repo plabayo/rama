@@ -253,6 +253,13 @@ impl<C: transport::Connection> Connection<C> {
         self.shared.datagram_drops()
     }
 
+    /// Request and push streams this connection ended for what its peer sent on them,
+    /// over its whole life.
+    #[must_use]
+    pub fn refused_streams(&self) -> u64 {
+        self.shared.refused_streams()
+    }
+
     /// Tell the peer to send no further requests, while those it already sent are still
     /// admitted (RFC 9114 §5.2). Returns how long such a request may take to arrive: keep
     /// accepting for that long, then call [`Self::shutdown`].
@@ -439,7 +446,7 @@ impl<C: transport::Connection> RequestStream<C> {
             .request_observation(self.reader.id, &fields);
         let request = match headers::request_head(fields, extended_connect) {
             Ok(request) => request,
-            Err(error) => return Err(self.reader.reject(error)),
+            Err(error) => return Err(self.reader.reject(error.remote())),
         };
         let received_early = self.reader.stream.is_0rtt();
         if !received_early
@@ -472,7 +479,8 @@ impl<C: transport::Connection> RequestStream<C> {
             request.extensions().insert(observer);
             request.extensions().insert(snapshot);
         }
-        let remaining = headers::content_length(request.headers())?;
+        let remaining = headers::content_length(request.headers())
+            .map_err(|error| self.reader.reject(error.remote()))?;
         self.heads.received.fetch_add(1, Ordering::Relaxed);
         let method = request.method().clone();
         // Only an Extended CONNECT can be declared to carry datagrams, by its 2xx response.

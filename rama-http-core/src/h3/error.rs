@@ -6,6 +6,7 @@ use rama_quic_proto::TransportErrorCode;
 
 use super::frame::FrameError;
 use super::qpack::{ErrorScope, QpackError};
+use crate::proto::TOO_MANY_REFUSED_STREAMS;
 
 /// A terminal HTTP/3 protocol error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +33,19 @@ enum Source {
 }
 
 impl Error {
+    /// The peer made this endpoint end more streams than its refused stream budget covers.
+    pub(crate) const TOO_MANY_REFUSED_STREAMS: Self =
+        Self::connection(Code::H3_EXCESSIVE_LOAD, TOO_MANY_REFUSED_STREAMS).remote();
+
+    /// What a connection closed for this error tells its peer.
+    pub(crate) fn close_reason(self) -> &'static [u8] {
+        if self == Self::TOO_MANY_REFUSED_STREAMS {
+            self.reason.as_bytes()
+        } else {
+            b"HTTP/3 connection error"
+        }
+    }
+
     /// Construct a connection error.
     #[must_use]
     pub const fn connection(code: Code, reason: &'static str) -> Self {
@@ -188,6 +202,12 @@ impl Error {
             reason,
             source: self.source,
         }
+    }
+
+    /// A stream this endpoint ends for what its peer sent on it: a message past a local
+    /// limit or a malformed one. Resets by the peer and local causes are excluded.
+    pub(crate) fn is_peer_stream_fault(self) -> bool {
+        self.scope == ErrorScope::Stream && matches!(self.source, Source::Remote)
     }
 
     /// Whether received protocol data or a transport failure caused this error.

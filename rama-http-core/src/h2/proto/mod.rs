@@ -12,11 +12,12 @@ pub use self::error::{Error, Initiator};
 pub(crate) use self::peer::{Dyn as DynPeer, Peer};
 pub(crate) use self::peer_settings::PeerSettingsState;
 pub(crate) use self::ping_pong::UserPings;
+pub use self::rate_budget::RateBudget;
 pub(crate) use self::settings::with_local_caps;
 pub(crate) use self::streams::{DynStreams, OpaqueStreamRef, StreamRef, Streams};
 pub(crate) use self::streams::{LocalStreams, Open, PollReset, Prioritized};
 
-use crate::h2::codec::Codec;
+use crate::{h2::codec::Codec, proto::rate_budget};
 
 use self::go_away::GoAway;
 use self::ping_pong::PingPong;
@@ -35,7 +36,6 @@ pub type WindowSize = u32;
 // Constants
 pub const MAX_WINDOW_SIZE: WindowSize = (1 << 31) - 1; // i32::MAX as u32
 pub const DEFAULT_REMOTE_RESET_STREAM_MAX: usize = 20;
-pub const DEFAULT_LOCAL_RESET_COUNT_MAX: usize = 1024;
 // Approximately the memory occupied by one buffered DATA event. Payloads
 // smaller than this consume more internal bookkeeping than useful data.
 pub const DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD: usize = 256;

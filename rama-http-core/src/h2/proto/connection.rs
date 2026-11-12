@@ -108,7 +108,8 @@ pub(crate) struct Config {
     pub reset_stream_duration: Duration,
     pub reset_stream_max: usize,
     pub remote_reset_stream_max: usize,
-    pub local_error_reset_streams_max: Option<usize>,
+    pub max_informational_responses: usize,
+    pub refused_stream_budget: Option<RateBudget>,
     pub settings: frame::Settings,
     pub send_alt_svc: bool,
     pub headers_pseudo_order: Option<PseudoHeaderOrder>,
@@ -191,7 +192,8 @@ where
                     .config
                     .max_concurrent_streams
                     .map(|max| max as usize),
-                local_max_error_reset_streams: config.local_error_reset_streams_max,
+                local_max_informational_responses: config.max_informational_responses,
+                local_refused_stream_budget: config.refused_stream_budget,
                 headers_pseudo_order: config.headers_pseudo_order.clone(),
                 early_frame_ctx: config.early_frame_ctx.clone(),
                 data_frame_budget: config.data_frame_budget,
@@ -282,6 +284,11 @@ where
     #[cfg(feature = "unstable")]
     pub(crate) fn num_wired_streams(&self) -> usize {
         self.inner.streams.num_wired_streams()
+    }
+
+    #[cfg(feature = "unstable")]
+    pub(crate) fn num_refused_streams(&self) -> u64 {
+        self.inner.streams.num_refused_streams()
     }
 
     /// Returns `Ready` when the connection is ready to receive a frame.
