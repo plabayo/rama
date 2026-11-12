@@ -5,6 +5,18 @@
 //! [`HttpMitmRelay`]. WebSocket upgrades use [`HttpUpgradeMitmRelayLayer`]
 //! instead of hand-written ingress/egress tasks.
 //!
+//! Ingress is HTTP/1.1 and HTTP/2 over TCP. A client that tunnels through CONNECT cannot
+//! carry HTTP/3 to its target, so nothing here speaks QUIC. See `quic_h3_mitm_proxy` for
+//! HTTP/3 interception.
+//!
+//! The design is not tied to TCP and can be combined with the QUIC examples to cover UDP
+//! on the same proxy:
+//!
+//! - `quic_h3_mitm_proxy` is the same peek, mirror and relay flow for QUIC, with
+//!   `QuicMitmRelay` and `Http3MitmRelay` taking the same kind of HTTP middleware;
+//! - `masque_connect_udp_proxy` serves CONNECT-UDP next to CONNECT on one listener, which
+//!   is how a client reaches HTTP/3 through an HTTP proxy.
+//!
 //! This example is not production ready. A real deployment should load a
 //! persistent, client-trusted MITM CA and define explicit inspection policy.
 //!
@@ -34,7 +46,7 @@ use rama::{
     graceful::{Scope, WeakScope},
     http::{
         BodyLimitLayer, HeaderName, HeaderValue,
-        client::{EasyHttpWebClient, Http3Connector},
+        client::EasyHttpWebClient,
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
@@ -59,7 +71,6 @@ use rama::{
     io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutputLayer, TimeoutLayer},
     net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
-    quic::tls::BoringTlsProvider,
     service::service_fn,
     tcp::{client::service::TcpConnector, posted_recv::PostedRecvLayer, server::TcpListener},
     telemetry::tracing::{
@@ -110,22 +121,14 @@ async fn main() -> Result<(), BoxError> {
             mitm_svc,
         );
         // Ordinary HTTP forwarding has its own connector and needs the same TCP protection.
-        // Keep the default client's TLS, proxy, HTTP/3, and pooling behavior.
-        let client_scope = weak_scope.clone();
-        let tls_config = TlsClientConfig::default_http();
-        let h3 = Http3Connector::builder(client_scope.clone())
-            .with_tls_config(tls_config.clone())
-            .with_tls_provider(Arc::new(BoringTlsProvider))
-            .build_lazy()
-            .expect("default HTTP/3 configuration is valid");
+        // Keep the default client's TLS, proxy, and pooling behavior; ingress is never HTTP/3.
         let web_client = EasyHttpWebClient::connector_builder()
             .with_custom_transport_connector(PostedRecvLayer::new().into_layer(TcpConnector::new()))
             .with_default_dns_connector()
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
-            .with_tls_support_using_boringssl(tls_config)
-            .with_default_http_connector(client_scope)
-            .with_http3_support(h3)
+            .with_tls_support_using_boringssl(TlsClientConfig::default_http())
+            .with_default_http_connector(weak_scope.clone())
             .with_default_connection_pool()
             .build_client()
             .with_isolate_forward_proxy_auth_error(true);
