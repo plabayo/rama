@@ -11,13 +11,16 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use rama_core::{
     ServiceInput,
     bytes::{Bytes, BytesMut},
     extensions::ExtensionsRef,
+    graceful::{Cause, Scope, attach_scope},
     io::Io,
+    service::service_fn,
 };
 use rama_icap::{
     client::{ClientConnection, PreviewOutcome, WriteOutcome},
@@ -27,11 +30,16 @@ use rama_icap::{
     },
     io::{BodyEnd, ConnectionOptions, Error},
     message::{EncapsulatedParts, IcapTrailerNames, Request, Response, TrailerBlock},
-    proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode, header},
-    server::ServerConnection,
+    proto::{EncapsulatedKind, Method, MethodKind, Preview, ServiceTag, StatusCode, header},
+    server::{
+        IncomingRequest, OutgoingResponse, Server, ServerConnection, ServerError, ServerErrorKind,
+    },
 };
 use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf},
+    time::Instant,
+};
 
 const UNNEGOTIATED_204_RESPONSE: &[u8] = b"ICAP/1.0 204 No Content\r\n\
     ISTag: \"rama-test\"\r\n\
@@ -91,6 +99,83 @@ struct FailShutdownOnceIo<T> {
 struct FailNextReadIo<T> {
     inner: T,
     fail: Arc<AtomicBool>,
+}
+
+/// Reports the end of its input the way a transport does when the peer dropped the
+/// connection with data unread: as an error of `ended_as`, not as a clean end.
+#[derive(ExtensionsRef)]
+struct DroppedPeerIo<T> {
+    inner: T,
+    ended_as: ErrorKind,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for DroppedPeerIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let filled = output.filled().len();
+        match Pin::new(&mut self.inner).poll_read(cx, output) {
+            Poll::Ready(Ok(())) if output.filled().len() == filled => {
+                Poll::Ready(Err(self.ended_as.into()))
+            }
+            read => read,
+        }
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for DroppedPeerIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, input)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+#[derive(ExtensionsRef)]
+struct FailWritesIo<T> {
+    inner: T,
+    write_polled: Arc<AtomicBool>,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for FailWritesIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, output)
+    }
+}
+
+impl<T> AsyncWrite for FailWritesIo<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _input: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.write_polled.store(true, Ordering::Release);
+        Poll::Ready(Err(ErrorKind::BrokenPipe.into()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
 }
 
 #[derive(ExtensionsRef)]
@@ -2087,7 +2172,11 @@ async fn cancelled_early_response_shutdown_is_retried() {
         eof_tx.send(()).unwrap();
     };
     let client = async move {
-        let mut connection = ClientConnection::new(ServiceInput::new(client_io));
+        let mut connection = ClientConnection::with_options(
+            ServiceInput::new(client_io),
+            // The retried shutdown is released by this test, not by its grace.
+            ConnectionOptions::new().with_shutdown_grace(HELD_CLOSE_LIMIT),
+        );
         let mut transaction = connection
             .start(request(
                 Method::Reqmod,
@@ -2137,7 +2226,7 @@ async fn cancelled_early_response_shutdown_is_retried() {
 }
 
 #[tokio::test]
-async fn failed_early_response_shutdown_is_retried() {
+async fn a_failed_early_response_shutdown_keeps_the_response() {
     let (client_io, mut server_io) = tokio::io::duplex(4096);
     let (eof_tx, eof_rx) = tokio::sync::oneshot::channel();
     let client_io = FailShutdownOnceIo {
@@ -2170,8 +2259,10 @@ async fn failed_early_response_shutdown_is_retried() {
             ))
             .await
             .unwrap();
-        let error = transaction.monitor_response().await.unwrap_err();
-        assert_matches!(error, Error::Io(error) if error.kind() == ErrorKind::Other);
+        assert_eq!(
+            transaction.monitor_response().await.unwrap(),
+            WriteOutcome::ResponseAvailable
+        );
 
         let mut response = transaction.finish().await.unwrap();
         assert_eq!(
@@ -2179,17 +2270,23 @@ async fn failed_early_response_shutdown_is_retried() {
             b"adapted"
         );
         drop(response);
+        assert_eq!(
+            close_error_kind(connection.close_error()),
+            Some(ErrorKind::Other)
+        );
         assert!(!connection.is_reusable());
+        // The failed shutdown is not tried again: dropping the connection ends the request.
+        drop(connection);
         tokio::time::timeout(std::time::Duration::from_millis(200), eof_rx)
             .await
-            .expect("peer did not observe the retried shutdown")
+            .expect("peer did not observe the dropped connection")
             .unwrap();
     };
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         tokio::join!(server, client);
     })
     .await
-    .expect("retrying a failed shutdown deadlocked");
+    .expect("a failed shutdown deadlocked");
 }
 
 #[tokio::test(start_paused = true)]
@@ -3825,4 +3922,480 @@ async fn scans_near_limit_frames_linearly_one_byte_at_a_time() {
     tokio::time::timeout(std::time::Duration::from_secs(5), exercise)
         .await
         .expect("near-limit incremental scanning was not linear");
+}
+
+/// Far beyond every shutdown grace used below: a close that waits this long is not bounded.
+const HELD_CLOSE_LIMIT: Duration = Duration::from_mins(10);
+
+const CLOSING_OPTIONS_REQUEST: &[u8] = b"OPTIONS icap://icap.test/echo ICAP/1.0\r\n\
+    Host: icap.test\r\n\
+    Connection: close\r\n\
+    Encapsulated: null-body=0\r\n\r\n";
+
+/// A stream whose write shutdown its peer never lets finish.
+fn held_shutdown<T>(inner: T) -> ServiceInput<BlockShutdownIo<T>> {
+    ServiceInput::new(BlockShutdownIo {
+        inner,
+        release: Arc::default(),
+        shutdown_polled: Arc::default(),
+    })
+}
+
+fn options_with_grace(grace: Duration) -> ConnectionOptions {
+    ConnectionOptions::new().with_shutdown_grace(grace)
+}
+
+/// The kind of failure a connection recorded for a close that did not finish in order.
+fn close_error_kind(error: Option<&Error>) -> Option<ErrorKind> {
+    match error {
+        Some(Error::Io(error)) => Some(error.kind()),
+        Some(other) => panic!("a close records an I/O error, not {other:?}"),
+        None => None,
+    }
+}
+
+/// Answer a closing request on a stream whose shutdown is held, in `scope` if any, aborted
+/// after `abort_after` if set. Returns how long the close took and what the connection
+/// recorded for it; the transaction itself has to complete.
+async fn held_server_close(
+    grace: Duration,
+    scope: Option<&Scope>,
+    abort_after: Option<Duration>,
+) -> (Duration, Option<ErrorKind>) {
+    let (mut client_io, server_io) = tokio::io::duplex(4096);
+    let server_io = held_shutdown(server_io);
+    if let Some(scope) = scope {
+        attach_scope(server_io.extensions(), scope);
+    }
+    let mut connection = ServerConnection::with_options(server_io, options_with_grace(grace));
+    client_io.write_all(CLOSING_OPTIONS_REQUEST).await.unwrap();
+    let transaction = connection.accept().await.unwrap().unwrap();
+    let response = transaction.respond(options_response(true)).await.unwrap();
+    let start = Instant::now();
+    let (closed, ()) = tokio::join!(
+        tokio::time::timeout(HELD_CLOSE_LIMIT, response.finish()),
+        async {
+            if let (Some(scope), Some(after)) = (scope, abort_after) {
+                tokio::time::sleep(after).await;
+                scope.abort(Cause::Reason("test"));
+            }
+        }
+    );
+    closed
+        .expect("the peer held the server's close without a bound")
+        .expect("a held close failed a transaction whose response was written in full");
+    let took = start.elapsed();
+    assert!(connection.is_closed());
+    assert!(!connection.is_reusable());
+    assert!(matches!(
+        connection.accept().await,
+        Err(Error::InvalidState(_))
+    ));
+    assert!(
+        read_raw_head(&mut client_io)
+            .await
+            .starts_with(b"ICAP/1.0 200 OK\r\n")
+    );
+    (took, close_error_kind(connection.close_error()))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_close_its_peer_holds_ends_at_the_shutdown_grace_with_its_response_complete() {
+    let grace = Duration::from_secs(3);
+    let (took, close_error) = held_server_close(grace, None, None).await;
+    assert_eq!(took, grace);
+    assert_eq!(close_error, Some(ErrorKind::TimedOut));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_hard_phase_of_its_scope_ends_a_held_server_close_before_the_grace() {
+    let scope = Scope::new();
+    let abort_after = Duration::from_secs(1);
+    let (took, close_error) =
+        held_server_close(Duration::from_mins(1), Some(&scope), Some(abort_after)).await;
+    assert_eq!(took, abort_after);
+    assert_eq!(close_error, Some(ErrorKind::Interrupted));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_graceful_phase_of_its_scope_leaves_a_server_close_its_grace() {
+    let scope = Scope::new();
+    scope.cancel(Cause::Reason("test"));
+    let grace = Duration::from_secs(3);
+    let (took, close_error) = held_server_close(grace, Some(&scope), None).await;
+    assert_eq!(took, grace);
+    assert_eq!(close_error, Some(ErrorKind::TimedOut));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_close_its_peer_lets_finish_records_nothing() {
+    let (mut client_io, server_io) = tokio::io::duplex(4096);
+    let mut connection = ServerConnection::new(ServiceInput::new(server_io));
+    client_io.write_all(CLOSING_OPTIONS_REQUEST).await.unwrap();
+    let transaction = connection.accept().await.unwrap().unwrap();
+    let response = transaction.respond(options_response(true)).await.unwrap();
+    response.finish().await.unwrap();
+    assert!(connection.is_closed());
+    assert_eq!(close_error_kind(connection.close_error()), None);
+}
+
+/// Serve one request on a stream whose shutdown is held. Returns how long serving took, how
+/// it ended and the status line the peer received.
+async fn serve_over_a_held_close(
+    grace: Duration,
+    request: &[u8],
+) -> (Duration, Result<(), ServerError>, Vec<u8>) {
+    let (mut client_io, server_io) = tokio::io::duplex(4096);
+    let service = service_fn(async |_request: IncomingRequest| {
+        Ok::<_, std::convert::Infallible>(OutgoingResponse::without_body(options_response(true)))
+    });
+    let server = Server::new(service, ServiceTag::from_static("rama-test"))
+        .unwrap()
+        .with_options(options_with_grace(grace));
+    client_io.write_all(request).await.unwrap();
+    let start = Instant::now();
+    let served = tokio::time::timeout(
+        HELD_CLOSE_LIMIT,
+        server.serve_connection(held_shutdown(server_io)),
+    )
+    .await
+    .expect("the peer held the server's close without a bound");
+    let took = start.elapsed();
+    let mut head = read_raw_head(&mut client_io).await;
+    head.truncate(head.iter().position(|byte| *byte == b'\r').unwrap());
+    (took, served, head)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_served_response_whose_close_its_peer_holds_is_not_a_connection_error() {
+    let grace = Duration::from_secs(3);
+    let (took, served, status_line) = serve_over_a_held_close(grace, CLOSING_OPTIONS_REQUEST).await;
+    assert_eq!(took, grace);
+    served.expect("a held close failed a connection whose response was written in full");
+    assert_eq!(status_line, b"ICAP/1.0 200 OK");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_closing_error_response_whose_close_its_peer_holds_is_not_a_connection_error() {
+    let grace = Duration::from_secs(3);
+    let (took, served, status_line) = serve_over_a_held_close(
+        grace,
+        b"OPTIONS /relative ICAP/1.0\r\nHost: icap.test\r\n\r\n",
+    )
+    .await;
+    assert_eq!(took, grace);
+    served.expect("a held close failed a connection whose rejection was written in full");
+    assert_eq!(status_line, b"ICAP/1.0 400 Bad Request");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_closing_response_that_cannot_be_written_still_fails() {
+    let (client_io, server_io) = tokio::io::duplex(4096);
+    let service = service_fn(async |_request: IncomingRequest| {
+        Ok::<_, std::convert::Infallible>(OutgoingResponse::without_body(options_response(true)))
+    });
+    let server = Server::new(service, ServiceTag::from_static("rama-test"))
+        .unwrap()
+        .with_options(options_with_grace(Duration::from_secs(3)));
+    let (mut peer_read, mut peer_write) = tokio::io::split(client_io);
+    peer_write
+        .write_all(b"OPTIONS /relative ICAP/1.0\r\nHost: icap.test\r\n\r\n")
+        .await
+        .unwrap();
+    // The peer is gone before the rejection can reach it.
+    let write_polled = Arc::new(AtomicBool::new(false));
+    let server_io = ServiceInput::new(FailWritesIo {
+        inner: server_io,
+        write_polled: Arc::clone(&write_polled),
+    });
+    let served = tokio::time::timeout(HELD_CLOSE_LIMIT, server.serve_connection(server_io))
+        .await
+        .expect("an unwritable rejection was never given up");
+    assert_eq!(served.unwrap_err().kind(), ServerErrorKind::Connection);
+    assert!(write_polled.load(Ordering::Acquire));
+    let mut received = Vec::new();
+    peer_read.read_to_end(&mut received).await.unwrap();
+    assert!(received.is_empty());
+}
+
+const EARLY_ADAPTED_RESPONSE_HEAD: &[u8] = b"ICAP/1.0 200 OK\r\n\
+    ISTag: \"rama-test\"\r\n\
+    Encapsulated: req-body=0\r\n\r\n";
+
+#[tokio::test(start_paused = true)]
+async fn a_client_whose_close_its_peer_holds_keeps_its_complete_response() {
+    let grace = Duration::from_secs(3);
+    let (client_io, server_io) = tokio::io::duplex(4096);
+    let server = async move {
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
+        let mut transaction = connection.accept().await.unwrap().unwrap();
+        assert_eq!(transaction.next_data().await.unwrap().unwrap(), b"data"[..]);
+        assert!(transaction.next_data().await.unwrap().is_none());
+        assert_eq!(transaction.body_end(), Some(BodyEnd::Complete));
+        let close = Header::new("Connection", b"close").unwrap();
+        let response = Response::new(
+            MethodKind::Reqmod,
+            ResponseLine::new(StatusCode::NO_MODIFICATION_NEEDED, b"No Content").unwrap(),
+            &[Header::new(header::ISTAG, b"\"rama-test\"").unwrap(), close],
+            None,
+        )
+        .unwrap();
+        transaction
+            .respond(response)
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+    };
+    let client = async move {
+        let mut connection =
+            ClientConnection::with_options(held_shutdown(client_io), options_with_grace(grace));
+        let mut transaction = connection.start(preview_request(4)).await.unwrap();
+        assert_eq!(
+            transaction.write_data(b"data").await.unwrap(),
+            WriteOutcome::Written
+        );
+        let start = Instant::now();
+        let outcome = tokio::time::timeout(HELD_CLOSE_LIMIT, transaction.finish_preview(true))
+            .await
+            .expect("the peer held the client's close without a bound")
+            .expect("a held close cost the client a response it had received in full");
+        assert_eq!(start.elapsed(), grace);
+        let PreviewOutcome::Response(response) = outcome else {
+            panic!("a complete Preview ends in a final response");
+        };
+        assert_eq!(
+            response.into_response().unwrap().status(),
+            StatusCode::NO_MODIFICATION_NEEDED
+        );
+        assert_eq!(
+            close_error_kind(connection.close_error()),
+            Some(ErrorKind::TimedOut)
+        );
+        assert!(!connection.is_reusable());
+        assert!(matches!(
+            connection.start(options_request(false)).await,
+            Err(Error::InvalidState(_))
+        ));
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_client_abandoning_its_body_over_a_held_close_keeps_its_response() {
+    let grace = Duration::from_secs(3);
+    let (client_io, server_io) = tokio::io::duplex(4096);
+    let (dropped_tx, mut dropped_rx) = tokio::sync::oneshot::channel();
+    let server = async move {
+        let mut connection = ServerConnection::new(ServiceInput::new(server_io));
+        let transaction = connection.accept().await.unwrap().unwrap();
+        // The server drains the request it answered early until the client ends it.
+        let finished = transaction
+            .respond_early(response(
+                MethodKind::Reqmod,
+                StatusCode::OK,
+                b"OK",
+                Some(EncapsulatedParts::null()),
+            ))
+            .await
+            .unwrap()
+            .finish()
+            .await;
+        // Only the dropped connection ends the request: its close never reached this side.
+        dropped_rx
+            .try_recv()
+            .expect("the server took the request as ended before its client dropped it");
+        finished.unwrap();
+        assert!(connection.is_closed());
+        assert!(!connection.is_reusable());
+    };
+    let client = async move {
+        let mut connection =
+            ClientConnection::with_options(held_shutdown(client_io), options_with_grace(grace));
+        let mut transaction = connection
+            .start(request(
+                Method::Reqmod,
+                request_parts(EncapsulatedKind::RequestBody),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            transaction.write_data(b"part").await.unwrap(),
+            WriteOutcome::Written
+        );
+        assert_eq!(
+            transaction.monitor_response().await.unwrap(),
+            WriteOutcome::ResponseAvailable
+        );
+        let start = Instant::now();
+        let response = tokio::time::timeout(HELD_CLOSE_LIMIT, transaction.abandon())
+            .await
+            .expect("the peer held the client's close without a bound")
+            .expect("a held close cost the client a response it had received in full");
+        assert_eq!(start.elapsed(), grace);
+        assert_eq!(response.into_response().unwrap().status(), StatusCode::OK);
+        assert_eq!(
+            close_error_kind(connection.close_error()),
+            Some(ErrorKind::TimedOut)
+        );
+        assert!(!connection.is_reusable());
+        assert!(matches!(
+            connection.start(options_request(false)).await,
+            Err(Error::InvalidState(_))
+        ));
+        dropped_tx.send(()).unwrap();
+        drop(connection);
+    };
+    tokio::join!(server, client);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_client_reading_an_early_response_body_over_a_held_close_keeps_it() {
+    let grace = Duration::from_secs(3);
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let server = async move {
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"REQMOD "));
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"GET "));
+        // A body-bearing early response: the client closes instead of sending the rest.
+        server_io
+            .write_all(EARLY_ADAPTED_RESPONSE_HEAD)
+            .await
+            .unwrap();
+        server_io
+            .write_all(b"7\r\nadapted\r\n0\r\n\r\n")
+            .await
+            .unwrap();
+        server_io
+    };
+    let client = async move {
+        let mut connection =
+            ClientConnection::with_options(held_shutdown(client_io), options_with_grace(grace));
+        let mut transaction = connection
+            .start(request(
+                Method::Reqmod,
+                request_parts(EncapsulatedKind::RequestBody),
+            ))
+            .await
+            .unwrap();
+        let start = Instant::now();
+        let outcome = tokio::time::timeout(HELD_CLOSE_LIMIT, transaction.monitor_response())
+            .await
+            .expect("the peer held the client's close without a bound")
+            .expect("a held close cost the client a response it was still to read");
+        assert_eq!(start.elapsed(), grace);
+        assert_eq!(outcome, WriteOutcome::ResponseAvailable);
+        // The close is given up once: what follows does not wait for the peer again.
+        let mut response = transaction.finish().await.unwrap();
+        assert_eq!(
+            &collect_client_response(&mut response).await[..],
+            b"adapted"
+        );
+        assert_eq!(response.body_end(), Some(BodyEnd::Complete));
+        drop(response);
+        assert_eq!(start.elapsed(), grace);
+        assert_eq!(
+            close_error_kind(connection.close_error()),
+            Some(ErrorKind::TimedOut)
+        );
+        assert!(!connection.is_reusable());
+    };
+    let (_server_io, ()) = tokio::join!(server, client);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_response_cut_short_over_a_held_close_still_fails() {
+    let grace = Duration::from_secs(3);
+    let (client_io, mut server_io) = tokio::io::duplex(4096);
+    let server = async move {
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"REQMOD "));
+        assert!(read_raw_head(&mut server_io).await.starts_with(b"GET "));
+        server_io
+            .write_all(EARLY_ADAPTED_RESPONSE_HEAD)
+            .await
+            .unwrap();
+        // The response body ends before its terminal chunk.
+        server_io.write_all(b"7\r\nadapted\r\n").await.unwrap();
+    };
+    let client = async move {
+        let mut connection =
+            ClientConnection::with_options(held_shutdown(client_io), options_with_grace(grace));
+        let mut transaction = connection
+            .start(request(
+                Method::Reqmod,
+                request_parts(EncapsulatedKind::RequestBody),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            transaction.monitor_response().await.unwrap(),
+            WriteOutcome::ResponseAvailable
+        );
+        let mut response = transaction.finish().await.unwrap();
+        assert_eq!(
+            &response.next_data().await.unwrap().unwrap()[..],
+            b"adapted"
+        );
+        assert_unexpected_eof(response.next_data().await.unwrap_err());
+        assert_matches!(response.into_response(), Err(Error::InvalidState(_)));
+        assert!(!connection.is_reusable());
+    };
+    tokio::join!(server, client);
+}
+
+/// A client that drops the connection instead of finishing a request answered early has
+/// abandoned it, however its transport reports the drop; any other read failure is one.
+#[tokio::test]
+async fn a_request_its_client_dropped_after_an_early_response_is_abandoned_not_failed() {
+    for (ended_as, abandoned) in [
+        (ErrorKind::UnexpectedEof, true),
+        (ErrorKind::ConnectionReset, true),
+        (ErrorKind::ConnectionAborted, true),
+        (ErrorKind::PermissionDenied, false),
+    ] {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server = async move {
+            let mut connection = ServerConnection::new(DroppedPeerIo {
+                inner: ServiceInput::new(server_io),
+                ended_as,
+            });
+            let transaction = connection.accept().await.unwrap().unwrap();
+            let finished = transaction
+                .respond_early(response(
+                    MethodKind::Reqmod,
+                    StatusCode::OK,
+                    b"OK",
+                    Some(EncapsulatedParts::null()),
+                ))
+                .await
+                .unwrap()
+                .finish()
+                .await;
+            assert_eq!(finished.is_ok(), abandoned, "{ended_as:?}");
+            if abandoned {
+                assert!(connection.is_closed(), "{ended_as:?}");
+            }
+        };
+        let client = async move {
+            let mut connection = ClientConnection::new(ServiceInput::new(client_io));
+            let mut transaction = connection
+                .start(request(
+                    Method::Reqmod,
+                    request_parts(EncapsulatedKind::RequestBody),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                transaction.write_data(b"part").await.unwrap(),
+                WriteOutcome::Written
+            );
+            assert_eq!(
+                transaction.monitor_response().await.unwrap(),
+                WriteOutcome::ResponseAvailable
+            );
+            drop(transaction);
+            drop(connection);
+        };
+        tokio::join!(server, client);
+    }
 }

@@ -3,12 +3,17 @@
 use core::fmt;
 use std::{
     io,
+    pin::pin,
     sync::atomic::{AtomicBool, Ordering},
+    task::Poll,
+    time::Duration,
 };
 
 use rama_core::{
     bytes::{Buf as _, Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef},
+    futures::poll,
+    graceful::{Scope, WeakScope, scope_context},
     io::Io,
 };
 use tokio::io::{
@@ -34,6 +39,13 @@ pub const DEFAULT_READ_BUFFER_BYTES: usize = 8 * 1024;
 /// Default maximum bytes in encapsulated HTTP header sections.
 pub const DEFAULT_MAX_ENCAPSULATED_HEADER_BYTES: usize = 128 * 1024;
 
+/// Default time a peer may hold the write shutdown that closes a connection.
+///
+/// A second lets a peer on a slow link take the last bytes of a close, and keeps a peer
+/// that stopped reading from holding a connection, or the verdict a client waits to hand
+/// on, for longer than that.
+pub const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
+
 /// Bounds and parser policy for an ICAP connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConnectionOptions {
@@ -42,6 +54,7 @@ pub struct ConnectionOptions {
     max_chunk_line_bytes: usize,
     max_encapsulated_header_bytes: usize,
     read_buffer_bytes: usize,
+    shutdown_grace: Duration,
 }
 
 impl ConnectionOptions {
@@ -54,6 +67,7 @@ impl ConnectionOptions {
             max_chunk_line_bytes: DEFAULT_MAX_CHUNK_LINE_BYTES,
             max_encapsulated_header_bytes: DEFAULT_MAX_ENCAPSULATED_HEADER_BYTES,
             read_buffer_bytes: DEFAULT_READ_BUFFER_BYTES,
+            shutdown_grace: DEFAULT_SHUTDOWN_GRACE,
         }
     }
 
@@ -66,6 +80,7 @@ impl ConnectionOptions {
             max_chunk_line_bytes: DEFAULT_MAX_CHUNK_LINE_BYTES,
             max_encapsulated_header_bytes: DEFAULT_MAX_ENCAPSULATED_HEADER_BYTES,
             read_buffer_bytes: DEFAULT_READ_BUFFER_BYTES,
+            shutdown_grace: DEFAULT_SHUTDOWN_GRACE,
         }
     }
 
@@ -112,6 +127,20 @@ impl ConnectionOptions {
         }
     }
 
+    rama_utils::macros::generate_set_and_with! {
+        /// Set how long a peer may hold the write shutdown that closes a connection.
+        ///
+        /// A stream such as TLS finishes its shutdown only once the peer takes what is
+        /// left to send. A shutdown still held after `grace`, or at the hard phase of the
+        /// scope the connection runs in, is given up: the connection is then dropped as
+        /// it is and never reused. A transaction that was complete before its close stays
+        /// complete, and its connection reports the close through `close_error`.
+        pub const fn shutdown_grace(mut self, grace: Duration) -> Self {
+            self.shutdown_grace = grace;
+            self
+        }
+    }
+
     /// Return the ICAP head and trailer parser policy.
     #[must_use]
     pub const fn head_parser(self) -> HeadParserConfig {
@@ -140,6 +169,12 @@ impl ConnectionOptions {
     #[must_use]
     pub const fn read_buffer_bytes(self) -> usize {
         self.read_buffer_bytes
+    }
+
+    /// Return how long a peer may hold the write shutdown that closes a connection.
+    #[must_use]
+    pub const fn shutdown_grace(self) -> Duration {
+        self.shutdown_grace
     }
 }
 
@@ -319,6 +354,51 @@ where
     pub(crate) const fn options(&self) -> &ConnectionOptions {
         &self.read.options
     }
+}
+
+impl<IO> FramedIo<IO>
+where
+    IO: AsyncWrite,
+{
+    /// Shut the write side down in order, in the scope the connection runs in and within the
+    /// shutdown grace. A shutdown its peer still holds at that hard phase or past the grace
+    /// fails, so the owner records it and drops a connection it could not close in order.
+    pub(crate) async fn close(&mut self) -> Result<(), Error> {
+        let scope = scope_context(&self.extensions).unwrap_or_else(WeakScope::detached);
+        if scope.is_aborted() {
+            return Err(close_interrupted());
+        }
+        let grace = self.read.options.shutdown_grace;
+        let mut shutdown = pin!(self.write.shutdown());
+        // A close that needs no peer ends here, with nothing to bound.
+        if let Poll::Ready(closed) = poll!(shutdown.as_mut()) {
+            return closed;
+        }
+        // A closed scope takes no holder: the close then runs below no parent.
+        let held = scope.try_hold().unwrap_or_else(|_closed| Scope::detached());
+        // The hard phase is watched on the scope itself too: a scope that took no holder
+        // still reaches it.
+        let ended = tokio::select! {
+            biased;
+            () = scope.aborted() => None,
+            ended = held.run_until_aborted_within(grace, shutdown) => ended,
+        };
+        match ended {
+            Some(closed) => closed,
+            None if scope.is_aborted() => Err(close_interrupted()),
+            None => Err(Error::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "ICAP write shutdown held by the peer",
+            ))),
+        }
+    }
+}
+
+fn close_interrupted() -> Error {
+    Error::Io(io::Error::new(
+        io::ErrorKind::Interrupted,
+        "ICAP write shutdown cut by the connection's scope",
+    ))
 }
 
 impl<R> FramedRead<R>

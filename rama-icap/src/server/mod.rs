@@ -14,7 +14,7 @@ pub use types::{
 use core::future::Future;
 use std::pin::pin;
 
-use rama_core::{bytes::Bytes, extensions::ExtensionsRef, io::Io};
+use rama_core::{bytes::Bytes, extensions::ExtensionsRef, io::Io, telemetry::tracing};
 use tokio::io::AsyncRead;
 
 use crate::{
@@ -37,6 +37,7 @@ pub struct ServerConnection<IO> {
     framed: FramedIo<IO>,
     closed: bool,
     poisoned: bool,
+    close_error: Option<Error>,
 }
 
 impl<IO> ServerConnection<IO>
@@ -59,6 +60,7 @@ where
             framed: FramedIo::new(io, options),
             closed: false,
             poisoned: false,
+            close_error: None,
         }
     }
 
@@ -72,6 +74,17 @@ where
     #[must_use]
     pub const fn is_closed(&self) -> bool {
         self.closed
+    }
+
+    /// Return why the write side was not closed in order, if a transaction closed it so.
+    ///
+    /// A response written in full completes its transaction. A shutdown the peer then
+    /// held past the [shutdown grace](ConnectionOptions::shutdown_grace), that the
+    /// connection's scope cut, or that the stream failed, leaves that transaction
+    /// complete and the connection closed: dropping it is what the peer then sees.
+    #[must_use]
+    pub const fn close_error(&self) -> Option<&Error> {
+        self.close_error.as_ref()
     }
 
     /// Return the connection bounds and parser policy.
@@ -104,11 +117,22 @@ where
             self.framed.write.flush().await
         }
         .await;
-        let shutdown_result = self.framed.write.shutdown().await;
+        self.close_after_response().await;
+        write_result
+    }
+
+    /// Close the write side after a response. What the peer was owed is already written
+    /// or already failed, so a close that does not finish in order is recorded, not raised.
+    async fn close_after_response(&mut self) {
+        if let Err(error) = self.framed.close().await {
+            tracing::debug!(
+                error = ?error,
+                "ICAP server connection will be dropped without an orderly close",
+            );
+            self.close_error = Some(error);
+        }
         self.closed = true;
         self.poisoned = true;
-        write_result?;
-        shutdown_result
     }
 
     /// Read the next ICAP request head and encapsulated HTTP head sections.
@@ -570,10 +594,11 @@ where
             self.drain_request().await?;
         }
         if self.close {
-            self.connection.framed.write.shutdown().await?;
+            self.connection.close_after_response().await;
+        } else {
+            self.connection.closed = false;
+            self.connection.poisoned = false;
         }
-        self.connection.closed = self.close;
-        self.connection.poisoned = self.close;
         Ok(())
     }
 
@@ -663,10 +688,11 @@ where
             self.drain_request().await?;
         }
         if self.close {
-            self.connection.framed.write.shutdown().await?;
+            self.connection.close_after_response().await;
+        } else {
+            self.connection.closed = false;
+            self.connection.poisoned = false;
         }
-        self.connection.closed = self.close;
-        self.connection.poisoned = self.close;
         Ok(())
     }
 
@@ -757,10 +783,17 @@ fn completed_original_body_len(
     }
 }
 
+/// A client ends a request it need not finish by dropping the connection: seen as the end
+/// of the stream, or as a reset when the drop left data of ours unread.
 fn is_request_abandonment(error: &Error) -> bool {
     matches!(
         error,
-        Error::Io(error) if error.kind() == std::io::ErrorKind::UnexpectedEof
+        Error::Io(error) if matches!(
+            error.kind(),
+            std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+        )
     )
 }
 

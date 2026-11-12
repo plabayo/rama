@@ -16,6 +16,7 @@ use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
     io::Io,
+    telemetry::tracing,
 };
 use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use tokio::io::AsyncRead;
@@ -42,6 +43,7 @@ pub struct ClientConnection<IO> {
     #[extensions_ref]
     framed: FramedIo<IO>,
     poisoned: bool,
+    close_error: Option<Error>,
 }
 
 struct PoisonOnDrop {
@@ -84,6 +86,7 @@ where
             },
             framed: FramedIo::new(io, options),
             poisoned: false,
+            close_error: None,
         }
     }
 
@@ -95,6 +98,18 @@ where
                 .extensions()
                 .get_ref::<ConnectionHealthWatcher>()
                 .is_none_or(|health| health.health() != ConnectionHealth::Broken)
+    }
+
+    /// Return why the write side was not closed in order, if a transaction closed it so.
+    ///
+    /// A closing transaction stops sending and shuts the write side down. A shutdown the
+    /// peer held past the [shutdown grace](ConnectionOptions::shutdown_grace), that the
+    /// connection's scope cut, or that the stream failed, does not fail the transaction:
+    /// its response is still read in full or fails on its own. The connection is not
+    /// reusable either way, and dropping it is what ends the request for the server.
+    #[must_use]
+    pub const fn close_error(&self) -> Option<&Error> {
+        self.close_error.as_ref()
     }
 
     /// Return the connection bounds and parser policy.
@@ -311,7 +326,7 @@ where
     {
         self.ensure_response_read_complete()?;
         if self.pending_response.is_some() {
-            self.ensure_write_shutdown().await?;
+            self.ensure_write_shutdown().await;
             return Ok(SourceOutcome::ResponseAvailable);
         }
         if self.write_in_progress {
@@ -351,7 +366,7 @@ where
     pub async fn write_data(&mut self, data: &[u8]) -> Result<WriteOutcome, Error> {
         self.ensure_response_read_complete()?;
         if self.pending_response_closes() {
-            self.ensure_write_shutdown().await?;
+            self.ensure_write_shutdown().await;
             return Ok(WriteOutcome::ResponseAvailable);
         }
         if self.write_in_progress {
@@ -433,7 +448,7 @@ where
     pub async fn monitor_response(&mut self) -> Result<WriteOutcome, Error> {
         self.ensure_response_read_complete()?;
         if self.pending_response.is_some() {
-            self.ensure_write_shutdown().await?;
+            self.ensure_write_shutdown().await;
             return Ok(WriteOutcome::ResponseAvailable);
         }
         self.response_read_in_progress = true;
@@ -550,7 +565,8 @@ where
     /// Finishing a bodyless response path is preferred. This explicit
     /// fallback satisfies the ICAP requirement to terminate the transport
     /// when the remainder is not sent. Body-bearing early responses already
-    /// take this fallback automatically.
+    /// take this fallback automatically. A close the peer does not let finish
+    /// is reported by [`ClientConnection::close_error`], not as an error here.
     pub async fn abandon(mut self) -> Result<ClientResponse<'a, IO>, Error> {
         self.ensure_response_read_complete()?;
         if self.pending_response.is_none() {
@@ -732,7 +748,7 @@ where
         self.pending_response = Some(PendingResponse { response, close });
         self.response_read_in_progress = false;
         if close {
-            self.ensure_write_shutdown().await?;
+            self.ensure_write_shutdown().await;
         }
         Ok(())
     }
@@ -747,12 +763,20 @@ where
         }
     }
 
-    async fn ensure_write_shutdown(&mut self) -> Result<(), Error> {
+    /// Close the write side once the pending response ends the request. The response is
+    /// already final, so a close that does not finish in order is recorded, not raised:
+    /// the connection is never reused and its drop ends the request for the server.
+    async fn ensure_write_shutdown(&mut self) {
         if self.pending_response_closes() && !self.write_shutdown_complete {
-            self.connection.framed.write.shutdown().await?;
+            if let Err(error) = self.connection.framed.close().await {
+                tracing::debug!(
+                    error = ?error,
+                    "ICAP client connection will be dropped without an orderly close",
+                );
+                self.connection.close_error = Some(error);
+            }
             self.write_shutdown_complete = true;
         }
-        Ok(())
     }
 
     fn pending_response_closes(&self) -> bool {
@@ -765,7 +789,7 @@ where
         mut self,
         original_body_len: Option<u64>,
     ) -> Result<ClientResponse<'a, IO>, Error> {
-        self.ensure_write_shutdown().await?;
+        self.ensure_write_shutdown().await;
         let pending = self
             .pending_response
             .take()
