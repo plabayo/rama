@@ -41,10 +41,11 @@ pub struct DatagramRelayOutcome {
 
 /// Forward a tunnel whose application explicitly selected HTTP Datagram semantics.
 ///
-/// Reliable DATAGRAM capsules stay reliable. Native datagrams use the next hop's
-/// native carrier when available and DATAGRAM capsules otherwise. Unknown capsule
-/// values stream within the configured read bound; their integer headers are
-/// re-encoded minimally, as by [`SessionSender::start_capsule`].
+/// Reliable DATAGRAM capsules stay reliable unless [`Self::with_prefer_native`]
+/// is set. Native datagrams use the next hop's native carrier when available and
+/// DATAGRAM capsules otherwise. Unknown capsule values stream within the configured
+/// read bound; their integer headers are re-encoded minimally, as by
+/// [`SessionSender::start_capsule`].
 ///
 /// While a capsule value is in progress, native input stays in the transport's
 /// bounded queue. No additional datagram queue or whole-capsule buffer is added.
@@ -58,6 +59,7 @@ pub struct HttpDatagramRelay {
     config: SessionConfig,
     idle_timeout: Option<Duration>,
     close_timeout: Option<Duration>,
+    prefer_native: bool,
     scope: WeakScope,
 }
 
@@ -77,6 +79,7 @@ impl HttpDatagramRelay {
             config,
             idle_timeout: Some(Duration::from_mins(2)),
             close_timeout: Some(Duration::from_secs(5)),
+            prefer_native: false,
             scope: WeakScope::detached(),
         }
     }
@@ -95,6 +98,17 @@ impl HttpDatagramRelay {
         /// five seconds; `None` allows it to drain without a close deadline.
         pub fn close_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.close_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Forward DATAGRAM capsules on the next hop's native carrier when available,
+        /// dropping them like native datagrams when it refuses them. RFC 9297 §3.5
+        /// allows this re-encoding, which can lose or reorder datagrams.
+        /// Defaults to `false`.
+        pub fn prefer_native(mut self, prefer: bool) -> Self {
+            self.prefer_native = prefer;
             self
         }
     }
@@ -136,6 +150,7 @@ where
         let config = self.config.clone();
         let idle_timeout = self.idle_timeout;
         let close_timeout = self.close_timeout;
+        let prefer_native = self.prefer_native;
         let scope = self.scope.clone();
         async move {
             let (left_send, left_receive) =
@@ -149,8 +164,8 @@ where
                 (None, None)
             };
             let exchange = try_join_with_drain(
-                forward(left_receive, right_send, progress.clone()),
-                forward(right_receive, left_send, progress),
+                forward(left_receive, right_send, prefer_native, progress.clone()),
+                forward(right_receive, left_send, prefer_native, progress),
                 close_timeout,
                 || {
                     SessionError::Io(io::Error::new(
@@ -195,6 +210,7 @@ async fn idle(progress: Option<watch::Receiver<Instant>>, timeout: Option<Durati
 async fn forward<L: AsyncRead, R: AsyncWrite>(
     mut receive: SessionReceiver<L>,
     mut send: SessionSender<R>,
+    prefer_native: bool,
     progress: Option<watch::Sender<Instant>>,
 ) -> Result<DatagramRelayDirection, SessionError> {
     let mut result = DatagramRelayDirection::default();
@@ -215,7 +231,8 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
             }
             return Ok(result);
         };
-        let sent = forward_event(&mut send, event, &mut result, &mut remaining).await;
+        let sent =
+            forward_event(&mut send, event, prefer_native, &mut result, &mut remaining).await;
         match sent {
             Ok(false) => continue,
             Ok(true) => (),
@@ -231,6 +248,7 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
 async fn forward_event<R: AsyncWrite>(
     send: &mut SessionSender<R>,
     event: SessionEvent,
+    prefer_native: bool,
     result: &mut DatagramRelayDirection,
     remaining: &mut u64,
 ) -> Result<bool, SessionError> {
@@ -238,14 +256,11 @@ async fn forward_event<R: AsyncWrite>(
         SessionEvent::Datagram {
             payload,
             transport: DatagramTransport::Capsule,
-        } => {
+        } if !prefer_native => {
             send.send_capsule(CapsuleType::DATAGRAM, payload).await?;
             result.datagrams = result.datagrams.saturating_add(1);
         }
-        SessionEvent::Datagram {
-            payload,
-            transport: DatagramTransport::Native,
-        } => {
+        SessionEvent::Datagram { payload, .. } => {
             match send.send_datagram(payload).await {
                 Ok(_) => result.datagrams = result.datagrams.saturating_add(1),
                 // Native delivery permits loss. Do not convert an oversize
