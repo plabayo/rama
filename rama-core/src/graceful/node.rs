@@ -406,12 +406,18 @@ impl Node {
 
     /// Moves a deadline earlier, never before the moment it is attached.
     pub(super) fn tighten_deadline(&self, hard: bool, at: Instant) {
+        self.tighten_coming_deadline(hard, at.max(Instant::now()));
+    }
+
+    /// Moves a deadline earlier, to an instant the caller knows is not before the moment it
+    /// is attached: the clock is not read for it.
+    pub(super) fn tighten_coming_deadline(&self, hard: bool, at: Instant) {
         let field = if hard {
             &self.hard_deadline
         } else {
             &self.deadline
         };
-        field.fetch_min(self.offset(at.max(Instant::now())), Ordering::Release);
+        field.fetch_min(self.offset(at), Ordering::Release);
         self.flags.fetch_or(TIMED, Ordering::Release);
         self.waiters.wake_all();
     }

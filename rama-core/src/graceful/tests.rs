@@ -285,6 +285,50 @@ fn parent_hard_deadline_caps_child_grace() {
 }
 
 #[test]
+fn a_child_hard_timeout_only_tightens() {
+    rt().block_on(async {
+        let start = Instant::now();
+        let parent = Scope::new().with_hard_timeout(10 * SEC);
+
+        let tighter = parent.child().with_hard_timeout(2 * SEC);
+        tighter.aborted().await;
+        assert_eq!(start.elapsed(), 2 * SEC);
+        assert!(!parent.is_cancelled(), "a child never ends its parent");
+
+        let looser = parent.child().with_hard_timeout(60 * SEC);
+        let stopped = parent.child().with_hard_timeout(60 * SEC);
+        advance(SEC).await;
+        assert!(!stopped.is_aborted());
+        let unfinished = stopped.run_until_aborted(std::future::pending::<()>());
+        let (flag, waker) = Flag::waker();
+        let mut unfinished = std::pin::pin!(unfinished);
+        assert!(poll(&mut unfinished, &waker).is_pending());
+        parent.abort(Cause::Reason("parent"));
+        assert!(
+            flag.woken(),
+            "an abort of the parent wakes the child's work"
+        );
+        assert_eq!(poll(&mut unfinished, &waker), Poll::Ready(None));
+        assert_eq!(reason(stopped.abort_cause().as_ref()), Some("parent"));
+        assert!(looser.is_aborted());
+    });
+}
+
+#[test]
+fn a_child_hard_timeout_ends_with_the_parent_hard_deadline() {
+    rt().block_on(async {
+        let start = Instant::now();
+        let parent = Scope::new().with_hard_timeout(3 * SEC);
+        let child = parent.child().with_hard_timeout(60 * SEC);
+        assert_eq!(
+            child.run_until_aborted(std::future::pending::<()>()).await,
+            None
+        );
+        assert_eq!(start.elapsed(), 3 * SEC);
+    });
+}
+
+#[test]
 fn overdue_deadline_counts_from_now() {
     rt().block_on(async {
         let past = Instant::now();
@@ -1028,6 +1072,233 @@ fn run_until_yields_the_output_of_a_future_that_finishes_first() {
         scope.cancel(Cause::Owner);
         assert_eq!(scope.run_until_cancelled(async { 3 }).await, None);
         assert_eq!(scope.run_until_aborted(async { 4 }).await, Some(4));
+    });
+}
+
+type Bound<T> = Pin<Box<dyn Future<Output = Option<T>>>>;
+
+/// `future` bound by the hard phase of `scope` and by `timeout`: in one call if `within`,
+/// else through a child with a hard timeout, held while the future runs.
+fn bound<F: Future + 'static>(
+    within: bool,
+    scope: &Scope,
+    timeout: Duration,
+    future: F,
+) -> Bound<F::Output> {
+    if within {
+        return Box::pin(scope.run_until_aborted_within(timeout, future));
+    }
+    let child = scope.child().with_hard_timeout(timeout);
+    Box::pin(async move { child.run_until_aborted(future).await })
+}
+
+/// A future that is pending for ever, and the count of its polls.
+fn counted_pending() -> (Arc<AtomicUsize>, impl Future<Output = ()> + 'static) {
+    let polls = Arc::new(AtomicUsize::new(0));
+    let future = std::future::poll_fn({
+        let polls = polls.clone();
+        move |_cx| {
+            polls.fetch_add(1, Ordering::SeqCst);
+            Poll::Pending
+        }
+    });
+    (polls, future)
+}
+
+#[test]
+fn a_bound_future_that_finishes_first_yields_its_output() {
+    rt().block_on(async {
+        for within in [false, true] {
+            let scope = Scope::new();
+            let start = Instant::now();
+            let work = async {
+                tokio::time::sleep(SEC).await;
+                "done"
+            };
+            assert_eq!(bound(within, &scope, 5 * SEC, work).await, Some("done"));
+            assert_eq!(start.elapsed(), SEC, "within: {within}");
+            assert_eq!(bound(within, &scope, SEC, async { 1 }).await, Some(1));
+        }
+    });
+}
+
+#[test]
+fn a_bound_future_ends_at_its_timeout_and_leaves_the_scope_open() {
+    rt().block_on(async {
+        for within in [false, true] {
+            let scope = Scope::new().with_hard_timeout(60 * SEC);
+            let start = Instant::now();
+            let (flag, waker) = Flag::waker();
+            let mut cut = bound(within, &scope, 2 * SEC, std::future::pending::<()>());
+            assert!(poll(&mut cut, &waker).is_pending());
+            advance(2 * SEC).await;
+            assert!(flag.woken(), "within: {within}");
+            assert_eq!(poll(&mut cut, &waker), Poll::Ready(None));
+            assert_eq!(start.elapsed(), 2 * SEC);
+            assert!(!scope.is_cancelled(), "within: {within}");
+        }
+    });
+}
+
+#[test]
+fn a_bound_future_ends_at_the_hard_phase_of_its_scope() {
+    rt().block_on(async {
+        for within in [false, true] {
+            let start = Instant::now();
+            let timed = Scope::new().with_hard_timeout(3 * SEC);
+            let cut = bound(within, &timed, 60 * SEC, std::future::pending::<()>());
+            assert_eq!(cut.await, None);
+            assert_eq!(start.elapsed(), 3 * SEC, "within: {within}");
+
+            let root = Scope::new();
+            let scope = root.child();
+            let (flag, waker) = Flag::waker();
+            let mut cut = bound(within, &scope, 60 * SEC, std::future::pending::<()>());
+            assert!(poll(&mut cut, &waker).is_pending());
+            root.cancel(Cause::Owner);
+            assert!(poll(&mut cut, &waker).is_pending());
+            root.abort(Cause::Owner);
+            assert!(flag.woken(), "within: {within}");
+            assert_eq!(poll(&mut cut, &waker), Poll::Ready(None));
+        }
+    });
+}
+
+#[test]
+fn a_bound_future_is_never_polled_once_its_bound_is_reached() {
+    rt().block_on(async {
+        for within in [false, true] {
+            let scope = Scope::new();
+
+            let (polls, work) = counted_pending();
+            let mut overdue = bound(within, &scope, Duration::ZERO, work);
+            assert_eq!(poll_noop(&mut overdue), Poll::Ready(None));
+            assert_eq!(polls.load(Ordering::SeqCst), 0, "within: {within}");
+
+            // Made in time, first polled late.
+            let (polls, work) = counted_pending();
+            let mut late = bound(within, &scope, SEC, work);
+            advance(SEC).await;
+            assert_eq!(poll_noop(&mut late), Poll::Ready(None));
+            assert_eq!(polls.load(Ordering::SeqCst), 0, "within: {within}");
+
+            let (polls, work) = counted_pending();
+            let mut cut = bound(within, &scope, SEC, work);
+            assert!(poll_noop(&mut cut).is_pending());
+            assert!(poll_noop(&mut cut).is_pending());
+            advance(SEC).await;
+            assert_eq!(poll_noop(&mut cut), Poll::Ready(None));
+            assert_eq!(polls.load(Ordering::SeqCst), 2, "within: {within}");
+
+            let (polls, work) = counted_pending();
+            let mut stopped = bound(within, &scope, SEC, work);
+            scope.abort(Cause::Owner);
+            assert_eq!(poll_noop(&mut stopped), Poll::Ready(None));
+            assert_eq!(polls.load(Ordering::SeqCst), 0, "within: {within}");
+        }
+    });
+}
+
+#[test]
+fn a_bound_future_wakes_the_task_that_polled_it_last_at_its_timeout() {
+    rt().block_on(async {
+        for within in [false, true] {
+            for polls_before_the_move in 1..=4 {
+                let scope = Scope::new();
+                let (first, first_waker) = Flag::waker();
+                let (last, last_waker) = Flag::waker();
+                let mut cut = bound(within, &scope, SEC, std::future::pending::<()>());
+                for _ in 0..polls_before_the_move {
+                    assert!(poll(&mut cut, &first_waker).is_pending());
+                }
+                assert!(poll(&mut cut, &last_waker).is_pending());
+                advance(SEC).await;
+                assert!(
+                    last.woken(),
+                    "within: {within}, polls: {polls_before_the_move}"
+                );
+                drop(first);
+                assert_eq!(poll(&mut cut, &last_waker), Poll::Ready(None));
+            }
+        }
+    });
+}
+
+#[test]
+fn a_bound_future_holds_its_scope_until_it_ends_or_is_dropped() {
+    rt().block_on(async {
+        for within in [false, true] {
+            let scope = Scope::new();
+            let mut cut = bound(within, &scope, SEC, std::future::pending::<()>());
+            let mut join = Box::pin(scope.join());
+            assert!(poll_noop(&mut join).is_pending(), "within: {within}");
+            assert!(poll_noop(&mut cut).is_pending());
+            assert!(poll_noop(&mut join).is_pending(), "within: {within}");
+            advance(SEC).await;
+            assert_eq!(poll_noop(&mut cut), Poll::Ready(None));
+            assert!(
+                matches!(poll_noop(&mut join), Poll::Ready(Ok(_))),
+                "within: {within}"
+            );
+
+            let scope = Scope::new();
+            let mut done = bound(within, &scope, SEC, async {});
+            let mut join = Box::pin(scope.join());
+            assert_eq!(poll_noop(&mut done), Poll::Ready(Some(())));
+            assert!(
+                matches!(poll_noop(&mut join), Poll::Ready(Ok(_))),
+                "within: {within}"
+            );
+
+            let scope = Scope::new();
+            let mut dropped = bound(within, &scope, SEC, std::future::pending::<()>());
+            let mut join = Box::pin(scope.join());
+            assert!(poll_noop(&mut dropped).is_pending());
+            assert!(poll_noop(&mut join).is_pending(), "within: {within}");
+            drop(dropped);
+            assert!(
+                matches!(poll_noop(&mut join), Poll::Ready(Ok(_))),
+                "within: {within}"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_bound_future_of_a_detached_scope_ends_at_its_timeout() {
+    rt().block_on(async {
+        for within in [false, true] {
+            let start = Instant::now();
+            let scope = Scope::detached();
+            let cut = bound(within, &scope, 2 * SEC, std::future::pending::<()>());
+            assert_eq!(cut.await, None);
+            assert_eq!(start.elapsed(), 2 * SEC, "within: {within}");
+            assert!(!scope.is_aborted());
+        }
+    });
+}
+
+#[test]
+fn a_bound_future_of_a_scope_below_several_parents_ends_with_any_of_them() {
+    rt().block_on(async {
+        for within in [false, true] {
+            let a = Scope::new();
+            let b = Scope::new();
+            let scope = Scope::child_of([&a, &b]);
+            let (flag, waker) = Flag::waker();
+            let mut cut = bound(within, &scope, 60 * SEC, std::future::pending::<()>());
+            assert!(poll(&mut cut, &waker).is_pending());
+            let mut join = Box::pin(a.clone().join());
+            drop((scope, a));
+            assert!(poll_noop(&mut join).is_pending(), "within: {within}");
+            b.abort(Cause::Owner);
+            assert!(flag.woken(), "within: {within}");
+            assert_eq!(poll(&mut cut, &waker), Poll::Ready(None));
+            assert!(
+                matches!(poll_noop(&mut join), Poll::Ready(Ok(_))),
+                "within: {within}"
+            );
+        }
     });
 }
 
@@ -3190,4 +3461,51 @@ fn every_level_of_a_chain_is_judged_at_one_instant() {
         advance(3 * SEC).await;
         assert!(root.is_aborted());
     });
+}
+
+/// A timeout the clock cannot reach is no bound at all, rather than a failure to add it.
+#[tokio::test(start_paused = true)]
+async fn a_bound_past_the_clock_leaves_only_the_scope_to_end_the_run() {
+    let scope = Scope::new();
+    let run = scope.run_until_aborted_within(Duration::MAX, std::future::pending::<()>());
+    tokio::pin!(run);
+    tokio::time::timeout(Duration::from_hours(24), run.as_mut())
+        .await
+        .unwrap_err();
+    scope.abort(Cause::Reason("test"));
+    assert_eq!(run.await, None);
+}
+
+/// What a bounded run owns is gone before its hold on the scope is, at its end as on a drop:
+/// a join that returns never finds the work's resources still alive.
+#[tokio::test(start_paused = true)]
+async fn a_bounded_run_releases_its_future_before_its_hold() {
+    struct HeldAtDrop(WeakScope, Arc<AtomicBool>);
+    impl Drop for HeldAtDrop {
+        fn drop(&mut self) {
+            self.1.store(self.0.try_hold().is_ok(), Ordering::SeqCst);
+        }
+    }
+
+    for timed_out in [true, false] {
+        let scope = Scope::new();
+        let weak = scope.clone_weak();
+        let held_at_drop = Arc::new(AtomicBool::new(false));
+        let guard = HeldAtDrop(weak, held_at_drop.clone());
+        let run = scope.run_until_aborted_within(Duration::from_secs(1), async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        });
+        drop(scope);
+        if timed_out {
+            tokio::pin!(run);
+            assert_eq!(run.as_mut().await, None);
+        } else {
+            drop(run);
+        }
+        assert!(
+            held_at_drop.load(Ordering::SeqCst),
+            "timed out: {timed_out}"
+        );
+    }
 }

@@ -10,6 +10,13 @@
 //! future made, polled once and dropped), `spawn` (a task spawned and awaited), `child` (a
 //! child scope made and dropped), `input` (a child scope with a max age, a grace and a hard
 //! max age made, awaited once and dropped, as a scope layer does per input).
+//!
+//! The `bound_*` modes compare ways to bound one future by the hard phase of the scope and a
+//! timeout of its own, as the close of a tunnel does: `bound_timer` (an `Aborted` future next
+//! to `tokio::time::timeout`), `bound_child` (`run_until_aborted` of a child scope with a hard
+//! timeout), `bound_within` (`run_until_aborted_within`). Each is made, polled once and
+//! dropped; with the suffix `_make` it is made and dropped unpolled, with `_repoll` it is made
+//! once and polled `polls` times.
 
 #![expect(
     clippy::expect_used,
@@ -18,12 +25,13 @@
     reason = "bench: panic-on-error and printing results is the standard pattern for harnesses"
 )]
 
-use rama::graceful::{Cause, Scope};
+use rama::graceful::{Aborted, Cause, Scope};
 use std::future::Future;
 use std::hint::black_box;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
+use tokio::time::{Timeout, timeout};
 
 /// Returns pending and wakes itself `left` times.
 struct Spin {
@@ -154,6 +162,103 @@ async fn serve(scope: Scope, spin: Spin) {
     }
 }
 
+/// The future the `bound_*` modes bound: a close that waits for its peer.
+type Close = std::future::Pending<()>;
+
+/// How long the `bound_*` modes give [`Close`].
+const CLOSE_GRACE: Duration = Duration::from_secs(5);
+
+pin_project_lite::pin_project! {
+    /// What `bound_timer` polls: the hard phase of the scope first, then the timed future.
+    struct TimerBound<F> {
+        #[pin]
+        stop: Aborted,
+        #[pin]
+        timed: Timeout<F>,
+    }
+}
+
+impl<F: Future> Future for TimerBound<F> {
+    type Output = Option<F::Output>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        if this.stop.poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        this.timed.poll(cx).map(Result::ok)
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// A future and the scope held while it runs, as a scope made within an awaited
+    /// expression is.
+    struct Held<F> {
+        scope: Scope,
+        #[pin]
+        future: F,
+    }
+}
+
+impl<F: Future> Future for Held<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.project().future.poll(cx)
+    }
+}
+
+fn bound_timer(scope: &Scope) -> TimerBound<Close> {
+    TimerBound {
+        stop: scope.aborted(),
+        timed: timeout(CLOSE_GRACE, std::future::pending()),
+    }
+}
+
+fn bound_child(scope: &Scope) -> Held<impl Future<Output = Option<()>> + use<>> {
+    let scope = scope.child().with_hard_timeout(CLOSE_GRACE);
+    let future = scope.run_until_aborted(std::future::pending());
+    Held { scope, future }
+}
+
+fn bound_within(scope: &Scope) -> impl Future<Output = Option<()>> + use<> {
+    scope.run_until_aborted_within(CLOSE_GRACE, std::future::pending())
+}
+
+/// Times `polls` rounds of a `bound_*` mode: the future `make` returns is made, polled once
+/// and dropped per round (`stage` empty), made and dropped unpolled (`_make`), or made once
+/// and polled every round (`_repoll`).
+fn bound_rounds<T: Future>(polls: u64, stage: &str, make: impl Fn() -> T) -> Duration {
+    let mut cx = Context::from_waker(Waker::noop());
+    match stage {
+        "" => {
+            let start = Instant::now();
+            for _ in 0..polls {
+                let mut bound = std::pin::pin!(make());
+                assert!(bound.as_mut().poll(&mut cx).is_pending());
+            }
+            start.elapsed()
+        }
+        "_make" => {
+            let start = Instant::now();
+            for _ in 0..polls {
+                drop(black_box(make()));
+            }
+            start.elapsed()
+        }
+        "_repoll" => {
+            let mut bound = std::pin::pin!(make());
+            assert!(bound.as_mut().poll(&mut cx).is_pending());
+            let start = Instant::now();
+            for _ in 0..polls {
+                assert!(black_box(bound.as_mut()).poll(&mut cx).is_pending());
+            }
+            start.elapsed()
+        }
+        other => panic!("unknown stage {other}"),
+    }
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mode = args.next().expect("mode");
@@ -250,7 +355,18 @@ fn main() {
                 }
                 start.elapsed()
             }
-            other => panic!("unknown mode {other}"),
+            other => {
+                let (scope, _keep) = scope.as_ref().expect("a scope shape");
+                if let Some(stage) = other.strip_prefix("bound_timer") {
+                    bound_rounds(polls, stage, || bound_timer(black_box(scope)))
+                } else if let Some(stage) = other.strip_prefix("bound_child") {
+                    bound_rounds(polls, stage, || bound_child(black_box(scope)))
+                } else if let Some(stage) = other.strip_prefix("bound_within") {
+                    bound_rounds(polls, stage, || bound_within(black_box(scope)))
+                } else {
+                    panic!("unknown mode {other}")
+                }
+            }
         }
     });
     #[expect(clippy::cast_precision_loss, reason = "a rate for reading")]

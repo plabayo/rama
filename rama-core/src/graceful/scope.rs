@@ -6,7 +6,7 @@ use std::{
     mem::{self, ManuallyDrop},
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     pin::Pin,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -19,7 +19,7 @@ use super::{
     join::{JoinAborted, Joined},
     node::{Node, Signal, Target, Wait},
     signal::default_signal,
-    sync::{Arc, AtomicU8, Mutex, Ordering, yield_point},
+    sync::{Arc, AtomicU8, Mutex, Ordering, Sleep, sleep_until, yield_point},
 };
 
 pin_project_lite::pin_project! {
@@ -186,7 +186,13 @@ impl Scope {
         /// Cancel this scope once `timeout` passed, counted from now.
         #[no_unset]
         pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
-            self.maybe_set_deadline(timeout.map(|timeout| Instant::now() + timeout));
+            if let Some(timeout) = timeout {
+                self.make_root();
+                // Read once: counted from this instant, the deadline is not before it.
+                let deadline = Instant::now() + timeout;
+                self.nodes
+                    .for_each(|node| node.tighten_coming_deadline(false, deadline));
+            }
             self
         }
     }
@@ -208,7 +214,13 @@ impl Scope {
         /// Abort this scope once `timeout` passed, counted from now.
         #[no_unset]
         pub fn hard_timeout(mut self, timeout: Option<Duration>) -> Self {
-            self.maybe_set_hard_deadline(timeout.map(|timeout| Instant::now() + timeout));
+            if let Some(timeout) = timeout {
+                self.make_root();
+                // Read once: counted from this instant, the deadline is not before it.
+                let deadline = Instant::now() + timeout;
+                self.nodes
+                    .for_each(|node| node.tighten_coming_deadline(true, deadline));
+            }
             self
         }
     }
@@ -317,6 +329,29 @@ impl Scope {
         RunUntil {
             stop: self.aborted(),
             future,
+        }
+    }
+
+    /// Run `future` until this scope is aborted or `timeout` passed, counted from now: `None`
+    /// once either is, the output otherwise.
+    ///
+    /// The same as [`Scope::run_until_aborted`] on a [`Scope::child`] made with
+    /// [`Scope::with_hard_timeout`] and held while `future` runs, without making that child:
+    /// both ends are checked first on every poll, this scope is held until the returned
+    /// future ends or is dropped, so its [`Scope::join`] waits, and the timeout never ends it.
+    pub fn run_until_aborted_within<F: Future>(
+        &self,
+        timeout: Duration,
+        future: F,
+    ) -> impl Future<Output = Option<F::Output>> + use<F> {
+        RunWithin {
+            future: Some(future),
+            stop: self.aborted(),
+            // A timeout past what the clock can tell is no bound: only the scope ends it.
+            deadline: Instant::now().checked_add(timeout),
+            timer: None,
+            armed: None,
+            held: Some(self.clone()),
         }
     }
 
@@ -1233,4 +1268,77 @@ wait_future! {
 wait_future! {
     /// Future returned by [`Scope::drained`]; cancel safe.
     Drained
+}
+
+pin_project_lite::pin_project! {
+    /// `future` raced against the hard phase of a scope and a deadline of its own, both
+    /// checked first.
+    struct RunWithin<F> {
+        // Gone before the hold below is: whatever it owns is released while a join still waits.
+        #[pin]
+        future: Option<F>,
+        stop: Aborted,
+        deadline: Option<Instant>,
+        // Made once `future` is pending: one that ends on its first poll costs no timer.
+        #[pin]
+        timer: Option<Sleep>,
+        // The waker `timer` was last left pending with, kept from its second poll on: a poll
+        // that would wake the same task leaves the timer alone.
+        armed: Option<Waker>,
+        // Held until this ends, as a child scope holds its parent: a join waits meanwhile.
+        held: Option<Scope>,
+    }
+}
+
+impl<F: Future> Future for RunWithin<F> {
+    type Output = Option<F::Output>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+        let output = 'run: {
+            if Pin::new(this.stop).poll(cx).is_ready() {
+                break 'run None;
+            }
+            // Read on every poll: the timer only wakes, and that some time after the deadline.
+            if this
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                break 'run None;
+            }
+            let Some(future) = this.future.as_mut().as_pin_mut() else {
+                break 'run None;
+            };
+            if let Poll::Ready(output) = future.poll(cx) {
+                break 'run Some(output);
+            }
+            if this
+                .armed
+                .as_ref()
+                .is_some_and(|armed| armed.will_wake(cx.waker()))
+            {
+                return Poll::Pending;
+            }
+            let Some(deadline) = *this.deadline else {
+                return Poll::Pending;
+            };
+            let repolled = this.timer.is_some();
+            if !repolled {
+                this.timer.set(Some(sleep_until(deadline)));
+            }
+            let Some(timer) = this.timer.as_pin_mut() else {
+                return Poll::Pending;
+            };
+            if timer.poll(cx).is_pending() {
+                if repolled {
+                    *this.armed = Some(cx.waker().clone());
+                }
+                return Poll::Pending;
+            }
+            None
+        };
+        this.future.set(None);
+        drop(this.held.take());
+        Poll::Ready(output)
+    }
 }
