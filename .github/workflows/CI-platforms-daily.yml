@@ -15,7 +15,12 @@ on:
     # GitHub starts schedules hours late and runs take hours; this lands results by morning.
     - cron: "0 23 * * *"
       timezone: Europe/Brussels
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Job ids to run, space separated (what they need runs too); empty runs every job"
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -56,6 +61,8 @@ jobs:
   # MSRV on Linux and stable on every platform; the per-OS MSRV clippy that is
   # not OS-specific lives here so it stays off the per-push critical path.
   check-rust:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' check-rust ') }}
     permissions:
       contents: read
     timeout-minutes: 120
@@ -128,6 +135,8 @@ jobs:
           fi
 
   test-rust-base:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-rust-base ') }}
     permissions:
       contents: read
     strategy:
@@ -255,6 +264,8 @@ jobs:
           fi
 
   test-quic-interop-qa:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-quic-interop-qa ') }}
     permissions:
       contents: read
     name: test-quic-interop-qa-${{ matrix.backends }}-${{ matrix.toolchain }}-${{ matrix.os }}
@@ -518,6 +529,8 @@ jobs:
         run: just rama-quic/qa-interop-runner rustls-aws-lc
 
   precheck-rust-tier2:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' precheck-rust-tier2 ') }}
     permissions:
       contents: read
     strategy:
@@ -591,6 +604,8 @@ jobs:
         run: just check-tier2 ${{ matrix.target }}
 
   test-rust-linux-gnu-cross-macos:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-rust-linux-gnu-cross-macos ') || contains(format(' {0} ', inputs.only), ' test-rust-linux-gnu-cross-smoke ') }}
     permissions:
       contents: read
     runs-on: macos-latest
@@ -643,6 +658,8 @@ jobs:
           retention-days: 1
 
   test-rust-linux-gnu-cross-windows:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-rust-linux-gnu-cross-windows ') }}
     permissions:
       contents: read
     runs-on: windows-latest
@@ -682,6 +699,8 @@ jobs:
         run: just test-zigbuild-linux-gnu-cli x86_64-unknown-linux-gnu.2.17
 
   test-rust-linux-gnu-cross-smoke:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-rust-linux-gnu-cross-smoke ') }}
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -701,6 +720,8 @@ jobs:
         run: just test-zigbuild-linux-gnu-smoke
 
   cargo-deny-advisories:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' cargo-deny-advisories ') }}
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -717,6 +738,8 @@ jobs:
           command: check advisories
 
   test-rust-e2e-release:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-rust-e2e-release ') }}
     permissions:
       contents: read
     strategy:
@@ -761,6 +784,8 @@ jobs:
           /usr/bin/time -v cargo nextest run --profile ci --build-jobs 2 --all-features --release --workspace --run-ignored=only
 
   test-js-interpreter:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-js-interpreter ') }}
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -808,10 +833,19 @@ jobs:
       - name: Require every daily check to succeed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          ONLY: ${{ inputs.only }}
         run: |
-          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+          if [ -z "$ONLY" ]; then
+            echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+          else
+            # Jobs a manual run left out are skipped; at least one named job must have run.
+            echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")
+              and any(to_entries[]; .key != "precheck-rust" and .value.result == "success")'
+          fi
 
   test-browser-profiles:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-browser-profiles ') }}
     needs: precheck-rust
     name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.transport }}-${{ matrix.mode }}
     permissions:
@@ -964,6 +998,8 @@ jobs:
             ${{ runner.temp }}/browser-evidence/reference.pcapng
 
   test-safari-desktop:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-safari-desktop ') }}
     needs: precheck-rust
     name: browser-safari-macos-${{ matrix.mode }}
     permissions:
@@ -1064,6 +1100,8 @@ jobs:
             ${{ runner.temp }}/safari-full-*/*replay.log
 
   test-embedded-profiles:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-embedded-profiles ') }}
     needs: precheck-rust
     name: embedded-profiles-emulation
     permissions:
@@ -1112,6 +1150,8 @@ jobs:
             ${{ runner.temp }}/embedded-profiles/*/*.log
 
   test-native-relay-contract:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-native-relay-contract ') }}
     needs: precheck-rust
     name: native-relay-${{ matrix.scenario.label }}-${{ matrix.mode }}
     permissions:
@@ -1210,6 +1250,8 @@ jobs:
           path: ${{ runner.temp }}/native-relay/artifacts/
 
   test-android-on-device:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-android-on-device ') }}
     needs: precheck-rust
     name: android-on-device-api-${{ matrix.api }}
     permissions:
@@ -1256,6 +1298,8 @@ jobs:
 
   # Build the optional experimental peer daily to keep source builds off the per-push gate.
   test-masque-interop-curl:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-masque-interop-curl ') }}
     permissions:
       contents: read
     runs-on: ubuntu-24.04

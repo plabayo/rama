@@ -102,7 +102,7 @@ the cell as `unsupported` with an `unsupported_reason` and does not fail the
 job. A WebSocket that reports a protocol is validated as usual.
 
 The H3-only origin's TCP port serves a JS-free bootstrap door ("ラマ | HTTP/3")
-that sends `Alt-Svc: h3` and refreshes once. If loading the report fails or
+that sends `Alt-Svc: h3` and refreshes up to three times, after 1, 2 and 4 seconds. If loading the report fails or
 times out while the browser still shows that door, the cell is `unsupported`:
 "browser stayed on TCP: did not switch to HTTP/3" when it returned over TCP, or
 "browser did not leave the HTTP/3 bootstrap" on the switching page. Only

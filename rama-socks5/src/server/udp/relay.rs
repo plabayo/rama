@@ -63,6 +63,45 @@ pub enum UnspecifiedClientUdpAddressPolicy {
     AnySource,
 }
 
+/// How a UDP ASSOCIATE relay treats a client UDP address the request declares.
+///
+/// An all-zero address is governed by [`UnspecifiedClientUdpAddressPolicy`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum DeclaredClientUdpAddressPolicy {
+    #[default]
+    /// Use the declared address as the client UDP address, whatever the TCP peer is.
+    ///
+    /// Clients behind NAT can declare an address that differs from their TCP peer
+    /// address, at the cost that a client can name a third party as the target of
+    /// the datagrams the relay sends back.
+    Trust,
+    /// Refuse the request unless the declared IP is the TCP peer IP.
+    ///
+    /// The relay then only sends datagrams back to the host that opened the TCP
+    /// connection, at the cost of refusing clients whose UDP address differs from
+    /// it. The match is canonicalized (v4-mapped IPv6 equals plain IPv4), and the
+    /// request is refused when the TCP peer IP is unknown (no [`SocketInfo`] in the
+    /// extensions).
+    ///
+    /// [`SocketInfo`]: rama_net::stream::SocketInfo
+    RequireTcpPeerIp,
+}
+
+impl DeclaredClientUdpAddressPolicy {
+    /// Whether a request declaring `declared` over a TCP connection from `tcp_peer_ip` is served.
+    pub(super) fn accepts(self, declared: IpAddr, tcp_peer_ip: Option<IpAddr>) -> bool {
+        match self {
+            Self::Trust => true,
+            Self::RequireTcpPeerIp => {
+                declared.is_unspecified()
+                    || tcp_peer_ip
+                        .is_some_and(|peer| peer.to_canonical() == declared.to_canonical())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum UdpRelayState {
     ReadNorth(SocketAddress),
@@ -140,7 +179,8 @@ impl UdpSocketRelay {
                             "north socket: received packet (len = {len}; src = {src})",
                         );
 
-                        if !self.accept_north_source(src.into()) {
+                        let src = SocketAddress::from(src);
+                        if !self.north_source_allowed(src) {
                             tracing::debug!(
                                 network.peer.address = %self.client_address.ip_addr,
                                 network.peer.port = %self.client_address.port,
@@ -150,6 +190,16 @@ impl UdpSocketRelay {
                         }
 
                         let mut buf = &self.north_read_buf[..len];
+                        // RFC 1928 §7 reserves the first two bytes as zero: anything else is
+                        // not a datagram of this protocol, and must not pin its source.
+                        if !buf.starts_with(&[0, 0]) {
+                            tracing::debug!(
+                                network.peer.address = %self.client_address.ip_addr,
+                                network.peer.port = %self.client_address.port,
+                                "received north packet with non-zero reserved bytes: drop it",
+                            );
+                            return Ok(None);
+                        }
                         let target_authority = match UdpHeader::read_from(&mut buf).await {
                             Ok(header) => {
                                 if header.fragment_number != 0 {
@@ -185,8 +235,12 @@ impl UdpSocketRelay {
                             },
                         };
 
-                        // remove header from payload
                         let offset = len - buf.len();
+
+                        // Only a datagram the relay forwards selects the client source.
+                        self.pin_north_source(src);
+
+                        // remove header from payload
                         self.north_read_buf.copy_within(offset.., 0);
                         self.north_read_buf.truncate(len-offset);
 
@@ -402,9 +456,13 @@ impl UdpSocketRelay {
 }
 
 impl UdpSocketRelay {
-    fn accept_north_source(&mut self, src: SocketAddress) -> bool {
+    /// Whether `src` may be the client: checked before any work is spent on its datagram.
+    fn north_source_allowed(&self, src: SocketAddress) -> bool {
         if !self.client_address.ip_addr.is_unspecified() {
-            return self.client_address.eq(&src);
+            // Canonical forms, as below: the socket may report the declared IPv4 address
+            // as a v4-mapped IPv6 one, or the other way around.
+            return self.client_address.port == src.port
+                && self.client_address.ip_addr.to_canonical() == src.ip_addr.to_canonical();
         }
 
         match self.unspecified_client_address_policy {
@@ -417,33 +475,42 @@ impl UdpSocketRelay {
                 {
                     return false;
                 }
-                self.pin_or_match_client_source(src)
+                self.matches_pinned_client_source(src)
             }
             UnspecifiedClientUdpAddressPolicy::PinToFirstPacket => {
-                self.pin_or_match_client_source(src)
+                self.matches_pinned_client_source(src)
             }
-            UnspecifiedClientUdpAddressPolicy::AnySource => {
-                self.pinned_client_address = Some(src);
-                true
-            }
+            UnspecifiedClientUdpAddressPolicy::AnySource => true,
         }
     }
 
-    fn pin_or_match_client_source(&mut self, src: SocketAddress) -> bool {
-        if let Some(address) = self.pinned_client_address {
-            address == src
-        } else {
+    fn matches_pinned_client_source(&self, src: SocketAddress) -> bool {
+        self.pinned_client_address
+            .is_none_or(|address| address == src)
+    }
+
+    /// Record an allowed `src` as the client source, once its datagram proved valid.
+    fn pin_north_source(&mut self, src: SocketAddress) {
+        if !self.client_address.ip_addr.is_unspecified() {
+            // Replies go to the declared client in the form this socket reported it.
             self.pinned_client_address = Some(src);
-            true
+            return;
+        }
+        match self.unspecified_client_address_policy {
+            UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp
+            | UnspecifiedClientUdpAddressPolicy::PinToFirstPacket => {
+                self.pinned_client_address.get_or_insert(src);
+            }
+            UnspecifiedClientUdpAddressPolicy::AnySource => {
+                self.pinned_client_address = Some(src);
+            }
         }
     }
 
     fn north_send_address(&self) -> Option<SocketAddress> {
-        if self.client_address.ip_addr.is_unspecified() {
-            self.pinned_client_address
-        } else {
-            Some(self.client_address)
-        }
+        self.pinned_client_address.or_else(|| {
+            (!self.client_address.ip_addr.is_unspecified()).then_some(self.client_address)
+        })
     }
 }
 
@@ -545,7 +612,7 @@ impl UdpSocketRelay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::assert_matches;
+    use std::{assert_matches, net::Ipv4Addr, time::Duration};
 
     // Regression for Bug 2: send_to_north(None) was calling BytesMut::resize() after
     // truncate(0), which filled the buffer with N zeros before appending header+data,
@@ -708,13 +775,13 @@ mod tests {
         let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
-        let mut relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096)
+        let relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096)
             .with_unspecified_client_address_policy(
                 UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp,
                 Some(std::net::IpAddr::from([127, 0, 0, 2])),
             );
 
-        assert!(!relay.accept_north_source(SocketAddress::local_ipv4(12345)));
+        assert!(!relay.north_source_allowed(SocketAddress::local_ipv4(12345)));
     }
 
     #[tokio::test]
@@ -731,9 +798,10 @@ mod tests {
 
         // First packet from the matching TCP peer IP is accepted and pins the
         // full (ip, port) source.
-        assert!(relay.accept_north_source(SocketAddress::local_ipv4(40000)));
+        assert!(relay.north_source_allowed(SocketAddress::local_ipv4(40000)));
+        relay.pin_north_source(SocketAddress::local_ipv4(40000));
         // A later packet from the same IP but a different port is rejected.
-        assert!(!relay.accept_north_source(SocketAddress::local_ipv4(40001)));
+        assert!(!relay.north_source_allowed(SocketAddress::local_ipv4(40001)));
         // North-bound replies now target the pinned source.
         assert_eq!(
             relay.north_send_address(),
@@ -750,13 +818,13 @@ mod tests {
         // A v4-mapped IPv6 TCP peer (as a dual-stack listener reports an IPv4
         // client) must match the plain IPv4 UDP source.
         let v4_mapped = std::net::Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped();
-        let mut relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096)
+        let relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096)
             .with_unspecified_client_address_policy(
                 UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp,
                 Some(std::net::IpAddr::V6(v4_mapped)),
             );
 
-        assert!(relay.accept_north_source(SocketAddress::local_ipv4(40000)));
+        assert!(relay.north_source_allowed(SocketAddress::local_ipv4(40000)));
     }
 
     #[tokio::test]
@@ -778,5 +846,116 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(relay.north_send_address(), None);
+    }
+
+    fn north_packet(payload: &[u8]) -> BytesMut {
+        let header = UdpHeader {
+            fragment_number: 0,
+            destination: SocketAddress::local_ipv4(9999).into(),
+        };
+        let mut packet = BytesMut::new();
+        header.write_to_buf(&mut packet).unwrap();
+        packet.extend_from_slice(payload);
+        packet
+    }
+
+    async fn recv_one(relay: &mut UdpSocketRelay) -> Option<UdpRelayState> {
+        tokio::time::timeout(Duration::from_millis(500), relay.recv())
+            .await
+            .expect("timed out")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_recv_north_invalid_datagram_does_not_pin_its_source() {
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let north_addr = north.local_addr().unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut relay =
+            UdpSocketRelay::new(SocketAddress::default_ipv4(0), north, 4096, south, 4096);
+
+        let mut fragment = north_packet(b"data");
+        fragment[2] = 1;
+        let mut reserved = north_packet(b"data");
+        reserved[1] = 1;
+        let stranger = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        for invalid in [&b"\xff"[..], &fragment[..], &reserved[..]] {
+            stranger.send_to(invalid, north_addr).await.unwrap();
+            assert!(recv_one(&mut relay).await.is_none());
+            assert_eq!(relay.north_send_address(), None);
+        }
+
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client
+            .send_to(&north_packet(b"data"), north_addr)
+            .await
+            .unwrap();
+        assert_matches!(
+            recv_one(&mut relay).await,
+            Some(UdpRelayState::ReadNorth(_))
+        );
+        assert_eq!(
+            relay.north_send_address(),
+            Some(client.local_addr().unwrap().into())
+        );
+
+        // The source that only sent invalid datagrams stays locked out once pinned.
+        stranger
+            .send_to(&north_packet(b"data"), north_addr)
+            .await
+            .unwrap();
+        assert!(recv_one(&mut relay).await.is_none());
+    }
+
+    /// A client declared by a v4-mapped address is the one the socket reports as IPv4, and
+    /// replies go to the form the socket reported.
+    #[tokio::test]
+    async fn test_recv_north_declared_mapped_address_matches_its_ipv4_source() {
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let north_addr = north.local_addr().unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client.local_addr().unwrap();
+        let declared = SocketAddress::new(
+            IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped()),
+            client_addr.port(),
+        );
+        let mut relay = UdpSocketRelay::new(declared, north, 4096, south, 4096);
+        assert_eq!(relay.north_send_address(), Some(declared));
+
+        client
+            .send_to(&north_packet(b"data"), north_addr)
+            .await
+            .unwrap();
+        assert_matches!(
+            recv_one(&mut relay).await,
+            Some(UdpRelayState::ReadNorth(_))
+        );
+        assert_eq!(relay.north_send_address(), Some(client_addr.into()));
+    }
+
+    #[test]
+    fn test_declared_client_addr_policy_compares_with_tcp_peer_ip() {
+        let v4 = IpAddr::from([192, 0, 2, 1]);
+        let v4_mapped = IpAddr::V6(Ipv4Addr::new(192, 0, 2, 1).to_ipv6_mapped());
+        let other = IpAddr::from([192, 0, 2, 2]);
+        let unspecified = IpAddr::from([0, 0, 0, 0]);
+
+        for (declared, tcp_peer_ip, strict_accepts) in [
+            (v4, Some(v4), true),
+            (v4, Some(v4_mapped), true),
+            (v4_mapped, Some(v4), true),
+            (v4, Some(other), false),
+            (v4, None, false),
+            (unspecified, Some(other), true),
+            (unspecified, None, true),
+        ] {
+            assert!(DeclaredClientUdpAddressPolicy::Trust.accepts(declared, tcp_peer_ip));
+            assert_eq!(
+                DeclaredClientUdpAddressPolicy::RequireTcpPeerIp.accepts(declared, tcp_peer_ip),
+                strict_accepts,
+                "declared: {declared}, tcp peer: {tcp_peer_ip:?}",
+            );
+        }
     }
 }

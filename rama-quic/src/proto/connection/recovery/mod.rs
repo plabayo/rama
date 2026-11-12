@@ -569,15 +569,6 @@ impl Connection {
         let backoff = 2u32.pow(self.pto_count.min(MAX_BACKOFF_EXPONENT));
         let mut duration = self.path.rtt.pto_base() * backoff;
 
-        if self.in_flight_ack_eliciting() == 0 {
-            debug_assert!(!self.peer_completed_address_validation());
-            let space = match self.highest_space {
-                SpaceId::Handshake => SpaceId::Handshake,
-                _ => SpaceId::Initial,
-            };
-            return Some((now + duration, space));
-        }
-
         let mut result = None;
         for space in SpaceId::iter() {
             if !self.spaces[space].has_in_flight() {
@@ -587,7 +578,7 @@ impl Connection {
                 // TLS completion alone does not confirm a client's handshake.
                 // RFC 9002 §6.2.1 forbids Data PTO until confirmation.
                 if !self.handshake_confirmed() {
-                    return result;
+                    break;
                 }
                 // Include max_ack_delay and backoff for ApplicationData.
                 duration += self.ack_frequency.max_ack_delay_for_pto() * backoff;
@@ -601,7 +592,20 @@ impl Connection {
                 result = Some((pto, space));
             }
         }
-        result
+        result.or_else(|| {
+            if self.peer_completed_address_validation() {
+                return None;
+            }
+            // RFC 9002 §6.2.2.1: the client must keep probing until the server has
+            // validated its address. Outstanding 0-RTT cannot supply a Data PTO
+            // before confirmation, and can fill the window before Finished is sent.
+            let space = if self.spaces[SpaceId::Handshake].crypto.is_some() {
+                SpaceId::Handshake
+            } else {
+                SpaceId::Initial
+            };
+            Some((now + duration, space))
+        })
     }
 
     fn peer_completed_address_validation(&self) -> bool {

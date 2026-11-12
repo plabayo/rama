@@ -380,7 +380,8 @@ pub struct ServerConfig {
     /// Whether to allow clients to migrate to new addresses
     ///
     /// Improves behavior for clients that move between different internet connections or suffer NAT
-    /// rebinding. Enabled by default.
+    /// rebinding. Enabled by default. When disabled, a client address change during
+    /// the handshake is also rejected, including an involuntary NAT rebinding.
     pub(crate) migration: bool,
 
     pub(crate) preferred_address_v4: Option<SocketAddrV4>,
@@ -550,7 +551,8 @@ impl ServerConfig {
         /// Whether to allow clients to migrate to new addresses
         ///
         /// Improves behavior for clients that move between different internet connections or suffer NAT
-        /// rebinding. Enabled by default.
+        /// rebinding. Enabled by default. When disabled, a client address change during
+        /// the handshake is also rejected, including an involuntary NAT rebinding.
         pub fn migration(mut self, value: bool) -> Self {
             self.migration = value;
             self

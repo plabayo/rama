@@ -6,8 +6,8 @@ use rama_boring::{
     error::ErrorStack,
     ex_data::Index,
     ssl::{
-        AlpnError, ClientHello, NameType, Ssl, SslAcceptorBuilder, SslCurve, SslOptions, SslRef,
-        SslSignatureAlgorithm,
+        AlpnError, ClientHello, ExtensionType, NameType, SelectCertError, Ssl, SslAcceptorBuilder,
+        SslCurve, SslOptions, SslRef, SslSignatureAlgorithm,
     },
 };
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
@@ -17,7 +17,10 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
-use rama_net::{address::Domain, tls::ApplicationProtocol};
+use rama_net::{
+    address::Domain,
+    tls::{AlpnPolicy, ApplicationProtocol},
+};
 use rama_tls::{
     CertificateCompressionAlgorithm, KeyLogIntent, ProtocolVersion,
     client::ClientHello as RamaClientHello,
@@ -238,6 +241,8 @@ pub(super) struct TlsConfig {
     pub(super) cert_source: TlsCertSource,
     /// Optionally set the ALPN protocols supported by the service's inner application service.
     pub(super) alpn_protocols: Option<Vec<ApplicationProtocol>>,
+    /// Whether a handshake that agrees on no application protocol fails.
+    pub(super) require_alpn: bool,
     /// Optionally write logging information to facilitate tls interception.
     pub(super) keylog_intent: KeyLogIntent,
     /// optionally define protocol versions to support
@@ -262,6 +267,16 @@ impl TlsConfig {
         };
         use rama_tls::keylog::{KeyLogSink, open_intent_sink};
         let mut builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())?;
+        if self.require_alpn {
+            // The ALPN selection only runs for a client that offers protocols.
+            builder.set_select_certificate_callback(|client_hello| {
+                if offers_alpn(&client_hello) {
+                    Ok(())
+                } else {
+                    Err(SelectCertError::ERROR)
+                }
+            });
+        }
         builder.set_grease_enabled(true);
         for (version, minimum) in [
             (self.protocol_versions.iter().flatten().min(), true),
@@ -290,8 +305,16 @@ impl TlsConfig {
             builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
         }
         if let Some(protocols) = self.alpn_protocols.clone() {
+            let require_alpn = self.require_alpn;
             builder.set_alpn_select_callback(move |_, offered| {
-                select_alpn_by_server_preference(&protocols, offered)
+                // RFC 7301 3.2: without a shared protocol "the server SHALL respond with a fatal "no_application_protocol" alert".
+                select_alpn_by_server_preference(&protocols, offered).map_err(|error| {
+                    if require_alpn {
+                        AlpnError::ALERT_FATAL
+                    } else {
+                        error
+                    }
+                })
             });
         }
         if let Some(sink) = open_intent_sink(&self.keylog_intent)? {
@@ -470,17 +493,24 @@ impl TlsCertSource {
 
     /// Present this source's certificates on every connection of the context `builder`
     /// builds, reading each connection's [`ConnectionState`].
+    ///
+    /// With `require_alpn` a ClientHello that offers no ALPN at all is refused here:
+    /// the ALPN selection only runs for clients that offer protocols.
     pub(super) fn install(
         self,
         mut builder: SslAcceptorBuilder,
         store_client_hello: bool,
+        require_alpn: bool,
     ) -> Result<SslAcceptorBuilder, BoxError> {
         let state_index = connection_state_index()?;
         if let TlsCertSourceKind::InMemory(issued_cert) = &self.kind {
             install_identity(&mut builder, issued_cert, self.signing_prefs.as_deref())?;
 
-            if store_client_hello {
+            if store_client_hello || require_alpn {
                 builder.set_select_certificate_callback(move |boring_client_hello| {
+                    if require_alpn && !offers_alpn(&boring_client_hello) {
+                        return Err(SelectCertError::ERROR);
+                    }
                     if let Some(sink) = boring_client_hello
                         .ssl()
                         .ex_data(state_index)
@@ -495,6 +525,9 @@ impl TlsCertSource {
         }
 
         builder.set_async_select_certificate_callback(move |client_hello| {
+            if require_alpn && !offers_alpn(client_hello) {
+                return Err(AsyncSelectCertError {});
+            }
             let rama_client_hello = rama_client_hello(client_hello);
             let ssl_ref = client_hello.ssl_mut();
             let state = ssl_ref.ex_data(state_index);
@@ -547,6 +580,12 @@ impl TlsCertSource {
 
         Ok(builder)
     }
+}
+
+fn offers_alpn(client_hello: &ClientHello<'_>) -> bool {
+    client_hello
+        .get_extension(ExtensionType::APPLICATION_LAYER_PROTOCOL_NEGOTIATION)
+        .is_some()
 }
 
 fn rama_client_hello(client_hello: &ClientHello<'_>) -> Option<RamaClientHello> {
@@ -696,6 +735,14 @@ impl TryFrom<super::config::BoringTlsAcceptorConfig<'_>> for TlsConfig {
             native_unique(schemes.0.iter().filter_map(|s| (*s).rama_try_into().ok())).into()
         });
 
+        let alpn_protocols = value.alpn.map(|a| a.0.to_vec());
+        let require_alpn = matches!(value.alpn_policy, Some(AlpnPolicy::Require));
+        if require_alpn && alpn_protocols.as_ref().is_none_or(Vec::is_empty) {
+            return Err(BoxError::from_static_str(
+                "boring/TlsAcceptorData: ALPN is required but no ALPN protocols are configured",
+            ));
+        }
+
         Ok(Self {
             cert_source: TlsCertSource {
                 kind: cert_source_kind,
@@ -704,7 +751,8 @@ impl TryFrom<super::config::BoringTlsAcceptorConfig<'_>> for TlsConfig {
             cipher_list,
             curves,
             cert_compression: value.cert_compression.map(|c| c.0.clone()),
-            alpn_protocols: value.alpn.map(|a| a.0.to_vec()),
+            alpn_protocols,
+            require_alpn,
             keylog_intent: value.keylog.map(|k| k.0.clone()).unwrap_or_default(),
             protocol_versions: value.versions.map(|v| v.0.clone()),
             client_cert_chain,

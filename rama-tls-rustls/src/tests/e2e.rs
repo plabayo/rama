@@ -2,7 +2,7 @@ use rama_core::conversion::RamaTryFrom;
 use rama_core::{Layer, Service as _, ServiceInput};
 use rama_crypto::cert::generate_server_auth;
 use rama_crypto::pki_types::{CertificateDer, ServerName};
-use rama_net::{address::Host, stream::service::EchoService};
+use rama_net::{address::Host, stream::service::EchoService, tls::AlpnPolicy};
 use rama_tls::{
     client::{
         DistrustedServerKeys, DynTlsServerCertChainPolicy, ServerCertChain, ServerCertChainKind,
@@ -16,7 +16,10 @@ use rama_tls::{
 };
 
 use crate::client::{RustlsTlsConnectorConfig, TlsConnectorData};
-use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
+use crate::dep::{
+    rustls::ServerConfig,
+    tokio_rustls::{TlsAcceptor as RustlsAcceptor, TlsConnector as RustlsConnector},
+};
 use crate::server::TlsAcceptorLayer;
 
 async fn connect_to_pinned_server(
@@ -688,5 +691,88 @@ async fn omitted_root_is_in_the_verified_path_and_distrust_applies() {
         })
         .await;
         assert!(!ok, "{name}: omitted distrusted anchor accepted");
+    }
+}
+
+/// Whether a client completes a handshake with a server accepting HTTP/2 and HTTP/1.1.
+async fn connects_with_alpn(
+    policy: Option<AlpnPolicy>,
+    offer: impl FnOnce(TlsClientConfig) -> TlsClientConfig,
+    native: bool,
+) -> bool {
+    crate::ensure_default_crypto_provider();
+
+    let (cert_chain, private_key) =
+        generate_server_auth(GeneratedServerAuthConfig::default()).expect("generated server auth");
+    let trust_anchor = cert_chain.last().expect("certificate chain").clone();
+    let server_config = TlsServerConfig::new()
+        .with_single_cert(ServerAuthData {
+            cert_chain,
+            private_key,
+            ocsp: None,
+        })
+        .with_alpn_http_auto();
+    let server_config = match policy {
+        Some(policy) => server_config.with_alpn_policy(policy),
+        None => server_config,
+    };
+    let native_config = native.then(|| ServerConfig::rama_try_from(&server_config).unwrap());
+    let server = TlsAcceptorLayer::new(server_config).into_layer(EchoService::new());
+
+    let server_name = Host::from_static("localhost");
+    let client_config = offer(
+        TlsClientConfig::new()
+            .with_server_name(server_name.clone())
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    );
+    let connector_data = TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
+        client_config.as_extensions(),
+    ))
+    .expect("client connector data");
+
+    let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
+    let handle = tokio::spawn(async move {
+        if let Some(config) = native_config {
+            drop(
+                RustlsAcceptor::from(std::sync::Arc::new(config))
+                    .accept(stream_server)
+                    .await,
+            );
+        } else {
+            drop(server.serve(ServiceInput::new(stream_server)).await);
+        }
+    });
+    let connector = RustlsConnector::from(connector_data.client_config);
+    let tls_server_name = ServerName::rama_try_from(server_name).expect("tls server name");
+    let connected = connector
+        .connect(tls_server_name, stream_client)
+        .await
+        .is_ok();
+    drop(handle.await);
+    connected
+}
+
+/// An offer naming no configured protocol never completes, and one naming none at all
+/// completes unless an application protocol is required.
+#[tokio::test]
+async fn a_handshake_without_an_alpn_offer_fails_only_when_alpn_is_required() {
+    for policy in [
+        None,
+        Some(AlpnPolicy::OutOfBandAgreement),
+        Some(AlpnPolicy::Require),
+    ] {
+        let required = policy == Some(AlpnPolicy::Require);
+        for native in [false, true] {
+            assert!(
+                connects_with_alpn(policy, TlsClientConfig::with_alpn_http_2, native).await,
+                "{policy:?}, native: {native}"
+            );
+            assert_eq!(
+                connects_with_alpn(policy, |config| config, native).await,
+                !required,
+                "{policy:?}, native: {native}"
+            );
+        }
     }
 }

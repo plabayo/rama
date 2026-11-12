@@ -80,10 +80,10 @@ async fn consecutive_refusals_survive_write_backpressure() {
     const STREAMS: u32 = 2000;
     // Allow only the initial SETTINGS (15 bytes) and its ACK (9 bytes).
     let (io, mut client) = mock::new_with_write_capacity(24);
-    // Exactly one local reset per refused stream fits the limit.
+    // Exactly one token per refused stream fits the budget.
     let builder = server::Builder::new()
         .with_max_concurrent_streams(0)
-        .with_max_local_error_reset_streams(STREAMS as usize);
+        .with_refused_stream_budget(RateBudget::lifetime(STREAMS));
 
     client.write_preface().await;
     client.send_frame(frame::Settings::default()).await;
@@ -898,7 +898,7 @@ async fn sends_reset_no_error_when_req_body_is_dropped() {
 }
 
 #[tokio::test]
-async fn early_response_no_error_resets_do_not_affect_local_limit() {
+async fn early_response_no_error_resets_do_not_draw_on_the_refused_stream_budget() {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -907,7 +907,7 @@ async fn early_response_no_error_resets_do_not_affect_local_limit() {
         assert_default_settings!(settings);
 
         // Leave each request body open so dropping it after the response
-        // schedules an early-response NO_ERROR reset. Exceed the error limit.
+        // schedules an early-response NO_ERROR reset. More of them than the budget covers.
         for id in [1, 3, 5] {
             client
                 .send_frame(frames::headers(id).request("POST", "https://example.com/"))
@@ -934,7 +934,7 @@ async fn early_response_no_error_resets_do_not_affect_local_limit() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .with_max_local_error_reset_streams(1)
+            .with_refused_stream_budget(RateBudget::lifetime(1))
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -1819,7 +1819,7 @@ async fn send_reset_explicitly() {
 }
 
 #[tokio::test]
-async fn send_reset_explicitly_does_not_affect_local_limit() {
+async fn explicit_resets_do_not_draw_on_the_refused_stream_budget() {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -1842,7 +1842,7 @@ async fn send_reset_explicitly_does_not_affect_local_limit() {
 
     let srv = async move {
         let mut srv = server::Builder::new()
-            .with_max_local_error_reset_streams(3)
+            .with_refused_stream_budget(RateBudget::lifetime(3))
             .handshake::<_, Bytes>(io)
             .await
             .expect("handshake");
@@ -1859,7 +1859,7 @@ async fn send_reset_explicitly_does_not_affect_local_limit() {
 }
 
 #[tokio::test]
-async fn refused_requests_count_toward_local_reset_limit() {
+async fn refused_requests_draw_on_the_refused_stream_budget() {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -1878,7 +1878,7 @@ async fn refused_requests_count_toward_local_reset_limit() {
                 client.recv_frame(frames::reset(id).refused()).await;
             } else {
                 client
-                    .recv_frame(frames::go_away(0).calm().data("too_many_internal_resets"))
+                    .recv_frame(frames::go_away(0).calm().data("too_many_refused_streams"))
                     .await;
             }
         }
@@ -1887,7 +1887,7 @@ async fn refused_requests_count_toward_local_reset_limit() {
     let srv = async move {
         let mut conn = server::Builder::new()
             .with_max_concurrent_streams(0)
-            .with_max_local_error_reset_streams(2)
+            .with_refused_stream_budget(RateBudget::lifetime(2))
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();

@@ -1,4 +1,5 @@
 use super::*;
+use crate::h2::proto::rate_budget::{RateBudgetExhausted, RefusedStreams};
 use rama_core::telemetry::tracing;
 use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
 use std::sync::{
@@ -109,15 +110,10 @@ pub(super) struct Counts {
     /// Current number of "pending accept" streams that were remotely reset
     num_remote_reset_streams: usize,
 
-    /// Maximum number of locally reset streams due to protocol error across
-    /// the lifetime of the connection.
+    /// Streams refused or reset for what the peer sent, and the budget they draw on.
     ///
-    /// When this gets exceeded, we issue GOAWAYs.
-    max_local_error_reset_streams: Option<usize>,
-
-    /// Total number of locally reset streams due to protocol error across the
-    /// lifetime of the connection.
-    num_local_error_reset_streams: usize,
+    /// When this gets exhausted, we issue GOAWAYs.
+    refused_streams: RefusedStreams,
 
     /// connection-level budget for DATA framing overhead.
     data_frame_budget: Budget,
@@ -146,8 +142,7 @@ impl Counts {
             num_local_reset_streams: 0,
             max_remote_reset_streams: config.remote_reset_max,
             num_remote_reset_streams: 0,
-            max_local_error_reset_streams: config.local_max_error_reset_streams,
-            num_local_error_reset_streams: 0,
+            refused_streams: RefusedStreams::new(config.local_refused_stream_budget),
             data_frame_budget: Budget::new(config.data_frame_budget.resolve(None)),
             data_frame_budget_is_auto: config.data_frame_budget.is_auto(),
             num_recv_empty_data_frames: 0,
@@ -220,24 +215,21 @@ impl Counts {
         self.num_send_streams != 0 || self.num_recv_streams != 0
     }
 
-    /// Returns true if we can issue another local reset due to protocol error.
-    pub(super) fn can_inc_num_local_error_resets(&self) -> bool {
-        if let Some(max) = self.max_local_error_reset_streams {
-            max > self.num_local_error_reset_streams
+    /// Charge one stream refused or reset for what the peer sent, unless the connection
+    /// is out of budget.
+    pub(super) fn refuse_stream(&mut self) -> Result<(), RateBudgetExhausted> {
+        let role = if self.peer.is_server() {
+            "server"
         } else {
-            true
-        }
+            "client"
+        };
+        self.refused_streams.charge("h2", role)
     }
 
-    pub(super) fn inc_num_local_error_resets(&mut self) {
-        debug_assert!(self.can_inc_num_local_error_resets());
-
-        // Increment the number of remote initiated streams
-        self.num_local_error_reset_streams += 1;
-    }
-
-    pub(super) fn max_local_error_resets(&self) -> Option<usize> {
-        self.max_local_error_reset_streams
+    /// The streams refused or reset for what the peer sent, over the connection's life.
+    #[cfg(feature = "unstable")]
+    pub(super) fn num_refused_streams(&self) -> u64 {
+        self.refused_streams.total()
     }
 
     /// Returns true if the receive stream concurrency can be incremented
@@ -452,7 +444,8 @@ mod tests {
             remote_reset_max: 0,
             remote_init_window_sz: DEFAULT_INITIAL_WINDOW_SIZE,
             remote_max_initiated: None,
-            local_max_error_reset_streams: None,
+            local_max_informational_responses: 0,
+            local_refused_stream_budget: None,
             headers_pseudo_order: None,
             early_frame_ctx: rama_http_types::proto::h2::frame::EarlyFrameStreamContext::new_nop(),
             data_frame_budget: DataFrameBudget::Configured(DEFAULT_DATA_FRAME_BUDGET),

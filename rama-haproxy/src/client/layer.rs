@@ -270,6 +270,13 @@ fn proxy_source(input: &impl ExtensionsRef, conn: &impl ExtensionsRef) -> Option
         .clone_to_if_absent::<Forwarded>(conn)
         .and_then(|forwarded| {
             let policy = input.clone_to_if_absent::<ForwardedSelectionPolicy>(conn);
+            // A chain from a peer the policy does not trust names no source: the peer does.
+            if policy
+                .as_deref()
+                .is_some_and(|policy| !policy.trusts_peer(input))
+            {
+                return None;
+            }
             forwarded
                 .client(
                     policy

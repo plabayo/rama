@@ -779,6 +779,25 @@ impl Endpoint {
                 .map(DatagramEvent::Response);
         };
 
+        // RFC 9000 §7.2: only the Initial that answers a Retry names a destination we chose,
+        // which may be shorter than the 8 bytes a client's own choice has.
+        if header.dst_cid.len() < 8 && token.retry_src_cid.is_none() {
+            debug!(
+                "rejecting connection due to invalid DCID length {}",
+                header.dst_cid.len()
+            );
+            return self
+                .initial_close(
+                    header.version,
+                    addresses,
+                    &crypto,
+                    &header.src_cid,
+                    TransportError::PROTOCOL_VIOLATION("invalid destination CID length"),
+                    buf,
+                )
+                .map(DatagramEvent::Response);
+        }
+
         let deadline = event.now.checked_add(self.config.handshake_timeout)?;
         let admission = match self.admission.arrive(
             event.now,
@@ -1317,9 +1336,8 @@ impl Endpoint {
         header: &ProtectedInitialHeader,
     ) -> Result<(), TransportError> {
         // RFC9000 §7.2 dictates that initial (client-chosen) destination CIDs must be at least 8
-        // bytes. If this is a Retry packet, then the length must instead match our usual CID
-        // length. If we ever issue non-Retry address validation tokens via `NEW_TOKEN`, then we'll
-        // also need to validate CID length for those after decoding the token.
+        // bytes. An Initial answering a Retry instead matches our usual CID length; whether its
+        // token is a Retry token is only known once the packet is opened, and checked there.
         if header.dst_cid.len() < 8
             && (header.token_pos.is_empty()
                 || header.dst_cid.len() != self.local_cid_generator.cid_len())

@@ -81,11 +81,13 @@ pub(crate) struct Config {
     /// Maximum number of remote initiated streams
     pub remote_max_initiated: Option<usize>,
 
-    /// Maximum number of locally reset streams due to protocol error across
-    /// the lifetime of the connection.
-    ///
-    /// When this gets exceeded, we issue GOAWAYs.
-    pub local_max_error_reset_streams: Option<usize>,
+    /// Maximum interim (1xx) responses a client accepts on one stream before
+    /// resetting it.
+    pub local_max_informational_responses: usize,
+
+    /// Budget of streams refused or reset for what the peer sent. Past it we issue a
+    /// GOAWAY. `None` refuses without end.
+    pub local_refused_stream_budget: Option<RateBudget>,
 
     /// Pseudo order of the headers stream
     pub headers_pseudo_order: Option<PseudoHeaderOrder>,

@@ -500,6 +500,73 @@ async fn a_stalled_close_releases_the_carrier_after_its_grace() {
     );
 }
 
+/// A socket over a carrier that never writes, whose pump waits on its stalled close.
+async fn stalled_close(
+    scope: &Scope,
+    grace: Duration,
+) -> (ConnectUdpSocket<ServiceInput<Stuck>>, Arc<AtomicBool>) {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let idle = Duration::from_secs(10);
+    let socket = ConnectUdpSocket::new(
+        scope,
+        HttpDatagramSession::with_config(
+            ServiceInput::new(Stuck(dropped.clone())),
+            session_config(),
+        ),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default()
+            .with_idle_timeout(idle)
+            .with_close_grace(grace),
+    );
+    socket
+        .create_sender()
+        .send(SendDatagram::new(PEER, b"never written"))
+        .await
+        .unwrap();
+    tokio::time::sleep(idle).await;
+    while socket.close_reason().is_none() {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Idle));
+    (socket, dropped)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_close_is_released_at_the_configured_grace() {
+    let (most, rest) = (Duration::from_secs(29), Duration::from_secs(1));
+    let scope = Scope::new();
+    let (_socket, dropped) = stalled_close(&scope, most + rest).await;
+    tokio::time::sleep(most).await;
+    assert!(!dropped.load(Ordering::Acquire), "the close gets its grace");
+    tokio::time::sleep(rest).await;
+    released(&dropped).await;
+    assert!(!scope.is_cancelled(), "the grace ends the close alone");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_hard_phase_releases_a_stalled_close_before_its_grace() {
+    let scope = Scope::new();
+    let (_socket, dropped) = stalled_close(&scope, Duration::from_hours(1)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!dropped.load(Ordering::Acquire));
+    let start = tokio::time::Instant::now();
+    scope.abort(Cause::Owner);
+    released(&dropped).await;
+    assert_eq!(start.elapsed(), Duration::ZERO);
+}
+
+/// Let the pump run until it dropped its carrier, without moving the paused clock.
+async fn released(dropped: &AtomicBool) {
+    for _ in 0..64 {
+        if dropped.load(Ordering::Acquire) {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("the carrier is still held");
+}
+
 /// A native carrier with a payload limit the test changes.
 #[derive(Clone, Default)]
 struct ShrinkingNative(Arc<AtomicUsize>);

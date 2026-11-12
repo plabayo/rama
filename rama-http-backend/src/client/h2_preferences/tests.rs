@@ -205,7 +205,6 @@ fn empty_and_runtime_only_params_do_not_partition_but_wire_knobs_do() {
                 max_send_buf_size: Some(128),
                 max_concurrent_reset_streams: Some(4),
                 max_pending_accept_reset_streams: Some(4),
-                max_local_error_reset_streams: Some(4),
                 reset_stream_duration: Some(Duration::from_secs(4)),
                 ..Default::default()
             }),

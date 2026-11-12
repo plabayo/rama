@@ -164,7 +164,7 @@ impl<R: RecvStream + Unpin> StreamingBody for Body<R> {
             Poll::Ready(Some(Err(error))) => {
                 self.failed = true;
                 self._permit.take();
-                self.reader.reject(error);
+                let error = self.reader.reject(error);
                 Poll::Ready(Some(Err(crate::Error::new_body(error))))
             }
             result => result.map(|frame| frame.map(|frame| frame.map_err(crate::Error::new_body))),

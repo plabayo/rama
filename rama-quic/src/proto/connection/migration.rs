@@ -140,9 +140,21 @@ impl Connection {
         }
     }
 
-    /// The latest socket address for this connection's peer
+    /// The peer address of the path in use, which the peer may not have proven yet: a packet
+    /// from a new address moves the connection there before validation (RFC 9000 §9.3).
     pub(crate) fn remote_address(&self) -> SocketAddr {
         self.path.remote
+    }
+
+    /// The peer address last proven to reach the peer: that of the path in use once it passed
+    /// validation, else of the last one that did, whether or not that path is still kept as a
+    /// fallback. Until any path has, it is the address the attempt came from.
+    pub(crate) fn validated_remote_address(&self) -> SocketAddr {
+        if self.path.validated {
+            self.path.remote
+        } else {
+            self.proven_remote
+        }
     }
 
     /// The current path passed validation: not an attempt that may still be reverted.
@@ -383,6 +395,9 @@ impl Connection {
         ));
         let prev_pto = self.pto(SpaceId::Data);
 
+        if self.path.validated {
+            self.proven_remote = self.path.remote;
+        }
         let mut prev = mem::replace(&mut self.path, new_path);
         match previous {
             // Don't clobber the original path with one that is not proven usable: a path

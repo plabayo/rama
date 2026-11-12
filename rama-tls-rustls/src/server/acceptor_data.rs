@@ -5,6 +5,7 @@ use rama_core::conversion::{RamaTryFrom, RamaTryInto};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_core::extensions::Extension;
 use rama_core::telemetry::tracing;
+use rama_net::tls::AlpnPolicy;
 use rama_tls::keylog::open_intent_sink;
 use rama_tls::server::{ClientVerifyMode, GeneratedServerAuthConfig, ServerAuthData};
 use std::pin::Pin;
@@ -204,7 +205,39 @@ pub(super) fn build_server_config(
         server_config = modify.apply(server_config)?;
     }
 
+    if matches!(value.alpn_policy, Some(AlpnPolicy::Require)) {
+        if server_config.alpn_protocols.is_empty() {
+            return Err(BoxError::from_static_str(
+                "rustls server: ALPN is required but no ALPN protocols are configured",
+            ));
+        }
+        server_config.cert_resolver = Arc::new(RequireAlpn(server_config.cert_resolver));
+    }
+
     Ok(server_config)
+}
+
+/// Certificate selection runs for every ClientHello, including a resumed session.
+#[derive(Debug)]
+struct RequireAlpn(Arc<dyn rustls::server::ResolvesServerCert>);
+
+impl rustls::server::ResolvesServerCert for RequireAlpn {
+    fn resolve(
+        &self,
+        client_hello: rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        if client_hello
+            .alpn()
+            .is_none_or(|mut protocols| protocols.next().is_none())
+        {
+            return None;
+        }
+        self.0.resolve(client_hello)
+    }
+
+    fn only_raw_public_keys(&self) -> bool {
+        self.0.only_raw_public_keys()
+    }
 }
 
 impl From<rustls::ServerConfig> for TlsAcceptorData {

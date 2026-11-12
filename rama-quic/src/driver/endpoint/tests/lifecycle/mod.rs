@@ -1093,6 +1093,42 @@ async fn a_held_lease_delays_only_a_graceful_close_and_within_its_budget() {
     .unwrap();
 }
 
+/// The budget covers the lease wait and the driver drain together: a lease never dropped
+/// leaves a driver that never ends the rest of the budget, not a budget of its own.
+#[tokio::test]
+async fn a_held_lease_leaves_the_driver_drain_the_rest_of_the_budget() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (client_config, server_config) = configs();
+        let server = endpoint(
+            Some(server_config),
+            WeakScope::detached(),
+            Duration::from_secs(1),
+        );
+        // Long enough that a drain given a budget of its own ends well past the bound.
+        let budget = Duration::from_secs(2);
+        let (trigger, shutdown) = triggered_shutdown();
+        let (client, _plain, leased, _server_sides) =
+            graceful_client_pair(&client_config, &server, &shutdown, budget).await;
+        let _lease = leased.close_lease();
+        client.spawn_connection_task(std::future::pending());
+        let started = tokio::time::Instant::now();
+        _ = trigger.send(());
+        let stopping = tokio::spawn(shutdown.join());
+        assert_eq!(
+            client.inner.shared.lifecycle.completed().await,
+            ShutdownOutcome::Forced
+        );
+        let waited = started.elapsed();
+        assert!(
+            waited >= budget && waited < budget + budget * 2 / 5,
+            "{waited:?}"
+        );
+        stopping.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 /// Each leased connection closes as soon as its own lease goes, whatever other leases remain.
 #[tokio::test]
 async fn each_leased_connection_closes_when_its_own_lease_goes() {
@@ -7877,7 +7913,7 @@ async fn socket_info_waits_for_the_new_path_to_be_validated() {
     wait_for(
         "the server follows the new address",
         Duration::from_secs(5),
-        || s.remote_address() == moved_addr,
+        || s.path_remote_address() == moved_addr,
     )
     .await;
     for _ in 0..10 {
@@ -7886,6 +7922,11 @@ async fn socket_info_waits_for_the_new_path_to_be_validated() {
             socket_info.peer_addr(),
             before,
             "an unvalidated path is not published"
+        );
+        assert_eq!(
+            SocketAddress::from(s.remote_address()),
+            before,
+            "an unvalidated address is not reported as the peer's"
         );
     }
 
@@ -7896,6 +7937,7 @@ async fn socket_info_waits_for_the_new_path_to_be_validated() {
         || socket_info.peer_addr() == SocketAddress::from(moved_addr),
     )
     .await;
+    assert_eq!(s.remote_address(), moved_addr);
 }
 
 #[tokio::test]

@@ -1005,7 +1005,9 @@ impl WebSocketContext {
                     tracing::debug!("rsv1 bit is set but compression feature no enabled");
                     return Err(ProtocolError::NonZeroReservedBits);
                 }
-            } else if hdr.rsv2 || hdr.rsv3 {
+            }
+            // No extension gives RSV2 or RSV3 a meaning, whatever RSV1 says (RFC 6455 §5.2).
+            if hdr.rsv2 || hdr.rsv3 {
                 tracing::debug!("rsv2 or rsv3 bit set: not expected ever");
                 return Err(ProtocolError::NonZeroReservedBits);
             }
@@ -1054,6 +1056,18 @@ impl WebSocketContext {
                     return Err(ProtocolError::NonZeroReservedBits);
                 }
 
+                // A compressed message in progress is held apart from `incomplete`, and a new
+                // data frame may not start inside either (RFC 6455 §5.4).
+                #[cfg(feature = "compression")]
+                let compressed_in_progress = self
+                    .per_message_deflate_state
+                    .as_ref()
+                    .is_some_and(|state| state.decompress_incomplete_msg.msg_type.is_some());
+                #[cfg(feature = "compression")]
+                if compressed_in_progress && !matches!(data, OpCodeData::Continue) {
+                    return Err(ProtocolError::ExpectedFragment(data));
+                }
+
                 let payload = match (data, self.incomplete.as_mut()) {
                     (OpCodeData::Continue, None) => {
                         #[cfg(feature = "compression")]
@@ -1080,6 +1094,9 @@ impl WebSocketContext {
                                 };
                             }
 
+                            if !compressed_in_progress {
+                                return Err(ProtocolError::UnexpectedContinueFrame);
+                            }
                             deflate_state
                                 .decompress_incomplete_msg
                                 .extend(frame.into_payload(), self.config.max_message_size)?;

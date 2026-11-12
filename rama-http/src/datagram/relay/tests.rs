@@ -1,8 +1,9 @@
 use parking_lot::Mutex;
-use rama_core::{ServiceInput, bytes::Bytes, rt::spawn};
+use rama_core::{ServiceInput, bytes::Bytes, graceful::Cause, rt::spawn};
 use std::{
     collections::VecDeque,
     future::Future as _,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -10,7 +11,10 @@ use std::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
-use tokio::io::{AsyncWriteExt as _, DuplexStream};
+use tokio::{
+    io::{AsyncWriteExt as _, DuplexStream, ReadBuf},
+    task::JoinHandle,
+};
 
 #[tokio::test(start_paused = true)]
 async fn default_deadlines_release_idle_and_half_closed_relays() {
@@ -134,6 +138,104 @@ async fn the_hard_phase_ends_a_live_tunnel_and_the_graceful_one_does_not() {
     assert!(
         matches!(relay.await.unwrap(), Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted)
     );
+}
+
+/// Reads and writes pass through; its peer never lets a close end.
+struct HeldClose(DuplexStream);
+
+impl AsyncRead for HeldClose {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for HeldClose {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+/// A relay without an idle bound whose client ended, so it closes toward a peer that holds
+/// the close.
+async fn held_close(
+    relay: HttpDatagramRelay,
+) -> (
+    JoinHandle<Result<DatagramRelayOutcome, SessionError>>,
+    [DuplexStream; 2],
+) {
+    let (left, mut client) = tokio::io::duplex(64);
+    let (right, origin) = tokio::io::duplex(64);
+    let relay = relay.without_idle_timeout();
+    let io = BridgeIo(ServiceInput::new(left), ServiceInput::new(HeldClose(right)));
+    client.shutdown().await.unwrap();
+    let relay = spawn(async move { relay.serve(io).await });
+    (relay, [client, origin])
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_peer_holding_the_close_is_released_at_the_close_timeout() {
+    let timeout = Duration::from_secs(30);
+    let start = tokio::time::Instant::now();
+    let (relay, _peers) =
+        held_close(HttpDatagramRelay::default().with_close_timeout(timeout)).await;
+    let result = relay.await.unwrap();
+    assert_eq!(start.elapsed(), timeout);
+    assert!(
+        matches!(result, Err(SessionError::Io(error)) if error.kind() == io::ErrorKind::TimedOut)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_hard_phase_releases_a_held_close_before_its_timeout() {
+    let scope = Scope::new();
+    let (relay, _peers) = held_close(
+        HttpDatagramRelay::default()
+            .with_close_timeout(Duration::from_hours(1))
+            .with_scope(&scope),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(!relay.is_finished(), "the close has its timeout");
+    let start = tokio::time::Instant::now();
+    scope.abort(Cause::Owner);
+    let result = relay.await.unwrap();
+    assert_eq!(start.elapsed(), Duration::ZERO);
+    assert!(
+        matches!(result, Err(SessionError::Io(error)) if error.kind() == io::ErrorKind::Interrupted)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_closing_relay_holds_its_scope() {
+    let scope = Scope::new();
+    let (relay, _peers) = held_close(
+        HttpDatagramRelay::default()
+            .with_close_timeout(Duration::from_secs(30))
+            .with_scope(&scope),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let start = tokio::time::Instant::now();
+    scope.cancel(Cause::Owner);
+    scope.join().await.unwrap();
+    assert_eq!(start.elapsed(), Duration::from_secs(25));
+    relay.await.unwrap().unwrap_err();
 }
 
 use super::*;

@@ -3,13 +3,12 @@
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
-    futures::try_join_with_drain,
-    graceful::WeakScope,
+    graceful::{Scope, WeakScope},
     io::{AbortIo, BridgeIo, Io},
 };
 use rama_http_types::proto::capsule::CapsuleType;
 use rama_utils::guard::DropGuard;
-use std::{io, time::Duration};
+use std::{io, pin::pin, time::Duration};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::{sync::watch, time::Instant};
 
@@ -50,8 +49,10 @@ pub struct DatagramRelayOutcome {
 /// While a capsule value is in progress, native input stays in the transport's
 /// bounded queue. No additional datagram queue or whole-capsule buffer is added.
 /// A closed destination ends only its sending direction; its sibling can drain.
-/// By default, inactivity ends a relay after two minutes, and a half-close gives
-/// the remaining direction five seconds to finish. Both deadlines are configurable.
+/// By default, inactivity ends a relay after two minutes, and once the input of one
+/// direction ended the relay has five seconds to finish, the close of that direction
+/// included: a peer that never lets a close end does not hold the relay. Both deadlines
+/// are configurable.
 /// Other errors and cancellation abort both I/Os when they publish their own [`AbortIo`].
 /// Ordinary byte tunnels should use `IoForwardService` instead.
 #[derive(Debug, Clone)]
@@ -94,8 +95,9 @@ impl HttpDatagramRelay {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Bound the remaining direction after a clean half-close. Defaults to
-        /// five seconds; `None` allows it to drain without a close deadline.
+        /// Bound what is left of the relay once the input of one direction ended: the
+        /// close of that direction and the remaining one. Defaults to five seconds;
+        /// `None` allows it to drain without a close deadline.
         pub fn close_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.close_timeout = timeout;
             self
@@ -115,7 +117,7 @@ impl HttpDatagramRelay {
 
     rama_utils::macros::generate_set_and_with! {
         /// Stop both streams at this scope's hard phase; they keep relaying through its graceful
-        /// phase.
+        /// phase. A relay that is closing holds the scope until it finished.
         pub fn scope(mut self, scope: impl Into<WeakScope>) -> Self {
             self.scope = scope.into();
             self
@@ -163,16 +165,11 @@ where
             } else {
                 (None, None)
             };
-            let exchange = try_join_with_drain(
+            let exchange = exchange(
+                &scope,
+                close_timeout,
                 forward(left_receive, right_send, prefer_native, progress.clone()),
                 forward(right_receive, left_send, prefer_native, progress),
-                close_timeout,
-                || {
-                    SessionError::Io(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "datagram relay close timeout",
-                    ))
-                },
             );
             let (ingress_to_egress, egress_to_ingress) = tokio::select! {
                 result = exchange => result?,
@@ -207,12 +204,96 @@ async fn idle(progress: Option<watch::Receiver<Instant>>, timeout: Option<Durati
     }
 }
 
+/// The halves of a direction whose input ended, its output still to close.
+type Ended<L, R> = Option<(SessionReceiver<L>, SessionSender<R>)>;
+
+/// What a direction forwarded until its input ended.
+type Forwarded<L, R> = Result<(DatagramRelayDirection, Ended<L, R>), SessionError>;
+
+/// Run both directions; the first input to end starts the close of the relay.
+async fn exchange<L: AsyncWrite, R: AsyncWrite>(
+    scope: &WeakScope,
+    close_timeout: Option<Duration>,
+    ingress: impl Future<Output = Forwarded<L, R>>,
+    egress: impl Future<Output = Forwarded<R, L>>,
+) -> Result<(DatagramRelayDirection, DatagramRelayDirection), SessionError> {
+    let mut ingress = pin!(ingress);
+    let mut egress = pin!(egress);
+    tokio::select! {
+        ended = &mut ingress => {
+            let (ingress, ended) = ended?;
+            let egress = close(scope, close_timeout, ended, egress).await?;
+            Ok((ingress, egress))
+        }
+        ended = &mut egress => {
+            let (egress, ended) = ended?;
+            let ingress = close(scope, close_timeout, ended, ingress).await?;
+            Ok((ingress, egress))
+        }
+    }
+}
+
+/// Close the direction that `ended` and run the `other` one to its own close, in a scope
+/// below `scope` that is aborted once `timeout` passed: whichever hard phase comes first
+/// ends what a peer still holds.
+async fn close<L, R, OL, OR>(
+    scope: &WeakScope,
+    timeout: Option<Duration>,
+    ended: Ended<L, R>,
+    other: impl Future<Output = Forwarded<OL, OR>>,
+) -> Result<DatagramRelayDirection, SessionError>
+where
+    R: AsyncWrite,
+    OR: AsyncWrite,
+{
+    // A closed scope takes no holder: the close then runs below no parent.
+    let closing = scope
+        .try_hold()
+        .unwrap_or_else(|_closed| Scope::detached())
+        .child()
+        .maybe_with_hard_timeout(timeout);
+    let closed = closing
+        .run_until_aborted(async {
+            tokio::try_join!(finish(ended), async {
+                let (direction, ended) = other.await?;
+                finish(ended).await?;
+                Ok(direction)
+            })
+        })
+        .await;
+    match closed {
+        Some(closed) => closed.map(|((), direction)| direction),
+        None if scope.is_aborted() => Err(SessionError::Io(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "datagram relay shutdown",
+        ))),
+        None => Err(SessionError::Io(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "datagram relay close timeout",
+        ))),
+    }
+}
+
+/// End the output of a direction; a destination that closed before is no error.
+async fn finish<L, R: AsyncWrite>(ended: Ended<L, R>) -> Result<(), SessionError> {
+    let Some((_receive, mut send)) = ended else {
+        return Ok(());
+    };
+    match send.close().await {
+        Ok(()) => Ok(()),
+        Err(error) if error.is_send_closed() => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Forward one direction until its input ends, which leaves its halves to [`finish`], or
+/// its destination closed.
 async fn forward<L: AsyncRead, R: AsyncWrite>(
     mut receive: SessionReceiver<L>,
     mut send: SessionSender<R>,
     prefer_native: bool,
     progress: Option<watch::Sender<Instant>>,
-) -> Result<DatagramRelayDirection, SessionError> {
+) -> Result<(DatagramRelayDirection, Ended<L, R>), SessionError> {
     let mut result = DatagramRelayDirection::default();
     let mut remaining = 0_u64;
     loop {
@@ -224,19 +305,14 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
             receive.recv_reliable().await?
         };
         let Some(event) = event else {
-            match send.close().await {
-                Ok(()) => (),
-                Err(error) if error.is_send_closed() => (),
-                Err(error) => return Err(error),
-            }
-            return Ok(result);
+            return Ok((result, Some((receive, send))));
         };
         let sent =
             forward_event(&mut send, event, prefer_native, &mut result, &mut remaining).await;
         match sent {
             Ok(false) => continue,
             Ok(true) => (),
-            Err(error) if error.is_send_closed() => return Ok(result),
+            Err(error) if error.is_send_closed() => return Ok((result, None)),
             Err(error) => return Err(error),
         }
         if let Some(progress) = &progress {

@@ -169,6 +169,58 @@ fn aggregate_field_size_limit_has_http_stream_scope() {
     );
 }
 
+/// One large table entry named over and over by one-byte references: the section is refused
+/// by what it decodes to, long before the lines its few wire bytes ask for are produced.
+#[test]
+fn repeated_references_to_one_large_entry_are_bounded_by_decoded_size() {
+    let mut instructions = BytesMut::new();
+    EncoderInstruction::SetDynamicTableCapacity {
+        capacity: kib_u64(4),
+    }
+    .encode(&mut instructions);
+    EncoderInstruction::InsertWithLiteralName {
+        name: Bytes::from_static(b"a"),
+        value: Bytes::from(vec![b'v'; 4000]),
+        name_huffman: false,
+        value_huffman: false,
+    }
+    .encode(&mut instructions);
+    let reference = FieldLine::Indexed {
+        is_static: false,
+        index: 0,
+    };
+    let lines = |count: usize| {
+        let mut line = BytesMut::new();
+        reference.encode(&mut line);
+        let mut bytes = section(1, 1, &reference).to_vec();
+        for _ in 1..count {
+            bytes.extend_from_slice(&line);
+        }
+        Bytes::from(bytes)
+    };
+
+    // The line limit is out of the way, so only the decoded size can refuse the section.
+    let mut decoder = Decoder::new(DecoderConfig {
+        max_field_lines: 100_000,
+        ..DecoderConfig::default()
+    });
+    decoder.feed_encoder_stream(&instructions).unwrap();
+    let fits = DecoderConfig::default().max_field_section_size / (1 + 4000 + 32);
+    assert_eq!(
+        decoder
+            .decode_field_section(0, lines(fits))
+            .unwrap()
+            .unwrap()
+            .len(),
+        fits
+    );
+    for count in [fits + 1, 10_000] {
+        let error = decoder.decode_field_section(4, lines(count)).unwrap_err();
+        assert_eq!(error.code(), Some(Code::H3_EXCESSIVE_LOAD), "{count}");
+        assert_eq!(error.scope(), Some(ErrorScope::Stream), "{count}");
+    }
+}
+
 #[test]
 fn field_line_limit_has_http_stream_scope() {
     let mut decoder = Decoder::new(DecoderConfig {

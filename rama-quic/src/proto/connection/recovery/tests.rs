@@ -299,8 +299,10 @@ impl super::Connection {
                 SpaceId::Handshake,
                 [100 + attempt * 2, 101 + attempt * 2],
             );
-            self.read_crypto(SpaceId::Handshake, &duplicate, 1).unwrap();
-            self.read_crypto(SpaceId::Handshake, &duplicate, 1).unwrap();
+            self.read_crypto(now, SpaceId::Handshake, &duplicate, 1)
+                .unwrap();
+            self.read_crypto(now, SpaceId::Handshake, &duplicate, 1)
+                .unwrap();
             let should_recover = attempt < 3 && !(late_ack && attempt > 0);
             let before = self.stats.frame_tx.crypto;
             let mut buffer = Vec::new();

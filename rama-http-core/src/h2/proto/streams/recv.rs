@@ -61,6 +61,9 @@ pub(super) struct Recv {
     /// Reset every received push promise with REFUSED_STREAM.
     refuse_push_promises: bool,
 
+    /// Interim (1xx) responses accepted on one stream.
+    max_informational_responses: usize,
+
     /// If extended connect protocol is enabled.
     is_extended_connect_protocol_enabled: bool,
 }
@@ -131,6 +134,7 @@ impl Recv {
             buffer: Buffer::new(),
             is_push_enabled: config.local_push_enabled,
             refuse_push_promises: config.refuse_push_promises,
+            max_informational_responses: config.local_max_informational_responses,
             is_extended_connect_protocol_enabled: config.extended_connect_protocol_enabled,
         })
     }
@@ -367,6 +371,13 @@ impl Recv {
                 self.pending_accept.push(stream);
             }
         } else {
+            // A peer may not hold a request open with interim responses without end.
+            if stream.informational_responses >= self.max_informational_responses {
+                proto_err!(stream: "too many informational responses; stream={:?}", stream.id);
+                return Err(Error::library_reset(stream.id, Reason::ENHANCE_YOUR_CALM).into());
+            }
+            stream.informational_responses += 1;
+
             // Client receiving an informational response
             let extensions =  stream
                 .req_extensions
@@ -1502,7 +1513,8 @@ mod tests {
             remote_reset_max: 0,
             remote_init_window_sz: DEFAULT_INITIAL_WINDOW_SIZE,
             remote_max_initiated: None,
-            local_max_error_reset_streams: None,
+            local_max_informational_responses: 0,
+            local_refused_stream_budget: None,
             headers_pseudo_order: None,
             early_frame_ctx: frame::EarlyFrameStreamContext::new_nop(),
             data_frame_budget: DataFrameBudget::Configured(DEFAULT_DATA_FRAME_BUDGET),

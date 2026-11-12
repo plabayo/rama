@@ -74,7 +74,9 @@ const DEFAULT_IPV6_PREFIX: u8 = 64;
 /// transport peer address ([`SocketInfo`](crate::stream::SocketInfo)).
 /// Only populate `Forwarded` from a trusted proxy boundary: accepting a
 /// client-supplied forwarding header lets that client choose and rotate its
-/// own rate key.
+/// own rate key. A listener that clients can also reach directly needs a
+/// [`ForwardedSelectionPolicy`](crate::forwarded::ForwardedSelectionPolicy)
+/// with its trusted proxies, which keys every other peer on its own address.
 ///
 /// The resolved address is canonicalised before keying: IPv4-mapped IPv6
 /// peers (`::ffff:a.b.c.d`) collapse to their IPv4 form, and IPv6 clients
@@ -148,6 +150,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        address::SocketAddress,
+        forwarded::{Forwarded, ForwardedElement, ForwardedSelectionPolicy, NodeId},
+        stream::SocketInfo,
+    };
     use rama_core::extensions::Extensions;
 
     fn ip(s: &str) -> IpAddr {
@@ -208,9 +215,6 @@ mod tests {
 
     #[test]
     fn extractor_reads_and_canonicalises_client_ip() {
-        use crate::address::SocketAddress;
-        use crate::stream::SocketInfo;
-
         let ext = Extensions::new();
         ext.insert(SocketInfo::new(
             None,
@@ -218,5 +222,21 @@ mod tests {
         ));
         let got = ClientIpRateKey::new().rate_key(&ext).unwrap();
         assert_eq!(got, Some(ip("203.0.113.5")));
+    }
+
+    #[test]
+    fn a_peer_outside_the_trusted_proxies_cannot_choose_its_key() {
+        let policy =
+            ForwardedSelectionPolicy::new().with_trusted_proxies(["10.0.0.0/8".parse().unwrap()]);
+        for (peer, expected) in [("203.0.113.5", "203.0.113.5"), ("10.1.2.3", "192.0.2.43")] {
+            let ext = Extensions::new();
+            ext.insert(policy.clone());
+            ext.insert(SocketInfo::new(None, SocketAddress::new(ip(peer), 0)));
+            ext.insert(Forwarded::new(ForwardedElement::new_forwarded_for(
+                NodeId::try_from("192.0.2.43").unwrap(),
+            )));
+            let got = ClientIpRateKey::new().rate_key(&ext).unwrap();
+            assert_eq!(got, Some(ip(expected)), "{peer}");
+        }
     }
 }

@@ -17,7 +17,12 @@ on:
     # Same start as the daily platforms workflow, so both land by morning.
     - cron: "0 23 * * *"
       timezone: Europe/Brussels
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Job ids to run, space separated (what they need runs too); empty runs every job"
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -27,6 +32,8 @@ concurrency:
 
 jobs:
   udp-cmsg-miri:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' udp-cmsg-miri ') }}
     permissions:
       contents: read
     strategy:
@@ -76,6 +83,8 @@ jobs:
         run: bash scripts/ci/check-format.sh
 
   apple-runner:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' apple-runner ') || contains(format(' {0} ', inputs.only), ' test-apple-preview ') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -98,6 +107,8 @@ jobs:
         run: just scripts/ci/apple-preview-runner
 
   test-apple-private-api-stable:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-apple-private-api-stable ') }}
     permissions:
       contents: read
     needs: precheck
@@ -133,6 +144,8 @@ jobs:
           retention-days: 7
 
   test-apple-preview:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-apple-preview ') }}
     permissions:
       contents: read
     needs: apple-runner
@@ -214,6 +227,8 @@ jobs:
           retention-days: 7
 
   check-rust:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' check-rust ') || contains(format(' {0} ', inputs.only), ' clippy-autofix ') || contains(format(' {0} ', inputs.only), ' clippy-autofix-pr ') }}
     permissions:
       contents: read
     strategy:
@@ -261,6 +276,8 @@ jobs:
         run: just clippy
 
   test-rust:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-rust ') }}
     permissions:
       contents: read
     name: test-rust-${{ matrix.toolchain }}-${{ matrix.profile }}-${{ matrix.os }}
@@ -479,6 +496,8 @@ jobs:
         fi
 
   test-ffi-apple-example-transparent-proxy-e2e-sanitizers:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-ffi-apple-example-transparent-proxy-e2e-sanitizers ') }}
     permissions:
       contents: read
     needs: precheck
@@ -515,6 +534,8 @@ jobs:
         run: just test-e2e-sanitizers
 
   test-ffi-apple-ne-miri:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' test-ffi-apple-ne-miri ') }}
     permissions:
       contents: read
     needs: precheck
@@ -546,6 +567,8 @@ jobs:
         run: just miri-apple-ne-ffi
 
   fuzz-rust:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' fuzz-rust ') }}
     permissions:
       contents: read
     needs: precheck
@@ -662,6 +685,8 @@ jobs:
             fuzz/artifacts/multipart_*
 
   docsrs-emulation:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' docsrs-emulation ') }}
     permissions:
       contents: read
     # Linux is the docs.rs build host. cargo-docs-rs applies each crate's
@@ -691,6 +716,8 @@ jobs:
           just docsrs-check-full
 
   edge-docs:
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ inputs.only == '' || contains(format(' {0} ', inputs.only), ' edge-docs ') }}
     permissions:
       contents: read
     name: edge-docs (${{ matrix.os }})
@@ -736,7 +763,8 @@ jobs:
     permissions:
       contents: read
     name: refresh docs.rs Apple bindings
-    if: github.ref == 'refs/heads/main'
+    # A manual run may name the jobs it wants; any other run takes them all.
+    if: ${{ (inputs.only == '' || contains(format(' {0} ', inputs.only), ' refresh-docsrs-bindings ') || contains(format(' {0} ', inputs.only), ' refresh-docsrs-bindings-pr ')) && (github.ref == 'refs/heads/main') }}
     needs: precheck
     runs-on: macos-latest
     concurrency:

@@ -120,7 +120,8 @@
 
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{self, Config, Error, Prioritized};
-use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
+use crate::h2::{FlowControl, PingPong, RateBudget, RecvStream, SendStream};
+use crate::proto::DEFAULT_REFUSED_STREAM_BUDGET;
 use crate::proto::target::{
     AsteriskHostError, asterisk_host, normalize_received, received_authority, several_hosts,
 };
@@ -291,11 +292,10 @@ pub struct Builder {
     /// Maximum amount of bytes to "buffer" for writing per stream.
     max_send_buffer_size: u32,
 
-    /// Maximum number of locally reset streams due to protocol error across
-    /// the lifetime of the connection.
+    /// Budget of streams refused or reset for what the peer sent.
     ///
-    /// When this gets exceeded, we issue GOAWAYs.
-    local_max_error_reset_streams: Option<usize>,
+    /// When this gets exhausted, we issue a GOAWAY with `ENHANCE_YOUR_CALM`.
+    refused_stream_budget: Option<RateBudget>,
 
     /// connection-level budget for DATA framing overhead.
     ///
@@ -820,6 +820,14 @@ where
     pub fn num_wired_streams(&self) -> usize {
         self.connection.num_wired_streams()
     }
+
+    // Could disappear at anytime.
+    #[doc(hidden)]
+    #[cfg(feature = "unstable")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
+    pub fn num_refused_streams(&self) -> u64 {
+        self.connection.num_refused_streams()
+    }
 }
 
 impl<T, B> rama_core::futures::Stream for Connection<T, B>
@@ -887,7 +895,7 @@ impl Builder {
             settings: Settings::default(),
             initial_target_connection_window_size: None,
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
-            local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
+            refused_stream_budget: Some(DEFAULT_REFUSED_STREAM_BUDGET),
             data_frame_budget: proto::DataFrameBudget::Auto,
         }
     }
@@ -1154,7 +1162,7 @@ impl Builder {
         /// received for that stream will result in a connection level protocol
         /// error, forcing the connection to terminate.
         ///
-        /// The default value is 10.
+        /// The default value is 50.
         ///
         /// # Examples
         ///
@@ -1183,21 +1191,27 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Sets the maximum number of local resets due to protocol errors made by the remote end.
+        /// Sets the budget of streams this endpoint refuses or resets for what the peer sent
+        /// on them: a protocol or message error of the peer, or a local limit it ran into
+        /// such as the one of [`Builder::with_max_concurrent_streams`].
         ///
-        /// Invalid frames and many other protocol errors will lead to resets being generated for those streams.
-        /// Too many of these often indicate a malicious client, and there are attacks which can abuse this to DOS servers.
-        /// This limit protects against these DOS attacks by limiting the amount of resets we can be forced to generate.
+        /// Each such stream follows work done for a request that then fails. Every one takes
+        /// a token of this budget, which regains them over time: occasional ones leave the
+        /// connection alone, while a flood that outpaces the budget closes it with a GOAWAY
+        /// of `ENHANCE_YOUR_CALM` and the debug data `too_many_refused_streams`.
         ///
-        /// When the number of local resets exceeds this threshold, the server will issue GOAWAYs with an error code of
-        /// `ENHANCE_YOUR_CALM` to the client.
+        /// A peer that stays below the rate is never closed for it. Its lifetime total is
+        /// logged as a warning each time it doubles, starting at the burst, and
+        /// [`RateBudget::with_ceiling`] closes the connection past a total. Use
+        /// [`RateBudget::lifetime`] for a plain count over the life of the connection.
         ///
-        /// If you really want to disable this, supply [`Option::None`] here.
-        /// Disabling this is not recommended and may expose you to DOS attacks.
+        /// Supply [`Option::None`] to never close the connection for such streams, which is
+        /// not recommended as it leaves a peer free to cause them without end.
         ///
-        /// The default value is currently 1024, but could change.
-        pub fn max_local_error_reset_streams(mut self, max: Option<usize>) -> Self {
-            self.local_max_error_reset_streams = max;
+        /// The default is currently a burst of 1000 streams regained at 33 per second,
+        /// without ceiling, but could change.
+        pub fn refused_stream_budget(mut self, budget: Option<RateBudget>) -> Self {
+            self.refused_stream_budget = budget;
             self
         }
     }
@@ -1856,9 +1870,9 @@ where
                             reset_stream_duration: self.builder.reset_stream_duration,
                             reset_stream_max: self.builder.reset_stream_max,
                             remote_reset_stream_max: self.builder.pending_accept_reset_stream_max,
-                            local_error_reset_streams_max: self
-                                .builder
-                                .local_max_error_reset_streams,
+                            // A server receives no responses.
+                            max_informational_responses: 0,
+                            refused_stream_budget: self.builder.refused_stream_budget,
                             settings: self.builder.settings.clone(),
                             send_alt_svc: self.builder.send_alt_svc,
                             headers_pseudo_order: None,

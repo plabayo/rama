@@ -281,7 +281,7 @@ _H3_BOOTSTRAP_PAGES = (
 
 
 def _user_agent(driver, attempts=1):
-    # The bootstrap door reloads every second; a read can land mid-navigation.
+    # The bootstrap door uses spaced reloads; a read can land mid-navigation.
     for attempt in range(attempts):
         try:
             agent = driver.execute_script("return navigator.userAgent")

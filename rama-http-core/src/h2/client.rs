@@ -139,8 +139,11 @@
 
 use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::proto::{self, Error};
-use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
-use crate::proto::target::{OutgoingHost, host_is_wire_authority, outgoing_host};
+use crate::h2::{FlowControl, PingPong, RateBudget, RecvStream, SendStream};
+use crate::proto::{
+    DEFAULT_MAX_INFORMATIONAL_RESPONSES, DEFAULT_REFUSED_STREAM_BUDGET,
+    target::{OutgoingHost, host_is_wire_authority, outgoing_host},
+};
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::{BoxError, BoxErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -362,11 +365,13 @@ pub struct Builder {
     /// monotonically increasing stream IDs.
     stream_id: StreamId,
 
-    /// Maximum number of locally reset streams due to protocol error across
-    /// the lifetime of the connection.
+    /// Maximum interim (1xx) responses accepted for one request.
+    max_informational_responses: usize,
+
+    /// Budget of streams refused or reset for what the peer sent.
     ///
-    /// When this gets exceeded, we issue GOAWAYs.
-    local_max_error_reset_streams: Option<usize>,
+    /// When this gets exhausted, we issue a GOAWAY with `ENHANCE_YOUR_CALM`.
+    refused_stream_budget: Option<RateBudget>,
 
     /// connection-level budget for DATA framing overhead.
     ///
@@ -695,6 +700,13 @@ where
     pub fn num_wired_streams(&self) -> usize {
         self.inner.num_wired_streams()
     }
+
+    /// Returns the number of streams this endpoint refused or reset for what the peer
+    /// sent on them, over the life of the connection.
+    #[must_use]
+    pub fn num_refused_streams(&self) -> u64 {
+        self.inner.num_refused_streams()
+    }
 }
 
 // ===== impl ReadySendRequest =====
@@ -765,7 +777,8 @@ impl Builder {
             settings: None,
             overwrite_replay_settings: false,
             stream_id: 1.into(),
-            local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
+            max_informational_responses: DEFAULT_MAX_INFORMATIONAL_RESPONSES,
+            refused_stream_budget: Some(DEFAULT_REFUSED_STREAM_BUDGET),
             data_frame_budget: proto::DataFrameBudget::Auto,
             headers_pseudo_order: None,
             early_frames: None,
@@ -1115,7 +1128,7 @@ impl Builder {
         /// received for that stream will result in a connection level protocol
         /// error, forcing the connection to terminate.
         ///
-        /// The default value is 10.
+        /// The default value is 50.
         ///
         /// # Examples
         ///
@@ -1194,20 +1207,44 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Sets the maximum number of local resets due to protocol errors made by the remote end.
+        /// Sets the maximum number of informational (1xx) responses accepted for one request.
         ///
-        /// Invalid frames and many other protocol errors will lead to resets being generated for those streams.
-        /// Too many of these often indicate a malicious client, and there are attacks which can abuse this to DOS servers.
-        /// This limit protects against these DOS attacks by limiting the amount of resets we can be forced to generate.
+        /// A server that keeps sending them never answers, yet its steady traffic defeats
+        /// idle timeouts. When a stream receives more than this many, it is reset with
+        /// `ENHANCE_YOUR_CALM` and its request fails.
         ///
-        /// When the number of local resets exceeds this threshold, the client will close the connection.
+        /// The default value is currently 1024, far above what servers send, but could change.
         ///
-        /// If you really want to disable this, supply [`Option::None`] here.
-        /// Disabling this is not recommended and may expose you to DOS attacks.
+        /// Each stream reset this way draws on the budget of
+        /// [`Builder::with_refused_stream_budget`].
+        pub fn max_informational_responses(mut self, max: usize) -> Self {
+            self.max_informational_responses = max;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the budget of streams this endpoint refuses or resets for what the peer sent
+        /// on them: a protocol or message error of the peer, or a local limit it ran into
+        /// such as the one of [`Builder::with_max_informational_responses`].
         ///
-        /// The default value is currently 1024, but could change.
-        pub fn max_local_error_reset_streams(mut self, max: Option<usize>) -> Self {
-            self.local_max_error_reset_streams = max;
+        /// Each such stream follows work done for a request that then fails. Every one takes
+        /// a token of this budget, which regains them over time: occasional ones leave the
+        /// connection alone, while a flood that outpaces the budget closes it with a GOAWAY
+        /// of `ENHANCE_YOUR_CALM` and the debug data `too_many_refused_streams`.
+        ///
+        /// A peer that stays below the rate is never closed for it. Its lifetime total is
+        /// logged as a warning each time it doubles, starting at the burst, and
+        /// [`RateBudget::with_ceiling`] closes the connection past a total. Use
+        /// [`RateBudget::lifetime`] for a plain count over the life of the connection.
+        ///
+        /// Supply [`Option::None`] to never close the connection for such streams, which is
+        /// not recommended as it leaves a peer free to cause them without end.
+        ///
+        /// The default is currently a burst of 1000 streams regained at 33 per second,
+        /// without ceiling, but could change.
+        pub fn refused_stream_budget(mut self, budget: Option<RateBudget>) -> Self {
+            self.refused_stream_budget = budget;
             self
         }
     }
@@ -1665,7 +1702,8 @@ where
                 reset_stream_duration: builder.reset_stream_duration,
                 reset_stream_max: builder.reset_stream_max,
                 remote_reset_stream_max: builder.pending_accept_reset_stream_max,
-                local_error_reset_streams_max: builder.local_max_error_reset_streams,
+                max_informational_responses: builder.max_informational_responses,
+                refused_stream_budget: builder.refused_stream_budget,
                 settings: initial_settings,
                 send_alt_svc: false,
                 headers_pseudo_order: builder.headers_pseudo_order,

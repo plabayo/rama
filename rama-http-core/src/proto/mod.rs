@@ -5,6 +5,8 @@ use rama_http::io::upgrade;
 use rama_http_types::{HeaderMap, Method, Response, StatusCode, Version};
 use rama_net::uri::Uri;
 
+use self::rate_budget::RateBudget;
+
 pub(crate) mod h1;
 
 pub(crate) use self::h1::Conn;
@@ -13,7 +15,21 @@ pub(crate) use self::h1::dispatch;
 
 pub(crate) mod h2;
 
+pub(crate) mod rate_budget;
+
 pub(crate) mod target;
+
+/// Interim (1xx) responses a client accepts for one request by default: far above what
+/// origins send, yet finite so a peer cannot hold a request open with them forever.
+pub(crate) const DEFAULT_MAX_INFORMATIONAL_RESPONSES: usize = 1024;
+
+/// Streams a connection refuses or resets for what its peer sent before it is closed, on
+/// HTTP/2 and HTTP/3: the numbers established stacks use to rate limit stream resets. A
+/// peer has to cause more than 33 a second, sustained after a burst of 1000.
+pub(crate) const DEFAULT_REFUSED_STREAM_BUDGET: RateBudget = RateBudget::new(1000, 33);
+
+/// What a connection closed for an exhausted refused stream budget tells its peer.
+pub(crate) const TOO_MANY_REFUSED_STREAMS: &str = "too_many_refused_streams";
 
 /// An Incoming Message head. Includes request/status line, and headers.
 #[derive(Debug, Default)]

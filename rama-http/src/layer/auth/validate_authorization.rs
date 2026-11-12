@@ -43,15 +43,17 @@ impl From<RawToken> for HttpAuthorizer<StaticAuthorizer<RawToken>, RawToken> {
     }
 }
 
-impl<C: Credentials> From<Vec<C>> for HttpAuthorizer<Vec<C>, C> {
+/// Authorizes any of the given credentials; without any, all requests are unauthorized.
+impl<C: Credentials> From<Vec<C>> for HttpAuthorizer<Vec<StaticAuthorizer<C>>, C> {
     fn from(value: Vec<C>) -> Self {
-        Self::new(value)
+        Self::new(value.into_iter().map(StaticAuthorizer::new).collect())
     }
 }
 
-impl<const N: usize, C: Credentials> From<[C; N]> for HttpAuthorizer<[C; N], C> {
+/// Authorizes any of the given credentials; without any, all requests are unauthorized.
+impl<const N: usize, C: Credentials> From<[C; N]> for HttpAuthorizer<[StaticAuthorizer<C>; N], C> {
     fn from(value: [C; N]) -> Self {
-        Self::new(value)
+        Self::new(value.map(StaticAuthorizer::new))
     }
 }
 
@@ -186,5 +188,90 @@ impl<A, C> ValidateRequestHeaderLayer<HttpAuthorizer<A, C>> {
     /// Validate the request with an [`HttpAuthorizer`].
     pub fn auth(authorizer: impl Into<HttpAuthorizer<A, C>>) -> Self {
         Self::custom(authorizer.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::convert::Infallible;
+
+    use rama_core::{Layer as _, Service, service::service_fn};
+    use rama_net::user::credentials::basic;
+
+    async fn status_of<S>(service: &S, authorization: Option<Basic>) -> StatusCode
+    where
+        S: Service<Request, Output = Response, Error = Infallible>,
+    {
+        let mut request = Request::new(Body::empty());
+        if let Some(credentials) = authorization {
+            request
+                .headers_mut()
+                .typed_insert(Authorization::new(credentials));
+        }
+        service.serve(request).await.unwrap().status()
+    }
+
+    async fn ok(_: Request) -> Result<Response, Infallible> {
+        Ok(StatusCode::OK.into_response())
+    }
+
+    #[tokio::test]
+    async fn no_configured_credentials_authorize_no_request() {
+        let from_vec =
+            ValidateRequestHeaderLayer::auth(Vec::<Basic>::new()).into_layer(service_fn(ok));
+        let from_array =
+            ValidateRequestHeaderLayer::auth([] as [Basic; 0]).into_layer(service_fn(ok));
+        let from_authorizers =
+            ValidateRequestHeaderLayer::custom(HttpAuthorizer::<_, Basic>::new(Vec::<
+                StaticAuthorizer<Basic>,
+            >::new(
+            )))
+            .into_layer(service_fn(ok));
+
+        let credentials = Some(basic!("john", "secret"));
+        assert_eq!(
+            status_of(&from_vec, credentials.clone()).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_of(&from_array, credentials.clone()).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_of(&from_authorizers, credentials).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(status_of(&from_vec, None).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn any_of_the_configured_credentials_authorizes_a_request() {
+        let service = ValidateRequestHeaderLayer::auth(vec![
+            basic!("john", "secret"),
+            basic!("jane", "hunter2"),
+        ])
+        .into_layer(service_fn(ok));
+
+        for (credentials, expected) in [
+            (basic!("john", "secret"), StatusCode::OK),
+            (basic!("jane", "hunter2"), StatusCode::OK),
+            (basic!("john", "hunter2"), StatusCode::UNAUTHORIZED),
+        ] {
+            assert_eq!(status_of(&service, Some(credentials)).await, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_absent_authorizer_requires_no_authorization() {
+        let open = ValidateRequestHeaderLayer::custom(HttpAuthorizer::<_, Basic>::new(
+            None::<StaticAuthorizer<Basic>>,
+        ))
+        .into_layer(service_fn(ok));
+        assert_eq!(
+            status_of(&open, Some(basic!("john", "secret"))).await,
+            StatusCode::OK
+        );
     }
 }

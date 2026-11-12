@@ -408,3 +408,108 @@ fn closing_releases_held_packets() {
         .close(now, VarInt::from_u32(0), Bytes::new());
     assert_eq!(pair.client_conn_mut(client).held_early_packets(), 0);
 }
+
+#[test]
+fn lost_early_data_cannot_starve_the_handshake_pto() {
+    let _guard = subscribe();
+    let mut server =
+        ServerConfig::with_crypto(Arc::new(server_crypto_with_alpn(vec![vec![0, 0, 0, 42]])));
+    server.transport = Arc::new(transport(0, octets::kib(64)));
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server,
+    );
+    let config = ClientConfig::new(Arc::new(client_crypto_with_alpn(
+        (0..300u32).map(|x| x.to_be_bytes().to_vec()).collect(),
+    )));
+    let first = pair.begin_connect(config.clone());
+    pair.drive();
+    pair.server.assert_accept();
+    let now = pair.time;
+    pair.client_conn_mut(first)
+        .close(now, VarInt::from_u32(0), Bytes::new());
+    pair.drive();
+    pair.client
+        .addr
+        .set_port(CLIENT_PORTS.lock().next().unwrap());
+    let client = pair.begin_connect(config);
+    assert!(pair.client_conn_mut(client).has_0rtt());
+    let stream = pair.client_streams(client).open(Dir::Uni).unwrap();
+    const LENGTH: usize = 64 * 1024;
+    assert_eq!(
+        pair.client_send(client, stream)
+            .write(&vec![42; LENGTH])
+            .unwrap(),
+        LENGTH
+    );
+    pair.client_send(client, stream).finish().unwrap();
+    pair.drive_client();
+    let mut initials = 0;
+    let mut first_flight = VecDeque::new();
+    for datagram in pair.server.inbound.drain(..) {
+        let mut kept = BytesMut::new();
+        for (packet, space) in packets(&datagram.packet) {
+            if is_initial(space) {
+                initials += 1;
+                if initials == 1 {
+                    kept.extend_from_slice(&packet);
+                }
+            }
+        }
+        if !kept.is_empty() {
+            kept.resize(datagram.packet.len(), 0xff);
+            first_flight.push_back(Inbound {
+                packet: kept,
+                ..datagram
+            });
+        }
+    }
+    assert!(initials > 1);
+    pair.server.inbound = first_flight;
+    pair.drive_server();
+    let start = pair.time;
+    for _ in 0..1000 {
+        pair.drive_client();
+        // Lose early data even if it is coalesced with a retransmitted Initial.
+        let mut incoming = VecDeque::new();
+        for datagram in pair.server.inbound.drain(..) {
+            let mut kept = BytesMut::new();
+            for (packet, space) in packets(&datagram.packet) {
+                if space != Some(SpaceId::Data) {
+                    kept.extend_from_slice(&packet);
+                }
+            }
+            if !kept.is_empty() {
+                kept.resize(datagram.packet.len(), 0xff);
+                incoming.push_back(Inbound {
+                    packet: kept,
+                    ..datagram
+                });
+            }
+        }
+        pair.server.inbound = incoming;
+        pair.drive_server();
+        if pair.client_conn_mut(client).handshake_confirmed() {
+            break;
+        }
+        pair.time += Duration::from_millis(1);
+    }
+    assert!(
+        pair.client_conn_mut(client).handshake_confirmed(),
+        "handshake stalled after {:?}",
+        pair.time - start
+    );
+    // Once Finished gets through, normal Data recovery must also deliver the request.
+    pair.drive();
+    let server = pair.server.assert_accept();
+    assert_eq!(pair.server_streams(server).accept(Dir::Uni), Some(stream));
+    let mut received = pair.server_recv(server, stream);
+    let mut chunks = received.read(true).unwrap();
+    let mut length = 0;
+    while let Some(chunk) = chunks.next(usize::MAX).unwrap() {
+        assert!(chunk.bytes.iter().all(|byte| *byte == 42));
+        length += chunk.bytes.len();
+    }
+    assert_eq!(length, LENGTH);
+    let _transmit = chunks.finalize();
+}

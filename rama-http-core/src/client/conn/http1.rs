@@ -137,6 +137,7 @@ pub struct Builder {
     h1_title_case_headers: bool,
     h1_max_headers: Option<usize>,
     h1_max_header_size: Option<usize>,
+    h1_max_informational: usize,
 
     h1_read_buf_exact_size: Option<usize>,
     h1_max_buf_size: Option<usize>,
@@ -355,6 +356,7 @@ impl Builder {
             h1_title_case_headers: false,
             h1_max_headers: None,
             h1_max_header_size: None,
+            h1_max_informational: proto::DEFAULT_MAX_INFORMATIONAL_RESPONSES,
             h1_max_buf_size: None,
         }
     }
@@ -516,6 +518,19 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum number of informational (1xx) responses accepted for one request.
+        ///
+        /// If the server sends more before its final response, the error
+        /// "too many informational responses" is returned and the connection is closed.
+        ///
+        /// Default is 1024, far above what servers send.
+        pub fn max_informational_responses(mut self, max: usize) -> Self {
+            self.h1_max_informational = max;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Sets the exact size of the read buffer to *always* use.
         ///
         /// Note that setting this option unsets the `max_buf_size` option.
@@ -597,6 +612,7 @@ impl Builder {
             if let Some(max_header_size) = opts.h1_max_header_size {
                 conn.set_http1_max_header_size(max_header_size);
             }
+            conn.set_http1_max_informational(opts.h1_max_informational);
 
             if opts.h09_responses {
                 conn.set_h09_responses();

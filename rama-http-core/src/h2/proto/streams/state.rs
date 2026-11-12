@@ -356,6 +356,11 @@ impl State {
         self.inner = Inner::Closed(Cause::Error(Error::Reset(stream_id, reason, initiator)));
     }
 
+    /// Fail the stream with a connection error raised by one of its own frames.
+    pub(super) fn set_error(&mut self, err: &proto::Error) {
+        self.inner = Inner::Closed(Cause::Error(err.clone()));
+    }
+
     /// Set the stream state to a scheduled reset.
     pub(super) fn set_scheduled_reset(&mut self, reason: Reason) {
         debug_assert!(!self.is_closed());

@@ -9,7 +9,7 @@ use crate::headers::forwarded::ForwardHeader;
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _};
 use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_net::address::Domain;
-use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
+use rama_net::forwarded::{Forwarded, ForwardedClientExt as _, ForwardedElement, NodeId};
 use rama_net::stream::SocketInfo;
 use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 use rama_utils::macros::{all_the_tuples_no_last_special_case, define_inner_service_accessors};
@@ -155,7 +155,8 @@ macro_rules! set_forwarded_service_for_tuple {
                 &self,
                 mut req: Request<Body>,
             ) -> Result<Self::Output, Self::Error> {
-                let forwarded: Option<Forwarded> = req.extensions().get_ref().cloned();
+                // A chain from a peer the policy does not trust is not this request's history.
+                let forwarded: Option<Forwarded> = req.trusted_forwarded().cloned();
 
                 let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
                 forwarded_element.set_forwarded_version(super::forwarded_version(req.version()));

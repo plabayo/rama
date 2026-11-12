@@ -8,7 +8,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::{Layer, Service};
 use rama_http_headers::forwarded::Forwarded;
 use rama_net::address::Domain;
-use rama_net::forwarded::{ForwardedElement, NodeId};
+use rama_net::forwarded::{ForwardedClientExt as _, ForwardedElement, NodeId};
 use rama_net::stream::SocketInfo;
 use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 use rama_utils::macros::define_inner_service_accessors;
@@ -318,7 +318,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
-        let forwarded: Option<rama_net::forwarded::Forwarded> = req.extensions().get_ref().cloned();
+        // A chain from a peer the policy does not trust is not this request's history.
+        let forwarded = req.trusted_forwarded().cloned();
 
         let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
         forwarded_element.set_forwarded_version(super::forwarded_version(req.version()));

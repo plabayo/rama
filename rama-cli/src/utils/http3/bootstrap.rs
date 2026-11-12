@@ -32,12 +32,16 @@ use rama::{
 
 const STYLE_CSS: &str = include_str!("bootstrap.css");
 
-/// Marks a browser that was already sent back once, so a client that keeps
+/// Counts reloads already sent to a browser, so a client that keeps
 /// using TCP gets an explanation instead of an endless reload.
 const COOKIE_NAME: &str = "rama-h3-bootstrap";
 /// Query marker on the reload, the loop guard for browsers that refuse the cookie.
 const MARKER: &str = "h3-bootstrap";
-const COOKIE_SET: &str = "rama-h3-bootstrap=1; Max-Age=60; Path=/; Secure; HttpOnly; SameSite=Lax";
+const COOKIE_SET: [&str; 3] = [
+    "rama-h3-bootstrap=1; Max-Age=60; Path=/; Secure; HttpOnly; SameSite=Lax",
+    "rama-h3-bootstrap=2; Max-Age=60; Path=/; Secure; HttpOnly; SameSite=Lax",
+    "rama-h3-bootstrap=3; Max-Age=60; Path=/; Secure; HttpOnly; SameSite=Lax",
+];
 const COOKIE_CLEAR: &str = "rama-h3-bootstrap=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax";
 /// How long a TCP connection waits for its handshake: a browser that races QUIC against TCP
 /// for a new connection then settles on QUIC, and the door only serves those that cannot.
@@ -55,18 +59,14 @@ impl Http3Bootstrap {
     }
 
     fn respond(&self, request: &Request) -> Response {
-        let retried = request
-            .headers()
-            .typed_get::<Cookie>()
-            .is_some_and(|cookie| cookie.get(COOKIE_NAME).is_some())
-            || request.uri().contains_query_name(MARKER);
-        // Only a navigation follows the reload, so a subresource leaves the one retry alone.
+        let retries = retry_count(request);
+        // Only a navigation follows the reload, so a subresource leaves the retries alone.
         let navigation = request
             .headers()
             .typed_get::<SecFetchMode>()
             .is_none_or(|mode| mode == SecFetchMode::Navigate);
-        let reload = reload_target(request.uri());
-        let mut response = if retried {
+        let reload = (retries < 3).then(|| reload_target(request.uri(), retries + 1));
+        let mut response = if reload.is_none() {
             page(
                 "This browser did not switch to HTTP/3",
                 (
@@ -80,7 +80,7 @@ impl Http3Bootstrap {
             page(
                 "Switching to HTTP/3…",
                 p!("This origin is served over HTTP/3 (QUIC) only. Your browser is being sent back over HTTP/3."),
-                Some(reload.clone()),
+                reload.clone(),
             )
             .into_response()
         };
@@ -90,24 +90,52 @@ impl Http3Bootstrap {
         headers.typed_insert(CacheControl::new().with_no_store());
         // The reload must open a new connection, the first one Alt-Svc can apply to.
         headers.typed_insert(Connection::close());
-        if !retried {
+        if let Some(reload) = reload {
             headers.insert(REFRESH, reload);
         }
         if navigation {
-            let cookie = if retried { COOKIE_CLEAR } else { COOKIE_SET };
+            let cookie = COOKIE_SET
+                .get(usize::from(retries))
+                .copied()
+                .unwrap_or(COOKIE_CLEAR);
             headers.insert(SET_COOKIE, HeaderValue::from_static(cookie));
         }
         response
     }
 }
 
-/// `Refresh` to the same path with the marker; a query-only reference cannot leave the origin.
-fn reload_target(uri: &Uri) -> HeaderValue {
+/// A malformed counter exhausts the retries; neither a cookie nor a marker can lower it.
+fn retry_count(request: &Request) -> u8 {
+    let parse = |value: &str| value.parse::<u8>().unwrap_or(3).min(3);
+    let cookie = request.headers().typed_get::<Cookie>();
+    let cookies = cookie
+        .iter()
+        .flat_map(|cookie| cookie.iter())
+        .filter(|(name, _)| *name == COOKIE_NAME)
+        .map(|(_, value)| parse(value));
+    let markers = request
+        .uri()
+        .query()
+        .into_iter()
+        .flat_map(|query| query.pairs())
+        .filter(|pair| pair.name_decoded() == MARKER)
+        .map(|pair| pair.value_decoded().map_or(3, |value| parse(&value)));
+    cookies.chain(markers).max().unwrap_or(0)
+}
+
+/// `Refresh` to the same path with the counter; a query-only reference cannot leave the origin.
+fn reload_target(uri: &Uri, retry: u8) -> HeaderValue {
     let mut uri = uri.clone();
     uri.query_mut().remove(MARKER);
-    uri.query_mut().push_pair(MARKER, "1");
-    HeaderValue::try_from(format!("1; url=?{}", uri.query_or_empty()))
-        .unwrap_or_else(|_error| HeaderValue::from_static("1"))
+    uri.query_mut().push_pair(MARKER, retry.to_string());
+    let delay = 1_u8 << (retry - 1);
+    HeaderValue::try_from(format!("{delay}; url=?{}", uri.query_or_empty())).unwrap_or_else(
+        |_error| match retry {
+            1 => HeaderValue::from_static("1; url=?h3-bootstrap=1"),
+            2 => HeaderValue::from_static("2; url=?h3-bootstrap=2"),
+            _ => HeaderValue::from_static("4; url=?h3-bootstrap=3"),
+        },
+    )
 }
 
 /// Keeps the door's cookie and marker out of HTTP/3 handlers and captures, and clears the cookie.
@@ -385,7 +413,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert!(headers.typed_get::<AltSvc>().is_some());
         assert_eq!(headers.get(REFRESH).unwrap(), "1; url=?h3-bootstrap=1");
-        assert_eq!(headers.get(SET_COOKIE).unwrap(), COOKIE_SET);
+        assert_eq!(headers.get(SET_COOKIE).unwrap(), COOKIE_SET[0]);
         assert_eq!(headers.get(CONNECTION).unwrap(), "close");
     }
 
@@ -403,13 +431,90 @@ mod tests {
     }
 
     #[test]
-    fn a_marked_reload_back_over_tcp_without_cookies_gets_the_fallback() {
+    fn three_marked_reloads_back_over_tcp_without_cookies_get_the_fallback() {
         let request = Request::builder()
-            .uri("https://example.test/report?h3-bootstrap=1")
+            .uri("https://example.test/report?h3-bootstrap=3")
             .body(Body::empty())
             .unwrap();
         let response = bootstrap().respond(&request);
         assert!(response.headers().get(REFRESH).is_none());
+    }
+
+    #[test]
+    fn reloads_back_off_and_stop_with_or_without_cookies() {
+        for cookies in [false, true] {
+            let mut uri = "https://example.test/report?a=1".to_owned();
+            let mut cookie = None;
+            for (retry, delay) in [1, 2, 4].into_iter().enumerate() {
+                let mut request = Request::builder().uri(uri.as_str());
+                if let Some(cookie) = &cookie {
+                    request = request.header(COOKIE, cookie);
+                }
+                let response = bootstrap().respond(&request.body(Body::empty()).unwrap());
+                let refresh = response.headers().get(REFRESH).unwrap().to_str().unwrap();
+                assert_eq!(
+                    refresh,
+                    format!("{delay}; url=?a=1&h3-bootstrap={}", retry + 1)
+                );
+                if cookies {
+                    cookie = Some(
+                        response
+                            .headers()
+                            .get(SET_COOKIE)
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .split(';')
+                            .next()
+                            .unwrap()
+                            .to_owned(),
+                    );
+                } else {
+                    uri = format!(
+                        "https://example.test/report{}",
+                        refresh.split_once("url=").unwrap().1
+                    );
+                }
+            }
+            let mut request = Request::builder().uri(uri);
+            if let Some(cookie) = cookie {
+                request = request.header(COOKIE, cookie);
+            }
+            let response = bootstrap().respond(&request.body(Body::empty()).unwrap());
+            assert!(response.headers().get(REFRESH).is_none());
+            assert_eq!(response.headers().get(SET_COOKIE).unwrap(), COOKIE_CLEAR);
+        }
+    }
+
+    #[test]
+    fn the_largest_counter_wins_and_invalid_counters_stop() {
+        for marker in ["3", "", "bad", "256", "-1", "1&h3-bootstrap=3"] {
+            let request = Request::builder()
+                .uri(format!("https://example.test/report?h3-bootstrap={marker}"))
+                .header(COOKIE, "rama-h3-bootstrap=1")
+                .body(Body::empty())
+                .unwrap();
+            assert!(
+                bootstrap()
+                    .respond(&request)
+                    .headers()
+                    .get(REFRESH)
+                    .is_none()
+            );
+        }
+        let request = Request::builder()
+            .uri("https://example.test/report?h3-bootstrap=1")
+            .header(COOKIE, "rama-h3-bootstrap=2")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            bootstrap()
+                .respond(&request)
+                .headers()
+                .get(REFRESH)
+                .unwrap(),
+            "4; url=?h3-bootstrap=3"
+        );
     }
 
     async fn cleaned(active: bool, request: Request) -> (Request, Response) {
@@ -525,11 +630,11 @@ mod tests {
     }
 
     #[test]
-    fn a_browser_that_returns_over_tcp_gets_no_further_reload() {
+    fn a_browser_that_returns_over_tcp_three_times_gets_no_further_reload() {
         let mut request = Request::new(Body::empty());
         request.headers_mut().insert(
             COOKIE,
-            HeaderValue::from_static("other=1; rama-h3-bootstrap=1"),
+            HeaderValue::from_static("other=1; rama-h3-bootstrap=3"),
         );
         let response = bootstrap().respond(&request);
         let headers = response.headers();
@@ -559,7 +664,7 @@ mod tests {
             .headers_mut()
             .insert(SEC_FETCH_MODE, HeaderValue::from_static("navigate"));
         let response = bootstrap().respond(&navigation);
-        assert_eq!(response.headers().get(SET_COOKIE).unwrap(), COOKIE_SET);
+        assert_eq!(response.headers().get(SET_COOKIE).unwrap(), COOKIE_SET[0]);
     }
 
     #[tokio::test(start_paused = true)]

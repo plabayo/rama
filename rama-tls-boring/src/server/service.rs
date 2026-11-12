@@ -78,9 +78,11 @@ impl<S> TlsAcceptorService<S> {
         if !resumable {
             builder.set_options(SslOptions::NO_TICKET);
         }
-        let builder = tls_config
-            .cert_source
-            .install(builder, self.store_client_hello)?;
+        let builder = tls_config.cert_source.install(
+            builder,
+            self.store_client_hello,
+            tls_config.require_alpn,
+        )?;
         Ok(Acceptor {
             context: builder.build().into_context(),
             store_client_certificate_chain: tls_config.store_client_certificate_chain,

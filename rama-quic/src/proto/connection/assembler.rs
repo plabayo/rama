@@ -239,6 +239,12 @@ impl Assembler {
         Ok(())
     }
 
+    /// Whether data is held that no read returned yet. Exact once an ordered read came back
+    /// empty, as that also drops what earlier reads made stale.
+    pub(super) fn has_buffered(&self) -> bool {
+        !self.data.is_empty()
+    }
+
     /// Number of bytes consumed by the application
     pub(super) fn bytes_read(&self) -> u64 {
         self.bytes_read

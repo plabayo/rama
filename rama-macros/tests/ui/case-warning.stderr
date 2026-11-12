@@ -1,6 +1,8 @@
 error: function `fooBar` should have a snake case name
   --> tests/ui/case-warning.rs:8:20
    |
+ 5 | macro_rules! m {
+...
  8 |             pub fn [<foo $i>]() {}
    |                    ^^^^^^^^^^ help: convert the identifier to snake case: `foo_bar`
 ...
@@ -13,4 +15,3 @@ note: the lint level is defined here
  1 | #![deny(warnings)]
    |         ^^^^^^^^
    = note: `#[deny(non_snake_case)]` implied by `#[deny(warnings)]`
-   = note: this error originates in the macro `m` (in Nightly builds, run with -Z macro-backtrace for more info)

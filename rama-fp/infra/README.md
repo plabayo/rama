@@ -63,8 +63,8 @@ the H3 origin serves pages over QUIC only. Its TCP port only runs the bootstrap
 (`--h3-bootstrap-bind`): browsers always start over TCP, so it answers with `Alt-Svc`
 and a reload onto HTTP/3, or explains why a browser that stays on TCP was not
 switched. The reload carries a query marker and a short-lived cookie so it
-happens once; the H3 origin strips both before capturing and clears the cookie.
-Only a navigation uses up that one reload, and the bootstrap holds each TCP
+happens at most three times, after 1, 2 and 4 seconds; the H3 origin strips both
+before capturing and clears the cookie. Only a navigation uses up a reload, and the bootstrap holds each TCP
 connection briefly before its handshake, so a browser that races QUIC against
 TCP for a new connection settles on QUIC. Unsupported clients are reported explicitly.
 

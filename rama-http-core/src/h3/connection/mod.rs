@@ -14,7 +14,13 @@ use super::{
         WriteError,
     },
 };
-use crate::server::conn::{HeaderReadTimeout, IdleTimeout};
+use crate::{
+    proto::{
+        DEFAULT_MAX_INFORMATIONAL_RESPONSES, DEFAULT_REFUSED_STREAM_BUDGET,
+        rate_budget::{RateBudget, RefusedStreams},
+    },
+    server::conn::{HeaderReadTimeout, IdleTimeout},
+};
 use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -153,6 +159,17 @@ pub struct Config {
     pub read_chunk_size: usize,
     /// Maximum unclassified peer unidirectional streams retained simultaneously.
     pub max_pending_uni_streams: usize,
+    /// Maximum interim (1xx) responses a client accepts for one request or push before
+    /// failing it with `H3_EXCESSIVE_LOAD`. Defaults to 1024, far above what origins send.
+    pub max_informational_responses: usize,
+    /// How many request and push streams this endpoint may end for what its peer sent on
+    /// them, a message past a local limit or a malformed one, before it closes the
+    /// connection with `H3_EXCESSIVE_LOAD`: a burst tolerated at once and regained over
+    /// time. Streams the peer resets and those ended for a local cause are not counted.
+    /// A peer staying below the rate is flagged in the logs as its lifetime total doubles,
+    /// and [`RateBudget::with_ceiling`] ends it. Defaults to a burst of 1000 regained at 33
+    /// per second, as for HTTP/2. `None` ends such streams without end.
+    pub refused_stream_budget: Option<RateBudget>,
     /// Accept Extended CONNECT (RFC 9220) as a server, advertising
     /// `SETTINGS_ENABLE_CONNECT_PROTOCOL`. The service decides which `:protocol`
     /// tokens it serves; RFC 9220 §3 recommends `501` for others.
@@ -194,6 +211,8 @@ impl Default for Config {
             max_frame_size: kib(64),
             read_chunk_size: kib(16),
             max_pending_uni_streams: 32,
+            max_informational_responses: DEFAULT_MAX_INFORMATIONAL_RESPONSES,
+            refused_stream_budget: Some(DEFAULT_REFUSED_STREAM_BUDGET),
             extended_connect: false,
             datagrams: Some(DatagramConfig::default()),
             strict_connect_framing: false,
@@ -650,6 +669,8 @@ pub(crate) struct Shared {
     // This client started with TLS early keys, before the server's early-data decision.
     early: AtomicBool,
     pub(crate) schedule: super::priority::Schedule,
+    /// Charged for each stream ended for what the peer sent on it.
+    refused_streams: Mutex<RefusedStreams>,
     /// Taken by the one record of this connection's datagram drops.
     #[cfg(feature = "opentelemetry")]
     drops_metrics: Mutex<Option<super::H3Metrics>>,
@@ -997,6 +1018,7 @@ impl Shared {
             schedule: super::priority::Schedule::new(
                 config.max_requests.saturating_add(config.max_pushes),
             ),
+            refused_streams: Mutex::new(RefusedStreams::new(config.refused_stream_budget)),
             #[cfg(feature = "opentelemetry")]
             drops_metrics: Mutex::new(config.metrics.clone()),
             config,
@@ -1051,6 +1073,25 @@ impl Shared {
             ));
         }
         state.error.filter(|error| !error.is_clean_close())
+    }
+
+    /// Charge a stream ended for what the peer sent on it to the refused stream budget:
+    /// `error` while the budget covers it, the connection error that closes the connection
+    /// after.
+    pub(crate) fn charge_refusal(&self, error: Error) -> Error {
+        let role = match self.role {
+            Role::Client => "client",
+            Role::Server => "server",
+        };
+        match self.refused_streams.lock().charge("h3", role) {
+            Ok(()) => error,
+            Err(_exhausted) => Error::TOO_MANY_REFUSED_STREAMS,
+        }
+    }
+
+    /// The streams ended for what the peer sent on them, over the connection's life.
+    pub(crate) fn refused_streams(&self) -> u64 {
+        self.refused_streams.lock().total()
     }
 
     pub(crate) fn fail(&self, error: Error) {
@@ -2227,7 +2268,7 @@ impl<C: transport::Connection> Driver<C> {
         if let Err(error) = result {
             self.shared.fail(error);
             if let Ok(code) = VarInt::from_u64(error.code().value()) {
-                self.connection.close(code, b"HTTP/3 connection error");
+                self.connection.close(code, error.close_reason());
             }
         } else {
             // Wake terminal waiters without making Drop discard complete buffered responses.

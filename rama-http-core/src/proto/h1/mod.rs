@@ -76,6 +76,8 @@ pub(crate) struct ParseContext<'a> {
     h1_max_header_size: Option<usize>,
     h09_responses: bool,
     on_informational: &'a mut Option<OnInformational>,
+    /// Interim responses the current request may still receive; `None` leaves them uncounted.
+    informational_left: Option<&'a mut usize>,
     /// This can be consumed but we pass this as mut ref to prevent cloning in parse loops.
     /// These extensions have been prepared with the correct scope and they should be consumed
     /// and used as it without any extra wrapping
@@ -147,6 +149,7 @@ pub(crate) mod test_util {
                 h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                informational_left: None,
                 prepared_extensions: &mut Some(Extensions::default()),
             },
         )

@@ -4,6 +4,7 @@ use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,
     futures::{SinkExt as _, stream},
+    graceful::{Cause, Scope},
     io::BridgeIo,
     layer::{ArcLayer, MapInputLayer, MapOutputLayer},
     rt::spawn,
@@ -25,6 +26,7 @@ use rama_http::{
         ext::{HttpDatagrams, Protocol},
     },
 };
+use rama_http_core::h3::RateBudget;
 use rama_http_types::proto::h3::{FrameHeader, FrameType, SettingId, Settings, StreamType};
 use rama_net::{address::SocketAddress, uri::Uri};
 use rama_quic::{
@@ -2087,4 +2089,308 @@ async fn clean_carrier_close_drains_datagrams_through_the_mitm() {
         tokio::join!(browser_endpoint.wait_idle(), ingress_endpoint.wait_idle(), egress_endpoint.wait_idle(), origin_endpoint.wait_idle());
         let _drivers = tokio::join!(browser_driver, origin_driver);
     })).await.unwrap();
+}
+
+/// A datagram tunnel through the relay whose carrier closed cleanly while its origin still
+/// holds the tunnel: the relay is past transport closure with one accepted request in flight.
+/// `hard` aborts the relay's scope there; otherwise it is cancelled and the origin then takes
+/// the tunnel's input and closes it.
+async fn shutdown_after_a_clean_carrier_close(hard: bool) -> Result<(), BoxError> {
+    let count = 8;
+    let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+    let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+    let config = Config {
+        extended_connect: true,
+        ..Default::default()
+    };
+    let close_timeout = config.close_drain_timeout;
+    let (mut origin_http, origin_driver) = server::handshake(origin, config.clone()).unwrap();
+    let origin_driver = spawn(origin_driver.run());
+    let browser_connection = browser.clone();
+    let ingress_connection = ingress.clone();
+    let scope = Scope::new();
+    let relay = Http3MitmRelay::new(scope.clone_weak())
+        .with_ingress_config(config.clone())
+        .with_egress_config(config.clone())
+        .with_http_middleware((
+            MapInputLayer::new(|request: Request| {
+                request.extensions().insert(HttpDatagrams);
+                request
+            }),
+            MapOutputLayer::new(|response: Response| {
+                response.extensions().insert(HttpDatagrams);
+                response
+            }),
+            ArcLayer::new(),
+        ));
+    let mut forwarding = pin!(relay.serve(BridgeIo(ingress, egress)));
+    let (mut browser_http, browser_driver) =
+        client::handshake::<Body, _>(browser, config, WeakScope::detached()).unwrap();
+    let browser_driver = spawn(browser_driver.run());
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri("https://localhost/datagrams")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions().insert(HttpDatagrams);
+    request.extensions().insert(Protocol::CONNECT_UDP);
+    let (browser_io, origin_io) = tokio::select! {
+        tunnels = async {
+            let (response, origin_io) = tokio::join!(browser_http.send_request(request), async {
+                let (request, response) =
+                    origin_http.accept().await.unwrap().resolve().await.unwrap();
+                let upgrade = handle_upgrade(&request);
+                let accepted = Response::new(Body::empty());
+                accepted.extensions().insert(HttpDatagrams);
+                response.send_response(accepted).await.unwrap();
+                upgrade.await.unwrap()
+            });
+            (handle_upgrade(&response.unwrap()).await.unwrap(), origin_io)
+        } => tunnels,
+        result = &mut forwarding => panic!("relay ended during setup: {result:?}"),
+    };
+    let mut browser_io = HttpDatagramSession::new(browser_io);
+    let mut origin_io = HttpDatagramSession::new(origin_io);
+    for index in 0..count {
+        browser_io
+            .send_datagram(Bytes::from(vec![index as u8]))
+            .await
+            .unwrap();
+    }
+    browser_io.close().await.unwrap();
+    browser_connection.close(Code::H3_NO_ERROR.value() as u32, b"done");
+    ingress_connection.closed().await;
+    // The relay sees the closed carrier and waits for the tunnel its origin still holds.
+    assert!(
+        timeout(Duration::from_millis(1), &mut forwarding)
+            .await
+            .is_err(),
+        "the relay must drain a tunnel in flight",
+    );
+    let shutdown = Instant::now();
+    let result = if hard {
+        scope.abort(Cause::Reason("test"));
+        let result = forwarding.await;
+        assert!(
+            shutdown.elapsed() < close_timeout,
+            "the hard phase must not wait for the close timeout",
+        );
+        result
+    } else {
+        scope.cancel(Cause::Reason("test"));
+        assert!(
+            timeout(Duration::from_millis(1), &mut forwarding)
+                .await
+                .is_err(),
+            "a graceful phase must not end a tunnel in flight",
+        );
+        let delivered = async {
+            for index in 0..count {
+                assert!(
+                    matches!(
+                        origin_io.recv().await.unwrap(),
+                        Some(SessionEvent::Datagram { payload, .. }) if payload == [index as u8][..]
+                    ),
+                    "payload {index}"
+                );
+            }
+            assert_eq!(origin_io.recv().await.unwrap(), None);
+            origin_io.close().await.unwrap();
+        };
+        let (result, ()) = tokio::join!(forwarding, delivered);
+        result
+    };
+    for endpoint in [
+        &browser_endpoint,
+        &ingress_endpoint,
+        &egress_endpoint,
+        &origin_endpoint,
+    ] {
+        endpoint.close(0u32, b"done");
+    }
+    tokio::join!(
+        browser_endpoint.wait_idle(),
+        ingress_endpoint.wait_idle(),
+        egress_endpoint.wait_idle(),
+        origin_endpoint.wait_idle()
+    );
+    let _drivers = tokio::join!(browser_driver, origin_driver);
+    result
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_graceful_shutdown_lets_a_tunnel_finish_after_a_clean_carrier_close() {
+    timeout(LIMIT, Box::pin(shutdown_after_a_clean_carrier_close(false)))
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_hard_phase_cuts_a_tunnel_held_after_a_clean_carrier_close() {
+    let error = timeout(LIMIT, Box::pin(shutdown_after_a_clean_carrier_close(true)))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<io::Error>().map(io::Error::kind),
+        Some(io::ErrorKind::Interrupted),
+    );
+}
+
+/// The status a browser gets through the relay when the origin answers with `interim` 103
+/// responses before its final one, with a limit of `allowed` stamped on the egress transport.
+async fn relayed_status_after_interim_responses(allowed: usize, interim: usize) -> StatusCode {
+    let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+    let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+    egress
+        .extensions()
+        .insert(MaxInformationalResponses(allowed));
+    let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
+    let origin_driver = spawn(origin_driver.run());
+    let relay = spawn(async move {
+        Http3MitmRelay::new(WeakScope::detached())
+            .with_ingress_config(ordinary_config())
+            .with_egress_config(ordinary_config())
+            .serve(BridgeIo(ingress, egress))
+            .await
+    });
+    let (mut browser, browser_driver) =
+        client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached()).unwrap();
+    let browser_driver = spawn(browser_driver.run());
+    let request = Request::builder()
+        .version(Version::HTTP_3)
+        .uri("https://localhost/interim")
+        .body(Body::empty())
+        .unwrap();
+    let (received, ()) = tokio::join!(browser.send_request(request), async {
+        let (_request, mut response) = origin.accept().await.unwrap().resolve().await.unwrap();
+        for _ in 0..interim {
+            // The relay refuses the stream once the limit is passed.
+            if response
+                .send_informational(Response::builder().status(103).body(()).unwrap())
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        _ = response.send_response(Response::new(Body::empty())).await;
+    });
+    let status = received.unwrap().status();
+    relay.abort();
+    for endpoint in [
+        &browser_endpoint,
+        &ingress_endpoint,
+        &egress_endpoint,
+        &origin_endpoint,
+    ] {
+        endpoint.close(0u32, b"complete");
+    }
+    tokio::join!(
+        browser_endpoint.shutdown(),
+        ingress_endpoint.shutdown(),
+        egress_endpoint.shutdown(),
+        origin_endpoint.shutdown()
+    );
+    let _drivers = tokio::join!(browser_driver, origin_driver);
+    status
+}
+
+/// Whether a request relayed after one the relay refused for its interim responses is still
+/// served, with `budget` stamped on the egress transport.
+async fn relayed_after_a_refused_response(budget: Option<RefusedStreamBudget>) -> bool {
+    let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+    let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+    egress.extensions().insert(MaxInformationalResponses(1));
+    if let Some(budget) = budget {
+        egress.extensions().insert(budget);
+    }
+    let (mut origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
+    let origin_driver = spawn(origin_driver.run());
+    let relay = spawn(async move {
+        Http3MitmRelay::new(WeakScope::detached())
+            .with_ingress_config(ordinary_config())
+            .with_egress_config(ordinary_config())
+            .serve(BridgeIo(ingress, egress))
+            .await
+    });
+    let (mut browser, browser_driver) =
+        client::handshake::<Body, _>(browser, ordinary_config(), WeakScope::detached()).unwrap();
+    let browser_driver = spawn(browser_driver.run());
+    let mut served = false;
+    for interim in [2, 0] {
+        let request = Request::builder()
+            .version(Version::HTTP_3)
+            .uri("https://localhost/interim")
+            .body(Body::empty())
+            .unwrap();
+        let (received, ()) = tokio::join!(browser.send_request(request), async {
+            let Ok(accepted) = origin.accept().await else {
+                return;
+            };
+            let Ok((_request, mut response)) = accepted.resolve().await else {
+                return;
+            };
+            for _ in 0..interim {
+                if response
+                    .send_informational(Response::builder().status(103).body(()).unwrap())
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            _ = response.send_response(Response::new(Body::empty())).await;
+        });
+        served = received.is_ok_and(|response| response.status() == StatusCode::OK);
+    }
+    relay.abort();
+    for endpoint in [
+        &browser_endpoint,
+        &ingress_endpoint,
+        &egress_endpoint,
+        &origin_endpoint,
+    ] {
+        endpoint.close(0u32, b"complete");
+    }
+    tokio::join!(
+        browser_endpoint.shutdown(),
+        ingress_endpoint.shutdown(),
+        egress_endpoint.shutdown(),
+        origin_endpoint.shutdown()
+    );
+    let _drivers = tokio::join!(browser_driver, origin_driver);
+    served
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_applies_a_refused_stream_budget_stamped_on_egress() {
+    timeout(LIMIT, async {
+        // The relay's own budget tolerates one refused response; a spent one stamped on the
+        // egress transport ends that connection, and a disabled one never does.
+        assert!(relayed_after_a_refused_response(None).await);
+        let spent = RefusedStreamBudget(Some(RateBudget::lifetime(0)));
+        assert!(!relayed_after_a_refused_response(Some(spent)).await);
+        assert!(relayed_after_a_refused_response(Some(RefusedStreamBudget(None))).await);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_applies_an_interim_response_limit_stamped_on_egress() {
+    timeout(LIMIT, async {
+        let allowed = 3;
+        assert_eq!(
+            relayed_status_after_interim_responses(allowed, allowed).await,
+            StatusCode::OK
+        );
+        assert_ne!(
+            relayed_status_after_interim_responses(allowed, allowed + 1).await,
+            StatusCode::OK
+        );
+    })
+    .await
+    .unwrap();
 }

@@ -47,6 +47,10 @@ use std::sync::Arc;
 /// [`Client-Ip`]: crate::headers::forwarded::ClientIp
 /// [`CF-Connecting-Ip`]: crate::headers::forwarded::CFConnectingIp
 /// [`True-Client-Ip`]: crate::headers::forwarded::TrueClientIp
+///
+/// A [`ForwardedSelectionPolicy`] with trusted proxies has the headers recorded only for
+/// requests received from one of them, see [`ForwardedSelectionPolicy::trusts_peer`]; from
+/// any other peer they are ignored, and that peer is the client.
 pub struct GetForwardedHeadersLayer<T = Forwarded> {
     selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
     keep_existing_selection_policy: bool,
@@ -218,6 +222,13 @@ macro_rules! get_forwarded_service_for_tuple {
                 if let Some(policy) = &self.selection_policy {
                     policy.install(req.extensions(), self.keep_existing_selection_policy);
                 }
+                let extensions = req.extensions();
+                let trusted = extensions
+                    .get_ref::<ForwardedSelectionPolicy>()
+                    .is_none_or(|policy| policy.trusts_peer(extensions));
+                if !trusted {
+                    return self.inner.serve(req);
+                }
                 let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
 
                 $(
@@ -235,7 +246,7 @@ macro_rules! get_forwarded_service_for_tuple {
                     }
                 )*
 
-                Forwarded::record(req.extensions(), forwarded_elements);
+                Forwarded::record(extensions, forwarded_elements);
 
                 self.inner.serve(req)
             }
@@ -268,6 +279,7 @@ mod tests {
     }
     use rama_core::{Layer, error::BoxError, extensions::ExtensionsRef, service::service_fn};
     use rama_net::forwarded::ForwardedProtocol;
+    use rama_net::{address::SocketAddress, client_ip::client_ip, stream::SocketInfo};
     use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<Request<()>>>(_: T) {}
@@ -385,5 +397,40 @@ mod tests {
             .unwrap();
 
         service.serve(req).await.unwrap();
+    }
+
+    /// With trusted proxies the headers count only when one of them sent the request; any
+    /// other peer is the client itself, whatever it claims.
+    #[tokio::test]
+    async fn the_headers_are_honoured_only_from_a_trusted_proxy() {
+        let trusted = "10.0.0.0/8".parse().unwrap();
+        for (socket_peer, expected) in [
+            ("203.0.113.5", "203.0.113.5"),
+            ("10.1.2.3", "12.23.34.45"),
+            ("::ffff:10.1.2.3", "12.23.34.45"),
+        ] {
+            let service = GetForwardedHeadersLayer::<(ClientIp, TrueClientIp)>::new()
+                .with_forwarded_selection_policy(
+                    ForwardedSelectionPolicy::new().with_trusted_proxies([trusted]),
+                )
+                .into_layer(service_fn(move |req: Request<()>| async move {
+                    assert_eq!(
+                        client_ip(&req),
+                        Some(expected.parse().unwrap()),
+                        "{socket_peer}"
+                    );
+                    Ok::<_, Infallible>(())
+                }));
+            let req = Request::builder()
+                .header("Client-Ip", "12.23.34.45")
+                .header("True-Client-Ip", "12.23.34.45")
+                .body(())
+                .unwrap();
+            req.extensions().insert(SocketInfo::new(
+                None,
+                SocketAddress::new(socket_peer.parse().unwrap(), 0),
+            ));
+            service.serve(req).await.unwrap();
+        }
     }
 }

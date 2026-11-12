@@ -2849,13 +2849,13 @@ async fn too_many_window_update_resets_causes_go_away() {
             .send_frame(frames::window_update(21, u32::MAX - 2))
             .await;
         client
-            .recv_frame(frames::go_away(21).calm().data("too_many_internal_resets"))
+            .recv_frame(frames::go_away(21).calm().data("too_many_refused_streams"))
             .await;
     };
 
     let srv = async move {
         let mut conn = server::Builder::new()
-            .with_max_local_error_reset_streams(10)
+            .with_refused_stream_budget(RateBudget::lifetime(10))
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();

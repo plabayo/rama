@@ -798,3 +798,91 @@ async fn buffered_server_request_racing_clean_close_is_rejected() {
         }
     }
 }
+
+/// Trailers that decode to more than the field section limit are refused on their stream, as
+/// a response head is: the body ends in that error, never as a complete message.
+#[tokio::test(start_paused = true)]
+async fn memory_trailers_over_the_field_section_limit_fail_the_body() {
+    let small = "1".repeat(64);
+    let large = "1".repeat(1024);
+    // Both stay well within the frame budget on the wire and pass the limit once decoded:
+    // lines that each fit, and one line that alone does not.
+    for (trailers, code) in [
+        (
+            vec![("x-checksum", small.as_str()); 8],
+            Code::H3_EXCESSIVE_LOAD,
+        ),
+        (
+            vec![("x-checksum", large.as_str())],
+            Code::QPACK_DECOMPRESSION_FAILED,
+        ),
+    ] {
+        tokio::time::timeout(LIMIT, async {
+            let pair = Pair::in_memory(None, None).await;
+            let mut config = Config::default();
+            config.decoder.max_field_section_size = 256;
+            let (client, driver) =
+                client::handshake::<Body, _>(pair.client.clone(), config, WeakScope::detached())
+                    .unwrap();
+            let driver = spawn(driver.run());
+            let response = spawn({
+                let mut client = client.clone();
+                async move {
+                    client
+                        .send_request(
+                            Request::builder()
+                                .uri("https://localhost/oversized-trailers")
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap()
+                }
+            });
+            let (mut send, mut recv) = pair.server.accept_bi().await.unwrap();
+            recv.read_to_end(4096).await.unwrap();
+            let id = u64::from(send.id());
+            let mut encoder = Encoder::new(EncoderConfig {
+                max_table_capacity: 0,
+                ..EncoderConfig::default()
+            });
+            let fields = encoder.encode(id, [(":status", "200")]).unwrap();
+            let mut bytes = BytesMut::new();
+            FrameHeader::new(FrameType::HEADERS, fields.len() as u64)
+                .encode(&mut bytes)
+                .unwrap();
+            bytes.extend_from_slice(&fields);
+            FrameHeader::new(FrameType::DATA, 1)
+                .encode(&mut bytes)
+                .unwrap();
+            bytes.extend_from_slice(b"x");
+            let trailers = encoder.encode(id, trailers).unwrap();
+            FrameHeader::new(FrameType::HEADERS, trailers.len() as u64)
+                .encode(&mut bytes)
+                .unwrap();
+            bytes.extend_from_slice(&trailers);
+            send.write_all(&bytes).await.unwrap();
+
+            let mut body = response.await.unwrap().into_body();
+            let data = body.frame().await.unwrap().unwrap();
+            assert_eq!(data.into_data().unwrap(), b"x"[..]);
+            let error = body.frame().await.unwrap().unwrap_err();
+            let cause = error.find_cause::<Error>().unwrap();
+            assert_eq!(cause.code(), code);
+            assert_eq!(cause.scope(), ErrorScope::Stream);
+            assert!(cause.is_remote_failure());
+            // The refusal reaches the peer, and only that stream.
+            assert_eq!(
+                send.stopped().await.unwrap().unwrap().into_inner(),
+                code.value()
+            );
+            assert!(pair.client.close_reason().is_none());
+            pair.client
+                .close(Code::H3_NO_ERROR.value() as u32, b"complete");
+            driver.await.unwrap().unwrap();
+            pair.close().await;
+        })
+        .await
+        .unwrap();
+    }
+}

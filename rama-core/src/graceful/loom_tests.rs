@@ -160,6 +160,27 @@ fn signal_completion_reaches_every_waiter() {
     });
 }
 
+// Below a parent the waiters of a node forward the wakes of that parent, and its signals
+// wake them with a waker of their own.
+#[test]
+fn a_hard_signal_below_a_parent_reaches_a_waiter_that_the_parent_wakes_too() {
+    loom::model(|| {
+        let root = Scope::new();
+        let signal = LoomSignal::default();
+        let child = root.child().with_hard_signal(signal.clone());
+        let firer = thread::spawn(move || signal.fire());
+        let canceller = {
+            let root = root.clone_weak();
+            thread::spawn(move || root.cancel(Cause::Owner))
+        };
+        block_on(child.aborted());
+        firer.join().unwrap();
+        canceller.join().unwrap();
+        assert!(matches!(child.abort_cause(), Some(Cause::Signal)));
+        assert!(!root.is_aborted());
+    });
+}
+
 #[test]
 fn cancel_last_drop_and_upgrade_never_revive_a_drained_cancelled_scope() {
     loom::model(|| {
