@@ -149,6 +149,7 @@ impl RefusedStreams {
     }
 
     /// The streams refused over the connection's whole life.
+    #[cfg(any(test, feature = "quic", feature = "unstable"))]
     pub(crate) fn total(&self) -> u64 {
         self.total
     }
