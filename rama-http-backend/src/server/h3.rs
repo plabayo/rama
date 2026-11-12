@@ -74,7 +74,7 @@ where
     let mut notice = std::pin::pin!(notice);
     loop {
         tokio::select! {
-            result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await,
+            result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, &scope).await,
             _ = &mut cancelled, if !announced => {
                 let period = connection.announce_shutdown()?;
                 notice.as_mut().reset(Instant::now() + period);
@@ -88,7 +88,7 @@ where
                 let stream = match accepted {
                     Ok(stream) => stream,
                     // Keep accepted work alive while the driver files received input.
-                    Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await,
+                    Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, &scope).await,
                     Err(error) => return Err(error.into()),
                 };
                 let service = service.clone();
@@ -107,7 +107,7 @@ where
             result = requests.next(), if !requests.is_empty() => {
                 if let Some(Err(error)) = result {
                     if clean_close(error) {
-                        return drain(driver, &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await;
+                        return drain(driver, &mut requests, close_timeout, &scope).await;
                     }
                     if error.scope() == ErrorScope::Connection {
                         return completed(Err(error));
@@ -118,9 +118,9 @@ where
         }
         if draining && requests.is_empty() {
             return tokio::select! {
-                result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, &scope).await,
                 result = drained_within(connection.drained(), goaway_timeout) => match result {
-                    Err(error) if clean_close(error) => drain(driver, &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                    Err(error) if clean_close(error) => drain(driver, &mut requests, close_timeout, &scope).await,
                     result => completed(result),
                 },
             };

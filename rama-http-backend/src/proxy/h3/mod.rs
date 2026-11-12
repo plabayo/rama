@@ -44,7 +44,7 @@ use tokio::time::{Instant, sleep};
 
 use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
 use crate::{
-    client::SendAttempts,
+    client::{MaxInformationalResponses, RefusedStreamBudget, SendAttempts},
     h3::{clean_close, completed, drain, drained_within},
 };
 
@@ -313,6 +313,13 @@ where
             tracing::debug!("HTTP/3 relay disables egress early requests");
             egress_config.early_requests = false;
         }
+        // As for a byte-stream egress: a limit stamped on the transport wins over the config.
+        if let Some(max) = egress.extensions().get_ref::<MaxInformationalResponses>() {
+            egress_config.max_informational_responses = max.0;
+        }
+        if let Some(budget) = egress.extensions().get_ref::<RefusedStreamBudget>() {
+            egress_config.refused_stream_budget = budget.0;
+        }
         // QPACK state stays independent per hop; push is not relayed.
         if ingress_config.max_pushes != 0 || egress_config.max_pushes != 0 {
             tracing::debug!("HTTP/3 relay disables server push on both hops");
@@ -495,7 +502,7 @@ where
         let result = async {
             loop {
                 tokio::select! {
-                    result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await,
+                    result = &mut driver => return drain(std::future::ready(result), &mut requests, close_timeout, &self.scope).await,
                     _ = &mut cancelled, if !announced => {
                         let period = connection.announce_shutdown()?;
                         notice.as_mut().reset(Instant::now() + period);
@@ -513,7 +520,7 @@ where
                     accepted = connection.accept(), if !draining => {
                         let stream = match accepted {
                             Ok(stream) => stream,
-                            Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await,
+                            Err(error) if clean_close(error) => return drain(driver, &mut requests, close_timeout, &self.scope).await,
                             Err(error) => return completed(Err(error)),
                         };
                         let service = service.clone();
@@ -595,7 +602,7 @@ where
                     result = requests.next(), if !requests.is_empty() => {
                         if let Some(Err(error)) = result {
                             if clean_close(error) {
-                                return drain(driver, &mut requests, close_timeout, (!announced).then_some(&mut cancelled)).await;
+                                return drain(driver, &mut requests, close_timeout, &self.scope).await;
                             }
                             if error.scope() == ErrorScope::Connection {
                                 return completed(Err(error));
@@ -606,9 +613,9 @@ where
                 }
                 if draining && requests.is_empty() {
                     return tokio::select! {
-                        result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                        result = &mut driver => drain(std::future::ready(result), &mut requests, close_timeout, &self.scope).await,
                         result = drained_within(connection.drained(), goaway_timeout) => match result {
-                            Err(error) if clean_close(error) => drain(driver, &mut requests, close_timeout, None::<std::future::Pending<()>>).await,
+                            Err(error) if clean_close(error) => drain(driver, &mut requests, close_timeout, &self.scope).await,
                             result => completed(result),
                         },
                     };

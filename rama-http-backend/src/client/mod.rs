@@ -13,7 +13,10 @@ pub use connect_request::{HttpConnectRequestAdapter, HttpConnectRequestAdapterLa
 
 mod conn;
 #[doc(inline)]
-pub use conn::{HttpConnector, HttpConnectorLayer, http_connect, http2_eager_handshake};
+pub use conn::{
+    HttpConnector, HttpConnectorLayer, MaxInformationalResponses, RefusedStreamBudget,
+    http_connect, http2_eager_handshake,
+};
 
 mod bind_body;
 #[doc(inline)]
