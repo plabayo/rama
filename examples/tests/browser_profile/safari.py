@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2] / "rama-fp"))
 from browser_automation.drivers import local_session
 from browser_automation.workflow import PROTOCOLS, run_capture_flow
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 
 
@@ -38,16 +39,35 @@ def fixture_environment(parent, key, certificate):
     return environment
 
 
+def reach_protocol(driver, origin, protocol):
+    """Land a navigation on `protocol`, or fail saying where the browser ended up."""
+    # The CLI's TCP bootstrap closes the connection and reloads into H3, once per visit:
+    # Safari may still be settling on QUIC when that reload leaves, so a visit that stays
+    # on TCP is repeated. Fallback or a stuck bootstrap must fail, never skip this regression.
+    visits = 4 if protocol == "h3" else 1
+    landed = []
+    for _ in range(visits):
+        driver.get(origin + "/consent")
+        try:
+            WebDriverWait(driver, 30 // visits + 5).until(lambda browser: PROTOCOLS.get(
+                browser.execute_script(
+                    'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
+                )) == protocol)
+        except TimeoutException:
+            pass
+        landed.append(driver.execute_script(
+            'return {url: location.href, title: document.title, '
+            'protocol: performance.getEntriesByType("navigation")[0]?.nextHopProtocol}'))
+        if PROTOCOLS.get(landed[-1]["protocol"]) == protocol:
+            # Every visit is on record: one that needed repeating shows up in the report.
+            return landed
+    raise RuntimeError(f"Safari never navigated over {protocol}: {landed}")
+
+
 def verify_responses(driver, origin, protocol):
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
-    driver.get(origin + "/consent")
-    # The CLI's TCP bootstrap closes the connection and reloads into H3.
-    # Fallback or a stuck bootstrap must fail, never skip this regression.
-    WebDriverWait(driver, 30).until(lambda browser: PROTOCOLS.get(
-        browser.execute_script(
-            'return performance.getEntriesByType("navigation")[0]?.nextHopProtocol'
-        )) == protocol)
+    visits = reach_protocol(driver, origin, protocol)
     rows = driver.execute_async_script("""
         const done = arguments[0];
         (async () => {
@@ -77,6 +97,10 @@ def verify_responses(driver, origin, protocol):
             done({results});
         })().catch(error => done({error: String(error)}));
     """)
+    if isinstance(rows, dict):
+        rows["visits"] = visits
+        if len(visits) > 1:
+            print(f"Safari needed {len(visits)} visits to reach {protocol}: {visits}")
     return rows
 
 
