@@ -26,7 +26,7 @@ pub use inspect::{
 };
 
 mod relay;
-pub use relay::UnspecifiedClientUdpAddressPolicy;
+pub use relay::{DeclaredClientUdpAddressPolicy, UnspecifiedClientUdpAddressPolicy};
 
 #[cfg(feature = "dns")]
 type MaybeDnsResolver = Option<BoxDnsAddressResolver>;
@@ -127,6 +127,7 @@ pub struct UdpRelay<B, I> {
     relay_timeout: Option<Duration>,
 
     unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
+    declared_client_udp_address_policy: DeclaredClientUdpAddressPolicy,
 }
 
 impl<B> UdpRelay<B, DirectUdpRelay> {
@@ -143,6 +144,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             south_buffer_size: 4096,
             relay_timeout: None,
             unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy::default(),
+            declared_client_udp_address_policy: DeclaredClientUdpAddressPolicy::default(),
         }
     }
 
@@ -160,6 +162,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
             unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
+            declared_client_udp_address_policy: self.declared_client_udp_address_policy,
         }
     }
 
@@ -177,6 +180,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
             unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
+            declared_client_udp_address_policy: self.declared_client_udp_address_policy,
         }
     }
 }
@@ -197,6 +201,7 @@ impl<B, I> UdpRelay<B, I> {
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
             unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
+            declared_client_udp_address_policy: self.declared_client_udp_address_policy,
         }
     }
 
@@ -274,6 +279,19 @@ impl<B, I> UdpRelay<B, I> {
             policy: UnspecifiedClientUdpAddressPolicy,
         ) -> Self {
             self.unspecified_client_udp_address_policy = policy;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set how a UDP ASSOCIATE relay treats a client UDP address the request declares.
+        ///
+        /// Defaults to [`DeclaredClientUdpAddressPolicy::Trust`].
+        pub fn declared_client_udp_address_policy(
+            mut self,
+            policy: DeclaredClientUdpAddressPolicy,
+        ) -> Self {
+            self.declared_client_udp_address_policy = policy;
             self
         }
     }
@@ -375,6 +393,28 @@ where
         };
         let client_address = SocketAddress::new(dest_addr, dest_port);
         let tcp_peer_ip = SocketInfo::ingress(&extensions).map(|info| info.peer_addr().ip_addr);
+
+        if !self
+            .declared_client_udp_address_policy
+            .accepts(client_address.ip_addr, tcp_peer_ip)
+        {
+            tracing::debug!(
+                network.peer.address = %client_address.ip_addr,
+                network.peer.port = %client_address.port,
+                "udp associate: declared client address is not the tcp peer: refused by policy",
+            );
+            let reply_kind = ReplyKind::ConnectionNotAllowed;
+            Reply::error_reply(reply_kind)
+                .write_to(&mut stream)
+                .await
+                .map_err(|err| {
+                    Error::io(err)
+                        .with_context("write server reply: declared udp client address refused")
+                })?;
+            return Err(
+                Error::aborted("declared udp client address refused").with_context(reply_kind)
+            );
+        }
 
         if client_address.ip_addr.is_unspecified()
             && self.unspecified_client_udp_address_policy
