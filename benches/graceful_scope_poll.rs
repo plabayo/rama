@@ -9,7 +9,10 @@
 //! `observe` (`WeakScope::is_cancelled` called `polls` times), `first_poll` (an `Aborted`
 //! future made, polled once and dropped), `spawn` (a task spawned and awaited), `child` (a
 //! child scope made and dropped), `input` (a child scope with a max age, a grace and a hard
-//! max age made, awaited once and dropped, as a scope layer does per input).
+//! max age made, awaited once and dropped, as a scope layer does per input), `waiters` (as
+//! `first_poll`, for 64 futures at a time on the one scope, counted per future), `wake` (64
+//! `Aborted` futures registered on a child scope, woken by its abort and polled to their end,
+//! counted per future).
 //!
 //! The `bound_*` modes compare ways to bound one future by the hard phase of the scope and a
 //! timeout of its own, as the close of a tunnel does: `bound_timer` (an `Aborted` future next
@@ -52,6 +55,9 @@ impl Future for Spin {
 }
 
 const HOUR: Duration = Duration::from_secs(3600);
+
+/// The futures the `waiters` and `wake` modes keep on one scope at a time.
+const WAITERS: usize = 64;
 
 /// The scope a task runs in, and what keeps its ancestors alive.
 fn shape(name: &str) -> Option<(Scope, Vec<Scope>)> {
@@ -352,6 +358,36 @@ fn main() {
                         .with_hard_timeout(2 * HOUR);
                     let mut wait = std::pin::pin!(input.aborted());
                     assert!(wait.as_mut().poll(&mut cx).is_pending());
+                }
+                start.elapsed()
+            }
+            "waiters" => {
+                let (scope, _keep) = scope.as_ref().expect("a scope shape");
+                let mut cx = Context::from_waker(Waker::noop());
+                let start = Instant::now();
+                for _ in 0..polls / WAITERS as u64 {
+                    let mut waits: [Aborted; WAITERS] =
+                        std::array::from_fn(|_| black_box(scope).aborted());
+                    for wait in &mut waits {
+                        assert!(Pin::new(wait).poll(&mut cx).is_pending());
+                    }
+                }
+                start.elapsed()
+            }
+            "wake" => {
+                let (scope, _keep) = scope.as_ref().expect("a scope shape");
+                let mut cx = Context::from_waker(Waker::noop());
+                let start = Instant::now();
+                for _ in 0..polls / WAITERS as u64 {
+                    let child = black_box(scope).child();
+                    let mut waits: [Aborted; WAITERS] = std::array::from_fn(|_| child.aborted());
+                    for wait in &mut waits {
+                        assert!(Pin::new(wait).poll(&mut cx).is_pending());
+                    }
+                    child.abort(Cause::Owner);
+                    for wait in &mut waits {
+                        assert!(Pin::new(wait).poll(&mut cx).is_ready());
+                    }
                 }
                 start.elapsed()
             }

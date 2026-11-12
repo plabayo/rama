@@ -5,7 +5,11 @@ use crate::client::tests::browser_tls_profiles;
 use parking_lot::Mutex;
 #[cfg(feature = "compression")]
 use rama_boring::ssl::UnknownValues;
-use rama_boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode, SslVersion};
+use rama_boring::{
+    pkey::PKey,
+    ssl::{SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode, SslVersion},
+    x509::X509,
+};
 use rama_boring_tokio::{SslStream, SslStreamBuilder};
 use rama_core::{
     Layer as _, Service, ServiceInput,
@@ -826,6 +830,39 @@ async fn a_static_context_requiring_alpn_refuses_an_offer_without_one() {
             .into_static_acceptor_builder()
             .unwrap()
             .build();
+        let mut client = client(SslVersion::TLS1_3);
+        if let Some(offer) = offer {
+            client.set_alpn_protos(offer).unwrap();
+        }
+        let connect = client.build().configure().unwrap();
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
+        let (client, server) = tokio::join!(
+            rama_boring_tokio::connect(connect, Some("localhost"), client_io),
+            rama_boring_tokio::accept(&acceptor, server_io),
+        );
+        assert_eq!(client.is_ok() && server.is_ok(), agreed, "{offer:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_context_with_identity_installed_later_still_requires_alpn() {
+    for (offer, agreed) in [(Some(b"\x02h2".as_slice()), true), (None, false)] {
+        let auth = server_auth(CertificateKeyKind::EcP256);
+        let config = TlsServerConfig::new()
+            .with_server_auth(auth.clone())
+            .with_alpn_http_auto()
+            .with_alpn_policy(AlpnPolicy::Require);
+        let mut builder = TlsAcceptorData::try_from(&config)
+            .unwrap()
+            .acceptor_builder_without_identity()
+            .unwrap();
+        builder
+            .set_certificate(&X509::from_der(auth.cert_chain[0].as_ref()).unwrap())
+            .unwrap();
+        builder
+            .set_private_key(&PKey::private_key_from_der(auth.private_key.secret_der()).unwrap())
+            .unwrap();
+        let acceptor = builder.build();
         let mut client = client(SslVersion::TLS1_3);
         if let Some(offer) = offer {
             client.set_alpn_protos(offer).unwrap();

@@ -1278,13 +1278,6 @@ impl Inner {
         id: StreamId,
         reason: Reason,
     ) -> Result<(), crate::h2::proto::error::GoAway> {
-        // A frame for a stream this side opened, reset and forgot is the peer's answer racing
-        // our own cancellation (RFC 9113 §5.1): refusing it is no fault of the peer's.
-        let raced_own_cancellation = reason == Reason::STREAM_CLOSED
-            && self.counts.peer().is_local_init(id)
-            && self
-                .actions
-                .may_have_forgotten_stream(self.counts.peer(), id);
         let key = match self.store.find_entry(id) {
             Entry::Occupied(e) => e.key(),
             Entry::Vacant(e) => {
@@ -1333,7 +1326,8 @@ impl Inner {
             stream,
             reason,
             Initiator::Library,
-            !raced_own_cancellation,
+            // Retained cancellations are ignored on receive; forgotten streams cost budget.
+            true,
             &mut self.counts,
             send_buffer,
         )

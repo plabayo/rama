@@ -46,31 +46,35 @@ const DRIVE_ROUNDS: usize = 4;
 
 pub(super) type Signal = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
+// Laid out as declared. The count every hold writes comes first, next to the counts of the
+// allocation; what a poll or a walk up the chain reads follows past the rarely read fields,
+// away from those writes and within reach of a single load.
+#[repr(C)]
 pub(super) struct Node {
-    parent: Option<Arc<Self>>,
+    // Handles on this node plus live children (each holds one), plus the `CLOSED` bit.
+    strong: AtomicUsize,
     // Shared by the whole tree, so instants inherited from an ancestor are stored exactly.
     base: Instant,
-    flags: AtomicU8,
     // Offsets in nanoseconds since `base`, `UNSET` when absent.
     cancelled_at: AtomicU64,
     aborted_at: AtomicU64,
-    deadline: AtomicU64,
-    hard_deadline: AtomicU64,
     // Nanoseconds, `UNSET` when absent.
     grace: AtomicU64,
-    // Handles on this node plus live children (each holds one), plus the `CLOSED` bit.
-    strong: AtomicUsize,
+    parent: Option<Arc<Self>>,
+    flags: AtomicU8,
+    // Set once the wakes of every ancestor are forwarded to `waiters`, see `Relay`.
+    relayed: AtomicBool,
+    // Shared with the waiters of the children, which register it on those of this node to
+    // have its wakes forwarded, and with this node's signals as their waker.
+    waiters: std::sync::Arc<Waiters>,
+    // Offsets as for `cancelled_at`.
+    deadline: AtomicU64,
+    hard_deadline: AtomicU64,
     causes: Mutex<Causes>,
     // Polled only by the driver holding this lock.
-    signals: Mutex<Signals>,
+    signals: Mutex<Driven>,
     // Added here, moved into `signals` by the driver, so a signal can add signals while polled.
     incoming: Mutex<Signals>,
-    // Shared with the relays of the children, and with this node's signals as their waker.
-    waiters: std::sync::Arc<Waiters>,
-    // Forwards the parent's wakes to `waiters`; made by the first waiter, see `Relay`.
-    relay: Mutex<Option<std::sync::Arc<Relay>>>,
-    // Set once this node and every ancestor forward their parent's wakes.
-    relayed: AtomicBool,
 }
 
 #[derive(Default)]
@@ -83,6 +87,14 @@ struct Causes {
 struct Signals {
     graceful: Vec<Signal>,
     hard: Vec<Signal>,
+}
+
+/// The signals a driver polls, and what it polls them with.
+#[derive(Default)]
+struct Driven {
+    signals: Signals,
+    // The waker of the signals of a node below a parent, made by its first drive.
+    waker: Option<Waker>,
 }
 
 /// Scheduled phase instants of a node, as offsets (`UNSET` without one); they may lie in
@@ -176,7 +188,8 @@ impl Node {
             }
             None => Instant::now(),
         };
-        let relayed = AtomicBool::new(parent.is_none());
+        let root = parent.is_none();
+        let relayed = AtomicBool::new(root);
         Self {
             parent,
             base,
@@ -188,10 +201,9 @@ impl Node {
             grace: AtomicU64::new(UNSET),
             strong: AtomicUsize::new(1),
             causes: Mutex::new(Causes::default()),
-            signals: Mutex::new(Signals::default()),
+            signals: Mutex::new(Driven::default()),
             incoming: Mutex::new(Signals::default()),
-            waiters: std::sync::Arc::new(Waiters::default()),
-            relay: Mutex::new(None),
+            waiters: std::sync::Arc::new(Waiters::new(root)),
             relayed,
         }
     }
@@ -224,22 +236,14 @@ impl Node {
         }
     }
 
-    /// Puts this node's relay on its parent's waiters; its parent must be relayed already.
+    /// Has the wakes of its parent's waiters forwarded to those of this node; its parent
+    /// must be relayed already.
     fn install_relay(&self) {
         let Some(parent) = self.parent() else {
             return;
         };
-        let mut relay = self.relay.lock();
-        if relay.is_none() {
-            let new = std::sync::Arc::new(Relay {
-                parent: parent.waiters.clone(),
-                child: self.waiters.clone(),
-                state: Mutex::new(RelayState::default()),
-            });
-            new.register();
-            *relay = Some(new);
-            self.relayed.store(true, Ordering::Release);
-        }
+        self.waiters.relay_from(&parent.waiters);
+        self.relayed.store(true, Ordering::Release);
     }
 
     pub(super) fn parent(&self) -> Option<&Self> {
@@ -382,11 +386,12 @@ impl Node {
         if flags & SIGNALS == 0 {
             return;
         }
-        let Some(mut signals) = self.signals.try_lock() else {
+        let Some(mut driven) = self.signals.try_lock() else {
             // Release: the driver holding the lock sees this and clears them next round.
             self.waiters.signalled.store(true, Ordering::Release);
             return;
         };
+        let signals = &mut driven.signals;
         let mut settled = Signals::default();
         {
             let mut incoming = self.incoming.lock();
@@ -399,7 +404,7 @@ impl Node {
                 settled.hard.append(&mut incoming.hard);
             }
         }
-        drop(signals);
+        drop(driven);
         // Dropped outside the locks: a signal's drop may re-enter the tree.
         drop(settled);
     }
@@ -462,9 +467,10 @@ impl Node {
             }
             // Declared before the lock guard: on unwind the lock is released first.
             let rearm = RearmOnPanic(self);
-            let Some(mut signals) = self.signals.try_lock() else {
+            let Some(mut driven) = self.signals.try_lock() else {
                 return polled;
             };
+            let Driven { signals, waker } = &mut *driven;
             self.waiters.signalled.store(false, Ordering::Relaxed);
             polled = true;
             {
@@ -481,7 +487,7 @@ impl Node {
                 signals.hard.clear();
             }
 
-            let waker = Waker::from(self.waiters.clone());
+            let waker = self.waiters.signal_waker(waker);
             let mut cx = Context::from_waker(&waker);
             let graceful = poll_any(&mut signals.graceful, &mut cx);
             let hard = poll_any(&mut signals.hard, &mut cx);
@@ -493,7 +499,7 @@ impl Node {
                 }
             }
             drop(rearm);
-            drop(signals);
+            drop(driven);
 
             if hard {
                 self.abort(Cause::Signal);
@@ -516,6 +522,18 @@ impl Node {
     /// One walk when no signal is polled and no level has a phase to publish; the flags read
     /// on the way stay valid, as a later change wakes the waiter registered before.
     pub(super) fn driven_phase(&self) -> Phase {
+        self.driven_phase_by(Instant::now)
+    }
+
+    /// As [`Self::driven_phase`], with `now` in place of a read of the clock where an open
+    /// chain is judged by its deadlines: a reading the caller took for this poll.
+    pub(super) fn driven_phase_at(&self, now: Instant) -> Phase {
+        self.driven_phase_by(|| now)
+    }
+
+    /// [`Self::driven_phase`], an open chain judged at the instant `now` gives.
+    #[inline(always)]
+    fn driven_phase_by(&self, now: impl FnOnce() -> Instant) -> Phase {
         let own = self.flags.load(Ordering::Acquire);
         let mut seen = own;
         let mut earliest = UNSET;
@@ -548,7 +566,7 @@ impl Node {
         } else if seen & (CANCELLED | ABORTED) != 0 {
             self.phase_slow()
         } else {
-            match self.open_until(earliest) {
+            match self.open_until_by(earliest, now) {
                 Some(phase) => phase,
                 None => self.phase_slow(),
             }
@@ -571,11 +589,17 @@ impl Node {
     /// offset `earliest`: every level is open until then, as a grace only counts from a
     /// cancel. `None` without a deadline, or once it is reached.
     fn open_until(&self, earliest: u64) -> Option<Phase> {
+        self.open_until_by(earliest, Instant::now)
+    }
+
+    /// [`Self::open_until`], judged at the instant `now` gives.
+    #[inline(always)]
+    fn open_until_by(&self, earliest: u64, now: impl FnOnce() -> Instant) -> Option<Phase> {
         if earliest == UNSET {
             return None;
         }
         let at = self.base + Duration::from_nanos(earliest);
-        (Instant::now() < at).then_some(Phase {
+        (now() < at).then_some(Phase {
             stage: Stage::Open,
             next: Some(at),
         })
@@ -1159,9 +1183,11 @@ impl Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
-        let relay = self.relay.lock().take();
-        if let Some(relay) = relay {
-            relay.close();
+        // Acquire: pairs with the store in `install_relay`, made once it registered.
+        // Iterative destruction below takes an ancestor's parent before dropping it.
+        // The relay still owns its registration and must be closed in that case too.
+        if self.relayed.load(Ordering::Acquire) && !self.waiters.root {
+            self.waiters.close_relay();
         }
         // Ancestors this was the last reference to go one by one, not as nested drops.
         #[cfg(not(all(rama_loom, test)))]
@@ -1319,71 +1345,17 @@ impl Drop for DropOnPanic<'_> {
     }
 }
 
-/// A waker on a parent's waiters that wakes the child's waiters, so a waiter registers on
-/// its own node only, at any depth.
+/// How the wakes of a parent's waiters reach those of a child, so a waiter registers on its
+/// own node only, at any depth: the child's waiters are themselves a waker on the parent's,
+/// and wake every waiter of the child.
 ///
-/// It registers itself again before forwarding: a parent wake from then on reaches it, and
-/// one that drained it before sees the child woken after its own changes.
-struct Relay {
-    parent: std::sync::Arc<Waiters>,
-    child: std::sync::Arc<Waiters>,
-    state: Mutex<RelayState>,
-}
-
+/// They register again before forwarding: a parent wake from then on reaches them, and one
+/// that drained them before sees the child woken after its own changes.
 #[derive(Default)]
-struct RelayState {
+struct Relay {
+    // The waiters of the parent, from the first waiter of the child until the child is gone.
+    parent: Option<std::sync::Arc<Waiters>>,
     registration: Option<Registration>,
-    // Set once the child node is gone.
-    closed: bool,
-}
-
-impl Relay {
-    /// Registers on the parent's waiters, unless the child is gone.
-    fn register(self: &std::sync::Arc<Self>) -> bool {
-        let mut state = self.state.lock();
-        if state.closed {
-            return false;
-        }
-        let waker = Waker::from(self.clone());
-        self.parent.register(&mut state.registration, &waker, true);
-        true
-    }
-
-    fn close(&self) {
-        let registration = {
-            let mut state = self.state.lock();
-            state.closed = true;
-            state.registration.take()
-        };
-        if let Some(registration) = registration {
-            self.parent.deregister(registration);
-        }
-    }
-
-    fn forward(self: &std::sync::Arc<Self>) {
-        if !self.register() {
-            return;
-        }
-        // A wake reaching a deeper relay while this thread forwards is queued, not nested:
-        // a deep tree costs no stack. Each relay registers again before it is queued.
-        let queued = FORWARDING.with(|forwarding| match forwarding.borrow_mut().as_mut() {
-            Some(queue) => {
-                queue.push(self.child.clone());
-                true
-            }
-            None => false,
-        });
-        if queued {
-            return;
-        }
-        let _forwarding = Forwarding::start();
-        let mut next = Some(self.child.clone());
-        while let Some(waiters) = next {
-            waiters.wake_all();
-            next =
-                FORWARDING.with(|forwarding| forwarding.borrow_mut().as_mut().and_then(Vec::pop));
-        }
-    }
 }
 
 /// Waiters still to wake by the relay forwarding on this thread, if one is.
@@ -1417,46 +1389,52 @@ impl Drop for Forwarding {
     }
 }
 
-impl Wake for Relay {
-    fn wake(self: std::sync::Arc<Self>) {
-        self.forward();
-    }
-
-    fn wake_by_ref(self: &std::sync::Arc<Self>) {
-        self.forward();
-    }
-}
-
 /// Wakers of futures waiting on a node.
 ///
 /// `wake_all` empties the list and bumps the generation, so a waiter whose generation is
 /// current knows its waker is still registered without taking the lock.
+// Laid out as declared: the lock every registration takes comes first, where taking it
+// needs no address computed.
+#[repr(C)]
 pub(super) struct Waiters {
     slots: Mutex<Slab<Waker>>,
     // Starts at one, so a registration's generation is never zero and fits its niche.
     generation: AtomicU64,
     // Set once a signal of the node asked for a poll, until a driver takes it up.
     signalled: AtomicBool,
+    relay: Mutex<Relay>,
+    // Whether the node has no parent: its waiters are never a relay, and so are free to be
+    // the waker of its signals.
+    root: bool,
 }
 
-impl Default for Waiters {
-    fn default() -> Self {
-        Self {
-            slots: Mutex::default(),
-            generation: AtomicU64::new(1),
-            signalled: AtomicBool::new(false),
-        }
-    }
-}
+/// The waker of the signals of a node below a parent, whose waiters are a relay when woken.
+struct SignalWake(std::sync::Arc<Waiters>);
 
-/// As the waker handed to a node's signals: marks a drive as needed and wakes every waiter.
-impl Wake for Waiters {
+impl Wake for SignalWake {
     fn wake(self: std::sync::Arc<Self>) {
-        self.signal();
+        self.0.signal();
     }
 
     fn wake_by_ref(self: &std::sync::Arc<Self>) {
-        self.signal();
+        self.0.signal();
+    }
+}
+
+/// Below a parent, the [`Relay`] of the parent's wakes. Those of a root, which has nothing
+/// to relay, are the waker handed to its signals: marks a drive as needed and wakes every
+/// waiter.
+impl Wake for Waiters {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        if self.root {
+            self.signal();
+        } else {
+            self.forward();
+        }
     }
 }
 
@@ -1468,6 +1446,89 @@ pub(super) struct Registration {
 }
 
 impl Waiters {
+    fn new(root: bool) -> Self {
+        Self {
+            slots: Mutex::default(),
+            generation: AtomicU64::new(1),
+            signalled: AtomicBool::new(false),
+            relay: Mutex::default(),
+            root,
+        }
+    }
+
+    /// The waker to poll the signals of the node with; `made` keeps the one of a node below
+    /// a parent, which is made once.
+    fn signal_waker(self: &std::sync::Arc<Self>, made: &mut Option<Waker>) -> Waker {
+        if self.root {
+            return Waker::from(self.clone());
+        }
+        made.get_or_insert_with(|| Waker::from(std::sync::Arc::new(SignalWake(self.clone()))))
+            .clone()
+    }
+
+    /// Starts forwarding the wakes of `parent`, the waiters of the parent node, unless it
+    /// does already.
+    fn relay_from(self: &std::sync::Arc<Self>, parent: &std::sync::Arc<Self>) {
+        let mut relay = self.relay.lock();
+        if relay.parent.is_none() {
+            let waker = Waker::from(self.clone());
+            parent.register(&mut relay.registration, &waker, true);
+            relay.parent = Some(parent.clone());
+        }
+    }
+
+    /// Registers on the parent's waiters again, unless the child node is gone.
+    fn relay_again(self: &std::sync::Arc<Self>) -> bool {
+        let mut relay = self.relay.lock();
+        let Relay {
+            parent: Some(parent),
+            registration,
+        } = &mut *relay
+        else {
+            return false;
+        };
+        let waker = Waker::from(self.clone());
+        parent.register(registration, &waker, true);
+        true
+    }
+
+    /// Ends the forwarding, as the child node goes away.
+    fn close_relay(&self) {
+        let (parent, registration) = {
+            let mut relay = self.relay.lock();
+            (relay.parent.take(), relay.registration.take())
+        };
+        if let Some((parent, registration)) = parent.zip(registration) {
+            parent.deregister(registration);
+        }
+    }
+
+    /// Wakes every waiter, as a wake of the parent's waiters.
+    fn forward(self: &std::sync::Arc<Self>) {
+        if !self.relay_again() {
+            return;
+        }
+        // A wake reaching a deeper relay while this thread forwards is queued, not nested:
+        // a deep tree costs no stack. Each relay registers again before it is queued.
+        let queued = FORWARDING.with(|forwarding| match forwarding.borrow_mut().as_mut() {
+            Some(queue) => {
+                queue.push(self.clone());
+                true
+            }
+            None => false,
+        });
+        if queued {
+            return;
+        }
+        let _forwarding = Forwarding::start();
+        let mut next = Some(self.clone());
+        while let Some(waiters) = next {
+            waiters.wake_all();
+            next =
+                FORWARDING.with(|forwarding| forwarding.borrow_mut().as_mut().and_then(Vec::pop));
+        }
+    }
+
     /// Registers `waker`; `same_waker` says it will wake the waker registered before. Returns
     /// the identity of the clone it keeps, `None` if it kept the one it had.
     ///
@@ -1571,7 +1632,7 @@ pub(super) enum Target {
     Drained,
 }
 
-/// Cancel-safe wait on one node; ancestor wakes reach it through the node's [`Relay`].
+/// Cancel-safe wait on one node; ancestor wakes reach it through the [`Relay`] of each level.
 pub(super) struct Wait {
     node: Option<Arc<Node>>,
     state: WaitState,
@@ -1673,11 +1734,17 @@ impl WaitState {
 
     /// As [`Self::check`] of [`Node::driven_phase`], without a call when the flags say it all.
     #[inline]
-    fn check_driven(&self, node: &Node) -> Result<(), Option<Instant>> {
+    fn check_driven(&self, node: &Node, now: Option<Instant>) -> Result<(), Option<Instant>> {
         match node.settled_flags() {
             Some(own) if self.reached(node, own) => Ok(()),
             Some(_) => Err(None),
-            None => self.check(node, node.driven_phase()),
+            None => self.check(
+                node,
+                match now {
+                    Some(now) => node.driven_phase_at(now),
+                    None => node.driven_phase(),
+                },
+            ),
         }
     }
 
@@ -1753,11 +1820,38 @@ impl WaitState {
         self.poll_registered(node, cx)
     }
 
+    /// As [`Self::poll_node`], with `now` as its first reading of the clock: one the caller
+    /// took for this poll.
+    fn poll_node_at(&mut self, node: &Node, cx: &mut Context<'_>, now: Instant) -> Poll<()> {
+        if !self.is_registered(node, cx.waker()) {
+            return self.poll_unregistered_at(node, cx, now);
+        }
+        if self.timer.is_none()
+            && let Some(own) = node.settled_flags()
+            && !self.reached(node, own)
+        {
+            return Poll::Pending;
+        }
+        self.poll_registered_at(node, cx, now)
+    }
+
     /// The poll of a registered wait that ends, or has signals or a timer to look after.
     #[inline(never)]
     fn poll_registered(&mut self, node: &Node, cx: &mut Context<'_>) -> Poll<()> {
+        self.poll_in_phase(node, cx, node.driven_phase())
+    }
+
+    /// As [`Self::poll_registered`], the clock read as `now`.
+    #[inline(never)]
+    fn poll_registered_at(&mut self, node: &Node, cx: &mut Context<'_>, now: Instant) -> Poll<()> {
+        self.poll_in_phase(node, cx, node.driven_phase_at(now))
+    }
+
+    /// The poll of a registered wait whose node is in `phase`.
+    #[inline(always)]
+    fn poll_in_phase(&mut self, node: &Node, cx: &mut Context<'_>, phase: Phase) -> Poll<()> {
         // Nothing to register, and the relays are in place since it registered.
-        match self.check(node, node.driven_phase()) {
+        match self.check(node, phase) {
             Ok(()) => return self.finish(node),
             Err(None) => {
                 self.clear_timer();
@@ -1776,12 +1870,34 @@ impl WaitState {
     #[cold]
     #[inline(never)]
     fn poll_elapsed(&mut self, node: &Node, cx: &mut Context<'_>) -> Poll<()> {
-        self.poll_registering(node, cx)
+        self.poll_registering(node, cx, None)
     }
 
     /// The poll of a wait that is not registered, or not with this waker.
     #[inline(never)]
     fn poll_unregistered(&mut self, node: &Node, cx: &mut Context<'_>) -> Poll<()> {
+        self.poll_unregistered_by(node, cx, None)
+    }
+
+    /// As [`Self::poll_unregistered`], the clock first read as `now`.
+    #[inline(never)]
+    fn poll_unregistered_at(
+        &mut self,
+        node: &Node,
+        cx: &mut Context<'_>,
+        now: Instant,
+    ) -> Poll<()> {
+        self.poll_unregistered_by(node, cx, Some(now))
+    }
+
+    /// [`Self::poll_unregistered`], with `now` as the first reading of the clock, if any.
+    #[inline(always)]
+    fn poll_unregistered_by(
+        &mut self,
+        node: &Node,
+        cx: &mut Context<'_>,
+        now: Option<Instant>,
+    ) -> Poll<()> {
         // Checked before registering: a woken waiter completes without touching any lock. A
         // first poll only looks at the published flags.
         let ready = match self.registration {
@@ -1791,16 +1907,22 @@ impl WaitState {
         if ready {
             return self.finish(node);
         }
-        self.poll_registering(node, cx)
+        self.poll_registering(node, cx, now)
     }
 
-    /// Registers, checks and arms the timer, until the wait is over or left pending.
+    /// Registers, checks and arms the timer, until the wait is over or left pending. The
+    /// first check takes `now` for the clock, if given: a timer that elapsed is newer.
     #[inline(always)]
-    fn poll_registering(&mut self, node: &Node, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_registering(
+        &mut self,
+        node: &Node,
+        cx: &mut Context<'_>,
+        mut now: Option<Instant>,
+    ) -> Poll<()> {
         loop {
             // Registered before driving: a signal that completes later wakes this waiter.
             self.register(node, cx.waker());
-            let next = match self.check_driven(node) {
+            let next = match self.check_driven(node, now.take()) {
                 Ok(()) => return self.finish(node),
                 Err(next) => next,
             };
@@ -1872,6 +1994,34 @@ impl WaitState {
     }
 }
 
+impl Wait {
+    /// Lets go of the waker and the timer, as dropping the wait does.
+    #[inline]
+    fn end(&mut self) {
+        if let Some(node) = self.node.as_deref() {
+            self.state.deregister(node);
+        }
+        self.state.clear_timer();
+    }
+
+    /// Polls as the future does, with `now` as its first reading of the clock: one the caller
+    /// took for this poll, so that a poll judged by more than this wait reads it once.
+    #[inline]
+    pub(super) fn poll_at(&mut self, cx: &mut Context<'_>, now: Instant) -> Poll<()> {
+        let Self { node, state } = self;
+        if state.done {
+            return Poll::Ready(());
+        }
+        let Some(node) = node.as_deref() else {
+            return match state.target {
+                Target::Drained => Poll::Ready(()),
+                Target::Graceful | Target::Hard => Poll::Pending,
+            };
+        };
+        state.poll_node_at(node, cx, now)
+    }
+}
+
 impl Future for Wait {
     type Output = ();
 
@@ -1895,10 +2045,7 @@ impl Future for Wait {
 impl Drop for Wait {
     #[inline]
     fn drop(&mut self) {
-        if let Some(node) = self.node.as_deref() {
-            self.state.deregister(node);
-        }
-        self.state.clear_timer();
+        self.end();
     }
 }
 

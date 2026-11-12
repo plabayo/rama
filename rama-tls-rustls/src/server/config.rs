@@ -4,7 +4,7 @@ use rama_core::{
     error::BoxError,
     extensions::{Extension, FromExtensions},
 };
-use rama_net::tls::TlsAlpn;
+use rama_net::tls::{AlpnPolicy, TlsAlpn};
 use rama_tls::{
     TlsKeyLog, TlsSupportedVersions,
     server::{TlsClientVerify, TlsServerAuth, TlsStoreClientCertChain},
@@ -18,6 +18,7 @@ use crate::dep::rustls::ServerConfig;
 pub struct RustlsTlsAcceptorConfig<'a> {
     pub server_auth: Option<&'a TlsServerAuth>,
     pub alpn: Option<&'a TlsAlpn>,
+    pub alpn_policy: Option<&'a AlpnPolicy>,
     pub versions: Option<&'a TlsSupportedVersions>,
     pub keylog: Option<&'a TlsKeyLog>,
     pub client_verify: Option<&'a TlsClientVerify>,
@@ -30,8 +31,8 @@ impl RustlsTlsAcceptorConfig<'_> {
     /// Build a native TLS server configuration using the supplied cryptographic provider.
     ///
     /// This does not read or install the process-wide default provider. Certificate
-    /// verification uses the same provider. The modify hook runs last and may replace
-    /// the configuration, including its provider.
+    /// verification uses the same provider. The modify hook may replace the configuration,
+    /// including its provider; the required ALPN policy is then applied.
     ///
     /// A full asynchronous dynamic configuration cannot be represented by a static
     /// configuration and returns an error. A certificate resolver can be installed
@@ -116,8 +117,8 @@ impl std::fmt::Debug for RustlsDynamicConfig {
 #[extension(tags(tls))]
 /// Escape hatch: take over the final rustls [`ServerConfig`] build.
 ///
-/// Rama builds the config from the common [`TlsServerConfig`] pieces and as the
-/// last step hands it to this function. Either tweak the input and return it,
+/// Rama builds the config from the common [`TlsServerConfig`] pieces and hands
+/// it to this function before enforcing required ALPN. Either tweak the input and return it,
 /// or ignore it and build a fresh one through the full rustls builder for
 /// anything the common pieces can't express (e.g. a custom
 /// [`ResolvesServerCert`]).

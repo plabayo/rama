@@ -230,7 +230,19 @@ impl Connection {
             );
         }
 
-        if self.is_handshaking() && remote != self.path.remote {
+        if self.is_handshaking()
+            && remote != self.path.remote
+            && !(self.side.is_server()
+                && packet.as_ref().is_some_and(|packet| {
+                    matches!(
+                        packet.header,
+                        Header::Long {
+                            ty: LongType::Handshake,
+                            ..
+                        }
+                    )
+                }))
+        {
             debug!("discarding packet with unexpected remote during handshake");
             self.qlog_packet_dropped(now, info, DropReason::Rejected);
             return;
@@ -313,6 +325,24 @@ impl Connection {
                         && let Some(number) = number
                     {
                         observation.packet(&packet, number);
+                    }
+
+                    // A NAT can change the client's address between flights. Only a fresh
+                    // authenticated Handshake packet with the expected CID can move this
+                    // attempt; Initial and 0-RTT packets cannot prove receipt of our flight.
+                    if self.state.is_handshake()
+                        && self.side.is_server()
+                        && remote != self.path.remote
+                        && matches!(packet.header, Header::Long {
+                            ty: LongType::Handshake, src_cid, ..
+                        } if src_cid == self.rem_handshake_cid)
+                    {
+                        self.migrate(
+                            now,
+                            remote,
+                            local,
+                            super::migration::PreviousPath::Keep(super::migration::PrevCid::Active),
+                        );
                     }
 
                     if packet.header.space() == SpaceId::Handshake && self.state.is_handshake() {
@@ -655,7 +685,14 @@ impl Connection {
                     state.rem_cid_set = true;
                 }
                 self.extend_handshake_deadline();
-                self.on_path_validated();
+                // Only the original (or already proven) address can be validated by
+                // Handshake traffic. A changed address must answer a path challenge,
+                // even after a failed validation has cleared that challenge. Otherwise
+                // a client could spoof a new source, wait for expiry, then send Finished
+                // to lift that address's amplification limit without receiving there.
+                if self.path.remote == self.proven_remote {
+                    self.on_path_validated();
+                }
 
                 self.process_early_payload(now, packet)?;
                 if self.state.is_closed() {

@@ -194,16 +194,6 @@ impl TlsAcceptorData {
             ));
         };
         install_identity(&mut builder, cert, source.signing_prefs.as_deref())?;
-        if self.config.require_alpn {
-            // The ALPN selection only runs for a client that offers protocols.
-            builder.set_select_certificate_callback(|client_hello| {
-                if offers_alpn(&client_hello) {
-                    Ok(())
-                } else {
-                    Err(SelectCertError::ERROR)
-                }
-            });
-        }
         Ok(builder)
     }
 }
@@ -277,6 +267,16 @@ impl TlsConfig {
         };
         use rama_tls::keylog::{KeyLogSink, open_intent_sink};
         let mut builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())?;
+        if self.require_alpn {
+            // The ALPN selection only runs for a client that offers protocols.
+            builder.set_select_certificate_callback(|client_hello| {
+                if offers_alpn(&client_hello) {
+                    Ok(())
+                } else {
+                    Err(SelectCertError::ERROR)
+                }
+            });
+        }
         builder.set_grease_enabled(true);
         for (version, minimum) in [
             (self.protocol_versions.iter().flatten().min(), true),

@@ -45,6 +45,7 @@ mod datagrams;
 mod early_packets;
 mod grease;
 mod handshake_deadline;
+mod handshake_rebind;
 mod loss_config;
 mod migration_interop;
 mod observation;

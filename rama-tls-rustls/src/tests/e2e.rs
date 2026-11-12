@@ -16,7 +16,10 @@ use rama_tls::{
 };
 
 use crate::client::{RustlsTlsConnectorConfig, TlsConnectorData};
-use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
+use crate::dep::{
+    rustls::ServerConfig,
+    tokio_rustls::{TlsAcceptor as RustlsAcceptor, TlsConnector as RustlsConnector},
+};
 use crate::server::TlsAcceptorLayer;
 
 async fn connect_to_pinned_server(
@@ -695,6 +698,7 @@ async fn omitted_root_is_in_the_verified_path_and_distrust_applies() {
 async fn connects_with_alpn(
     policy: Option<AlpnPolicy>,
     offer: impl FnOnce(TlsClientConfig) -> TlsClientConfig,
+    native: bool,
 ) -> bool {
     crate::ensure_default_crypto_provider();
 
@@ -712,6 +716,7 @@ async fn connects_with_alpn(
         Some(policy) => server_config.with_alpn_policy(policy),
         None => server_config,
     };
+    let native_config = native.then(|| ServerConfig::rama_try_from(&server_config).unwrap());
     let server = TlsAcceptorLayer::new(server_config).into_layer(EchoService::new());
 
     let server_name = Host::from_static("localhost");
@@ -727,7 +732,17 @@ async fn connects_with_alpn(
     .expect("client connector data");
 
     let (stream_client, stream_server) = tokio::io::duplex(usize::MAX);
-    let handle = tokio::spawn(async move { server.serve(ServiceInput::new(stream_server)).await });
+    let handle = tokio::spawn(async move {
+        if let Some(config) = native_config {
+            drop(
+                RustlsAcceptor::from(std::sync::Arc::new(config))
+                    .accept(stream_server)
+                    .await,
+            );
+        } else {
+            drop(server.serve(ServiceInput::new(stream_server)).await);
+        }
+    });
     let connector = RustlsConnector::from(connector_data.client_config);
     let tls_server_name = ServerName::rama_try_from(server_name).expect("tls server name");
     let connected = connector
@@ -748,14 +763,16 @@ async fn a_handshake_without_an_alpn_offer_fails_only_when_alpn_is_required() {
         Some(AlpnPolicy::Require),
     ] {
         let required = policy == Some(AlpnPolicy::Require);
-        assert!(
-            connects_with_alpn(policy, TlsClientConfig::with_alpn_http_2).await,
-            "{policy:?}"
-        );
-        assert_eq!(
-            connects_with_alpn(policy, |config| config).await,
-            !required,
-            "{policy:?}"
-        );
+        for native in [false, true] {
+            assert!(
+                connects_with_alpn(policy, TlsClientConfig::with_alpn_http_2, native).await,
+                "{policy:?}, native: {native}"
+            );
+            assert_eq!(
+                connects_with_alpn(policy, |config| config, native).await,
+                !required,
+                "{policy:?}, native: {native}"
+            );
+        }
     }
 }

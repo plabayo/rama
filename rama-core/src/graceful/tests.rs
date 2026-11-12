@@ -594,6 +594,74 @@ fn a_dropped_child_leaves_no_relay_on_its_parent() {
 }
 
 #[test]
+fn a_waiter_that_leaves_makes_room_without_losing_the_others() {
+    let scope = Scope::new();
+    let mut waiters: Vec<_> = (0..3)
+        .map(|_| {
+            let (flag, waker) = Flag::waker();
+            (flag, waker, scope.cancelled())
+        })
+        .collect();
+    for (_, waker, wait) in &mut waiters {
+        assert!(poll(wait, waker).is_pending());
+    }
+    // The first to register leaves, then the last; a late one takes a place.
+    drop(waiters.remove(0));
+    drop(waiters.pop());
+    assert_eq!(waiter_count(&scope), 1);
+    let (late, late_waker) = Flag::waker();
+    let mut late_wait = scope.cancelled();
+    assert!(poll(&mut late_wait, &late_waker).is_pending());
+    assert_eq!(waiter_count(&scope), 2);
+
+    scope.cancel(Cause::Owner);
+    let (kept, kept_waker, mut kept_wait) = waiters.pop().unwrap();
+    assert!(kept.woken());
+    assert!(late.woken());
+    assert_eq!(waiter_count(&scope), 0);
+    assert!(poll(&mut kept_wait, &kept_waker).is_ready());
+    assert!(poll(&mut late_wait, &late_waker).is_ready());
+}
+
+#[test]
+fn a_signal_below_a_parent_is_driven_as_often_as_it_wakes() {
+    let root = Scope::new();
+    let steps = Arc::new(AtomicUsize::new(0));
+    let slot: Arc<parking_lot::Mutex<Option<Waker>>> = Arc::default();
+    let signal = std::future::poll_fn({
+        let steps = steps.clone();
+        let slot = slot.clone();
+        move |cx| {
+            *slot.lock() = Some(cx.waker().clone());
+            if steps.load(Ordering::SeqCst) < 2 {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        }
+    });
+    let child = root.child().with_signal(signal);
+    let (flag, waker) = Flag::waker();
+    let mut aborted = child.aborted();
+    assert!(poll(&mut aborted, &waker).is_pending());
+    for step in 1..=2 {
+        assert!(!child.is_cancelled());
+        steps.store(step, Ordering::SeqCst);
+        let signal_waker = slot.lock().take().unwrap();
+        signal_waker.wake();
+        assert!(flag.woken(), "step {step}");
+        assert!(poll(&mut aborted, &waker).is_pending());
+    }
+    assert!(matches!(child.cause(), Some(Cause::Signal)));
+    assert!(!root.is_cancelled());
+
+    // The wakes of the parent reach the same waiter.
+    root.abort(Cause::Owner);
+    assert!(flag.woken());
+    assert!(poll(&mut aborted, &waker).is_ready());
+}
+
+#[test]
 fn signal_body_may_reenter_its_own_scope() {
     rt().block_on(async {
         let slot: Arc<parking_lot::Mutex<Option<WeakScope>>> = Arc::default();
@@ -3104,6 +3172,7 @@ fn polled_shapes() -> Vec<(&'static str, Scope, Scope)> {
     let graced = Scope::new().with_grace(SEC);
     let timed = Scope::new().with_timeout(1000 * SEC);
     let (part_a, part_b) = (Scope::new(), Scope::new());
+    let many: [Scope; 5] = std::array::from_fn(|_| Scope::new());
     vec![
         ("root", root.clone(), root),
         ("grandchild", above.child().child(), above),
@@ -3111,6 +3180,11 @@ fn polled_shapes() -> Vec<(&'static str, Scope, Scope)> {
         ("below a grace", graced.child().child(), graced),
         ("below a deadline", timed.child(), timed),
         ("composite", Scope::child_of([&part_a, &part_b]), part_b),
+        (
+            "large composite",
+            Scope::child_of(many.iter()),
+            many[4].clone(),
+        ),
     ]
 }
 
@@ -3376,6 +3450,32 @@ fn a_timer_polled_out_of_budget_still_wakes_at_the_deadline() {
     });
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_bounded_run_out_of_budget_still_wakes_at_its_deadline() {
+    let start = Instant::now();
+    let task = tokio::spawn(async {
+        let scope = Scope::new();
+        let mut polls = 0;
+        let work = std::future::poll_fn(|cx| {
+            polls += 1;
+            if polls <= 2 {
+                while std::pin::pin!(tokio::task::consume_budget())
+                    .poll(cx)
+                    .is_ready()
+                {}
+            }
+            Poll::<()>::Pending
+        });
+        scope.run_until_aborted_within(10 * SEC, work).await
+    });
+    let result = tokio::time::timeout(100 * SEC, task)
+        .await
+        .expect("the bounded run wakes at its own deadline")
+        .unwrap();
+    assert_eq!(result, None);
+    assert_eq!(start.elapsed(), 10 * SEC);
+}
+
 #[test]
 fn run_until_polled_again_never_polls_its_future_once_the_phase_is_there() {
     rt().block_on(async {
@@ -3508,4 +3608,20 @@ async fn a_bounded_run_releases_its_future_before_its_hold() {
             "timed out: {timed_out}"
         );
     }
+}
+
+#[test]
+fn iteratively_dropped_ancestors_leave_no_relay_on_the_root() {
+    let root = Scope::new();
+    let parent = root.child();
+    let child = parent.child();
+    let mut cancelled = child.cancelled();
+    assert!(poll_noop(&mut cancelled).is_pending());
+    assert_eq!(waiter_count(&root), 1);
+    drop(parent);
+    drop(cancelled);
+    drop(child);
+    assert_eq!(waiter_count(&root), 0);
+    root.cancel(Cause::Owner);
+    assert_eq!(waiter_count(&root), 0);
 }

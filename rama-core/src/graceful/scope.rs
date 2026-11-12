@@ -11,7 +11,7 @@ use std::{
 };
 
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
-use tokio::time::Instant;
+use tokio::{task::unconstrained, time::Instant};
 
 use super::{
     cause::Cause,
@@ -1132,7 +1132,8 @@ struct Waits {
 
 /// The waits on the other parts of a composite.
 struct Rest {
-    waits: Box<[Wait]>,
+    // Keep the common two- and three-parent composites in the rest allocation.
+    waits: SmallVec<[Wait; 2]>,
     composite: std::sync::Arc<Composite>,
     /// The phase waited for (`true` for the hard one), fixed as the composite's fact once
     /// reached; a drain (`None`) waits for every node.
@@ -1171,6 +1172,16 @@ impl Waits {
     #[inline]
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         let first = Pin::new(&mut self.first).poll(cx);
+        match &mut *self.rest {
+            None => first,
+            Some(rest) => rest.poll(first, cx),
+        }
+    }
+
+    /// Poll with a clock reading shared with the enclosing deadline check.
+    #[inline]
+    fn poll_at(&mut self, cx: &mut Context<'_>, now: Instant) -> Poll<()> {
+        let first = self.first.poll_at(cx, now);
         match &mut *self.rest {
             None => first,
             Some(rest) => rest.poll(first, cx),
@@ -1296,14 +1307,16 @@ impl<F: Future> Future for RunWithin<F> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
         let output = 'run: {
-            if Pin::new(this.stop).poll(cx).is_ready() {
-                break 'run None;
-            }
-            // Read on every poll: the timer only wakes, and that some time after the deadline.
-            if this
-                .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
+            let stopped = match *this.deadline {
+                // Read once per poll, before the scope is asked and for it too: the timer
+                // only wakes, and that some time after the deadline.
+                Some(deadline) => {
+                    let now = Instant::now();
+                    this.stop.0.poll_at(cx, now).is_ready() || now >= deadline
+                }
+                None => Pin::new(this.stop).poll(cx).is_ready(),
+            };
+            if stopped {
                 break 'run None;
             }
             let Some(future) = this.future.as_mut().as_pin_mut() else {
@@ -1329,7 +1342,8 @@ impl<F: Future> Future for RunWithin<F> {
             let Some(timer) = this.timer.as_pin_mut() else {
                 return Poll::Pending;
             };
-            if timer.poll(cx).is_pending() {
+            // Register even when the work exhausted its cooperative budget before yielding.
+            if std::pin::pin!(unconstrained(timer)).poll(cx).is_pending() {
                 if repolled {
                     *this.armed = Some(cx.waker().clone());
                 }

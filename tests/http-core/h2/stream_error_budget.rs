@@ -13,7 +13,7 @@ use rama::{
 };
 use rama_core::futures::StreamExt;
 use std::{convert::Infallible, future::pending};
-use tokio::{task::JoinHandle, time::timeout};
+use tokio::{sync::oneshot, task::JoinHandle, time::timeout};
 
 const LIMIT: Duration = Duration::from_secs(5);
 
@@ -465,8 +465,49 @@ fn get() -> Request<()> {
     Request::get("https://example.com/").body(()).unwrap()
 }
 
-/// A response already in flight when its request was cancelled is refused at no cost to
-/// the peer that sent it.
+/// Another response after a completed exchange is a peer error, not a raced cancellation.
+#[tokio::test(start_paused = true)]
+async fn client_response_after_a_completed_exchange_draws_on_the_budget() {
+    timeout(LIMIT, async {
+        let (io, mut srv) = mock::new();
+        let (completed, completion) = oneshot::channel();
+        let peer = async move {
+            srv.assert_client_handshake().await;
+            for id in [1, 3] {
+                let request = frames::headers(id).request("GET", "https://example.com/");
+                srv.recv_frame(request.eos()).await;
+            }
+            srv.send_frame(frames::headers(3).response(200).eos()).await;
+            completion.await.unwrap();
+            srv.send_frame(frames::headers(3).response(200)).await;
+            srv.recv_frame(frames::go_away(0).calm().data("too_many_refused_streams"))
+                .await;
+        };
+        let client = async move {
+            let (mut client, conn) = client::Builder::new()
+                .with_refused_stream_budget(RateBudget::lifetime(0))
+                .handshake::<_, Bytes>(io)
+                .await
+                .unwrap();
+            let conn = tokio::spawn(conn);
+            let sibling = exchange(client.send_request(get(), true).unwrap().0);
+            exchange(client.send_request(get(), true).unwrap().0)
+                .await
+                .unwrap()
+                .expect("completed exchange");
+            // Its response handles are gone before the peer sends the extra head.
+            completed.send(()).unwrap();
+            assert!(conn.await.unwrap().is_err());
+            assert_ended_with_connection(sibling.await.unwrap(), "sibling exchange");
+            assert_eq!(client.num_refused_streams(), 1);
+        };
+        join(peer, client).await;
+    })
+    .await
+    .expect("a response after a completed exchange left the client waiting");
+}
+
+/// A response racing a retained cancellation is ignored without spending the budget.
 #[tokio::test(start_paused = true)]
 async fn client_response_racing_its_cancellation_does_not_draw_on_the_budget() {
     timeout(LIMIT, async {
@@ -479,9 +520,7 @@ async fn client_response_racing_its_cancellation_does_not_draw_on_the_budget() {
             }
             srv.recv_frame(frames::reset(3).cancel()).await;
             srv.send_frame(frames::headers(3).response(200)).await;
-            srv.recv_frame(frames::reset(3).stream_closed()).await;
             srv.send_frame(frames::data(3, "hello").eos()).await;
-            srv.recv_frame(frames::reset(3).stream_closed()).await;
             srv.send_frame(frames::headers(1).response(200)).await;
             srv.send_frame(frames::data(1, "hello").eos()).await;
             // the client leaves once its last exchange ended, not for a spent budget
@@ -489,7 +528,12 @@ async fn client_response_racing_its_cancellation_does_not_draw_on_the_budget() {
             srv.recv_eof().await;
         };
         let client = async move {
-            let (mut client, conn) = forgetful_client(io).await;
+            let (mut client, conn) = client::Builder::new()
+                .with_refused_stream_budget(RateBudget::lifetime(0))
+                .handshake::<_, Bytes>(io)
+                .await
+                .unwrap();
+            let conn = tokio::spawn(conn);
             let sibling = exchange(client.send_request(get(), true).unwrap().0);
             drop(client.send_request(get(), true).unwrap());
             sibling.await.unwrap().expect("sibling exchange");
@@ -501,6 +545,39 @@ async fn client_response_racing_its_cancellation_does_not_draw_on_the_budget() {
     })
     .await
     .expect("a raced cancellation left the client waiting");
+}
+
+#[tokio::test(start_paused = true)]
+async fn client_response_after_a_forgotten_cancellation_draws_on_the_budget() {
+    timeout(LIMIT, async {
+        let (io, mut srv) = mock::new();
+        let peer = async move {
+            srv.assert_client_handshake().await;
+            for id in [1, 3] {
+                srv.recv_frame(
+                    frames::headers(id)
+                        .request("GET", "https://example.com/")
+                        .eos(),
+                )
+                .await;
+            }
+            srv.recv_frame(frames::reset(3).cancel()).await;
+            srv.send_frame(frames::headers(3).response(200)).await;
+            srv.recv_frame(frames::go_away(0).calm().data("too_many_refused_streams"))
+                .await;
+        };
+        let client = async move {
+            let (mut client, conn) = forgetful_client(io).await;
+            let sibling = exchange(client.send_request(get(), true).unwrap().0);
+            drop(client.send_request(get(), true).unwrap());
+            assert!(conn.await.unwrap().is_err());
+            assert_ended_with_connection(sibling.await.unwrap(), "sibling exchange");
+            assert_eq!(client.num_refused_streams(), 1);
+        };
+        join(peer, client).await;
+    })
+    .await
+    .expect("a forgotten cancellation left the client waiting");
 }
 
 /// A frame for a stream the peer opened and this side has forgotten is the peer's to
