@@ -105,7 +105,7 @@ impl HttpDatagramRelay {
     rama_utils::macros::generate_set_and_with! {
         /// Forward DATAGRAM capsules on the next hop's native carrier when available,
         /// dropping them like native datagrams when it refuses them. RFC 9297 §3.5
-        /// allows this re-encoding; it trades reliable delivery for lower latency.
+        /// allows this re-encoding, which can lose or reorder datagrams.
         /// Defaults to `false`.
         pub fn prefer_native(mut self, prefer: bool) -> Self {
             self.prefer_native = prefer;

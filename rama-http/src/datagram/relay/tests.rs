@@ -258,11 +258,13 @@ async fn relay_keeps_capsule_datagrams_reliable_with_native_egress() {
 }
 
 #[tokio::test]
-async fn prefer_native_moves_capsule_datagrams_to_native_egress_and_drops_oversize() {
+async fn prefer_native_moves_capsule_datagrams_to_native_in_both_directions() {
     tokio::time::timeout(Duration::from_secs(2), async {
+        let ingress = Native::default();
         let egress = Native::default();
+        ingress.0.lock().maximum = Some(8);
         egress.0.lock().maximum = Some(8);
-        let (left, client) = socket(&Native::default());
+        let (left, client) = socket(&ingress);
         let (right, origin) = socket(&egress);
         let relay = spawn(async move {
             HttpDatagramRelay::default()
@@ -280,14 +282,59 @@ async fn prefer_native_moves_capsule_datagrams_to_native_egress_and_drops_oversi
         }
         client.close().await.unwrap();
         assert_eq!(origin.recv().await.unwrap(), None);
+        origin
+            .send_capsule(CapsuleType::DATAGRAM, Bytes::from_static(b"reply"))
+            .await
+            .unwrap();
         origin.close().await.unwrap();
         let outcome = relay.await.unwrap().unwrap();
         assert_eq!(outcome.ingress_to_egress.datagrams, 1);
         assert_eq!(outcome.ingress_to_egress.dropped, 1);
+        assert_eq!(outcome.egress_to_ingress.datagrams, 1);
         assert_eq!(
             egress.0.lock().sent.as_slice(),
             &[Bytes::from_static(b"native")]
         );
+        assert_eq!(
+            ingress.0.lock().sent.as_slice(),
+            &[Bytes::from_static(b"reply")]
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn prefer_native_keeps_capsules_without_native_egress() {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let egress = Native::default();
+        let (left, client) = socket(&Native::default());
+        let (right, origin) = socket(&egress);
+        let relay = spawn(async move {
+            HttpDatagramRelay::default()
+                .with_prefer_native(true)
+                .serve(BridgeIo(left, right))
+                .await
+        });
+        let mut client = HttpDatagramSession::new(client);
+        let mut origin = HttpDatagramSession::new(origin);
+        client
+            .send_capsule(CapsuleType::DATAGRAM, Bytes::from_static(b"capsule"))
+            .await
+            .unwrap();
+        assert_eq!(
+            origin.recv().await.unwrap(),
+            Some(SessionEvent::Datagram {
+                payload: Bytes::from_static(b"capsule"),
+                transport: DatagramTransport::Capsule,
+            })
+        );
+        client.close().await.unwrap();
+        assert_eq!(origin.recv().await.unwrap(), None);
+        origin.close().await.unwrap();
+        let outcome = relay.await.unwrap().unwrap();
+        assert_eq!(outcome.ingress_to_egress.datagrams, 1);
+        assert!(egress.0.lock().sent.is_empty());
     })
     .await
     .unwrap();
