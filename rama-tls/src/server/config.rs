@@ -10,7 +10,7 @@ pub use rama_crypto::cert::{
     SelfSignedCaConfig,
 };
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
-use rama_net::tls::{ApplicationProtocol, TlsAlpn};
+use rama_net::tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
 /// A backend agnostic TLS server config
@@ -114,6 +114,20 @@ impl TlsServerConfig {
         /// Accept HTTP/2 only via ALPN.
         pub fn alpn_http_2(mut self) -> Self {
             self.0.insert(TlsAlpn::http_2());
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set whether a handshake needs an agreed application protocol.
+        ///
+        /// Without a policy a handshake that agrees on none continues without ALPN where
+        /// the backend allows it. With [`AlpnPolicy::Require`] it fails instead: a client
+        /// that offers none of the configured protocols gets the fatal
+        /// `no_application_protocol` alert, and one that offers no ALPN at all is refused.
+        /// The configuration is then rejected unless it lists ALPN protocols.
+        pub fn alpn_policy(mut self, policy: AlpnPolicy) -> Self {
+            self.0.insert(policy);
             self
         }
     }

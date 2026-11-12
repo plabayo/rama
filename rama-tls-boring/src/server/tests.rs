@@ -18,7 +18,7 @@ use rama_crypto::cert::{CertificateKeyKind, LeafCertConfig};
 use rama_net::{
     address::{Host, HostWithPort},
     client::ConnectorTarget,
-    tls::TlsAlpn,
+    tls::{AlpnPolicy, ApplicationProtocol, TlsAlpn},
 };
 #[cfg(feature = "compression")]
 use rama_tls::fingerprint::{Ja3, Ja4, PeetPrint};
@@ -36,7 +36,8 @@ use rama_tls::{
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
 use super::{
-    BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer, TlsAcceptorService,
+    BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorData, TlsAcceptorLayer,
+    TlsAcceptorService,
 };
 use crate::{
     TlsStream,
@@ -541,6 +542,108 @@ async fn try_handshake(
     )
 }
 
+/// The protocol a server offering `h2` then `http/1.1` under `policy` agrees on with a
+/// client offering `offer`, or the client's error when the handshake fails.
+async fn negotiate_alpn(
+    identity: TlsServerConfig,
+    policy: Option<AlpnPolicy>,
+    offer: Option<&[ApplicationProtocol]>,
+) -> Result<Option<ApplicationProtocol>, String> {
+    let server = identity.with_alpn_http_auto();
+    let server = match policy {
+        Some(policy) => server.with_alpn_policy(policy),
+        None => server,
+    };
+    let acceptor = TlsAcceptorService::new(
+        server,
+        service_fn(|stream: TlsStream<ServiceInput<DuplexStream>>| async move {
+            Ok::<_, BoxError>(
+                stream
+                    .extensions()
+                    .get_ref::<NegotiatedTlsParameters>()
+                    .unwrap()
+                    .application_layer_protocol
+                    .clone(),
+            )
+        }),
+        false,
+    );
+    let mut client = client(SslVersion::TLS1_3);
+    if let Some(offer) = offer {
+        client
+            .set_alpn_protos(&ApplicationProtocol::encode_alpns(offer).unwrap())
+            .unwrap();
+    }
+    let config = client.build().configure().unwrap();
+    let (client_io, server_io) = tokio::io::duplex(kib(64));
+    let (client, server) = tokio::join!(
+        rama_boring_tokio::connect(config, Some("localhost"), client_io),
+        acceptor.serve(ServiceInput::new(server_io)),
+    );
+    match (client, server) {
+        (Ok(client), Ok(selected)) => {
+            assert_eq!(
+                client.ssl().selected_alpn_protocol(),
+                selected.as_ref().map(ApplicationProtocol::as_bytes)
+            );
+            Ok(selected)
+        }
+        (Err(error), Err(_)) => Err(error.to_string()),
+        (client, server) => panic!(
+            "handshake sides disagree: client {:?}, server {server:?}",
+            client.map(drop)
+        ),
+    }
+}
+
+#[tokio::test]
+async fn a_handshake_without_alpn_agreement_fails_only_when_alpn_is_required() {
+    let auth = server_auth(CertificateKeyKind::EcP256);
+    let identities = [
+        TlsServerConfig::new().with_server_auth(auth.clone()),
+        TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData::new(FixedIssuer(auth))),
+    ];
+    let mismatch = [ApplicationProtocol::HTTP_3];
+    let matching = [ApplicationProtocol::HTTP_11, ApplicationProtocol::HTTP_2];
+    for (index, identity) in identities.into_iter().enumerate() {
+        for policy in [None, Some(AlpnPolicy::OutOfBandAgreement)] {
+            for offer in [None, Some(&mismatch[..])] {
+                let selected = negotiate_alpn(identity.clone(), policy, offer).await;
+                assert_eq!(selected, Ok(None), "#{index} {policy:?} {offer:?}");
+            }
+        }
+        for policy in [
+            None,
+            Some(AlpnPolicy::OutOfBandAgreement),
+            Some(AlpnPolicy::Require),
+        ] {
+            let selected = negotiate_alpn(identity.clone(), policy, Some(&matching)).await;
+            assert_eq!(
+                selected,
+                Ok(Some(ApplicationProtocol::HTTP_2)),
+                "#{index} {policy:?}"
+            );
+        }
+
+        let policy = Some(AlpnPolicy::Require);
+        let refused = negotiate_alpn(identity.clone(), policy, Some(&mismatch))
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("NO_APPLICATION_PROTOCOL"),
+            "#{index}: {refused}"
+        );
+        negotiate_alpn(identity, policy, None).await.unwrap_err();
+    }
+}
+
+#[test]
+fn requiring_alpn_without_protocols_is_a_configuration_error() {
+    let config = static_config().with_alpn_policy(AlpnPolicy::Require);
+    TlsAcceptorData::try_from(&config).unwrap_err();
+    TlsAcceptorData::try_from(&config.with_alpn_http_auto()).unwrap();
+}
+
 struct PanickingIssuer;
 
 impl DynamicCertIssuer for PanickingIssuer {
@@ -707,5 +810,32 @@ async fn browser_profiles_reach_the_acceptor_with_their_fingerprints() {
                 .to_string(),
             "{ua}: peetprint"
         );
+    }
+}
+
+/// A context built without the acceptor service refuses the same handshakes once an
+/// application protocol is required.
+#[tokio::test]
+async fn a_static_context_requiring_alpn_refuses_an_offer_without_one() {
+    for (offer, agreed) in [(Some(b"\x02h2".as_slice()), true), (None, false)] {
+        let config = static_config()
+            .with_alpn_http_auto()
+            .with_alpn_policy(AlpnPolicy::Require);
+        let acceptor = TlsAcceptorData::try_from(&config)
+            .unwrap()
+            .into_static_acceptor_builder()
+            .unwrap()
+            .build();
+        let mut client = client(SslVersion::TLS1_3);
+        if let Some(offer) = offer {
+            client.set_alpn_protos(offer).unwrap();
+        }
+        let connect = client.build().configure().unwrap();
+        let (client_io, server_io) = tokio::io::duplex(kib(64));
+        let (client, server) = tokio::join!(
+            rama_boring_tokio::connect(connect, Some("localhost"), client_io),
+            rama_boring_tokio::accept(&acceptor, server_io),
+        );
+        assert_eq!(client.is_ok() && server.is_ok(), agreed, "{offer:?}");
     }
 }

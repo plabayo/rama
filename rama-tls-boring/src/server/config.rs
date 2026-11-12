@@ -1,7 +1,7 @@
 use crate::server::ServerCertIssuerData;
 
 use rama_core::extensions::{Extension, FromExtensions};
-use rama_net::tls::TlsAlpn;
+use rama_net::tls::{AlpnPolicy, TlsAlpn};
 use rama_tls::server::{TlsClientVerify, TlsServerAuth, TlsServerConfig, TlsStoreClientCertChain};
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, SignatureScheme, SupportedGroup, TlsKeyLog,
@@ -13,6 +13,7 @@ use rama_utils::macros::generate_set_and_with;
 #[derive(FromExtensions)]
 pub struct BoringTlsAcceptorConfig<'a> {
     pub alpn: Option<&'a TlsAlpn>,
+    pub alpn_policy: Option<&'a AlpnPolicy>,
     pub versions: Option<&'a TlsSupportedVersions>,
     pub keylog: Option<&'a TlsKeyLog>,
     pub client_verify: Option<&'a TlsClientVerify>,

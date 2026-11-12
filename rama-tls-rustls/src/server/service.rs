@@ -8,11 +8,14 @@ use crate::types::SecureTransport;
 use rama_core::{
     Service,
     conversion::{RamaFrom, RamaInto},
-    error::{BoxError, ErrorContext},
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
     extensions::ExtensionsRef,
     io::Io,
 };
-use rama_net::{extensions::StreamTransformed, tls::ApplicationProtocol};
+use rama_net::{
+    extensions::StreamTransformed,
+    tls::{AlpnPolicy, ApplicationProtocol},
+};
 use rama_tls::{
     client::{NegotiatedTlsAlgorithms, NegotiatedTlsParameters},
     server::TlsServerConfig,
@@ -56,6 +59,7 @@ where
                 TlsAcceptorData::try_from(RustlsTlsAcceptorConfig::from_extensions(&merged))
                     .context("rustls acceptor: build acceptor data from config")?;
 
+            let require_alpn = merged.get_ref::<AlpnPolicy>() == Some(&AlpnPolicy::Require);
             let acceptor = LazyConfigAcceptor::new(Acceptor::default(), stream);
 
             let start = acceptor.await?;
@@ -70,6 +74,21 @@ where
                 ServerConfig::Stored(server_config) => server_config.clone(),
                 ServerConfig::Async(dynamic) => dynamic.get_config(start.client_hello()).await?,
             };
+
+            // The backend refuses an offer that names none of the configured protocols by
+            // itself; a required protocol also rules out an offer that names none at all.
+            if require_alpn {
+                if server_config.alpn_protocols.is_empty() {
+                    return Err(BoxError::from_static_str(
+                        "rustls acceptor: ALPN is required but no protocols are configured",
+                    ));
+                }
+                if start.client_hello().alpn().is_none() {
+                    return Err(BoxError::from_static_str(
+                        "rustls acceptor: client offered no application protocol",
+                    ));
+                }
+            }
 
             let stream = start.into_stream(server_config).await?;
             let stream = TlsStream::new(stream);
