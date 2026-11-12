@@ -1,6 +1,11 @@
 use crate::proto::{
     Duration, Instant,
-    connection::{recovery::persistent_congestion_period, spaces::SentPacket},
+    connection::{
+        pacing::Pacer,
+        paths::{PathData, RttEstimator},
+        recovery::persistent_congestion_period,
+        spaces::SentPacket,
+    },
 };
 use rama_core::bytes::Bytes;
 use rama_quic_proto::{
@@ -8,6 +13,225 @@ use rama_quic_proto::{
     packet::SpaceId,
     range_set::ArrayRangeSet,
 };
+use std::ops::RangeInclusive;
+
+impl super::Connection {
+    /// Whether a transmit the pacer holds back with `in_flight` bytes outstanding leaves the
+    /// connection limited by something other than its window.
+    fn is_app_limited_when_paced_with(&mut self, now: Instant, in_flight: u64) -> bool {
+        let rtt = Duration::from_millis(100);
+        self.path.rtt = RttEstimator::new(rtt);
+        self.path.in_flight.bytes = in_flight;
+        let window = self.path.congestion.window();
+        self.path.pacing = Pacer::new(rtt, window, self.path.current_mtu(), now);
+        self.path.pacing.on_transmit(u16::MAX);
+        let mut buf = Vec::new();
+        assert!(
+            self.poll_transmit(now, 10, &mut buf).is_none(),
+            "the pacer holds the queued data back"
+        );
+        self.app_limited
+    }
+
+    pub(crate) fn assert_a_pacer_pause_uses_the_window_only_when_most_of_it_is_in_flight(
+        &mut self,
+        now: Instant,
+    ) {
+        assert!(self.streams.can_send_stream_data());
+        let mtu = u64::from(self.path.current_mtu());
+        let window = self.path.congestion.window();
+        assert!(window > 20 * mtu);
+        assert!(self.path.congestion.in_slow_start());
+        // Slow start doubles the window while the paced flight follows behind it.
+        assert!(!self.is_app_limited_when_paced_with(now, window / 4));
+
+        self.path.congestion.on_congestion_event(now, now, false, 0);
+        assert!(!self.path.congestion.in_slow_start());
+        let window = self.path.congestion.window();
+        assert!(window > 20 * mtu);
+        assert!(self.is_app_limited_when_paced_with(now, window / 2 + mtu));
+        assert!(!self.is_app_limited_when_paced_with(now, window - mtu));
+    }
+}
+
+impl super::Connection {
+    /// Records `count` full datagrams as sent at `sent` on the current path, and returns the
+    /// number of the first.
+    fn record_sent_for_test(&mut self, count: u64, sent: Instant) -> u64 {
+        let first = self.spaces[SpaceId::Data].next_packet_number;
+        for _ in 0..count {
+            self.record_one_sent_for_test(sent, true);
+        }
+        first
+    }
+
+    /// Records one full datagram as sent at `sent` on the current path, counted in flight
+    /// whether or not it is `ack_eliciting`, and returns its number.
+    fn record_one_sent_for_test(&mut self, sent: Instant, ack_eliciting: bool) -> u64 {
+        let space = SpaceId::Data;
+        let packet = self.spaces[space].next_packet_number;
+        let info = SentPacket {
+            path_generation: self.path.generation(),
+            time_sent: sent,
+            size: 1200,
+            ack_eliciting,
+            is_0rtt: false,
+            is_mtu_probe_packet: false,
+            largest_acked: None,
+            retransmits: Default::default(),
+            stream_frames: Default::default(),
+        };
+        if ack_eliciting {
+            self.in_flight_ack_eliciting += 1;
+        }
+        self.path.sent(packet, info, &mut self.spaces[space]);
+        self.spaces[space].next_packet_number = packet + 1;
+        packet
+    }
+
+    fn acknowledge_for_test(&mut self, now: Instant, packets: RangeInclusive<u64>) {
+        let mut ranges = ArrayRangeSet::new();
+        ranges.insert(*packets.start()..*packets.end() + 1);
+        self.on_ack_received(
+            now,
+            SpaceId::Data,
+            &frame::Ack::from_ranges(0, &ranges, None).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn is_awaiting_ack_for_test(&self, packet: u64) -> bool {
+        self.spaces[SpaceId::Data]
+            .sent_packets
+            .contains_key(&packet)
+    }
+
+    /// Sends eight packets and has the last two acknowledged, which declares the first five
+    /// lost. Returns the number of the first.
+    fn lose_five_packets_for_test(&mut self, now: &mut Instant) -> u64 {
+        let first = self.record_sent_for_test(8, *now);
+        *now += Duration::from_millis(1);
+        self.acknowledge_for_test(*now, first + 6..=first + 7);
+        assert!(!self.is_awaiting_ack_for_test(first + 4));
+        first
+    }
+
+    pub(crate) fn assert_only_a_reduction_for_late_packets_is_undone(&mut self, mut now: Instant) {
+        // Acknowledgements leave the window alone, so it changes by reductions and their undoing.
+        self.app_limited = true;
+        let window = self.path.congestion.window();
+
+        let first = self.lose_five_packets_for_test(&mut now);
+        let reduced = self.path.congestion.window();
+        assert!(reduced < window);
+        // Acknowledged long after packets declared lost are given up on: they were lost.
+        now += 3 * self.pto(SpaceId::Data);
+        self.acknowledge_for_test(now, first..=first + 5);
+        assert_eq!(self.path.congestion.window(), reduced);
+
+        let first = self.lose_five_packets_for_test(&mut now);
+        let reduced_again = self.path.congestion.window();
+        assert!(reduced_again < reduced);
+        now += Duration::from_millis(1);
+        self.acknowledge_for_test(now, first..=first + 3);
+        assert_eq!(
+            self.path.congestion.window(),
+            reduced_again,
+            "a packet declared lost is still unacknowledged"
+        );
+        // Nothing else is newly acknowledged by the frame that settles the last of them.
+        self.acknowledge_for_test(now, first + 4..=first + 5);
+        assert_eq!(self.path.congestion.window(), reduced);
+    }
+
+    pub(crate) fn assert_a_reduction_for_a_lost_padded_ack_is_not_undone_by_late_packets(
+        &mut self,
+        mut now: Instant,
+    ) {
+        self.app_limited = true;
+        let window = self.path.congestion.window();
+
+        let padded_ack = self.record_one_sent_for_test(now, false);
+        let first = self.record_sent_for_test(4, now);
+        now += Duration::from_millis(1);
+        self.acknowledge_for_test(now, first..=first + 3);
+        assert!(!self.is_awaiting_ack_for_test(padded_ack));
+        let reduced = self.path.congestion.window();
+        assert!(reduced < window);
+
+        now += Duration::from_millis(1);
+        let first = self.lose_five_packets_for_test(&mut now);
+        let reduced_again = self.path.congestion.window();
+        assert!(reduced_again < reduced);
+        // Every late packet arrives, the padded acknowledgement never does.
+        self.acknowledge_for_test(now, first..=first + 5);
+        assert_eq!(self.path.congestion.window(), reduced_again);
+    }
+
+    pub(crate) fn assert_a_reduction_on_the_previous_path_is_not_undone_after_rebinding(
+        &mut self,
+        mut now: Instant,
+    ) {
+        self.app_limited = true;
+        let window = self.path.congestion.window();
+        self.lose_five_packets_for_test(&mut now);
+        let reduced = self.path.congestion.window();
+        assert!(reduced < window);
+
+        self.path_counter += 1;
+        self.path = PathData::from_previous(
+            self.path.remote,
+            self.path.local,
+            &self.path,
+            self.path_counter,
+            now,
+        );
+        assert_eq!(self.path.congestion.window(), reduced);
+
+        now += Duration::from_millis(1);
+        let first = self.lose_five_packets_for_test(&mut now);
+        assert!(self.path.congestion.window() < reduced);
+        // Only the reduction made on this path was for late packets.
+        self.acknowledge_for_test(now, first..=first + 5);
+        assert_eq!(self.path.congestion.window(), reduced);
+    }
+
+    pub(crate) fn assert_a_burst_of_more_losses_than_are_remembered_is_not_undone(
+        &mut self,
+        mut now: Instant,
+    ) {
+        self.app_limited = true;
+        let first = self.record_sent_for_test(1000, now);
+        now += Duration::from_millis(1);
+        self.acknowledge_for_test(now, first + 999..=first + 999);
+        assert!(!self.is_awaiting_ack_for_test(first + 900));
+        let reduced = self.path.congestion.window();
+
+        // Every packet still remembered is acknowledged, the forgotten ones with them.
+        self.acknowledge_for_test(now, first..=first + 998);
+        assert_eq!(self.path.congestion.window(), reduced);
+    }
+
+    pub(crate) fn assert_late_packets_make_loss_detection_wait_for_more(
+        &mut self,
+        mut now: Instant,
+    ) {
+        let first = self.lose_five_packets_for_test(&mut now);
+        // The first packet arrives after seven sent later.
+        self.acknowledge_for_test(now, first..=first + 5);
+
+        let first = self.record_sent_for_test(9, now);
+        now += Duration::from_millis(1);
+        self.acknowledge_for_test(now, first + 7..=first + 7);
+        assert!(
+            self.is_awaiting_ack_for_test(first),
+            "seven packets ahead is how late a packet was seen to arrive"
+        );
+        self.acknowledge_for_test(now, first + 8..=first + 8);
+        assert!(!self.is_awaiting_ack_for_test(first));
+        assert!(self.is_awaiting_ack_for_test(first + 1));
+    }
+}
 
 #[test]
 fn persistent_congestion_period_saturates() {
@@ -495,10 +719,18 @@ impl crate::proto::congestion::Controller for LossRecorder {
         self.0.lock().push((sent, persistent, bytes));
     }
 
+    fn on_spurious_congestion_event(&mut self) {}
+
+    fn on_loss_confirmed(&mut self) {}
+
     fn on_mtu_update(&mut self, _: u16) {}
 
     fn window(&self) -> u64 {
         12000
+    }
+
+    fn in_slow_start(&self) -> bool {
+        false
     }
 
     fn initial_window(&self) -> u64 {

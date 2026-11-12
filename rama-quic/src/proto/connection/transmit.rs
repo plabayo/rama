@@ -10,6 +10,7 @@ use rama_core::{
 
 use crate::proto::{
     Duration, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, Transmit,
+    congestion::window_in_use,
     connection::{
         Connection, State,
         migration::{PrevCid, PrevPath},
@@ -771,7 +772,14 @@ impl Connection {
             );
         }
 
-        self.app_limited = buf.is_empty() && !congestion_blocked;
+        // A pacer pause with most of the window idle must not let that window grow.
+        let in_use = congestion_blocked
+            && window_in_use(
+                self.path.congestion.as_ref(),
+                self.path.in_flight.bytes,
+                self.path.current_mtu(),
+            );
+        self.app_limited = buf.is_empty() && !in_use;
 
         // Requiring spare congestion/pacing credit would starve PLPMTUD behind
         // busy streams. RFC 8899 §3 item 7 permits independent probe admission:

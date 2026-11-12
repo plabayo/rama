@@ -7,6 +7,7 @@ use super::{
     mtud::MtuDiscovery,
     pacing::Pacer,
     qlog::event::RecoveryMetricsUpdated,
+    recovery::lost::DeclaredLost,
     spaces::{PacketSpace, SentPacket},
 };
 use crate::proto::{
@@ -55,6 +56,8 @@ pub(super) struct PathData {
     /// Used in persistent congestion determination.
     pub(super) first_packet_after_rtt_sample: Option<(SpaceId, u64)>,
     pub(super) in_flight: InFlight,
+    /// Packets declared lost on this path that may yet be acknowledged
+    pub(super) lost: DeclaredLost,
     /// Number of the first packet sent on this path
     ///
     /// Used to determine whether a packet was sent on an earlier path. Insufficient to determine if
@@ -258,6 +261,7 @@ impl PathData {
                 ),
             first_packet_after_rtt_sample: None,
             in_flight: InFlight::new(),
+            lost: DeclaredLost::default(),
             first_packet: None,
             qlog_recording_generation: (0, 0),
             recovery_metrics: None,
@@ -272,7 +276,9 @@ impl PathData {
         generation: u64,
         now: Instant,
     ) -> Self {
-        let congestion = prev.congestion.clone_box();
+        let mut congestion = prev.congestion.clone_box();
+        // The packets a reduction on the previous path waits for are not carried over.
+        congestion.on_loss_confirmed();
         let smoothed_rtt = prev.rtt.get();
         let mut mtud = prev.mtud.clone();
         mtud.reset_for_new_path();
@@ -293,6 +299,7 @@ impl PathData {
             mtud,
             first_packet_after_rtt_sample: prev.first_packet_after_rtt_sample,
             in_flight: InFlight::new(),
+            lost: DeclaredLost::default(),
             first_packet: None,
             qlog_recording_generation: prev.qlog_recording_generation,
             recovery_metrics: prev.recovery_metrics.clone(),
@@ -308,6 +315,7 @@ impl PathData {
         self.congestion = config
             .congestion_factory()
             .build(now, config.get_initial_mtu());
+        self.lost = DeclaredLost::default();
         self.mtud.reset(config.get_initial_mtu(), config.min_mtu);
         // A budget spent on the old path would hold back the first sends on the new one.
         self.pacing = Pacer::starting(

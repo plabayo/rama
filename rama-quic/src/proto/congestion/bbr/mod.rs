@@ -479,6 +479,11 @@ impl Controller for Bbr {
         self.loss_state.lost_bytes += lost_bytes;
     }
 
+    // The window follows the measured bandwidth; a loss bounds it only for the round after it.
+    fn on_spurious_congestion_event(&mut self) {}
+
+    fn on_loss_confirmed(&mut self) {}
+
     fn on_mtu_update(&mut self, new_mtu: u16) {
         self.current_mtu = new_mtu as u64;
         self.min_cwnd = calculate_min_window(self.current_mtu);
@@ -493,6 +498,11 @@ impl Controller for Bbr {
             return self.cwnd.min(self.recovery_window);
         }
         self.cwnd
+    }
+
+    fn in_slow_start(&self) -> bool {
+        // Until the bandwidth stops growing the window adds every acknowledged byte.
+        !self.is_at_full_bandwidth
     }
 
     fn metrics(&self) -> ControllerMetrics {

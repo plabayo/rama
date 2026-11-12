@@ -1,5 +1,4 @@
-use std::cmp;
-use std::sync::Arc;
+use std::{cmp, mem, sync::Arc};
 
 use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
 use crate::proto::connection::RttEstimator;
@@ -11,6 +10,9 @@ use crate::proto::{Duration, Instant};
 const BETA_CUBIC: f64 = 0.7;
 
 const C: f64 = 0.4;
+/// Segments per round the Reno-friendly estimate adds while below the window before the last
+/// reduction (RFC 9438 section 4.3).
+const ALPHA_CUBIC: f64 = 3.0 * (1.0 - BETA_CUBIC) / (1.0 + BETA_CUBIC);
 
 /// CUBIC State Variables.
 ///
@@ -22,6 +24,16 @@ pub(super) struct State {
 
     w_max: f64,
 
+    // cwnd at the start of the current congestion avoidance stage (RFC 9438 section 4.1.2).
+    cwnd_epoch: f64,
+
+    // cwnd when ssthresh was last set (RFC 9438 section 4.1.2).
+    cwnd_prior: f64,
+
+    // Part of the current stage during which the application or the path kept the window from
+    // being used; the cubic function's clock skips it (RFC 9438 section 4.2).
+    unused: Duration,
+
     // Store cwnd increment during congestion avoidance.
     cwnd_inc: u64,
 }
@@ -32,10 +44,10 @@ pub(super) struct State {
 /// not packets.
 /// Unit of t (duration) and RTT are based on seconds (f64).
 impl State {
-    // K = cbrt(w_max * (1 - beta_cubic) / C) (Eq. 2)
+    // K = cbrt((w_max - cwnd_epoch) / C) (RFC 9438 Figure 2)
     fn cubic_k(&self, max_datagram_size: u64) -> f64 {
-        let w_max = self.w_max / max_datagram_size as f64;
-        (w_max * (1.0 - BETA_CUBIC) / C).cbrt()
+        let climb = (self.w_max - self.cwnd_epoch).max(0.0) / max_datagram_size as f64;
+        (climb / C).cbrt()
     }
 
     // W_cubic(t) = C * (t - K)^3 - w_max (Eq. 1)
@@ -49,17 +61,26 @@ impl State {
         (C * (t.as_secs_f64() - self.k).powi(3) + w_max) * max_datagram_size as f64
     }
 
-    // W_est(t) = w_max * beta_cubic + 3 * (1 - beta_cubic) / (1 + beta_cubic) *
-    // (t / RTT) (Eq. 4)
-    #[expect(
-        clippy::suboptimal_flops,
-        reason = "written as RFC 8312 states the equation; fusing the multiply and add rounds differently from the reference"
-    )]
+    // W_est grows from cwnd_epoch by alpha_cubic segments per round, and by one segment per
+    // round once it is back at cwnd_prior (RFC 9438 section 4.3).
     fn w_est(&self, t: Duration, rtt: Duration, max_datagram_size: u64) -> f64 {
-        let w_max = self.w_max / max_datagram_size as f64;
-        (w_max * BETA_CUBIC
-            + 3.0 * (1.0 - BETA_CUBIC) / (1.0 + BETA_CUBIC) * t.as_secs_f64() / rtt.as_secs_f64())
-            * max_datagram_size as f64
+        let cwnd_epoch = self.cwnd_epoch / max_datagram_size as f64;
+        let climb = (self.cwnd_prior - self.cwnd_epoch).max(0.0) / max_datagram_size as f64;
+        let rounds = t.as_secs_f64() / rtt.as_secs_f64();
+        let climbing_rounds = climb / ALPHA_CUBIC;
+        let growth = if rounds <= climbing_rounds {
+            ALPHA_CUBIC * rounds
+        } else {
+            climb + (rounds - climbing_rounds)
+        };
+        (cwnd_epoch + growth) * max_datagram_size as f64
+    }
+
+    // Starts a congestion avoidance stage at `window`, reached from `prior`.
+    fn start_epoch(&mut self, window: u64, prior: f64) {
+        self.cwnd_epoch = window as f64;
+        self.cwnd_prior = prior;
+        self.unused = Duration::ZERO;
     }
 }
 
@@ -77,6 +98,22 @@ pub(crate) struct Cubic {
     recovery_start_time: Option<Instant>,
     cubic_state: State,
     current_mtu: u64,
+    /// When the previous acknowledgement was processed.
+    last_ack: Option<Instant>,
+    /// Whether the previous acknowledgement found the sender with nothing more to send.
+    idle: bool,
+    /// What a loss reduced, kept until that loss is known to be real or reported in error
+    /// (RFC 9438 section 4.9).
+    undo: Option<Undo>,
+}
+
+/// The state a congestion event changes, as it was before one.
+#[derive(Debug, Clone)]
+struct Undo {
+    window: u64,
+    ssthresh: u64,
+    recovery_start_time: Option<Instant>,
+    cubic_state: State,
 }
 
 impl Cubic {
@@ -89,6 +126,9 @@ impl Cubic {
             config,
             cubic_state: Default::default(),
             current_mtu: current_mtu as u64,
+            last_ack: None,
+            idle: false,
+            undo: None,
         }
     }
 
@@ -106,6 +146,17 @@ impl Controller for Cubic {
         app_limited: bool,
         rtt: &RttEstimator,
     ) {
+        let gap = self
+            .last_ack
+            .replace(now)
+            .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
+        // After an acknowledgement that found nothing more to send, the wait for the next one
+        // is idle time as well.
+        let was_idle = mem::replace(&mut self.idle, app_limited);
+        if app_limited || was_idle {
+            self.cubic_state.unused = self.cubic_state.unused.saturating_add(gap);
+        }
+
         if app_limited
             || self
                 .recovery_start_time
@@ -131,15 +182,16 @@ impl Controller for Cubic {
                 self.recovery_start_time = Some(now);
 
                 self.cubic_state.w_max = self.window as f64;
+                self.cubic_state
+                    .start_epoch(self.window, self.window as f64);
                 self.cubic_state.k = 0.0;
             }
 
-            let t = now - ca_start_time;
+            let t = (now - ca_start_time).saturating_sub(self.cubic_state.unused);
 
             // w_cubic(t + rtt)
             let w_cubic = self.cubic_state.w_cubic(t + rtt.get(), self.current_mtu);
 
-            // w_est(t)
             let w_est = self.cubic_state.w_est(t, rtt.get(), self.current_mtu);
 
             let mut cubic_cwnd = self.window;
@@ -149,11 +201,11 @@ impl Controller for Cubic {
                 cubic_cwnd = cmp::max(cubic_cwnd, w_est as u64);
             } else if cubic_cwnd < w_cubic as u64 {
                 // Concave region or convex region use same increment.
+                // At most half a window ahead, so growth stays below slow start's (RFC 9438 4.2).
+                let target = w_cubic.min(1.5 * cubic_cwnd as f64);
                 let cubic_inc =
-                    (w_cubic - cubic_cwnd as f64) / cubic_cwnd as f64 * self.current_mtu as f64;
+                    (target - cubic_cwnd as f64) / cubic_cwnd as f64 * self.current_mtu as f64;
 
-                // w_cubic grows cubically with the time since the last congestion
-                // event and can exceed `u64::MAX` after a long lossless period.
                 cubic_cwnd = cubic_cwnd.saturating_add(cubic_inc as u64);
             }
 
@@ -181,8 +233,13 @@ impl Controller for Cubic {
         now: Instant,
         sent: Instant,
         is_persistent_congestion: bool,
-        _lost_bytes: u64,
+        lost_bytes: u64,
     ) {
+        // A congestion mark or a silent path is no loss that a late acknowledgement takes back.
+        let undoable = lost_bytes > 0 && !is_persistent_congestion;
+        if !undoable {
+            self.undo = None;
+        }
         if self
             .recovery_start_time
             .map(|recovery_start_time| sent <= recovery_start_time)
@@ -191,6 +248,14 @@ impl Controller for Cubic {
             return;
         }
 
+        if undoable && self.undo.is_none() {
+            self.undo = Some(Undo {
+                window: self.window,
+                ssthresh: self.ssthresh,
+                recovery_start_time: self.recovery_start_time,
+                cubic_state: self.cubic_state.clone(),
+            });
+        }
         self.recovery_start_time = Some(now);
         let window = self.window as f64;
 
@@ -206,6 +271,7 @@ impl Controller for Cubic {
 
         self.ssthresh = cmp::max((window * BETA_CUBIC) as u64, self.minimum_window());
         self.window = self.ssthresh;
+        self.cubic_state.start_epoch(self.window, window);
         self.cubic_state.k = self.cubic_state.cubic_k(self.current_mtu);
 
         self.cubic_state.cwnd_inc = (self.cubic_state.cwnd_inc as f64 * BETA_CUBIC) as u64;
@@ -222,6 +288,21 @@ impl Controller for Cubic {
         }
     }
 
+    fn on_spurious_congestion_event(&mut self) {
+        if let Some(undo) = self.undo.take()
+            && self.window < undo.window
+        {
+            self.window = undo.window;
+            self.ssthresh = undo.ssthresh;
+            self.recovery_start_time = undo.recovery_start_time;
+            self.cubic_state = undo.cubic_state;
+        }
+    }
+
+    fn on_loss_confirmed(&mut self) {
+        self.undo = None;
+    }
+
     fn on_mtu_update(&mut self, new_mtu: u16) {
         self.current_mtu = new_mtu as u64;
         self.window = self.window.max(self.minimum_window());
@@ -229,6 +310,10 @@ impl Controller for Cubic {
 
     fn window(&self) -> u64 {
         self.window
+    }
+
+    fn in_slow_start(&self) -> bool {
+        self.window < self.ssthresh
     }
 
     fn metrics(&self) -> super::ControllerMetrics {
@@ -337,6 +422,163 @@ mod tests {
     }
 
     #[test]
+    fn the_window_grows_again_within_two_round_trips_of_a_fast_convergence_reduction() {
+        let start = Instant::now();
+        let mtu = BASE_DATAGRAM_SIZE;
+        let round = Duration::from_millis(50);
+        let rtt = RttEstimator::new(round);
+        let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+        cubic.window = 30 * mtu;
+        cubic.ssthresh = cubic.window;
+        cubic.cubic_state.w_max = 40.0 * mtu as f64;
+
+        cubic.on_congestion_event(start, start + Duration::from_millis(1), false, mtu);
+        let reduced = cubic.window;
+        assert!(reduced < 30 * mtu);
+
+        let mut now = start;
+        for _ in 0..2 {
+            now += round;
+            for _ in 0..reduced / mtu {
+                cubic.on_ack(now, start + Duration::from_millis(1), mtu, false, &rtt);
+            }
+        }
+        assert!(cubic.window > reduced, "{} <= {reduced}", cubic.window);
+    }
+
+    /// Acknowledges a full window per round trip for `rounds` round trips.
+    fn acknowledge_rounds(
+        cubic: &mut Cubic,
+        now: &mut Instant,
+        sent: Instant,
+        rtt: &RttEstimator,
+        rounds: usize,
+    ) {
+        let mtu = cubic.current_mtu;
+        for _ in 0..rounds {
+            let packets = cubic.window / mtu;
+            for _ in 0..packets {
+                *now += rtt.get() / packets as u32;
+                cubic.on_ack(*now, sent, mtu, false, rtt);
+            }
+        }
+    }
+
+    #[test]
+    fn the_window_grows_a_segment_per_round_trip_once_back_at_the_window_before_the_cut() {
+        let start = Instant::now();
+        let mtu = BASE_DATAGRAM_SIZE;
+        let rtt = RttEstimator::new(Duration::from_millis(5));
+        let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+        cubic.window = 30 * mtu;
+        cubic.ssthresh = cubic.window;
+        cubic.cubic_state.w_max = 40.0 * mtu as f64;
+        let sent = start + Duration::from_millis(1);
+        cubic.on_congestion_event(start, sent, false, mtu);
+
+        let mut now = start;
+        while cubic.window < 30 * mtu {
+            acknowledge_rounds(&mut cubic, &mut now, sent, &rtt, 1);
+        }
+        let back_at_prior = cubic.window;
+        acknowledge_rounds(&mut cubic, &mut now, sent, &rtt, 10);
+        assert!(
+            cubic.window >= back_at_prior + 9 * mtu,
+            "{} segments in ten round trips",
+            (cubic.window - back_at_prior) / mtu
+        );
+    }
+
+    #[test]
+    fn a_busy_sender_acknowledged_a_flight_at_a_time_keeps_growing() {
+        let start = Instant::now();
+        let mtu = BASE_DATAGRAM_SIZE;
+        let rtt = RttEstimator::new(Duration::from_millis(1));
+        let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+        cubic.window = 10 * mtu;
+        cubic.ssthresh = cubic.window;
+        cubic.cubic_state.w_max = cubic.window as f64;
+        cubic.on_congestion_event(start, start + Duration::from_millis(1), false, mtu);
+        let reduced = cubic.window;
+
+        // The receiver holds each flight for its acknowledgement delay, far longer than the
+        // round trip.
+        let mut now = start;
+        cubic.on_ack(now, start, mtu, false, &rtt);
+        for _ in 0..200 {
+            let sent = now + Duration::from_millis(25);
+            now += Duration::from_millis(26);
+            for _ in 0..cubic.window / mtu {
+                cubic.on_ack(now, sent, mtu, false, &rtt);
+            }
+        }
+        assert!(cubic.window > reduced, "{} <= {reduced}", cubic.window);
+    }
+
+    #[test]
+    fn time_the_window_went_unused_does_not_count_towards_its_growth() {
+        let mtu = BASE_DATAGRAM_SIZE;
+        let rtt = RttEstimator::new(Duration::from_millis(50));
+        for app_limited in [true, false] {
+            let start = Instant::now();
+            let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+            cubic.window = 20 * mtu;
+            cubic.ssthresh = cubic.window;
+            let mut now = start;
+            acknowledge_rounds(&mut cubic, &mut now, start, &rtt, 1);
+            let before = cubic.window;
+
+            if app_limited {
+                for _ in 0..300 {
+                    now += Duration::from_millis(100);
+                    cubic.on_ack(now, start, mtu, true, &rtt);
+                }
+            } else {
+                cubic.on_ack(now, start, mtu, true, &rtt);
+                now += Duration::from_secs(30);
+            }
+            let sent = now;
+            acknowledge_rounds(&mut cubic, &mut now, sent, &rtt, 1);
+            assert!(
+                cubic.window <= before + 2 * mtu,
+                "app_limited {app_limited}: {} segments in one round trip",
+                (cubic.window - before) / mtu
+            );
+        }
+    }
+
+    #[test]
+    fn after_a_reduction_made_in_error_the_window_grows_as_if_never_reduced() {
+        let start = Instant::now();
+        let mtu = BASE_DATAGRAM_SIZE;
+        let rtt = RttEstimator::new(Duration::from_millis(50));
+        let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+        cubic.window = 60 * mtu;
+        cubic.ssthresh = cubic.window;
+        cubic.cubic_state.w_max = 80.0 * mtu as f64;
+        // A real loss first, so the stage the window grows in has a shape to return to.
+        let sent = start + Duration::from_millis(1);
+        cubic.on_congestion_event(start, sent, false, mtu);
+        cubic.on_loss_confirmed();
+        let mut now = start;
+        acknowledge_rounds(&mut cubic, &mut now, sent, &rtt, 20);
+
+        let mut undisturbed = cubic.clone();
+        let lost = now;
+        now += Duration::from_millis(1);
+        let mut undisturbed_now = now;
+        cubic.on_congestion_event(now, lost, false, mtu);
+        assert!(cubic.window < undisturbed.window);
+        cubic.on_spurious_congestion_event();
+
+        // Both acknowledge packets sent before the reduction, as late packets leave behind.
+        acknowledge_rounds(&mut cubic, &mut now, sent, &rtt, 20);
+        acknowledge_rounds(&mut undisturbed, &mut undisturbed_now, sent, &rtt, 20);
+        assert!(undisturbed.window > 60 * mtu);
+        assert_eq!(cubic.window, undisturbed.window);
+    }
+
+    #[test]
     fn congestion_avoidance_does_not_overflow_after_long_lossless_period() {
         let now = Instant::now();
         let rtt = RttEstimator::new(Duration::from_millis(100));
@@ -349,11 +591,45 @@ mod tests {
         let window = cubic.window;
 
         // After ten days without a congestion event, w_cubic exceeds u64::MAX.
-        // Before this fix, computing the window increment overflowed.
         let later = now + Duration::from_secs(10 * 24 * 60 * 60);
-        cubic.on_ack(later, later, BASE_DATAGRAM_SIZE, false, &rtt);
+        for _ in 0..window / BASE_DATAGRAM_SIZE {
+            cubic.on_ack(later, later, BASE_DATAGRAM_SIZE, false, &rtt);
+        }
 
-        assert_eq!(cubic.window, window + BASE_DATAGRAM_SIZE);
+        assert!(cubic.window > window);
+        assert!(cubic.window <= 2 * window);
+    }
+
+    #[test]
+    fn the_window_grows_by_at_most_half_per_round_trip_however_long_since_the_last_reduction() {
+        let start = Instant::now();
+        let mtu = BASE_DATAGRAM_SIZE;
+        let rtt = RttEstimator::new(Duration::from_millis(50));
+        let mut cubic = Cubic::new(Arc::new(CubicConfig::default()), start, mtu as u16);
+        cubic.window = 100 * mtu;
+        cubic.ssthresh = cubic.window;
+        cubic.cubic_state.w_max = cubic.window as f64;
+        cubic.on_congestion_event(start, start + Duration::from_millis(1), false, mtu);
+
+        // Far into the convex region the cubic function is many windows ahead.
+        let mut now = start + Duration::from_secs(60);
+        for _ in 0..3 {
+            let before = cubic.window;
+            acknowledge_rounds(
+                &mut cubic,
+                &mut now,
+                start + Duration::from_secs(1),
+                &rtt,
+                1,
+            );
+            assert!(cubic.window > before);
+            assert!(
+                cubic.window <= before + before / 2 + mtu,
+                "{} segments became {}",
+                before / mtu,
+                cubic.window / mtu
+            );
+        }
     }
 
     #[test]

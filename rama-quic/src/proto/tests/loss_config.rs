@@ -105,6 +105,79 @@ fn mtu_probes_wait_for_handshake_confirmation() {
 }
 
 #[test]
+fn a_pacer_pause_uses_the_window_only_when_most_of_it_is_in_flight() {
+    let mut config = server_config();
+    Arc::get_mut(&mut config.transport)
+        .unwrap()
+        .maybe_set_mtu_discovery_config(None)
+        .try_set_initial_congestion_window(120_000)
+        .unwrap();
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        config,
+    );
+    let (_client, server) = pair.connect();
+    pair.drive();
+    let stream = pair.server_streams(server).open(Dir::Uni).unwrap();
+    pair.server_send(server, stream)
+        .write(&vec![0x5a; 32 * 1024])
+        .unwrap();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_a_pacer_pause_uses_the_window_only_when_most_of_it_is_in_flight(now);
+}
+
+#[test]
+fn only_a_reduction_for_late_packets_is_undone() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_only_a_reduction_for_late_packets_is_undone(now);
+}
+
+#[test]
+fn a_reduction_for_a_lost_padded_ack_is_not_undone_by_late_packets() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_a_reduction_for_a_lost_padded_ack_is_not_undone_by_late_packets(now);
+}
+
+#[test]
+fn a_reduction_on_the_previous_path_is_not_undone_after_rebinding() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_a_reduction_on_the_previous_path_is_not_undone_after_rebinding(now);
+}
+
+#[test]
+fn a_burst_of_more_losses_than_are_remembered_is_not_undone() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_a_burst_of_more_losses_than_are_remembered_is_not_undone(now);
+}
+
+#[test]
+fn late_packets_make_loss_detection_wait_for_more() {
+    let mut pair = Pair::default();
+    let (_, server) = pair.connect();
+    pair.drive();
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .assert_late_packets_make_loss_detection_wait_for_more(now);
+}
+
+#[test]
 fn mtu_discovery_progresses_with_a_full_window_and_busy_streams() {
     for gso in [false, true] {
         let mut config = server_config();

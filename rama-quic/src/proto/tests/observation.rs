@@ -180,7 +180,7 @@ fn server_observation_retains_buffered_retransmissions_before_accept() {
 }
 
 // Re-protect a real Initial after changing its authenticated frame layout or token.
-fn rewrite_initial(wire: &mut BytesMut, reverse: bool, token: bool) -> usize {
+pub(super) fn rewrite_initial(wire: &mut BytesMut, reverse: bool, token: bool) -> usize {
     let dcid_len = usize::from(wire[5]);
     let dcid = ConnectionId::new(&wire[6..6 + dcid_len]);
     let version = Version::from_be_bytes(wire[1..5].try_into().unwrap());
@@ -281,7 +281,7 @@ fn observation_reverse_fragments_complete_within_the_fragment_budget() {
 }
 
 #[test]
-fn observation_completes_after_accept_and_excludes_mismatched_token() {
+fn observation_completes_after_accept_and_counts_a_repeated_packet_once() {
     for mismatch in [false, true] {
         let mut server =
             ServerConfig::with_crypto(Arc::new(server_crypto_with_alpn(vec![b"h3".to_vec()])));

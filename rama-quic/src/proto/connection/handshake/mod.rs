@@ -148,6 +148,7 @@ impl Connection {
         packet_number: u64,
         packet: InitialPacket,
         remaining: Option<BytesMut>,
+        retried: bool,
     ) -> Result<(), ConnectionError> {
         let span = trace_span!("first recv");
         let _guard = span.enter();
@@ -164,7 +165,7 @@ impl Connection {
 
         match self.state {
             State::Handshake(ref mut state) => {
-                state.expected_token = packet.header.token.clone();
+                state.expected_token = retried.then(|| packet.header.token.clone());
             }
             #[expect(
                 clippy::unreachable,

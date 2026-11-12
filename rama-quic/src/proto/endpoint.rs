@@ -2653,6 +2653,7 @@ impl Accepting {
                     packet_number,
                     packet,
                     rest,
+                    params.retry_src_cid.is_some(),
                 )
                 .map(|()| {
                     for event in early {

@@ -31,6 +31,9 @@ use std::{
 };
 use tokio::{io::AsyncReadExt as _, task::JoinSet};
 
+/// Outlasts the 250 ms batches of the simulator's packet capture, which stops when the server exits.
+const CAPTURE_DRAIN: Duration = Duration::from_secs(1);
+
 #[derive(Debug, Parser)]
 pub struct Args {
     #[arg(long, env = "TESTCASE", default_value = "transfer")]
@@ -134,9 +137,13 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         .context("bind interop server")?;
     tracing::info!(address = %endpoint.local_addr()?, "interop server listening");
     let mut connections = JoinSet::new();
+    let mut signalled = false;
     let outcome = loop {
         tokio::select! {
-            _ = &mut stopping => break Ok(()),
+            _ = &mut stopping => {
+                signalled = true;
+                break Ok(());
+            }
             result = connections.join_next(), if !connections.is_empty() => {
                 report_task(result);
             }
@@ -173,6 +180,10 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     // The scope is cancelled once something waits on it; then wait for every holder.
     shutdown.cancelled().await;
     let _ = shutdown.join().await;
+    if signalled {
+        // The simulator stops once this container exits; its capture loses the last batch otherwise.
+        tokio::time::sleep(CAPTURE_DRAIN).await;
+    }
     outcome
 }
 

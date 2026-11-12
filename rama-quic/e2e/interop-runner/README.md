@@ -88,6 +88,8 @@ Its output directory must be new.
 - Both roles use the unmerged [upstream #509 counter fix](https://github.com/quic-interop/quic-interop-runner/pull/509), pinned by commit:
   expired server state must not count one attempt twice. Rama server qlogs reject
   overlapping connections for the same attempt.
+- A signalled server stays up for one more second: the upstream simulator stops once the
+  server exits, and its packet capture loses any batch not yet written.
 - Unexplained failures, missing outcomes or invalid qlogs fail the gate.
   Raw upstream results are preserved.
 - Upstream `goodput`/`crosstraffic` measurements, CONNECT-IP and WebTransport
