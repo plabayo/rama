@@ -1267,6 +1267,33 @@ mod test {
         }
     }
 
+    /// RFC 9000 §19.3.1: a range reaching below packet number zero is a FRAME_ENCODING_ERROR,
+    /// in the first range as in a later one.
+    #[test]
+    fn ack_ranges_below_packet_number_zero_are_a_frame_encoding_error() {
+        for fields in [
+            &[1u64, 0, 0, 5][..],
+            &[9, 0, 1, 2, 3, 4],
+            &[9, 0, 1, 2, 6, 0],
+        ] {
+            let mut bytes = Vec::new();
+            bytes.write(FrameType::ACK);
+            for field in fields {
+                bytes.write_var(*field);
+            }
+            let error = Iter::new(bytes.into())
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                TransportError::from(error).code,
+                TransportErrorCode::FRAME_ENCODING_ERROR,
+                "{fields:?}"
+            );
+        }
+    }
+
     /// RFC 9000 §19.15: a NEW_CONNECTION_ID that retires identifiers the peer never issued is a
     /// FRAME_ENCODING_ERROR. The decoder refuses it, so the frame never reaches the connection.
     #[test]

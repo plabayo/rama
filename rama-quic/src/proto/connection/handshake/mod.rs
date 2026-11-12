@@ -12,7 +12,7 @@ mod failure_tests;
 
 use crate::qlog::event::negotiation::KeyChangeTrigger;
 use rama_quic_proto::{
-    EcnCodepoint, TransportError, VarInt, Version, frame,
+    EcnCodepoint, TransportError, TransportErrorCode, VarInt, Version, frame,
     packet::{InitialPacket, SpaceId},
     transport_parameters::TransportParameters,
     version::VersionInformation,
@@ -248,13 +248,12 @@ impl Connection {
         self.qlog_zero_rtt_key(now, false);
     }
 
-    pub(super) fn read_crypto(
-        &mut self,
-        space: SpaceId,
-        crypto: &frame::Crypto,
-        allocated: usize,
-    ) -> Result<(), TransportError> {
-        let expected = if !self.state.is_handshake() {
+    /// The packet space whose CRYPTO frames the TLS stack reads next.
+    ///
+    /// Keys the session has produced are installed before this is asked, so the answer holds
+    /// between two frames of one packet as well as between packets.
+    fn crypto_read_space(&self) -> SpaceId {
+        if !self.state.is_handshake() || !self.crypto.is_handshaking() {
             SpaceId::Data
         } else if self.highest_space == SpaceId::Initial {
             SpaceId::Initial
@@ -262,7 +261,17 @@ impl Connection {
             // On the server, self.highest_space can be Data after receiving the client's first
             // flight, but we expect Handshake CRYPTO until the handshake is complete.
             SpaceId::Handshake
-        };
+        }
+    }
+
+    pub(super) fn read_crypto(
+        &mut self,
+        now: Instant,
+        space: SpaceId,
+        crypto: &frame::Crypto,
+        allocated: usize,
+    ) -> Result<(), TransportError> {
+        let expected = self.crypto_read_space();
         // We can't decrypt Handshake packets when highest_space is Initial, CRYPTO frames in 0-RTT
         // packets are illegal, and we don't process 1-RTT packets until the handshake is
         // complete. Therefore, we will never see CRYPTO data from a later-than-expected space.
@@ -291,15 +300,13 @@ impl Connection {
             ));
         }
 
-        let level = space;
-        let space = &mut self.spaces[space];
-        let max = end.saturating_sub(space.crypto_stream.bytes_read());
+        let max = end.saturating_sub(self.spaces[space].crypto_stream.bytes_read());
         if max > self.config.crypto_buffer_size as u64 {
             return Err(TransportError::CRYPTO_BUFFER_EXCEEDED(""));
         }
 
         // As above: the assembler reports only that it holds too many spans.
-        if space
+        if self.spaces[space]
             .crypto_stream
             .insert(crypto.offset, crypto.data.clone(), allocated)
             .is_err()
@@ -309,50 +316,88 @@ impl Connection {
             ));
         }
 
-        while let Some(chunk) = space.crypto_stream.read(usize::MAX, true) {
+        while let Some(chunk) = self.spaces[space].crypto_stream.read(usize::MAX, true) {
+            // RFC 9001 §4.1.3: a message that moved the TLS stack to the next level must end
+            // the data it reads at this one, also when reordered frames delivered both at once.
+            if space < self.crypto_read_space() {
+                return Err(TransportError::PROTOCOL_VIOLATION(
+                    "handshake data past an encryption level change",
+                ));
+            }
             trace!("consumed {} CRYPTO bytes", chunk.bytes.len());
-            if self.crypto.read_handshake(level, &chunk.bytes)? {
+            if self.crypto.read_handshake(space, &chunk.bytes)? {
                 self.events.push_back(Event::HandshakeDataReady);
             }
+            // Install the keys this chunk produced, so the next frame meets the new level.
+            self.drain_handshake(now)?;
         }
+        self.refuse_stranded_crypto()?;
 
         if duplicate_handshake_crypto {
-            space.maybe_queue_early_crypto();
+            self.spaces[space].maybe_queue_early_crypto();
         }
 
         Ok(())
     }
 
+    /// RFC 9001 §4.1.3: once the TLS stack reads at a level, nothing it has not consumed may
+    /// remain at a lower one, not even behind a gap that keeps it from being handed over.
+    fn refuse_stranded_crypto(&self) -> Result<(), TransportError> {
+        let reading = self.crypto_read_space();
+        for space in [SpaceId::Initial, SpaceId::Handshake] {
+            if space < reading && self.spaces[space].crypto_stream.has_buffered() {
+                return Err(TransportError::PROTOCOL_VIOLATION(
+                    "handshake data past an encryption level change",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Server: take the client's transport parameters once its hello produced Handshake keys,
+    /// whether a packet or callback work that finished on its own got the TLS stack there.
+    pub(super) fn adopt_client_params(&mut self, now: Instant) -> Result<(), TransportError> {
+        if self.side.is_client()
+            || self.peer_params_received
+            || self.highest_space == SpaceId::Initial
+        {
+            return Ok(());
+        }
+        let params = self.crypto.transport_parameters()?.ok_or_else(|| {
+            TransportError::new(
+                TransportErrorCode::crypto(0x6d),
+                "transport parameters missing",
+            )
+        })?;
+        self.handle_peer_params(now, params)?;
+        self.issue_first_cids(now);
+        self.init_0rtt(now);
+        Ok(())
+    }
+
     pub(super) fn write_crypto(&mut self, now: Instant) {
-        loop {
-            let event = match self.crypto.poll_handshake() {
-                Ok(Some(event)) => event,
-                Ok(None) => break,
-                Err(error) => {
-                    self.kill(now, error.into());
-                    break;
-                }
-            };
+        if let Err(error) = self.drain_handshake(now) {
+            self.kill(now, error.into());
+        }
+    }
+
+    /// Queue the handshake data the session produced and install its keys.
+    fn drain_handshake(&mut self, now: Instant) -> Result<(), TransportError> {
+        while let Some(event) = self.crypto.poll_handshake()? {
             let (space, outgoing) = match event {
                 HandshakeEvent::Data(space, bytes) => (space, bytes),
                 HandshakeEvent::Keys(space, keys) => {
-                    self.upgrade_crypto(now, space, keys);
+                    self.upgrade_crypto(now, space, keys)?;
                     continue;
                 }
                 HandshakeEvent::ReadKeys(space, keys) => {
                     let Some(crypto) = self.spaces[space].crypto.as_mut() else {
-                        self.kill(
-                            now,
-                            TransportError::INTERNAL_ERROR("read keys before write keys").into(),
-                        );
-                        break;
+                        return Err(TransportError::INTERNAL_ERROR(
+                            "read keys before write keys",
+                        ));
                     };
                     if crypto.remote.is_some() {
-                        self.kill(
-                            now,
-                            TransportError::INTERNAL_ERROR("duplicate read keys").into(),
-                        );
-                        break;
+                        return Err(TransportError::INTERNAL_ERROR("duplicate read keys"));
                     }
                     crypto.remote = Some(keys);
                     self.qlog_directional_key_change(
@@ -362,11 +407,8 @@ impl Connection {
                         false,
                         Some(KeyChangeTrigger::Tls),
                     );
-                    if space == SpaceId::Data
-                        && let Err(error) = self.prepare_key_update()
-                    {
-                        self.kill(now, error.into());
-                        break;
+                    if space == SpaceId::Data {
+                        self.prepare_key_update()?;
                     }
                     continue;
                 }
@@ -387,21 +429,23 @@ impl Connection {
                 data: outgoing,
             });
         }
+        Ok(())
     }
 
     /// Switch to stronger cryptography during handshake
-    fn upgrade_crypto(&mut self, now: Instant, space: SpaceId, crypto: Keys) {
+    fn upgrade_crypto(
+        &mut self,
+        now: Instant,
+        space: SpaceId,
+        crypto: Keys,
+    ) -> Result<(), TransportError> {
         debug_assert!(
             self.spaces[space].crypto.is_none(),
             "already reached packet space {space:?}"
         );
         trace!("{:?} keys ready", space);
-        if space == SpaceId::Data
-            && crypto.remote.is_some()
-            && let Err(error) = self.prepare_key_update()
-        {
-            self.kill(now, error.into());
-            return;
+        if space == SpaceId::Data && crypto.remote.is_some() {
+            self.prepare_key_update()?;
         }
 
         if space == SpaceId::Data && !self.config.early_key_update {
@@ -441,6 +485,7 @@ impl Connection {
                 self.qlog_zero_rtt_key(now, true);
             }
         }
+        Ok(())
     }
 
     pub(super) fn discard_space(&mut self, now: Instant, space_id: SpaceId) {
@@ -727,8 +772,12 @@ impl Connection {
         if metadata_ready {
             self.events.push_back(Event::HandshakeDataReady);
         }
-        self.write_crypto(now);
-        if let Err(error) = self.finish_handshake(now) {
+        let resumed = self
+            .drain_handshake(now)
+            .and_then(|()| self.refuse_stranded_crypto())
+            .and_then(|()| self.adopt_client_params(now))
+            .and_then(|()| self.finish_handshake(now));
+        if let Err(error) = resumed {
             self.kill(now, error.into());
         }
     }

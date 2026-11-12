@@ -42,6 +42,14 @@ fn a_changed_token_on_a_later_initial_is_refused_only_after_a_retry() {
         let after = pair.server_conn_mut(server).stats().frame_rx.crypto;
         assert_eq!(after > before, !retry, "retry: {retry}");
 
+        let mut rest = rest;
+        if retry {
+            // The refused copy left its packet number free for the genuine packet.
+            pair.server.inbound.push_back(rest.pop_front().unwrap());
+            pair.drive_server();
+            let genuine = pair.server_conn_mut(server).stats().frame_rx.crypto;
+            assert!(genuine > after);
+        }
         pair.server.inbound.extend(rest);
         pair.drive();
         assert!(pair.client_conn_mut(client).handshake_confirmed());

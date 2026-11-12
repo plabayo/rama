@@ -383,6 +383,7 @@ impl Endpoint {
             };
             let mut forced = false;
             if let Some(graceful) = stop {
+                // No child scope: unlike a hard stop, a spent budget grants drivers no last poll.
                 let started = tokio::time::Instant::now();
                 {
                     let mut state = inner.state.lock();

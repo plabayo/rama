@@ -285,32 +285,30 @@ impl Connection {
                 };
                 let _guard = span.enter();
 
+                // Checked before the packet number is recorded: a refused Initial must not move
+                // the window that decides which later packet numbers count as duplicates.
+                if let Header::Initial(InitialHeader { ref token, .. }) = packet.header
+                    && let State::Handshake(ref hs) = self.state
+                    && self.side.is_server()
+                    && hs
+                        .expected_token
+                        .as_ref()
+                        .is_some_and(|expected| token != expected)
+                {
+                    // A Retry token is the address proof, so every Initial after a Retry
+                    // repeats it. Initial packets can be spoofed, so we discard rather than
+                    // killing the connection. Without a Retry the token is not compared:
+                    // some clients change it between Initials (RFC 9000 §8.1.3).
+                    warn!("discarding Initial with invalid retry token");
+                    self.qlog_packet_dropped(now, info.with_number(number), DropReason::Invalid);
+                    return;
+                }
                 let is_duplicate = |n| self.spaces[packet.header.space()].dedup.insert(n);
                 if number.is_some_and(is_duplicate) {
                     debug!("discarding possible duplicate packet");
                     self.qlog_packet_dropped(now, info.with_number(number), DropReason::Duplicate);
                     return;
                 } else {
-                    if let Header::Initial(InitialHeader { ref token, .. }) = packet.header
-                        && let State::Handshake(ref hs) = self.state
-                        && self.side.is_server()
-                        && hs
-                            .expected_token
-                            .as_ref()
-                            .is_some_and(|expected| token != expected)
-                    {
-                        // A Retry token is the address proof, so every Initial after a Retry
-                        // repeats it. Initial packets can be spoofed, so we discard rather than
-                        // killing the connection. Without a Retry the token is not compared:
-                        // some clients change it between Initials (RFC 9000 §8.1.3).
-                        warn!("discarding Initial with invalid retry token");
-                        self.qlog_packet_dropped(
-                            now,
-                            info.with_number(number),
-                            DropReason::Invalid,
-                        );
-                        return;
-                    }
                     if let Some(observation) = &mut self.observation
                         && let Some(number) = number
                     {
@@ -692,23 +690,8 @@ impl Connection {
                     return Ok(());
                 }
 
-                let starting_space = self.highest_space;
                 self.process_early_payload(now, packet)?;
-
-                if self.side.is_server()
-                    && starting_space == SpaceId::Initial
-                    && self.highest_space != SpaceId::Initial
-                {
-                    let params = self.crypto.transport_parameters()?.ok_or_else(|| {
-                        TransportError::new(
-                            TransportErrorCode::crypto(0x6d),
-                            "transport parameters missing",
-                        )
-                    })?;
-                    self.handle_peer_params(now, params)?;
-                    self.issue_first_cids(now);
-                    self.init_0rtt(now);
-                }
+                self.adopt_client_params(now)?;
                 Ok(())
             }
             Header::Long {
@@ -783,7 +766,7 @@ impl Connection {
             match frame {
                 Frame::Padding { .. } | Frame::Ping => {}
                 Frame::Crypto(frame) => {
-                    self.read_crypto(packet.header.space(), &frame, allocated)?;
+                    self.read_crypto(now, packet.header.space(), &frame, allocated)?;
                 }
                 Frame::Ack(ack) => {
                     self.on_ack_received(now, packet.header.space(), &ack)?;

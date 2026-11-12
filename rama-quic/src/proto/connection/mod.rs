@@ -200,6 +200,9 @@ pub(crate) struct Connection {
     /// The CID the peer initially chose, for use during the handshake
     rem_handshake_cid: ConnectionId,
     path: PathData,
+    /// The peer address of the last path that passed validation, kept across a move to a
+    /// path that has not: the address the attempt came from until one has.
+    proven_remote: SocketAddr,
     /// Incremented every time we see a new path
     ///
     /// Stored separately from `path.generation` to account for aborted migrations
@@ -446,6 +449,7 @@ impl Connection {
             rem_handshake_cid: rem_cid,
             local_cid_state: CidState::new(cid_len, cid_lifetime, now, loc_cid, pref_addr_cid),
             path: PathData::new(remote, local, allow_mtud, None, 0, now, &config),
+            proven_remote: remote,
             path_counter: 0,
             allow_mtud,
             prev_path: None,

@@ -216,7 +216,7 @@ impl Connection {
             }
             match frame {
                 Frame::Crypto(frame) => {
-                    self.read_crypto(SpaceId::Data, &frame, allocated)?;
+                    self.read_crypto(now, SpaceId::Data, &frame, allocated)?;
                 }
                 Frame::Stream(frame) => {
                     let transmit = if packet.header.is_0rtt() {
@@ -539,7 +539,7 @@ mod tests {
     use rama_quic_proto::{
         ConnectionId, Dir, RESET_TOKEN_SIZE, ResetToken, Side, StreamId, TransportErrorCode,
         VarInt, Version,
-        coding::Codec,
+        coding::{BufMutExt, Codec},
         packet::{Header, LongType, PacketNumber},
     };
     use std::{
@@ -1027,6 +1027,73 @@ mod tests {
             }
         }
         assert!(mismatches.is_empty(), "{mismatches:?}");
+    }
+
+    fn ack_of(largest: u64) -> Vec<u8> {
+        let mut wire = Vec::new();
+        frame::FrameType::ACK.encode(&mut wire);
+        for field in [largest, 0, 0, 0] {
+            wire.write_var(field);
+        }
+        wire
+    }
+
+    /// RFC 9000 §13.1: acknowledging a packet that was never sent ends the connection, so
+    /// such an acknowledgement cannot grow the congestion window.
+    #[test]
+    fn acknowledging_a_packet_never_sent_is_a_protocol_violation() {
+        for side in [Side::Client, Side::Server] {
+            for ahead in [0, 1_000] {
+                let mut pair = Pair::default();
+                let (now, conn) = connected(&mut pair, side);
+                let unsent = conn.spaces[SpaceId::Data].next_packet_number + ahead;
+                let error = receive(conn, now, &ack_of(unsent)).unwrap_err();
+                assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+                assert_eq!(error.reason, "unsent packet acked");
+            }
+        }
+    }
+
+    /// RFC 9000 §21.4: a packet number passed over on purpose was never sent either, so a
+    /// peer acknowledging it is acknowledging blindly.
+    #[test]
+    fn acknowledging_a_skipped_packet_number_is_a_protocol_violation() {
+        let mut pair = Pair::default();
+        let (client, _server) = pair.connect();
+        let skipped = loop {
+            if let Some(skipped) = pair
+                .client_conn_mut(client)
+                .packet_number_filter
+                .last_skipped()
+            {
+                break skipped;
+            }
+            pair.client_conn_mut(client).ping();
+            pair.drive();
+        };
+        let now = pair.time;
+        let conn = pair.client_conn_mut(client);
+        assert!(skipped < conn.spaces[SpaceId::Data].next_packet_number);
+        let error = receive(conn, now, &ack_of(skipped)).unwrap_err();
+        assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+        assert_eq!(error.reason, "unsent packet acked");
+    }
+
+    /// RFC 9000 §19.7 and §19.20: only a server sends NEW_TOKEN and HANDSHAKE_DONE.
+    #[test]
+    fn a_server_refuses_the_frames_only_a_server_sends() {
+        for (ty, payload) in [
+            (frame::FrameType::NEW_TOKEN, vec![1, 42]),
+            (frame::FrameType::HANDSHAKE_DONE, vec![]),
+        ] {
+            let mut pair = Pair::default();
+            let (now, conn) = connected(&mut pair, Side::Server);
+            let mut wire = Vec::new();
+            ty.encode(&mut wire);
+            wire.extend_from_slice(&payload);
+            let error = receive(conn, now, &wire).unwrap_err();
+            assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION, "{ty}");
+        }
     }
 
     #[test]

@@ -1786,11 +1786,23 @@ impl Connection {
         self.0.state.lock().inner.side()
     }
 
-    /// The peer's UDP address
+    /// The peer's UDP address, as last validated.
     ///
     /// If `ServerConfig::migration` is `true`, clients may change addresses at will, e.g. when
-    /// switching to a cellular internet connection.
+    /// switching to a cellular internet connection. A new address is reported once the peer
+    /// proved it receives there, and never if it does not, so this is the address to base
+    /// access decisions, limits and logs on. Before the handshake proved any address, as on a
+    /// server handle taken for 0-RTT, it is the address the attempt came from.
     pub fn remote_address(&self) -> SocketAddr {
+        self.0.state.lock().inner.validated_remote_address()
+    }
+
+    /// The peer's UDP address on the path packets are sent to right now.
+    ///
+    /// During a migration this is the new address before the peer proved it receives there:
+    /// anyone able to forward one of the peer's packets can make it name an address of their
+    /// choosing until validation fails. Use it for diagnostics only.
+    pub fn path_remote_address(&self) -> SocketAddr {
         self.0.state.lock().inner.remote_address()
     }
 

@@ -40,6 +40,7 @@ mod accept;
 mod admission;
 mod aead_limits;
 mod closing;
+mod crypto_levels;
 mod datagrams;
 mod early_packets;
 mod grease;
@@ -1896,6 +1897,73 @@ fn streams_blocked() {
             .streams_blocked_uni,
         1
     );
+}
+
+/// A peer that resets its own stream gets the slot back only once this side let go of both
+/// halves, not when the reset arrives: opening and resetting cannot outrun the stream limit.
+#[test]
+fn a_reset_stream_frees_its_slot_only_once_both_halves_are_gone() {
+    let _guard = subscribe();
+    for receive_half_first in [true, false] {
+        let server = ServerConfig {
+            transport: Arc::new(TransportConfig {
+                max_concurrent_bidi_streams: 1u32.into(),
+                ..TransportConfig::default()
+            }),
+            ..server_config()
+        };
+        let mut pair = Pair::new(
+            Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+            server,
+        );
+        let (client_ch, server_ch) = pair.connect();
+
+        let s = pair
+            .client_streams(client_ch)
+            .open(Dir::Bi)
+            .expect("the only bidirectional stream");
+        pair.client_send(client_ch, s).write(b"request").unwrap();
+        pair.drive();
+        assert_eq!(pair.server_streams(server_ch).accept(Dir::Bi), Some(s));
+
+        let code = VarInt::from_u32(1);
+        pair.client_send(client_ch, s).reset(code).unwrap();
+        pair.drive();
+        assert_eq!(
+            pair.client_streams(client_ch).open(Dir::Bi),
+            None,
+            "the server still holds the stream it has not answered"
+        );
+
+        // The server lets go of one half, then the other: only the second frees the slot.
+        for receive_half in [receive_half_first, !receive_half_first] {
+            assert_eq!(pair.client_streams(client_ch).open(Dir::Bi), None);
+            if receive_half {
+                let mut recv = pair.server_recv(server_ch, s);
+                let mut chunks = recv.read(false).unwrap();
+                loop {
+                    match chunks.next(usize::MAX) {
+                        Ok(Some(_)) => {}
+                        Err(ReadError::Reset(reset)) => {
+                            assert_eq!(reset, code);
+                            break;
+                        }
+                        other => panic!("the stream ended without its reset: {other:?}"),
+                    }
+                }
+                _ = chunks.finalize();
+            } else {
+                pair.server_send(server_ch, s).reset(code).unwrap();
+            }
+            pair.drive();
+        }
+        assert!(pair.client_streams(client_ch).open(Dir::Bi).is_some());
+        assert_eq!(
+            pair.client_streams(client_ch).open(Dir::Bi),
+            None,
+            "one stream ended, so one slot came back"
+        );
+    }
 }
 
 #[test]
@@ -5677,6 +5745,170 @@ fn reject_short_idcid() {
     let Some(DatagramEvent::Response(Transmit { .. })) = event else {
         panic!("expected an initial close");
     };
+}
+
+/// A token does not excuse a short destination CID: only a Retry token names one we chose.
+#[test]
+fn a_short_initial_dcid_is_refused_whatever_token_comes_with_it() {
+    let _guard = subscribe();
+    let client_addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 2], 7890));
+    for local_len in [0, 4, 8] {
+        let mut config = EndpointConfig::try_with_rand_key().unwrap();
+        config.set_cid_generator(Arc::new(move || {
+            Box::new(RandomConnectionIdGenerator::new(local_len).unwrap())
+        }));
+        let mut server = Endpoint::new(
+            Arc::new(config),
+            Some(Arc::new(server_config())),
+            true,
+            None,
+        );
+        for len in 0..8 {
+            let dst_cid = ConnectionId::new(&[7; 8][..len]);
+            let keys = server_config()
+                .crypto
+                .initial()
+                .initial_keys(Version::V1, &dst_cid)
+                .unwrap();
+            let keys = keys.remote.as_ref().unwrap();
+            for token in [Bytes::new(), Bytes::from_static(b"x")] {
+                let mut initial = Vec::new();
+                let partial = Header::Initial(InitialHeader {
+                    dst_cid,
+                    src_cid: ConnectionId::new(&[9; 8]),
+                    token: token.clone(),
+                    number: PacketNumber::U8(0),
+                    version: Version::V1.to_wire().unwrap(),
+                })
+                .encode(&mut initial);
+                initial.push(0x01);
+                initial.resize(usize::from(MIN_INITIAL_SIZE), 0);
+                partial
+                    .finish(
+                        &mut initial,
+                        keys.header.as_ref(),
+                        Some((0, keys.packet.as_ref())),
+                    )
+                    .unwrap();
+                let mut buf = Vec::new();
+                let event = server.handle(
+                    Instant::now(),
+                    client_addr,
+                    None,
+                    None,
+                    initial.as_slice().into(),
+                    &mut buf,
+                );
+                let case = format!(
+                    "local {local_len}, destination {len}, token of {} bytes",
+                    token.len()
+                );
+                assert!(matches!(event, Some(DatagramEvent::Response(_))), "{case}");
+                assert_eq!(server.pending_incoming(), 0, "{case}");
+            }
+        }
+    }
+}
+
+/// RFC 9000 §17.2: version 1 has no connection ID longer than 20 bytes, so such a packet is
+/// not answered at all.
+#[test]
+fn an_initial_with_an_oversized_dcid_is_dropped_unanswered() {
+    let _guard = subscribe();
+    let client_addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 2], 7890));
+    let mut server = Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        Some(Arc::new(server_config())),
+        true,
+        None,
+    );
+    let mut initial = vec![0xc0, 0x00, 0x00, 0x00, 0x01, 21];
+    initial.extend_from_slice(&[7; 21]);
+    initial.extend_from_slice(&[0x00, 0x00, 0x44, 0x00]);
+    initial.resize(usize::from(MIN_INITIAL_SIZE), 0);
+    let mut buf = Vec::new();
+    let event = server.handle(
+        Instant::now(),
+        client_addr,
+        None,
+        None,
+        initial.as_slice().into(),
+        &mut buf,
+    );
+    assert!(event.is_none());
+    assert!(buf.is_empty());
+    assert_eq!(server.pending_incoming(), 0);
+}
+
+/// RFC 9000 §6.2: a Version Negotiation packet is discarded once the client processed any
+/// other packet, so one arriving late cannot end the connection an early one would.
+#[test]
+fn a_late_version_negotiation_does_not_end_the_connection() {
+    let _guard = subscribe();
+    for late in [false, true] {
+        let mut pair = Pair::default();
+        let client = pair.begin_connect(client_config());
+        pair.drive_client();
+        let first = pair.server.inbound.front().unwrap().packet.clone();
+        let dcid_len = usize::from(first[5]);
+        let dcid = &first[6..6 + dcid_len];
+        let scid_len = usize::from(first[6 + dcid_len]);
+        let scid = &first[7 + dcid_len..7 + dcid_len + scid_len];
+        let mut negotiation = vec![0x80, 0, 0, 0, 0, scid_len as u8];
+        negotiation.extend_from_slice(scid);
+        negotiation.push(dcid_len as u8);
+        negotiation.extend_from_slice(dcid);
+        negotiation.extend_from_slice(&[0x0a, 0x1a, 0x2a, 0x3a]);
+        if late {
+            pair.drive_server();
+            pair.drive_client();
+        }
+
+        pair.client.inbound.push_back(Inbound::plain(
+            pair.time,
+            None,
+            BytesMut::from(negotiation.as_slice()),
+        ));
+        pair.drive();
+        let connection = pair.client_conn_mut(client);
+        if late {
+            assert!(connection.handshake_confirmed());
+            assert!(!connection.is_closed());
+        } else {
+            assert_matches!(
+                connection.poll(),
+                Some(Event::ConnectionLost {
+                    reason: ConnectionError::VersionMismatch { .. },
+                })
+            );
+        }
+    }
+}
+
+/// A packet for another destination that shares a datagram with a first Initial starts
+/// nothing of its own and leaves nothing behind.
+#[test]
+fn a_coalesced_packet_for_another_destination_starts_nothing() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client = pair.begin_connect(client_config());
+    pair.drive_client();
+    let first = pair.server.inbound.front_mut().unwrap();
+    let version = first.packet[1..5].to_vec();
+    let mut other = vec![0xc0];
+    other.extend_from_slice(&version);
+    other.push(8);
+    other.extend_from_slice(&[0xee; 8]);
+    other.push(8);
+    other.extend_from_slice(&[0xdd; 8]);
+    other.extend_from_slice(&[0x00, 0x40, 64]);
+    other.extend_from_slice(&[0x5a; 64]);
+    first.packet.extend_from_slice(&other);
+
+    pair.drive();
+    assert!(pair.client_conn_mut(client).handshake_confirmed());
+    assert_eq!(pair.server.open_connections(), 1);
+    assert_eq!(pair.server.pending_incoming(), 0);
 }
 
 /// Ensure that a connection can be made when a preferred address is advertised by the server,
@@ -9566,6 +9798,33 @@ fn leaving_the_identifier_a_rebinding_kept_orphans_the_previous_path() {
 /// A second peer move before the first is validated does not replace the path kept as a
 /// fallback: the connection returns to the address it was using when validation fails, not to the
 /// unvalidated one in between (RFC 9000 §9.3.3).
+/// The address reported for access decisions follows a move only once the peer answered there.
+#[test]
+fn the_validated_address_follows_a_move_only_after_the_peer_answered_there() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, server_ch) = pair.connect();
+    drive_settled(&mut pair);
+    let original = pair.client.addr;
+    pair.client.addr = SocketAddr::new(
+        Ipv4Addr::new(127, 0, 0, 7).into(),
+        CLIENT_PORTS.lock().next().unwrap(),
+    );
+    let moved = pair.client.addr;
+    pair.client_conn_mut(client_ch).ping();
+    pair.drive_client();
+    pair.server.drive(pair.time, moved);
+
+    let server = pair.server_conn_mut(server_ch);
+    assert_eq!(server.remote_address(), moved);
+    assert_eq!(server.validated_remote_address(), original);
+
+    pair.drive();
+    let server = pair.server_conn_mut(server_ch);
+    assert_eq!(server.remote_address(), moved);
+    assert_eq!(server.validated_remote_address(), moved);
+}
+
 #[test]
 fn a_second_move_before_validation_keeps_the_original_path() {
     let _guard = subscribe();
@@ -9590,6 +9849,10 @@ fn a_second_move_before_validation_keeps_the_original_path() {
     assert_eq!(
         pair.server_conn_mut(server_ch).remote_address(),
         unvalidated
+    );
+    assert_eq!(
+        pair.server_conn_mut(server_ch).validated_remote_address(),
+        original
     );
     pair.client.addr = original;
 

@@ -250,7 +250,9 @@ async fn certificate_work_finishing_between_packets_resumes_the_handshake() {
                 })
                 .await
                 .unwrap_or_else(|_elapsed| panic!("{case}: the handshake waited for a probe"));
-            connected.unwrap();
+            let connected = connected.unwrap();
+            // The server sends only within the limits the client's transport parameters set.
+            exchange(&accepted, &connected, b"resumed").await;
             if server_delay && client_delay {
                 // The resumed server step announces its handshake data; the client's next
                 // packet only leaves once the client's own work is done.
