@@ -17,6 +17,15 @@
 //! Each response carries the selected profile's User-Agent in `x-emulated-user-agent`,
 //! so a client can check the fingerprint it was given against that profile.
 //!
+//! Ingress is HTTP/1.1 and HTTP/2 over TCP, and egress emulates the profile's TLS and
+//! HTTP/2 only. Nothing here speaks QUIC. See `quic_h3_mitm_proxy` for HTTP/3 interception.
+//!
+//! The approach is not tied to TCP. Captured profiles describe HTTP/3 as well, so the same
+//! terminate and re-send flow applies once the egress client has an HTTP/3 connector and
+//! the proxy accepts UDP: `masque_connect_udp_proxy` shows CONNECT-UDP served next to
+//! CONNECT, and `quic_h3_mitm_proxy` shows QUIC termination. Both need adapting to carry
+//! the profile selection made here.
+//!
 //! Egress certificate verification is disabled, as in the other MITM examples.
 //! This example is not production ready: load a persistent, client-trusted MITM
 //! CA and verify egress certificates in a real deployment.

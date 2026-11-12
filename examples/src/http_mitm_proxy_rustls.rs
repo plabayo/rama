@@ -15,6 +15,12 @@
 //! one egress connection from the proxy handshake through the application
 //! relay.
 //!
+//! Ingress is HTTP/1.1 and HTTP/2 over TCP. A client that tunnels through CONNECT cannot
+//! carry HTTP/3 to its target, so nothing here speaks QUIC. See `quic_h3_mitm_proxy` for
+//! HTTP/3 interception, and `masque_connect_udp_proxy` for
+//! CONNECT-UDP served next to CONNECT. The manual termination shown here stays specific
+//! to TCP; the Relay/Peek design of `http_mitm_proxy_boring` is the one that carries over.
+//!
 //! Note that this MITM proxy is not production ready, and is only meant
 //! to show you how one might start. You might want to address the following:
 //!

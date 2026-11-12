@@ -13,15 +13,17 @@
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
 - [/examples/src/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_boring.rs):
-  A minimal HTTP proxy that accepts both HTTP/1.1 and HTTP/2 connections,
-  proxying them to the target host using Boring for TLS.
+  The recommended starting point for a MITM proxy. It is built from the Relay/Peek services:
+  the CONNECT target is established before success is returned, TLS is mirrored and HTTP is
+  relayed over that one egress connection. Also shows WebSocket relaying and inspection of
+  decoded bodies.
   - Similar to [/examples/src/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_connect_proxy.rs)
     but with MITM capabilities for both HTTP and HTTPS requests.
-  
+
 - [/examples/src/http_mitm_relay_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_relay_proxy_boring.rs):
-  Similar to [/examples/src/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_boring.rs), but with a more advanced flow,
-  and usually the kind of approach more desired for MITM proxies,
-  especially transparent proxies.
+  A smaller version of [/examples/src/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_boring.rs)
+  on the same Relay/Peek services, without WebSocket or body handling. It marks each request
+  and prints the final egress headers, which makes it the shortest way into this design.
 
 - [/examples/src/http_mitm_proxy_emulate_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_emulate_boring.rs):
   Unlike the relays above, which mirror the client, this proxy terminates TLS and
@@ -41,10 +43,28 @@
   the stapled leaf. Driven by `scripts/ocsp-relay-gate.sh` (`just test-ocsp-gate`).
 
 - [/examples/src/http_mitm_proxy_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_rustls.rs):
-  A minimal HTTP proxy that accepts both HTTP/1.1 and HTTP/2 connections,
-  proxying them to the target host using Rustls for TLS.
-  - Similar to [/examples/src/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_connect_proxy.rs)
-    but with MITM capabilities for both HTTP and HTTPS requests.
+  A Rustls compatibility example that terminates ingress TLS by hand and connects egress
+  per decrypted request, because a paired Rustls TLS relay is not available yet. Its CONNECT
+  success does not prove egress reachability. Prefer
+  [/examples/src/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_mitm_proxy_boring.rs) for a new proxy.
+
+The `http_mitm_*` examples above accept HTTP/1.1 and HTTP/2 over TCP. A client that tunnels
+through CONNECT cannot carry HTTP/3 to its target, so none of them speak QUIC. To intercept
+HTTP/3 see [/examples/src/quic_h3_mitm_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/quic_h3_mitm_proxy.rs), which listens on
+UDP, peeks the QUIC ClientHello and terminates HTTP/3 for the server names you choose.
+For proxying UDP through an HTTP proxy see
+[/examples/src/masque_connect_udp_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/src/masque_connect_udp_proxy.rs), which serves
+CONNECT-UDP (RFC 9298, one of the MASQUE protocols) next to ordinary CONNECT on one port.
+
+The principles stay the same across transports, so these examples can be combined:
+
+- the Relay/Peek design of `http_mitm_proxy_boring` and `http_mitm_relay_proxy_boring` is what
+  `quic_h3_mitm_proxy` applies to QUIC: peek the ClientHello, mirror TLS, then relay HTTP
+  through your own HTTP middleware. A proxy can run both, with CONNECT-UDP as the way in
+  for clients that only know an HTTP proxy;
+- the terminate and re-send design of `http_mitm_proxy_emulate_boring` applies to HTTP/3 too,
+  as captured profiles describe HTTP/3 as well. The egress client then needs an HTTP/3
+  connector and the proxy a UDP ingress, both adapted to carry the selected profile.
 
 ## Description
 

@@ -6,6 +6,19 @@
 //! HTTP relay forwards each request as the client sent it. HTTP middleware marks
 //! the request and prints the final egress headers.
 //!
+//! Ingress is HTTP/1.1 and HTTP/2 over TCP. A client that tunnels through CONNECT cannot
+//! carry HTTP/3 to its target, so nothing here speaks QUIC. See `quic_h3_mitm_proxy` for
+//! HTTP/3 interception, and `http_mitm_proxy_boring` for the same Relay/Peek stack with
+//! WebSocket relaying and decoded-body inspection.
+//!
+//! The design is not tied to TCP and can be combined with the QUIC examples to cover UDP
+//! on the same proxy:
+//!
+//! - `quic_h3_mitm_proxy` is the same peek, mirror and relay flow for QUIC, with
+//!   `QuicMitmRelay` and `Http3MitmRelay` taking the same kind of HTTP middleware;
+//! - `masque_connect_udp_proxy` serves CONNECT-UDP next to CONNECT on one listener, which
+//!   is how a client reaches HTTP/3 through an HTTP proxy.
+//!
 //! Note that this proxy is not production ready, and is only meant
 //! to show you how one might start.
 //!
