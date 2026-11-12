@@ -258,6 +258,42 @@ async fn relay_keeps_capsule_datagrams_reliable_with_native_egress() {
 }
 
 #[tokio::test]
+async fn prefer_native_moves_capsule_datagrams_to_native_egress_and_drops_oversize() {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let egress = Native::default();
+        egress.0.lock().maximum = Some(8);
+        let (left, client) = socket(&Native::default());
+        let (right, origin) = socket(&egress);
+        let relay = spawn(async move {
+            HttpDatagramRelay::default()
+                .with_prefer_native(true)
+                .serve(BridgeIo(left, right))
+                .await
+        });
+        let mut client = HttpDatagramSession::new(client);
+        let mut origin = HttpDatagramSession::new(origin);
+        for payload in [&b"native"[..], b"too large for egress"] {
+            client
+                .send_capsule(CapsuleType::DATAGRAM, Bytes::copy_from_slice(payload))
+                .await
+                .unwrap();
+        }
+        client.close().await.unwrap();
+        assert_eq!(origin.recv().await.unwrap(), None);
+        origin.close().await.unwrap();
+        let outcome = relay.await.unwrap().unwrap();
+        assert_eq!(outcome.ingress_to_egress.datagrams, 1);
+        assert_eq!(outcome.ingress_to_egress.dropped, 1);
+        assert_eq!(
+            egress.0.lock().sent.as_slice(),
+            &[Bytes::from_static(b"native")]
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn relay_finishes_unknown_capsule_before_native_fallback() {
     tokio::time::timeout(Duration::from_secs(2), async {
         let ingress = Native::default();
