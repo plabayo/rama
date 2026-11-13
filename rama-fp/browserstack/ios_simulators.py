@@ -129,7 +129,7 @@ def run_device(version, udid, output):
         run_bounded(
             [sys.executable, str(Path(__file__).with_name("main.py")),
              "--output", str(output / ("ios-" + version)),
-             "--device", "ios-simulator:" + version],
+             "--device", "ios-simulator:" + version, "--defer-h3-gate"],
             timeout=1200,
         )
         receipt["status"] = "passed"
@@ -167,12 +167,23 @@ def main():
     devices = simctl_listing("devices", "available")["devices"]
     runtimes = simctl_listing("runtimes")["runtimes"]
     failed = False
+    journeys = []
     for version, udid in devices_by_runtime(devices, runtimes):
+        journeys.append(str(args.output / ("ios-" + version)))
         try:
             run_device(version, udid, args.output)
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
             print(f"FAILED iOS {version}: {error}", file=sys.stderr, flush=True)
             failed = True
+    # One runtime missing its Alt-Svc switch is that Safari's timing; all of them is the origin.
+    try:
+        run_bounded(
+            [sys.executable, str(Path(__file__).with_name("main.py")),
+             "--h3-gate", *journeys],
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        failed = True
     return int(failed)
 
 
