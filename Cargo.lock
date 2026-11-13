@@ -2567,8 +2567,6 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
- "allocator-api2",
- "equivalent",
  "foldhash 0.2.0",
 ]
 
@@ -5370,7 +5368,6 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
- "venndb",
  "windows-sys 0.61.2",
 ]
 
@@ -7548,24 +7545,23 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "venndb"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "027cbaacc64ede3aec4ad7a8d234bee0e440c23eed3f61e2f5a83784900ed33a"
+checksum = "59fc7dc41635dd82ba456057bdbb56a243c3803953562e95866b96365553afab"
 dependencies = [
- "hashbrown 0.16.1",
- "rand 0.9.5",
+ "foldhash 0.2.0",
  "venndb-macros",
 ]
 
 [[package]]
 name = "venndb-macros"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a2f10c8ddad13095264c5b2fae73f80d178bbaed5f57481fb2f13d7f5ff7685"
+checksum = "881731ed422b5b1f34300c941500922a62b8ac03e4f59d2134885bacd2fd8c62"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.10",
 ]
 
 [[package]]
