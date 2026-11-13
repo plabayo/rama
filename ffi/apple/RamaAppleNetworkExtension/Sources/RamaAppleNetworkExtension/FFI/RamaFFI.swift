@@ -775,6 +775,13 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
         }
     }
 
+    /// Copy a provider path observation while the engine lifetime lease excludes teardown.
+    func notifyNetworkChange(status: UInt32, preferredInterface: UInt32, flags: UInt32) {
+        lifetime.withEngine(default: ()) { p in
+            rama_transparent_proxy_engine_notify_network_change(p, status, preferredInterface, flags)
+        }
+    }
+
     /// Forward a provider message into Rust and return the reply (or `nil` for
     /// "no reply").
     ///

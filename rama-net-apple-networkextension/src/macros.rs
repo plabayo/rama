@@ -515,6 +515,32 @@ macro_rules! __transparent_proxy_ffi_emit {
 
         /// # Safety
         ///
+        /// The caller must uphold *Engine handles* (see `transparent_proxy_ffi!`).
+        /// No foreign memory is retained. Status: 0 unknown, 1 satisfied, 2 unsatisfied,
+        /// 3 requires connection; flags: bit 0 expensive, bit 1 constrained.
+        // SAFETY: *Linking* on `transparent_proxy_ffi!` requires a single expansion and
+        // no competing definitions of its exported names in the linked image.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_notify_network_change(
+            engine: *mut RamaTransparentProxyEngine,
+            status: u32,
+            preferred_interface: u32,
+            flags: u32,
+        ) {
+            if engine.is_null() {
+                return;
+            }
+            // SAFETY: after the null check, *Engine handles* supplies a still-live,
+            // initialized Box allocation of this expansion's engine type, hence its
+            // alignment and provenance. It excludes freeing for this whole call;
+            // overlapping calls use shared access, never a mutable reference. The
+            // shared borrow ends before return and no raw pointer is retained.
+            let engine = unsafe { &*engine };
+            engine.notify_network_change(status, preferred_interface, flags);
+        }
+
+        /// # Safety
+        ///
         /// The caller must uphold *Engine handles* and *Byte ranges* for
         /// `message` (see `transparent_proxy_ffi!`). The reply is empty or
         /// built by `BytesOwned::try_from`; release it with

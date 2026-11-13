@@ -13,14 +13,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rama::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
-    extensions::ExtensionsRef as _,
+    extensions::{Extensions, ExtensionsRef as _},
     net::{
         apple::networkextension::{
             Datagram, UdpFlow,
-            tproxy::{TransparentProxyFlowMeta, TransparentProxyServiceContext},
+            tproxy::{
+                TransparentProxyFlowMeta, TransparentProxyNetworkStatus,
+                TransparentProxyServiceContext,
+            },
         },
         client::ConnectorTarget,
         socket::core::{Domain, Protocol, Socket, Type},
+    },
+    quic::proxy::{
+        QuicMigrationSide, QuicMitmIngressByIdentity, QuicNetworkAvailability, QuicNetworkChanges,
     },
     service::service_fn,
     telemetry::tracing,
@@ -95,6 +101,7 @@ pub(super) struct QuicFlows {
     pub(super) state: SharedState,
     /// Remote ports of the flows that take the QUIC path.
     pub(super) ports: Arc<[u16]>,
+    pub(super) migration_limits: crate::config::QuicMigrationLimits,
     /// The intercept admission QUIC associations share with TCP flows.
     pub(super) limiter: Arc<ConcurrencyLimiter>,
 }
@@ -107,15 +114,48 @@ pub(super) async fn try_new_service(
     let QuicFlows {
         state,
         ports,
+        migration_limits,
         limiter,
     } = quic;
     let budget = |bytes| {
         NonZeroUsize::new(bytes)
             .ok_or_else(|| BoxError::from_static_str("zero engine UDP ingress budget"))
     };
+    let network = QuicNetworkChanges::new();
+    let events = network.clone();
+    let mut platform = ctx.network_path_changes();
+    let held = ctx
+        .scope
+        .try_hold()
+        .map_err(|_closed| BoxError::from_static_str("provider scope closed"))?;
+    held.into_spawn_cancellable_task(async move {
+        loop {
+            let path = *platform.borrow_and_update();
+            let availability = match path.status {
+                TransparentProxyNetworkStatus::Satisfied => QuicNetworkAvailability::Available,
+                TransparentProxyNetworkStatus::Unknown => QuicNetworkAvailability::Unknown,
+                _ => QuicNetworkAvailability::Unavailable,
+            };
+            let context = Extensions::new();
+            context.insert(path);
+            events.update(QuicMigrationSide::Egress, availability, context);
+            if platform.changed().await.is_err() {
+                break;
+            }
+        }
+    });
     let path = crate::quic::QuicPath {
+        network,
+        egress_preparations: Arc::new(tokio::sync::Semaphore::new(
+            migration_limits.max_concurrent_egress_preparations.get(),
+        )),
         state,
         limiter,
+        scope: ctx.scope.clone(),
+        migration: QuicMitmIngressByIdentity::new(
+            ctx.scope.clone(),
+            migration_limits.ingress_config(),
+        ),
         flow_bytes: budget(ctx.udp_ingress_per_flow_max_bytes())?,
         budget: SharedQueueBudget::new(budget(ctx.udp_ingress_global_max_bytes())?),
     };

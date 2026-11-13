@@ -89,6 +89,12 @@ final class TransparentProxyCore: @unchecked Sendable {
     private let lifecycleLock = NSRecursiveLock()
     private let flowLifecycleGroup = DispatchGroup()
     private var engineStorage: RamaTransparentProxyEngineHandle?
+    // Confined to stateQueue, one monitor per attached engine generation.
+    private var networkPathMonitor: NWPathMonitor?
+
+    deinit {
+        networkPathMonitor?.cancel()
+    }
     /// Published and cleared in the same `stateQueue` transaction as the
     /// matching engine. Sessions copy this through `EngineFlowLease`, so
     /// retiring callbacks never consult a replacement generation's policy.
@@ -230,6 +236,23 @@ final class TransparentProxyCore: @unchecked Sendable {
         let generation = stateQueue.sync {
             self.engineGeneration &+= 1
             self.engineStorage = engine
+            let monitor = NWPathMonitor()
+            monitor.pathUpdateHandler = { [weak engine] path in
+                let status: UInt32
+                switch path.status {
+                case .satisfied: status = 1
+                case .unsatisfied: status = 2
+                case .requiresConnection: status = 3
+                @unknown default: status = 0
+                }
+                let flags: UInt32 = (path.isExpensive ? 1 : 0) | (path.isConstrained ? 2 : 0)
+                engine?.notifyNetworkChange(
+                    status: status,
+                    preferredInterface: UInt32(clamping: path.availableInterfaces.first?.index ?? 0),
+                    flags: flags)
+            }
+            self.networkPathMonitor = monitor
+            monitor.start(queue: self.stateQueue)
             self.runtimePolicyStorage = runtimePolicy
             let effectivePolicy = runtimePolicy ?? .testDefaultsSnapshot
             self.udpIngressStagingBudgetStorage.reconfigure(
@@ -266,6 +289,8 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.engineGeneration &+= 1
             let engine = self.engineStorage
             self.engineStorage = nil
+            self.networkPathMonitor?.cancel()
+            self.networkPathMonitor = nil
             // Reserve retirement capacity before dropping registry ownership.
             // TCP uses its stable resource identity so a promoted linger which
             // races this detach becomes a second claimant, not a second slot.
@@ -2812,6 +2837,10 @@ final class TransparentProxyCore: @unchecked Sendable {
 
         var testPressureVictimDispatchLeaseMs: UInt64 {
             stateQueue.sync { self.pressureVictimDispatchLeaseMs }
+        }
+
+        var testHasNetworkPathMonitor: Bool {
+            stateQueue.sync { self.networkPathMonitor != nil }
         }
 
         var testEngineGeneration: UInt64 {

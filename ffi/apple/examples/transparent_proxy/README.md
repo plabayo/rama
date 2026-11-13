@@ -872,6 +872,23 @@ at the policy call in `tproxy_rs/src/quic.rs`. `NOT_QUIC` also rejects unsupport
 versions. These policies still forward non-QUIC traffic; applications enforcing
 an all-traffic rule must configure that separately.
 
+When NE supplies the application's audit token and a concrete local socket address,
+the demo registers independent MITM endpoints within that process's policy domain. A new
+flow carrying an existing connection ID is routed during the inspector's first receive,
+without repeating inspection or creating another origin connection. QUIC still
+authenticates the packet and validates the path; the connection and HTTP/3 relay belong
+to the provider scope, so closure of the original flow does not end them. Replies retain
+the original server address through NE's `sentBy` mechanism. Other processes and
+other destinations remain separate routing keys. Missing identity/address metadata
+keeps the existing isolated-flow behavior rather than guessing which process owns a path.
+
+Each connection's path adapter polls transports directly without another payload queue. The existing
+demux still uses the engine's global queued-byte budget. `QuicMitmIngressByIdentity` bounds
+process identities and their registered connections; the platform supplies the trusted identity key. Unknown connection IDs retain the configured fallback policy;
+a matched connection never falls back to raw forwarding on a later error. This is local
+application socket migration: ordinary router NAT rebinding affects the proxy's upstream
+connection and does not require joining NE ingress flows.
+
 Firefox can trust the interception CA yet abandon HTTP/3 because of its
 third-party-root policy. For an explicit interception test, import the demo CA
 into a disposable Firefox profile and set
@@ -889,3 +906,20 @@ Chromium relay tests. This limitation also occurs with the QUIC inspector disabl
 Any on-device test that enables the transparent proxy must install/open, test and
 quit the app in one bounded script with an exit trap, so a failed run restores
 connectivity. Do not leave a diagnostic build running after the test.
+
+### QUIC migration resource settings
+
+The startup JSON `quic_migration` object accepts `max_process_identities` (default 128),
+`max_registered_connections_per_process` (256), `max_paths_per_connection` (4), and
+`path_validation_timeout_ms` (5000, at most 60000). Process identities include their generation,
+not just PID. These defaults are bookkeeping budgets, not measured concurrency ceilings;
+registration is allocated on demand, independently of flow admission. At capacity new
+connections continue without cross-flow migration registration. Idle identities are evicted.
+A registration lasts until its connection ends; obsolete paths are evicted while the active
+validated path (or original handshake path) is protected. At least two path slots are required.
+The validation deadline removes a new path unless it becomes the active validated path.
+
+Provider network observations trigger an egress policy through `QuicMigrationLayer`. The
+factory reuses the initial UDP connector target and extensions. Failure keeps the existing
+transports in this example; deployments forbidding the old route can configure Close instead.
+See the [migration guide](https://ramaproxy.org/book/proxies/quic_migration.html).

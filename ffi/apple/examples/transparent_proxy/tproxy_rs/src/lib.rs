@@ -418,6 +418,7 @@ impl DemoTransparentProxyHandler {
         let quic = self::udp::QuicFlows {
             state: shared_state.clone(),
             ports: demo_config.udp_quic_ports.clone().into(),
+            migration_limits: demo_config.quic_migration.clone(),
             limiter: concurrency_limiter.clone(),
         };
         let udp_service = self::udp::try_new_service(ctx.clone(), udp_policy_scope, quic)
