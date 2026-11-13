@@ -7,7 +7,7 @@ use rama_net::mode::ConnectIpMode;
 use rama_net::{address::SocketAddress, socket::SocketOptions};
 use rama_utils::macros::error::static_str_error;
 use std::{net::SocketAddr, sync::Arc};
-use tokio::net::TcpSocket;
+use tokio::net::{TcpSocket, TcpStream as TokioTcpStream};
 
 use crate::TcpStream;
 
@@ -39,6 +39,7 @@ impl TcpStreamConnector for () {
         // Same default as `SocketOptions::default_tcp`, set before the first segment is sent.
         socket.set_nodelay(true)?;
         let stream = socket.connect(addr).await?;
+        refuse_self_connect(&stream)?;
         Ok(stream.into())
     }
 }
@@ -148,8 +149,21 @@ async fn tcp_connect_with_socket_opts_async(
     let stream = TcpStream::try_from_connecting_socket(socket, Default::default())
         .await
         .context("complete nonblocking connect to the provided socket addr")?;
+    refuse_self_connect(&stream.stream).context("connect to the provided socket addr")?;
 
     Ok(stream)
+}
+
+/// A dial to a local port without a listener can be given that port as its source and
+/// then complete against itself (TCP simultaneous open), reading back what it writes.
+fn refuse_self_connect(stream: &TokioTcpStream) -> std::io::Result<()> {
+    match (stream.local_addr(), stream.peer_addr()) {
+        (Ok(local), Ok(peer)) if local == peer => Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "tcp dial reached itself: nothing listens at the target address",
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn nonblocking_connect_in_progress(err: &std::io::Error) -> bool {
@@ -433,6 +447,8 @@ mod tests {
 #[cfg(all(test, any(target_os = "windows", target_family = "unix")))]
 mod unix_windows_tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use rama_core::error::error_chain;
 
     // The dial primitives canonicalize themselves, so even a raw
     // (resolver-bypassing) `TcpStreamConnector` call with a v4-mapped
@@ -489,6 +505,25 @@ mod unix_windows_tests {
             .await
             .unwrap();
         stream.as_socket_ref().tcp_nodelay().unwrap()
+    }
+
+    // With its source bound to the target address, a Linux dial connects to itself.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_dial_that_reaches_itself_is_refused() {
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let source = SocketAddress::from(addr);
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), source.connect(addr))
+            .await
+            .unwrap()
+            .unwrap_err();
+        let refused = error_chain(error.as_ref())
+            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .any(|cause| cause.kind() == std::io::ErrorKind::ConnectionRefused);
+        assert!(refused, "{error:?}");
     }
 
     #[tokio::test]

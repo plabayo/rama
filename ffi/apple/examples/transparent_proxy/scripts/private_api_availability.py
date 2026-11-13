@@ -167,7 +167,11 @@ class Probe:
             return probe_result(output, "ios-simulator")
         finally:
             # Keep cleanup failures separate, so they cannot hide the probe error.
-            self.check("simulator-shutdown", lambda: self.run("xcrun", "simctl", "shutdown", udid))
+            # Deleting also stops the device, so a slow shutdown alone is not a failure.
+            try:
+                self.run("xcrun", "simctl", "shutdown", udid)
+            except (RuntimeError, subprocess.TimeoutExpired) as error:
+                print(f"simulator-shutdown (ignored): {error}", flush=True)
             self.check("simulator-delete", lambda: self.run("xcrun", "simctl", "delete", udid))
 
 

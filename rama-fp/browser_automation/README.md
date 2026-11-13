@@ -108,8 +108,8 @@ times out while the browser still shows that door, the cell is `unsupported`:
 "browser did not leave the HTTP/3 bootstrap" on the switching page. Only
 browsers observed to stay on TCP there (Safari, every iOS browser and every
 Android browser) may be `unsupported`; desktop Chromium or Firefox stuck on the
-door fails the cell, and BrowserStack fails the job when every H3 cell stayed on
-the door. Such a cell also records `h3_control`, the transport the same session
+door fails the cell, and a job fails when every H3 cell stayed on the door, counted
+over all versions when it runs one browser version at a time. Such a cell also records `h3_control`, the transport the same session
 gets from a public HTTP/3 site: on BrowserStack these browsers stay on HTTP/2
 there too. BrowserStack starts Android Chrome behind an HTTP proxy, which rules out
 QUIC, so the nightly job launches it with `--no-proxy-server`; Firefox for Android

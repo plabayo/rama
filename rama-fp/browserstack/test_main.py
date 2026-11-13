@@ -107,6 +107,29 @@ class NightlyTests(unittest.TestCase):
                 code, _, _ = self.collect(main.UnsupportedFlow(reason))
                 self.assertEqual(code, expected)
 
+    def test_a_deferred_h3_gate_counts_every_version_together(self):
+        stuck = {
+            "expected_http_protocol": "h3",
+            "status": "unsupported",
+            "unsupported_reason": "h3: browser stayed on TCP: did not switch to HTTP/3",
+        }
+        switched = {"expected_http_protocol": "h3", "status": "passed"}
+        for versions, expected in (
+            ([stuck, switched], 0),
+            ([stuck, stuck], 1),
+            ([], 1),
+        ):
+            with self.subTest(versions=versions), tempfile.TemporaryDirectory() as directory:
+                directories = [str(Path(directory) / "version-none")]
+                for index, receipt in enumerate(versions):
+                    version = Path(directory) / f"version-{index}"
+                    version.mkdir()
+                    (version / "000-0.json").write_text(json.dumps(receipt))
+                    directories.append(str(version))
+                with redirect_stdout(io.StringIO()):
+                    code = main.main(["--h3-gate", *directories])
+                self.assertEqual(code, expected)
+
     def test_https_cells_require_every_site_flow(self):
         incomplete = dict(SITE_FLOWS)
         del incomplete["frame"]
