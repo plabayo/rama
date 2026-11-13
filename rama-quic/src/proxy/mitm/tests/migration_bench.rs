@@ -345,14 +345,32 @@ async fn compare_native_relay_migration() {
             reuse_peer: false,
         },
     ];
+    // Restrict comparisons without spending samples on unrelated migration scenarios.
+    let selected = std::env::var("RAMA_MIGRATION_BENCH_CASES")
+        .map(|value| {
+            value
+                .split(',')
+                .map(|index| index.trim().parse::<usize>().unwrap())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|_| (0..cases.len()).collect());
+    assert!(!selected.is_empty());
+    assert!(selected.iter().all(|&index| index < cases.len()));
+    for (position, index) in selected.iter().enumerate() {
+        assert!(
+            !selected[..position].contains(index),
+            "duplicate benchmark case"
+        );
+    }
+
     let rounds = std::env::var("RAMA_MIGRATION_BENCH_ROUNDS")
         .ok()
         .map(|s| s.parse::<usize>().unwrap())
         .unwrap_or(9);
     assert!(rounds >= 3);
     for round in 0..=rounds {
-        for offset in 0..cases.len() {
-            let index = (round + offset) % cases.len();
+        for offset in 0..selected.len() {
+            let index = selected[(round + offset) % selected.len()];
             let measured = timeout(Duration::from_secs(60), sample(cases[index]))
                 .await
                 .unwrap();
