@@ -10,8 +10,8 @@ pub use admission::{
 mod peek;
 pub use peek::{
     DEFAULT_QUIC_PEEK_LIMITS, DEFAULT_QUIC_PEEK_TIMEOUT, InputWithQuicClientHello,
-    NoQuicRejectError, PeekQuicClientHelloService, QuicPeekFallbackPolicy, QuicPeekRejectedError,
-    QuicPeekRejection,
+    NoQuicPeekRouting, NoQuicRejectError, PeekQuicClientHelloService, QuicPeekFallbackPolicy,
+    QuicPeekRejectedError, QuicPeekRejection, QuicPeekRoute, QuicPeekRouter,
 };
 
 mod relay;
@@ -21,5 +21,15 @@ pub use relay::QuicRelay;
 mod mitm;
 #[cfg(feature = "boring")]
 pub use mitm::{
-    DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT, QuicMirrorCeiling, QuicMitmRelay, QuicMitmRelayService,
+    DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT, QuicMirrorCeiling, QuicMitmIngress,
+    QuicMitmIngressByIdentity, QuicMitmIngressByIdentityConfig, QuicMitmIngressConfig,
+    QuicMitmRelay, QuicMitmRelayService, QuicMitmRoute,
+};
+
+mod migration;
+pub use migration::{
+    QuicEgressMigration, QuicMigrationConfig, QuicMigrationDecision, QuicMigrationFailureAction,
+    QuicMigrationInput, QuicMigrationLayer, QuicMigrationService, QuicMigrationSide,
+    QuicMigrationTrigger, QuicNetworkAvailability, QuicNetworkChanges, QuicNetworkPath,
+    QuicNetworkSnapshot, QuicPathAction, QuicTransportReplacement,
 };

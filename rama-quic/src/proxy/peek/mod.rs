@@ -1,5 +1,6 @@
 //! Peek at a QUIC client's Initial flight before choosing how to handle the association.
 
+use rama_udp::DatagramMetadata;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, future::pending, time::Duration};
 
@@ -27,6 +28,62 @@ use rama_udp::{
 };
 use rama_utils::octets::{kib, mib};
 use tokio::time::{Instant, timeout_at};
+
+/// Optional first-datagram routing, sharing inspection's deadline and receive buffer.
+/// A positive decision is terminal: subsequent rejection must never invoke fallback policy.
+pub trait QuicPeekRouter<O>: Send + Sync + 'static {
+    type Route: QuicPeekRoute<O>;
+
+    fn route<Socket: DatagramSocket>(
+        &self,
+        socket: &Socket,
+        metadata: &DatagramMetadata,
+        data: &[u8],
+    ) -> Result<Option<Self::Route>, BoxError>;
+}
+
+/// Owns the selected endpoint/path decision until the association ends.
+pub trait QuicPeekRoute<O>: Send + 'static {
+    fn serve<Socket: DatagramSocket>(
+        self,
+        socket: PrefixedDatagramSocket<Socket>,
+    ) -> impl Future<Output = Result<O, BoxError>> + Send;
+}
+
+/// Default inspection behavior: no cross-association routing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoQuicPeekRouting;
+
+impl<O: Send + 'static> QuicPeekRouter<O> for NoQuicPeekRouting {
+    type Route = std::convert::Infallible;
+
+    fn route<Socket: DatagramSocket>(
+        &self,
+        _: &Socket,
+        _: &DatagramMetadata,
+        _: &[u8],
+    ) -> Result<Option<Self::Route>, BoxError> {
+        Ok(None)
+    }
+}
+
+impl<O: Send + 'static> QuicPeekRoute<O> for std::convert::Infallible {
+    async fn serve<Socket: DatagramSocket>(
+        self,
+        _: PrefixedDatagramSocket<Socket>,
+    ) -> Result<O, BoxError> {
+        match self {}
+    }
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "transient result retains the existing inline ClientHello without another allocation"
+)]
+enum PeekOutcome<R> {
+    Inspected(Result<PeekedClientHello, QuicPeekRejection>),
+    Routed(R),
+}
 
 /// The default for [`PeekQuicClientHelloService::with_peek_timeout`]: one handshake flight
 /// over a slow path, short enough that a silent client cannot hold an inspection open.
@@ -220,7 +277,13 @@ impl std::error::Error for QuicPeekRejectedError {}
 ///
 /// The fallback rejects by default; use [`Self::with_fallback`] to forward instead.
 #[derive(ExtensionsRef)]
-pub struct PeekQuicClientHelloService<K, S, F = RejectService<(), NoQuicRejectError>> {
+pub struct PeekQuicClientHelloService<
+    K,
+    S,
+    F = RejectService<(), NoQuicRejectError>,
+    R = NoQuicPeekRouting,
+> {
+    router: R,
     keys: K,
     inner: S,
     fallback: F,
@@ -238,6 +301,7 @@ impl<K, S> PeekQuicClientHelloService<K, S> {
     /// certificate or server identity is needed.
     pub fn new(keys: K, inner: S) -> Self {
         Self {
+            router: NoQuicPeekRouting,
             keys,
             inner,
             fallback: RejectService::new(NoQuicRejectError),
@@ -250,10 +314,28 @@ impl<K, S> PeekQuicClientHelloService<K, S> {
     }
 }
 
-impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
-    /// Hand associations the fallback policy admits to `fallback`.
-    pub fn with_fallback<G>(self, fallback: G) -> PeekQuicClientHelloService<K, S, G> {
+impl<K, S, F, R> PeekQuicClientHelloService<K, S, F, R> {
+    /// Route existing connections before inspecting a new handshake, using the same receive
+    /// buffer, timeout and cancellation policy. Only the first datagram is offered to the
+    /// router. The default adds no routing lookup.
+    pub fn with_router<T>(self, router: T) -> PeekQuicClientHelloService<K, S, F, T> {
         PeekQuicClientHelloService {
+            router,
+            keys: self.keys,
+            inner: self.inner,
+            fallback: self.fallback,
+            limits: self.limits,
+            peek_timeout: self.peek_timeout,
+            peek_policy: self.peek_policy,
+            fallback_policy: self.fallback_policy,
+            retain_first_flight: self.retain_first_flight,
+        }
+    }
+
+    /// Hand associations the fallback policy admits to `fallback`.
+    pub fn with_fallback<G>(self, fallback: G) -> PeekQuicClientHelloService<K, S, G, R> {
+        PeekQuicClientHelloService {
+            router: self.router,
             keys: self.keys,
             inner: self.inner,
             fallback,
@@ -332,11 +414,12 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
     }
 }
 
-impl<K: fmt::Debug, S: fmt::Debug, F: fmt::Debug> fmt::Debug
-    for PeekQuicClientHelloService<K, S, F>
+impl<K: fmt::Debug, S: fmt::Debug, F: fmt::Debug, R: fmt::Debug> fmt::Debug
+    for PeekQuicClientHelloService<K, S, F, R>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PeekQuicClientHelloService")
+            .field("router", &self.router)
             .field("keys", &self.keys)
             .field("inner", &self.inner)
             .field("fallback", &self.fallback)
@@ -349,9 +432,10 @@ impl<K: fmt::Debug, S: fmt::Debug, F: fmt::Debug> fmt::Debug
     }
 }
 
-impl<K: Clone, S: Clone, F: Clone> Clone for PeekQuicClientHelloService<K, S, F> {
+impl<K: Clone, S: Clone, F: Clone, R: Clone> Clone for PeekQuicClientHelloService<K, S, F, R> {
     fn clone(&self) -> Self {
         Self {
+            router: self.router.clone(),
             keys: self.keys.clone(),
             inner: self.inner.clone(),
             fallback: self.fallback.clone(),
@@ -364,7 +448,7 @@ impl<K: Clone, S: Clone, F: Clone> Clone for PeekQuicClientHelloService<K, S, F>
     }
 }
 
-impl<I, K, S, F, O> Service<I> for PeekQuicClientHelloService<K, S, F>
+impl<I, K, S, F, O, R> Service<I> for PeekQuicClientHelloService<K, S, F, R>
 where
     I: DatagramPeekInput + ExtensionsRef,
     I::Mapped<PrefixedDatagramSocket<I::Socket>>: ExtensionsRef,
@@ -376,6 +460,7 @@ where
         >,
     F: Service<I::Mapped<PrefixedDatagramSocket<I::Socket>>, Output = O, Error: Into<BoxError>>,
     O: Send + 'static,
+    R: QuicPeekRouter<O>,
 {
     type Output = O;
     type Error = BoxError;
@@ -387,13 +472,24 @@ where
         async move {
             let mut retained = Vec::new();
             let peeked = self
-                .peek(
+                .peek::<_, O>(
                     input.peek_socket_mut(),
                     deadline,
                     scope.as_ref(),
                     &mut retained,
                 )
                 .await?;
+            let peeked = match peeked {
+                PeekOutcome::Inspected(result) => result,
+                PeekOutcome::Routed(route) => {
+                    return route
+                        .serve(PrefixedDatagramSocket::new(
+                            input.into_peek_socket(),
+                            retained,
+                        ))
+                        .await;
+                }
+            };
             let input =
                 input.map_peek_socket(|socket| PrefixedDatagramSocket::new(socket, retained));
             let failure = peeked.as_ref().err().and_then(|reason| match reason {
@@ -428,14 +524,17 @@ where
     }
 }
 
-impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
-    async fn peek<Socket: rama_udp::DatagramSocket>(
+impl<K: KeyProvider, S, F, R> PeekQuicClientHelloService<K, S, F, R> {
+    async fn peek<Socket: rama_udp::DatagramSocket, O: Send + 'static>(
         &self,
         socket: &mut Socket,
         deadline: Instant,
         scope: Option<&WeakScope>,
         retained: &mut Vec<RetainedDatagram>,
-    ) -> Result<Result<PeekedClientHello, QuicPeekRejection>, BoxError> {
+    ) -> Result<PeekOutcome<R::Route>, BoxError>
+    where
+        R: QuicPeekRouter<O>,
+    {
         let mut inspector = if self.retain_first_flight {
             InitialPeek::new_with_first_flight(self.limits, deadline.into_std())
         } else {
@@ -459,7 +558,7 @@ impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
                             cancel_waived = Some(progress);
                             continue;
                         }
-                        PeekAction::Fallback => return Ok(Err(QuicPeekRejection::Cancelled)),
+                        PeekAction::Fallback => return Ok(PeekOutcome::Inspected(Err(QuicPeekRejection::Cancelled))),
                         PeekAction::Fail => {
                             let cause = scope.and_then(WeakScope::cause);
                             return Err(PeekCutoffError::new(PeekCutoff::Cancelled, cause).into());
@@ -469,8 +568,24 @@ impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
             };
             let metadata = match received {
                 Ok(received) => received?,
-                Err(_elapsed) => return Ok(Err(QuicPeekRejection::Deadline)),
+                Err(_elapsed) => {
+                    return Ok(PeekOutcome::Inspected(Err(QuicPeekRejection::Deadline)));
+                }
             };
+            if retained.is_empty()
+                && let Some(route) = self.router.route(
+                    socket,
+                    &metadata,
+                    &buffer[..metadata.len.min(buffer.len())],
+                )?
+            {
+                buffer.truncate(metadata.len.min(buffer.len()));
+                retained.push(RetainedDatagram {
+                    payload: Bytes::from(buffer),
+                    metadata,
+                });
+                return Ok(PeekOutcome::Routed(route));
+            }
             let payload = Bytes::copy_from_slice(&buffer[..metadata.len.min(buffer.len())]);
             retained.push(RetainedDatagram {
                 payload: payload.clone(),
@@ -479,15 +594,15 @@ impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
             // A cut or inconsistent receive cannot be inspected, and is replayed as received.
             if let Err(error) = metadata.validate(buffer.len()) {
                 tracing::debug!(%error, "QUIC ClientHello peek received an uninspectable datagram");
-                return Ok(Err(QuicPeekRejection::Malformed));
+                return Ok(PeekOutcome::Inspected(Err(QuicPeekRejection::Malformed)));
             }
             for segment in metadata.segments(&payload) {
                 match inspector.inspect(Instant::now().into_std(), segment, &self.keys) {
-                    Ok(Some(client_hello)) => return Ok(Ok(client_hello)),
+                    Ok(Some(client_hello)) => return Ok(PeekOutcome::Inspected(Ok(client_hello))),
                     Ok(None) => {}
                     Err(error) => {
                         tracing::debug!(%error, "QUIC ClientHello peek ended without a ClientHello");
-                        return Ok(Err(rejection(&error)));
+                        return Ok(PeekOutcome::Inspected(Err(rejection(&error))));
                     }
                 }
             }

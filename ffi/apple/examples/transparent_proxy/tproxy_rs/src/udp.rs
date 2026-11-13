@@ -13,18 +13,27 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rama::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
-    extensions::ExtensionsRef as _,
+    extensions::{Extensions, ExtensionsRef as _},
     net::{
         apple::networkextension::{
             Datagram, UdpFlow,
-            tproxy::{TransparentProxyFlowMeta, TransparentProxyServiceContext},
+            tproxy::{
+                TransparentProxyFlowMeta, TransparentProxyNetworkPath,
+                TransparentProxyNetworkStatus, TransparentProxyServiceContext,
+            },
         },
         client::ConnectorTarget,
         socket::core::{Domain, Protocol, Socket, Type},
     },
+    quic::proxy::{
+        QuicMigrationSide, QuicMitmIngressByIdentity, QuicNetworkAvailability, QuicNetworkChanges,
+    },
     service::service_fn,
     telemetry::tracing,
-    udp::{SharedQueueBudget, UdpSocket, bind_udp_with_address, bind_udp_with_socket},
+    udp::{
+        SharedQueueBudget, UdpSocket, bind_udp_with_address, bind_udp_with_socket,
+        proxy::{DatagramRecoverySignal, DatagramRecoveryState},
+    },
     utils::octets::kib,
 };
 
@@ -95,6 +104,7 @@ pub(super) struct QuicFlows {
     pub(super) state: SharedState,
     /// Remote ports of the flows that take the QUIC path.
     pub(super) ports: Arc<[u16]>,
+    pub(super) migration_limits: crate::config::QuicMigrationLimits,
     /// The intercept admission QUIC associations share with TCP flows.
     pub(super) limiter: Arc<ConcurrencyLimiter>,
 }
@@ -107,15 +117,57 @@ pub(super) async fn try_new_service(
     let QuicFlows {
         state,
         ports,
+        migration_limits,
         limiter,
     } = quic;
     let budget = |bytes| {
         NonZeroUsize::new(bytes)
             .ok_or_else(|| BoxError::from_static_str("zero engine UDP ingress budget"))
     };
+    let network = QuicNetworkChanges::new();
+    let events = network.clone();
+    let recovery_signal = DatagramRecoverySignal::new();
+    let forwarding_events = recovery_signal.clone();
+    let mut platform = ctx.network_path_changes();
+    let held = ctx
+        .scope
+        .try_hold()
+        .map_err(|_closed| BoxError::from_static_str("provider scope closed"))?;
+    held.into_spawn_cancellable_task(async move {
+        loop {
+            let path = *platform.borrow_and_update();
+            let availability = match path.status {
+                TransparentProxyNetworkStatus::Satisfied => QuicNetworkAvailability::Available,
+                TransparentProxyNetworkStatus::Unknown => QuicNetworkAvailability::Unknown,
+                _ => QuicNetworkAvailability::Unavailable,
+            };
+            let context = Extensions::new();
+            context.insert(path);
+            events.update(QuicMigrationSide::Egress, availability, context);
+            // Both consumers receive the same trusted routing revision from this one observer.
+            forwarding_events.update(forwarding_network_state(path));
+            if platform.changed().await.is_err() {
+                break;
+            }
+        }
+    });
+    let egress_preparations = Arc::new(tokio::sync::Semaphore::new(
+        migration_limits.max_concurrent_egress_preparations.get(),
+    ));
     let path = crate::quic::QuicPath {
+        network,
+        forwarding_recovery: crate::quic::forwarding_recovery(
+            recovery_signal,
+            egress_preparations.clone(),
+        ),
+        egress_preparations,
         state,
         limiter,
+        scope: ctx.scope.clone(),
+        migration: QuicMitmIngressByIdentity::new(
+            ctx.scope.clone(),
+            migration_limits.ingress_config(),
+        ),
         flow_bytes: budget(ctx.udp_ingress_per_flow_max_bytes())?,
         budget: SharedQueueBudget::new(budget(ctx.udp_ingress_global_max_bytes())?),
     };
@@ -137,6 +189,13 @@ pub(super) async fn try_new_service(
             }
         }
     }))
+}
+
+fn forwarding_network_state(path: TransparentProxyNetworkPath) -> DatagramRecoveryState {
+    DatagramRecoveryState {
+        revision: path.routing_revision,
+        available: path.status == TransparentProxyNetworkStatus::Satisfied,
+    }
 }
 
 /// UDP flow handler used by the transparent proxy engine.
@@ -515,6 +574,31 @@ mod tests {
         },
     };
     use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn recovery_observations_follow_routing_not_cost_flags() {
+        let mut path = TransparentProxyNetworkPath {
+            routing_revision: 7,
+            status: TransparentProxyNetworkStatus::Satisfied,
+            ..Default::default()
+        };
+        let available = forwarding_network_state(path);
+        assert!(available.available);
+        path.expensive = true;
+        path.constrained = true;
+        path.revision += 1;
+        assert_eq!(forwarding_network_state(path), available);
+        path.routing_revision += 1;
+        assert_ne!(forwarding_network_state(path), available);
+        for status in [
+            TransparentProxyNetworkStatus::Unknown,
+            TransparentProxyNetworkStatus::Unsatisfied,
+            TransparentProxyNetworkStatus::RequiresConnection,
+        ] {
+            path.status = status;
+            assert!(!forwarding_network_state(path).available);
+        }
+    }
 
     const TEST_WORKERS: usize = 2;
     const CONCURRENT_FLOWS: usize = 64;

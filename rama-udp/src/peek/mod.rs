@@ -132,6 +132,9 @@ pub trait DatagramPeekInput: Send + 'static {
     /// The socket an inspection reads from.
     fn peek_socket_mut(&mut self) -> &mut Self::Socket;
 
+    /// Consume the input and take its ingress socket, dropping any unused egress context.
+    fn into_peek_socket(self) -> Self::Socket;
+
     /// Rebuild this input around `map`'s result for its peeked socket.
     fn map_peek_socket<Peeked, F>(self, map: F) -> Self::Mapped<Peeked>
     where
@@ -144,6 +147,10 @@ impl<S: DatagramSocket> DatagramPeekInput for S {
     type Mapped<Peeked: DatagramSocket> = Peeked;
 
     fn peek_socket_mut(&mut self) -> &mut Self::Socket {
+        self
+    }
+
+    fn into_peek_socket(self) -> Self::Socket {
         self
     }
 
@@ -167,6 +174,10 @@ where
     fn peek_socket_mut(&mut self) -> &mut Self::Socket {
         let Self(ingress, _egress) = self;
         ingress
+    }
+
+    fn into_peek_socket(self) -> Self::Socket {
+        self.0
     }
 
     fn map_peek_socket<Peeked, F>(self, map: F) -> Self::Mapped<Peeked>

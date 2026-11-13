@@ -119,7 +119,7 @@ fn sockets(origin_identity: &ServerAuthData, port: u16) -> Sockets {
 
 fn sockets_with_alpn(origin_identity: &ServerAuthData, port: u16, alpn: &[u8]) -> Sockets {
     let address = |offset| SocketAddr::from(([127, 0, 0, 1], port + offset));
-    let capacity = NonZeroUsize::new(64).unwrap();
+    let capacity = rama_utils::macros::nonzero!(64);
     let (client_socket, ingress) = MemoryDatagramSocket::pair(address(0), address(1), capacity);
     let (egress, origin_socket) = MemoryDatagramSocket::pair(address(2), address(3), capacity);
     let tls = rama_tls::server::TlsServerConfig::new()
@@ -217,6 +217,15 @@ async fn a_terminated_association_relays_streams_to_the_verified_origin() {
 /// refused at once, not left to its own handshake timeout, and the first one keeps working.
 #[tokio::test]
 async fn a_second_connection_on_an_association_is_refused_at_once() {
+    second_connection_is_refused(false).await;
+}
+
+#[tokio::test]
+async fn migration_ingress_refuses_a_second_connection_on_the_active_tuple() {
+    second_connection_is_refused(true).await;
+}
+
+async fn second_connection_is_refused(migration: bool) {
     timeout(LIMIT, async {
         let mitm_identity = identity();
         let origin_identity = untrusted_identity();
@@ -227,9 +236,21 @@ async fn a_second_connection_on_an_association_is_refused_at_once() {
             egress,
             origin,
         } = sockets(&origin_identity, 24520);
+        let migration_ingress = migration.then(|| {
+            super::QuicMitmIngress::new(
+                WeakScope::detached(),
+                super::QuicMitmIngressConfig {
+                    max_registered_connections: rama_utils::macros::nonzero!(2),
+                    max_paths_per_connection: rama_utils::macros::nonzero!(2),
+                    path_validation_timeout: Duration::from_secs(5),
+                    capabilities: None,
+                },
+            )
+        });
         let service = PeekQuicClientHelloService::new(
             BoringTlsProvider,
             relay(issuer(&mitm_identity), &origin_identity)
+                .maybe_with_migration_ingress(migration_ingress)
                 .into_layer(QuicRelay::new(VarInt::from_u32(0x0101))),
         );
         let relaying = tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
@@ -758,7 +779,7 @@ async fn the_origin_sees_the_clients_protocols_in_order_and_its_version() {
             let mitm_identity = identity();
             let origin_identity = untrusted_identity();
             let address = |offset: u16| SocketAddr::from(([127, 0, 0, 1], 24580 + offset));
-            let capacity = NonZeroUsize::new(64).unwrap();
+            let capacity = rama_utils::macros::nonzero!(64);
             let (client_socket, ingress) =
                 MemoryDatagramSocket::pair(address(0), address(1), capacity);
             let (egress, origin_socket) =
@@ -937,7 +958,7 @@ async fn origin_connect_failure_logs_its_public_class() {
         let (egress, _peer) = MemoryDatagramSocket::pair(
             SocketAddr::from(([127, 0, 0, 1], 24610)),
             SocketAddr::from(([127, 0, 0, 1], 0)),
-            NonZeroUsize::new(64).unwrap(),
+            rama_utils::macros::nonzero!(64),
         );
         let resolver = OriginResolver {
             relay: relay(issuer(&identity), &identity),
@@ -1006,3 +1027,257 @@ fn origin_handshake_kinds_exclude_private_reasons() {
         assert!(!log.text().contains("origin.example"));
     }
 }
+
+/// A new platform association carries an existing connection's short-header packets. Native
+/// CID routing must join it to the same relay, without another inspection or origin handshake.
+#[tokio::test]
+async fn migration_ingress_survives_repeated_client_port_migration() {
+    timeout(LIMIT, async {
+        let mitm_identity = identity();
+        let origin_identity = untrusted_identity();
+        let Sockets {
+            client,
+            ingress,
+            ingress_address,
+            egress,
+            origin,
+        } = sockets(&origin_identity, 24900);
+        let shared = QuicMitmIngress::new(
+            WeakScope::detached(),
+            QuicMitmIngressConfig {
+                max_registered_connections: rama_utils::macros::nonzero!(1),
+                max_paths_per_connection: rama_utils::macros::nonzero!(2),
+                path_validation_timeout: std::time::Duration::from_secs(5),
+                capabilities: None,
+            },
+        );
+        let observed = Arc::new(Mutex::new(None::<Connection>));
+        let observed_ingress = observed.clone();
+        let terminate = relay(issuer(&mitm_identity), &origin_identity)
+            .with_migration_ingress(shared.clone())
+            .into_layer(service_fn(
+                move |input: BridgeIo<Connection, Connection>| {
+                    *observed_ingress.lock() = Some(input.0.clone());
+                    async move { QuicRelay::new(VarInt::from_u32(0x0101)).serve(input).await }
+                },
+            ));
+        let origin_socket = Arc::new(Mutex::new(Some(egress)));
+        let inspections = Arc::new(AtomicUsize::new(0));
+        let count = inspections.clone();
+        let supervisor = shared.clone();
+        let service = PeekQuicClientHelloService::new(
+            BoringTlsProvider,
+            service_fn(
+                move |input: super::InputWithQuicClientHello<
+                    rama_udp::PrefixedDatagramSocket<MemoryDatagramSocket>,
+                >| {
+                    let terminate = terminate.clone();
+                    let supervisor = supervisor.clone();
+                    count.fetch_add(1, Ordering::Relaxed);
+                    let egress = origin_socket
+                        .lock()
+                        .take()
+                        .expect("only the original attempt reaches policy");
+                    async move {
+                        supervisor
+                            .run_connection(async move {
+                                terminate
+                                    .serve(super::InputWithQuicClientHello {
+                                        input: BridgeIo(input.input, egress),
+                                        peeked: input.peeked,
+                                    })
+                                    .await
+                            })
+                            .await
+                    }
+                },
+            ),
+        )
+        .with_router(shared.clone());
+        let first = service.clone();
+        let relaying = tokio::spawn(async move { first.serve(ingress).await });
+        let origin_task = tokio::spawn(async move {
+            let connection = origin.accept().await.unwrap().await.unwrap();
+            for _ in 0..8 {
+                let (mut send, mut recv) = connection.accept_bi().await.unwrap();
+                let bytes = recv.read_to_end(64).await.unwrap();
+                send.write_all(&bytes).await.unwrap();
+                send.finish().unwrap();
+            }
+            connection.closed().await;
+            origin
+        });
+        let config =
+            ClientConfig::try_from_rama_tls(&trusting(&mitm_identity), TlsOptions::default())
+                .unwrap();
+        let connection = client
+            .connect_with(config, ingress_address, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+        let mut paths = Vec::new();
+        for round in 0..8u16 {
+            if round > 0 {
+                let (new_client, new_ingress) = MemoryDatagramSocket::pair(
+                    ([127, 0, 0, 1], 24910 + round),
+                    ingress_address,
+                    rama_utils::macros::nonzero!(64),
+                );
+                if round == 1 {
+                    new_client.fault_control().drop_next(1);
+                } else {
+                    new_client.fault_control().duplicate_next(1);
+                }
+                let serve = service.clone();
+                paths.push(tokio::spawn(async move { serve.serve(new_ingress).await }));
+                client.rebind_datagram_socket(new_client).unwrap();
+            }
+            let (mut send, mut recv) = connection.open_bi().await.unwrap();
+            let payload = format!("round-{round}");
+            send.write_all(payload.as_bytes()).await.unwrap();
+            send.finish().unwrap();
+            assert_eq!(recv.read_to_end(64).await.unwrap(), payload.as_bytes());
+            if round == 0 {
+                // The platform may cancel its original service task. The established relay
+                // belongs to the shared ingress scope and must survive that cancellation.
+                relaying.abort();
+            }
+            if round > 0 {
+                loop {
+                    if observed.lock().as_ref().unwrap().remote_address().port() == 24910 + round {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+        }
+        assert_eq!(inspections.load(Ordering::Relaxed), 1);
+        connection.close(VarInt::from_u32(0), b"done");
+        assert!(relaying.await.unwrap_err().is_cancelled());
+        client.shutdown_now().await;
+        for path in paths {
+            path.abort();
+        }
+        drop(origin_task.await.unwrap());
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn migration_ingress_keeps_concurrent_origin_and_alpn_selection_separate() {
+    timeout(LIMIT, async {
+        let mitm_identity = identity();
+        let origin_identity = untrusted_identity();
+        let shared = QuicMitmIngress::new(
+            WeakScope::detached(),
+            QuicMitmIngressConfig {
+                max_registered_connections: rama_utils::macros::nonzero!(2),
+                max_paths_per_connection: rama_utils::macros::nonzero!(4),
+                path_validation_timeout: std::time::Duration::from_secs(5),
+                capabilities: None,
+            },
+        );
+        let ingress_address: SocketAddr = ([127, 0, 0, 1], 25001).into();
+        let mut clients = Vec::new();
+        let mut relays = Vec::new();
+        let mut origins = Vec::new();
+        for (index, alpn) in [b"origin-a".as_slice(), b"origin-b".as_slice()]
+            .into_iter()
+            .enumerate()
+        {
+            let port = 25010 + u16::try_from(index).unwrap() * 10;
+            let fixture = sockets_with_alpn(&origin_identity, port, alpn);
+            let (client_socket, ingress) = MemoryDatagramSocket::pair(
+                ([127, 0, 0, 1], port),
+                ingress_address,
+                rama_utils::macros::nonzero!(64),
+            );
+            let client = Endpoint::build(WeakScope::detached())
+                .with_datagram_socket(client_socket)
+                .unwrap();
+            let terminate = QuicMitmRelay::new(
+                issuer(&mitm_identity),
+                WeakScope::detached(),
+                trusting_with_alpn(&origin_identity, alpn),
+                VarInt::from_u32(1),
+            )
+            .with_migration_ingress(shared.clone())
+            .into_layer(QuicRelay::new(VarInt::from_u32(1)));
+            let egress = Arc::new(Mutex::new(Some(fixture.egress)));
+            let service = PeekQuicClientHelloService::new(
+                BoringTlsProvider,
+                service_fn(
+                    move |input: super::InputWithQuicClientHello<
+                        rama_udp::PrefixedDatagramSocket<MemoryDatagramSocket>,
+                    >| {
+                        let terminate = terminate.clone();
+                        let egress = egress.lock().take().unwrap();
+                        async move {
+                            terminate
+                                .serve(super::InputWithQuicClientHello {
+                                    input: BridgeIo(input.input, egress),
+                                    peeked: input.peeked,
+                                })
+                                .await
+                        }
+                    },
+                ),
+            )
+            .with_router(shared.clone());
+            relays.push(tokio::spawn(async move { service.serve(ingress).await }));
+            let origin = fixture.origin;
+            origins.push(tokio::spawn(async move {
+                let connection = origin.accept().await.unwrap().await.unwrap();
+                let (mut send, mut recv) = connection.accept_bi().await.unwrap();
+                assert_eq!(recv.read_to_end(64).await.unwrap(), b"request");
+                send.write_all(alpn).await.unwrap();
+                send.finish().unwrap();
+                connection.closed().await;
+                origin
+            }));
+            let config = ClientConfig::try_from_rama_tls(
+                &trusting_with_alpn(&mitm_identity, alpn),
+                TlsOptions::default(),
+            )
+            .unwrap();
+            clients.push(tokio::spawn(async move {
+                let connection = client
+                    .connect_with(config, ingress_address, "localhost")
+                    .unwrap()
+                    .await
+                    .unwrap();
+                let (mut send, mut recv) = connection.open_bi().await.unwrap();
+                send.write_all(b"request").await.unwrap();
+                send.finish().unwrap();
+                assert_eq!(recv.read_to_end(64).await.unwrap(), alpn);
+                assert_eq!(
+                    connection
+                        .extensions()
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .unwrap()
+                        .application_layer_protocol
+                        .as_ref()
+                        .unwrap()
+                        .as_bytes(),
+                    alpn
+                );
+                connection.close(VarInt::from_u32(0), b"done");
+                client
+            }));
+        }
+        for client in clients {
+            drop(client.await.unwrap());
+        }
+        for relay in relays {
+            relay.await.unwrap().unwrap();
+        }
+        for origin in origins {
+            drop(origin.await.unwrap());
+        }
+    })
+    .await
+    .unwrap();
+}
+
+mod migration_bench;

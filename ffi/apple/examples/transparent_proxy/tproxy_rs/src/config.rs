@@ -43,6 +43,8 @@ pub struct DemoProxyConfig {
     /// UDP destination ports whose intercepted flows are split per destination and peeked for
     /// QUIC, to terminate HTTP/3 like the TCP relay does; other flows keep the multi-peer loop.
     pub udp_quic_ports: Vec<u16>,
+    /// Startup bounds for migration routing, independent of connection admission.
+    pub quic_migration: QuicMigrationLimits,
     /// Intercepts (TCP flows and QUIC associations) at once; absent derives it from the CPUs.
     pub concurrency_global_limit: Option<usize>,
     /// Makes the UDP overrides temporary and enables allowlisted public
@@ -75,6 +77,47 @@ pub struct DemoProxyConfig {
     // the XPC server (fail-closed) so unrestricted access to install/uninstall routes
     // is impossible.
     pub container_signing_identifier: Option<String>,
+}
+
+/// Migration resources per provider and authenticated process identity (not DNS names).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct QuicMigrationLimits {
+    pub max_process_identities: std::num::NonZeroUsize,
+    pub max_registered_connections_per_process: std::num::NonZeroUsize,
+    pub max_paths_per_connection: std::num::NonZeroUsize,
+    /// Provider-wide bound on concurrent replacement-socket preparation, not connections.
+    pub max_concurrent_egress_preparations: std::num::NonZeroUsize,
+    pub path_validation_timeout_ms: std::num::NonZeroU64,
+}
+
+impl Default for QuicMigrationLimits {
+    fn default() -> Self {
+        use rama::utils::macros::nonzero;
+        Self {
+            max_process_identities: nonzero!(128),
+            max_registered_connections_per_process: nonzero!(256),
+            max_paths_per_connection: nonzero!(4),
+            max_concurrent_egress_preparations: nonzero!(16),
+            path_validation_timeout_ms: nonzero!(5000),
+        }
+    }
+}
+
+impl QuicMigrationLimits {
+    pub fn ingress_config(&self) -> rama::quic::proxy::QuicMitmIngressByIdentityConfig {
+        rama::quic::proxy::QuicMitmIngressByIdentityConfig {
+            max_identities: self.max_process_identities,
+            ingress: rama::quic::proxy::QuicMitmIngressConfig {
+                max_registered_connections: self.max_registered_connections_per_process,
+                max_paths_per_connection: self.max_paths_per_connection,
+                path_validation_timeout: std::time::Duration::from_millis(
+                    self.path_validation_timeout_ms.get(),
+                ),
+                capabilities: None,
+            },
+        }
+    }
 }
 
 impl Default for DemoProxyConfig {
@@ -130,6 +173,7 @@ impl Default for DemoProxyConfig {
             udp_passthrough_ports: Vec::new(),
             udp_blocked_endpoints: Vec::new(),
             udp_quic_ports: vec![443],
+            quic_migration: QuicMigrationLimits::default(),
             concurrency_global_limit: None,
             udp_e2e_mode: false,
             evidence_run_uuid: None,
@@ -154,6 +198,16 @@ impl DemoProxyConfig {
     }
 
     fn validate(config: Self) -> Result<Self, BoxError> {
+        if config.quic_migration.max_paths_per_connection.get() < 2 {
+            return Err(BoxError::from_static_str(
+                "quic_migration needs at least two paths per connection",
+            ));
+        }
+        if config.quic_migration.path_validation_timeout_ms.get() > 60_000 {
+            return Err(BoxError::from_static_str(
+                "quic_migration path validation timeout must be at most 60000 ms",
+            ));
+        }
         if config.udp_e2e_mode && !cfg!(any(test, feature = "e2e")) {
             return Err(BoxError::from_static_str(
                 "udp_e2e_mode requires the e2e build feature",
@@ -213,6 +267,32 @@ fn is_canonical_uuid(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_budgets_are_named_validated_startup_settings() {
+        let config = DemoProxyConfig::from_opaque_config(Some(
+            br#"{
+            "quic_migration": {"max_process_identities": 16,
+                "max_registered_connections_per_process": 1024,
+                "max_paths_per_connection": 2, "path_validation_timeout_ms": 1000}
+        }"#,
+        ))
+        .unwrap();
+        let ingress = config.quic_migration.ingress_config();
+        assert_eq!(ingress.max_identities.get(), 16);
+        assert_eq!(ingress.ingress.max_registered_connections.get(), 1024);
+        assert_eq!(ingress.ingress.max_paths_per_connection.get(), 2);
+        assert_eq!(ingress.ingress.path_validation_timeout.as_millis(), 1000);
+        for json in [
+            br#"{"quic_migration":{"max_process_identities":0}}"#.as_slice(),
+            br#"{"quic_migration":{"max_registered_connections_per_process":0}}"#,
+            br#"{"quic_migration":{"max_paths_per_connection":1}}"#,
+            br#"{"quic_migration":{"path_validation_timeout_ms":0}}"#,
+            br#"{"quic_migration":{"path_validation_timeout_ms":60001}}"#,
+        ] {
+            assert!(DemoProxyConfig::from_opaque_config(Some(json)).is_err());
+        }
+    }
 
     #[test]
     fn parses_udp_policy_overrides_for_signed_e2e() {

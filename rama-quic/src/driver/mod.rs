@@ -38,6 +38,8 @@
 //! encryption alone.
 
 mod connection;
+#[cfg(feature = "boring")]
+pub(crate) use connection::WeakConnection;
 mod endpoint;
 mod gate;
 mod incoming;
@@ -52,15 +54,18 @@ mod work_limiter;
 
 pub(crate) use std::time::{Duration, Instant};
 
+#[cfg(feature = "dial9")]
+pub(crate) use endpoint::RoutingStats;
+
 pub use crate::driver::{
     connection::{
         AcceptBi, AcceptUni, BiStreamReservation, CloseLease, Connecting, Connection,
-        DatagramSendReady, DriverStats, OpenBi, OpenUni, QuicConnectionInfo, ReadDatagram,
-        SendDatagram, SendDatagramError, ZeroRttAccepted,
+        DatagramSendReady, DriverStats, LocalMigrationCapability, OpenBi, OpenUni,
+        QuicConnectionInfo, ReadDatagram, SendDatagram, SendDatagramError, ZeroRttAccepted,
     },
     endpoint::{
         Accept, DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, EndpointBuilder,
-        EndpointStats,
+        EndpointRoute, EndpointRouteDirectory, EndpointRouteRegistration, EndpointStats,
         ceiling::{MIN_UDP_PAYLOAD, SocketCapacityError},
     },
     incoming::{Incoming, IncomingFuture, IncomingOutcome, RetryError},

@@ -146,8 +146,9 @@ pub use self::{
         SessionFlowAction, TcpDeliverStatus, TcpEgressReport, TcpProxyPolicy,
         TransparentProxyAsyncRuntime, TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine,
         TransparentProxyEngineBuilder, TransparentProxyHandler, TransparentProxyHandlerFactory,
-        TransparentProxyServiceContext, TransparentProxyTcpSession, TransparentProxyUdpSession,
-        log_engine_build_error, log_engine_build_panic, tcp_egress_reporting_enabled,
+        TransparentProxyNetworkPath, TransparentProxyNetworkStatus, TransparentProxyServiceContext,
+        TransparentProxyTcpSession, TransparentProxyUdpSession, log_engine_build_error,
+        log_engine_build_panic, tcp_egress_reporting_enabled,
     },
     types::{
         DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS, DEFAULT_FLOW_PRESSURE_LOW_WATER,

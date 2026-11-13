@@ -52,10 +52,10 @@ fn demux(socket: UdpFlowSocket) -> Associations {
     let demux = DatagramDemux::new(
         socket,
         DemuxConfig {
-            associations: NonZeroUsize::new(8).unwrap(),
-            queue: NonZeroUsize::new(8).unwrap(),
+            associations: rama_utils::macros::nonzero!(8),
+            queue: rama_utils::macros::nonzero!(8),
             idle_timeout: Duration::from_secs(30),
-            receive_bytes: NonZeroUsize::new(2048).unwrap(),
+            receive_bytes: rama_utils::macros::nonzero!(2048),
             queued_bytes: NonZeroUsize::new(kib(64)).unwrap(),
         },
     );
@@ -443,6 +443,90 @@ async fn scoped_destinations_on_two_interfaces_are_distinct_associations() {
             "[ff01::123%7]:5353".parse().unwrap(),
         ];
         assert_eq!(sent_by, expected.map(Some));
+    })
+    .await
+    .unwrap();
+}
+
+/// Independent NE flows can feed one transport socket. A reply keeps its original server
+/// identity and returns through the chosen flow; ending the old flow leaves the new one live.
+#[tokio::test]
+async fn grouped_ne_flows_preserve_reply_identity_after_the_old_flow_closes() {
+    timeout(LIMIT, async {
+        let destination = destination(1, 443);
+        let local = SocketAddress::from(destination);
+        let (mut grouped, group) = rama_udp::DatagramSocketGroup::new(
+            local,
+            rama_udp::DatagramSocketGroupConfig {
+                max_paths: rama_utils::macros::nonzero!(2),
+                capabilities: rama_udp::DatagramCapabilities::portable(),
+            },
+        );
+        let (first, input_a, written_a, _) = flow();
+        let (second, input_b, written_b, _) = flow();
+        let app_a = "127.0.0.1:32001".parse().unwrap();
+        let app_b = "[::1]:32002".parse().unwrap();
+        let mut associations_a = demux(UdpFlowSocket::with_app(first, app_a));
+        let mut associations_b = demux(UdpFlowSocket::with_app(second, app_b));
+        input_a
+            .send(Datagram::new(Bytes::from_static(b"old-path"), destination))
+            .await
+            .unwrap();
+        let attachment_a = group.attach(associations_a.recv().await.unwrap()).unwrap();
+        let pump_a = tokio::spawn(attachment_a.run());
+        let mut buffer = [0; 2048];
+        assert_eq!(grouped.recv(&mut buffer).await.unwrap().peer, app_a);
+        input_b
+            .send(Datagram::new(Bytes::from_static(b"new-path"), destination))
+            .await
+            .unwrap();
+        let attachment_b = group.attach(associations_b.recv().await.unwrap()).unwrap();
+        let pump_b = tokio::spawn(attachment_b.run());
+        assert_eq!(grouped.recv(&mut buffer).await.unwrap().peer, app_b);
+        let mut sender = grouped.create_sender();
+        sender
+            .send(SendDatagram::new(app_a, b"old-reply"))
+            .await
+            .unwrap();
+        sender
+            .send(SendDatagram::new(app_b, b"new-reply"))
+            .await
+            .unwrap();
+        assert_eq!(written_a.lock()[0].peer, Some(destination));
+        assert_eq!(
+            written_b.lock()[0].peer,
+            Some(SocketAddr::new(
+                IpAddr::V6("::ffff:198.51.100.1".parse().unwrap()),
+                443
+            ))
+        );
+        assert_eq!(written_a.lock()[0].payload, b"old-reply"[..]);
+        assert_eq!(written_b.lock()[0].payload, b"new-reply"[..]);
+        drop(input_a);
+        // The group consumes transports directly: polling it observes the old flow closing.
+        // No background receive pump owns a second payload buffer or competes for reads.
+        tokio::select! {
+            result = pump_a => { result.unwrap().unwrap_err(); }
+            result = grouped.recv(&mut buffer) => panic!("no live path sent data: {result:?}"),
+        }
+        assert_eq!(group.path_count(), 1);
+        input_b
+            .send(Datagram::new(
+                Bytes::from_static(b"still-live"),
+                destination,
+            ))
+            .await
+            .unwrap();
+        let metadata = grouped.recv(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..metadata.len], b"still-live");
+        sender
+            .send(SendDatagram::new(app_b, b"still-replies"))
+            .await
+            .unwrap();
+        assert_eq!(written_b.lock()[1].payload, b"still-replies"[..]);
+        assert_eq!(written_a.lock().len(), 1);
+        drop(grouped);
+        pump_b.await.unwrap().unwrap();
     })
     .await
     .unwrap();

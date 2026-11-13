@@ -41,6 +41,7 @@ trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes>;
     fn notify_system_sleep(&self);
     fn notify_system_wake(&self);
+    fn notify_network_change(&self, status: u32, preferred_interface: u32, flags: u32);
     fn stop_box(self: Box<Self>, reason: i32);
     fn new_tcp_session(
         &self,
@@ -108,6 +109,10 @@ where
 
     fn notify_system_wake(&self) {
         self.notify_system_wake();
+    }
+
+    fn notify_network_change(&self, status: u32, preferred_interface: u32, flags: u32) {
+        self.notify_network_change(status, preferred_interface, flags);
     }
 
     fn stop_box(self: Box<Self>, reason: i32) {
@@ -196,6 +201,11 @@ impl BoxedTransparentProxyEngine {
 
     pub fn notify_system_wake(&self) {
         self.0.notify_system_wake();
+    }
+
+    pub fn notify_network_change(&self, status: u32, preferred_interface: u32, flags: u32) {
+        self.0
+            .notify_network_change(status, preferred_interface, flags);
     }
 
     pub fn stop(self, reason: i32) {

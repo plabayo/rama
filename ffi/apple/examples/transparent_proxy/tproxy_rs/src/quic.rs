@@ -5,10 +5,18 @@
 //! that is not excluded is terminated with the TCP relay's CA and its HTTP/3 relayed request by
 //! request; anything else is forwarded to its destination untouched.
 
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    num::NonZeroUsize,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use rama::{
     Layer as _, Service,
+    error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef as _,
     graceful::WeakScope,
     http::{
@@ -20,16 +28,22 @@ use rama::{
     net::{
         address::Host,
         apple::networkextension::{
-            UdpFlow, UdpFlowSender, UdpFlowSocket, tproxy::TransparentProxyFlowMeta,
+            UdpFlow, UdpFlowSender, UdpFlowSocket,
+            process::AuditToken,
+            tproxy::{TransparentProxyFlowMeta, TransparentProxyNetworkPath},
         },
+        client::{ConnectRequest, ConnectorTarget},
         stream::Socket as _,
         tls::ApplicationProtocol,
     },
     quic::{
         proto::VarInt,
         proxy::{
-            InputWithQuicClientHello, PeekQuicClientHelloService, QuicMitmRelay,
-            QuicPeekFallbackPolicy, QuicPeekRejection, QuicRelay,
+            InputWithQuicClientHello, PeekQuicClientHelloService, QuicMigrationConfig,
+            QuicMigrationDecision, QuicMigrationFailureAction, QuicMigrationInput,
+            QuicMigrationLayer, QuicMigrationTrigger, QuicMitmIngressByIdentity, QuicMitmRelay,
+            QuicNetworkAvailability, QuicNetworkChanges, QuicPathAction, QuicPeekFallbackPolicy,
+            QuicPeekRejection, QuicRelay, QuicTransportReplacement,
         },
         tls::BoringTlsProvider,
     },
@@ -38,7 +52,11 @@ use rama::{
     tls::alpn::AlpnRouter,
     udp::{
         DatagramDemux, DemuxConfig, DemuxedSocket, PrefixedDatagramSocket, SharedQueueBudget,
-        proxy::{DatagramForwardService, DatagramToProxyBridge, EcnPolicy},
+        proxy::{
+            DatagramForwardService, DatagramRecovery, DatagramRecoveryConfig,
+            DatagramRecoveryFailureAction, DatagramRecoverySignal, DatagramToProxyBridge,
+            EcnPolicy, UdpConnector,
+        },
     },
     utils::octets::kib,
 };
@@ -60,13 +78,20 @@ pub(super) struct QuicPath {
     pub(super) flow_bytes: NonZeroUsize,
     /// The engine's global ingress bound, shared by every flow's queues.
     pub(super) budget: SharedQueueBudget,
+    /// Connections belong to the provider, so closing the original flow does not end them.
+    pub(super) scope: WeakScope,
+    /// Never join paths from different process identities, including PID reuse.
+    pub(super) migration: QuicMitmIngressByIdentity<AuditToken>,
+    pub(super) network: QuicNetworkChanges,
+    pub(super) forwarding_recovery: DatagramRecovery,
+    pub(super) egress_preparations: Arc<tokio::sync::Semaphore>,
 }
 
 /// One flow's associations, each a destination the app addressed.
 fn demux_config(flow_bytes: NonZeroUsize) -> DemuxConfig {
     DemuxConfig {
-        associations: NonZeroUsize::new(16).expect("nonzero"),
-        queue: NonZeroUsize::new(64).expect("nonzero"),
+        associations: rama::utils::macros::nonzero!(16),
+        queue: rama::utils::macros::nonzero!(64),
         idle_timeout: Duration::from_secs(30),
         receive_bytes: NonZeroUsize::new(kib(64)).expect("nonzero"),
         queued_bytes: flow_bytes,
@@ -82,20 +107,50 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
         limiter,
         flow_bytes,
         budget,
+        scope: provider_scope,
+        migration,
+        network,
+        egress_preparations,
+        forwarding_recovery,
     } = path;
     let bundle_identifier = flow
         .extensions()
         .get_arc::<TransparentProxyFlowMeta>()
         .and_then(|meta| meta.source_app_bundle_identifier.clone());
+    // Without an authenticated process identity, keep this flow isolated. A bounded cache
+    // prevents short-lived processes from creating an unbounded collection of endpoints.
+    let audit = flow
+        .extensions()
+        .get_ref::<TransparentProxyFlowMeta>()
+        .filter(|meta| {
+            meta.local_endpoint.as_ref().is_some_and(|local| {
+                local.port != 0 && matches!(&local.host, Host::Address(ip) if !ip.is_unspecified())
+            })
+        })
+        .and_then(|meta| meta.source_app_audit_token);
+    let migration_ingress = audit.and_then(|identity| migration.get_or_create(identity));
     let forward = DatagramToProxyBridge::extension_connector_target(DatagramForwardService::new(
         NonZeroUsize::new(kib(64)).expect("nonzero"),
         EcnPolicy::Discard,
     ));
 
+    // Only confirmed QUIC receives proactive source-address replacement. The peek fallback
+    // may carry non-QUIC protocols whose sessions cannot tolerate that change.
+    let fallback_forward = forward.clone();
+    let forward = forward.with_egress_recovery(forwarding_recovery);
+
     let route = {
-        let scope = scope.clone();
+        let scope = if migration_ingress.is_some() {
+            provider_scope
+        } else {
+            scope.clone()
+        };
+        let migration_ingress = migration_ingress.clone();
         let forward = forward.clone();
         service_fn(move |input: InputWithQuicClientHello<Association>| {
+            let network = network.clone();
+            let egress_preparations = egress_preparations.clone();
+            let migration_ingress = migration_ingress.clone();
             let settings = state.load_full();
             let exclusions = DomainExclusionList::new(settings.exclude_domains.iter());
             let scope = scope.clone();
@@ -120,47 +175,127 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
                 })
                 .map(|reservation| reservation.activate());
             async move {
-                if let Some(_permit) = permit {
-                    tracing::debug!(?name, "tproxy quic intercepting");
-                    let egress_tls = settings
-                        .server_auth
-                        .quic(settings.tls_mitm_relay.keylog_intent_ref().clone());
-                    // HTTP/3 can multiplex ordinary requests and MASQUE tunnels.
-                    // Transport settings precede those requests: native datagrams
-                    // need room for an inner QUIC Initial on both hops, and the
-                    // outer idle timeout must outlive the tunnel's idle policy.
-                    let mut transport = rama::http::client::masque_quic_transport();
-                    rama::http::core::h3::connection::Config::default()
-                        .configure_transport(&mut transport)?;
-                    let transport = Arc::new(transport);
-                    let h3 = Http3MitmRelay::new(scope.clone())
-                        .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(
-                            scope.clone(),
-                        ))
-                        .with_http_middleware((
-                            ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse),
-                            SetResponseHeaderLayer::overriding(
-                                HeaderName::from_static("x-rama-mitm"),
-                                HeaderValue::from_static("h3"),
-                            ),
-                            rama::proxy::masque::connect_udp::mitm::ConnectUdpMitmLayer::new(),
-                            ArcLayer::new(),
-                        ));
-                    let terminate = DatagramToProxyBridge::extension_connector_target(
-                        QuicMitmRelay::new(
-                            settings.tls_mitm_relay.issuer().clone(),
-                            scope.clone(),
-                            egress_tls,
-                            VarInt::from_u32(FAILURE),
+                if let Some(permit) = permit {
+                    let supervisor = migration_ingress.clone();
+                    let intercept = async move {
+                        let _permit = permit;
+                        tracing::debug!(?name, "tproxy quic intercepting");
+                        let egress_tls = settings
+                            .server_auth
+                            .quic(settings.tls_mitm_relay.keylog_intent_ref().clone());
+                        // HTTP/3 can multiplex ordinary requests and MASQUE tunnels.
+                        // Transport settings precede those requests: native datagrams
+                        // need room for an inner QUIC Initial on both hops, and the
+                        // outer idle timeout must outlive the tunnel's idle policy.
+                        let mut transport = rama::http::client::masque_quic_transport();
+                        rama::http::core::h3::connection::Config::default()
+                            .configure_transport(&mut transport)?;
+                        let transport = Arc::new(transport);
+                        let h3 = Http3MitmRelay::new(scope.clone())
+                            .with_datagram_relay(rama::proxy::masque::connect_udp::mitm::relay(
+                                scope.clone(),
+                            ))
+                            .with_http_middleware((
+                                ConsumeErrLayer::trace_as_debug()
+                                    .with_response(DefaultErrorResponse),
+                                SetResponseHeaderLayer::overriding(
+                                    HeaderName::from_static("x-rama-mitm"),
+                                    HeaderValue::from_static("h3"),
+                                ),
+                                rama::proxy::masque::connect_udp::mitm::ConnectUdpMitmLayer::new(),
+                                ArcLayer::new(),
+                            ));
+                        // Use the same connector and original policy extensions as the initial
+                        // bridge. A global path hint must never create a direct-routing bypass.
+                        let target = input
+                            .input
+                            .extensions()
+                            .get_ref::<ConnectorTarget>()
+                            .ok_or_else(|| {
+                                BoxError::from_static_str("missing QUIC connector target")
+                            })?
+                            .0
+                            .clone();
+                        let request = ConnectRequest::new_with_extensions(
+                            target,
+                            input.input.extensions().fork(),
+                        );
+                        let initial_revision = network
+                            .snapshot()
+                            .egress
+                            .context
+                            .get_ref::<TransparentProxyNetworkPath>()
+                            .map_or(0, |path| path.routing_revision);
+                        let prepared_revision = Arc::new(AtomicU64::new(initial_revision));
+                        let policy = service_fn(move |event: QuicMigrationInput| {
+                            let request = request.clone();
+                            let prepared_revision = prepared_revision.clone();
+                            async move {
+                                // An ingress port change alone says nothing about our upstream.
+                                if !matches!(
+                                    event.trigger,
+                                    QuicMigrationTrigger::Initial
+                                        | QuicMigrationTrigger::NetworkChanged
+                                ) || event.network.egress.availability
+                                    != QuicNetworkAvailability::Available
+                                {
+                                    return Ok::<_, BoxError>(QuicMigrationDecision::default());
+                                }
+                                let revision = event
+                                    .network
+                                    .egress
+                                    .context
+                                    .get_ref::<TransparentProxyNetworkPath>()
+                                    .map_or(0, |path| path.routing_revision);
+                                if revision == prepared_revision.load(Ordering::Relaxed) {
+                                    return Ok(QuicMigrationDecision::default());
+                                }
+                                let connected = UdpConnector::new().serve(request).await?;
+                                let replacement = QuicTransportReplacement::new(connected.conn)?
+                                    .with_on_applied(move || {
+                                        prepared_revision.store(revision, Ordering::Relaxed);
+                                    });
+                                Ok(QuicMigrationDecision {
+                                    ingress: QuicPathAction::Keep,
+                                    egress: QuicPathAction::Replace(replacement),
+                                })
+                            }
+                        });
+                        let migration_policy = QuicMigrationLayer::new(
+                            policy,
+                            QuicMigrationConfig {
+                                scope: scope.clone(),
+                                decision_timeout: Duration::from_secs(5),
+                                failure_action: QuicMigrationFailureAction::Keep,
+                                failure_code: VarInt::from_u32(FAILURE),
+                            },
                         )
-                        .with_ingress_transport(transport.clone())
-                        .with_egress_transport(transport)
-                        .into_layer(
-                            AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
-                                .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
-                        ),
-                    );
-                    terminate.serve(input).await.map(drop)
+                        .with_network_changes(network)
+                        .with_decision_gate(egress_preparations.clone());
+                        let terminate = DatagramToProxyBridge::extension_connector_target(
+                            QuicMitmRelay::new(
+                                settings.tls_mitm_relay.issuer().clone(),
+                                scope.clone(),
+                                egress_tls,
+                                VarInt::from_u32(FAILURE),
+                            )
+                            .maybe_with_migration_ingress(migration_ingress)
+                            .with_ingress_transport(transport.clone())
+                            .with_egress_transport(transport)
+                            .into_layer(
+                                migration_policy.into_layer(
+                                    AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
+                                        .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
+                                ),
+                            ),
+                        );
+                        terminate.serve(input).await.map(drop)
+                    };
+                    if let Some(supervisor) = supervisor {
+                        supervisor.run_connection(intercept).await
+                    } else {
+                        intercept.await
+                    }
                 } else {
                     tracing::debug!(?name, "tproxy quic forwarding");
                     forward.serve(input.input).await.map(drop)
@@ -172,14 +307,35 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
     let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
         .with_fallback_policy(QuicPeekFallbackPolicy::ALL)
         .with_fallback(service_fn(move |input: Association| {
-            let forward = forward.clone();
+            let forward = fallback_forward.clone();
             async move { forward_uninspected(&forward, input).await.map(drop) }
         }));
     let demux = DatagramDemux::new(UdpFlowSocket::new(flow), demux_config(flow_bytes))
         .with_shared_budget(budget);
-    if let Err(error) = demux.serve(scope, inspect).await {
+    let result = if let Some(ingress) = migration_ingress {
+        demux.serve(scope, inspect.with_router(ingress)).await
+    } else {
+        demux.serve(scope, inspect).await
+    };
+    if let Err(error) = result {
         tracing::debug!(%error, "tproxy quic flow ended");
     }
+}
+
+/// Recover confirmed QUIC pass-through using the same preparation budget as MITM.
+pub(super) fn forwarding_recovery(
+    signal: DatagramRecoverySignal,
+    gate: Arc<tokio::sync::Semaphore>,
+) -> DatagramRecovery {
+    DatagramRecovery::new(
+        signal,
+        DatagramRecoveryConfig {
+            preparation_timeout: Duration::from_secs(5),
+            unavailable_timeout: Duration::from_secs(15),
+            failure_action: DatagramRecoveryFailureAction::Keep,
+        },
+    )
+    .with_preparation_gate(gate)
 }
 
 /// Whether a flow to `port` is served by [`serve`] rather than the multi-peer loop.

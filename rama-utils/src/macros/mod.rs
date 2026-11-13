@@ -1,4 +1,7 @@
-//! hidden rama macros 🤫
+//! Reusable Rama macros.
+
+mod nonzero;
+pub use nonzero::nonzero;
 
 #[doc(hidden)]
 #[macro_use]

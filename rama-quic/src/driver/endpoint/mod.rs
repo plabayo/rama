@@ -57,8 +57,12 @@ use crate::{
 
 mod builder;
 pub(crate) mod ceiling;
+mod routing;
+#[cfg(feature = "dial9")]
+pub(crate) use routing::RoutingStats;
 mod serve;
 pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
+pub use routing::{EndpointRoute, EndpointRouteDirectory, EndpointRouteRegistration};
 
 const BATCH_SIZE: usize = 32;
 // Per-entry receive memory ceiling, independent of backend capability claims.
@@ -77,6 +81,54 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    pub(crate) fn from_inner(inner: Arc<EndpointInner>) -> Self {
+        // Arc owns the allocation; reviving the public-handle count only re-arms driver wakeup.
+        inner.shared.ref_count.fetch_add(1, Ordering::Relaxed);
+        Self {
+            inner: EndpointRef(inner),
+            default_client_config: None,
+        }
+    }
+
+    /// Install a control-plane hook for native index misses on a dedicated ingress endpoint.
+    /// Return true only when the stale path was handled; false preserves refusal/reset processing.
+    /// The callback runs under the endpoint lock; it must not call back into that endpoint.
+    #[cfg(feature = "boring")]
+    pub(crate) fn on_unrouted_datagram(
+        &self,
+        handler: impl Fn(SocketAddress) -> bool + Send + Sync + 'static,
+    ) {
+        let mut state = self.inner.state.lock();
+        state.inner.on_unrouted(move |peer| handler(peer.into()));
+    }
+
+    /// Preserve an ingress path aggregate whose membership is managed outside the endpoint.
+    #[cfg(feature = "boring")]
+    pub(crate) fn preserve_ingress_transport(&self) {
+        self.inner.state.lock().preserve_ingress_transport = true;
+    }
+
+    /// Whether this datagram currently routes to an existing connection or pending attempt.
+    ///
+    /// This consults the endpoint's own CID/address/reset-token index. It neither authenticates
+    /// the packet nor validates its path. It is useful before applying an interception policy
+    /// to a new platform flow: known traffic belongs to this endpoint, not a new handshake.
+    /// Routes can retire immediately after this snapshot; a matched packet must still be sent
+    /// here or dropped, never forwarded to an unrelated origin on a later failure.
+    pub fn routes_datagram(
+        &self,
+        remote: SocketAddress,
+        local: Option<SocketAddress>,
+        data: &[u8],
+    ) -> bool {
+        let state = self.inner.state.lock();
+        // Closing does not make a still-indexed CID unknown: callers must retain the
+        // endpoint/drop route rather than fall through to a new inspection policy.
+        state
+            .inner
+            .routes_datagram(remote.into(), local.map(Into::into), data)
+    }
+
     /// Supervise connector verification alongside this endpoint's drivers.
     pub(crate) fn spawn_connection_task(&self, future: impl Future<Output = ()> + Send + 'static) {
         self.inner.shared.lifecycle.spawn(Box::pin(future));
@@ -605,6 +657,12 @@ impl Endpoint {
             .map_err(DatagramError::from)
     }
 
+    /// Switch to an application's datagram transport, with the same migration rules as
+    /// [`Self::rebind`]. The supplied socket must preserve datagram metadata and readiness.
+    pub fn rebind_datagram_socket(&self, socket: impl rama_udp::DatagramSocket) -> io::Result<()> {
+        self.rebind_abstract(Socket::new(socket)?)
+    }
+
     /// Switch to a packet socket the caller prepared. [`Endpoint::rebind`] describes what the
     /// switch means for existing connections.
     pub fn rebind_packet_socket(&self, socket: UdpPacketSocket) -> io::Result<()> {
@@ -619,6 +677,14 @@ impl Endpoint {
 
     /// Switch to a new UDP socket, as [`Endpoint::rebind`] describes.
     pub(crate) fn rebind_abstract(&self, socket: Socket) -> io::Result<()> {
+        self.rebind_abstract_for(socket, None)
+    }
+
+    pub(crate) fn rebind_abstract_for(
+        &self,
+        socket: Socket,
+        connection: Option<ConnectionHandle>,
+    ) -> io::Result<()> {
         let addr = socket.local_addr();
         // New connections follow the active socket's limits and reach.
         let ceiling = ceiling::payload_ceiling(&socket.capabilities()).map_err(io::Error::other)?;
@@ -630,6 +696,29 @@ impl Endpoint {
             drop(inner);
             drop(socket);
             return Err(io::ErrorKind::NotConnected.into());
+        }
+        if inner.preserve_ingress_transport {
+            drop(inner);
+            drop(socket);
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "registered ingress paths must migrate through their path aggregate",
+            ));
+        }
+        if let Some(connection) = connection
+            && (inner.recv_state.connections.channels.len() != 1
+                || !inner
+                    .recv_state
+                    .connections
+                    .channels
+                    .contains_key(&connection))
+        {
+            drop(inner);
+            drop(socket);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "connection rebinding requires its own dedicated endpoint",
+            ));
         }
         let State {
             sockets,
@@ -1507,6 +1596,7 @@ pub(crate) struct State {
     /// The sockets this endpoint owns: the active one and earlier ones that connections, queued
     /// attempts or queued responses still depend on (see [`SocketRegistry`]).
     sockets: Sockets,
+    preserve_ingress_transport: bool,
     inner: crate::proto::Endpoint,
     recv_state: RecvState,
     driver: Option<Waker>,
@@ -2042,6 +2132,7 @@ impl EndpointRef {
             },
             state: Mutex::new(State {
                 sockets: Sockets::Live(SocketRegistry::new(socket)),
+                preserve_ingress_transport: false,
                 inner,
                 ipv6,
                 payload_ceiling,
@@ -2350,6 +2441,12 @@ impl RecvState {
                         )
                     }) =>
                 {
+                    if socket.capabilities().min_receive_buffer_size > iovs[0].len() {
+                        // A new path attached after this pass sized its receive slots.
+                        // Start a fresh bounded pass to size the retained slot again.
+                        progress.keep_going = true;
+                        return progress;
+                    }
                     // A non-retaining socket already discarded the packet. Do
                     // not let network input enlarge the endpoint's allocation.
                     self.dropped_packets += 1;

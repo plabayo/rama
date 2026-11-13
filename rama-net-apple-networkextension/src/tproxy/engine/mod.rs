@@ -54,6 +54,9 @@ use crate::{
     tproxy::{FlowRefusalAction, TransparentProxyFlowMeta, types::NwTcpConnectOptions},
 };
 
+mod network_path;
+pub use network_path::{TransparentProxyNetworkPath, TransparentProxyNetworkStatus};
+
 mod svc_context;
 pub use self::svc_context::TransparentProxyServiceContext;
 
@@ -290,6 +293,7 @@ pub struct TransparentProxyEngine<H> {
     provider_pid: u32,
     provider_generation: u64,
     handler: H,
+    network_path: tokio::sync::watch::Sender<TransparentProxyNetworkPath>,
     /// Startup snapshot exported to Swift and used to derive matching bridge
     /// limits for the lifetime of this engine.
     transparent_proxy_config: crate::tproxy::TransparentProxyConfig,
@@ -389,6 +393,20 @@ where
         let weak_scope = WeakScope::from(scope);
         let handler = self.handler.clone();
         _ = rt.spawn(async move { handler.on_system_sleep(weak_scope).await });
+    }
+
+    /// Publish a trusted platform observation; readers keep only the newest snapshot.
+    pub fn notify_network_change(&self, status: u32, preferred_interface: u32, flags: u32) {
+        self.network_path.send_modify(|current| {
+            let mut next =
+                TransparentProxyNetworkPath::from_ffi(status, preferred_interface, flags);
+            next.revision = current.revision.wrapping_add(1);
+            next.routing_revision = current.routing_revision.wrapping_add(u64::from(
+                next.status != current.status
+                    || next.preferred_interface != current.preferred_interface,
+            ));
+            *current = next;
+        });
     }
 
     /// Symmetric counterpart of [`Self::notify_system_sleep`].

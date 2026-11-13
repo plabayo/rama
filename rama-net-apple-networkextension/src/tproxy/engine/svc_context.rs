@@ -5,6 +5,7 @@ use rama_core::graceful::WeakScope;
 #[derive(Clone)]
 pub struct TransparentProxyServiceContext {
     pub scope: WeakScope,
+    pub(super) network_path: tokio::sync::watch::Receiver<super::TransparentProxyNetworkPath>,
     pub(super) opaque_config: Option<Arc<[u8]>>,
     pub(super) provider_pid: u32,
     pub(super) provider_generation: u64,
@@ -13,6 +14,14 @@ pub struct TransparentProxyServiceContext {
 }
 
 impl TransparentProxyServiceContext {
+    /// Subscribe to provider network changes. This is a hint to reassess routing policy,
+    /// not permission to bypass a flow's configured connector or interface constraints.
+    pub fn network_path_changes(
+        &self,
+    ) -> tokio::sync::watch::Receiver<super::TransparentProxyNetworkPath> {
+        self.network_path.clone()
+    }
+
     pub fn opaque_config(&self) -> Option<&[u8]> {
         self.opaque_config.as_deref()
     }

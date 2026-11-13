@@ -80,6 +80,12 @@ use crate::{
     tls::{BoringTlsProvider, TlsOptions},
 };
 
+mod ingress;
+pub use ingress::{
+    QuicMitmIngress, QuicMitmIngressByIdentity, QuicMitmIngressByIdentityConfig,
+    QuicMitmIngressConfig, QuicMitmRoute,
+};
+
 /// The default for [`QuicMitmRelay::with_handshake_timeout`].
 pub const DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -174,6 +180,7 @@ pub struct QuicMitmRelay<Issuer> {
     client_auth: Option<TlsMitmClientAuthPolicy>,
     mirror_client: bool,
     mirror_ceiling: QuicMirrorCeiling,
+    migration_ingress: Option<QuicMitmIngress>,
 }
 
 impl<Issuer> QuicMitmRelay<Issuer> {
@@ -203,6 +210,16 @@ impl<Issuer> QuicMitmRelay<Issuer> {
             client_auth: None,
             mirror_client: true,
             mirror_ceiling: QuicMirrorCeiling::default(),
+            migration_ingress: None,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Give each connection an independent endpoint whose migrated platform flows can
+        /// be found through this registry. Configure the inspector with the same router.
+        pub fn migration_ingress(mut self, ingress: Option<QuicMitmIngress>) -> Self {
+            self.migration_ingress = ingress;
+            self
         }
     }
 
@@ -330,6 +347,7 @@ where
                 ingress,
                 egress,
                 endpoints,
+                _attempt,
             } = established;
             // One association relays one connection; its origin mirrors only that client.
             // Another attempt on the same socket is refused at once instead of being left
@@ -360,6 +378,7 @@ struct Established {
     ingress: Connection,
     egress: Connection,
     endpoints: [Endpoint; 2],
+    _attempt: Option<ingress::Attempt>,
 }
 
 impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<Issuer> {
@@ -422,9 +441,15 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
             origin: origin.clone(),
         }));
         server.set_transport_config(self.ingress_transport.clone());
-        let ingress_endpoint = Endpoint::build(self.scope.clone())
-            .with_server_config(server)
-            .with_datagram_socket(ingress)?;
+        let (ingress_endpoint, attempt) = if let Some(migration) = &self.migration_ingress {
+            let attempt = migration.accept(ingress, server)?;
+            (attempt.endpoint(), Some(attempt))
+        } else {
+            let endpoint = Endpoint::build(self.scope.clone())
+                .with_server_config(server)
+                .with_datagram_socket(ingress)?;
+            (endpoint, None)
+        };
         let ingress_connection = loop {
             let incoming = ingress_endpoint.accept().await.ok_or_else(|| {
                 BoxError::from_static_str("QUIC MITM ingress closed before accept")
@@ -437,6 +462,9 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
                 IncomingOutcome::Retried => {}
             }
         };
+        if let Some(attempt) = &attempt {
+            attempt.established(&ingress_connection);
+        }
         let mut close_ingress = close_on_drop(&ingress_connection, failure_code);
         let (negotiated, client_auth) = {
             let mut origin = origin.lock();
@@ -486,6 +514,7 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
             ingress: ingress_connection,
             egress: egress_connection,
             endpoints: [ingress_endpoint, egress_endpoint],
+            _attempt: attempt,
         })
     }
 }

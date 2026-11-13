@@ -433,8 +433,11 @@ where
         let provider_generation = super::next_provider_generation();
 
         let root = Scope::new();
+        let (network_path, network_receiver) =
+            tokio::sync::watch::channel(super::TransparentProxyNetworkPath::default());
         let ctx = TransparentProxyServiceContext {
             scope: root.clone_weak(),
+            network_path: network_receiver,
             opaque_config,
             provider_pid,
             provider_generation,
@@ -462,6 +465,7 @@ where
             provider_pid,
             provider_generation,
             handler,
+            network_path,
             transparent_proxy_config,
             tcp_flow_buffer_size: tcp_flow_buffer_size
                 .unwrap_or(super::DEFAULT_TCP_FLOW_BUFFER_SIZE),

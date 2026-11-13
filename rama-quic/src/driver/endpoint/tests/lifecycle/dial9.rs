@@ -1,6 +1,7 @@
 //! Endpoint tests for the dial9 integration.
 
 use super::*;
+use dial9_trace_format::types::FieldValueRef;
 use rama_core::rt::OwnedRuntime;
 use rama_core::telemetry::dial9::{
     Dial9Handle, Dial9HandleTokioExt as _, DiskBuffer, TokioAttachOptions, recorder_or_disabled,
@@ -73,14 +74,68 @@ fn driver_tasks_run_inside_an_attached_dial9_session() {
     runtime.block_on(async {
         assert!(Dial9Handle::current().is_enabled());
         handshake_and_shutdown().await;
+        let directory = crate::EndpointRouteDirectory::new(rama_utils::macros::nonzero!(1));
+        let endpoint = endpoint(None, WeakScope::detached(), Duration::from_secs(1));
+        let registration = directory
+            .register(&endpoint, endpoint.local_addr().unwrap().into())
+            .unwrap();
+        assert!(
+            directory
+                .route(endpoint.local_addr().unwrap().into(), b"invalid")
+                .unwrap()
+                .is_none()
+        );
+        drop(registration);
+        #[cfg(feature = "boring")]
+        directory.record_fallback(3);
     });
     assert!(
         crate::driver::connection::DRIVER_POLLED_WITH_DIAL9.load(Ordering::Relaxed),
         "connection drivers must run inside the recorder's session"
     );
     runtime.shutdown_bounded(Duration::from_secs(5));
-    assert!(
-        std::fs::read_dir(temp_dir.path()).unwrap().count() > 0,
-        "the recorder wrote trace data for the session"
+    let mut routing_events = Vec::new();
+    let mut fallback_events = 0;
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|extension| extension != "bin") {
+            continue;
+        }
+        let bytes = std::fs::read(path).unwrap();
+        dial9_trace_format::decoder::Decoder::new(&bytes)
+            .unwrap()
+            .for_each_event(|event| {
+                let fields: std::collections::BTreeMap<_, _> =
+                    event.field_names().zip(event.fields.iter()).collect();
+                if event.name == "QuicRoutingSnapshot" {
+                    let FieldValueRef::Varint(id) = fields["resource_id"] else {
+                        panic!("resource id")
+                    };
+                    let FieldValueRef::String(reason) = fields["reason"] else {
+                        panic!("reason")
+                    };
+                    let FieldValueRef::Varint(used) = fields["registered_endpoints"] else {
+                        panic!("occupancy")
+                    };
+                    routing_events.push((*id, reason.to_string(), *used));
+                }
+                if event.name == "QuicMigrationCapacity" {
+                    assert!(matches!(fields["affected_total"], FieldValueRef::Varint(3)));
+                    fallback_events += 1;
+                }
+            })
+            .unwrap();
+    }
+    assert_eq!(routing_events.len(), 3);
+    let id = routing_events[0].0;
+    assert_ne!(id, 0);
+    assert_eq!(
+        routing_events,
+        [
+            (id, "registered".into(), 1),
+            (id, "miss".into(), 1),
+            (id, "released".into(), 0)
+        ]
     );
+    assert_eq!(fallback_events, usize::from(cfg!(feature = "boring")));
 }

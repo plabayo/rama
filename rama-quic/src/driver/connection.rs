@@ -930,6 +930,39 @@ impl Drop for ConnectionDriver {
 #[derive(Debug, Clone)]
 pub struct Connection(ConnectionRef);
 
+/// Internal observation without keeping the application connection alive.
+#[derive(Debug, Clone)]
+#[cfg(feature = "boring")]
+pub(crate) struct WeakConnection(Weak<ConnectionInner>);
+
+#[cfg(feature = "boring")]
+impl WeakConnection {
+    pub(crate) fn remote_address(&self) -> Option<SocketAddr> {
+        let inner = self.0.upgrade()?;
+        let state = inner.state.lock();
+        state
+            .error
+            .is_none()
+            .then(|| state.inner.validated_remote_address())
+    }
+}
+
+/// Whether a connection can adopt a socket bound to a proposed local address.
+/// This is a snapshot, not confirmation that a requested rebind has completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalMigrationCapability {
+    /// A replacement transport preserves the local socket address.
+    SameAddress,
+    /// Active migration is currently permitted.
+    Ready,
+    /// Handshake confirmation or an unused peer connection ID is still needed.
+    Deferred,
+    /// The connection role or peer policy prohibits this address change.
+    Prohibited,
+    /// The connection is closed.
+    Closed,
+}
+
 /// QUIC facts of a connection, published in its extensions when the handshake completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
 #[extension(tags(net))]
@@ -2004,6 +2037,71 @@ impl Connection {
         self.0.state.lock().inner.qlog_control()
     }
 
+    #[cfg(feature = "boring")]
+    pub(crate) fn downgrade(&self) -> WeakConnection {
+        WeakConnection(Arc::downgrade(&self.0.0))
+    }
+
+    /// Subscribe to validated address changes. Subscription allocates only when requested;
+    /// ordinary connections have no path signal. Read `SocketInfo` after each notification.
+    /// Notifications coalesce; they are revisions, not a history of every intermediate path.
+    pub fn path_watch(&self) -> Changed<usize> {
+        let mut state = self.0.state.lock();
+        state
+            .path_changes
+            .get_or_insert_with(|| Reactive::new(0))
+            .watch()
+    }
+
+    /// The bound address of the transport currently used for this connection's sends.
+    /// A wildcard address describes the socket binding, not the selected interface.
+    pub fn local_socket_address(&self) -> Option<rama_net::address::SocketAddress> {
+        self.0
+            .state
+            .lock()
+            .socket
+            .as_ref()
+            .map(|socket| socket.local_addr().into())
+    }
+
+    /// Inspect native migration constraints before preparing a replacement transport.
+    /// A later rebind still observes current protocol state; this does not reserve a move.
+    pub fn local_migration_capability(
+        &self,
+        address: rama_net::address::SocketAddress,
+    ) -> LocalMigrationCapability {
+        let state = self.0.state.lock();
+        if state.error.is_some() {
+            return LocalMigrationCapability::Closed;
+        }
+        if state
+            .socket
+            .as_ref()
+            .is_some_and(|socket| socket.local_addr() == SocketAddr::from(address))
+        {
+            return LocalMigrationCapability::SameAddress;
+        }
+        match state.migration_switch() {
+            Switch::SameAddress => LocalMigrationCapability::SameAddress,
+            Switch::Now => LocalMigrationCapability::Ready,
+            Switch::Later => LocalMigrationCapability::Deferred,
+            Switch::Never => LocalMigrationCapability::Prohibited,
+        }
+    }
+
+    /// Offer a replacement transport to this connection's dedicated endpoint.
+    ///
+    /// Refuses an endpoint shared with other connections. Success means the transport was
+    /// registered; native migration may still be deferred or prohibited. Inspect
+    /// `local_migration_capability` first and observe `path_watch`/`local_socket_address`
+    /// for progress. Existing application streams are never replayed on a new connection.
+    pub fn rebind_datagram_socket(&self, socket: impl rama_udp::DatagramSocket) -> io::Result<()> {
+        let link = self.0.state.lock().endpoint.clone();
+        let endpoint = link.endpoint.upgrade().ok_or(io::ErrorKind::NotConnected)?;
+        crate::Endpoint::from_inner(endpoint)
+            .rebind_abstract_for(crate::driver::udp::Socket::new(socket)?, Some(link.handle))
+    }
+
     /// Tell the connection its network path changed, so the congestion controller, the
     /// round-trip estimate and MTU discovery start again from the transport configuration.
     ///
@@ -2511,6 +2609,7 @@ impl ConnectionRef {
                 available_streams: [0; 2],
                 stream_budget_changed: [BudgetChange::default(); 2],
                 socket_info,
+                path_changes: None,
                 reserved_streams: [0; 2],
                 handshake_confirmed: false,
                 timer: DeadlineTimer::default(),
@@ -2954,6 +3053,7 @@ pub(crate) struct State {
     stream_budget_changed: [BudgetChange; 2],
     /// Updated in place when a validated path changes.
     socket_info: Arc<SocketInfo>,
+    path_changes: Option<Reactive<usize>>,
     reserved_streams: [u64; 2],
     handshake_confirmed: bool,
     timer: DeadlineTimer,
@@ -3815,6 +3915,9 @@ impl State {
             known_local_address(socket.local_addr(), self.inner.local_ip()).map(Into::into);
         let peer_addr = self.inner.remote_address().into();
         if self.socket_info.set_current(local_addr, peer_addr) {
+            if let Some(changes) = &self.path_changes {
+                changes.set(changes.get().wrapping_add(1));
+            }
             debug!(
                 %peer_addr,
                 ?local_addr,

@@ -841,6 +841,14 @@ void rama_transparent_proxy_engine_notify_system_wake(
     RamaTransparentProxyEngine* _Nullable engine
 );
 
+/** Provider path hint; status 0 unknown, 1 satisfied, 2 unsatisfied, 3 requires connection.
+ * preferred_interface is zero or the first available interface index. flags bit 0 expensive,
+ * bit 1 constrained. engine is null or live for this call, which cannot overlap its destruction.
+ * All scalars are copied; no caller memory is retained. */
+void rama_transparent_proxy_engine_notify_network_change(
+    RamaTransparentProxyEngine * _Nullable engine, uint32_t status, uint32_t preferred_interface, uint32_t flags);
+
+
 // TCP flow lifecycle
 
 /// Create a TCP session for one intercepted flow.
