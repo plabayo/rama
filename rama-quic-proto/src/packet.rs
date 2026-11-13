@@ -79,6 +79,61 @@ pub struct PartialDecode {
     allocated: usize,
 }
 
+/// A borrowed invariant header and the first packet's bytes, for endpoint routing.
+/// Uses the same decoder as [`PartialDecode`] without allocating or splitting the datagram.
+#[derive(Debug)]
+pub struct RoutingPacket<'a> {
+    header: ProtectedHeader,
+    data: &'a [u8],
+}
+
+impl<'a> RoutingPacket<'a> {
+    pub fn decode(
+        data: &'a [u8],
+        cid_parser: &(impl ConnectionIdParser + ?Sized),
+        supported_versions: &[Version],
+        grease_quic_bit: bool,
+    ) -> Result<Self, PacketDecodeError> {
+        let mut buffer = Cursor::new(data);
+        let header =
+            ProtectedHeader::decode(&mut buffer, cid_parser, supported_versions, grease_quic_bit)?;
+        let len = match header.payload_len() {
+            Some(len) => {
+                buffer.pos
+                    + bounded_len(len, buffer.remaining()).map_err(|_error| {
+                        PacketDecodeError::InvalidHeader(
+                            "packet too short to contain payload length",
+                        )
+                    })?
+            }
+            None => data.len(),
+        };
+        Ok(Self {
+            header,
+            data: &data[..len],
+        })
+    }
+
+    pub fn dst_cid(&self) -> &ConnectionId {
+        self.header.dst_cid()
+    }
+
+    pub fn is_initial_or_0rtt(&self) -> bool {
+        matches!(
+            self.header,
+            ProtectedHeader::Initial(_)
+                | ProtectedHeader::Long {
+                    ty: LongType::ZeroRtt,
+                    ..
+                }
+        )
+    }
+
+    pub fn data(&self) -> &'a [u8] {
+        self.data
+    }
+}
+
 impl PartialDecode {
     /// Begin decoding a QUIC packet from `bytes`, a datagram in an allocation of its own size,
     /// returning any trailing data not part of that packet.
@@ -812,7 +867,7 @@ impl ProtectedHeader {
 
     /// Decode a plain header from given buffer, with given [`ConnectionIdParser`].
     pub(crate) fn decode(
-        buf: &mut Cursor<BytesMut>,
+        buf: &mut Cursor<impl AsRef<[u8]>>,
         cid_parser: &(impl ConnectionIdParser + ?Sized),
         supported_versions: &[Version],
         grease_quic_bit: bool,
@@ -1543,6 +1598,50 @@ mod tests {
                         .unwrap()
                         .expand(expected)
                 );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_routing_matches_native_decode_without_owning_payload() {
+        for cid_len in [0, 8, 20] {
+            let parser = FixedLengthConnectionIdParser::new(cid_len);
+            for first in 0..=255 {
+                for len in [0, 1, 8, 32, 128] {
+                    let mut data = alloc::vec![0; len];
+                    if len > 0 {
+                        data[0] = first;
+                    }
+                    if len >= 8 {
+                        data[4] = 1;
+                    }
+                    let borrowed =
+                        RoutingPacket::decode(&data, &parser, &[Version::V1, Version::V2], false);
+                    let native = PartialDecode::new(
+                        BytesMut::from(data.as_slice()),
+                        &parser,
+                        &[Version::V1, Version::V2],
+                        false,
+                    );
+                    match (borrowed, native) {
+                        (Ok(borrowed), Ok((native, _))) => {
+                            assert_eq!(borrowed.dst_cid(), native.dst_cid());
+                            assert_eq!(
+                                borrowed.is_initial_or_0rtt(),
+                                native.is_initial() || native.is_0rtt()
+                            );
+                            assert_eq!(borrowed.data(), native.data());
+                            assert_eq!(borrowed.data().as_ptr(), data.as_ptr());
+                        }
+                        (Err(_), Err(_)) => {}
+                        other => panic!("routing/parser mismatch: {other:?}"),
+                    }
+                }
             }
         }
     }

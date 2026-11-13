@@ -1,16 +1,21 @@
 //! Conditional QUIC interception: peek each association's ClientHello, terminate HTTP/3 for
 //! the server names you choose, and forward everything else untouched.
 //!
+//! See the [book’s short migration guide](https://ramaproxy.org/book/proxies/quic_migration.html)
+//! for admission, migration routing, inspection and relay ordering.
+//!
 //! Every client association on the UDP listener passes through, in order:
 //!
 //! - the demultiplexer, which gives each client its own association, bounded in number,
 //!   queue and idle time;
 //! - admission, which bounds associations per source (an IPv4 address or IPv6 /64) and in
 //!   total, and how many start per second;
-//! - the egress bridge, which connects a socket to the upstream for the association;
-//! - the ClientHello peek, which reads the client's Initial flight without answering it.
+//! - the ClientHello peek, whose optional migration router first returns known connection
+//!   IDs to their original independent endpoint; otherwise it reads the Initial flight
+//!   without answering it.
 //!   Datagrams that are not QUIC are forwarded; a QUIC flight that cannot be inspected is
-//!   refused rather than forwarded uninspected.
+//!   refused rather than forwarded uninspected;
+//! - interception policy, followed by the egress bridge opening the selected upstream.
 //!
 //! A peeked server name in `--intercept` is terminated: the client's address is validated
 //! with a Retry, the upstream handshake runs with the client's version, name and offered
@@ -65,9 +70,13 @@
 //! allows 32 datagrams, 256 KiB input, 128 Initial packets, 2048 frame classifications,
 //! 128 CRYPTO fragments, a 16 KiB ClientHello and 256 transport parameters.
 //!
-//! Association identity is the local/peer address pair, not a client-selected connection ID.
-//! A changed tuple starts a separate association; this composition does not promise seamless
-//! migration or NAT rebinding. Admission quarantine and idle expiry also apply to new tuples.
+//! Platform association identity is the local/peer address pair. The optional migration registry
+//! follows native CID ownership during the inspector's first receive: a changed tuple carrying an issued
+//! CID joins the existing connection and undergoes ordinary QUIC path validation. Unknown
+//! traffic retains the inspection/fallback policy. CID ownership is not authentication.
+//! Connection/path limits bound the adapter; attached transports retain their own queue budgets.
+//! Independent client connections retain independent endpoints and origin connections.
+//! Closing the original association does not close a migrated connection.
 //!
 //! # Trust and preservation boundaries
 //!
@@ -116,7 +125,6 @@ use rama::{
         layer::set_header::SetResponseHeaderLayer,
         proxy::{h3::Http3MitmRelay, mitm::DefaultErrorResponse},
     },
-    io::BridgeIo,
     layer::{ArcLayer, ConsumeErrLayer},
     net::{
         address::{Domain, SocketAddress},
@@ -127,7 +135,8 @@ use rama::{
         proto::VarInt,
         proxy::{
             AssociationLimits, InputWithQuicClientHello, PeekQuicClientHelloService,
-            QuicAdmissionLayer, QuicAssociationAdmission, QuicMitmRelay, QuicRelay,
+            QuicAdmissionLayer, QuicAssociationAdmission, QuicMitmIngress, QuicMitmIngressConfig,
+            QuicMitmRelay, QuicRelay,
         },
         tls::BoringTlsProvider,
     },
@@ -162,8 +171,7 @@ struct Args {
 }
 
 /// A client association once its egress is connected: what the ClientHello peek reads.
-type Association =
-    BridgeIo<PrefixedDatagramSocket<DemuxedSocket<UdpPacketSender>>, UdpPacketSocket>;
+type Association = PrefixedDatagramSocket<DemuxedSocket<UdpPacketSender>>;
 
 /// An application error code closing both hops when an interception fails.
 const FAILURE: u32 = 0x0101;
@@ -215,12 +223,22 @@ async fn main() -> Result<(), BoxError> {
         ),
         ArcLayer::new(),
     ));
+    let ingress = QuicMitmIngress::new(
+        weak_scope.clone(),
+        QuicMitmIngressConfig {
+            max_registered_connections: rama::utils::macros::nonzero!(256),
+            max_paths_per_connection: rama::utils::macros::nonzero!(4),
+            path_validation_timeout: std::time::Duration::from_secs(5),
+            capabilities: None,
+        },
+    );
     let terminate = QuicMitmRelay::new(
         issuer,
         weak_scope.clone(),
         egress_tls,
         VarInt::from_u32(FAILURE),
     )
+    .with_migration_ingress(ingress.clone())
     .into_layer(
         AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
             .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),
@@ -230,48 +248,58 @@ async fn main() -> Result<(), BoxError> {
         EcnPolicy::Discard,
     );
 
+    let terminate = DatagramToProxyBridge::new(terminate, args.upstream);
+    let forward = DatagramToProxyBridge::new(forward, args.upstream);
     let intercept: Arc<[Domain]> = args.intercept.into();
+    let route_forward = forward.clone();
+    let supervisor = ingress.clone();
     let route = service_fn(move |input: InputWithQuicClientHello<Association>| {
         let terminate = terminate.clone();
         let intercept = intercept.clone();
+        let supervisor = supervisor.clone();
+        let forward = route_forward.clone();
         async move {
             // Domains compare case-insensitively, as DNS names do.
             let name = input.peeked.client_hello.ext_server_name().cloned();
             if name.as_ref().is_some_and(|name| intercept.contains(name)) {
                 tracing::info!(?name, "intercepting");
-                terminate.serve(input).await
+                supervisor
+                    .run_connection(async move { terminate.serve(input).await })
+                    .await
             } else {
                 tracing::info!(?name, "forwarding");
                 forward.serve(input.input).await.map_err(BoxError::from)
             }
         }
     });
-    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route).with_fallback(
-        service_fn(move |input: Association| async move {
-            forward.serve(input).await.map_err(BoxError::from)
-        }),
-    );
+    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
+        .with_router(ingress)
+        .with_fallback(service_fn(move |input: Association| {
+            let forward = forward.clone();
+            async move { forward.serve(input).await.map_err(BoxError::from) }
+        }));
 
     let admission = QuicAssociationAdmission::try_new(AssociationLimits {
-        active: NonZeroUsize::new(256).expect("nonzero"),
-        active_per_source: NonZeroUsize::new(32).expect("nonzero"),
-        sources: NonZeroUsize::new(1536).expect("nonzero"),
-        tuples: NonZeroUsize::new(2048).expect("nonzero"),
-        starts_per_window: NonZeroUsize::new(512).expect("nonzero"),
-        starts_per_source_window: NonZeroUsize::new(64).expect("nonzero"),
+        active: rama::utils::macros::nonzero!(256),
+        active_per_source: rama::utils::macros::nonzero!(32),
+        sources: rama::utils::macros::nonzero!(1536),
+        tuples: rama::utils::macros::nonzero!(2048),
+        starts_per_window: rama::utils::macros::nonzero!(512),
+        starts_per_source_window: rama::utils::macros::nonzero!(64),
         window: Duration::from_secs(1),
         quarantine: Duration::from_secs(2),
     })?;
-    let association = QuicAdmissionLayer::new(admission)
-        .into_layer(DatagramToProxyBridge::new(inspect, args.upstream));
+    // Rate and source limits apply to new migration paths too: a CID match is not proof
+    // that an unauthenticated sender should consume an unbounded number of path slots.
+    let association = QuicAdmissionLayer::new(admission).into_layer(inspect);
 
     let listener = UdpPacketSocket::bind(args.listen).await?;
     tracing::info!("QUIC MITM proxy listening on {}", listener.local_addr()?);
     let demux = DatagramDemux::new(
         listener,
         DemuxConfig {
-            associations: NonZeroUsize::new(1024).expect("nonzero"),
-            queue: NonZeroUsize::new(64).expect("nonzero"),
+            associations: rama::utils::macros::nonzero!(1024),
+            queue: rama::utils::macros::nonzero!(64),
             idle_timeout: Duration::from_secs(30),
             receive_bytes: NonZeroUsize::new(kib(64)).expect("nonzero"),
             queued_bytes: NonZeroUsize::new(mib(16)).expect("nonzero"),

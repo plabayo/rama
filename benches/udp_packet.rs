@@ -156,3 +156,88 @@ fn sender_creation(bencher: divan::Bencher, handles: usize) {
         }
     });
 }
+
+/// Isolate the steady-state path lookup and independently cached sender cost. There are no
+/// tasks, network operations or payload allocations in the measured round; one sender models
+/// each QUIC connection. Path creation and the first sender lookup are warmed up beforehand.
+#[divan::bench(args = [1, 16, 64])]
+fn grouped_ready_senders(bencher: divan::Bencher, paths: usize) {
+    use rama::{
+        net::address::SocketAddress,
+        udp::{DatagramMetadata, DatagramSocketGroup},
+    };
+    use std::{io, io::IoSliceMut, num::NonZeroUsize};
+    #[derive(Debug)]
+    struct ReadySocket {
+        peer: SocketAddress,
+    }
+
+    impl rama::net::stream::Socket for ReadySocket {
+        fn local_addr(&self) -> io::Result<SocketAddress> {
+            Ok(([127, 0, 0, 1], 443).into())
+        }
+
+        fn peer_addr(&self) -> io::Result<SocketAddress> {
+            Ok(self.peer)
+        }
+    }
+
+    impl DatagramSocket for ReadySocket {
+        type Sender = ReadySender;
+        fn create_sender(&self) -> ReadySender {
+            ReadySender::default()
+        }
+
+        fn capabilities(&self) -> DatagramCapabilities {
+            DatagramCapabilities::portable()
+        }
+
+        fn poll_recv(
+            &mut self,
+            _: &mut Context<'_>,
+            _: &mut [IoSliceMut<'_>],
+            _: &mut [DatagramMetadata],
+        ) -> Poll<Result<usize, DatagramError>> {
+            Poll::Pending
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let (socket, group) = DatagramSocketGroup::new(
+        ([127, 0, 0, 1], 443).into(),
+        rama::udp::DatagramSocketGroupConfig {
+            max_paths: NonZeroUsize::new(paths).unwrap(),
+            capabilities: rama::udp::DatagramCapabilities::portable(),
+        },
+    );
+    let payload = [0xa5; 1200];
+    let attachments: Vec<_> = (0..paths)
+        .map(|i| {
+            group
+                .attach(ReadySocket {
+                    peer: ([127, 0, 0, 1], u16::try_from(i + 1000).unwrap()).into(),
+                })
+                .unwrap()
+        })
+        .collect();
+    let mut senders: Vec<_> = attachments.iter().map(|_| socket.create_sender()).collect();
+    let packets: Vec<_> = attachments
+        .iter()
+        .map(|a| SendDatagram::new(a.peer_addr(), &payload))
+        .collect();
+    let mut cx = Context::from_waker(Waker::noop());
+    for (sender, packet) in senders.iter_mut().zip(&packets) {
+        assert_matches!(sender.poll_send(&mut cx, packet), Poll::Ready(Ok(())));
+    }
+    bencher.counter(ItemsCount::new(paths)).bench_local(|| {
+        for (sender, packet) in senders.iter_mut().zip(&packets) {
+            assert_matches!(
+                sender.poll_send(&mut cx, black_box(packet)),
+                Poll::Ready(Ok(()))
+            );
+        }
+    });
+}

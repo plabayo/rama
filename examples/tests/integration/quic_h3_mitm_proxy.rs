@@ -25,7 +25,7 @@ fn listening(line: &str, needle: &str) -> SocketAddr {
 
 /// One GET through `proxy` for `localhost`, trusting `ca`: its status, the proxy's marker,
 /// and the body.
-async fn get(proxy: SocketAddr, ca: &Path) -> (StatusCode, Option<String>, String) {
+async fn get(proxy: SocketAddr, ca: &Path, migrate: bool) -> (StatusCode, Option<String>, String) {
     let ca = CertificateDer::from_pem_file(ca).unwrap();
     let endpoint = Endpoint::build(WeakScope::detached())
         .bind_address(SocketAddress::local_ipv4(0))
@@ -43,10 +43,31 @@ async fn get(proxy: SocketAddr, ca: &Path) -> (StatusCode, Option<String>, Strin
     .await
     .unwrap()
     .unwrap();
-    let (mut client, driver) =
-        h3_client::handshake::<Body, _>(connection, H3Config::default(), WeakScope::detached())
-            .unwrap();
+    let (mut client, driver) = h3_client::handshake::<Body, _>(
+        connection.clone(),
+        H3Config::default(),
+        WeakScope::detached(),
+    )
+    .unwrap();
     let driver = spawn(driver.run());
+    if migrate {
+        // Complete a request before rebinding, then reuse the same H3 connection afterward.
+        let warmup = Request::get(format!("https://localhost:{}/", proxy.port()))
+            .body(Body::empty())
+            .unwrap();
+        timeout(LIMIT, client.send_request(warmup))
+            .await
+            .unwrap()
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+        endpoint
+            .rebind(SocketAddress::local_ipv4(0), Default::default())
+            .await
+            .unwrap();
+    }
     let request = Request::get(format!("https://localhost:{}/", proxy.port()))
         .body(Body::empty())
         .unwrap();
@@ -130,7 +151,7 @@ async fn test_quic_h3_mitm_proxy() {
         );
         // An intercepted client trusts the proxy's CA; a forwarded one, the origin itself.
         let trusted = if intercept { &mitm_ca } else { &origin_cert };
-        let (status, marker, body) = get(proxy_address, trusted).await;
+        let (status, marker, body) = get(proxy_address, trusted, intercept).await;
         assert_eq!(status, StatusCode::OK, "{}", proxy.said());
         assert_eq!(
             marker.as_deref(),

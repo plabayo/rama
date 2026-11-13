@@ -105,7 +105,7 @@ pub(crate) use first_flight::ClientHelloPeek;
 
 pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 pub(crate) use crate::proto::endpoint::{
-    ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
+    ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError, RouteObserver,
 };
 
 mod shared;

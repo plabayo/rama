@@ -20,7 +20,7 @@ use rama_quic_proto::{
     frame,
     packet::{
         FixedLengthConnectionIdParser, Header, InitialHeader, InitialPacket, PacketDecodeError,
-        PacketNumber, PartialDecode, ProtectedInitialHeader,
+        PacketNumber, PartialDecode, ProtectedInitialHeader, RoutingPacket,
     },
     transport_parameters::{PreferredAddress, TransportParameters},
     version::WireVersion,
@@ -75,6 +75,7 @@ pub(crate) struct Endpoint {
     /// Counts attempts in progress and decides how each new one is answered.
     admission: Admission,
     admission_stats: AdmissionStats,
+    unrouted: Option<Box<dyn Fn(SocketAddr) -> bool + Send + Sync>>,
 }
 
 /// What admission did with the attempts it did not accept.
@@ -131,6 +132,7 @@ impl Endpoint {
             all_incoming_buffers_total_bytes: 0,
             admission: Admission::default(),
             admission_stats: AdmissionStats::default(),
+            unrouted: None,
         }
     }
 
@@ -304,6 +306,60 @@ impl Endpoint {
         None
     }
 
+    pub(crate) fn has_route_observer(&self) -> bool {
+        self.index.observer.is_some()
+    }
+
+    pub(crate) fn routing_cid_len(&self) -> usize {
+        self.local_cid_generator.cid_len()
+    }
+
+    /// Publish route ownership only when identifiers are installed or retired. The observer
+    /// must not call back into this endpoint; it runs under the endpoint's state lock.
+    pub(crate) fn observe_routes(&mut self, observer: Arc<dyn RouteObserver>) {
+        for cid in self.index.connection_ids.keys() {
+            observer.insert(*cid, false);
+        }
+        for cid in self.index.connection_ids_initial.keys() {
+            observer.insert(*cid, true);
+        }
+        self.index.observer = Some(observer);
+    }
+
+    /// Consult the native routing index without copying, admitting or authenticating a packet.
+    pub(crate) fn routes_datagram(
+        &self,
+        remote: SocketAddr,
+        local: Option<SocketAddr>,
+        data: &[u8],
+    ) -> bool {
+        let Ok(packet) = RoutingPacket::decode(
+            data,
+            &FixedLengthConnectionIdParser::new(self.local_cid_generator.cid_len()),
+            &self.config.supported_versions,
+            self.config.grease_quic_bit,
+        ) else {
+            return false;
+        };
+        self.index
+            .get_parts(
+                &FourTuple { remote, local },
+                packet.dst_cid(),
+                packet.is_initial_or_0rtt(),
+                packet.data(),
+            )
+            .is_some()
+    }
+
+    /// Report index misses to an outer association owner instead of accepting/resetting them.
+    #[cfg(feature = "boring")]
+    pub(crate) fn on_unrouted(
+        &mut self,
+        handler: impl Fn(SocketAddr) -> bool + Send + Sync + 'static,
+    ) {
+        self.unrouted = Some(Box::new(handler));
+    }
+
     /// Process an incoming UDP datagram
     pub(crate) fn handle(
         &mut self,
@@ -423,6 +479,10 @@ impl Endpoint {
                     ConnectionEvent(ConnectionEventInner::Datagram(event)),
                 )),
             }
+        } else if self.unrouted.as_ref().is_some_and(|handle| handle(remote)) {
+            // The owner retired a stale association. Otherwise retain normal refusal/reset
+            // processing, without decoding again or copying the owned packet.
+            None
         } else if event.first_decode.initial_header().is_some() {
             // Potentially create a new connection
 
@@ -578,7 +638,7 @@ impl Endpoint {
         let tls = match config.crypto.start_session(version, server_name, &params) {
             Ok(tls) => tls,
             Err(error) => {
-                self.index.connection_ids.remove(&loc_cid);
+                self.index.retire(loc_cid);
                 return Err(error);
             }
         };
@@ -607,7 +667,7 @@ impl Endpoint {
                 },
             )
             .map_err(|error| {
-                self.index.connection_ids.remove(&loc_cid);
+                self.index.retire(loc_cid);
                 ConnectError::Crypto(error)
             })?;
         // Reserve only after successful TLS/connection construction. A failed dial
@@ -652,6 +712,9 @@ impl Endpoint {
             }
             if let hash_map::Entry::Vacant(e) = self.index.connection_ids.entry(cid) {
                 e.insert(route);
+                if let Some(observer) = &self.index.observer {
+                    observer.insert(cid, false);
+                }
                 break cid;
             }
         }
@@ -1993,9 +2056,17 @@ enum RouteDatagramTo {
     Connection(ConnectionHandle),
 }
 
+/// Internal control-plane hook; no callback runs on an ordinary routing lookup.
+/// Implementations must never acquire an endpoint lock while holding their own lock.
+pub(crate) trait RouteObserver: std::fmt::Debug + Send + Sync {
+    fn insert(&self, cid: ConnectionId, initial: bool);
+    fn remove(&self, cid: ConnectionId, initial: bool);
+}
+
 /// Maps packets to existing connections
 #[derive(Default, Debug)]
 struct ConnectionIndex {
+    observer: Option<Arc<dyn RouteObserver>>,
     /// Identifies connections based on the initial DCID the peer utilized
     ///
     /// Uses a standard `HashMap` to protect against hash collision attacks.
@@ -2035,6 +2106,9 @@ impl ConnectionIndex {
         }
         self.connection_ids_initial
             .insert(dst_cid, RouteDatagramTo::Incoming(incoming_key));
+        if let Some(observer) = &self.observer {
+            observer.insert(dst_cid, true);
+        }
     }
 
     /// Remove an association with an initial destination CID
@@ -2044,6 +2118,11 @@ impl ConnectionIndex {
         }
         let removed = self.connection_ids_initial.remove(&dst_cid);
         debug_assert!(removed.is_some());
+        if removed.is_some()
+            && let Some(observer) = &self.observer
+        {
+            observer.remove(dst_cid, true);
+        }
     }
 
     /// Associate a connection with its initial destination CID
@@ -2053,6 +2132,9 @@ impl ConnectionIndex {
         }
         self.connection_ids_initial
             .insert(dst_cid, RouteDatagramTo::Connection(connection));
+        if let Some(observer) = &self.observer {
+            observer.insert(dst_cid, true);
+        }
     }
 
     /// Associate a connection with its first locally-chosen destination CID if used, or otherwise
@@ -2064,8 +2146,8 @@ impl ConnectionIndex {
         connection: ConnectionHandle,
         side: Side,
     ) {
-        match dst_cid.len() {
-            0 => match side {
+        if dst_cid.is_empty() {
+            match side {
                 Side::Server => {
                     self.incoming_connection_remotes
                         .insert(addresses, connection);
@@ -2074,17 +2156,23 @@ impl ConnectionIndex {
                     self.outgoing_connection_remotes
                         .insert(addresses.remote, connection);
                 }
-            },
-            _ => {
-                self.connection_ids
-                    .insert(dst_cid, RouteDatagramTo::Connection(connection));
+            }
+        } else {
+            self.connection_ids
+                .insert(dst_cid, RouteDatagramTo::Connection(connection));
+            if let Some(observer) = &self.observer {
+                observer.insert(dst_cid, false);
             }
         }
     }
 
     /// Discard a connection ID
     fn retire(&mut self, dst_cid: ConnectionId) {
-        self.connection_ids.remove(&dst_cid);
+        if self.connection_ids.remove(&dst_cid).is_some()
+            && let Some(observer) = &self.observer
+        {
+            observer.remove(dst_cid, false);
+        }
     }
 
     /// Discard the connection IDs minted for an accept that never became a connection
@@ -2106,7 +2194,7 @@ impl ConnectionIndex {
     /// Remove the routes a connection's own identifiers, addresses and reset tokens give it.
     fn remove_routes(&mut self, ch: ConnectionHandle, conn: &ConnectionMeta) {
         for cid in conn.loc_cids.values() {
-            self.connection_ids.remove(cid);
+            self.retire(*cid);
         }
         // Retiring an older connection must not remove a replacement at the same address,
         // including when server connection IDs are zero length and this is its only route.
@@ -2124,17 +2212,30 @@ impl ConnectionIndex {
 
     /// Find the existing connection that `datagram` should be routed to, if any
     fn get(&self, addresses: &FourTuple, datagram: &PartialDecode) -> Option<RouteDatagramTo> {
-        if !datagram.dst_cid().is_empty()
-            && let Some(&route) = self.connection_ids.get(datagram.dst_cid())
+        self.get_parts(
+            addresses,
+            datagram.dst_cid(),
+            datagram.is_initial() || datagram.is_0rtt(),
+            datagram.data(),
+        )
+    }
+
+    fn get_parts(
+        &self,
+        addresses: &FourTuple,
+        cid: &ConnectionId,
+        initial_or_0rtt: bool,
+        data: &[u8],
+    ) -> Option<RouteDatagramTo> {
+        if !cid.is_empty()
+            && let Some(&route) = self.connection_ids.get(cid)
         {
             return Some(route);
         }
-        if (datagram.is_initial() || datagram.is_0rtt())
-            && let Some(&ch) = self.connection_ids_initial.get(datagram.dst_cid())
-        {
+        if initial_or_0rtt && let Some(&ch) = self.connection_ids_initial.get(cid) {
             return Some(ch);
         }
-        if datagram.dst_cid().is_empty() {
+        if cid.is_empty() {
             if let Some(&ch) = self.incoming_connection_remotes.get(addresses) {
                 return Some(RouteDatagramTo::Connection(ch));
             }
@@ -2142,7 +2243,6 @@ impl ConnectionIndex {
                 return Some(RouteDatagramTo::Connection(ch));
             }
         }
-        let data = datagram.data();
         if data.len() < RESET_TOKEN_SIZE {
             return None;
         }

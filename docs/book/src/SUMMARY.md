@@ -65,6 +65,7 @@
     - [🔌 Network proxies](./proxies/network.md)
     - [⛶ Transparent proxies](./proxies/transparent.md)
     - [🔎 MITM proxies](./proxies/mitm.md)
+    - [QUIC MITM across changing flows](./proxies/quic_migration.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
     - [🧭 HaProxy (PROXY protocol)](./proxies/haproxy.md)
 - [🔍 Protocol Inspection](./proxies/protocol_inspection.md)
