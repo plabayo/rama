@@ -30,6 +30,7 @@ instance to `QuicMitmRelay::with_migration_ingress`. One registry represents one
 routing identity boundary (for example one process generation, not a DNS name); it indexes the original destination and identifiers published by the
 native endpoint. Established traffic never looks up this registry. A positive routing
 hint is terminal: native rejection or closure drops the packet, never forwards it elsewhere.
+Apply per-source admission before routing, including known-CID flows, to bound path churn.
 
 `QuicMitmIngressByIdentity<Key>` bounds a reusable collection of isolated registries. Choose
 a trusted platform/policy key, such as an Apple audit token including process generation.
