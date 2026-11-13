@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     graceful::WeakScope,
+    telemetry::tracing,
 };
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
 use rama_quic_proto::VarInt;
@@ -25,7 +26,7 @@ use std::{
     num::NonZeroUsize,
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::Notify;
@@ -65,36 +66,110 @@ pub struct QuicMitmIngressByIdentityConfig {
 /// Clones share a cache. Only new associations consult it; established packets do not.
 #[derive(Debug, Clone)]
 pub struct QuicMitmIngressByIdentity<K> {
-    identities: Arc<Mutex<HashMap<K, QuicMitmIngress>>>,
+    identities: Arc<Mutex<IdentityState<K>>>,
+    #[cfg(feature = "dial9")]
+    telemetry: Arc<crate::dial9::MigrationTelemetry>,
     scope: WeakScope,
     config: QuicMitmIngressByIdentityConfig,
+}
+
+/// Snapshot of one policy-identity cache. Counters are cumulative for this cache's lifetime.
+/// These are migration registrations, not application flow admission limits.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QuicMitmIdentityStats {
+    pub identities: usize,
+    pub identity_limit: usize,
+    pub high_water: usize,
+    pub created: u64,
+    pub reused: u64,
+    pub reaped: u64,
+    /// New identities denied migration support. Their callers can still proxy independently.
+    pub rejected: u64,
+}
+
+#[derive(Debug)]
+struct IdentityState<K> {
+    entries: HashMap<K, QuicMitmIngress>,
+    stats: QuicMitmIdentityStats,
 }
 
 impl<K: Eq + std::hash::Hash> QuicMitmIngressByIdentity<K> {
     pub fn new(scope: impl Into<WeakScope>, config: QuicMitmIngressByIdentityConfig) -> Self {
         Self {
-            identities: Arc::default(),
+            identities: Arc::new(Mutex::new(IdentityState {
+                entries: HashMap::default(),
+                stats: QuicMitmIdentityStats {
+                    identity_limit: config.max_identities.get(),
+                    ..Default::default()
+                },
+            })),
+            #[cfg(feature = "dial9")]
+            telemetry: Arc::default(),
             scope: scope.into(),
             config,
         }
     }
 
+    /// Read a consistent occupancy/counter snapshot without enabling telemetry.
+    pub fn stats(&self) -> QuicMitmIdentityStats {
+        self.identities.lock().stats
+    }
+
     pub fn get_or_create(&self, identity: K) -> Option<QuicMitmIngress> {
-        let mut identities = self.identities.lock();
-        if let Some(ingress) = identities.get(&identity) {
-            return Some(ingress.clone());
+        let mut state = self.identities.lock();
+        if let Some(ingress) = state.entries.get(&identity).cloned() {
+            state.stats.reused = state.stats.reused.saturating_add(1);
+            return Some(ingress);
         }
 
-        if identities.len() >= self.config.max_identities.get() {
-            identities.retain(|_, ingress| !ingress.is_idle());
+        let limit = self.config.max_identities.get();
+        if state.entries.len() >= limit {
+            let before = state.entries.len();
+            state.entries.retain(|_, ingress| !ingress.is_idle());
+            state.stats.reaped = state
+                .stats
+                .reaped
+                .saturating_add((before - state.entries.len()) as u64);
+            state.stats.identities = state.entries.len();
         }
-        if identities.len() >= self.config.max_identities.get() {
+        if state.entries.len() >= limit {
+            state.stats.rejected = state.stats.rejected.saturating_add(1);
+            let stats = state.stats;
+            drop(state);
+            self.observe("full", stats);
             return None;
         }
 
         let ingress = QuicMitmIngress::new(self.scope.clone(), self.config.ingress);
-        identities.insert(identity, ingress.clone());
+        state.entries.insert(identity, ingress.clone());
+        state.stats.identities = state.entries.len();
+        state.stats.high_water = state.stats.high_water.max(state.entries.len());
+        state.stats.created = state.stats.created.saturating_add(1);
+        let stats = state.stats;
+        drop(state);
+        self.observe("created", stats);
         Some(ingress)
+    }
+
+    fn observe(&self, reason: &'static str, stats: QuicMitmIdentityStats) {
+        tracing::trace!(target: "rama_quic::migration", reason,
+            used = stats.identities, limit = stats.identity_limit,
+            high_water = stats.high_water, rejected = stats.rejected,
+            reaped = stats.reaped, "QUIC migration identity cache");
+        if reason == "full" && stats.rejected.is_power_of_two() {
+            tracing::debug!(target: "rama_quic::migration",
+                used = stats.identities, limit = stats.identity_limit,
+                rejected = stats.rejected, "QUIC migration identity capacity exhausted");
+        }
+        #[cfg(feature = "dial9")]
+        self.telemetry.capacity(crate::dial9::CapacitySnapshot {
+            resource: "policy_identities",
+            reason,
+            used: stats.identities,
+            limit: stats.identity_limit,
+            high_water: stats.high_water,
+            affected_total: stats.rejected,
+        });
     }
 }
 
@@ -133,6 +208,10 @@ struct Group {
     connection: Mutex<Option<crate::driver::WeakConnection>>,
     max_paths: usize,
     path_validation_timeout: std::time::Duration,
+    path_high_water: AtomicUsize,
+    path_evictions: AtomicU64,
+    #[cfg(feature = "dial9")]
+    telemetry: crate::dial9::MigrationTelemetry,
 }
 
 impl Drop for Group {
@@ -179,6 +258,12 @@ impl QuicMitmIngress {
             .spawn_task(connection)
             .await?
             .ok_or_else(|| BoxError::from_static_str("QUIC MITM ingress scope aborted"))?
+    }
+
+    /// Registration occupancy, high-water marks and new-association routing counters.
+    /// A matched route is not proof of authentication or successful migration.
+    pub fn routing_stats(&self) -> crate::EndpointRouteStats {
+        self.shared.directory.stats()
     }
 
     /// New connections served normally without migration registration because the directory
@@ -248,6 +333,10 @@ impl QuicMitmIngress {
             connection: Mutex::new(None),
             max_paths: self.shared.paths.get(),
             path_validation_timeout: self.shared.path_validation_timeout,
+            path_high_water: AtomicUsize::new(0),
+            path_evictions: AtomicU64::new(0),
+            #[cfg(feature = "dial9")]
+            telemetry: Default::default(),
         }))
     }
 
@@ -260,7 +349,19 @@ impl QuicMitmIngress {
         let endpoint = Endpoint::build(self.shared.scope.clone())
             .with_server_config(server)
             .with_datagram_socket(socket)?;
-        self.shared.unregistered.fetch_add(1, Ordering::Relaxed);
+        let total = self
+            .shared
+            .unregistered
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        tracing::trace!(target: "rama_quic::migration", total,
+            "QUIC connection proceeding without migration registration");
+        if total.is_power_of_two() {
+            tracing::debug!(target: "rama_quic::migration", total,
+                "QUIC registration capacity exhausted; independent connection fallback");
+        }
+        #[cfg(feature = "dial9")]
+        self.shared.directory.record_fallback(total);
         Ok(Attempt {
             endpoint,
             group: None,
@@ -366,12 +467,42 @@ impl Group {
                 && let Some(old) = paths.remove(index)
             {
                 self.sockets.detach(old);
+                self.path_evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
-        let attachment = self.sockets.attach(socket)?;
+        let attachment = match self.sockets.attach(socket) {
+            Ok(attachment) => attachment,
+            Err(error) => {
+                drop(paths);
+                self.observe_paths("attach_failed");
+                return Err(error.into());
+            }
+        };
         paths.retain(|path| *path != peer);
         paths.push_back(peer);
+        self.path_high_water
+            .fetch_max(paths.len(), Ordering::Relaxed);
+        drop(paths);
+        self.observe_paths("attached");
         Ok(attachment)
+    }
+
+    // Control-plane snapshots can race with attachment drops; they never inspect payloads.
+    fn observe_paths(&self, reason: &'static str) {
+        let used = self.sockets.path_count();
+        let high_water = self.path_high_water.load(Ordering::Relaxed);
+        let evictions = self.path_evictions.load(Ordering::Relaxed);
+        tracing::trace!(target: "rama_quic::migration", reason, used,
+            limit = self.max_paths, high_water, evictions, "QUIC connection transport paths");
+        #[cfg(feature = "dial9")]
+        self.telemetry.capacity(crate::dial9::CapacitySnapshot {
+            resource: "connection_paths",
+            reason,
+            used,
+            limit: self.max_paths,
+            high_water,
+            affected_total: evictions,
+        });
     }
 
     async fn run_path<S>(&self, attachment: DatagramGroupAttachment<S>) -> Result<(), BoxError> {
@@ -396,6 +527,7 @@ impl Group {
             .and_then(|connection| connection.remote_address())
             .map(SocketAddress::from);
         if active != Some(peer) {
+            self.observe_paths("validation_timeout");
             return Ok(());
         }
         tokio::select! {
@@ -812,6 +944,13 @@ mod tests {
         drop((first, same));
         let other = identities.get_or_create((43, 1)).unwrap();
         assert!(!Arc::ptr_eq(&other.shared, &reused_pid.shared));
-        assert_eq!(identities.identities.lock().len(), 2);
+        let stats = identities.stats();
+        assert_eq!(stats.identities, 2);
+        assert_eq!(stats.identity_limit, 2);
+        assert_eq!(stats.high_water, 2);
+        assert_eq!(stats.created, 3);
+        assert_eq!(stats.reused, 1);
+        assert_eq!(stats.reaped, 1);
+        assert_eq!(stats.rejected, 1);
     }
 }

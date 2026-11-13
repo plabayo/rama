@@ -8,6 +8,7 @@ use super::Endpoint;
 use crate::proto::RouteObserver;
 use ahash::HashMap;
 use parking_lot::Mutex;
+use rama_core::telemetry::tracing;
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
 use rama_quic_proto::{
     ConnectionId,
@@ -27,11 +28,30 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct EndpointRouteDirectory {
     shared: Arc<Mutex<State>>,
+    #[cfg(feature = "dial9")]
+    telemetry: Arc<crate::dial9::MigrationTelemetry>,
+}
+
+/// Consistent snapshot of one directory's occupancy and lifetime counters.
+/// Lookups count new transport associations, not established datagrams. A routing hit is
+/// only a hint; it does not authenticate the packet or prove successful path validation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EndpointRouteStats {
+    pub registered_endpoints: usize,
+    pub endpoint_limit: usize,
+    pub endpoint_high_water: usize,
+    pub routing_keys: usize,
+    pub routing_keys_high_water: usize,
+    pub registrations_rejected: u64,
+    pub route_hits: u64,
+    pub route_misses: u64,
+    pub ambiguous_routes: u64,
 }
 
 #[derive(Debug)]
 struct State {
     limit: usize,
+    stats: EndpointRouteStats,
     next: u64,
     cid_lengths: [usize; rama_quic_proto::MAX_CID_SIZE + 1],
     owners: HashMap<u64, Owner>,
@@ -62,6 +82,19 @@ struct Observer {
     directory: Weak<Mutex<State>>,
     id: u64,
     local: SocketAddress,
+    #[cfg(feature = "dial9")]
+    telemetry: Arc<crate::dial9::MigrationTelemetry>,
+}
+
+impl State {
+    fn snapshot(&self) -> EndpointRouteStats {
+        EndpointRouteStats {
+            registered_endpoints: self.owners.len(),
+            endpoint_limit: self.limit,
+            routing_keys: self.routes.len(),
+            ..self.stats
+        }
+    }
 }
 
 /// A routing hint, not proof of packet authenticity or current CID ownership.
@@ -76,12 +109,48 @@ impl EndpointRouteDirectory {
         Self {
             shared: Arc::new(Mutex::new(State {
                 limit: max_endpoints.get(),
+                stats: EndpointRouteStats::default(),
                 next: 0,
                 cid_lengths: [0; rama_quic_proto::MAX_CID_SIZE + 1],
                 owners: HashMap::default(),
                 routes: HashMap::default(),
             })),
+            #[cfg(feature = "dial9")]
+            telemetry: Arc::default(),
         }
+    }
+
+    /// Read occupancy, high-water marks and rejection/routing counters without enabling tracing.
+    pub fn stats(&self) -> EndpointRouteStats {
+        self.shared.lock().snapshot()
+    }
+
+    fn observe(&self, reason: &'static str, stats: EndpointRouteStats) {
+        tracing::trace!(target: "rama_quic::migration", reason,
+            registered_endpoints = stats.registered_endpoints,
+            endpoint_limit = stats.endpoint_limit,
+            endpoint_high_water = stats.endpoint_high_water,
+            routing_keys = stats.routing_keys,
+            routing_keys_high_water = stats.routing_keys_high_water,
+            registrations_rejected = stats.registrations_rejected,
+            route_hits = stats.route_hits, route_misses = stats.route_misses,
+            ambiguous_routes = stats.ambiguous_routes,
+            "QUIC routing directory snapshot");
+        #[cfg(feature = "dial9")]
+        self.telemetry.routing(reason, stats);
+    }
+
+    #[cfg(all(feature = "dial9", feature = "boring"))]
+    pub(crate) fn record_fallback(&self, total: u64) {
+        let stats = self.stats();
+        self.telemetry.capacity(crate::dial9::CapacitySnapshot {
+            resource: "registered_connections",
+            reason: "independent_fallback",
+            used: stats.registered_endpoints,
+            limit: stats.endpoint_limit,
+            high_water: stats.endpoint_high_water,
+            affected_total: total,
+        });
     }
 
     /// Whether the registration budget is currently exhausted. This snapshot reserves no slot.
@@ -121,6 +190,18 @@ impl EndpointRouteDirectory {
         let observer = {
             let mut state = self.shared.lock();
             if state.owners.len() >= state.limit {
+                state.stats.registrations_rejected =
+                    state.stats.registrations_rejected.saturating_add(1);
+                let snapshot = state.snapshot();
+                drop(state);
+                drop(endpoint_state);
+                self.observe("registration_rejected", snapshot);
+                if snapshot.registrations_rejected.is_power_of_two() {
+                    tracing::debug!(target: "rama_quic::migration",
+                        used = snapshot.registered_endpoints, limit = snapshot.endpoint_limit,
+                        rejected = snapshot.registrations_rejected,
+                        "QUIC routing registration capacity exhausted");
+                }
                 return Err(io::Error::new(
                     io::ErrorKind::StorageFull,
                     "endpoint routing directory is full",
@@ -138,13 +219,19 @@ impl EndpointRouteDirectory {
                     cid_len,
                 },
             );
+            state.stats.endpoint_high_water =
+                state.stats.endpoint_high_water.max(state.owners.len());
             Arc::new(Observer {
                 directory: Arc::downgrade(&self.shared),
                 id,
                 local,
+                #[cfg(feature = "dial9")]
+                telemetry: self.telemetry.clone(),
             })
         };
         endpoint_state.inner.observe_routes(observer.clone());
+        drop(endpoint_state);
+        self.observe("registered", self.stats());
         Ok(EndpointRouteRegistration { observer })
     }
 
@@ -177,6 +264,11 @@ impl EndpointRouteDirectory {
                 if let Some(ids) = state.routes.get(&(local, *packet.dst_cid(), initial)) {
                     for id in ids {
                         if selected.is_some_and(|previous| previous != *id) {
+                            state.stats.ambiguous_routes =
+                                state.stats.ambiguous_routes.saturating_add(1);
+                            let snapshot = state.snapshot();
+                            drop(state);
+                            self.observe("ambiguous", snapshot);
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
                                 "ambiguous QUIC endpoint route",
@@ -187,12 +279,23 @@ impl EndpointRouteDirectory {
                 }
             }
         }
-        Ok(selected.and_then(|id| {
-            state.owners.get_mut(&id).map(|owner| EndpointRoute {
+        let route = selected.and_then(|id| {
+            state.owners.get(&id).map(|owner| EndpointRoute {
                 registration: id,
                 endpoint: owner.endpoint.clone(),
             })
-        }))
+        });
+        let reason = if route.is_some() {
+            state.stats.route_hits = state.stats.route_hits.saturating_add(1);
+            "hit"
+        } else {
+            state.stats.route_misses = state.stats.route_misses.saturating_add(1);
+            "miss"
+        };
+        let snapshot = state.snapshot();
+        drop(state);
+        self.observe(reason, snapshot);
+        Ok(route)
     }
 }
 
@@ -209,6 +312,8 @@ impl RouteObserver for Observer {
         if !ids.contains(&self.id) {
             ids.push(self.id);
         }
+        state.stats.routing_keys_high_water =
+            state.stats.routing_keys_high_water.max(state.routes.len());
     }
 
     fn remove(&self, cid: ConnectionId, initial: bool) {
@@ -231,7 +336,7 @@ impl Drop for EndpointRouteRegistration {
         let Some(shared) = self.observer.directory.upgrade() else {
             return;
         };
-        let owner = {
+        let (owner, snapshot) = {
             let mut state = shared.lock();
             state.routes.retain(|_, ids| {
                 ids.retain(|id| *id != self.observer.id);
@@ -241,8 +346,14 @@ impl Drop for EndpointRouteRegistration {
             if let Some(owner) = &owner {
                 state.cid_lengths[owner.cid_len] -= 1;
             }
-            owner
+            (owner, state.snapshot())
         };
+        tracing::trace!(target: "rama_quic::migration",
+            registered_endpoints = snapshot.registered_endpoints,
+            endpoint_limit = snapshot.endpoint_limit, routing_keys = snapshot.routing_keys,
+            "QUIC routing registration released");
+        #[cfg(feature = "dial9")]
+        self.observer.telemetry.routing("released", snapshot);
         // Endpoint destruction may drop native state; never do that under the directory lock.
         drop(owner);
     }
@@ -303,6 +414,16 @@ mod tests {
         observer.insert(ConnectionId::new(&[8; 8]), false);
         assert!(directory.shared.lock().routes.is_empty());
         assert!(directory.shared.lock().owners.is_empty());
+        let stats = directory.stats();
+        assert_eq!(stats.registered_endpoints, 0);
+        assert_eq!(stats.endpoint_limit, 2);
+        assert_eq!(stats.endpoint_high_water, 1);
+        assert_eq!(stats.routing_keys, 0);
+        assert_eq!(stats.routing_keys_high_water, 1);
+        assert_eq!(stats.registrations_rejected, 0);
+        assert_eq!(stats.route_hits, 1);
+        assert_eq!(stats.route_misses, 2);
+        assert_eq!(stats.ambiguous_routes, 0);
     }
 
     #[tokio::test]
@@ -329,5 +450,11 @@ mod tests {
             second.id()
         );
         let _third = directory.register(&endpoint(443), local).unwrap();
+        let stats = directory.stats();
+        assert_eq!(stats.registered_endpoints, 2);
+        assert_eq!(stats.endpoint_high_water, 2);
+        assert_eq!(stats.registrations_rejected, 1);
+        assert_eq!(stats.ambiguous_routes, 1);
+        assert_eq!(stats.route_hits, 1);
     }
 }

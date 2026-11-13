@@ -21,7 +21,7 @@ pub use relay::QuicRelay;
 mod mitm;
 #[cfg(feature = "boring")]
 pub use mitm::{
-    DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT, QuicMirrorCeiling, QuicMitmIngress,
+    DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT, QuicMirrorCeiling, QuicMitmIdentityStats, QuicMitmIngress,
     QuicMitmIngressByIdentity, QuicMitmIngressByIdentityConfig, QuicMitmIngressConfig,
     QuicMitmRelay, QuicMitmRelayService, QuicMitmRoute,
 };

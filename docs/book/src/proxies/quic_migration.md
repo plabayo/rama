@@ -87,3 +87,19 @@ and [Apple's network path observations](https://developer.apple.com/documentatio
 
 See the [conditional QUIC MITM example](https://github.com/plabayo/rama/blob/main/examples/src/quic_h3_mitm_proxy.rs)
 and [Apple transparent-proxy example](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy).
+
+### Observe capacity
+
+`QuicMitmIngress::routing_stats()` exposes registration occupancy, high-water marks,
+route hits/misses and rejected registrations. `unregistered_connections()` counts
+new connections that continued independently when registration was full.
+`QuicMitmIngressByIdentity::stats()` reports identity-cache occupancy, reuse,
+reaping and rejection totals. These limits govern migration support, not flow admission.
+
+With `dial9`, `QuicRoutingSnapshot` and `QuicMigrationCapacity` record control-plane
+snapshots, including connection-path attachment, eviction totals and validation timeouts.
+Resource IDs correlate events without recording addresses, connection IDs or process identities.
+Path occupancy is sampled at the event; it is not a continuously maintained gauge.
+The `rama_quic::migration` tracing target provides the same lifecycle diagnostics;
+capacity fallback messages at debug level are logarithmically sampled.
+Updates follow routing and lifecycle events, not each established datagram.

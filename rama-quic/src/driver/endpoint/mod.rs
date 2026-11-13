@@ -60,7 +60,9 @@ pub(crate) mod ceiling;
 mod routing;
 mod serve;
 pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
-pub use routing::{EndpointRoute, EndpointRouteDirectory, EndpointRouteRegistration};
+pub use routing::{
+    EndpointRoute, EndpointRouteDirectory, EndpointRouteRegistration, EndpointRouteStats,
+};
 
 const BATCH_SIZE: usize = 32;
 // Per-entry receive memory ceiling, independent of backend capability claims.
