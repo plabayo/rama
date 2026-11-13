@@ -268,7 +268,7 @@ async fn main() -> Result<(), BoxError> {
                     .await
             } else {
                 tracing::info!(?name, "forwarding");
-                forward.serve(input.input).await.map_err(BoxError::from)
+                forward.serve(input.input).await
             }
         }
     });
@@ -276,7 +276,7 @@ async fn main() -> Result<(), BoxError> {
         .with_router(ingress)
         .with_fallback(service_fn(move |input: Association| {
             let forward = forward.clone();
-            async move { forward.serve(input).await.map_err(BoxError::from) }
+            async move { forward.serve(input).await }
         }));
 
     let admission = QuicAssociationAdmission::try_new(AssociationLimits {
