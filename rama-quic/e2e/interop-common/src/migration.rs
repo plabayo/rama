@@ -69,11 +69,10 @@ pub fn migration_cases() -> Vec<Case<MigrationScenario>> {
 
 /// Where the peer saw a case's datagrams come from, either side of the move.
 ///
-/// This is the address the peer is talking to, and nothing more: Rama answers it from
-/// `self.path.remote`, which `migrate` swaps while the challenge on the new path is still
-/// outstanding, and quiche answers it from the source tuple of the last datagram it read. So a
-/// case here establishes that the traffic moved and kept working, not that the new path was
-/// validated. Validation itself is not covered yet.
+/// Rama reports its last validated peer address, so its server-side observation waits for
+/// successful path validation. Other adapters can report only the last received source tuple
+/// (notably quiche); those observations prove traffic moved and continued, not validation.
+/// Do not interpret a peer adapter's address alone as a completed PATH_CHALLENGE exchange.
 #[derive(Debug, Clone, Copy)]
 pub struct MigrationObservation {
     pub from_before: SocketAddr,

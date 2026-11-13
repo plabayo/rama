@@ -1,4 +1,4 @@
-//! Independent Quinn client and origin, with Rama's shared MITM between them.
+//! Independent Quinn client and origin, with independent Rama MITM endpoints between them.
 //! Ordinary endpoint migration tests do not exercise association admission or the MITM layer.
 #![cfg(feature = "boring")]
 
@@ -51,8 +51,8 @@ impl Service<BridgeIo<Connection, Connection>> for Observe {
 }
 
 #[tokio::test]
-async fn independent_client_migrates_repeatedly_through_shared_mitm() {
-    common::step("shared MITM migration", async {
+async fn independent_client_keeps_streams_across_mitm_path_eviction() {
+    common::step("independent MITM migration", async {
         let auth = common::identity();
         let mitm = common::identity_from_a_stranger("MITM migration test");
         let origin = quinn::Endpoint::server(
@@ -73,7 +73,7 @@ async fn independent_client_migrates_repeatedly_through_shared_mitm() {
             WeakScope::detached(),
             QuicMitmIngressConfig {
                 max_registered_connections: n(1),
-                max_paths_per_connection: n(8),
+                max_paths_per_connection: n(2),
                 path_validation_timeout: std::time::Duration::from_secs(5),
                 capabilities: None,
             },
@@ -119,7 +119,12 @@ async fn independent_client_migrates_repeatedly_through_shared_mitm() {
         let accepting = origin.clone();
         let echo = common::Peer::spawn(async move {
             let connection = accepting.accept().await.unwrap().await.unwrap();
+            let (mut persistent_send, mut persistent_recv) = connection.accept_bi().await.unwrap();
             for _ in 0..4 {
+                let mut bytes = [0; 16];
+                persistent_recv.read_exact(&mut bytes).await.unwrap();
+                persistent_send.write_all(&bytes).await.unwrap();
+
                 let (mut send, mut recv) = connection.accept_bi().await.unwrap();
                 let bytes = recv.read_to_end(1024).await.unwrap();
                 send.write_all(&bytes).await.unwrap();
@@ -136,19 +141,27 @@ async fn independent_client_migrates_repeatedly_through_shared_mitm() {
             .unwrap()
             .await
             .unwrap();
+        // Keep an existing stream across each move, while opening new streams as well.
+        // Four addresses with a two-path bound force obsolete transport eviction.
+        let (mut persistent_send, mut persistent_recv) = connection.open_bi().await.unwrap();
         for round in 0..4 {
             if round > 0 {
                 client
                     .rebind(std::net::UdpSocket::bind("127.0.0.1:0").unwrap())
                     .unwrap();
             }
+            let bytes = [round as u8; 16];
+            persistent_send.write_all(&bytes).await.unwrap();
+            let mut echoed = [0; 16];
+            persistent_recv.read_exact(&mut echoed).await.unwrap();
+            assert_eq!(echoed, bytes);
+
             let (mut send, mut recv) = connection.open_bi().await.unwrap();
             let payload = format!("independent migration {round}");
             send.write_all(payload.as_bytes()).await.unwrap();
             send.finish().unwrap();
             assert_eq!(recv.read_to_end(1024).await.unwrap(), payload.as_bytes());
-            while observed.lock().as_ref().unwrap().remote_address().port()
-                != client.local_addr().unwrap().port()
+            while observed.lock().as_ref().unwrap().remote_address() != client.local_addr().unwrap()
             {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
