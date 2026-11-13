@@ -3,7 +3,7 @@
 <defs><pattern id="na" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" stroke="#c8c8c8" stroke-width="2"/></pattern></defs>
 <text x="16" y="30" font-size="20" font-weight="bold">QUIC hq-interop bulk: one stream, one large file [MiB/s]</text>
 <text x="16" y="56" fill="#333">Linux 6.14.0-37-generic · amd64 · 16 cpus · docker 29.2.1</text>
-<text x="16" y="74" fill="#333">2026-11-04 20:08 UTC · rama 3952f3669 · workload 1 × 4G · 5 runs, median shown</text>
+<text x="16" y="74" fill="#333">2026-11-12 11:25 UTC · rama f4caa3acb · workload 1 × 4G · 5 runs, median shown</text>
 <text x="16" y="110" fill="#555">rows: client · columns: server</text>
 <text x="260" y="140" text-anchor="middle">rama-boring</text>
 <text x="428" y="140" text-anchor="middle">rama-rustls-ring</text>
@@ -14,205 +14,205 @@
 <text x="1268" y="140" text-anchor="middle">quic-go</text>
 <text x="1436" y="140" text-anchor="middle">ngtcp2</text>
 <text x="168" y="182" text-anchor="end">rama-boring</text>
-<rect x="176" y="150" width="168" height="54" fill="#2351f8" stroke="#fff"/>
-<text x="260" y="175" text-anchor="middle" font-weight="bold" fill="#111">242</text>
-<text x="260" y="193" text-anchor="middle" font-size="10" fill="#111">229 – 247</text>
-<rect x="344" y="150" width="168" height="54" fill="#1f4ef8" stroke="#fff"/>
-<text x="428" y="175" text-anchor="middle" font-weight="bold" fill="#111">245</text>
-<text x="428" y="193" text-anchor="middle" font-size="10" fill="#111">241 – 246</text>
-<rect x="512" y="150" width="168" height="54" fill="#1f4ef8" stroke="#fff"/>
-<text x="596" y="175" text-anchor="middle" font-weight="bold" fill="#fff">245</text>
-<text x="596" y="193" text-anchor="middle" font-size="10" fill="#fff">243 – 246</text>
-<rect x="680" y="150" width="168" height="54" fill="#819df8" stroke="#fff"/>
-<text x="764" y="175" text-anchor="middle" font-weight="bold" fill="#111">136</text>
-<text x="764" y="193" text-anchor="middle" font-size="10" fill="#111">136 – 137</text>
+<rect x="176" y="150" width="168" height="54" fill="#1f4ef8" stroke="#fff"/>
+<text x="260" y="175" text-anchor="middle" font-weight="bold" fill="#fff">251</text>
+<text x="260" y="193" text-anchor="middle" font-size="10" fill="#fff">249 – 251</text>
+<rect x="344" y="150" width="168" height="54" fill="#2150f8" stroke="#fff"/>
+<text x="428" y="175" text-anchor="middle" font-weight="bold" fill="#111">249</text>
+<text x="428" y="193" text-anchor="middle" font-size="10" fill="#111">246 – 251</text>
+<rect x="512" y="150" width="168" height="54" fill="#2251f8" stroke="#fff"/>
+<text x="596" y="175" text-anchor="middle" font-weight="bold" fill="#111">247</text>
+<text x="596" y="193" text-anchor="middle" font-size="10" fill="#111">244 – 248</text>
+<rect x="680" y="150" width="168" height="54" fill="#839ff8" stroke="#fff"/>
+<text x="764" y="175" text-anchor="middle" font-weight="bold" fill="#111">137</text>
+<text x="764" y="193" text-anchor="middle" font-size="10" fill="#111">133 – 137</text>
 <rect x="848" y="150" width="168" height="54" fill="#cfdcf8" stroke="#fff"/>
-<text x="932" y="175" text-anchor="middle" font-weight="bold" fill="#111">49.0</text>
-<text x="932" y="193" text-anchor="middle" font-size="10" fill="#111">48.3 – 49.3</text>
-<rect x="1016" y="150" width="168" height="54" fill="#dee8f8" stroke="#fff"/>
-<text x="1100" y="175" text-anchor="middle" font-weight="bold" fill="#111">32.9</text>
-<text x="1100" y="193" text-anchor="middle" font-size="10" fill="#111">32.7 – 33.0</text>
-<rect x="1184" y="150" width="168" height="54" fill="#829ef8" stroke="#fff"/>
-<text x="1268" y="175" text-anchor="middle" font-weight="bold" fill="#111">135</text>
-<text x="1268" y="193" text-anchor="middle" font-size="10" fill="#111">134 – 135</text>
-<rect x="1352" y="150" width="168" height="54" fill="#a6bbf8" stroke="#fff"/>
-<text x="1436" y="175" text-anchor="middle" font-weight="bold" fill="#111">95.4</text>
-<text x="1436" y="193" text-anchor="middle" font-size="10" fill="#111">89.3 – 95.5</text>
+<text x="932" y="175" text-anchor="middle" font-weight="bold" fill="#111">50.2</text>
+<text x="932" y="193" text-anchor="middle" font-size="10" fill="#111">50.0 – 50.4</text>
+<rect x="1016" y="150" width="168" height="54" fill="#dde8f8" stroke="#fff"/>
+<text x="1100" y="175" text-anchor="middle" font-weight="bold" fill="#111">33.4</text>
+<text x="1100" y="193" text-anchor="middle" font-size="10" fill="#111">33.0 – 33.4</text>
+<rect x="1184" y="150" width="168" height="54" fill="#849ff8" stroke="#fff"/>
+<text x="1268" y="175" text-anchor="middle" font-weight="bold" fill="#111">136</text>
+<text x="1268" y="193" text-anchor="middle" font-size="10" fill="#111">134 – 136</text>
+<rect x="1352" y="150" width="168" height="54" fill="#a7bcf8" stroke="#fff"/>
+<text x="1436" y="175" text-anchor="middle" font-weight="bold" fill="#111">95.5</text>
+<text x="1436" y="193" text-anchor="middle" font-size="10" fill="#111">94.2 – 95.8</text>
 <text x="168" y="236" text-anchor="end">rama-rustls-ring</text>
-<rect x="176" y="204" width="168" height="54" fill="#1f4ef8" stroke="#fff"/>
-<text x="260" y="229" text-anchor="middle" font-weight="bold" fill="#111">245</text>
-<text x="260" y="247" text-anchor="middle" font-size="10" fill="#111">238 – 248</text>
-<rect x="344" y="204" width="168" height="54" fill="#1f4ef8" stroke="#fff"/>
-<text x="428" y="229" text-anchor="middle" font-weight="bold" fill="#111">245</text>
-<text x="428" y="247" text-anchor="middle" font-size="10" fill="#111">243 – 247</text>
-<rect x="512" y="204" width="168" height="54" fill="#2150f8" stroke="#fff"/>
-<text x="596" y="229" text-anchor="middle" font-weight="bold" fill="#111">244</text>
-<text x="596" y="247" text-anchor="middle" font-size="10" fill="#111">243 – 244</text>
-<rect x="680" y="204" width="168" height="54" fill="#819df8" stroke="#fff"/>
-<text x="764" y="229" text-anchor="middle" font-weight="bold" fill="#111">136</text>
-<text x="764" y="247" text-anchor="middle" font-size="10" fill="#111">135 – 137</text>
+<rect x="176" y="204" width="168" height="54" fill="#2351f8" stroke="#fff"/>
+<text x="260" y="229" text-anchor="middle" font-weight="bold" fill="#111">247</text>
+<text x="260" y="247" text-anchor="middle" font-size="10" fill="#111">244 – 250</text>
+<rect x="344" y="204" width="168" height="54" fill="#2251f8" stroke="#fff"/>
+<text x="428" y="229" text-anchor="middle" font-weight="bold" fill="#111">247</text>
+<text x="428" y="247" text-anchor="middle" font-size="10" fill="#111">247 – 247</text>
+<rect x="512" y="204" width="168" height="54" fill="#2553f8" stroke="#fff"/>
+<text x="596" y="229" text-anchor="middle" font-weight="bold" fill="#111">245</text>
+<text x="596" y="247" text-anchor="middle" font-size="10" fill="#111">243 – 246</text>
+<rect x="680" y="204" width="168" height="54" fill="#84a0f8" stroke="#fff"/>
+<text x="764" y="229" text-anchor="middle" font-weight="bold" fill="#111">135</text>
+<text x="764" y="247" text-anchor="middle" font-size="10" fill="#111">135 – 136</text>
 <rect x="848" y="204" width="168" height="54" fill="#cfdcf8" stroke="#fff"/>
 <text x="932" y="229" text-anchor="middle" font-weight="bold" fill="#111">49.6</text>
-<text x="932" y="247" text-anchor="middle" font-size="10" fill="#111">49.5 – 49.7</text>
+<text x="932" y="247" text-anchor="middle" font-size="10" fill="#111">49.5 – 49.8</text>
 <rect x="1016" y="204" width="168" height="54" fill="#dee8f8" stroke="#fff"/>
-<text x="1100" y="229" text-anchor="middle" font-weight="bold" fill="#111">33.1</text>
-<text x="1100" y="247" text-anchor="middle" font-size="10" fill="#111">32.9 – 33.4</text>
-<rect x="1184" y="204" width="168" height="54" fill="#839ff8" stroke="#fff"/>
-<text x="1268" y="229" text-anchor="middle" font-weight="bold" fill="#111">134</text>
-<text x="1268" y="247" text-anchor="middle" font-size="10" fill="#111">128 – 135</text>
+<text x="1100" y="229" text-anchor="middle" font-weight="bold" fill="#111">33.2</text>
+<text x="1100" y="247" text-anchor="middle" font-size="10" fill="#111">32.8 – 33.5</text>
+<rect x="1184" y="204" width="168" height="54" fill="#85a0f8" stroke="#fff"/>
+<text x="1268" y="229" text-anchor="middle" font-weight="bold" fill="#111">135</text>
+<text x="1268" y="247" text-anchor="middle" font-size="10" fill="#111">134 – 135</text>
 <rect x="1352" y="204" width="168" height="54" fill="#a7bcf8" stroke="#fff"/>
-<text x="1436" y="229" text-anchor="middle" font-weight="bold" fill="#111">94.3</text>
-<text x="1436" y="247" text-anchor="middle" font-size="10" fill="#111">91.8 – 95.1</text>
+<text x="1436" y="229" text-anchor="middle" font-weight="bold" fill="#111">95.2</text>
+<text x="1436" y="247" text-anchor="middle" font-size="10" fill="#111">95.0 – 95.6</text>
 <text x="168" y="290" text-anchor="end">rama-rustls-aws-lc</text>
-<rect x="176" y="258" width="168" height="54" fill="#2754f8" stroke="#fff"/>
-<text x="260" y="283" text-anchor="middle" font-weight="bold" fill="#111">238</text>
-<text x="260" y="301" text-anchor="middle" font-size="10" fill="#111">235 – 248</text>
-<rect x="344" y="258" width="168" height="54" fill="#204ff8" stroke="#fff"/>
-<text x="428" y="283" text-anchor="middle" font-weight="bold" fill="#111">245</text>
-<text x="428" y="301" text-anchor="middle" font-size="10" fill="#111">232 – 247</text>
-<rect x="512" y="258" width="168" height="54" fill="#2150f8" stroke="#fff"/>
-<text x="596" y="283" text-anchor="middle" font-weight="bold" fill="#111">244</text>
-<text x="596" y="301" text-anchor="middle" font-size="10" fill="#111">243 – 246</text>
-<rect x="680" y="258" width="168" height="54" fill="#829ef8" stroke="#fff"/>
+<rect x="176" y="258" width="168" height="54" fill="#2251f8" stroke="#fff"/>
+<text x="260" y="283" text-anchor="middle" font-weight="bold" fill="#111">247</text>
+<text x="260" y="301" text-anchor="middle" font-size="10" fill="#111">247 – 248</text>
+<rect x="344" y="258" width="168" height="54" fill="#2452f8" stroke="#fff"/>
+<text x="428" y="283" text-anchor="middle" font-weight="bold" fill="#111">246</text>
+<text x="428" y="301" text-anchor="middle" font-size="10" fill="#111">245 – 246</text>
+<rect x="512" y="258" width="168" height="54" fill="#2452f8" stroke="#fff"/>
+<text x="596" y="283" text-anchor="middle" font-weight="bold" fill="#111">246</text>
+<text x="596" y="301" text-anchor="middle" font-size="10" fill="#111">244 – 246</text>
+<rect x="680" y="258" width="168" height="54" fill="#849ff8" stroke="#fff"/>
 <text x="764" y="283" text-anchor="middle" font-weight="bold" fill="#111">136</text>
 <text x="764" y="301" text-anchor="middle" font-size="10" fill="#111">135 – 136</text>
 <rect x="848" y="258" width="168" height="54" fill="#cfdcf8" stroke="#fff"/>
-<text x="932" y="283" text-anchor="middle" font-weight="bold" fill="#111">49.2</text>
-<text x="932" y="301" text-anchor="middle" font-size="10" fill="#111">48.3 – 49.4</text>
-<rect x="1016" y="258" width="168" height="54" fill="#dee8f8" stroke="#fff"/>
-<text x="1100" y="283" text-anchor="middle" font-weight="bold" fill="#111">32.9</text>
-<text x="1100" y="301" text-anchor="middle" font-size="10" fill="#111">32.9 – 33.1</text>
-<rect x="1184" y="258" width="168" height="54" fill="#839ef8" stroke="#fff"/>
+<text x="932" y="283" text-anchor="middle" font-weight="bold" fill="#111">49.4</text>
+<text x="932" y="301" text-anchor="middle" font-size="10" fill="#111">48.8 – 50.0</text>
+<rect x="1016" y="258" width="168" height="54" fill="#dde8f8" stroke="#fff"/>
+<text x="1100" y="283" text-anchor="middle" font-weight="bold" fill="#111">33.3</text>
+<text x="1100" y="301" text-anchor="middle" font-size="10" fill="#111">33.1 – 33.4</text>
+<rect x="1184" y="258" width="168" height="54" fill="#84a0f8" stroke="#fff"/>
 <text x="1268" y="283" text-anchor="middle" font-weight="bold" fill="#111">135</text>
-<text x="1268" y="301" text-anchor="middle" font-size="10" fill="#111">134 – 135</text>
-<rect x="1352" y="258" width="168" height="54" fill="#a4b9f8" stroke="#fff"/>
-<text x="1436" y="283" text-anchor="middle" font-weight="bold" fill="#111">97.4</text>
-<text x="1436" y="301" text-anchor="middle" font-size="10" fill="#111">93.1 – 97.9</text>
+<text x="1268" y="301" text-anchor="middle" font-size="10" fill="#111">132 – 136</text>
+<rect x="1352" y="258" width="168" height="54" fill="#a8bcf8" stroke="#fff"/>
+<text x="1436" y="283" text-anchor="middle" font-weight="bold" fill="#111">94.6</text>
+<text x="1436" y="301" text-anchor="middle" font-size="10" fill="#111">94.0 – 94.9</text>
 <text x="168" y="344" text-anchor="end">quinn</text>
-<rect x="176" y="312" width="168" height="54" fill="#2755f8" stroke="#fff"/>
-<text x="260" y="337" text-anchor="middle" font-weight="bold" fill="#111">236</text>
-<text x="260" y="355" text-anchor="middle" font-size="10" fill="#111">223 – 238</text>
-<rect x="344" y="312" width="168" height="54" fill="#2a57f8" stroke="#fff"/>
-<text x="428" y="337" text-anchor="middle" font-weight="bold" fill="#111">234</text>
-<text x="428" y="355" text-anchor="middle" font-size="10" fill="#111">233 – 235</text>
-<rect x="512" y="312" width="168" height="54" fill="#2b58f8" stroke="#fff"/>
-<text x="596" y="337" text-anchor="middle" font-weight="bold" fill="#111">233</text>
-<text x="596" y="355" text-anchor="middle" font-size="10" fill="#111">229 – 234</text>
-<rect x="680" y="312" width="168" height="54" fill="#88a3f8" stroke="#fff"/>
-<text x="764" y="337" text-anchor="middle" font-weight="bold" fill="#111">129</text>
-<text x="764" y="355" text-anchor="middle" font-size="10" fill="#111">127 – 130</text>
+<rect x="176" y="312" width="168" height="54" fill="#2a57f8" stroke="#fff"/>
+<text x="260" y="337" text-anchor="middle" font-weight="bold" fill="#111">238</text>
+<text x="260" y="355" text-anchor="middle" font-size="10" fill="#111">236 – 239</text>
+<rect x="344" y="312" width="168" height="54" fill="#2b58f8" stroke="#fff"/>
+<text x="428" y="337" text-anchor="middle" font-weight="bold" fill="#111">237</text>
+<text x="428" y="355" text-anchor="middle" font-size="10" fill="#111">237 – 238</text>
+<rect x="512" y="312" width="168" height="54" fill="#2d59f8" stroke="#fff"/>
+<text x="596" y="337" text-anchor="middle" font-weight="bold" fill="#111">236</text>
+<text x="596" y="355" text-anchor="middle" font-size="10" fill="#111">230 – 238</text>
+<rect x="680" y="312" width="168" height="54" fill="#8ba5f8" stroke="#fff"/>
+<text x="764" y="337" text-anchor="middle" font-weight="bold" fill="#111">128</text>
+<text x="764" y="355" text-anchor="middle" font-size="10" fill="#111">127 – 129</text>
 <rect x="848" y="312" width="168" height="54" fill="#cfdcf8" stroke="#fff"/>
-<text x="932" y="337" text-anchor="middle" font-weight="bold" fill="#111">49.1</text>
-<text x="932" y="355" text-anchor="middle" font-size="10" fill="#111">46.9 – 49.3</text>
+<text x="932" y="337" text-anchor="middle" font-weight="bold" fill="#111">49.7</text>
+<text x="932" y="355" text-anchor="middle" font-size="10" fill="#111">49.5 – 49.8</text>
 <rect x="1016" y="312" width="168" height="54" fill="#dee8f8" stroke="#fff"/>
-<text x="1100" y="337" text-anchor="middle" font-weight="bold" fill="#111">32.8</text>
-<text x="1100" y="355" text-anchor="middle" font-size="10" fill="#111">32.5 – 32.9</text>
-<rect x="1184" y="312" width="168" height="54" fill="#84a0f8" stroke="#fff"/>
-<text x="1268" y="337" text-anchor="middle" font-weight="bold" fill="#111">133</text>
-<text x="1268" y="355" text-anchor="middle" font-size="10" fill="#111">131 – 134</text>
+<text x="1100" y="337" text-anchor="middle" font-weight="bold" fill="#111">32.6</text>
+<text x="1100" y="355" text-anchor="middle" font-size="10" fill="#111">32.4 – 33.0</text>
+<rect x="1184" y="312" width="168" height="54" fill="#85a0f8" stroke="#fff"/>
+<text x="1268" y="337" text-anchor="middle" font-weight="bold" fill="#111">134</text>
+<text x="1268" y="355" text-anchor="middle" font-size="10" fill="#111">134 – 134</text>
 <rect x="1352" y="312" width="168" height="54" fill="#a7bcf8" stroke="#fff"/>
-<text x="1436" y="337" text-anchor="middle" font-weight="bold" fill="#111">94.2</text>
-<text x="1436" y="355" text-anchor="middle" font-size="10" fill="#111">92.9 – 95.2</text>
+<text x="1436" y="337" text-anchor="middle" font-weight="bold" fill="#111">95.8</text>
+<text x="1436" y="355" text-anchor="middle" font-size="10" fill="#111">95.5 – 95.8</text>
 <text x="168" y="398" text-anchor="end">quiche</text>
-<rect x="176" y="366" width="168" height="54" fill="#9db4f8" stroke="#fff"/>
-<text x="260" y="391" text-anchor="middle" font-weight="bold" fill="#111">105</text>
-<text x="260" y="409" text-anchor="middle" font-size="10" fill="#111">99.7 – 105</text>
-<rect x="344" y="366" width="168" height="54" fill="#9eb4f8" stroke="#fff"/>
-<text x="428" y="391" text-anchor="middle" font-weight="bold" fill="#111">105</text>
-<text x="428" y="409" text-anchor="middle" font-size="10" fill="#111">98.2 – 105</text>
+<rect x="176" y="366" width="168" height="54" fill="#9eb5f8" stroke="#fff"/>
+<text x="260" y="391" text-anchor="middle" font-weight="bold" fill="#111">106</text>
+<text x="260" y="409" text-anchor="middle" font-size="10" fill="#111">97.5 – 106</text>
+<rect x="344" y="366" width="168" height="54" fill="#9eb5f8" stroke="#fff"/>
+<text x="428" y="391" text-anchor="middle" font-weight="bold" fill="#111">106</text>
+<text x="428" y="409" text-anchor="middle" font-size="10" fill="#111">102 – 106</text>
 <rect x="512" y="366" width="168" height="54" fill="#9eb5f8" stroke="#fff"/>
-<text x="596" y="391" text-anchor="middle" font-weight="bold" fill="#111">104</text>
-<text x="596" y="409" text-anchor="middle" font-size="10" fill="#111">104 – 104</text>
+<text x="596" y="391" text-anchor="middle" font-weight="bold" fill="#111">106</text>
+<text x="596" y="409" text-anchor="middle" font-size="10" fill="#111">105 – 106</text>
 <rect x="680" y="366" width="168" height="54" fill="#9bb2f8" stroke="#fff"/>
-<text x="764" y="391" text-anchor="middle" font-weight="bold" fill="#111">107</text>
-<text x="764" y="409" text-anchor="middle" font-size="10" fill="#111">103 – 108</text>
-<rect x="848" y="366" width="168" height="54" fill="#c9d8f8" stroke="#fff"/>
-<text x="932" y="391" text-anchor="middle" font-weight="bold" fill="#111">55.5</text>
-<text x="932" y="409" text-anchor="middle" font-size="10" fill="#111">52.8 – 56.2</text>
-<rect x="1016" y="366" width="168" height="54" fill="#dce6f8" stroke="#fff"/>
-<text x="1100" y="391" text-anchor="middle" font-weight="bold" fill="#111">35.0</text>
-<text x="1100" y="409" text-anchor="middle" font-size="10" fill="#111">34.6 – 35.5</text>
-<rect x="1184" y="366" width="168" height="54" fill="#a7bcf8" stroke="#fff"/>
-<text x="1268" y="391" text-anchor="middle" font-weight="bold" fill="#111">94.0</text>
-<text x="1268" y="409" text-anchor="middle" font-size="10" fill="#111">92.1 – 94.9</text>
-<rect x="1352" y="366" width="168" height="54" fill="#acbff8" stroke="#fff"/>
-<text x="1436" y="391" text-anchor="middle" font-weight="bold" fill="#111">88.8</text>
-<text x="1436" y="409" text-anchor="middle" font-size="10" fill="#111">79.6 – 89.5</text>
+<text x="764" y="391" text-anchor="middle" font-weight="bold" fill="#111">110</text>
+<text x="764" y="409" text-anchor="middle" font-size="10" fill="#111">107 – 111</text>
+<rect x="848" y="366" width="168" height="54" fill="#c9d7f8" stroke="#fff"/>
+<text x="932" y="391" text-anchor="middle" font-weight="bold" fill="#111">56.6</text>
+<text x="932" y="409" text-anchor="middle" font-size="10" fill="#111">56.3 – 57.1</text>
+<rect x="1016" y="366" width="168" height="54" fill="#dae5f8" stroke="#fff"/>
+<text x="1100" y="391" text-anchor="middle" font-weight="bold" fill="#111">36.7</text>
+<text x="1100" y="409" text-anchor="middle" font-size="10" fill="#111">36.1 – 37.7</text>
+<rect x="1184" y="366" width="168" height="54" fill="#a8bcf8" stroke="#fff"/>
+<text x="1268" y="391" text-anchor="middle" font-weight="bold" fill="#111">94.9</text>
+<text x="1268" y="409" text-anchor="middle" font-size="10" fill="#111">93.4 – 95.1</text>
+<rect x="1352" y="366" width="168" height="54" fill="#adc1f8" stroke="#fff"/>
+<text x="1436" y="391" text-anchor="middle" font-weight="bold" fill="#111">88.2</text>
+<text x="1436" y="409" text-anchor="middle" font-size="10" fill="#111">85.8 – 89.7</text>
 <text x="168" y="452" text-anchor="end">aioquic</text>
-<rect x="176" y="420" width="168" height="54" fill="#d2dff8" stroke="#fff"/>
-<text x="260" y="445" text-anchor="middle" font-weight="bold" fill="#111">45.8</text>
-<text x="260" y="463" text-anchor="middle" font-size="10" fill="#111">43.5 – 51.4</text>
+<rect x="176" y="420" width="168" height="54" fill="#d3dff8" stroke="#fff"/>
+<text x="260" y="445" text-anchor="middle" font-weight="bold" fill="#111">45.5</text>
+<text x="260" y="463" text-anchor="middle" font-size="10" fill="#111">41.5 – 46.0</text>
 <rect x="344" y="420" width="168" height="54" fill="#d2def8" stroke="#fff"/>
 <text x="428" y="445" text-anchor="middle" font-weight="bold" fill="#111">46.4</text>
-<text x="428" y="463" text-anchor="middle" font-size="10" fill="#111">45.3 – 47.7</text>
+<text x="428" y="463" text-anchor="middle" font-size="10" fill="#111">44.8 – 49.7</text>
 <rect x="512" y="420" width="168" height="54" fill="#d2def8" stroke="#fff"/>
-<text x="596" y="445" text-anchor="middle" font-weight="bold" fill="#111">45.9</text>
-<text x="596" y="463" text-anchor="middle" font-size="10" fill="#111">44.1 – 51.5</text>
-<rect x="680" y="420" width="168" height="54" fill="#e1ebf8" stroke="#fff"/>
-<text x="764" y="445" text-anchor="middle" font-weight="bold" fill="#111">28.7</text>
-<text x="764" y="463" text-anchor="middle" font-size="10" fill="#111">28.5 – 29.0</text>
-<rect x="848" y="420" width="168" height="54" fill="#e2ebf8" stroke="#fff"/>
-<text x="932" y="445" text-anchor="middle" font-weight="bold" fill="#111">27.9</text>
-<text x="932" y="463" text-anchor="middle" font-size="10" fill="#111">25.4 – 46.0</text>
+<text x="596" y="445" text-anchor="middle" font-weight="bold" fill="#111">46.6</text>
+<text x="596" y="463" text-anchor="middle" font-size="10" fill="#111">44.3 – 49.3</text>
+<rect x="680" y="420" width="168" height="54" fill="#dfe9f8" stroke="#fff"/>
+<text x="764" y="445" text-anchor="middle" font-weight="bold" fill="#111">31.7</text>
+<text x="764" y="463" text-anchor="middle" font-size="10" fill="#111">28.3 – 51.1</text>
+<rect x="848" y="420" width="168" height="54" fill="#d4e0f8" stroke="#fff"/>
+<text x="932" y="445" text-anchor="middle" font-weight="bold" fill="#111">44.4</text>
+<text x="932" y="463" text-anchor="middle" font-size="10" fill="#111">23.2 – 45.6</text>
 <rect x="1016" y="420" width="168" height="54" fill="#e8f0f8" stroke="#fff"/>
-<text x="1100" y="445" text-anchor="middle" font-weight="bold" fill="#111">20.9</text>
-<text x="1100" y="463" text-anchor="middle" font-size="10" fill="#111">20.7 – 23.3</text>
-<rect x="1184" y="420" width="168" height="54" fill="#e2ecf8" stroke="#fff"/>
-<text x="1268" y="445" text-anchor="middle" font-weight="bold" fill="#111">27.8</text>
-<text x="1268" y="463" text-anchor="middle" font-size="10" fill="#111">27.5 – 49.6</text>
-<rect x="1352" y="420" width="168" height="54" fill="#e2ebf8" stroke="#fff"/>
-<text x="1436" y="445" text-anchor="middle" font-weight="bold" fill="#111">27.9</text>
-<text x="1436" y="463" text-anchor="middle" font-size="10" fill="#111">25.2 – 50.5</text>
+<text x="1100" y="445" text-anchor="middle" font-weight="bold" fill="#111">20.6</text>
+<text x="1100" y="463" text-anchor="middle" font-size="10" fill="#111">20.1 – 21.0</text>
+<rect x="1184" y="420" width="168" height="54" fill="#e3ecf8" stroke="#fff"/>
+<text x="1268" y="445" text-anchor="middle" font-weight="bold" fill="#111">27.2</text>
+<text x="1268" y="463" text-anchor="middle" font-size="10" fill="#111">24.6 – 47.6</text>
+<rect x="1352" y="420" width="168" height="54" fill="#d0dcf8" stroke="#fff"/>
+<text x="1436" y="445" text-anchor="middle" font-weight="bold" fill="#111">49.1</text>
+<text x="1436" y="463" text-anchor="middle" font-size="10" fill="#111">27.1 – 49.3</text>
 <text x="168" y="506" text-anchor="end">quic-go</text>
-<rect x="176" y="474" width="168" height="54" fill="#6e8ef8" stroke="#fff"/>
+<rect x="176" y="474" width="168" height="54" fill="#7291f8" stroke="#fff"/>
 <text x="260" y="499" text-anchor="middle" font-weight="bold" fill="#111">157</text>
-<text x="260" y="517" text-anchor="middle" font-size="10" fill="#111">156 – 157</text>
-<rect x="344" y="474" width="168" height="54" fill="#6f8ff8" stroke="#fff"/>
-<text x="428" y="499" text-anchor="middle" font-weight="bold" fill="#111">156</text>
-<text x="428" y="517" text-anchor="middle" font-size="10" fill="#111">156 – 157</text>
-<rect x="512" y="474" width="168" height="54" fill="#6f8ff8" stroke="#fff"/>
+<text x="260" y="517" text-anchor="middle" font-size="10" fill="#111">154 – 158</text>
+<rect x="344" y="474" width="168" height="54" fill="#7190f8" stroke="#fff"/>
+<text x="428" y="499" text-anchor="middle" font-weight="bold" fill="#111">157</text>
+<text x="428" y="517" text-anchor="middle" font-size="10" fill="#111">157 – 158</text>
+<rect x="512" y="474" width="168" height="54" fill="#7190f8" stroke="#fff"/>
 <text x="596" y="499" text-anchor="middle" font-weight="bold" fill="#111">157</text>
-<text x="596" y="517" text-anchor="middle" font-size="10" fill="#111">156 – 157</text>
-<rect x="680" y="474" width="168" height="54" fill="#7f9bf8" stroke="#fff"/>
-<text x="764" y="499" text-anchor="middle" font-weight="bold" fill="#111">139</text>
-<text x="764" y="517" text-anchor="middle" font-size="10" fill="#111">137 – 139</text>
-<rect x="848" y="474" width="168" height="54" fill="#cad8f8" stroke="#fff"/>
-<text x="932" y="499" text-anchor="middle" font-weight="bold" fill="#111">55.0</text>
-<text x="932" y="517" text-anchor="middle" font-size="10" fill="#111">54.6 – 55.4</text>
+<text x="596" y="517" text-anchor="middle" font-size="10" fill="#111">89.6 – 158</text>
+<rect x="680" y="474" width="168" height="54" fill="#829ef8" stroke="#fff"/>
+<text x="764" y="499" text-anchor="middle" font-weight="bold" fill="#111">138</text>
+<text x="764" y="517" text-anchor="middle" font-size="10" fill="#111">138 – 138</text>
+<rect x="848" y="474" width="168" height="54" fill="#c9d7f8" stroke="#fff"/>
+<text x="932" y="499" text-anchor="middle" font-weight="bold" fill="#111">56.3</text>
+<text x="932" y="517" text-anchor="middle" font-size="10" fill="#111">56.2 – 56.6</text>
 <rect x="1016" y="474" width="168" height="54" fill="#dee8f8" stroke="#fff"/>
 <text x="1100" y="499" text-anchor="middle" font-weight="bold" fill="#111">33.1</text>
-<text x="1100" y="517" text-anchor="middle" font-size="10" fill="#111">32.3 – 34.2</text>
-<rect x="1184" y="474" width="168" height="54" fill="#819df8" stroke="#fff"/>
-<text x="1268" y="499" text-anchor="middle" font-weight="bold" fill="#111">136</text>
-<text x="1268" y="517" text-anchor="middle" font-size="10" fill="#111">135 – 137</text>
+<text x="1100" y="517" text-anchor="middle" font-size="10" fill="#111">32.3 – 33.5</text>
+<rect x="1184" y="474" width="168" height="54" fill="#839ef8" stroke="#fff"/>
+<text x="1268" y="499" text-anchor="middle" font-weight="bold" fill="#111">137</text>
+<text x="1268" y="517" text-anchor="middle" font-size="10" fill="#111">137 – 138</text>
 <rect x="1352" y="474" width="168" height="54" fill="#aabef8" stroke="#fff"/>
-<text x="1436" y="499" text-anchor="middle" font-weight="bold" fill="#111">91.2</text>
-<text x="1436" y="517" text-anchor="middle" font-size="10" fill="#111">90.5 – 91.3</text>
+<text x="1436" y="499" text-anchor="middle" font-weight="bold" fill="#111">91.8</text>
+<text x="1436" y="517" text-anchor="middle" font-size="10" fill="#111">90.3 – 92.1</text>
 <text x="168" y="560" text-anchor="end">ngtcp2</text>
 <rect x="176" y="528" width="168" height="54" fill="#b9caf8" stroke="#fff"/>
-<text x="260" y="553" text-anchor="middle" font-weight="bold" fill="#111">73.7</text>
-<text x="260" y="571" text-anchor="middle" font-size="10" fill="#111">67.5 – 75.7</text>
+<text x="260" y="553" text-anchor="middle" font-weight="bold" fill="#111">74.5</text>
+<text x="260" y="571" text-anchor="middle" font-size="10" fill="#111">66.9 – 76.5</text>
 <rect x="344" y="528" width="168" height="54" fill="#b8c9f8" stroke="#fff"/>
-<text x="428" y="553" text-anchor="middle" font-weight="bold" fill="#111">75.6</text>
-<text x="428" y="571" text-anchor="middle" font-size="10" fill="#111">72.9 – 75.7</text>
-<rect x="512" y="528" width="168" height="54" fill="#b7c9f8" stroke="#fff"/>
-<text x="596" y="553" text-anchor="middle" font-weight="bold" fill="#111">75.7</text>
-<text x="596" y="571" text-anchor="middle" font-size="10" fill="#111">75.3 – 76.0</text>
+<text x="428" y="553" text-anchor="middle" font-weight="bold" fill="#111">75.9</text>
+<text x="428" y="571" text-anchor="middle" font-size="10" fill="#111">70.2 – 76.3</text>
+<rect x="512" y="528" width="168" height="54" fill="#b8c9f8" stroke="#fff"/>
+<text x="596" y="553" text-anchor="middle" font-weight="bold" fill="#111">76.2</text>
+<text x="596" y="571" text-anchor="middle" font-size="10" fill="#111">74.5 – 76.3</text>
 <rect x="680" y="528" width="168" height="54" fill="#b8c9f8" stroke="#fff"/>
-<text x="764" y="553" text-anchor="middle" font-weight="bold" fill="#111">75.6</text>
-<text x="764" y="571" text-anchor="middle" font-size="10" fill="#111">72.8 – 76.0</text>
-<rect x="848" y="528" width="168" height="54" fill="#c9d7f8" stroke="#fff"/>
-<text x="932" y="553" text-anchor="middle" font-weight="bold" fill="#111">55.5</text>
-<text x="932" y="571" text-anchor="middle" font-size="10" fill="#111">54.1 – 55.8</text>
-<rect x="1016" y="528" width="168" height="54" fill="#d4e0f8" stroke="#fff"/>
-<text x="1100" y="553" text-anchor="middle" font-weight="bold" fill="#111">43.8</text>
-<text x="1100" y="571" text-anchor="middle" font-size="10" fill="#111">43.1 – 45.9</text>
-<rect x="1184" y="528" width="168" height="54" fill="#bbccf8" stroke="#fff"/>
-<text x="1268" y="553" text-anchor="middle" font-weight="bold" fill="#111">71.5</text>
-<text x="1268" y="571" text-anchor="middle" font-size="10" fill="#111">70.9 – 72.4</text>
-<rect x="1352" y="528" width="168" height="54" fill="#c1d1f8" stroke="#fff"/>
-<text x="1436" y="553" text-anchor="middle" font-weight="bold" fill="#111">64.8</text>
-<text x="1436" y="571" text-anchor="middle" font-size="10" fill="#111">63.4 – 65.6</text>
+<text x="764" y="553" text-anchor="middle" font-weight="bold" fill="#111">76.3</text>
+<text x="764" y="571" text-anchor="middle" font-size="10" fill="#111">76.0 – 76.8</text>
+<rect x="848" y="528" width="168" height="54" fill="#cad8f8" stroke="#fff"/>
+<text x="932" y="553" text-anchor="middle" font-weight="bold" fill="#111">56.0</text>
+<text x="932" y="571" text-anchor="middle" font-size="10" fill="#111">55.8 – 56.1</text>
+<rect x="1016" y="528" width="168" height="54" fill="#d5e1f8" stroke="#fff"/>
+<text x="1100" y="553" text-anchor="middle" font-weight="bold" fill="#111">42.8</text>
+<text x="1100" y="571" text-anchor="middle" font-size="10" fill="#111">40.6 – 42.8</text>
+<rect x="1184" y="528" width="168" height="54" fill="#bccdf8" stroke="#fff"/>
+<text x="1268" y="553" text-anchor="middle" font-weight="bold" fill="#111">71.4</text>
+<text x="1268" y="571" text-anchor="middle" font-size="10" fill="#111">71.0 – 72.5</text>
+<rect x="1352" y="528" width="168" height="54" fill="#c4d3f8" stroke="#fff"/>
+<text x="1436" y="553" text-anchor="middle" font-weight="bold" fill="#111">62.6</text>
+<text x="1436" y="571" text-anchor="middle" font-size="10" fill="#111">61.2 – 63.4</text>
 <text x="16" y="612" fill="#555" font-size="12">loopback bridge on one host through one forwarding container; higher is better</text>
 <text x="16" y="630" fill="#555" font-size="12">compares pairs on this host only</text>
 </svg>
