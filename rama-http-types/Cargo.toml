@@ -55,7 +55,7 @@ tokio = { workspace = true, features = ["macros", "io-std", "sync"] }
 quickcheck = { workspace = true }
 rand = { workspace = true }
 serde_test = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]
 workspace = true

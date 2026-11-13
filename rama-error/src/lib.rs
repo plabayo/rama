@@ -222,4 +222,7 @@ pub mod extra {
     pub use crate::ext::opaque::OpaqueError;
 }
 
+mod timeout;
+pub use timeout::{TimeoutError, is_timeout_error};
+
 mod std;

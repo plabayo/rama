@@ -427,7 +427,11 @@ impl fmt::Display for DnsTimeoutError {
     }
 }
 
-impl std::error::Error for DnsTimeoutError {}
+impl std::error::Error for DnsTimeoutError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&rama_core::error::TimeoutError)
+    }
+}
 
 /// `timeout` from now, saturating instead of overflowing.
 pub(crate) fn deadline_after(timeout: Duration) -> Instant {
@@ -854,6 +858,7 @@ mod tests {
         let err = DnsTimeoutError::new(Duration::from_millis(50));
         assert_eq!(err.to_string(), "dns lookup timed out after 50ms");
         assert_eq!(err.timeout(), Duration::from_millis(50));
+        assert!(rama_core::error::is_timeout_error(&err));
     }
 
     #[test]

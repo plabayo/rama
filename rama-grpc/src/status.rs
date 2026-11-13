@@ -978,7 +978,11 @@ impl fmt::Display for TimeoutExpired {
 }
 
 // std::error::Error only requires a type to impl Debug and Display
-impl std::error::Error for TimeoutExpired {}
+impl std::error::Error for TimeoutExpired {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&rama_core::error::TimeoutError)
+    }
+}
 
 /// Wrapper type to indicate that an error occurs during the connection
 /// process, so that the appropriate gRPC Status can be inferred.
@@ -1002,6 +1006,13 @@ mod tests {
     use rama_core::error::BoxError;
 
     use super::*;
+
+    #[test]
+    fn timeout_marker_preserves_grpc_status_mapping() {
+        let error = TimeoutExpired(());
+        assert!(rama_core::error::is_timeout_error(&error));
+        assert_eq!(Status::from_error(Box::new(error)).code(), Code::Cancelled);
+    }
 
     #[derive(Debug)]
     struct Nested(BoxError);

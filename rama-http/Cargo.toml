@@ -93,7 +93,7 @@ quickcheck = { workspace = true }
 quickcheck_macros = { workspace = true }
 rama-core = { workspace = true, features = ["std", "test-utils"] }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }

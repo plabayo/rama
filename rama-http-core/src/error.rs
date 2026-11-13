@@ -114,7 +114,7 @@ pub(super) enum User {
     DispatchGone,
 }
 
-// Sentinel type to indicate the error was caused by a timeout.
+// A core connection timeout, distinct from an application body timeout.
 #[derive(Debug)]
 pub(super) struct TimedOut;
 
@@ -502,6 +502,10 @@ impl StdError for Error {
             .cause
             .as_ref()
             .map(|cause| &**cause as &(dyn StdError + 'static))
+            .or_else(|| {
+                matches!(self.inner.kind, Kind::HeaderTimeout)
+                    .then_some(&TimedOut as &(dyn StdError + 'static))
+            })
     }
 }
 
@@ -558,15 +562,17 @@ impl From<rama_net::uri::ParseError> for Parse {
     }
 }
 
-// ===== impl TimedOut ====
-
 impl fmt::Display for TimedOut {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("operation timed out")
     }
 }
 
-impl StdError for TimedOut {}
+impl StdError for TimedOut {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(&rama_core::error::TimeoutError)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -605,6 +611,19 @@ mod tests {
         let error = Error::new_canceled().with(Cycle);
         assert!(!error.is_timeout());
         assert_eq!(error.h2_reason(), h2::Reason::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn shared_timeout_classification_includes_headers_and_io() {
+        let header = Error::new_header_timeout();
+        assert!(rama_core::error::is_timeout_error(&header));
+        let io = Error::new_canceled().with(std::io::Error::from(std::io::ErrorKind::TimedOut));
+        assert!(!io.is_timeout());
+        assert!(rama_core::error::is_timeout_error(&io));
+        assert!(!Error::new_canceled().is_timeout());
+        let body = Error::new_user_body(rama_core::error::TimeoutError);
+        assert!(!body.is_timeout());
+        assert!(rama_core::error::is_timeout_error(&body));
     }
 
     #[test]

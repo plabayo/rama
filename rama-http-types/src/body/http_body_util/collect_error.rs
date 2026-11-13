@@ -216,7 +216,8 @@ impl std::error::Error for CollectError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
             CollectErrorKind::Stream(err) | CollectErrorKind::Decode(err) => Some(&**err),
-            CollectErrorKind::CapReached { .. } | CollectErrorKind::TimedOut { .. } => None,
+            CollectErrorKind::TimedOut { .. } => Some(&rama_core::error::TimeoutError),
+            CollectErrorKind::CapReached { .. } => None,
         }
     }
 }

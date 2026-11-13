@@ -34,7 +34,7 @@ use clap::{Parser, Subcommand};
 use rama::{
     Layer, Service,
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
-    error::{BoxError, BoxErrorExt as _, error_chain},
+    error::{BoxError, BoxErrorExt as _, is_timeout_error},
     extensions::{Extensions, ExtensionsRef as _},
     graceful::{Scope, WeakScope},
     http::{
@@ -62,10 +62,7 @@ use rama::{
         server::HttpServer,
         ws::handshake::matcher::{HttpWebSocketRelayServiceRequestMatcher, WebSocketMatcher},
     },
-    layer::{
-        AddInputExtensionLayer, HijackLayer,
-        timeout::{Elapsed, Timeout},
-    },
+    layer::{AddInputExtensionLayer, HijackLayer, timeout::Timeout},
     net::{
         Protocol,
         address::{HostWithOptPort, SocketAddress},
@@ -241,7 +238,7 @@ fn forwarding_service(
             RemoveRequestHeaderLayer::hop_by_hop(),
             ErrorHandlerLayer::new().error_mapper(|error: BoxError| {
                 rama::telemetry::tracing::warn!(%error, "upstream connection failed");
-                if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) {
+                if is_timeout_error(error.as_ref()) {
                     error_response(
                         StatusCode::GATEWAY_TIMEOUT,
                         "upstream HTTP connection timed out",
@@ -326,9 +323,7 @@ fn mitm(
                 probe.extensions().insert(TargetHttpVersion(version));
                 match preflight.serve(probe).await {
                     Ok(()) => (),
-                    Err(error)
-                        if error_chain(error.as_ref()).any(|cause| cause.is::<Elapsed>()) =>
-                    {
+                    Err(error) if is_timeout_error(error.as_ref()) => {
                         return Err(error_response(
                             StatusCode::GATEWAY_TIMEOUT,
                             format!("requested {version:?} connection timed out"),

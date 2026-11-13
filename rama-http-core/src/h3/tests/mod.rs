@@ -5,6 +5,7 @@ mod credit;
 mod critical_streams;
 mod datagram;
 mod demux;
+mod early_response;
 mod extended_connect;
 mod fairness;
 mod framing;

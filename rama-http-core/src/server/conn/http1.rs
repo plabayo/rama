@@ -5,6 +5,7 @@ use std::convert::Infallible;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::Service;
@@ -76,11 +77,39 @@ pub struct Builder {
     pub(super) h1_header_read_timeout: Option<HeaderReadTimeout>,
     pub(super) h1_idle_timeout: Option<IdleTimeout>,
     h1_lingering_close: Option<LingeringClose>,
+    h1_request_body_drain: Option<RequestBodyDrain>,
     h1_writev: Option<bool>,
     max_buf_size: Option<usize>,
     pipeline_flush: bool,
     date_header: bool,
     strict_connect_framing: bool,
+}
+
+/// Bounds for discarding an unread request body before sending a final response.
+///
+/// This optional HTTP/1 policy attempts to preserve connection reuse. It drains
+/// HTTP framing, including trailers, without collecting payloads. Exhaustion,
+/// timeout or malformed framing closes the read side and sends the response with
+/// connection close instead. It does not replace application body validation.
+/// Even early rejection responses (such as 401 or 413) can be delayed by this
+/// policy, so choose a short timeout. Bytes already handed to the application
+/// are outside this remaining-body budget; chunk framing/trailers use the
+/// decoder's existing overhead limits.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestBodyDrain {
+    pub(crate) max_bytes: u64,
+    pub(crate) timeout: Duration,
+}
+
+impl RequestBodyDrain {
+    /// Allow at most `max_bytes` unread DATA bytes and `timeout` total time.
+    /// Zero for either disables extended draining (the existing immediate,
+    /// buffered-body cleanup may still complete). Known oversized remainders are
+    /// rejected immediately; a chunk crossing the budget is discarded in full.
+    #[must_use]
+    pub const fn new(max_bytes: u64, timeout: Duration) -> Self {
+        Self { max_bytes, timeout }
+    }
 }
 
 /// Deconstructed parts of a `Connection`.
@@ -255,11 +284,26 @@ impl Builder {
             h1_header_read_timeout: Some(HeaderReadTimeout::DEFAULT),
             h1_idle_timeout: Some(IdleTimeout::DEFAULT),
             h1_lingering_close: Some(LingeringClose::default()),
+            h1_request_body_drain: None,
             h1_writev: None,
             max_buf_size: None,
             pipeline_flush: false,
             date_header: true,
             strict_connect_framing: false,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Opt into bounded draining of abandoned request bodies before the
+        /// final response, to permit HTTP/1 connection reuse. Disabled by default.
+        ///
+        /// Pending `100-continue`, CONNECT and upgrade requests are excluded:
+        /// waiting for their body could deadlock or consume tunnel bytes.
+        /// Draining is best effort; errors or exhausted bounds close the
+        /// connection without replacing the application's response.
+        pub fn request_body_drain(mut self, config: Option<RequestBodyDrain>) -> Self {
+            self.h1_request_body_drain = config;
+            self
         }
     }
 
@@ -554,7 +598,8 @@ impl Builder {
             conn.set_strict_connect_framing();
         }
         let sd = proto::h1::dispatch::Server::new(service);
-        let proto = proto::h1::Dispatcher::new(sd, conn);
+        let mut proto = proto::h1::Dispatcher::new(sd, conn);
+        proto.set_request_body_drain(self.h1_request_body_drain);
         Connection { conn: proto }
     }
 }
@@ -739,6 +784,321 @@ mod lingering_tests {
     use super::*;
     use crate::service::RamaHttpService;
 
+    async fn drain_fixture(
+        config: Option<RequestBodyDrain>,
+    ) -> (tokio::io::DuplexStream, JoinHandle<()>) {
+        let (client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            _ = Builder::new()
+                .without_lingering_close()
+                .maybe_with_request_body_drain(config)
+                .serve_connection(
+                    ServiceInput::new(server),
+                    RamaHttpService::new(service_fn(answer)),
+                )
+                .await;
+        });
+        (client, task)
+    }
+
+    #[tokio::test]
+    async fn request_drain_waits_for_framed_upload_and_preserves_pipeline() {
+        for chunked in [false, true] {
+            let (mut client, server) =
+                drain_fixture(Some(RequestBodyDrain::new(3, Duration::from_secs(2)))).await;
+            let framing = if chunked {
+                "transfer-encoding: chunked"
+            } else {
+                "content-length: 3"
+            };
+            client
+                .write_all(
+                    format!("POST /upload HTTP/1.1\r\nhost: localhost\r\n{framing}\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut first = [0; 1];
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), client.read(&mut first))
+                    .await
+                    .is_err(),
+                "response preceded upload"
+            );
+            let upload = if chunked {
+                "3\r\nabc\r\n0\r\nx-test: yes\r\n\r\n"
+            } else {
+                "abc"
+            };
+            client
+                .write_all(
+                    format!(
+                        "{upload}GET /read HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(2), client.read_to_string(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.matches("HTTP/1.1 ").count(), 2, "{response}");
+            assert!(response.contains("HTTP/1.1 413 "), "{response}");
+            assert!(response.contains("200 OK"), "{response}");
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn request_drain_bounds_and_expect_do_not_stall_responses() {
+        for (framing, bytes, budget) in [
+            ("content-length: 4", "", 3),
+            ("transfer-encoding: chunked", "4\r\nabcd\r\n", 3),
+            ("transfer-encoding: chunked", "invalid\r\n", 3),
+            ("content-length: 3\r\nexpect: 100-continue", "", 3),
+            ("content-length: 3", "", 0),
+        ] {
+            let (mut client, server) =
+                drain_fixture(Some(RequestBodyDrain::new(budget, Duration::from_secs(5)))).await;
+            client
+                .write_all(
+                    format!("POST /upload HTTP/1.1\r\nhost: localhost\r\n{framing}\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+            if !bytes.is_empty() {
+                let mut first = [0; 1];
+                tokio::time::timeout(Duration::from_millis(20), client.read(&mut first))
+                    .await
+                    .unwrap_err();
+                client.write_all(bytes.as_bytes()).await.unwrap();
+            }
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(1), client.read_to_string(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(response.contains("HTTP/1.1 413 "), "{response}");
+            assert!(
+                response.to_ascii_lowercase().contains("connection: close"),
+                "{response}"
+            );
+            assert!(!response.contains("100 Continue"), "{response}");
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn request_drain_skips_non_reusable_connections() {
+        for head in [
+            "POST /upload HTTP/1.0\r\ncontent-length: 3\r\n\r\n",
+            "POST /upload HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\ncontent-length: 3\r\n\r\n",
+        ] {
+            let (mut client, server) =
+                drain_fixture(Some(RequestBodyDrain::new(3, Duration::from_secs(30)))).await;
+            client.write_all(head.as_bytes()).await.unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(1), client.read_to_string(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(response.contains("413"), "{response}");
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn request_drain_response_close_preserves_live_body_and_skips_abandoned_body() {
+        for echo in [false, true] {
+            let (mut client, server_io) = tokio::io::duplex(4096);
+            let service = service_fn(move |request: Request| async move {
+                let body = if echo {
+                    request.into_body()
+                } else {
+                    drop(request);
+                    Body::empty()
+                };
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("connection", "close")
+                        .body(body)
+                        .unwrap(),
+                )
+            });
+            let server = tokio::spawn(async move {
+                Builder::new()
+                    .without_lingering_close()
+                    .with_request_body_drain(RequestBodyDrain::new(6, Duration::from_secs(30)))
+                    .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
+                    .await
+                    .unwrap();
+            });
+            client
+                .write_all(
+                    b"POST /upload HTTP/1.1\r\nhost: localhost\r\ncontent-length: 6\r\n\r\nabc",
+                )
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            // Read just the response head, then send the rest of a live echo upload.
+            while !response.ends_with(b"\r\n\r\n") {
+                let mut byte = [0; 1];
+                tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut byte))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                response.push(byte[0]);
+            }
+            if echo {
+                client.write_all(b"def").await.unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(response.starts_with(b"HTTP/1.1 200 "));
+            if echo {
+                assert!(response.ends_with(b"abcdef"), "{response:?}");
+            }
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn request_drain_graceful_shutdown_releases_parked_response() {
+        let (mut client, server_io) = tokio::io::duplex(4096);
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let connection = Builder::new()
+                .without_lingering_close()
+                .with_request_body_drain(RequestBodyDrain::new(3, Duration::from_secs(30)))
+                .serve_connection(
+                    ServiceInput::new(server_io),
+                    RamaHttpService::new(service_fn(answer)),
+                );
+            tokio::pin!(connection);
+            tokio::select! {
+                result = &mut connection => { result.unwrap(); return; },
+                _ = stop_rx => {},
+            }
+            connection.as_mut().graceful_shutdown();
+            connection.await.unwrap();
+        });
+        client
+            .write_all(b"POST /upload HTTP/1.1\r\nhost: localhost\r\ncontent-length: 3\r\n\r\n")
+            .await
+            .unwrap();
+        let mut first = [0; 1];
+        tokio::time::timeout(Duration::from_millis(20), client.read(&mut first))
+            .await
+            .unwrap_err();
+        stop_tx.send(()).unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(Duration::from_secs(1), client.read_to_string(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(response.contains("HTTP/1.1 413 "), "{response}");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_drain_after_partial_consumption_and_continue() {
+        use rama_http_types::body::util::BodyExt as _;
+        for expect in [false, true] {
+            let (mut client, server_io) = tokio::io::duplex(4096);
+            let (dropped_tx, mut dropped_rx) = tokio::sync::mpsc::unbounded_channel();
+            let release = std::sync::Arc::new(tokio::sync::Notify::new());
+            let wake = release.clone();
+            let service = service_fn(move |request: Request| {
+                let dropped = dropped_tx.clone();
+                let release = release.clone();
+                async move {
+                    if request.method() == rama_http::Method::POST {
+                        let mut body = request.into_body();
+                        assert_eq!(
+                            body.frame().await.unwrap().unwrap().into_data().unwrap(),
+                            "abc"
+                        );
+                        drop(body);
+                        dropped.send(()).unwrap();
+                        // The driver must drain while the handler is still pending.
+                        release.notified().await;
+                    }
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }
+            });
+            let server = tokio::spawn(async move {
+                Builder::new()
+                    .without_lingering_close()
+                    .with_request_body_drain(RequestBodyDrain::new(3, Duration::from_secs(2)))
+                    .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
+                    .await
+                    .unwrap();
+            });
+            let extra = if expect {
+                "expect: 100-continue\r\n"
+            } else {
+                ""
+            };
+            client.write_all(format!("POST /upload HTTP/1.1\r\nhost: localhost\r\ncontent-length: 6\r\n{extra}\r\n").as_bytes()).await.unwrap();
+            if expect {
+                let mut info = [0; 25];
+                tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut info))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(&info, b"HTTP/1.1 100 Continue\r\n\r\n");
+            }
+            client.write_all(b"abc").await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), dropped_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            client
+                .write_all(b"defGET /read HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            // Let the framed drain finish before allowing the handler to answer.
+            let mut first = [0; 1];
+            tokio::time::timeout(Duration::from_millis(20), client.read(&mut first))
+                .await
+                .unwrap_err();
+            wake.notify_one();
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(1), client.read_to_string(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.matches("200 OK").count(), 2, "{response}");
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn request_drain_timeout_and_disabled_default_release_response() {
+        for config in [
+            None,
+            Some(RequestBodyDrain::new(3, Duration::from_millis(30))),
+        ] {
+            let (mut client, server) = drain_fixture(config).await;
+            client
+                .write_all(b"POST /upload HTTP/1.1\r\nhost: localhost\r\ncontent-length: 3\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(1), client.read_to_string(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(response.contains("HTTP/1.1 413 "), "{response}");
+            server.await.unwrap();
+        }
+    }
+
     /// Lingers until something other than a timeout ends it.
     fn patient_linger() -> LingeringClose {
         LingeringClose::new().with_idle_timeout(Duration::from_secs(30))
@@ -887,6 +1247,7 @@ mod lingering_tests {
             });
             let server = tokio::spawn(async move {
                 Builder::new()
+                    .with_request_body_drain(RequestBodyDrain::new(1024, Duration::from_secs(30)))
                     .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
                     .with_upgrades()
                     .await

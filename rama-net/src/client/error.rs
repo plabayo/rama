@@ -383,17 +383,14 @@ impl ConnectionError {
         ConnectionErrorKind,
         ConnectionPolicyScope,
     )> {
-        let mut timeout = false;
         // Protect conversion from a malformed error implementation with a cyclic
         // source chain. Rama's own wrappers are shallow and acyclic.
         for error in error_chain(source) {
             if let Some(error) = error.downcast_ref::<Self>() {
                 return Some((error.domain, error.kind, error.policy_scope));
             }
-            timeout |= error.is::<rama_core::layer::timeout::Elapsed>()
-                || error.is::<tokio::time::error::Elapsed>();
         }
-        timeout.then_some((
+        rama_core::error::is_timeout_error(source).then_some((
             ConnectionErrorDomain::Transport,
             ConnectionErrorKind::Timeout,
             ConnectionPolicyScope::Unknown,
@@ -569,6 +566,30 @@ mod tests {
         let error = ConnectionError::from(error.context("connector attempt"));
         assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
         assert_eq!(error.kind(), ConnectionErrorKind::Timeout);
+    }
+
+    #[test]
+    fn explicit_classification_wins_over_timeout_cause() {
+        let source = ConnectionError::transport(
+            rama_core::error::TimeoutError,
+            ConnectionErrorKind::Unavailable,
+        )
+        .with_policy_scope(ConnectionPolicyScope::Request);
+        let error = ConnectionError::from(source.into_box_error().context("attempt"));
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+        assert_eq!(error.policy_scope(), ConnectionPolicyScope::Request);
+    }
+
+    #[test]
+    fn shared_and_io_timeouts_are_classified() {
+        for source in [
+            rama_core::error::TimeoutError.into_box_error(),
+            std::io::Error::from(std::io::ErrorKind::TimedOut).into_box_error(),
+        ] {
+            let error = ConnectionError::from(source.context("connector attempt"));
+            assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+            assert_eq!(error.kind(), ConnectionErrorKind::Timeout);
+        }
     }
 
     #[test]

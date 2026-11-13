@@ -1,7 +1,6 @@
-use super::TimeoutError;
 use crate::body::{Frame, SizeHint, StreamingBody};
 use pin_project_lite::pin_project;
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::error::{BoxError, ErrorContext as _, TimeoutError};
 use std::{
     pin::Pin,
     task::{Context, Poll, ready},
@@ -69,7 +68,7 @@ where
 
         // Error if the absolute deadline has expired.
         if this.sleep.poll(cx) == Poll::Ready(()) {
-            return Poll::Ready(Some(Err(Box::new(TimeoutError(())))));
+            return Poll::Ready(Some(Err(Box::new(TimeoutError))));
         }
 
         // Check for body data.

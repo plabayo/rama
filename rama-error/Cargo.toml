@@ -26,11 +26,13 @@ targets = [
 
 [features]
 default = ["std"]
-std = []
+std = ["dep:tokio"]
 
 [dependencies]
+tokio = { workspace = true, features = ["time"], optional = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 
 [lints]
 workspace = true

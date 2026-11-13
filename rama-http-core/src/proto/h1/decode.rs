@@ -129,6 +129,13 @@ impl Decoder {
 
     // methods
 
+    pub(crate) fn remaining_length(&self) -> Option<u64> {
+        match self.kind {
+            Length(n) => Some(n),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_eof(&self) -> bool {
         matches!(
             self.kind,
