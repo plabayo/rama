@@ -37,12 +37,7 @@ impl Service<Request> for CurlWriter {
             .extensions()
             .get_ref::<ProxyRoute>()
             .and_then(ProxyRoute::proxy_address)
-            .filter(|proxy| {
-                proxy
-                    .protocol
-                    .as_ref()
-                    .is_none_or(|protocol| protocol.is_http())
-            });
+            .filter(|proxy| proxy.protocol.is_http());
         let proxy_mode = if self.proxy_tunnel {
             PlaintextHttpProxyMode::Tunnel
         } else {

@@ -18,7 +18,6 @@ use rama_http::{
     io::upgrade::handle_upgrade, proto::ext::HttpDatagrams,
 };
 use rama_net::{
-    Protocol,
     address::{Host, ProxyAddress, SocketAddress},
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
@@ -216,7 +215,7 @@ where
                 conn: MaybeTunneledSocket::Direct(conn),
             });
         };
-        if !proxy.protocol.as_ref().is_some_and(Protocol::is_masque) {
+        if !proxy.protocol.is_masque() {
             return Err(ConnectionError::local(
                 BoxError::from_static_str("connect-udp connector serves masque proxies only"),
                 ConnectionErrorKind::Unavailable,

@@ -1709,8 +1709,7 @@ mod tests {
     #[test]
     fn encode_request_target_forms() {
         use rama_net::{
-            Protocol,
-            address::{HostWithPort, ProxyAddress},
+            address::{HostWithPort, ProxyAddress, ProxyProtocol},
             client::{EstablishedProxyRoute, ProxyRoute},
             uri::Uri,
         };
@@ -1730,8 +1729,7 @@ mod tests {
             ext.insert(EstablishedProxyRoute::Forward(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }));
             ext
         }
@@ -1741,8 +1739,7 @@ mod tests {
             ext.insert(ProxyRoute::Proxy(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }));
             ext
         }
@@ -1862,7 +1859,7 @@ mod tests {
     fn encode_request_target_uses_full_protocol_resolution() {
         use rama_net::{
             Protocol,
-            address::{HostWithPort, ProxyAddress},
+            address::{HostWithPort, ProxyAddress, ProxyProtocol},
             client::EstablishedProxyRoute,
             uri::Uri,
         };
@@ -1876,8 +1873,7 @@ mod tests {
         ext.insert(EstablishedProxyRoute::Forward(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
         ext.insert(Protocol::HTTPS);
 
@@ -1908,8 +1904,7 @@ mod tests {
     #[test]
     fn encode_request_target_honors_real_secure_transport() {
         use rama_net::{
-            Protocol,
-            address::{HostWithPort, ProxyAddress},
+            address::{HostWithPort, ProxyAddress, ProxyProtocol},
             client::EstablishedProxyRoute,
             uri::Uri,
         };
@@ -1919,8 +1914,7 @@ mod tests {
         ext.insert(EstablishedProxyRoute::Forward(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
         ext.insert(SecureTransport::default());
 

@@ -1,8 +1,7 @@
-use super::{Proxy, StringFilter};
+use super::{Proxy, ProxyDbAddress, StringFilter};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use rama_net::{
-    address::ProxyAddress,
     asn::{Asn, InvalidAsn},
     user::ProxyCredential,
 };
@@ -93,7 +92,7 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
         if s.is_empty() {
             None
         } else {
-            ProxyAddress::try_from(s).ok()
+            s.parse::<ProxyDbAddress>().ok()
         }
     })?;
     let pool_id = parse_csv_opt_string_filter(iter.next()?);
@@ -287,7 +286,7 @@ mod tests {
                 "id,,,,,,,,,,authority:80,,,,,,,,",
                 Proxy {
                     id: non_empty_str!("id"),
-                    address: ProxyAddress::from_str("authority:80").unwrap(),
+                    address: ProxyDbAddress::from_str("authority:80").unwrap(),
                     tcp: false,
                     udp: false,
                     http: false,
@@ -311,7 +310,7 @@ mod tests {
                 "id,true,false,true,,false,,true,false,true,authority:80,pool_id,,country,,city,carrier,,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
                 Proxy {
                     id: non_empty_str!("id"),
-                    address: ProxyAddress::from_str("username:password@authority:80").unwrap(),
+                    address: ProxyDbAddress::from_str("username:password@authority:80").unwrap(),
                     tcp: true,
                     udp: false,
                     http: true,
@@ -334,7 +333,7 @@ mod tests {
                 "123,1,0,False,,True,,null,false,true,host:1234,,americas,*,*,*,carrier,13335,",
                 Proxy {
                     id: non_empty_str!("123"),
-                    address: ProxyAddress::from_str("host:1234").unwrap(),
+                    address: ProxyDbAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
                     http: false,
@@ -357,7 +356,7 @@ mod tests {
                 "123,1,0,False,,True,,null,false,true,host:1234,,europe,*,,*,carrier,0",
                 Proxy {
                     id: non_empty_str!("123"),
-                    address: ProxyAddress::from_str("host:1234").unwrap(),
+                    address: ProxyDbAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
                     http: false,
@@ -380,7 +379,7 @@ mod tests {
                 "foo,1,0,1,,0,,1,0,0,http://bar,baz,,US,,,,",
                 Proxy {
                     id: non_empty_str!("foo"),
-                    address: ProxyAddress::from_str("http://bar").unwrap(),
+                    address: ProxyDbAddress::from_str("http://bar").unwrap(),
                     tcp: true,
                     udp: false,
                     http: true,
@@ -461,7 +460,7 @@ mod tests {
         assert_eq!(proxy.id, "id");
         assert_eq!(
             proxy.address,
-            ProxyAddress::from_str("username:password@authority:80").unwrap()
+            ProxyDbAddress::from_str("username:password@authority:80").unwrap()
         );
         assert!(proxy.tcp);
         assert!(!proxy.udp);
@@ -492,7 +491,7 @@ mod tests {
         assert_eq!(proxy.id, "id");
         assert_eq!(
             proxy.address,
-            ProxyAddress::from_str("username:password@authority:80").unwrap()
+            ProxyDbAddress::from_str("username:password@authority:80").unwrap()
         );
         assert!(proxy.tcp);
         assert!(!proxy.udp);
@@ -516,7 +515,7 @@ mod tests {
         assert_eq!(proxy.id, "id2");
         assert_eq!(
             proxy.address,
-            ProxyAddress::from_str("authority2:80").unwrap()
+            ProxyDbAddress::from_str("authority2:80").unwrap()
         );
         assert!(proxy.tcp);
         assert!(!proxy.udp);

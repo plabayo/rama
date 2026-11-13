@@ -7,6 +7,7 @@ use rama_core::{
 };
 use rama_net::{
     Protocol, TransportProtocolInputExt,
+    address::ProxyProtocol,
     client::{ProxyRoute, ProxyRoutes},
     transport::TransportProtocol,
     user::ProxyCredential,
@@ -179,7 +180,11 @@ fn prepare_proxy<F: UsernameFormatter>(
     transport_protocol: TransportProtocol,
     extensions: &Extensions,
 ) -> Result<PreparedProxy, BoxError> {
-    let mut proxy_address = proxy.address.clone();
+    let protocol = match proxy.address.protocol.clone() {
+        Some(protocol) => protocol,
+        None => select_protocol(&proxy, transport_protocol)?,
+    };
+    let mut proxy_address = proxy.address.with_protocol(protocol);
 
     proxy_address.credential = proxy_address
         .credential
@@ -203,48 +208,51 @@ fn prepare_proxy<F: UsernameFormatter>(
         })
         .transpose()?;
 
-    if proxy_address.protocol.is_none() {
-        proxy_address.protocol = match transport_protocol {
-            TransportProtocol::Udp => {
-                if proxy.socks5 {
-                    Some(Protocol::SOCKS5)
-                } else if proxy.socks5h {
-                    Some(Protocol::SOCKS5H)
-                } else {
-                    return Err(BoxError::from_static_str(
-                        "selected udp proxy does not have a valid protocol available (db bug?!)",
-                    ));
-                }
-            }
-            TransportProtocol::Tcp => match proxy_address.address.port {
-                Protocol::HTTP_DEFAULT_PORT | Protocol::HTTP_ALT_PORT if proxy.http => {
-                    Some(Protocol::HTTP)
-                }
-                Protocol::HTTPS_DEFAULT_PORT | Protocol::HTTPS_ALT_PORT if proxy.https => {
-                    Some(Protocol::HTTPS)
-                }
-                _ => {
-                    if proxy.socks5 {
-                        Some(Protocol::SOCKS5)
-                    } else if proxy.socks5h {
-                        Some(Protocol::SOCKS5H)
-                    } else if proxy.http {
-                        Some(Protocol::HTTP)
-                    } else if proxy.https {
-                        Some(Protocol::HTTPS)
-                    } else {
-                        return Err(BoxError::from_static_str(
-                            "selected tcp proxy does not have a valid protocol available (db bug?!)",
-                        ));
-                    }
-                }
-            },
-        };
-    }
-
     Ok(PreparedProxy {
         proxy,
         route: ProxyRoute::Proxy(proxy_address),
+    })
+}
+
+fn select_protocol(
+    proxy: &Proxy,
+    transport_protocol: TransportProtocol,
+) -> Result<ProxyProtocol, BoxError> {
+    Ok(match transport_protocol {
+        TransportProtocol::Udp => {
+            if proxy.socks5 {
+                ProxyProtocol::SOCKS5
+            } else if proxy.socks5h {
+                ProxyProtocol::SOCKS5H
+            } else {
+                return Err(BoxError::from_static_str(
+                    "selected udp proxy does not have a valid protocol available (db bug?!)",
+                ));
+            }
+        }
+        TransportProtocol::Tcp => match proxy.address.address.port {
+            Protocol::HTTP_DEFAULT_PORT | Protocol::HTTP_ALT_PORT if proxy.http => {
+                ProxyProtocol::HTTP
+            }
+            Protocol::HTTPS_DEFAULT_PORT | Protocol::HTTPS_ALT_PORT if proxy.https => {
+                ProxyProtocol::HTTPS
+            }
+            _ => {
+                if proxy.socks5 {
+                    ProxyProtocol::SOCKS5
+                } else if proxy.socks5h {
+                    ProxyProtocol::SOCKS5H
+                } else if proxy.http {
+                    ProxyProtocol::HTTP
+                } else if proxy.https {
+                    ProxyProtocol::HTTPS
+                } else {
+                    return Err(BoxError::from_static_str(
+                        "selected tcp proxy does not have a valid protocol available (db bug?!)",
+                    ));
+                }
+            }
+        },
     })
 }
 
@@ -576,7 +584,7 @@ mod tests {
     use super::*;
     #[cfg(feature = "memory-db")]
     use crate::MemoryProxyDB;
-    use crate::Proxy;
+    use crate::{Proxy, ProxyDbAddress};
     #[cfg(all(feature = "memory-db", feature = "csv"))]
     use crate::{ProxyCsvRowReader, StringFilter};
     #[cfg(all(feature = "memory-db", feature = "csv"))]
@@ -652,8 +660,7 @@ mod tests {
         .proxy_address()
         .unwrap()
         .protocol
-        .clone()
-        .unwrap()
+        .to_protocol()
     }
 
     #[test]
@@ -1125,7 +1132,7 @@ mod tests {
                 .with_transport_protocol(TransportProtocol::Udp);
             let established = service.serve(req).await.unwrap();
             let proxy_address = selected_proxy_address(&established.input).unwrap();
-            assert_eq!(proxy_address.protocol, Some(Protocol::MASQUE));
+            assert_eq!(proxy_address.protocol, ProxyProtocol::MASQUE);
         }
 
         // A lookup by id checks the row with `is_match` instead of the bitmap query.
@@ -1152,7 +1159,7 @@ mod tests {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
                 id: non_empty_str!("42"),
-                address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
+                address: ProxyDbAddress::from_str("12.34.12.34:8080").unwrap(),
                 tcp: true,
                 udp: true,
                 http: true,
@@ -1172,7 +1179,7 @@ mod tests {
             },
             Proxy {
                 id: non_empty_str!("100"),
-                address: ProxyAddress::from_str("12.34.12.35:8080").unwrap(),
+                address: ProxyDbAddress::from_str("12.34.12.35:8080").unwrap(),
                 tcp: true,
                 udp: false,
                 http: true,
@@ -1242,7 +1249,7 @@ mod tests {
     async fn test_proxy_db_single_proxy_example() {
         let proxy = Proxy {
             id: non_empty_str!("42"),
-            address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
+            address: ProxyDbAddress::from_str("12.34.12.34:8080").unwrap(),
             tcp: true,
             udp: true,
             http: true,
@@ -1300,7 +1307,7 @@ mod tests {
     async fn test_proxy_db_single_proxy_with_username_formatter() {
         let proxy = Proxy {
             id: non_empty_str!("42"),
-            address: ProxyAddress::from_str("john:secret@12.34.12.34:8080").unwrap(),
+            address: ProxyDbAddress::from_str("john:secret@12.34.12.34:8080").unwrap(),
             tcp: true,
             udp: true,
             http: true,
@@ -1375,7 +1382,7 @@ mod tests {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
                 id: non_empty_str!("42"),
-                address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
+                address: ProxyDbAddress::from_str("12.34.12.34:8080").unwrap(),
                 tcp: true,
                 udp: true,
                 http: true,
@@ -1395,7 +1402,7 @@ mod tests {
             },
             Proxy {
                 id: non_empty_str!("100"),
-                address: ProxyAddress::from_str("12.34.12.35:8080").unwrap(),
+                address: ProxyDbAddress::from_str("12.34.12.35:8080").unwrap(),
                 tcp: true,
                 udp: false,
                 http: true,

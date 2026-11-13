@@ -185,10 +185,7 @@ where
             };
         };
 
-        let masque = proxy_info
-            .protocol
-            .as_ref()
-            .is_some_and(Protocol::is_masque);
+        let masque = proxy_info.protocol.is_masque();
         if masque
             && let Some(target) = input.target_authority_with_default_port(
                 input.target_protocol().and_then(Protocol::default_port),
@@ -215,13 +212,7 @@ where
         }
 
         // A MASQUE proxy is also an HTTPS proxy for CONNECT; it never forwards plaintext.
-        if !masque
-            && !proxy_info
-                .protocol
-                .as_ref()
-                .map(|p| p.is_http())
-                .unwrap_or(true)
-        {
+        if !proxy_info.protocol.is_http() {
             return Err(ConnectionError::transport(
                 BoxError::from_static_str("http proxy connector can only serve http protocol"),
                 ConnectionErrorKind::Protocol,
@@ -229,11 +220,7 @@ where
             .context_debug_field("protocol", proxy_info.protocol.clone()));
         }
 
-        if proxy_info
-            .protocol
-            .as_ref()
-            .is_some_and(Protocol::is_secure)
-            && (!self.tls_proxy_supported || !cfg!(feature = "tls"))
+        if proxy_info.protocol.is_secure() && (!self.tls_proxy_supported || !cfg!(feature = "tls"))
         {
             return Err(ConnectionError::transport(
                 BoxError::from_static_str("https proxy selected without proxy-side TLS support"),
@@ -269,10 +256,7 @@ where
                 .copied()
                 .unwrap_or_default()
                 .should_forward(app_protocol.as_ref());
-        let proxy_is_secure = proxy_info
-            .protocol
-            .as_ref()
-            .is_some_and(Protocol::is_secure);
+        let proxy_is_secure = proxy_info.protocol.is_secure();
         // HTTPS routes supply their own tunnel policy below. An explicit
         // tunnel on a plaintext route belongs only to this request; failure
         // under that policy says nothing about the shared proxy's health.
@@ -318,12 +302,7 @@ where
 
         #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
-        if proxy_info
-            .protocol
-            .as_ref()
-            .map(|p| p.is_secure())
-            .unwrap_or_default()
-        {
+        if proxy_info.protocol.is_secure() {
             tracing::trace!(
                 server.address = %proxy_info.address.host,
                 server.port = proxy_info.address.port,
@@ -793,7 +772,7 @@ mod tests {
     };
     use rama_net::{
         Protocol,
-        address::{Domain, HostWithPort, ProxyAddress},
+        address::{Domain, HostWithPort, ProxyAddress, ProxyProtocol},
         client::{
             AddressCandidates, ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind,
             ConnectorService, ConnectorTargetStream, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
@@ -948,51 +927,45 @@ mod tests {
 
     #[tokio::test]
     async fn established_http_route_distinguishes_forward_and_tunnel_for_the_same_proxy() {
-        for protocol in [None, Some(Protocol::HTTP)] {
-            let mut proxy = "http://alice:private-password@proxy.example:8080"
-                .parse::<ProxyAddress>()
-                .unwrap();
-            proxy.protocol = protocol;
+        let proxy = "http://alice:private-password@proxy.example:8080"
+            .parse::<ProxyAddress>()
+            .unwrap();
 
-            for mode in [
-                PlaintextHttpProxyMode::Forward,
-                PlaintextHttpProxyMode::Tunnel,
-            ] {
-                let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
-                    async |req: Request| {
-                        assert_eq!(req.method(), Method::CONNECT);
-                        Ok::<_, Infallible>(Response::new(Body::empty()))
-                    },
-                ));
-                let connector =
-                    HttpProxyConnector::required(MockConnectorService::new(move || {
-                        http_server.clone()
-                    }));
-                let input = ConnectRequest::new(HostWithPort::example_domain_http())
-                    .with_application_protocol(Protocol::HTTP);
-                input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
-                input.extensions.insert(mode);
+        for mode in [
+            PlaintextHttpProxyMode::Forward,
+            PlaintextHttpProxyMode::Tunnel,
+        ] {
+            let http_server = HttpServer::auto(WeakScope::detached()).service(service_fn(
+                async |req: Request| {
+                    assert_eq!(req.method(), Method::CONNECT);
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                },
+            ));
+            let connector = HttpProxyConnector::required(MockConnectorService::new(move || {
+                http_server.clone()
+            }));
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(Protocol::HTTP);
+            input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+            input.extensions.insert(mode);
 
-                let established = connector.serve(input).await.unwrap();
-                let expected = match mode {
-                    PlaintextHttpProxyMode::Forward => {
-                        EstablishedProxyRoute::Forward(proxy.clone())
-                    }
-                    PlaintextHttpProxyMode::Tunnel => EstablishedProxyRoute::Tunnel(proxy.clone()),
-                };
-                assert_eq!(
-                    established
-                        .conn
-                        .extensions()
-                        .get_ref::<EstablishedProxyRoute>(),
-                    Some(&expected),
-                );
-                assert!(!established.conn.extensions().contains::<ProxyRoute>());
-                assert_eq!(
-                    established.input.extensions.get_ref::<ProxyRoute>(),
-                    Some(&ProxyRoute::Proxy(proxy.clone())),
-                );
-            }
+            let established = connector.serve(input).await.unwrap();
+            let expected = match mode {
+                PlaintextHttpProxyMode::Forward => EstablishedProxyRoute::Forward(proxy.clone()),
+                PlaintextHttpProxyMode::Tunnel => EstablishedProxyRoute::Tunnel(proxy.clone()),
+            };
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<EstablishedProxyRoute>(),
+                Some(&expected),
+            );
+            assert!(!established.conn.extensions().contains::<ProxyRoute>());
+            assert_eq!(
+                established.input.extensions.get_ref::<ProxyRoute>(),
+                Some(&ProxyRoute::Proxy(proxy.clone())),
+            );
         }
     }
 
@@ -1062,8 +1035,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: proxy_addr.into(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
 
         let error = connector.serve(input).await.unwrap_err();
@@ -1089,8 +1061,7 @@ mod tests {
         req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
 
         let error = proxy_connector
@@ -1114,8 +1085,7 @@ mod tests {
                 ProxyRoute::Proxy(ProxyAddress {
                     address: HostWithPort::example_domain_http(),
                     credential: None,
-                    protocol: Some(protocol.clone()),
-                    template: None,
+                    protocol: protocol.clone().into(),
                 }),
                 ProxyRoute::Direct,
             ]));
@@ -1143,8 +1113,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_https(),
             credential: None,
-            protocol: Some(Protocol::HTTPS),
-            template: None,
+            protocol: ProxyProtocol::HTTPS,
         }));
 
         let error = connector.serve(input).await.unwrap_err();
@@ -1195,8 +1164,7 @@ mod tests {
             credential: Some(rama_net::user::ProxyCredential::Basic(
                 rama_net::user::Basic::try_from("upstream:secret").unwrap(),
             )),
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
 
         connector.serve(input).await.unwrap();
@@ -1229,8 +1197,7 @@ mod tests {
                 input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
                     address: HostWithPort::example_domain_http(),
                     credential: None,
-                    protocol: Some(Protocol::HTTP),
-                    template: None,
+                    protocol: ProxyProtocol::HTTP,
                 }));
 
                 tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
@@ -1284,8 +1251,7 @@ mod tests {
             input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }));
 
             let error = tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
@@ -1465,8 +1431,7 @@ mod tests {
             request.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }));
 
             let established = proxy_connector
@@ -1495,8 +1460,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1516,8 +1480,7 @@ mod tests {
             Some(&EstablishedProxyRoute::Tunnel(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }))
         );
     }
@@ -1549,8 +1512,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1580,8 +1542,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1641,8 +1602,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_https(),
             credential: None,
-            protocol: Some(Protocol::HTTPS),
-            template: None,
+            protocol: ProxyProtocol::HTTPS,
         }));
 
         connector.serve(input).await.unwrap();
@@ -1660,8 +1620,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_https(),
             credential: None,
-            protocol: Some(Protocol::HTTPS),
-            template: None,
+            protocol: ProxyProtocol::HTTPS,
         }));
 
         let error = connector
@@ -1813,8 +1772,7 @@ mod tests {
             input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }));
 
             let established = connector.serve(input).await.unwrap();
@@ -1851,8 +1809,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
 
         let established = connector.serve(input).await.unwrap();
@@ -1909,8 +1866,7 @@ mod tests {
             input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
-                protocol: Some(Protocol::HTTP),
-                template: None,
+                protocol: ProxyProtocol::HTTP,
             }));
 
             let error = connector
@@ -1964,8 +1920,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_https(),
             credential: None,
-            protocol: Some(Protocol::HTTPS),
-            template: None,
+            protocol: ProxyProtocol::HTTPS,
         }));
 
         connector.serve(input).await.unwrap();
@@ -2015,8 +1970,7 @@ mod tests {
             input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
                 address: HostWithPort::example_domain_https(),
                 credential: None,
-                protocol: Some(Protocol::HTTPS),
-                template: None,
+                protocol: ProxyProtocol::HTTPS,
             }));
 
             let established = connector.serve(input).await.unwrap();
@@ -2067,8 +2021,7 @@ mod tests {
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
 
         connector.serve(input).await.unwrap();
@@ -2101,8 +2054,7 @@ mod tests {
         req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
-            protocol: Some(Protocol::HTTP),
-            template: None,
+            protocol: ProxyProtocol::HTTP,
         }));
 
         let EstablishedClientConnection { conn, input } = proxy_connector

@@ -198,8 +198,7 @@ fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRe
     if let Some(route) = route
         && route
             .proxy_address()
-            .and_then(|proxy| proxy.protocol.as_ref())
-            .is_some_and(rama_net::Protocol::is_masque)
+            .is_some_and(|proxy| proxy.protocol.is_masque())
     {
         return Some(if route.addresses_proxy(&input.authority) {
             HttpProxyModeRequirement::Forward
@@ -209,12 +208,7 @@ fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRe
     }
     let is_http_proxy = route
         .and_then(ProxyRoute::proxy_address)
-        .is_some_and(|proxy| {
-            proxy
-                .protocol
-                .as_ref()
-                .is_none_or(|protocol| protocol.is_http())
-        });
+        .is_some_and(|proxy| proxy.protocol.is_http());
     if !is_http_proxy {
         return None;
     }
@@ -267,8 +261,7 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
             .extensions()
             .get_ref::<ProxyRoute>()
             .and_then(ProxyRoute::proxy_address)
-            .and_then(|proxy| proxy.protocol.as_ref())
-            .is_some_and(|protocol| protocol.is_secure());
+            .is_some_and(|proxy| proxy.protocol.is_secure());
 
     // HTTPS forward-proxy wire versions come from proxy-side ALPN or an
     // explicit connector policy, never from origin request metadata.
@@ -518,7 +511,7 @@ mod tests {
     };
     use rama_http_types::proxy::PlaintextHttpProxyMode;
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
-    use rama_net::address::{HostWithPort, ProxyAddress};
+    use rama_net::address::{HostWithPort, ProxyAddress, ProxyProtocol};
     use rama_net::client::pool::{
         BasicConnIdentifier, ConnID as _, MultiplexPool, MuxSelection, PooledConnector,
         ReqToConnID, ReuseKey, SaturationPolicy,
@@ -749,10 +742,9 @@ mod tests {
         assert_ne!(unconfigured_id, direct_id);
 
         let proxy_address = ProxyAddress {
-            protocol: Some(Protocol::HTTP),
+            protocol: ProxyProtocol::HTTP,
             address: HostWithPort::example_domain_http(),
             credential: None,
-            template: None,
         };
         request
             .extensions()

@@ -104,17 +104,13 @@ pub fn connect_udp_request(
     target: &ConnectUdpTarget,
     version: Version,
 ) -> Result<Request<Body>, ConnectUdpRequestError> {
-    if !proxy
-        .protocol
-        .as_ref()
-        .is_some_and(rama_net::Protocol::is_masque)
-    {
+    let Some(masque) = proxy.protocol.masque() else {
         return Err(ConnectUdpRequestError::NotMasque);
-    }
+    };
     let mut uri = String::with_capacity(96);
     uri.push_str("https://");
     uri.push_str(&proxy.address.to_string());
-    match &proxy.template {
+    match &masque.connect_udp {
         Some(template) => template.expand_target_to(&mut uri, &target.host, target.port.get()),
         None => ProxyPathTemplate::expand_connect_udp_default_to(
             &mut uri,

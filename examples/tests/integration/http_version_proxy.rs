@@ -30,8 +30,7 @@ use rama::{
     },
     layer::MapInputLayer,
     net::{
-        Protocol,
-        address::{HostWithPort, ProxyAddress},
+        address::{HostWithPort, ProxyAddress, ProxyProtocol},
         client::ProxyRoute,
         process::ProcessSocket,
         transport::TransportProtocol,
@@ -102,11 +101,10 @@ fn client(outer: Version) -> (BoxService<Request, Response, OpaqueError>, Certif
 
 fn route(address: std::net::SocketAddr, username: Option<&str>) -> ProxyRoute {
     ProxyRoute::Proxy(ProxyAddress {
-        protocol: Some(Protocol::HTTP),
+        protocol: ProxyProtocol::HTTP,
         address: address.into(),
         credential: username
             .map(|name| Basic::new(name.parse().unwrap(), "secret".parse().unwrap()).into()),
-        template: None,
     })
 }
 
@@ -544,10 +542,9 @@ async fn test_http_version_proxy() {
                 assert_proxy_status(&error, StatusCode::BAD_REQUEST);
             }
             let mut bearer_proxy = ProxyAddress {
-                protocol: Some(Protocol::HTTP),
+                protocol: ProxyProtocol::HTTP,
                 address: proxy.into(),
                 credential: None,
-                template: None,
             };
             bearer_proxy.credential = Some(Bearer::try_from("token").unwrap().into());
             let error = web

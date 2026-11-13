@@ -271,18 +271,18 @@ fn parse_proxy(value: &str) -> Result<SystemProxyConfig, BoxError> {
         .filter(|item| !item.is_empty())
     {
         let Some((kind, endpoint)) = item.split_once('=') else {
-            fallback = Some(parse_proxy_endpoint(item, Protocol::HTTP)?);
+            fallback = Some(parse_proxy_endpoint(item, &Protocol::HTTP)?);
             continue;
         };
         match kind.trim().to_ascii_lowercase().as_str() {
-            "http" => config.http = Some(parse_proxy_endpoint(endpoint, Protocol::HTTP)?),
-            "https" => config.https = Some(parse_proxy_endpoint(endpoint, Protocol::HTTP)?),
+            "http" => config.http = Some(parse_proxy_endpoint(endpoint, &Protocol::HTTP)?),
+            "https" => config.https = Some(parse_proxy_endpoint(endpoint, &Protocol::HTTP)?),
             "socks" => {
                 rama_core::telemetry::tracing::debug!(
                     "ignoring WinINET SOCKS4 proxy because Rama supports SOCKS5 only"
                 );
             }
-            "socks5" => config.socks5 = Some(parse_proxy_endpoint(endpoint, Protocol::SOCKS5)?),
+            "socks5" => config.socks5 = Some(parse_proxy_endpoint(endpoint, &Protocol::SOCKS5)?),
             _ => {}
         }
     }
@@ -297,6 +297,8 @@ fn parse_proxy(value: &str) -> Result<SystemProxyConfig, BoxError> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+
+    use crate::address::ProxyProtocol;
 
     use super::*;
 
@@ -356,13 +358,13 @@ mod tests {
         assert_eq!(config.https.unwrap().to_string(), "http://secure:8443");
         assert!(config.socks5.is_none());
 
-        parse_proxy_endpoint("", Protocol::HTTP).unwrap_err();
+        parse_proxy_endpoint("", &Protocol::HTTP).unwrap_err();
         for endpoint in ["socks://localhost:1080", "SOCKS://localhost:1080"] {
             assert_eq!(
-                parse_proxy_endpoint(endpoint, Protocol::HTTP)
+                parse_proxy_endpoint(endpoint, &Protocol::HTTP)
                     .unwrap()
                     .protocol,
-                Some(Protocol::SOCKS5)
+                ProxyProtocol::SOCKS5
             );
         }
     }
