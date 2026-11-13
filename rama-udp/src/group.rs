@@ -87,6 +87,7 @@ struct Path {
     peer: SocketAddress,
     sender: Box<dyn Fn() -> Box<dyn DatagramSender> + Send + Sync>,
     receive: Box<Receive>,
+    close: Box<dyn Fn() + Send + Sync>,
     retained_size: Arc<AtomicUsize>,
     receive_local_ip: bool,
     ready: AtomicBool,
@@ -132,6 +133,7 @@ impl Shared {
             self.generation.fetch_add(1, Ordering::Release);
         }
         drop(paths);
+        (path.close)();
         path.stopped.notify_waiters();
         self.receiver.wake();
         self.changed.notify_waiters();
@@ -175,6 +177,8 @@ impl Drop for DatagramSocketGroup {
 
 impl DatagramGroup {
     /// Register a concrete peer. No receive task or payload queue is created.
+    /// Transport destruction can run on the endpoint driver when a path closes or is
+    /// evicted. Implementations must keep Drop nonblocking to avoid stalling that endpoint.
     pub fn attach<S: DatagramSocket>(
         &self,
         socket: S,
@@ -205,30 +209,43 @@ impl DatagramGroup {
             .into());
         }
 
-        let socket = Arc::new(Mutex::new(socket));
+        let socket = Arc::new(Mutex::new(Some(socket)));
         let send = Arc::downgrade(&socket);
-        let receive = Arc::downgrade(&socket);
+        // The receiver owns the slot directly: no weak upgrade/refcount pair per packet.
+        // remove() takes the transport out before releasing a path, also breaking a waker
+        // retained by that transport back to this Path.
+        let receive = socket.clone();
+        let close = Arc::downgrade(&socket);
         let retained_size = Arc::new(AtomicUsize::new(capabilities.min_receive_buffer_size));
         let received_size = retained_size.clone();
         let path = Arc::new(Path {
             peer,
             sender: Box::new(move || match send.upgrade() {
-                Some(socket) => Box::new(socket.lock().create_sender()),
+                Some(socket) => match socket.lock().as_ref() {
+                    Some(socket) => Box::new(socket.create_sender()),
+                    None => Box::new(ClosedSender),
+                },
                 None => Box::new(ClosedSender),
             }),
-            receive: Box::new(move |cx, buffers, metadata| match receive.upgrade() {
-                Some(socket) => {
-                    let mut socket = socket.lock();
-                    let result = socket.poll_recv(cx, buffers, metadata);
-                    if received_size.load(Ordering::Relaxed) != 0 {
-                        received_size.store(
-                            socket.capabilities().min_receive_buffer_size,
-                            Ordering::Release,
-                        );
-                    }
-                    result
+            receive: Box::new(move |cx, buffers, metadata| {
+                let mut owned = receive.lock();
+                let Some(socket) = owned.as_mut() else {
+                    return Poll::Ready(Err(DatagramError::Closed));
+                };
+                let result = socket.poll_recv(cx, buffers, metadata);
+                if received_size.load(Ordering::Relaxed) != 0 {
+                    received_size.store(
+                        socket.capabilities().min_receive_buffer_size,
+                        Ordering::Release,
+                    );
                 }
-                None => Poll::Ready(Err(DatagramError::Closed)),
+                result
+            }),
+            close: Box::new(move || {
+                if let Some(socket) = close.upgrade() {
+                    let removed = socket.lock().take();
+                    drop(removed);
+                }
             }),
             retained_size,
             receive_local_ip: capabilities.receive_local_ip,
@@ -273,6 +290,31 @@ impl DatagramGroup {
         })
     }
 
+    /// Detach a peer without affecting other paths, waking its attachment and pending senders.
+    /// A socket's owner can then drop its attachment; cached senders treat it as packet loss.
+    pub fn detach(&self, peer: SocketAddress) -> bool {
+        let path = self
+            .shared
+            .paths
+            .lock()
+            .get(&peer.into_canonical_ip_addr())
+            .cloned();
+        if let Some(path) = path {
+            self.shared.remove(&path);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether a peer still has a registered path.
+    pub fn contains_path(&self, peer: SocketAddress) -> bool {
+        self.shared
+            .paths
+            .lock()
+            .contains_key(&peer.into_canonical_ip_addr())
+    }
+
     pub fn path_count(&self) -> usize {
         self.shared.paths.lock().len()
     }
@@ -282,7 +324,7 @@ impl DatagramGroup {
 #[derive(Debug)]
 pub struct DatagramGroupAttachment<S> {
     group: DatagramGroup,
-    _socket: Arc<Mutex<S>>,
+    _socket: Arc<Mutex<Option<S>>>,
     path: Arc<Path>,
 }
 
@@ -576,6 +618,15 @@ mod tests {
     struct ProfileSocket {
         inner: MemoryDatagramSocket,
         profile: DatagramCapabilities,
+        drops: Option<Arc<AtomicUsize>>,
+    }
+
+    impl Drop for ProfileSocket {
+        fn drop(&mut self) {
+            if let Some(count) = &self.drops {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     impl Socket for ProfileSocket {
@@ -617,6 +668,43 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn detaching_releases_transport_even_with_a_live_guard_and_cached_waker() {
+        let (inner, _peer) = pair(1000);
+        let profile = inner.capabilities();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (mut socket, group) = DatagramSocketGroup::new(
+            inner.local_addr().unwrap(),
+            DatagramSocketGroupConfig {
+                max_paths: n(1),
+                capabilities: profile,
+            },
+        );
+        let attachment = group
+            .attach(ProfileSocket {
+                inner,
+                profile,
+                drops: Some(drops.clone()),
+            })
+            .unwrap();
+        let mut bytes = [0; 32];
+        let mut metadata = [DatagramMetadata::empty()];
+        assert!(
+            socket
+                .poll_recv(
+                    &mut Context::from_waker(Waker::noop()),
+                    &mut [IoSliceMut::new(&mut bytes)],
+                    &mut metadata
+                )
+                .is_pending()
+        );
+        assert!(group.detach(attachment.peer_addr()));
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        attachment.run().await.unwrap();
+        drop(socket);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
     #[test]
     fn attachment_rejects_incompatible_segment_limits() {
         for receive in [false, true] {
@@ -640,6 +728,7 @@ mod tests {
                 .attach(ProfileSocket {
                     inner,
                     profile: changed,
+                    drops: None,
                 })
                 .unwrap_err();
             assert_eq!(group.path_count(), 0);
@@ -659,7 +748,13 @@ mod tests {
                 capabilities: profile,
             },
         );
-        let _attachment = group.attach(ProfileSocket { inner, profile }).unwrap();
+        let _attachment = group
+            .attach(ProfileSocket {
+                inner,
+                profile,
+                drops: None,
+            })
+            .unwrap();
         client
             .create_sender()
             .send(SendDatagram::new(local, b"bound"))
