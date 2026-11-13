@@ -32,6 +32,9 @@
     "quic-go": "martenseemann/quic-go-interop@sha256:da5f6d1073d1d21c67c91ea8b052024bf75e735b89c01d7fafbe58f2dbb4fc2a",
     "ngtcp2": "ghcr.io/ngtcp2/ngtcp2-interop@sha256:f50753c009aa7de1b641d713cf8d6a482e084af767f6c14c6f7f9f0ab372637b"
   },
+  "retried_case_groups": [
+    "loss"
+  ],
   "case_groups": {
     "core": [
       "handshake",

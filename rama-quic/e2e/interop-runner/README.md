@@ -27,6 +27,13 @@ silicon (default: `linux/amd64`). `--tests handshake,transfer,retry` selects a s
 CI splits the full suite into `core` (14 families), `paths` (4) and `loss` (4);
 [runner.lock.json](runner.lock.json) lists their cases and pins the peers.
 
+The `loss` cases drop and damage packets at random, so one unlucky handshake of 50 fails a
+cell. With `--previous-run`, which CI passes, exactly one failed `loss` cell in a job is run
+a second time in `retry/` and must pass every gate there. More than one failed cell is not
+retried, and neither is a cell that also failed first in the previous workflow run: the job
+then fails and says so. Each run writes the cells that failed first to `first-failures.json`
+for the next one, and without `--previous-run` nothing is retried.
+
 ## Images
 
 CI publishes `glendc/rama-quic-interop` for amd64 and arm64:

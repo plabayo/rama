@@ -273,6 +273,16 @@ class RetransmissionTests(unittest.TestCase):
         blocks = parse_pdml(self.document((7, ["aabb"]), (8, ["aabb"])), "h3", 443)
         self.assertEqual([block.packet for block in blocks], [7])
 
+    def test_bytes_sent_again_in_other_frame_sizes_yield_their_headers_once(self):
+        data = self.document(
+            (7, ["aabbccdd"]), (8, ["aabb"]), (9, ["ccdd"], ("2", "2", False))
+        )
+        self.assertEqual([block.packet for block in parse_pdml(data, "h3", 443)], [7])
+
+    def test_a_frame_that_repeats_only_some_bytes_is_ambiguous(self):
+        with self.assertRaisesRegex(ValueError, "partly retransmitted"):
+            parse_pdml(self.document((7, ["aabb"]), (8, ["aabbccdd"])), "h3", 443)
+
     def test_different_stream_bytes_are_not_a_retransmission(self):
         blocks = parse_pdml(self.document((7, ["aabb"]), (8, ["ccdd"])), "h3", 443)
         self.assertEqual([block.packet for block in blocks], [7, 8])
@@ -292,7 +302,7 @@ class RetransmissionTests(unittest.TestCase):
                 ET.SubElement(frame, "field", name="quic.stream_data", show="", value=value)
             return node
 
-        seen = set()
+        seen = {}
         retransmitted_streams(control(["aabb"]), seen)
         self.assertEqual(retransmitted_streams(control(["aabb", "ccdd"]), seen), set())
 

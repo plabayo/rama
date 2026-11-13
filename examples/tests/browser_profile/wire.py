@@ -129,7 +129,7 @@ def parse_pdml(
     } if protocol == "h3" else {}
     qpack = None
     blocks = []
-    seen_stream_data = set()
+    seen_stream_data = {}
     for packet in packets:
         # Tshark decodes HTTP/3 frames again in a QUIC retransmission; count them once.
         repeated = (

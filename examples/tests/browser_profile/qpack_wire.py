@@ -107,7 +107,7 @@ def encoder_instruction_evidence(data, server_port, streams):
         for stream in prefixes
         if stream.stream_type == ENCODER_STREAM
     }
-    seen_stream_data = set()
+    seen_stream_data = {}
     for packet in pdml_packets(data):
         nodes = [node for node in packet.iter("field") if node.get("name") in OPCODES]
         if not nodes:
