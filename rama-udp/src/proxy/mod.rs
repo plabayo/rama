@@ -6,11 +6,18 @@
 //! explicit; timestamps, interface indices and original destinations remain local
 //! receive metadata. No QUIC parsing, retransmission or congestion control occurs.
 
-use std::{error::Error, fmt, net::IpAddr, num::NonZeroUsize, time::Duration};
+use std::{error::Error, fmt, io::ErrorKind, net::IpAddr, num::NonZeroUsize, time::Duration};
+
+mod recovery;
+pub use recovery::{
+    DatagramRecovery, DatagramRecoveryConfig, DatagramRecoveryFailureAction,
+    DatagramRecoverySignal, DatagramRecoveryState,
+};
 
 mod bridge;
 pub use bridge::{
-    DatagramBridgeInput, DatagramToProxyBridge, DatagramToProxyBridgeLayer, UdpConnector,
+    DatagramBridgeInput, DatagramForwardRecovery, DatagramToProxyBridge,
+    DatagramToProxyBridgeLayer, UdpConnector,
 };
 
 use rama_core::{Service, futures::try_join_with_drain, io::BridgeIo, telemetry::tracing};
@@ -19,8 +26,9 @@ use rama_utils::macros::generate_set_and_with;
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
 
 use crate::{
-    DatagramError, DatagramFeature, DatagramMetadata, DatagramSender, DatagramSenderExt as _,
-    DatagramSocket, DatagramSocketExt as _, InvalidDatagramMetadata, SendDatagram, SendFailure,
+    DatagramCapabilities, DatagramError, DatagramFeature, DatagramMetadata, DatagramSender,
+    DatagramSenderExt as _, DatagramSocket, DatagramSocketExt as _, InvalidDatagramMetadata,
+    SendDatagram, SendFailure,
 };
 
 /// ECN behavior selected before either direction starts sending.
@@ -169,7 +177,7 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
             Some(self.close_timeout),
             || {
                 DatagramError::Io(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
+                    ErrorKind::TimedOut,
                     "datagram forwarding close timeout",
                 ))
                 .into()
@@ -275,18 +283,27 @@ impl DatagramForwardService {
         to: &T,
         source_ip: Option<IpAddr>,
     ) -> Result<(), DatagramForwardError> {
-        if !from.capabilities().receive_truncation {
+        self.check_capabilities(from.capabilities(), to.capabilities(), source_ip)
+    }
+
+    fn check_capabilities(
+        &self,
+        from: DatagramCapabilities,
+        to: DatagramCapabilities,
+        source_ip: Option<IpAddr>,
+    ) -> Result<(), DatagramForwardError> {
+        if !from.receive_truncation {
             return Err(DatagramError::Unsupported(DatagramFeature::ReceiveTruncation).into());
         }
         if self.ecn == EcnPolicy::Preserve {
-            if !from.capabilities().receive_ecn {
+            if !from.receive_ecn {
                 return Err(DatagramError::Unsupported(DatagramFeature::ReceiveEcn).into());
             }
-            if !to.capabilities().send_ecn {
+            if !to.send_ecn {
                 return Err(DatagramError::Unsupported(DatagramFeature::SendEcn).into());
             }
         }
-        if source_ip.is_some() && !to.capabilities().send_source_ip {
+        if source_ip.is_some() && !to.send_source_ip {
             return Err(DatagramError::Unsupported(DatagramFeature::SendSourceIp).into());
         }
         Ok(())
@@ -300,17 +317,34 @@ impl DatagramForwardService {
         destination: SocketAddress,
         source_ip: Option<IpAddr>,
     ) -> Result<(), DatagramForwardError> {
+        match self
+            .copy_direction(from, expected, to, destination, source_ip)
+            .await
+        {
+            Err(CopyError::Send(DatagramError::Closed)) => Ok(()),
+            result => result.map_err(CopyError::into_error),
+        }
+    }
+
+    async fn copy_direction<S: DatagramSocket, T: DatagramSender>(
+        &self,
+        from: &mut S,
+        expected: SocketAddress,
+        to: &mut T,
+        destination: SocketAddress,
+        source_ip: Option<IpAddr>,
+    ) -> Result<(), CopyError> {
         let mut buffer = vec![0; self.buffer_bytes.get()];
         loop {
             tokio::task::consume_budget().await;
             // Receive closure ends the association after its queued input. Unlike
             // a destination-only send failure, there is nothing left to drain from
             // this socket, nor a live destination for the reverse direction.
-            let metadata = from.recv(&mut buffer).await?;
+            let metadata = from.recv(&mut buffer).await.map_err(CopyError::Receive)?;
             match self.validate(&metadata, buffer.len(), expected) {
                 Ok(()) => {}
                 Err(DatagramForwardError::Truncated) if self.drop_truncated(expected) => continue,
-                Err(error) => return Err(error),
+                Err(error) => return Err(CopyError::Policy(error)),
             }
             let payload = &buffer[..metadata.len];
             let ecn = match self.ecn {
@@ -329,9 +363,11 @@ impl DatagramForwardService {
                     .await;
                 match sent {
                     Ok(()) => {}
-                    Err(DatagramError::Closed) => return Ok(()),
+                    Err(DatagramError::Closed) => {
+                        return Err(CopyError::Send(DatagramError::Closed));
+                    }
                     Err(error) if self.drop_send_error(&error, destination) => {}
-                    Err(error) => return Err(error.into()),
+                    Err(error) => return Err(CopyError::Send(error)),
                 }
             }
         }
@@ -359,6 +395,37 @@ impl DatagramForwardService {
             return Err(DatagramForwardError::MissingEcn);
         }
         Ok(())
+    }
+}
+
+enum CopyError {
+    Receive(DatagramError),
+    Send(DatagramError),
+    Policy(DatagramForwardError),
+}
+
+impl CopyError {
+    fn is_recoverable_path_failure(&self) -> bool {
+        match self {
+            Self::Receive(DatagramError::Closed) | Self::Send(DatagramError::Closed) => true,
+            Self::Receive(DatagramError::Io(error)) | Self::Send(DatagramError::Io(error)) => {
+                matches!(
+                    error.kind(),
+                    ErrorKind::NetworkDown
+                        | ErrorKind::NetworkUnreachable
+                        | ErrorKind::HostUnreachable
+                        | ErrorKind::AddrNotAvailable
+                )
+            }
+            _ => false,
+        }
+    }
+
+    fn into_error(self) -> DatagramForwardError {
+        match self {
+            Self::Receive(error) | Self::Send(error) => error.into(),
+            Self::Policy(error) => error,
+        }
     }
 }
 

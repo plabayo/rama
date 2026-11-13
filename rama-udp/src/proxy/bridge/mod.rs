@@ -15,6 +15,9 @@ use rama_net::{
 };
 use rama_utils::macros::define_inner_service_accessors;
 
+mod recovery;
+pub use recovery::DatagramForwardRecovery;
+
 use crate::{DatagramSocket, UdpPacketSocket, UdpSocketConfig, bind_udp_socket_with_connect};
 
 /// Connects a [`UdpPacketSocket`] to the request's IP target, configured by its
@@ -205,7 +208,23 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let ingress = input.ingress();
+        let request = self.connect_request(input.ingress())?;
+        let target = request.authority.clone();
+        let EstablishedClientConnection { conn: egress, .. } = self
+            .connector
+            .connect(request)
+            .await
+            .context("connect datagram egress")
+            .context_field("target", target)?;
+        self.inner
+            .serve(input.bridge(egress))
+            .await
+            .into_box_error()
+    }
+}
+
+impl<S, C> DatagramToProxyBridge<S, C> {
+    fn connect_request(&self, ingress: &impl ExtensionsRef) -> Result<ConnectRequest, BoxError> {
         let target = match &self.address_provider {
             AddressProvider::Static(target) => target.clone(),
             AddressProvider::ExtensionConnectorTarget => {
@@ -218,18 +237,10 @@ where
             }
         };
         tracing::trace!("connect the egress of a datagram association: target = {target}");
-        let request =
-            ConnectRequest::new_with_extensions(target.clone(), ingress.extensions().fork());
-        let EstablishedClientConnection { conn: egress, .. } = self
-            .connector
-            .connect(request)
-            .await
-            .context("connect datagram egress")
-            .context_field("target", target)?;
-        self.inner
-            .serve(input.bridge(egress))
-            .await
-            .into_box_error()
+        Ok(ConnectRequest::new_with_extensions(
+            target,
+            ingress.extensions().fork(),
+        ))
     }
 }
 

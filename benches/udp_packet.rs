@@ -7,7 +7,16 @@
 
 use divan::{black_box, counter::ItemsCount};
 use rama::{
+    Service,
+    error::BoxError,
+    io::BridgeIo,
+    net::client::ConnectRequest,
     net::{socket::SocketOptions, stream::Socket as _},
+    service::service_fn,
+    udp::proxy::{
+        DatagramForwardService, DatagramRecovery, DatagramRecoveryConfig,
+        DatagramRecoveryFailureAction, DatagramRecoverySignal, EcnPolicy, Peer, UdpConnector,
+    },
     udp::{
         DatagramCapabilities, DatagramError, DatagramSender, DatagramSenderExt as _,
         DatagramSocket, DatagramSocketExt as _, SendDatagram, UdpPacketSender, UdpPacketSocket,
@@ -240,4 +249,73 @@ fn grouped_ready_senders(bencher: divan::Bencher, paths: usize) {
             );
         }
     });
+}
+
+/// Native forwarding baseline versus opt-in recovery with no network changes.
+/// Setup is excluded; every measured batch verifies delivery. No telemetry recorder is enabled.
+#[divan::bench(args = [false, true])]
+fn forwarding_recovery_idle(bencher: divan::Bencher, enabled: bool) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (mut pair, forwarding) = runtime.block_on(async {
+        let mut pair = NativePair::new(32, 1200).await;
+        let destination = pair.receiver.local_addr().unwrap();
+        let ingress = UdpPacketSocket::bind(([127, 0, 0, 1], 0)).await.unwrap();
+        pair.destination = ingress.local_addr().unwrap();
+        let client = UdpPacketSocket::bind(([127, 0, 0, 1], 0)).await.unwrap();
+        let client_address = client.local_addr().unwrap();
+        pair.senders = (0..32).map(|_| client.create_sender()).collect();
+        let egress = UdpConnector::new()
+            .serve(ConnectRequest::new(destination.into()))
+            .await
+            .unwrap()
+            .conn;
+        let peers = BridgeIo(
+            Peer {
+                socket: ingress,
+                address: client_address,
+                source_ip: None,
+            },
+            Peer::connected(egress).unwrap(),
+        );
+        let forward =
+            DatagramForwardService::new(rama::utils::macros::nonzero!(65536), EcnPolicy::Discard);
+        let task = tokio::spawn(async move {
+            // Retain the client receive owner for the entire association.
+            let _client = client;
+            if enabled {
+                let recovery = DatagramRecovery::new(
+                    DatagramRecoverySignal::new(),
+                    DatagramRecoveryConfig {
+                        preparation_timeout: Duration::from_secs(5),
+                        unavailable_timeout: Duration::from_secs(5),
+                        failure_action: DatagramRecoveryFailureAction::Close,
+                    },
+                );
+                let factory = service_fn(move |()| async move {
+                    Ok::<_, BoxError>(
+                        UdpConnector::new()
+                            .serve(ConnectRequest::new(destination.into()))
+                            .await?
+                            .conn,
+                    )
+                });
+                forward
+                    .forward_with_recovery(peers, &recovery, factory)
+                    .await
+                    .unwrap();
+            } else {
+                forward.serve(peers).await.unwrap();
+            }
+        });
+        pair.transfer().await;
+        (pair, task)
+    });
+    bencher
+        .counter(ItemsCount::new(32usize))
+        .bench_local(|| runtime.block_on(pair.transfer()));
+    forwarding.abort();
+    let _cancelled = runtime.block_on(forwarding);
 }
