@@ -731,7 +731,12 @@ def run_capture_flow(
             for name, value in cookies.items():
                 driver.add_cookie({"name": name, "value": value, "path": "/"})
 
-        driver.get(urljoin(origin, "/report"))
+        try:
+            driver.get(urljoin(origin, "/report"))
+        except TimeoutException:
+            # A browser that stalled before starting the load is still on its previous page.
+            if urlsplit(driver.current_url).path == "/report":
+                raise
         # A load that failed leaves the browser on the page it came from.
         if urlsplit(driver.current_url).path != "/report":
             print("RETRY report: the browser did not leave its previous page", flush=True)

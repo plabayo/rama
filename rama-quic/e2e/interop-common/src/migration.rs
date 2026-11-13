@@ -222,7 +222,7 @@ pub async fn rama_server_side(
                 .await
                 .expect("the handshake completes");
             answer(&what, deadline, &connection, scenario.before).await;
-            let from_before = connection.remote_address();
+            let from_before = connection.path_remote_address();
             answer(&what, deadline, &connection, scenario.after).await;
             let from_after = seen_from(&what, deadline, &connection, from_before, &scenario).await;
             let ended = deadline.wait(&what, connection.closed()).await;
@@ -240,7 +240,8 @@ pub async fn rama_server_side(
 
 /// Where the connection is coming from now. A case that expects a move waits for the address
 /// to change rather than reading it the moment the second exchange is answered, since the
-/// answer may go out before the peer's new address is the one in use.
+/// answer may go out before the peer's new address is the one in use. It reads the path in
+/// use, not the validated address: a peer may close before it answers the new path's challenge.
 async fn seen_from(
     what: &str,
     deadline: crate::support::Deadline,
@@ -251,11 +252,11 @@ async fn seen_from(
     if scenario.moves {
         deadline
             .wait(what, async {
-                while connection.remote_address() == before {
+                while connection.path_remote_address() == before {
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
             })
             .await;
     }
-    connection.remote_address()
+    connection.path_remote_address()
 }

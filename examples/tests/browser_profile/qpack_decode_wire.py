@@ -126,7 +126,7 @@ def resolve_blocked_headers(packets, server_port, *, from_server=False):
     decoders, witnesses, encoder_streams = {}, {}, {}
     sections, pending, resolved, recovered = {}, {}, {}, set()
     previous_packet = 0
-    seen_stream_data = set()
+    seen_stream_data = {}
 
     def decoder(connection):
         if connection not in decoders:

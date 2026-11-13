@@ -173,7 +173,11 @@ def close_problem(frame, kind, handshake):
 
 
 def retransmitted_streams(packet, seen):
-    """Streams whose QUIC data in this packet repeats bytes an earlier packet carried."""
+    """Streams whose QUIC data in this packet repeats bytes an earlier packet carried.
+
+    A sender may split the bytes differently when it sends them again, so a repeat is
+    judged per byte range, not per frame. `seen` is a dict the caller keeps across packets.
+    """
     connection = tuple(sorted(set(values(packet, "quic.connection.number"))))
     direction = tuple(values(packet, "udp.srcport"))
     framed = {int(stream) for stream in values(packet, "http3.frame_streamid")}
@@ -187,12 +191,28 @@ def retransmitted_streams(packet, seen):
             continue
         stream = int(stream_ids[0])
         offset = int((values(frame, "quic.stream.offset") or ["0"])[0])
-        key = (direction, connection, stream, offset, payload[0].get("value", ""))
-        repeats[stream].add(key in seen)
-        seen.add(key)
+        data = bytes.fromhex(payload[0].get("value", ""))
+        carried = seen.setdefault((direction, connection, stream), [])
+        repeats[stream].update(repeated_bytes(carried, offset, data))
+        carried.append((offset, data))
     if any(len(kinds) == 2 and stream in framed for stream, kinds in repeats.items()):
         raise ValueError("partly retransmitted QUIC stream data in one packet")
     return {stream for stream, kinds in repeats.items() if kinds == {True}}
+
+
+def repeated_bytes(carried, offset, data):
+    """Whether a frame's bytes were carried before: {True}, {False}, or both for a part."""
+    if (offset, data) in carried:
+        return {True}
+    known = [False] * len(data)
+    for start, earlier in carried:
+        low, high = max(start, offset), min(start + len(earlier), offset + len(data))
+        if low >= high:
+            continue
+        if earlier[low - start : high - start] != data[low - offset : high - offset]:
+            return {False}
+        known[low - offset : high - offset] = [True] * (high - low)
+    return set(known) or {False}
 
 
 def requestless_connections(data, server_port):

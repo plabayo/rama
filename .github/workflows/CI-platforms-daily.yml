@@ -694,6 +694,8 @@ jobs:
         with:
           key: linux-gnu-cross-windows-latest-stable-x86_64-pc-windows-gnu-x86_64-unknown-linux-gnu.2.17
           env-vars: RUST_TOOLCHAIN
+          # The wrapper expands cargo's argument file past the Windows command-line limit.
+          sccache: "false"
       # The just recipes are also the documented local developer entry points.
       - name: Cross-link Linux GNU coverage
         run: just test-zigbuild-linux-gnu-cli x86_64-unknown-linux-gnu.2.17

@@ -97,7 +97,7 @@ def sections_from_wire(data, server_port):
     result = {}
     packets = pdml_packets(data)
     resolved = resolve_blocked_headers(packets, server_port)
-    seen_stream_data = set()
+    seen_stream_data = {}
     for packet in packets:
         frames = [
             node
