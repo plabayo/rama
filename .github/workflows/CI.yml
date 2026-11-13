@@ -1078,6 +1078,8 @@ jobs:
   test-quic-interop-runner:
     permissions:
       contents: read
+      # Reads the previous run's record of cells that failed first.
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -1133,8 +1135,29 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: just
+      # One failed loss cell is run again, unless it also failed first in the previous run.
+      - name: Read the cells that failed first in the previous run
+        if: matrix.group == 'loss'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/ci/quic-interop-previous-run.sh ${{ matrix.backend }} ${{ matrix.group }} "$RUNNER_TEMP/quic-interop-previous-run.json" \
+            || { rm -f "$RUNNER_TEMP/quic-interop-previous-run.json"; echo "::warning::no previous-run record; a failed cell will not be run again"; }
       - name: Test both roles against quic-go and ngtcp2
-        run: just rama-quic/test-interop-runner --backend ${{ matrix.backend }} --group ${{ matrix.group }} --artifacts "$RUNNER_TEMP/quic-interop"
+        run: |
+          previous=()
+          if [[ -f "$RUNNER_TEMP/quic-interop-previous-run.json" ]]; then
+            previous=(--previous-run "$RUNNER_TEMP/quic-interop-previous-run.json")
+          fi
+          just rama-quic/test-interop-runner --backend ${{ matrix.backend }} --group ${{ matrix.group }} --artifacts "$RUNNER_TEMP/quic-interop" "${previous[@]}"
+      - name: Record the cells that failed first for the next run
+        if: always() && matrix.group == 'loss'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quic-interop-first-failures-${{ matrix.backend }}-${{ matrix.group }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/quic-interop/first-failures.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Retain interop reports and diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

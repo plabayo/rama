@@ -21,6 +21,7 @@ from check_results import InvalidResults, gate, load_report
 from check_migration import verify_migration
 from check_rebinding import CASES as REBINDING_CASES, verify_rebinding
 from check_qlogs import gate_qlogs
+from retry_policy import decide, failed_cells, previous_first_failures
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -42,6 +43,13 @@ def pull(reference, platform, attempts=4):
             delay = 5 * 2 ** (attempt - 1)
             print(f"pull of {reference} failed (attempt {attempt}); retrying in {delay}s", flush=True)
             time.sleep(delay)
+
+
+def annotate(level, message):
+    """Say it in the console, and on the job when GitHub Actions is running this."""
+    print(f"{level.upper()} {message}", flush=True)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::{level} title=QUIC interop::{message}", flush=True)
 
 
 def output(command, **kwargs):
@@ -184,15 +192,16 @@ def migration_classifications(artifacts, role, outcomes, evidence, peers):
     return verified_migrations, proofs
 
 
-def check_runner_exit(status, completion, verified_migrations):
+def check_runner_exit(status, completion, verified_migrations, excused=0):
     # The pinned InteropRunner.run returns the number of failed test cases.
     # Only a normal return, exactly accounted for by verified classifications,
     # can explain a nonzero exit. A same-number crash must still fail.
     if (not isinstance(completion, dict) or set(completion) != {"returned"}
             or type(completion["returned"]) is not int or completion["returned"] != status):
         raise InvalidResults("runner did not record a matching normal completion")
-    if status != len(verified_migrations):
-        raise InvalidResults(f"runner exited {status}; expected {len(verified_migrations)} classified failures")
+    if status != len(verified_migrations) + excused:
+        raise InvalidResults(f"runner exited {status}; expected {len(verified_migrations) + excused} "
+                             "classified failures")
 
 
 def inspect_image(reference, platform):
@@ -277,7 +286,14 @@ def main():
                         help="comma-separated subset for diagnosis; default is the full required gate")
     selection.add_argument("--group", choices=lock["case_groups"], help="CI case group")
     parser.add_argument("--platform", choices=["linux/amd64", "linux/arm64"], default=lock["platform"])
+    parser.add_argument("--previous-run", type=Path,
+                        help="JSON record of the cells that failed first in the previous workflow run; "
+                             "with it, one failed cell of a retried case group is run once more")
     args = parser.parse_args()
+    try:
+        previous = args.previous_run and previous_first_failures(load_report(args.previous_run))
+    except (InvalidResults, OSError, json.JSONDecodeError) as error:
+        parser.error(f"--previous-run: {error}")
     cases = lock["case_groups"][args.group] if args.group else args.tests.split(",")
     if not cases or len(set(cases)) != len(cases) or set(cases) - set(lock["cases"]):
         parser.error("--tests must select unique cases from runner.lock.json")
@@ -353,68 +369,117 @@ def main():
                      HERE / "requirements.lock"])
             (venv / ".installed").touch()
         manifest["python_dependencies"] = output(["uv", "pip", "freeze", "--python", venv / "bin/python"])
-        failed = False
-        for role in (("client", "server") if args.role == "both" else (args.role,)):
-            clients = ["rama"] if role == "client" else list(lock["peers"])
-            servers = list(lock["peers"]) if role == "client" else ["rama"]
-            # Execute all selected cases, including known capability gaps. Preserve their
-            # explicit upstream unsupported results instead of silently removing them.
-            role_cases = cases
-            # Each exception names the precise endpoint allowed to exit 127.
-            optional = unsupported_policy(role, args.backend, lock["peers"])
-            report = artifacts / f"rama-{role}.json"
+        def sides(role):
+            peers = list(lock["peers"])
+            return (["rama"], peers) if role == "client" else (peers, ["rama"])
+
+        def attempt(root, role, clients, servers, role_cases):
+            """Run the upstream matrix for these cells into `root`."""
+            peers = [name for name in (*clients, *servers) if name != "rama"]
             command = [venv / "bin/python", HERE / "upstream_adapter.py", checkout,
                        "-c", ",".join(clients), "-s", ",".join(servers), "-t", ",".join(role_cases),
-                       "-n", implementations_without_heuristics(lock["peers"]), "-j", report,
-                       "-l", artifacts / f"logs-rama-{role}", "-f", "true", "-d"]
-            print(f"Running Rama as {role}: {','.join(role_cases)} (console: {artifacts / f'rama-{role}.log'})", flush=True)
-            result = {"timeout_seconds": role_timeout(role_cases, len(lock["peers"]))}
-            manifest["roles"][role] = result
-            completion = artifacts / f"runner-completion-rama-{role}.json"
-            role_env = {**env, "RAMA_RUNNER_COMPLETION": str(completion),
-                        "COMPOSE_FILE": compose_files(f"compose.override-rama-{role}.json", role)}
-            with (artifacts / f"rama-{role}.log").open("w") as console:
-                status = run_managed(command, timeout=result["timeout_seconds"], cwd=checkout, env=role_env,
-                                     stdout=console, stderr=subprocess.STDOUT)
-            result["runner_exit"] = status
+                       "-n", implementations_without_heuristics(lock["peers"]),
+                       "-j", root / f"rama-{role}.json",
+                       "-l", root / f"logs-rama-{role}", "-f", "true", "-d"]
+            print(f"Running Rama as {role}: {','.join(role_cases)} "
+                  f"(console: {root / f'rama-{role}.log'})", flush=True)
+            result = {"timeout_seconds": role_timeout(role_cases, len(peers))}
+            override = f"compose.override-rama-{role}{'' if root == artifacts else '-' + root.name}.json"
+            role_env = {**env, "RAMA_RUNNER_COMPLETION": str(root / f"runner-completion-rama-{role}.json"),
+                        "COMPOSE_FILE": compose_files(override, role)}
+            with (root / f"rama-{role}.log").open("w") as console:
+                result["runner_exit"] = run_managed(command, timeout=result["timeout_seconds"], cwd=checkout,
+                                                    env=role_env, stdout=console, stderr=subprocess.STDOUT)
+            return result
+
+        def judge(root, role, clients, servers, role_cases, ran, excused=frozenset()):
+            """Hold one attempt to every gate; `excused` cells are settled by running them again."""
+            result = dict(ran)
+            # Each exception names the precise endpoint allowed to exit 127.
+            optional = unsupported_policy(role, args.backend, lock["peers"])
+            peers = [name for name in (*clients, *servers) if name != "rama"]
+            outcomes = load_report(root / f"rama-{role}.json")
+            evidence = read_exit_evidence(root, role)
+            result["exit_evidence"] = list(evidence.values())
+            result["rama_unsupported"] = [e for e in evidence.values() if e.get(f"{role}_exit") == 127]
+            peer_role = "server" if role == "client" else "client"
+            result["peer_unsupported"] = [e for e in evidence.values() if e.get(f"{peer_role}_exit") == 127]
+            verified_migrations, result["migration_evidence"] = migration_classifications(
+                root, role, outcomes, evidence, lock["peers"])
+            count = gate(outcomes, clients=clients, servers=servers, cases=role_cases,
+                         optional=optional, evidence=evidence, verified_migrations=verified_migrations,
+                         excused=excused)
+            unsupported = []
+            for ci, client in enumerate(outcomes["clients"]):
+                for si, server in enumerate(outcomes["servers"]):
+                    peer = server if client == "rama" else client
+                    for entry in outcomes["results"][ci * len(servers) + si]:
+                        if entry["result"] == "unsupported":
+                            unsupported.append((peer, entry["name"]))
+            result["unsupported_outcomes"] = unsupported
+            if not set(unsupported) <= optional.keys():
+                raise InvalidResults("unsupported outcomes outside declared policy")
+            result["successful_outcomes"] = count - len(unsupported) - len(verified_migrations) - len(excused)
+            result["checker_incompatible_outcomes"] = sum(v == "checker-incompatible" for v in verified_migrations.values())
+            result["peer_unexercised_outcomes"] = sum(v == "peer-did-not-exercise" for v in verified_migrations.values())
+            result["runner_completion"] = load_report(root / f"runner-completion-rama-{role}.json")
+            check_runner_exit(result["runner_exit"], result["runner_completion"], verified_migrations, len(excused))
+            # A cell that failed may have left a partial trace; its second run is held to this gate.
+            result["qlogs"] = gate_qlogs(root, role=role, peers=peers, cases=role_cases, optional=set(unsupported) | {
+                (server if client == "rama" else client, case) for client, server, case in excused})
+            result["qlog_records"] = sum(trace["records"] for trace in result["qlogs"].values())
+            print(f"PASS Rama {role}: {result['successful_outcomes']} successes, "
+                  f"{len(unsupported)} explicitly unsupported: {unsupported}, "
+                  f"{result['checker_incompatible_outcomes']} checker-incompatible outcomes (migration/rebinding), "
+                  f"{result['peer_unexercised_outcomes']} peer did not exercise migration", flush=True)
+            return result
+
+        ran, failures = {}, {}
+        for role in (("client", "server") if args.role == "both" else (args.role,)):
+            clients, servers = sides(role)
+            # Execute all selected cases, including known capability gaps. Preserve their
+            # explicit upstream unsupported results instead of silently removing them.
+            ran[role] = attempt(artifacts, role, clients, servers, cases)
             try:
-                outcomes = load_report(report)
-                evidence = read_exit_evidence(artifacts, role)
-                result["exit_evidence"] = list(evidence.values())
-                result["rama_unsupported"] = [e for e in evidence.values() if e.get(f"{role}_exit") == 127]
-                peer_role = "server" if role == "client" else "client"
-                result["peer_unsupported"] = [e for e in evidence.values() if e.get(f"{peer_role}_exit") == 127]
-                verified_migrations, result["migration_evidence"] = migration_classifications(
-                    artifacts, role, outcomes, evidence, lock["peers"])
-                count = gate(outcomes, clients=clients, servers=servers, cases=role_cases,
-                             optional=optional, evidence=evidence, verified_migrations=verified_migrations)
-                unsupported = []
-                for ci, client in enumerate(outcomes["clients"]):
-                    for si, server in enumerate(outcomes["servers"]):
-                        peer = server if client == "rama" else client
-                        for entry in outcomes["results"][ci * len(servers) + si]:
-                            if entry["result"] == "unsupported":
-                                unsupported.append((peer, entry["name"]))
-                result["unsupported_outcomes"] = unsupported
-                if not set(unsupported) <= optional.keys():
-                    raise InvalidResults("unsupported outcomes outside declared policy")
-                result["successful_outcomes"] = count - len(unsupported) - len(verified_migrations)
-                result["checker_incompatible_outcomes"] = sum(v == "checker-incompatible" for v in verified_migrations.values())
-                result["peer_unexercised_outcomes"] = sum(v == "peer-did-not-exercise" for v in verified_migrations.values())
-                result["runner_completion"] = load_report(completion)
-                check_runner_exit(status, result["runner_completion"], verified_migrations)
-                result["qlogs"] = gate_qlogs(artifacts, role=role, peers=list(lock["peers"]),
-                                             cases=role_cases, optional=set(unsupported))
-                result["qlog_records"] = sum(trace["records"] for trace in result["qlogs"].values())
-                print(f"PASS Rama {role}: {result['successful_outcomes']} successes, "
-                      f"{len(unsupported)} explicitly unsupported: {unsupported}, "
-                      f"{result['checker_incompatible_outcomes']} checker-incompatible outcomes (migration/rebinding), "
-                      f"{result['peer_unexercised_outcomes']} peer did not exercise migration", flush=True)
+                manifest["roles"][role] = judge(artifacts, role, clients, servers, cases, ran[role])
             except (InvalidResults, OSError, json.JSONDecodeError) as error:
-                result["error"] = str(error)
-                failed = True
+                manifest["roles"][role] = {**ran[role], "error": str(error)}
                 print(f"FAIL Rama {role}: {error}", flush=True)
-            manifest["roles"][role] = result
+                try:
+                    failures[role] = failed_cells(load_report(artifacts / f"rama-{role}.json"))
+                except (InvalidResults, OSError, json.JSONDecodeError):
+                    failures[role] = None
+            # Written after each role, so the next workflow run can read it whatever follows.
+            manifest["first_failures"] = [dict(zip(("client", "server", "case"), cell))
+                                          for found in failures.values() for cell in found or ()]
+            (artifacts / "first-failures.json").write_text(
+                json.dumps(manifest["first_failures"], indent=2) + "\n")
+        failed = bool(failures)
+        if failed:
+            role, cell, refusal = decide(group=args.group, retried_groups=lock["retried_case_groups"],
+                                         failures=failures, previous=previous)
+            if refusal is None:
+                clients, servers = sides(role)
+                try:
+                    # Every other cell and gate of the role must hold without the cell that failed.
+                    first = judge(artifacts, role, clients, servers, cases, ran[role], excused={cell})
+                    client, server, case = cell
+                    annotate("warning", f"client={client} server={server} case={case} failed and is run "
+                                        f"once more ({args.backend}, {args.group})")
+                    again = artifacts / "retry"
+                    again.mkdir()
+                    second = judge(again, role, [client], [server], [case],
+                                   attempt(again, role, [client], [server], [case]))
+                    manifest["roles"][role] = {**first, "retried": {
+                        "cell": dict(zip(("client", "server", "case"), cell)),
+                        "first_error": manifest["roles"][role]["error"], "second": second}}
+                    failed = False
+                except (InvalidResults, OSError, json.JSONDecodeError) as error:
+                    manifest["roles"][role]["retry_error"] = str(error)
+                    print(f"FAIL Rama {role} after a second run: {error}", flush=True)
+            elif args.group in lock["retried_case_groups"]:
+                manifest["retry_refused"] = refusal
+                annotate("error", f"failure not run a second time: {refusal}")
         manifest["passed"] = not failed
         return 1 if failed else 0
     except (Exception, KeyboardInterrupt) as error:

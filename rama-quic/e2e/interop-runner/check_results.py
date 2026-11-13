@@ -22,7 +22,8 @@ def load_report(path):
     return json.loads(Path(path).read_text(), object_pairs_hook=unique_object)
 
 
-def gate(report, *, clients, servers, cases, optional=None, evidence=None, verified_migrations=None):
+def gate(report, *, clients, servers, cases, optional=None, evidence=None, verified_migrations=None,
+         excused=frozenset()):
     """Require exactly one accounted outcome for every requested cell and case.
 
     `optional` maps (peer, case) to the endpoint roles allowed to exit 127.
@@ -31,6 +32,8 @@ def gate(report, *, clients, servers, cases, optional=None, evidence=None, verif
     `verified_migrations` contains only results from the independent path
     packet/file/exit verifier. They stay failed in upstream JSON and are counted
     separately from successes by the caller.
+    `excused` names the (client, server, case) cells whose failure the caller settles by
+    running them again; every other cell is still held to the rules above.
     """
     for label, expected in (("clients", clients), ("servers", servers), ("cases", cases)):
         if (not expected or not all(isinstance(x, str) and x for x in expected)
@@ -98,6 +101,8 @@ def gate(report, *, clients, servers, cases, optional=None, evidence=None, verif
                                    for side in ("client", "server"))
                     tolerated = (complete and bool(unsupported_sides)
                                  and unsupported_sides <= optional[(peer, name)])
+                if result == "failed" and (client, server, name) in excused:
+                    tolerated = True
                 if result != "succeeded" and not tolerated:
                     failures.append(f"{label} case={name}: {result!r}")
                 count += 1
