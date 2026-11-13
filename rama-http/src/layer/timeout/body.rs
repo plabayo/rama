@@ -1,6 +1,6 @@
 use crate::body::{Frame, SizeHint, StreamingBody};
 use pin_project_lite::pin_project;
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::error::{BoxError, ErrorContext as _, TimeoutError};
 use std::{
     pin::Pin,
     task::{Context, Poll, ready},
@@ -97,7 +97,7 @@ where
 
         // Error if the timeout has expired.
         if sleep_pinned.poll(cx) == Poll::Ready(()) {
-            return Poll::Ready(Some(Err(Box::new(TimeoutError(())))));
+            return Poll::Ready(Some(Err(Box::new(TimeoutError))));
         }
 
         // Check for body data.
@@ -119,17 +119,6 @@ where
     }
 }
 
-/// Error for [`TimeoutBody`] and [`DeadlineBody`][super::DeadlineBody].
-#[derive(Debug)]
-pub struct TimeoutError(pub(super) ());
-
-impl std::error::Error for TimeoutError {}
-
-impl std::fmt::Display for TimeoutError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "data was not received within the designated timeout")
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;

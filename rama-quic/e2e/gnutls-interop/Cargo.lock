@@ -1194,6 +1194,9 @@ dependencies = [
 [[package]]
 name = "rama-error"
 version = "0.5.0"
+dependencies = [
+ "tokio",
+]
 
 [[package]]
 name = "rama-http"

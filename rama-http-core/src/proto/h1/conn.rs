@@ -950,6 +950,23 @@ where
         }
     }
 
+    pub(super) fn request_body_fits_budget(&self, max_bytes: u64) -> bool {
+        matches!(&self.state.reading, Reading::Body(decoder) | Reading::Continue(decoder)
+            if max_bytes > 0 && decoder.remaining_length().is_none_or(|n| n <= max_bytes))
+    }
+
+    /// Only drain ordinary uploads before a response starts. In particular,
+    /// do not invite a pending Expect upload or read upgraded protocol bytes.
+    pub(super) fn can_drain_request_body(&self, max_bytes: u64) -> bool {
+        T::is_server()
+            && self.state.wants_keep_alive()
+            && matches!(self.state.writing, Writing::Init)
+            && self.state.upgrade.is_none()
+            && self.state.method != Some(Method::CONNECT)
+            && matches!(&self.state.reading, Reading::Body(decoder)
+                if decoder.remaining_length().is_none_or(|n| n <= max_bytes))
+    }
+
     /// If the read side can be cheaply drained, do so. Otherwise, close.
     pub(super) fn poll_drain_or_close_read(&mut self, cx: &mut Context<'_>) {
         if let Reading::Continue(decoder) = &mut self.state.reading {

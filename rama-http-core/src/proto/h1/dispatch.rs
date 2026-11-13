@@ -23,7 +23,7 @@ use crate::client::dispatch::TrySendError;
 use crate::common::task;
 use crate::proto::{BodyLength, Conn, Dispatched, MessageHead, RequestHead};
 
-pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T> {
+pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T: Http1Transaction> {
     conn: Conn<I, Bs::Data, T>,
     dispatch: D,
     body_tx: SenderDropGuard,
@@ -40,6 +40,15 @@ pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T> {
     // Shutdown completed or was abandoned after a write timeout; never retry it.
     shut_down: bool,
     linger: Linger,
+    request_body_drain: Option<crate::server::conn::http1::RequestBodyDrain>,
+    draining_request: Option<RequestDrain>,
+    pending_head: Option<Box<(MessageHead<T::Outgoing>, Option<BodyLength>)>>,
+}
+
+struct RequestDrain {
+    remaining: u64,
+    deadline: tokio::time::Instant,
+    timer: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 /// Lingering close of a server connection: while responding and after shutting down, keep
@@ -136,12 +145,105 @@ where
             pending_err: None,
             shut_down: false,
             linger: Linger::NotStarted,
+            request_body_drain: None,
+            draining_request: None,
+            pending_head: None,
         }
+    }
+
+    pub(crate) fn set_request_body_drain(
+        &mut self,
+        config: Option<crate::server::conn::http1::RequestBodyDrain>,
+    ) {
+        self.request_body_drain = config;
+    }
+
+    fn abandon_request_body(&mut self, cx: &mut Context<'_>, quick_drain: bool) {
+        if let Some(config) = self.request_body_drain {
+            if config.max_bytes > 0
+                && !config.timeout.is_zero()
+                && self.conn.can_drain_request_body(config.max_bytes)
+            {
+                self.draining_request = Some(RequestDrain {
+                    remaining: config.max_bytes,
+                    deadline: after(tokio::time::Instant::now(), config.timeout),
+                    timer: None,
+                });
+            } else if quick_drain && self.conn.request_body_fits_budget(config.max_bytes) {
+                self.conn.poll_drain_or_close_read(cx);
+            } else {
+                self.conn.close_read();
+            }
+        } else if quick_drain {
+            self.conn.poll_drain_or_close_read(cx);
+        } else {
+            self.conn.close_read();
+        }
+    }
+
+    fn poll_request_drain(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        for _ in 0..16 {
+            let Some(drain) = self.draining_request.as_mut() else {
+                return Poll::Ready(());
+            };
+            if tokio::time::Instant::now() >= drain.deadline {
+                self.draining_request = None;
+                self.conn.close_read();
+                return Poll::Ready(());
+            }
+            let frame = match self.conn.poll_read_body(cx) {
+                Poll::Ready(frame) => frame,
+                Poll::Pending => {
+                    // No timer allocation when buffered input drains immediately.
+                    let timer = drain
+                        .timer
+                        .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(drain.deadline)));
+                    if timer.as_mut().poll(cx).is_ready() {
+                        self.draining_request = None;
+                        self.conn.close_read();
+                        return Poll::Ready(());
+                    }
+                    return Poll::Pending;
+                }
+            };
+            match frame {
+                Some(Ok(frame)) => {
+                    if let Some(data) = frame.data_ref() {
+                        if let Some(left) = drain.remaining.checked_sub(data.remaining() as u64) {
+                            drain.remaining = left;
+                        } else {
+                            self.draining_request = None;
+                            self.conn.close_read();
+                            return Poll::Ready(());
+                        }
+                    }
+                    if !self.conn.can_read_body() {
+                        self.draining_request = None;
+                        return Poll::Ready(());
+                    }
+                }
+                None => {
+                    self.draining_request = None;
+                    return Poll::Ready(());
+                }
+                Some(Err(_)) => {
+                    self.draining_request = None;
+                    self.conn.close_read();
+                    return Poll::Ready(());
+                }
+            }
+        }
+        cx.waker().wake_by_ref();
+        Poll::Pending
     }
 
     pub(crate) fn disable_keep_alive(&mut self) {
         // A graceful shutdown must not wait for lingering clients.
         self.linger = Linger::Done;
+        self.request_body_drain = None;
+        if self.draining_request.take().is_some() {
+            self.conn.close_read();
+        }
         self.conn.disable_keep_alive();
 
         // If keep alive has been disabled and no read or write has been seen on
@@ -471,6 +573,11 @@ where
         loop {
             if self.is_closing {
                 return Poll::Ready(Ok(()));
+            } else if self.draining_request.is_some() {
+                ready!(self.poll_request_drain(cx));
+                // Leave the completed framing boundary intact until writing
+                // the response allows the next request to be dispatched.
+                return Poll::Ready(Ok(()));
             } else if self.conn.can_read_head() {
                 ready!(self.poll_read_head(cx))?;
             } else if let Some(mut body) = self.body_tx.take() {
@@ -485,7 +592,7 @@ where
                             // user doesn't care about the body
                             // so we should stop reading
                             trace!("body receiver dropped before eof, draining or closing");
-                            self.conn.poll_drain_or_close_read(cx);
+                            self.abandon_request_body(cx, true);
                             continue;
                         }
                     }
@@ -503,7 +610,7 @@ where
                                     Err(_canceled) => {
                                         if self.conn.can_read_body() {
                                             trace!("body receiver dropped before eof, closing");
-                                            self.conn.close_read();
+                                            self.abandon_request_body(cx, false);
                                         }
                                     }
                                 }
@@ -599,6 +706,11 @@ where
         loop {
             if self.is_closing {
                 return Poll::Ready(Ok(()));
+            } else if self.pending_head.is_some() {
+                ready!(self.poll_request_drain(cx));
+                if let Some(head) = self.pending_head.take() {
+                    self.conn.write_head(head.0, head.1);
+                }
             } else if self.body_rx.is_none()
                 && self.conn.can_write_head()
                 && self.dispatch.should_poll()
@@ -607,6 +719,7 @@ where
                     let (head, body) = msg.map_err(crate::Error::new_user_service)?;
 
                     let body_type = if body.is_end_stream() {
+                        drop(body);
                         self.body_rx.set(None);
                         None
                     } else {
@@ -618,6 +731,25 @@ where
                         self.body_rx.set(Some(body));
                         btype
                     };
+                    if self.request_body_drain.is_some() {
+                        if crate::headers::connection_any_close(&head.headers)
+                            || head
+                                .extensions
+                                .contains::<rama_http_types::proto::h1::ext::ConnectionClose>()
+                        {
+                            if self.draining_request.take().is_some() {
+                                self.conn.close_read();
+                            }
+                            self.conn.disable_keep_alive();
+                        }
+                        // The handler may have dropped its request during
+                        // poll_msg, after this iteration's read poll.
+                        _ = self.poll_read(cx)?;
+                    }
+                    if self.draining_request.is_some() {
+                        self.pending_head = Some(Box::new((head, body_type)));
+                        return Poll::Pending;
+                    }
                     self.conn.write_head(head, body_type);
                 } else {
                     self.close();
@@ -721,7 +853,9 @@ where
             true
         } else {
             let write_done = self.conn.is_write_closed()
-                || (!self.dispatch.should_poll() && self.body_rx.is_none());
+                || (!self.dispatch.should_poll()
+                    && self.body_rx.is_none()
+                    && self.pending_head.is_none());
             read_done && write_done
         }
     }

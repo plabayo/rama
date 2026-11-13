@@ -22,4 +22,8 @@ impl fmt::Display for Elapsed {
     }
 }
 
-impl error::Error for Elapsed {}
+impl error::Error for Elapsed {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        Some(&rama_error::TimeoutError)
+    }
+}

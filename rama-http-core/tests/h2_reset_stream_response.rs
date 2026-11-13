@@ -96,3 +96,56 @@ async fn h1_server_sends_response_carrying_reset_stream() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
 }
+
+#[tokio::test]
+async fn h2_early_response_completes_before_benign_upload_reset() {
+    // Larger than the default receive window: the client must read the response
+    // while its upload is unfinished. This ordering already exists for H2.
+    const RESPONSE_SIZE: usize = 256 * 1024;
+    let (client_io, server_io) = tokio::io::duplex(4096);
+    let server = tokio::spawn(
+        server::conn::http2::Builder::new(WeakScope::detached()).serve_connection(
+            ServiceInput::new(server_io),
+            RamaHttpService::new(service_fn(async |request: Request| {
+                drop(request);
+                Ok::<_, Infallible>(Response::new(Body::from(vec![b'x'; RESPONSE_SIZE])))
+            })),
+        ),
+    );
+    let (mut client, connection) = h2_client::handshake(ServiceInput::new(client_io))
+        .await
+        .unwrap();
+    let driver = tokio::spawn(connection);
+    timeout(Duration::from_secs(5), async {
+        for _ in 0..2 {
+            client = client.ready().await.unwrap();
+            let request = rama_http_types::Request::builder()
+                .method("POST")
+                .uri("https://example.test/upload")
+                .version(Version::HTTP_2)
+                .header("content-length", "1048576")
+                .body(())
+                .unwrap();
+            let (response, mut upload) = client.send_request(request, false).unwrap();
+            let response = response.await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut body = response.into_body();
+            let mut received = 0;
+            while let Some(data) = body.data().await {
+                let data = data.unwrap();
+                assert!(data.iter().all(|byte| *byte == b'x'));
+                received += data.len();
+                body.flow_control().release_capacity(data.len()).unwrap();
+            }
+            assert_eq!(received, RESPONSE_SIZE);
+            let reason = std::future::poll_fn(|cx| upload.poll_reset(cx))
+                .await
+                .unwrap();
+            assert_eq!(reason, Reason::NO_ERROR);
+        }
+    })
+    .await
+    .unwrap();
+    driver.abort();
+    server.abort();
+}

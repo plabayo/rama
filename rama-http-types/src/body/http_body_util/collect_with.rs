@@ -13,7 +13,11 @@ use crate::body::http_body_util::combinators::Chain;
 use crate::body::http_body_util::{CollectError, CollectErrorKind, Collected, Full};
 use crate::body::{Body, Frame, StreamingBody};
 
-/// Options for [`BodyExt::collect_with`]: an optional size cap and/or timeout.
+/// Options for [`BodyExt::collect_with`] and [`BodyExt::drain_with`]: an optional
+/// size cap and/or timeout. Draining discards data and cannot recover it; the
+/// recovery semantics below apply only to collecting.
+///
+/// [`BodyExt::drain_with`]: crate::body::http_body_util::BodyExt::drain_with
 ///
 /// When either bound is hit the collect stops with a [`CollectError`] that
 /// still carries the bytes read so far *and* the unread remainder, so the
@@ -219,6 +223,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.is_timed_out());
+        assert!(rama_core::error::is_timeout_error(&error));
         assert_eq!(error.bytes_read(), "hello");
         tx.send(()).unwrap();
         let mut recovered = error.into_full_body().unwrap().collect().await.unwrap();
@@ -318,6 +323,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is_timed_out());
+        assert!(rama_core::error::is_timeout_error(&err));
         assert_eq!(&err.bytes_read()[..], b"hello");
         // The unread remainder stays forwardable (full reassembly is exercised
         // by the cap tests; here we avoid draining the deliberately-slow tail).

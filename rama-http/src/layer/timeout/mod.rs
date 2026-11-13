@@ -61,7 +61,7 @@ mod body;
 mod deadline_body;
 mod service;
 
-pub use body::{TimeoutBody, TimeoutError};
+pub use body::TimeoutBody;
 pub use deadline_body::DeadlineBody;
 pub use service::{
     RequestBodyDeadline, RequestBodyDeadlineLayer, RequestBodyTimeout, RequestBodyTimeoutLayer,

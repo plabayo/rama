@@ -86,6 +86,15 @@ use crate::utils::{
     tls::try_new_server_config,
 };
 
+const REQUEST_BODY_LIMIT: usize = mib(1);
+
+fn http1_request_body_drain() -> rama::http::core::server::conn::http1::RequestBodyDrain {
+    rama::http::core::server::conn::http1::RequestBodyDrain::new(
+        REQUEST_BODY_LIMIT as u64,
+        Duration::from_secs(1),
+    )
+}
+
 #[derive(Debug, Clone, Copy, Default, Extension)]
 pub struct StorageAuthorized;
 
@@ -391,6 +400,12 @@ pub async fn run(
             "/api/fetch/number/{number}",
             endpoints::post_api_fetch_number,
         )
+        // Both browser probes deliberately upload data; consume it without
+        // collecting before the metadata-only handlers respond.
+        .with_endpoint_layer((
+            rama::http::layer::drain_request_body::DrainRequestBodyLayer::new(),
+            rama::http::service::web::router::DefaultEndpointLayer::default(),
+        ))
         .with_post(
             "/api/xml/number/{number}",
             endpoints::post_api_xml_http_request_number,
@@ -400,6 +415,7 @@ pub async fn run(
             HttpMatcher::method_get().or_method_post().and_path("/form"),
             endpoints::form,
         )
+        .with_default_endpoint_layer()
         .with_not_found(async || {
             tracing::debug!("redirecting to consent: fallback");
             Redirect::temporary("/consent")
@@ -445,7 +461,7 @@ where
         Either::B(UnlimitedPolicy::new())
     });
     // Limit the body size to 1MB for both request and response
-    let body_limit = BodyLimitLayer::symmetric(mib(1));
+    let body_limit = BodyLimitLayer::symmetric(REQUEST_BODY_LIMIT);
     // One layer for both: QUIC paces all streams of a connection against one budget.
     let throttle = opt_per_sec(Some(cfg.throttle))
         .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate)));
@@ -506,6 +522,9 @@ where
                         "FP Service (auto) listening: bind interface = {}", bind,
                     );
                     let mut http_server = HttpServer::auto(scope);
+                    http_server
+                        .http1_mut()
+                        .set_request_body_drain(http1_request_body_drain());
                     // Advertise RFC 8441 so h2 clients can open WebSockets
                     // (Extended CONNECT) — see the `/api/ws` route.
                     http_server.h2_mut().set_enable_connect_protocol();
@@ -520,11 +539,12 @@ where
                         network.local.port = %bind_address.port(),
                         "FP Service (HTTP/1.1) listening: bind interface = {}", bind,
                     );
+                    let mut http_server = HttpServer::new_http1(scope);
+                    http_server
+                        .http1_mut()
+                        .set_request_body_drain(http1_request_body_drain());
                     tcp_listener
-                        .serve(
-                            tcp_service_builder
-                                .into_layer(HttpServer::new_http1(scope).service(http_service)),
-                        )
+                        .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
                         .await;
                 }
                 TcpHttpVersion::H2 => {

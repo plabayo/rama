@@ -30,6 +30,7 @@ pub mod csrf;
 pub mod dial9;
 pub mod dns;
 pub mod dpi_proxy_credential;
+pub mod drain_request_body;
 pub mod error_handling;
 pub mod follow_redirect;
 pub mod forward_proxy;

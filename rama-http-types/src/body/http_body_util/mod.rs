@@ -45,6 +45,7 @@ mod collect_error;
 mod collect_with;
 mod collected;
 pub mod combinators;
+mod drain;
 mod either;
 mod empty;
 mod error;
@@ -215,6 +216,28 @@ pub trait BodyExt: crate::body::http_body::Body {
             + 'static,
     {
         CollectWith::new(self, opts)
+    }
+
+    /// Discard every frame without collecting or copying payload data.
+    /// Existing body limits still apply. Errors drop the unread remainder.
+    fn drain(self) -> impl Future<Output = Result<(), BoxError>>
+    where
+        Self: Sized + crate::body::http_body::Body<Error: Into<BoxError>>,
+    {
+        drain::drain(self, CollectOptions::new())
+    }
+
+    /// Discard every frame with optional byte and total-time bounds.
+    /// Unlike collecting, this retains no data or recoverable remainder.
+    /// `max_size` counts DATA bytes, not trailer metadata; use the protocol's
+    /// header limits to bound trailers. Crossing it drops the entire frame and returns
+    /// [`LengthLimitError`]; expiry returns [`tokio::time::error::Elapsed`].
+    /// The timeout starts on first poll and includes trailers and EOF.
+    fn drain_with(self, options: CollectOptions) -> impl Future<Output = Result<(), BoxError>>
+    where
+        Self: Sized + crate::body::http_body::Body<Error: Into<BoxError>>,
+    {
+        drain::drain(self, options)
     }
 
     /// Add trailers to the body.
