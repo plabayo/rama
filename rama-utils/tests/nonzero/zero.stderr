@@ -1,0 +1,15 @@
+error[E0080]: evaluation panicked: nonzero! requires a nonzero constant
+ --> tests/nonzero/zero.rs:1:38
+  |
+1 | const ZERO: std::num::NonZeroUsize = rama_utils::macros::nonzero!(0usize);
+  |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `ZERO::{constant#0}` failed here
+  |
+  = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `rama_utils::macros::nonzero` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+ --> tests/nonzero/zero.rs:1:38
+  |
+1 | const ZERO: std::num::NonZeroUsize = rama_utils::macros::nonzero!(0usize);
+  |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this note originates in the macro `rama_utils::macros::nonzero` (in Nightly builds, run with -Z macro-backtrace for more info)
