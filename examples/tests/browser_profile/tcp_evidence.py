@@ -157,8 +157,9 @@ def reassemble(rows, side):
             1 <= reset["sequence"] <= len(result) + 1 + own_fin,
             "reset is outside the captured terminal sequence extent",
         )
+        # The peer may have sent a segment before the reset reached it; the resetter may not.
         require(
-            not any(row["raw"] and row["number"] > reset["number"] for row in rows),
+            not any(row["raw"] and row["number"] > reset["number"] for row in selected),
             "payload follows terminal reset",
         )
     # A validated terminal reset ends the stream as surely as a FIN: no payload follows.

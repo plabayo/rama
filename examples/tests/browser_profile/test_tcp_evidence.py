@@ -593,6 +593,24 @@ class TerminalControls(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "payload follows terminal reset"):
             account(root, evidence)
 
+    def test_a_peer_segment_that_crossed_the_reset_is_accepted(self):
+        root, evidence = fixture()
+        self.add_reset(root)
+        crossing = deepcopy(
+            next(
+                packet
+                for packet in reversed(root)
+                if packet.find("field[@name='tcp.srcport']").get("show") == str(PORT)
+                and int(packet.find("field[@name='tcp.len']").get("show"))
+            )
+        )
+        for proto in crossing.findall("proto"):
+            if proto.get("name") in ("tls", "http2"):
+                crossing.remove(proto)
+        crossing.find("field[@name='frame.number']").set("show", "11")
+        root.append(crossing)
+        self.assertTrue(account(root, evidence)["connections"][0]["ended_by_reset"])
+
     def test_empty_connection_reset_instead_of_fin_has_no_application_data(self):
         root, evidence = empty_fixture()
         del root[-2:]
