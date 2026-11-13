@@ -125,6 +125,13 @@ impl EndpointRouteDirectory {
         self.shared.lock().snapshot()
     }
 
+    #[cfg_attr(
+        not(feature = "dial9"),
+        expect(
+            clippy::unused_self,
+            reason = "resource identity is used only by dial9"
+        )
+    )]
     fn observe(&self, reason: &'static str, stats: EndpointRouteStats) {
         tracing::trace!(target: "rama_quic::migration", reason,
             registered_endpoints = stats.registered_endpoints,
