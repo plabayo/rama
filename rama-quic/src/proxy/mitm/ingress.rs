@@ -76,21 +76,21 @@ pub struct QuicMitmIngressByIdentity<K> {
 /// Snapshot of one policy-identity cache. Counters are cumulative for this cache's lifetime.
 /// These are migration registrations, not application flow admission limits.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct QuicMitmIdentityStats {
-    pub identities: usize,
-    pub identity_limit: usize,
-    pub high_water: usize,
-    pub created: u64,
-    pub reused: u64,
-    pub reaped: u64,
+struct IdentityStats {
+    identities: usize,
+    identity_limit: usize,
+    high_water: usize,
+    created: u64,
+    reused: u64,
+    reaped: u64,
     /// New identities denied migration support. Their callers can still proxy independently.
-    pub rejected: u64,
+    rejected: u64,
 }
 
 #[derive(Debug)]
 struct IdentityState<K> {
     entries: HashMap<K, QuicMitmIngress>,
-    stats: QuicMitmIdentityStats,
+    stats: IdentityStats,
 }
 
 impl<K: Eq + std::hash::Hash> QuicMitmIngressByIdentity<K> {
@@ -98,7 +98,7 @@ impl<K: Eq + std::hash::Hash> QuicMitmIngressByIdentity<K> {
         Self {
             identities: Arc::new(Mutex::new(IdentityState {
                 entries: HashMap::default(),
-                stats: QuicMitmIdentityStats {
+                stats: IdentityStats {
                     identity_limit: config.max_identities.get(),
                     ..Default::default()
                 },
@@ -108,11 +108,6 @@ impl<K: Eq + std::hash::Hash> QuicMitmIngressByIdentity<K> {
             scope: scope.into(),
             config,
         }
-    }
-
-    /// Read a consistent occupancy/counter snapshot without enabling telemetry.
-    pub fn stats(&self) -> QuicMitmIdentityStats {
-        self.identities.lock().stats
     }
 
     pub fn get_or_create(&self, identity: K) -> Option<QuicMitmIngress> {
@@ -158,7 +153,7 @@ impl<K: Eq + std::hash::Hash> QuicMitmIngressByIdentity<K> {
             reason = "resource identity is used only by dial9"
         )
     )]
-    fn observe(&self, reason: &'static str, stats: QuicMitmIdentityStats) {
+    fn observe(&self, reason: &'static str, stats: IdentityStats) {
         tracing::trace!(target: "rama_quic::migration", reason,
             used = stats.identities, limit = stats.identity_limit,
             high_water = stats.high_water, rejected = stats.rejected,
@@ -265,18 +260,6 @@ impl QuicMitmIngress {
             .spawn_task(connection)
             .await?
             .ok_or_else(|| BoxError::from_static_str("QUIC MITM ingress scope aborted"))?
-    }
-
-    /// Registration occupancy, high-water marks and new-association routing counters.
-    /// A matched route is not proof of authentication or successful migration.
-    pub fn routing_stats(&self) -> crate::EndpointRouteStats {
-        self.shared.directory.stats()
-    }
-
-    /// New connections served normally without migration registration because the directory
-    /// was full. Known-CID paths never use this fallback.
-    pub fn unregistered_connections(&self) -> u64 {
-        self.shared.unregistered.load(Ordering::Relaxed)
     }
 
     /// Whether this is the last handle and no path, connection or acquisition needs its
@@ -742,7 +725,7 @@ mod tests {
         let (second, client) = MemoryDatagramSocket::pair(local, ([127, 0, 0, 1], 1001), n(8));
         let unregistered = ingress.accept(second, server).unwrap();
         assert!(unregistered.group.is_none());
-        assert_eq!(ingress.unregistered_connections(), 1);
+        assert_eq!(ingress.shared.unregistered.load(Ordering::Relaxed), 1);
         let client = Endpoint::build(WeakScope::detached())
             .with_datagram_socket(client)
             .unwrap();
@@ -951,7 +934,7 @@ mod tests {
         drop((first, same));
         let other = identities.get_or_create((43, 1)).unwrap();
         assert!(!Arc::ptr_eq(&other.shared, &reused_pid.shared));
-        let stats = identities.stats();
+        let stats = identities.identities.lock().stats;
         assert_eq!(stats.identities, 2);
         assert_eq!(stats.identity_limit, 2);
         assert_eq!(stats.high_water, 2);

@@ -25,82 +25,54 @@ digraph {
 }
 ```
 
-Install `QuicMitmIngress` through the inspector's `with_router`, and give the same
-instance to `QuicMitmRelay::with_migration_ingress`. One registry represents one trusted
-routing identity boundary (for example one process generation, not a DNS name); it indexes the original destination and identifiers published by the
-native endpoint. Established traffic never looks up this registry. A positive routing
-hint is terminal: native rejection or closure drops the packet, never forwards it elsewhere.
-Apply per-source admission before routing, including known-CID flows, to bound path churn.
+`QuicMitmIngress` connects the ClientHello inspector with the MITM relay. It routes a new
+platform flow back to an existing connection when the original destination and connection
+identifier match. Ordinary traffic stays on that connection's dedicated endpoint.
+A match is only a routing hint: QUIC must still authenticate the packet and validate the path.
+Rejected known traffic is dropped, never forwarded to another origin.
 
-`QuicMitmIngressByIdentity<Key>` bounds a reusable collection of isolated registries. Choose
-a trusted platform/policy key, such as an Apple audit token including process generation.
-Missing or ambiguous identity must keep flows isolated. After policy selects interception,
-`run_connection` moves that connection's work and admission guards into the provider scope;
-raw forwarding retains normal caller cancellation. Connection closure releases its paths.
+Keep registries within a trusted policy identity, such as one process generation or one
+authenticated tunnel tenant. `QuicMitmIngressByIdentity` manages these isolated registries;
+unknown identities must remain isolated too. Apply source admission before routing, including
+to known-CID flows, to bound path churn. The logical connection and its admission guards
+must outlive the individual platform flows that carry it.
 
-One platform association still carries one intercepted QUIC connection. A second handshake
-on its active tuple is refused promptly; multiplexing independent connections on one tuple
-requires a different CID-dispatch transport. Unknown traffic can retire an obsolete association
-so retransmission is routed afresh, but cannot evict the authenticated current path. Reuse of
-that still-active tuple remains subject to its original flow lifetime.
+### Bounds and flow lifetime
 
-`DatagramSocketGroup` polls the connection's attached transports directly into endpoint
-buffers, without an additional payload queue or copy. It retains native MTU, ECN and
-segmentation capabilities; incompatible paths are refused. Keep the per-connection path
-bound small. Readiness bookkeeping and a per-transport receive lock still have costs;
-measure these separately from platform queues and QUIC cryptography.
+Registration budgets limit migration bookkeeping, separately from flow admission. At capacity,
+new connections can still use independent endpoints, but cannot migrate between platform flows.
+Existing registrations remain available until their connections close. Path budgets apply
+per connection, so an interface change can move many connections at once. Use telemetry to
+see whether these budgets fit your workload and when capacity pressure disables migration support.
 
-The identity and connection-registration bounds are **migration bookkeeping budgets**, separate
-from flow admission. At capacity, new work uses an ordinary independent endpoint without
-migration registration. Existing registrations remain until connection closure, ready for
-future moves. Path bounds apply per connection, not to concurrent migrations across the proxy.
-Many connections can therefore move together after an interface change.
+One platform association carries one intercepted connection. A second handshake on its active
+tuple is refused; supporting several independent connections on that tuple needs a different
+transport arrangement. Obsolete paths can be retired, but the authenticated current path
+is protected. Reusing that active tuple remains subject to its original flow lifetime.
 
-Ingress and origin-facing QUIC connections are separate. An ingress port change alone
-need not move egress. An interface or policy change can require reassessing either side;
-QUIC address-change rules still apply. Ordinary upstream NAT rebinding does not require
-joining local platform flows.
+### Ingress and egress move independently
 
-For automatic reassessment, wrap the established relay in `QuicMigrationLayer`. Its policy
-receives validated path changes and trusted `QuicNetworkChanges` snapshots, then chooses
-`Keep`, `Refresh` or `Replace` independently for each leg. `QuicEgressMigration` is a small
-adapter for a replacement-socket factory. Reuse the initial connector and its policy
-extensions; a reachability hint must never bypass a tunnel or interface restriction.
-Registered transparent ingress keeps its path aggregate: `Replace` is refused there;
-new platform flows join through the router. Egress replacement requires a dedicated endpoint
-and remains subject to QUIC role, handshake and peer migration constraints.
+A client's port change usually leaves the origin-facing connection alone. A network or policy
+change can require reassessing either side. `QuicMigrationLayer` makes that decision explicit:
+keep a path, refresh its transport information, or replace its transport. `QuicEgressMigration`
+adapts a replacement-socket factory to this policy. New ingress flows join their existing
+connection through the router; egress changes remain subject to QUIC's migration constraints.
 
-Updates coalesce; newer observations cancel unfinished policy decisions. Set a decision
-deadline and choose explicitly whether failure keeps existing paths or closes both legs.
-The optional supervisor runs in the provider scope, with no payload channel or per-packet
-policy callback. Use `with_decision_gate` to share a preparation concurrency bound across
-connections. Waiting for admission does not consume the decision deadline; connection closure
-and newer network observations still cancel queued work. The gate does not bound native path validation.
+Network observations are hints, not proof that a particular connection failed. Reuse the
+original connector and its policy restrictions when preparing a replacement. Bound concurrent
+preparations during network-wide changes, set decision deadlines, and choose whether a failed
+preparation preserves the connection or closes it. Newer observations supersede unfinished work.
 
-The Apple example publishes provider `NWPathMonitor` observations and replaces egress through
-its original UDP connector when the network becomes available. An ingress port change alone
-does not replace egress. A provider-wide observation is a policy hint, not proof of any
-individual flow's route. Physical interface changes and recovery still need platform testing.
+The Apple example uses provider network-path observations to reassess egress when connectivity
+returns. An ingress port change alone does not replace egress. Physical interface changes and
+recovery still need platform testing.
 
-This separation follows [QUIC path validation and migration](https://www.rfc-editor.org/rfc/rfc9000.html#section-9),
+See the [migration API reference](https://ramaproxy.org/docs/rama/quic/proxy/index.html)
+and [telemetry reference](https://ramaproxy.org/docs/rama/quic/dial9/index.html) for configuration
+and event details. The [conditional QUIC MITM example](https://github.com/plabayo/rama/blob/main/examples/src/quic_h3_mitm_proxy.rs)
+and [Apple transparent-proxy example](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy)
+show how the layers fit into a complete proxy.
+
+The model follows [QUIC path validation and migration](https://www.rfc-editor.org/rfc/rfc9000.html#section-9),
 [MsQuic's distinct local/peer address events](https://github.com/microsoft/msquic/blob/main/docs/api/QUIC_CONNECTION_EVENT.md),
 and [Apple's network path observations](https://developer.apple.com/documentation/network/nwpathmonitor/).
-
-See the [conditional QUIC MITM example](https://github.com/plabayo/rama/blob/main/examples/src/quic_h3_mitm_proxy.rs)
-and [Apple transparent-proxy example](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy).
-
-### Observe capacity
-
-`QuicMitmIngress::routing_stats()` exposes registration occupancy, high-water marks,
-route hits/misses and rejected registrations. `unregistered_connections()` counts
-new connections that continued independently when registration was full.
-`QuicMitmIngressByIdentity::stats()` reports identity-cache occupancy, reuse,
-reaping and rejection totals. These limits govern migration support, not flow admission.
-
-With `dial9`, `QuicRoutingSnapshot` and `QuicMigrationCapacity` record control-plane
-snapshots, including connection-path attachment, eviction totals and validation timeouts.
-Resource IDs correlate events without recording addresses, connection IDs or process identities.
-Path occupancy is sampled at the event; it is not a continuously maintained gauge.
-The `rama_quic::migration` tracing target provides the same lifecycle diagnostics;
-capacity fallback messages at debug level are logarithmically sampled.
-Updates follow routing and lifecycle events, not each established datagram.

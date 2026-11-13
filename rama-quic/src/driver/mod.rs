@@ -54,6 +54,9 @@ mod work_limiter;
 
 pub(crate) use std::time::{Duration, Instant};
 
+#[cfg(feature = "dial9")]
+pub(crate) use endpoint::RoutingStats;
+
 pub use crate::driver::{
     connection::{
         AcceptBi, AcceptUni, BiStreamReservation, CloseLease, Connecting, Connection,
@@ -62,8 +65,7 @@ pub use crate::driver::{
     },
     endpoint::{
         Accept, DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, EndpointBuilder,
-        EndpointRoute, EndpointRouteDirectory, EndpointRouteRegistration, EndpointRouteStats,
-        EndpointStats,
+        EndpointRoute, EndpointRouteDirectory, EndpointRouteRegistration, EndpointStats,
         ceiling::{MIN_UDP_PAYLOAD, SocketCapacityError},
     },
     incoming::{Incoming, IncomingFuture, IncomingOutcome, RetryError},

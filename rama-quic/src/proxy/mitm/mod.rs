@@ -82,8 +82,8 @@ use crate::{
 
 mod ingress;
 pub use ingress::{
-    QuicMitmIdentityStats, QuicMitmIngress, QuicMitmIngressByIdentity,
-    QuicMitmIngressByIdentityConfig, QuicMitmIngressConfig, QuicMitmRoute,
+    QuicMitmIngress, QuicMitmIngressByIdentity, QuicMitmIngressByIdentityConfig,
+    QuicMitmIngressConfig, QuicMitmRoute,
 };
 
 /// The default for [`QuicMitmRelay::with_handshake_timeout`].

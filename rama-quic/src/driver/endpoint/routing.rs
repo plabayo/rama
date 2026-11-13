@@ -36,7 +36,7 @@ pub struct EndpointRouteDirectory {
 /// Lookups count new transport associations, not established datagrams. A routing hit is
 /// only a hint; it does not authenticate the packet or prove successful path validation.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct EndpointRouteStats {
+pub(crate) struct RoutingStats {
     pub registered_endpoints: usize,
     pub endpoint_limit: usize,
     pub endpoint_high_water: usize,
@@ -51,7 +51,7 @@ pub struct EndpointRouteStats {
 #[derive(Debug)]
 struct State {
     limit: usize,
-    stats: EndpointRouteStats,
+    stats: RoutingStats,
     next: u64,
     cid_lengths: [usize; rama_quic_proto::MAX_CID_SIZE + 1],
     owners: HashMap<u64, Owner>,
@@ -87,8 +87,8 @@ struct Observer {
 }
 
 impl State {
-    fn snapshot(&self) -> EndpointRouteStats {
-        EndpointRouteStats {
+    fn snapshot(&self) -> RoutingStats {
+        RoutingStats {
             registered_endpoints: self.owners.len(),
             endpoint_limit: self.limit,
             routing_keys: self.routes.len(),
@@ -109,7 +109,7 @@ impl EndpointRouteDirectory {
         Self {
             shared: Arc::new(Mutex::new(State {
                 limit: max_endpoints.get(),
-                stats: EndpointRouteStats::default(),
+                stats: RoutingStats::default(),
                 next: 0,
                 cid_lengths: [0; rama_quic_proto::MAX_CID_SIZE + 1],
                 owners: HashMap::default(),
@@ -121,7 +121,7 @@ impl EndpointRouteDirectory {
     }
 
     /// Read occupancy, high-water marks and rejection/routing counters without enabling tracing.
-    pub fn stats(&self) -> EndpointRouteStats {
+    fn stats(&self) -> RoutingStats {
         self.shared.lock().snapshot()
     }
 
@@ -132,7 +132,7 @@ impl EndpointRouteDirectory {
             reason = "resource identity is used only by dial9"
         )
     )]
-    fn observe(&self, reason: &'static str, stats: EndpointRouteStats) {
+    fn observe(&self, reason: &'static str, stats: RoutingStats) {
         tracing::trace!(target: "rama_quic::migration", reason,
             registered_endpoints = stats.registered_endpoints,
             endpoint_limit = stats.endpoint_limit,

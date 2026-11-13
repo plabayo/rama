@@ -1,7 +1,19 @@
 //! Connection diagnostics independent of qlog. Summaries reuse the transport's
 //! existing counters; no packet or frame events are added to the hot path.
+//!
+//! Migration events describe control-plane activity: routing-directory occupancy and pressure,
+//! identity-cache capacity, independent-connection fallbacks, and transport-path attachments,
+//! eviction totals and validation timeouts. Resource IDs correlate events without recording
+//! peer addresses, connection IDs or policy identities. Path occupancy is sampled at the event,
+//! not maintained as a live gauge. Counts are scoped to the emitting resource's lifetime.
+//! The `rama_quic::migration` tracing target provides related diagnostics; capacity fallback
+//! messages at debug level are logarithmically sampled. These are telemetry schemas, not
+//! additional application-facing polling APIs.
 
-use crate::proto::{Connection, ConnectionError};
+use crate::{
+    driver::RoutingStats,
+    proto::{Connection, ConnectionError},
+};
 use dial9_trace_format::TraceEvent;
 use rama_core::telemetry::dial9::{
     Dial9Handle, Operation, Outcome, TraceContext, core::clock_monotonic_ns,
@@ -180,7 +192,7 @@ mod tests {
 /// Control-plane routing counters for one directory. No addresses, CIDs or process identities
 /// are recorded. Hits describe routing hints, not authenticated or validated migrations.
 #[derive(TraceEvent)]
-pub struct QuicRoutingSnapshot {
+pub(crate) struct QuicRoutingSnapshot {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
     pub resource_id: u64,
@@ -200,8 +212,9 @@ pub struct QuicRoutingSnapshot {
 
 /// Occupancy and pressure on a migration resource. Resource names and reasons are bounded
 /// static strings; totals are cumulative within this resource's lifetime, not global gauges.
+#[cfg(feature = "boring")]
 #[derive(TraceEvent)]
-pub struct QuicMigrationCapacity {
+pub(crate) struct QuicMigrationCapacity {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
     pub resource_id: u64,
@@ -250,7 +263,7 @@ impl MigrationTelemetry {
         }
     }
 
-    pub(crate) fn routing(&self, reason: &'static str, stats: crate::EndpointRouteStats) {
+    pub(crate) fn routing(&self, reason: &'static str, stats: RoutingStats) {
         Dial9Handle::current().record_event_with(|| {
             let context = TraceContext::current();
             QuicRoutingSnapshot {
@@ -299,7 +312,7 @@ mod migration_tests {
     #[test]
     fn disabled_recorder_does_not_allocate_resource_identity() {
         let telemetry = MigrationTelemetry::default();
-        telemetry.routing("test", crate::EndpointRouteStats::default());
+        telemetry.routing("test", RoutingStats::default());
         assert_eq!(telemetry.id.load(Ordering::Relaxed), 0);
     }
 }
