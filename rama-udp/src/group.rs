@@ -133,6 +133,8 @@ impl Shared {
             self.generation.fetch_add(1, Ordering::Release);
         }
         drop(paths);
+
+        // Destroy transports and wake consumers outside the membership lock.
         (path.close)();
         path.stopped.notify_waiters();
         self.receiver.wake();
@@ -153,6 +155,7 @@ impl DatagramSocketGroup {
             closed: AtomicBool::new(false),
             paths: Mutex::new(HashMap::default()),
         });
+
         (
             Self {
                 shared: shared.clone(),
@@ -186,6 +189,8 @@ impl DatagramGroup {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(DatagramError::Closed);
         }
+
+        // Reject incompatible transports before allocating a registration.
         let capabilities = socket.capabilities();
         if !supports_profile(capabilities, self.shared.capabilities) {
             return Err(io::Error::new(
@@ -194,6 +199,7 @@ impl DatagramGroup {
             )
             .into());
         }
+
         let local = socket.local_addr()?.into_canonical_ip_addr();
         let peer = socket.peer_addr()?.into_canonical_ip_addr();
         if local != self.shared.local
@@ -232,6 +238,7 @@ impl DatagramGroup {
                 let Some(socket) = owned.as_mut() else {
                     return Poll::Ready(Err(DatagramError::Closed));
                 };
+
                 let result = socket.poll_recv(cx, buffers, metadata);
                 if received_size.load(Ordering::Relaxed) != 0 {
                     received_size.store(
@@ -255,6 +262,7 @@ impl DatagramGroup {
             error: Mutex::new(None),
             receiver: self.shared.receiver.clone(),
         });
+
         let mut paths = self.shared.paths.lock();
         // Recheck closure while serialized with path registration.
         if self.shared.closed.load(Ordering::Acquire) {
@@ -274,6 +282,8 @@ impl DatagramGroup {
             )
             .into());
         }
+
+        // Publish the path and its buffer requirement before waking the receiver.
         self.shared.retained_size.fetch_max(
             path.retained_size.load(Ordering::Acquire),
             Ordering::Release,
@@ -281,8 +291,10 @@ impl DatagramGroup {
         paths.insert(peer, path.clone());
         self.shared.generation.fetch_add(1, Ordering::Release);
         drop(paths);
+
         self.shared.receiver.wake();
         self.shared.changed.notify_waiters();
+
         Ok(DatagramGroupAttachment {
             group: self.clone(),
             _socket: socket,
@@ -340,9 +352,11 @@ impl<S> DatagramGroupAttachment<S> {
             let stopped = self.path.stopped.notified();
             tokio::pin!(stopped);
             stopped.as_mut().enable();
+
             if self.path.closed.load(Ordering::Acquire) {
                 return self.path.error.lock().take().map_or(Ok(()), Err);
             }
+
             stopped.await;
         }
     }
@@ -417,12 +431,16 @@ impl DatagramSocket for DatagramSocketGroup {
             let index = self.next % count;
             self.next = index + 1;
             let (path, waker) = &self.paths[index];
-            if path.closed.load(Ordering::Acquire)
-                || !path.ready.load(Ordering::Acquire)
-                || !path.ready.swap(false, Ordering::AcqRel)
-            {
+            if path.closed.load(Ordering::Acquire) || !path.ready.load(Ordering::Acquire) {
                 continue;
             }
+
+            // Avoid an atomic read-modify-write for silent paths. Clear readiness before
+            // polling so a concurrent wake remains visible to the next receive attempt.
+            if !path.ready.swap(false, Ordering::AcqRel) {
+                continue;
+            }
+
             let mut context = Context::from_waker(waker);
             let received = (path.receive)(&mut context, buffers, metadata);
             match received {
@@ -443,6 +461,7 @@ impl DatagramSocket for DatagramSocketGroup {
                         self.shared.remove(path);
                         continue;
                     }
+
                     // Do not compact payloads: invalid slots become discarded datagrams.
                     for (meta, buffer) in metadata[..n].iter_mut().zip(buffers.iter()) {
                         meta.peer = meta.peer.into_canonical_ip_addr();
@@ -464,6 +483,7 @@ impl DatagramSocket for DatagramSocketGroup {
                             meta.truncated = true;
                         }
                     }
+
                     if self.shared.retained_size.load(Ordering::Acquire) != 0 {
                         // Retained prefixes are a setup cost only. Serialize with attach so
                         // consuming one prefix cannot hide a newly registered larger prefix.
@@ -475,6 +495,7 @@ impl DatagramSocket for DatagramSocketGroup {
                             .unwrap_or(0);
                         self.shared.retained_size.store(size, Ordering::Release);
                     }
+
                     return Poll::Ready(Ok(n));
                 }
             }
@@ -517,12 +538,16 @@ impl DatagramSender for DatagramGroupSender {
             )
             .into()));
         }
+
         if let Err(error) = datagram
             .maybe_with_source_ip(None)
             .validate(self.capabilities())
         {
             return Poll::Ready(Err(error));
         }
+
+        // Reuse the native sender while its path remains attached. The registry is
+        // consulted only on a destination change or after the cached path closes.
         let destination = datagram.destination();
         if !self.cached.as_ref().is_some_and(|(path, _)| {
             path.peer == destination && !path.closed.load(Ordering::Acquire)
@@ -537,10 +562,12 @@ impl DatagramSender for DatagramGroupSender {
             // A vanished path is packet loss, not failure of the other paths sharing the socket.
             return Poll::Ready(Ok(()));
         };
+
         let caps = sender.capabilities();
         let outgoing = datagram
             .maybe_with_source_ip(caps.send_source_ip.then_some(self.shared.local.ip_addr))
             .maybe_with_source_port(caps.send_source_port.then_some(self.shared.local.port));
+
         match sender.poll_send(cx, &outgoing) {
             Poll::Ready(Err(DatagramError::Closed)) => Poll::Ready(Ok(())),
             Poll::Pending => {
@@ -562,6 +589,7 @@ impl DatagramSender for DatagramGroupSender {
 
 #[derive(Debug)]
 struct ClosedSender;
+
 impl DatagramSender for ClosedSender {
     fn capabilities(&self) -> DatagramCapabilities {
         DatagramCapabilities::portable()
@@ -587,6 +615,8 @@ fn group_capabilities(mut caps: DatagramCapabilities) -> DatagramCapabilities {
 }
 
 fn supports_profile(actual: DatagramCapabilities, required: DatagramCapabilities) -> bool {
+    // Registration-only checks: keep them short-circuiting, with no per-packet cost.
+    // A path must accept the group's sends and fit its receive segmentation budget.
     (required.may_fragment || !actual.may_fragment)
         && actual.max_send_segments >= required.max_send_segments
         && actual.max_receive_segments <= required.max_receive_segments
@@ -606,6 +636,7 @@ fn supports_profile(actual: DatagramCapabilities, required: DatagramCapabilities
 mod tests {
     use super::*;
     use crate::{DatagramSenderExt as _, DatagramSocketExt as _, test_utils::MemoryDatagramSocket};
+
     fn n(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()
     }
