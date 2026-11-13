@@ -629,6 +629,150 @@ mod tests {
         .unwrap();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_relays_recover_through_a_shared_preparation_gate() {
+        const FLOWS: usize = 32;
+        const MOVES: usize = 4;
+        timeout(Duration::from_secs(30), async {
+            let changes = QuicNetworkChanges::new();
+            let gate = Arc::new(tokio::sync::Semaphore::new(4));
+            let barrier = Arc::new(tokio::sync::Barrier::new(FLOWS + 1));
+            let active = Arc::new(AtomicUsize::new(0));
+            let high_water = Arc::new(AtomicUsize::new(0));
+            let mut tasks = tokio::task::JoinSet::new();
+            for _ in 0..FLOWS {
+                let changes = changes.clone();
+                let gate = gate.clone();
+                let barrier = barrier.clone();
+                let active = active.clone();
+                let high_water = high_water.clone();
+                tasks.spawn(async move {
+                    let (client_endpoint, ingress_endpoint, client, ingress) = pair().await;
+                    let (egress_endpoint, origin_endpoint, egress, origin) = pair().await;
+                    let ingress_peer = ingress.remote_address();
+                    let observed_ingress = ingress.clone();
+                    let observed_origin = origin.clone();
+                    let applied = Arc::new(AtomicUsize::new(0));
+                    let ready = Arc::new(AtomicUsize::new(0));
+                    let accepted = applied.clone();
+                    let started = ready.clone();
+                    let policy = service_fn(move |input: QuicMigrationInput| {
+                        let active = active.clone();
+                        let high_water = high_water.clone();
+                        let accepted = accepted.clone();
+                        let started = started.clone();
+                        async move {
+                            if input.trigger == QuicMigrationTrigger::Initial {
+                                started.store(1, Ordering::Release);
+                            }
+                            if input.trigger != QuicMigrationTrigger::NetworkChanged {
+                                return Ok::<_, BoxError>(QuicMigrationDecision::default());
+                            }
+                            let now = active.fetch_add(1, Ordering::AcqRel) + 1;
+                            high_water.fetch_max(now, Ordering::Relaxed);
+                            let _finished = DropGuard::new(move || {
+                                active.fetch_sub(1, Ordering::AcqRel);
+                            });
+                            tokio::task::yield_now().await;
+                            let socket =
+                                rama_udp::UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
+                                    .await?;
+                            Ok(QuicMigrationDecision {
+                                ingress: QuicPathAction::Keep,
+                                egress: QuicPathAction::Replace(
+                                    QuicTransportReplacement::new(socket)?.with_on_applied(
+                                        move || {
+                                            accepted.fetch_add(1, Ordering::Release);
+                                        },
+                                    ),
+                                ),
+                            })
+                        }
+                    });
+                    let service = QuicMigrationLayer::new(
+                        policy,
+                        QuicMigrationConfig {
+                            scope: WeakScope::detached(),
+                            decision_timeout: Duration::from_secs(5),
+                            failure_action: QuicMigrationFailureAction::Close,
+                            failure_code: VarInt::from_u32(1),
+                        },
+                    )
+                    .with_network_changes(changes)
+                    .with_decision_gate(gate)
+                    .into_layer(
+                        super::super::QuicRelay::new(VarInt::from_u32(1)).with_datagrams(true),
+                    );
+                    let relay =
+                        tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
+                    let echo = tokio::spawn(async move {
+                        let (mut send, mut recv) = origin.accept_bi().await.unwrap();
+                        for _ in 0..=MOVES {
+                            let mut bytes = [0; 1024];
+                            recv.read_exact(&mut bytes).await.unwrap();
+                            send.write_all(&bytes).await.unwrap();
+                        }
+                        origin.closed().await;
+                    });
+                    let (mut send, mut recv) = client.open_bi().await.unwrap();
+                    send.write_all(&[0; 1024]).await.unwrap();
+                    let mut echoed = [0; 1024];
+                    recv.read_exact(&mut echoed).await.unwrap();
+                    while ready.load(Ordering::Acquire) == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                    for round in 0..MOVES {
+                        let old_peer = observed_origin.remote_address();
+                        barrier.wait().await;
+                        barrier.wait().await;
+                        while applied.load(Ordering::Acquire) <= round {
+                            tokio::task::yield_now().await;
+                        }
+                        let bytes = [round as u8 + 1; 1024];
+                        send.write_all(&bytes).await.unwrap();
+                        recv.read_exact(&mut echoed).await.unwrap();
+                        assert_eq!(echoed, bytes);
+                        while observed_origin.remote_address() == old_peer {
+                            tokio::task::yield_now().await;
+                        }
+                        assert_eq!(observed_ingress.remote_address(), ingress_peer);
+                        barrier.wait().await;
+                    }
+                    client.close(VarInt::from_u32(0), b"done");
+                    relay.await.unwrap().unwrap();
+                    echo.await.unwrap();
+                    for endpoint in [
+                        client_endpoint,
+                        ingress_endpoint,
+                        egress_endpoint,
+                        origin_endpoint,
+                    ] {
+                        endpoint.shutdown_now().await;
+                    }
+                });
+            }
+            for _ in 0..MOVES {
+                barrier.wait().await;
+                changes.update(
+                    QuicMigrationSide::Egress,
+                    QuicNetworkAvailability::Available,
+                    Extensions::new(),
+                );
+                barrier.wait().await;
+                barrier.wait().await;
+            }
+            while let Some(result) = tasks.join_next().await {
+                result.unwrap();
+            }
+            assert_eq!(active.load(Ordering::Relaxed), 0);
+            assert!(high_water.load(Ordering::Relaxed) <= 4);
+            assert!(high_water.load(Ordering::Relaxed) > 0);
+            assert_eq!(gate.available_permits(), 4);
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn policy_timeout_closes_both_legs_and_cancels_pending_work() {
         let (client_endpoint, ingress_endpoint, client, ingress) = pair().await;
