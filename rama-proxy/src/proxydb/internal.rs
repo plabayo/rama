@@ -47,31 +47,31 @@ pub struct Proxy {
     /// Proxy's IP originates from a mobile network.
     pub mobile: bool,
 
-    #[cfg_attr(feature = "memory-db", venndb(filter, any))]
+    #[cfg_attr(feature = "memory-db", venndb(filter, any = StringFilter::is_any))]
     /// Pool ID of the proxy.
     pub pool_id: Option<StringFilter>,
 
-    #[cfg_attr(feature = "memory-db", venndb(filter, any))]
+    #[cfg_attr(feature = "memory-db", venndb(filter, any = StringFilter::is_any))]
     /// Continent of the proxy.
     pub continent: Option<StringFilter>,
 
-    #[cfg_attr(feature = "memory-db", venndb(filter, any))]
+    #[cfg_attr(feature = "memory-db", venndb(filter, any = StringFilter::is_any))]
     /// Country of the proxy.
     pub country: Option<StringFilter>,
 
-    #[cfg_attr(feature = "memory-db", venndb(filter, any))]
+    #[cfg_attr(feature = "memory-db", venndb(filter, any = StringFilter::is_any))]
     /// State of the proxy.
     pub state: Option<StringFilter>,
 
-    #[cfg_attr(feature = "memory-db", venndb(filter, any))]
+    #[cfg_attr(feature = "memory-db", venndb(filter, any = StringFilter::is_any))]
     /// City of the proxy.
     pub city: Option<StringFilter>,
 
-    #[cfg_attr(feature = "memory-db", venndb(filter, any))]
+    #[cfg_attr(feature = "memory-db", venndb(filter, any = StringFilter::is_any))]
     /// Mobile carrier of the proxy.
     pub carrier: Option<StringFilter>,
 
-    #[cfg_attr(feature = "memory-db", venndb(filter, any))]
+    #[cfg_attr(feature = "memory-db", venndb(filter, any = Asn::is_any))]
     ///  Autonomous System Number (ASN).
     pub asn: Option<Asn>,
 }

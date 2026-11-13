@@ -549,26 +549,38 @@ mod memdb {
     /// A fast in-memory ProxyDatabase that is the default choice for Rama.
     ///
     /// Plural queries return a uniformly shuffled sample up to the requested
-    /// limit, or every match when unbounded. Singular queries retain the
-    /// allocation-efficient random-selection path.
+    /// limit, or every match when unbounded. Singular queries pick a random
+    /// match without collecting the others first.
     #[derive(Debug)]
     pub struct MemoryProxyDB {
         data: internal::ProxyDB,
+        /// The proxies that can carry TCP and UDP traffic: worked out once per proxy,
+        /// as it depends on more than a single property of it.
+        tcp: venndb::RowSet,
+        udp: venndb::RowSet,
     }
 
     impl MemoryProxyDB {
+        fn new(data: internal::ProxyDB) -> Self {
+            Self {
+                tcp: data.column(|proxy| proxy.supports_transport(TransportProtocol::Tcp)),
+                udp: data.column(|proxy| proxy.supports_transport(TransportProtocol::Udp)),
+                data,
+            }
+        }
+
         /// Create a new in-memory proxy database with the given proxies.
         pub fn try_from_rows(proxies: Vec<Proxy>) -> Result<Self, MemoryProxyDBInsertError> {
-            Ok(Self {
-                data: internal::ProxyDB::from_rows(proxies).map_err(|err| match err.kind() {
+            internal::ProxyDB::from_rows(proxies)
+                .map(Self::new)
+                .map_err(|err| match err.kind() {
                     ProxyDBErrorKind::DuplicateKey => {
                         MemoryProxyDBInsertError::duplicate_key(err.into_input())
                     }
                     ProxyDBErrorKind::InvalidRow => {
                         MemoryProxyDBInsertError::invalid_proxy(err.into_input())
                     }
-                })?,
-            })
+                })
         }
 
         /// Create a new in-memory proxy database with the given proxies from an iterator.
@@ -576,16 +588,16 @@ mod memdb {
         where
             I: IntoIterator<Item = Proxy>,
         {
-            Ok(Self {
-                data: internal::ProxyDB::from_iter(proxies).map_err(|err| match err.kind() {
+            internal::ProxyDB::from_iter(proxies)
+                .map(Self::new)
+                .map_err(|err| match err.kind() {
                     ProxyDBErrorKind::DuplicateKey => {
                         MemoryProxyDBInsertError::duplicate_key(err.into_input())
                     }
                     ProxyDBErrorKind::InvalidRow => {
                         MemoryProxyDBInsertError::invalid_proxy(err.into_input())
                     }
-                })?,
-            })
+                })
         }
 
         /// Return the number of proxies in the database.
@@ -640,25 +652,15 @@ mod memdb {
                 query.mobile(value);
             }
 
-            // Which proxy kinds carry the transport is checked per row: see `supports_transport`.
-            match ctx.protocol {
-                TransportProtocol::Tcp => {
-                    query.tcp(true);
-                }
-                TransportProtocol::Udp => {
-                    query.udp(true);
-                }
-            }
+            // Which proxy kinds carry the transport is known per proxy: see `supports_transport`.
+            query.and(venndb::Filter::Is(match ctx.protocol {
+                TransportProtocol::Tcp => &self.tcp,
+                TransportProtocol::Udp => &self.udp,
+            }));
 
             query
         }
     }
-
-    // TODO: custom query filters using ProxyQueryPredicate
-    // might be a lot faster for cases where we want to filter a big batch of proxies,
-    // in which case a bitmap could be supported by a future VennDB version...
-    //
-    // Would just need to figure out how to allow this to happen.
 
     impl ProxyDB for MemoryProxyDB {
         type Error = MemoryProxyDBQueryError;
@@ -682,29 +684,25 @@ mod memdb {
                     }
                 }
             } else {
-                let transport = ctx.protocol;
                 let query = self.query_from_filter(ctx, filter);
                 let result = query
                     .execute()
-                    .and_then(|result| {
-                        result.filter(|proxy| {
-                            proxy.supports_transport(transport) && predicate.execute(proxy)
-                        })
-                    })
                     .ok_or_else(MemoryProxyDBQueryError::not_found)?;
+                // The predicate is only asked about the proxies that match the filter,
+                // and none of them is copied unless it is returned.
+                let matches = result.iter().filter(|proxy| predicate.execute(proxy));
                 let mut rng = rand::rng();
-                let mut proxies = match limit {
-                    Some(limit) => result
-                        .iter()
+                let proxies = if let Some(limit) = limit {
+                    matches
                         .sample(&mut rng, limit.get())
                         .into_iter()
                         .cloned()
-                        .collect(),
-                    None => result.iter().cloned().collect::<Vec<_>>(),
-                };
-                if limit.is_none() {
+                        .collect()
+                } else {
+                    let mut proxies = matches.cloned().collect::<Vec<_>>();
                     proxies.shuffle(&mut rng);
-                }
+                    proxies
+                };
                 NonEmptyVec::collect(proxies).ok_or_else(MemoryProxyDBQueryError::not_found)
             }
         }
@@ -727,20 +725,12 @@ mod memdb {
                     }
                 }
             } else {
-                let transport = ctx.protocol;
-                let query = self.query_from_filter(ctx, filter);
-                match query
-                    .execute()
-                    .and_then(|result| {
-                        result.filter(|proxy| {
-                            proxy.supports_transport(transport) && predicate.execute(proxy)
-                        })
-                    })
-                    .map(|result| result.any())
-                {
-                    None => Err(MemoryProxyDBQueryError::not_found()),
-                    Some(proxy) => Ok(proxy.clone()),
-                }
+                // A random match, found without working out all of them
+                // if many proxies match the filter.
+                self.query_from_filter(ctx, filter)
+                    .any_where(|proxy| predicate.execute(proxy))
+                    .cloned()
+                    .ok_or_else(MemoryProxyDBQueryError::not_found)
             }
         }
     }

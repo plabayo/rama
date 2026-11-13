@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn test_parse_csv_opt_string_filter_is_any() {
         let filter = parse_csv_opt_string_filter("*").unwrap();
-        assert!(venndb::Any::is_any(&filter));
+        assert!(filter.is_any());
     }
 
     #[test]

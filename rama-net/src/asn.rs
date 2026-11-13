@@ -142,14 +142,6 @@ impl fmt::Display for Asn {
     }
 }
 
-#[cfg(feature = "venndb")]
-#[cfg_attr(docsrs, doc(cfg(feature = "venndb")))]
-impl venndb::Any for Asn {
-    fn is_any(&self) -> bool {
-        Self::is_any(self)
-    }
-}
-
 impl Serialize for Asn {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
