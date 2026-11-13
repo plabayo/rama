@@ -102,14 +102,13 @@ Python client, and so on. That is the comparison people actually get.
 
 ## Chart run
 
-The charts below come from the 2026-11-04/05 Linux run of Rama commit `3952f3669`,
-built with Rust 1.99.1. The Rama images were built without Docker layer cache;
-Quinn was rebuilt from its maintained 0.11 branch at `77a51bdc5`, also with Rust
-1.99.1. The matrix used `--repeat 5 --handshake-runs 5`. All 256 cells ran; 15
-small-request cells were rerun with the higher open-file limit and have five
-verified samples each. The aioquic client to ngtcp2 server `parallel` cell remains
-`n/a`: repeated attempts ended with aioquic `ConnectionError` before all 256
-transfers finished. No throughput is inferred for that pair.
+The charts below come from the 2026-11-12/13 Linux run of Rama commit `f4caa3acb`,
+built with Rust 1.99.1. The Rama images were rebuilt without Docker layer cache;
+Quinn was rebuilt from its maintained 0.11 branch at `a9ae122f2`, also with Rust
+1.99.1. Registry peer images were refreshed before the run. The matrix used
+`--repeat 5 --handshake-runs 5`. All 256 cells have five content-verified samples.
+One intermittent quiche-to-aioquic small-request sample failed; an isolated
+verified rerun replaced it after a warm-up.
 
 ## Charts
 

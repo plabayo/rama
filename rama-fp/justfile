@@ -52,6 +52,7 @@ device-firefox-android OUTPUT +VERSIONS:
     downloads="$(mktemp -d)"
     trap 'rm -rf "$downloads"' EXIT
     result=0
+    receipts=()
     for version in {{VERSIONS}}; do
       case "$version" in
         latest) version="$latest" ;;
@@ -60,10 +61,14 @@ device-firefox-android OUTPUT +VERSIONS:
       apk="$downloads/fenix-$version.apk"
       curl -fsSL -o "$apk" "https://archive.mozilla.org/pub/fenix/releases/$version/android/fenix-$version-android-x86_64/fenix-$version.multi.android-x86_64.apk"
       adb install "$apk"
-      {{python}} rama-fp/browserstack/main.py --output {{quote(OUTPUT)}}/firefox-"$version" \
-        --device firefox-android:"$version" || result=1
+      receipt={{quote(OUTPUT)}}/firefox-"$version"
+      receipts+=("$receipt")
+      {{python}} rama-fp/browserstack/main.py --output "$receipt" \
+        --device firefox-android:"$version" --defer-h3-gate || result=1
       adb uninstall org.mozilla.firefox
     done
+    # One version missing its Alt-Svc switch is that browser's timing; all of them is the origin.
+    {{python}} rama-fp/browserstack/main.py --h3-gate "${receipts[@]}" || result=1
     exit "$result"
 
 # Public demo DNS and HTTP checks; same bounded entry point as scheduled CI.

@@ -7,7 +7,10 @@ independently, following the installed browser's default behavior. Known
 browser limitations (WebSocket over HTTP/2 before Safari 26, WebSocket over
 HTTP/3 outside Safari 26+, a browser that never leaves the H3-only origin's TCP
 bootstrap door) are recorded as "unsupported" and do not fail the job, unless
-every H3 cell stayed on that door, which points at a broken H3 origin.
+every H3 cell stayed on that door, which points at a broken H3 origin. A job that
+runs one browser version at a time passes `--defer-h3-gate` to each run and applies
+that check once to all of them with `--h3-gate`, so one version's Alt-Svc timing
+does not stand in for the origin.
 A failed cell is retried once in a fresh session; its receipt records
 `attempts` and, after a retry, the first attempt's `first_failure_stage` and
 `first_failure_reason`, and only a cell failing both attempts counts as failed. The job
@@ -435,6 +438,9 @@ def run_session(
 # Real devices fail a session now and then; a regression fails far more cells than this.
 FAILED_CELL_BUDGET_PERCENT = 1
 
+H3_NEVER_REACHED = "FAILED no H3 cell left the HTTP/3 bootstrap door"
+
+
 def h3_never_reached(receipts):
     """Every H3 cell ran but stayed on the TCP bootstrap door."""
     h3 = [row for row in receipts if row.get("expected_http_protocol") == "h3"]
@@ -447,8 +453,18 @@ def h3_never_reached(receipts):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, help="new receipt directory")
     parser.add_argument(
-        "--output", type=Path, required=True, help="new receipt directory"
+        "--defer-h3-gate",
+        action="store_true",
+        help="leave the every-H3-cell-stayed-on-TCP check to a later --h3-gate",
+    )
+    parser.add_argument(
+        "--h3-gate",
+        type=Path,
+        nargs="+",
+        metavar="DIRECTORY",
+        help="only apply that check, to these receipt directories together",
     )
     parser.add_argument(
         "--device",
@@ -456,6 +472,22 @@ def main(argv=None):
         help="drive a browser on this host instead of BrowserStack: " + ", ".join(DEVICES),
     )
     args = parser.parse_args(argv)
+    if args.h3_gate:
+        receipts = [
+            json.loads(path.read_text())
+            for directory in args.h3_gate
+            for path in directory.glob("*.json")
+        ]
+        # Without an H3 cell there is nothing to judge the origin by.
+        if not any(row.get("expected_http_protocol") == "h3" for row in receipts):
+            print("FAILED no H3 cell ran", flush=True)
+            return 1
+        if h3_never_reached(receipts):
+            print(H3_NEVER_REACHED, flush=True)
+            return 1
+        return 0
+    if not args.output:
+        parser.error("--output is required")
     build = "rama-fp-{}-{}-{}".format(
         platform.system(),
         platform.node().replace("-", "_"),
@@ -503,8 +535,8 @@ def main(argv=None):
         flush=True,
     )
     failures = int(over_budget)
-    if h3_never_reached(receipts):
-        print("FAILED no H3 cell left the HTTP/3 bootstrap door", flush=True)
+    if not args.defer_h3_gate and h3_never_reached(receipts):
+        print(H3_NEVER_REACHED, flush=True)
         failures += 1
     if args.device:
         failures += not check_echo(

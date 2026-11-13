@@ -1287,9 +1287,14 @@ fn terminal_state_at_close_with(
     };
     *signals.lock() = Some(session.signals.clone());
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
-    assert_eq!(
-        session.on_client_bytes(b"request"),
-        TcpDeliverStatus::Accepted
+    // A service that ends without reading can close the flow before this chunk lands.
+    let delivered = session.on_client_bytes(b"request");
+    assert!(
+        matches!(
+            delivered,
+            TcpDeliverStatus::Accepted | TcpDeliverStatus::Closed
+        ),
+        "{delivered:?}"
     );
     let state = closed_rx
         .recv_timeout(Duration::from_secs(2))
