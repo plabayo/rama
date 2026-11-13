@@ -52,7 +52,11 @@ use rama::{
     tls::alpn::AlpnRouter,
     udp::{
         DatagramDemux, DemuxConfig, DemuxedSocket, PrefixedDatagramSocket, SharedQueueBudget,
-        proxy::{DatagramForwardService, DatagramToProxyBridge, EcnPolicy, UdpConnector},
+        proxy::{
+            DatagramForwardService, DatagramRecovery, DatagramRecoveryConfig,
+            DatagramRecoveryFailureAction, DatagramRecoverySignal, DatagramToProxyBridge,
+            EcnPolicy, UdpConnector,
+        },
     },
     utils::octets::kib,
 };
@@ -79,6 +83,7 @@ pub(super) struct QuicPath {
     /// Never join paths from different process identities, including PID reuse.
     pub(super) migration: QuicMitmIngressByIdentity<AuditToken>,
     pub(super) network: QuicNetworkChanges,
+    pub(super) forwarding_recovery: DatagramRecovery,
     pub(super) egress_preparations: Arc<tokio::sync::Semaphore>,
 }
 
@@ -106,6 +111,7 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
         migration,
         network,
         egress_preparations,
+        forwarding_recovery,
     } = path;
     let bundle_identifier = flow
         .extensions()
@@ -127,6 +133,11 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
         NonZeroUsize::new(kib(64)).expect("nonzero"),
         EcnPolicy::Discard,
     ));
+
+    // Only confirmed QUIC receives proactive source-address replacement. The peek fallback
+    // may carry non-QUIC protocols whose sessions cannot tolerate that change.
+    let fallback_forward = forward.clone();
+    let forward = forward.with_egress_recovery(forwarding_recovery);
 
     let route = {
         let scope = if migration_ingress.is_some() {
@@ -296,7 +307,7 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
     let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
         .with_fallback_policy(QuicPeekFallbackPolicy::ALL)
         .with_fallback(service_fn(move |input: Association| {
-            let forward = forward.clone();
+            let forward = fallback_forward.clone();
             async move { forward_uninspected(&forward, input).await.map(drop) }
         }));
     let demux = DatagramDemux::new(UdpFlowSocket::new(flow), demux_config(flow_bytes))
@@ -309,6 +320,22 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, scope: WeakScope) {
     if let Err(error) = result {
         tracing::debug!(%error, "tproxy quic flow ended");
     }
+}
+
+/// Recover confirmed QUIC pass-through using the same preparation budget as MITM.
+pub(super) fn forwarding_recovery(
+    signal: DatagramRecoverySignal,
+    gate: Arc<tokio::sync::Semaphore>,
+) -> DatagramRecovery {
+    DatagramRecovery::new(
+        signal,
+        DatagramRecoveryConfig {
+            preparation_timeout: Duration::from_secs(5),
+            unavailable_timeout: Duration::from_secs(15),
+            failure_action: DatagramRecoveryFailureAction::Keep,
+        },
+    )
+    .with_preparation_gate(gate)
 }
 
 /// Whether a flow to `port` is served by [`serve`] rather than the multi-peer loop.

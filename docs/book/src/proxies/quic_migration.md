@@ -67,6 +67,23 @@ The Apple example uses provider network-path observations to reassess egress whe
 returns. An ingress port change alone does not replace egress. Physical interface changes and
 recovery still need platform testing.
 
+### Forwarding without interception
+
+Pass-through keeps QUIC end-to-end between the client and origin. Those peers validate
+migration; Rama only forwards their datagrams. If a proxy network change makes its outgoing
+UDP transport unusable, an opt-in recovering forwarding bridge can prepare a replacement
+through the original connector while keeping the incoming flow alive. It preserves the
+original peer and routing restrictions. Datagrams in flight may be lost, never replayed.
+
+The Apple example enables this recovery for confirmed QUIC pass-through, sharing network
+observations and the preparation budget with MITM. Its uninspectable fallback and generic
+multi-peer UDP handler retain their existing behaviour: arbitrary UDP protocols need an
+explicit decision about source-address changes. Recovery cannot guarantee continuity during
+an incomplete QUIC handshake or after the real endpoints have closed their connection.
+
+See the [UDP forwarding API reference](https://ramaproxy.org/docs/rama/udp/proxy/index.html)
+for recovery controls and failure policies.
+
 See the [migration API reference](https://ramaproxy.org/docs/rama/quic/proxy/index.html)
 and [telemetry reference](https://ramaproxy.org/docs/rama/quic/dial9/index.html) for configuration
 and event details. The [conditional QUIC MITM example](https://github.com/plabayo/rama/blob/main/examples/src/quic_h3_mitm_proxy.rs)
