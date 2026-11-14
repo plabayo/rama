@@ -55,3 +55,6 @@ mod http_version_compat;
 
 #[cfg(all(feature = "http-full", feature = "boring", feature = "quic"))]
 mod masque;
+
+#[cfg(all(feature = "http-full", feature = "rustls", feature = "ring"))]
+mod pool_stack;
