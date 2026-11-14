@@ -37,7 +37,7 @@ use rama::{
     },
 };
 use serial_test::serial;
-use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
+use std::{cell::Cell, convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     time::timeout,
@@ -137,8 +137,10 @@ async fn origins(auth: ServerAuthData) -> (SocketAddr, SocketAddr, AbortOnDrop, 
     (tcp, udp, AbortOnDrop(vec![tcp_task, h3_task]), endpoint)
 }
 
-async fn tcp_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
+async fn tcp_request(engine: Arc<EngineHandle>, origin: SocketAddr, case: &str) -> bool {
     let ingress = spawn_ingress_listener(engine, origin).await;
+    // A timeout names the last stage reached, to tell a stuck handshake from a lost close.
+    let stage = Cell::new("connect");
     let result = timeout(LIMIT, async {
         let stream = tokio::net::TcpStream::connect(ingress.local_addr())
             .await
@@ -146,6 +148,7 @@ async fn tcp_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
         let config = TlsClientConfig::new()
             .with_server_name(Host::from_static("localhost"))
             .with_server_verify(ServerVerifyMode::Disable);
+        stage.set("tls handshake");
         let Ok(mut stream) = tls_connect(
             ServiceInput::new(stream),
             Some(TlsConnectorData::try_from(&config).unwrap()),
@@ -154,6 +157,7 @@ async fn tcp_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
         else {
             return false;
         };
+        stage.set("write request");
         if stream
             .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .await
@@ -161,6 +165,7 @@ async fn tcp_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
         {
             return false;
         }
+        stage.set("read response");
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await.is_ok()
             && response
@@ -168,12 +173,12 @@ async fn tcp_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
                 .any(|s| s == b"verified origin")
     })
     .await
-    .expect("TCP certificate decision must finish");
+    .unwrap_or_else(|_| panic!("TCP {case} timed out at {}", stage.get()));
     ingress.shutdown().await;
     result
 }
 
-async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
+async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr, case: &str) -> bool {
     let socket = UdpFfiSession::new(engine, origin).into_datagram_socket(origin);
     let endpoint = Endpoint::build(WeakScope::detached())
         .with_datagram_socket(socket)
@@ -182,6 +187,7 @@ async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
         .with_server_verify(ServerVerifyMode::Disable)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
     let config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
+    let stage = Cell::new("quic connect");
     let result = timeout(LIMIT, async {
         let Ok(connection) = endpoint
             .connect_with(config, origin, "localhost")
@@ -190,10 +196,12 @@ async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
         else {
             return false;
         };
+        stage.set("h3 handshake");
         let (mut client, driver) =
             client::handshake::<Body, _>(connection, Config::default(), WeakScope::detached())
                 .unwrap();
         let driver = tokio::spawn(driver.run());
+        stage.set("send request");
         let result = client
             .send_request(
                 Request::get("https://localhost/")
@@ -205,7 +213,7 @@ async fn quic_request(engine: Arc<EngineHandle>, origin: SocketAddr) -> bool {
         result.is_ok_and(|response| response.status().is_success())
     })
     .await
-    .expect("QUIC certificate decision must finish");
+    .unwrap_or_else(|_| panic!("QUIC {case} timed out at {}", stage.get()));
     endpoint.close(0u32, b"done");
     endpoint.shutdown().await;
     result
@@ -239,16 +247,17 @@ async fn ffi_contract_upstream_certificate_policy_tcp_and_quic() {
         .await
         .unwrap();
         // Retry too: upstream rejection must never install a bypass exception.
-        for _ in 0..2 {
+        for attempt in 0..2 {
+            let case = format!("{kind:?} verify={verify} attempt={attempt}");
             assert_eq!(
-                tcp_request(engine.clone(), tcp).await,
+                tcp_request(engine.clone(), tcp, &case).await,
                 expected,
-                "TCP {kind:?}, verify={verify}"
+                "TCP {case}"
             );
             assert_eq!(
-                quic_request(engine.clone(), udp).await,
+                quic_request(engine.clone(), udp, &case).await,
                 expected,
-                "QUIC {kind:?}, verify={verify}"
+                "QUIC {case}"
             );
         }
         endpoint.close(0u32, b"done");
