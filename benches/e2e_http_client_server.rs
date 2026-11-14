@@ -64,8 +64,7 @@ use rama::{
     io::Io,
     layer::{ArcLayer, ConsumeErrLayer, MapOutputLayer, TimeoutLayer},
     net::{
-        Protocol,
-        address::{ProxyAddress, SocketAddress},
+        address::{ProxyAddress, ProxyProtocol, SocketAddress},
         client::{ProxyRoute, pool::SaturationPolicy},
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
@@ -500,10 +499,9 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
                             .unwrap(),
                     )),
                     Proxy::Socks5 => req.extension(ProxyRoute::Proxy(ProxyAddress {
-                        protocol: Some(Protocol::SOCKS5),
+                        protocol: ProxyProtocol::SOCKS5,
                         address: address_proxy.into(),
                         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
-                        template: None,
                     })),
                 };
 

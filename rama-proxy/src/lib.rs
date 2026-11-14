@@ -285,7 +285,8 @@ mod proxydb;
 
 #[doc(inline)]
 pub use proxydb::{
-    Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyID, ProxyQueryPredicate, StringFilter,
+    Proxy, ProxyContext, ProxyDB, ProxyDbAddress, ProxyFilter, ProxyID, ProxyQueryPredicate,
+    StringFilter,
 };
 
 #[doc(inline)]

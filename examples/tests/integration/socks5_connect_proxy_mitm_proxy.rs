@@ -16,8 +16,7 @@ use rama::{
     },
     layer::ArcLayer,
     net::{
-        Protocol,
-        address::{ProxyAddress, SocketAddress},
+        address::{ProxyAddress, ProxyProtocol, SocketAddress},
         client::ProxyRoute,
         user::{Basic, ProxyCredential},
     },
@@ -64,13 +63,12 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
     );
 
     let proxy_address = ProxyAddress {
-        protocol: Some(Protocol::SOCKS5),
+        protocol: ProxyProtocol::SOCKS5,
         address: proxy_socket_addr.into(),
         credential: Some(ProxyCredential::Basic(Basic::new(
             non_empty_str!("john"),
             non_empty_str!("secret"),
         ))),
-        template: None,
     };
 
     let test_uris = [

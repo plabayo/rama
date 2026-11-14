@@ -20,7 +20,10 @@ use rama_net::{
     user::ProxyCredential,
 };
 #[cfg(feature = "dns")]
-use rama_net::{Protocol, address::Host, mode::DnsResolveIpMode};
+use rama_net::{
+    address::{Host, ProxyProtocol},
+    mode::DnsResolveIpMode,
+};
 use rama_utils::macros::define_inner_service_accessors;
 #[cfg(feature = "dns")]
 use rama_utils::macros::generate_set_and_with;
@@ -237,7 +240,13 @@ impl<S> Socks5ProxyConnector<S> {
         addr: ProxyAddress,
     ) -> ProxyAddress {
         if let Some(dns_resolver) = self.dns_resolver.as_ref()
-            && addr.protocol == Some(Protocol::SOCKS5)
+            && matches!(
+                addr.protocol,
+                ProxyProtocol::Socks5 {
+                    remote_dns: false,
+                    ..
+                }
+            )
         {
             use rama_net::address::HostWithPort;
 
@@ -245,7 +254,6 @@ impl<S> Socks5ProxyConnector<S> {
                 protocol,
                 address: HostWithPort { host, port },
                 credential,
-                template,
             } = addr;
 
             let host = match host {
@@ -301,7 +309,6 @@ impl<S> Socks5ProxyConnector<S> {
                 protocol,
                 address,
                 credential,
-                template,
             };
         }
 
@@ -352,12 +359,7 @@ where
             }
         };
 
-        if !proxy_info
-            .protocol
-            .as_ref()
-            .map(|p| p.is_socks5())
-            .unwrap_or(true)
-        {
+        if !proxy_info.protocol.is_socks5() {
             return Err(ConnectionError::transport(
                 BoxError::from_static_str("socks5 proxy connector can only serve socks5 protocol"),
                 ConnectionErrorKind::Protocol,

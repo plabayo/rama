@@ -8,8 +8,7 @@ use crate::{
     },
     io::Io,
     net::{
-        AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt,
-        TargetHttpVersionInputExt,
+        AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt,
         client::{
             ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
             EstablishedProxyRoute, ProxyRoute,
@@ -120,13 +119,8 @@ where
                 Ok(EstablishedClientConnection { input, conn })
             }
             Some(ProxyRoute::Proxy(proxy)) => {
-                let protocol = proxy.protocol.as_ref();
+                let protocol = &proxy.protocol;
                 tracing::trace!(?protocol, "proxy detected in ctx");
-
-                let protocol = protocol.unwrap_or_else(|| {
-                    tracing::trace!("no protocol detected, using http as protocol");
-                    &Protocol::HTTP
-                });
 
                 if protocol.is_socks5() {
                     tracing::trace!(
@@ -151,7 +145,7 @@ where
 
                     let conn = MaybeProxiedConnection::socks(conn);
                     Ok(EstablishedClientConnection { input, conn })
-                } else if protocol.is_http() || protocol.is_masque() {
+                } else if protocol.is_http() {
                     // A MASQUE proxy is an HTTPS proxy for TCP, and receives its own requests
                     // as a forward proxy; see `ProxyRoute::addresses_proxy`.
                     tracing::trace!(
@@ -390,6 +384,7 @@ mod tests {
     use {
         crate::{
             net::{
+                Protocol,
                 address::HostWithPort,
                 address::ProxyAddress,
                 client::{

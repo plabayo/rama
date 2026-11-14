@@ -1,6 +1,15 @@
 use super::{ProxyContext, ProxyFilter, StringFilter};
+use core::{fmt, str::FromStr};
 use rama_core::extensions::Extension;
-use rama_net::{Protocol, address::ProxyAddress, asn::Asn, transport::TransportProtocol};
+
+use rama_core::error::BoxError;
+use rama_net::{
+    address::{HostWithPort, ProxyAddress, ProxyProtocol, UserInfo},
+    asn::Asn,
+    transport::TransportProtocol,
+    user::ProxyCredential,
+};
+use rama_utils::macros::serde_str::impl_serde_str;
 use rama_utils::str::NonEmptyStr;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +27,7 @@ pub struct Proxy {
     pub id: NonEmptyStr,
 
     /// The address to be used to connect to the proxy, including credentials if needed.
-    pub address: ProxyAddress,
+    pub address: ProxyDbAddress,
 
     /// True if the proxy supports TCP connections.
     pub tcp: bool,
@@ -105,7 +114,7 @@ impl Proxy {
         self.address
             .protocol
             .as_ref()
-            .is_some_and(Protocol::is_masque)
+            .is_some_and(ProxyProtocol::is_masque)
     }
 
     /// Whether the proxy can carry traffic of the given transport.
@@ -363,3 +372,62 @@ mod tests {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// The address of a [`Proxy`] record. Without a scheme it has no `protocol`: one is picked
+/// from the record's capabilities when the proxy is selected.
+pub struct ProxyDbAddress {
+    pub protocol: Option<ProxyProtocol>,
+    pub address: HostWithPort,
+    pub credential: Option<ProxyCredential>,
+}
+
+impl ProxyDbAddress {
+    #[must_use]
+    pub fn with_protocol(&self, protocol: ProxyProtocol) -> ProxyAddress {
+        ProxyAddress {
+            protocol,
+            address: self.address.clone(),
+            credential: self.credential.clone(),
+        }
+    }
+}
+
+impl FromStr for ProxyDbAddress {
+    type Err = BoxError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let ProxyAddress {
+            protocol,
+            address,
+            credential,
+        } = s.parse()?;
+        Ok(Self {
+            protocol: s.contains("://").then_some(protocol),
+            address,
+            credential,
+        })
+    }
+}
+
+impl TryFrom<&str> for ProxyDbAddress {
+    type Error = BoxError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl fmt::Display for ProxyDbAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(protocol) = &self.protocol {
+            return self.with_protocol(protocol.clone()).fmt(f);
+        }
+        if let Some(ProxyCredential::Basic(basic)) = &self.credential {
+            write!(f, "{}@", UserInfo::from(basic.clone()))?;
+        }
+        self.address.fmt(f)
+    }
+}
+
+impl_serde_str!(display ProxyDbAddress);

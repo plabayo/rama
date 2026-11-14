@@ -30,8 +30,7 @@ use rama::{
         ws::{Message, handshake::client::HttpClientWebSocketExt},
     },
     net::{
-        Protocol,
-        address::{Domain, HostWithPort, ProxyAddress, SocketAddress},
+        address::{Domain, HostWithPort, ProxyAddress, ProxyProtocol, SocketAddress},
         client::ProxyRoute,
         stream::Socket as NetSocket,
     },
@@ -1154,16 +1153,14 @@ fn proxy_address(proxy_kind: ProxyKind, proxy_addr: std::net::SocketAddr) -> Opt
     let proxy_address = match proxy_kind {
         ProxyKind::None => return None,
         ProxyKind::Http => ProxyAddress {
-            protocol: Some(Protocol::HTTP),
+            protocol: ProxyProtocol::HTTP,
             address: HostWithPort::from(proxy_addr),
             credential: None,
-            template: None,
         },
         ProxyKind::Socks5 => ProxyAddress {
-            protocol: Some(Protocol::SOCKS5),
+            protocol: ProxyProtocol::SOCKS5,
             address: HostWithPort::from(proxy_addr),
             credential: None,
-            template: None,
         },
     };
     Some(proxy_address)

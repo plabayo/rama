@@ -35,8 +35,7 @@ use rama::{
     },
     layer::ArcLayer,
     net::{
-        Protocol,
-        address::{ProxyAddress, SocketAddress},
+        address::{ProxyAddress, ProxyProtocol, SocketAddress},
         client::{ConnectorService, EstablishedClientConnection, ProxyRoute},
         user::{ProxyCredential, credentials::basic},
     },
@@ -94,10 +93,9 @@ async fn main() {
         .expect("build simple GET request");
 
     request.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
-        protocol: Some(Protocol::SOCKS5),
+        protocol: ProxyProtocol::SOCKS5,
         address: proxy_socket_addr.into(),
         credential: Some(ProxyCredential::Basic(basic!("john", "secret"))),
-        template: None,
     }));
 
     let EstablishedClientConnection {
