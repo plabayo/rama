@@ -26,6 +26,7 @@ targets = [
 
 [features]
 default = []
+dns = ["dep:rama-dns"]
 inspect = ["dep:rama-inspect"]
 http = []
 dial9 = ["dep:dial9-trace-format", "rama-core/dial9"]
@@ -43,6 +44,7 @@ parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-crypto = { workspace = true }
+rama-dns = { workspace = true, optional = true }
 rama-inspect = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }

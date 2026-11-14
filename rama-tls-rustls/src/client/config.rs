@@ -29,6 +29,7 @@ use std::sync::Arc;
 /// Gather all the TLS extensions supported by rustls
 #[derive(Clone, FromExtensions)]
 pub struct RustlsTlsConnectorConfig<'a> {
+    pub ech_requirement: Option<&'a rama_tls::client::EchRequirement>,
     pub session_profile_scope: Option<&'a TlsSessionProfileScope>,
     pub client_handshake: Option<&'a ClientHandshake>,
     pub alpn: Option<&'a TlsAlpn>,
@@ -59,6 +60,7 @@ impl RustlsTlsConnectorConfig<'_> {
             return None;
         }
         let Self {
+            ech_requirement: _,
             session_profile_scope,
             client_handshake: _,
             alpn,
@@ -132,6 +134,7 @@ impl RustlsTlsConnectorConfig<'_> {
     pub fn authenticates_server(&self) -> bool {
         // New fields must also be reviewed for their effect on authentication.
         let Self {
+            ech_requirement: _,
             session_profile_scope: _,
             client_handshake: _,
             alpn: _,

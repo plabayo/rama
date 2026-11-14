@@ -229,6 +229,24 @@ impl TlsSession {
     }
 
     fn tls_error(&self, error: QuicError) -> TransportError {
+        if let QuicError::Tls(error) = &error
+            && let Some(errors) = error.ssl_error()
+            && let Some(retry) = rama_tls_boring::client::ech::authenticated_retry_config(
+                self.inner.ssl(),
+                errors
+                    .errors()
+                    .iter()
+                    .map(|error| (error.library_code(), error.reason_code())),
+            )
+        {
+            // RFC 9849 ech_required is a TLS alert, carried as QUIC CRYPTO_ERROR.
+            let alert = self.callbacks.lock().alert.unwrap_or(121);
+            return TransportError::new(
+                TransportErrorCode::crypto(alert),
+                "authenticated ECH rejection",
+            )
+            .with_cause(retry);
+        }
         match self.callbacks.lock().alert {
             Some(alert) => {
                 TransportError::new(TransportErrorCode::crypto(alert), "TLS handshake failed")
@@ -437,6 +455,12 @@ impl crypto::Session for TlsSession {
             *negotiated.lock() = version;
         }
         Ok(())
+    }
+    fn ech_accepted(&self) -> Option<bool> {
+        self.inner
+            .ssl()
+            .is_init_finished()
+            .then(|| self.inner.ssl().ech_accepted())
     }
     fn handshake_summary(&self) -> Option<crypto::NegotiatedTlsParameters> {
         self.got_handshake_data

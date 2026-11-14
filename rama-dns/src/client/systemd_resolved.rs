@@ -19,6 +19,7 @@
 //! divergence from `res_nsearch`: a positive as-is answer wins even where
 //! `ndots` would have preferred a search-list candidate.
 
+use crate::client::resolver::ServiceBindingRecord;
 use std::{
     fmt,
     net::{Ipv4Addr, Ipv6Addr},
@@ -69,7 +70,7 @@ const AF_INET6: i64 = 10;
 use super::systemd_resolved_wire::{
     DNS_CLASS_IN, RrParse, parse_cname_rr, parse_service_binding_rr, parse_txt_rr,
 };
-use crate::wire::{Name, RecordType, ServiceBinding, Txt};
+use crate::wire::{Name, RecordType, Txt};
 
 /// A probe claim older than this is assumed orphaned and may be re-claimed.
 const PROBE_STALE: Duration = Duration::from_secs(15);
@@ -294,7 +295,7 @@ impl SystemdResolved {
         self: &Arc<Self>,
         domain: &Domain,
         timeout: Duration,
-    ) -> ResolvedLookup<ServiceBinding> {
+    ) -> ResolvedLookup<ServiceBindingRecord> {
         self.lookup_service_binding(domain, timeout, RecordType::SVCB)
             .await
     }
@@ -303,7 +304,7 @@ impl SystemdResolved {
         self: &Arc<Self>,
         domain: &Domain,
         timeout: Duration,
-    ) -> ResolvedLookup<ServiceBinding> {
+    ) -> ResolvedLookup<ServiceBindingRecord> {
         self.lookup_service_binding(domain, timeout, RecordType::HTTPS)
             .await
     }
@@ -313,7 +314,7 @@ impl SystemdResolved {
         domain: &Domain,
         timeout: Duration,
         record_type: RecordType,
-    ) -> ResolvedLookup<ServiceBinding> {
+    ) -> ResolvedLookup<ServiceBindingRecord> {
         self.lookup_record(
             domain,
             timeout,
@@ -1948,7 +1949,7 @@ mod tests {
         {
             ResolvedLookup::Records(records) => {
                 assert_eq!(records.len(), 1);
-                assert_eq!(records[0].0.port(), Some(8443));
+                assert_eq!(records[0].0.binding.port(), Some(8443));
                 assert_eq!(records[0].1, Some(123));
             }
             _ => panic!("expected SVCB records"),
@@ -1959,7 +1960,7 @@ mod tests {
         {
             ResolvedLookup::Records(records) => {
                 assert_eq!(records.len(), 1);
-                assert_eq!(records[0].0.port(), Some(443));
+                assert_eq!(records[0].0.binding.port(), Some(443));
                 assert_eq!(records[0].1, Some(321));
             }
             _ => panic!("expected HTTPS records"),
@@ -2376,7 +2377,8 @@ mod tests {
         match parse_service_binding_rr(&raw, RecordType::SVCB) {
             RrParse::Record { ttl, value } => {
                 assert_eq!(ttl, 300);
-                match &value.params()[0] {
+                assert_eq!(value.owner.to_string(), "example.com.");
+                match &value.binding.params()[0] {
                     crate::wire::SvcParam::Unknown { value, .. } => {
                         assert_eq!(value.as_ptr(), value_ptr);
                         assert_eq!(value.as_ref(), [1, 2, 3]);

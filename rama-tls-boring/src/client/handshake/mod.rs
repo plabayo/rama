@@ -26,6 +26,7 @@ use crate::TlsStream;
 pub struct PreparedClient {
     ssl: Ssl,
     server_name: Option<Host>,
+    ech_required: bool,
 }
 
 impl fmt::Debug for PreparedClient {
@@ -46,10 +47,15 @@ impl TryFrom<TlsConnectorData> for PreparedClient {
             ));
         }
         let server_name = data.server_name.clone();
+        let ech_required = data.ech_required;
         let mut ssl = data.into_ssl()?;
         // Clients do not renegotiate; release handshake configuration afterwards.
         ssl.set_shed_handshake_config(true);
-        Ok(Self { ssl, server_name })
+        Ok(Self {
+            ssl,
+            server_name,
+            ech_required,
+        })
     }
 }
 
@@ -59,11 +65,25 @@ impl PreparedClient {
     where
         T: Io + Unpin + ExtensionsRef,
     {
-        let Self { ssl, server_name } = self;
+        let Self {
+            ssl,
+            server_name,
+            ech_required,
+        } = self;
         let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
             .connect()
             .await
             .map_err(|error| TlsConnectError::Handshake { error, server_name })?;
+        let accepted = stream.ssl().ech_accepted();
+        if ech_required && !accepted {
+            return Err(TlsConnectError::Builder(BoxError::from_static_str(
+                "server did not accept required ECH",
+            )));
+        }
+        stream
+            .get_ref()
+            .extensions()
+            .insert(rama_tls::client::TlsEchAccepted(accepted));
         Ok(TlsStream::new(stream))
     }
 }

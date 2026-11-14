@@ -1,3 +1,4 @@
+use crate::client::resolver::ServiceBindingRecord;
 use rama_core::futures::{Stream, stream};
 use rama_net::address::Domain;
 use rama_utils::macros::error::static_str_error;
@@ -7,7 +8,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use super::resolver::{
     DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
 };
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::wire::{Name, Txt};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -103,14 +104,14 @@ impl DnsServiceBindingResolver for DenyAllDnsResolver {
     fn lookup_svcb(
         &self,
         _: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Err(DnsDeniedError)))
     }
 
     fn lookup_https(
         &self,
         _: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Err(DnsDeniedError)))
     }
 }

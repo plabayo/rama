@@ -49,6 +49,11 @@ use {
 /// authentication claims and pool identity describe the settings actually applied.
 /// Different connectors can therefore use different TLS policies.
 pub trait QuicClientConfigProvider: TlsClientConfigProvider {
+    /// Whether this backend can offer real ECH from endpoint configuration.
+    fn supports_ech(&self) -> bool {
+        false
+    }
+
     /// Optional connector-local backend session state shared by sibling configurations.
     /// These extensions hold cache metadata; they must not replace TLS security settings.
     /// The default retains each native configuration's own session state.
@@ -264,6 +269,10 @@ impl TlsClientConfigProvider for BoringTlsProvider {
 
 #[cfg(feature = "boring")]
 impl QuicClientConfigProvider for BoringTlsProvider {
+    fn supports_ech(&self) -> bool {
+        true
+    }
+
     fn prepare_client_config(
         &self,
         policy: &TlsClientConfig,

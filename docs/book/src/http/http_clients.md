@@ -48,6 +48,61 @@ Alternative services change where and how Rama connects, while preserving the
 request's origin and certificate identity. The easy client selects a service
 before choosing a proxy route and consulting the connection pool.
 
+HTTPS discovery is a reusable layer that supplies `HttpServiceCandidates` to
+the existing selector. Each candidate can carry its own endpoint, ECH configuration
+and address knowledge in optional extensions. Custom preknowledge producers use
+the same contract; easy client is one consumer of these components.
+
+<div class="book-article-image-center">
+
+```dot process
+digraph {
+    pad=0.2;
+    nodesep=0.45;
+    ranksep=0.5;
+    node [shape=box];
+    discovery [label="HTTPS DNS + Alt-Svc"];
+    candidate [label="Select candidate + its extensions"];
+    route [label="Select proxy route"];
+    pool [label="Pool lookup", shape=diamond];
+    connect [label="Connect + TLS"];
+    use [label="Use connection"];
+    discovery -> candidate;
+    candidate -> route;
+    route -> pool;
+    pool -> use [label="hit"];
+    pool -> connect [label="miss"];
+    connect -> use [label="success"];
+    connect -> candidate [label="failure, if fallback allowed", constraint=false];
+}
+```
+
+</div>
+
+Discovery runs before pool lookup because the selected service determines which
+connection can be reused. DNS caching stays in the configured resolver. With the
+`quic` feature, the easy client's default DNS path enables HTTPS discovery;
+`with_dns_resolver` shares a custom resolver with discovery and transport, while
+`with_https_resolver` configures discovery explicitly.
+
+HTTPS records select transports: a TCP candidate preserves the client's normal
+H2/H1 ALPN offer, including emulated profiles. Alt-Svc advertisements and explicit
+caller version requirements still constrain the exact HTTP protocol.
+
+Caller ECH policy is separate from discovered endpoint facts. Final TLS/profile
+settings determine ECH requirements for new handshakes. `EchRequirement::Required`
+also restricts pooled reuse to authenticated connections that accepted real ECH.
+`Optional` adds no caller requirement; DNS-derived rules still govern new handshakes.
+See the [custom resolver](https://github.com/plabayo/rama/tree/main/examples/src/http_https_discovery_custom_resolver.rs)
+and [ECH preknowledge](https://github.com/plabayo/rama/tree/main/examples/src/http_ech_preknowledge.rs)
+examples for both integration paths.
+
+ECH protects the inner ClientHello, not DNS queries or traffic patterns; resolver
+privacy remains a separate choice. The current BoringSSL backend keeps real session
+ticket identities out of the outer ClientHello but does not add a GREASE PSK there,
+so observers can distinguish resumed ECH handshakes. Use `ClientHandshake::Full`
+when that distinction is unacceptable.
+
 `HttpServiceConnector` returns the underlying connection unchanged. Compose
 `AltSvcLayer::new(cache)` separately with `MapEstablishedConnection`; the easy
 client does this automatically. The layer resolves each request's origin, learns response
@@ -56,8 +111,9 @@ feeds ALTSVC frames into the same cache. Advertisements are not automatically
 forwarded. To send H2 advertisements, enable `set_alt_svc(true)` before the server
 handshake and use `AltSvcSender`; ordinary connections allocate no sender queue.
 
-Selection tries alternatives sequentially, with a configurable 300 ms
-`attempt_timeout` including DNS and TLS. Increase it for slower networks. There
+Selection tries alternatives sequentially. Pure Alt-Svc attempts have a configurable
+300 ms `attempt_timeout` including DNS and TLS; DNS-selected services use the
+ordinary connection budget. Increase the Alt-Svc timeout for slower networks. There
 is no overall deadline unless `timeout` is set. Failed alternatives back off;
 selection can fall back to the origin with the same TLS policy. Explicit version
 requirements remain binding. A completed response resets backoff; reconnecting
@@ -88,7 +144,7 @@ Unclassified policy failures never suppress shared alternatives.
 Connectors report unsupported protocols or routes as local capability failures;
 clients need no separate protocol-support list. These refusals preserve cache health.
 In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3
-directly. Disk persistence and DNS HTTPS/SVCB discovery are not implemented yet.
+directly. Disk persistence is not implemented.
 
 ## Server certificate pinning
 

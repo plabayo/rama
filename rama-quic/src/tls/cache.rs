@@ -54,11 +54,27 @@ impl fmt::Debug for ClientConfigCache {
 }
 
 impl ClientConfigCache {
+    fn needs_endpoint_ech(&self, config: &TlsClientConfig) -> bool {
+        use rama_tls::client::{EchRequirement, TlsEncryptedClientHello};
+        let ext = config.as_extensions();
+        ext.get_ref::<EchRequirement>() == Some(&EchRequirement::Required)
+            || (self.provider.supports_ech()
+                && ext
+                    .get_ref::<TlsEncryptedClientHello>()
+                    .is_some_and(|intent| intent.0)
+                && ext.contains::<rama_net::tls::TargetEchConfig>())
+    }
+
     fn effective_options(&self, config: &TlsClientConfig) -> TlsOptions {
+        let options = if self.needs_endpoint_ech(config) {
+            self.options.with_early_data(false)
+        } else {
+            self.options
+        };
         let options = config
             .as_extensions()
             .get_ref::<AlpnPolicy>()
-            .map_or(self.options, |policy| self.options.with_alpn(*policy));
+            .map_or(options, |policy| options.with_alpn(*policy));
 
         #[cfg(feature = "boring")]
         if self.provider.pool_classifier() == BoringTlsProvider.pool_classifier() {
@@ -139,6 +155,18 @@ impl ClientConfigCache {
         config: &TlsClientConfig,
         overrides: &Extensions,
     ) -> Result<ClientConfig, TlsConfigError> {
+        if self.needs_endpoint_ech(config) {
+            let peer = config
+                .as_extensions()
+                .get_ref::<TlsServerName>()
+                .map(|name| name.0.clone())
+                .ok_or_else(|| {
+                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                        "endpoint ECH requires a peer identity",
+                    ))
+                })?;
+            return self.client_config_for_peer(config, overrides, &peer);
+        }
         if config
             .as_extensions()
             .get_ref::<ClientHandshake>()
@@ -167,6 +195,23 @@ impl ClientConfigCache {
         overrides: &Extensions,
         peer: &Host,
     ) -> Result<ClientConfig, TlsConfigError> {
+        if self.needs_endpoint_ech(config) {
+            return self
+                .prepare_client_config(
+                    config,
+                    peer.clone(),
+                    config
+                        .as_extensions()
+                        .get_ref::<ClientHandshake>()
+                        .copied()
+                        .unwrap_or_default(),
+                )?
+                .ok_or_else(|| {
+                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                        "TLS provider cannot prepare endpoint ECH",
+                    ))
+                });
+        }
         if let Some(handshake) = config
             .as_extensions()
             .get_ref::<ClientHandshake>()

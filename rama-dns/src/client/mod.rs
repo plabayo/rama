@@ -6,6 +6,12 @@ mod limit;
 #[doc(inline)]
 pub use self::limit::DnsTimeoutError;
 
+mod https;
+pub use https::{HttpsServiceBinding, HttpsServiceBindingLookup, HttpsServiceBindings};
+
+mod address_candidates;
+pub use address_candidates::PrefetchedAddressCandidates;
+
 mod connector;
 #[doc(inline)]
 pub use connector::{DnsConnector, DnsConnectorLayer};

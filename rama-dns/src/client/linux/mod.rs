@@ -19,6 +19,7 @@
 //! Concurrent cache misses for one name and record kind share a single
 //! lookup, and native (blocking) lookups are bounded in number.
 
+use crate::client::resolver::ServiceBindingRecord;
 use std::{
     ffi::CString,
     fmt, fs,
@@ -48,7 +49,7 @@ use super::{
     },
     systemd_resolved::{self, ResolvedLookup, SystemdResolved},
 };
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::wire::{Name, Txt};
 
 mod cache;
 
@@ -557,7 +558,7 @@ impl DnsServiceBindingResolver for LinuxDnsResolver {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send + '_ {
         // without systemd-resolved nothing here can answer: keep the typed error
         if !NATIVE_RECORD_LOOKUPS && self.systemd_resolved.is_none() {
             return Either::Left(stream::once(std::future::ready(Err(
@@ -581,7 +582,7 @@ impl DnsServiceBindingResolver for LinuxDnsResolver {
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send + '_ {
         // without systemd-resolved nothing here can answer: keep the typed error
         if !NATIVE_RECORD_LOOKUPS && self.systemd_resolved.is_none() {
             return Either::Left(stream::once(std::future::ready(Err(
@@ -843,7 +844,7 @@ fn lookup_svcb_uncached_stream(
     domain: Domain,
     timeout: Duration,
     native: NativeConfig,
-) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     let varlink = resolved.map(|resolved| {
         let domain = domain.clone();
         async move { resolved.lookup_svcb(&domain, timeout).await }
@@ -858,7 +859,7 @@ fn lookup_https_uncached_stream(
     domain: Domain,
     timeout: Duration,
     native: NativeConfig,
-) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     let varlink = resolved.map(|resolved| {
         let domain = domain.clone();
         async move { resolved.lookup_https(&domain, timeout).await }
@@ -990,7 +991,7 @@ fn native_lookup_svcb_stream(
     domain: Domain,
     timeout: Duration,
     native: NativeConfig,
-) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     res_nsearch::lookup_svcb_stream(domain, timeout, native)
 }
 
@@ -999,7 +1000,7 @@ fn native_lookup_svcb_stream(
     _domain: Domain,
     _timeout: Duration,
     _native: NativeConfig,
-) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     unsupported_service_binding_stream()
 }
 
@@ -1008,7 +1009,7 @@ fn native_lookup_https_stream(
     domain: Domain,
     timeout: Duration,
     native: NativeConfig,
-) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     res_nsearch::lookup_https_stream(domain, timeout, native)
 }
 
@@ -1017,13 +1018,13 @@ fn native_lookup_https_stream(
     _domain: Domain,
     _timeout: Duration,
     _native: NativeConfig,
-) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     unsupported_service_binding_stream()
 }
 
 #[cfg(not(target_env = "gnu"))]
 fn unsupported_service_binding_stream()
--> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+-> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     rama_core::futures::stream::once(std::future::ready(Err(BoxError::from(
         LinuxDnsServiceBindingUnsupportedError,
     ))))
@@ -1111,7 +1112,7 @@ mod tests {
     };
 
     use crate::{
-        client::DnsTimeoutError,
+        client::{DnsTimeoutError, resolver::ServiceBindingRecord},
         wire::{ServiceBinding, Txt},
     };
 
@@ -1143,10 +1144,14 @@ mod tests {
         );
     }
 
-    fn service_binding(port: u16) -> ServiceBinding {
+    fn service_binding(port: u16) -> ServiceBindingRecord {
         let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
         rdata.extend_from_slice(&port.to_be_bytes());
-        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+        ServiceBindingRecord {
+            owner: crate::wire::Name::from(&Domain::from_static("owner.example")),
+            binding: ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata))
+                .expect("valid service binding"),
+        }
     }
 
     fn cached_ipv4_stream<S>(
@@ -1195,7 +1200,7 @@ mod tests {
             self,
             cache: &cache::LinuxDnsCache,
             domain: &Domain,
-        ) -> Option<cache::CacheLookup<ServiceBinding>> {
+        ) -> Option<cache::CacheLookup<ServiceBindingRecord>> {
             match self {
                 Self::Svcb => cache.get_svcb(domain),
                 Self::Https => cache.get_https(domain),
@@ -1206,7 +1211,7 @@ mod tests {
             self,
             cache: &cache::LinuxDnsCache,
             domain: Domain,
-            values: Vec<ServiceBinding>,
+            values: Vec<ServiceBindingRecord>,
             ttl: Option<Duration>,
         ) {
             match self {
@@ -1221,9 +1226,9 @@ mod tests {
         cache: Arc<cache::LinuxDnsCache>,
         kind: ServiceBindingKind,
         backend: S,
-    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send
     where
-        S: Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send + 'static,
+        S: Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send + 'static,
     {
         lookup_cached_stream(
             domain,
@@ -2230,14 +2235,16 @@ mod tests {
         match cache.get_svcb(&domain) {
             Some(cache::CacheLookup::Positive(values)) => {
                 assert_eq!(values.len(), 1);
-                assert_eq!(values[0].port(), Some(8443));
+                assert_eq!(values[0].owner.to_string(), "owner.example.");
+                assert_eq!(values[0].binding.port(), Some(8443));
             }
             _ => panic!("expected cached SVCB record"),
         }
         match cache.get_https(&domain) {
             Some(cache::CacheLookup::Positive(values)) => {
                 assert_eq!(values.len(), 1);
-                assert_eq!(values[0].port(), Some(443));
+                assert_eq!(values[0].owner.to_string(), "owner.example.");
+                assert_eq!(values[0].binding.port(), Some(443));
             }
             _ => panic!("expected cached HTTPS record"),
         }

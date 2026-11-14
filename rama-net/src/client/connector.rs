@@ -60,19 +60,42 @@ pub trait AddressCandidates: Send + Sync + 'static {
 #[derive(Extension)]
 #[extension(tags(net))]
 /// [`Extensions`] carrier for an [`AddressCandidates`] source.
-pub struct ConnectorTargetStream(pub Box<dyn AddressCandidates>);
+pub struct ConnectorTargetStream {
+    target: HostWithPort,
+    candidates: Box<dyn AddressCandidates>,
+}
 
 impl ConnectorTargetStream {
-    /// Wrap an [`AddressCandidates`] implementor.
+    /// Bind an address source to the complete physical connection target.
     #[must_use]
-    pub fn new(candidates: impl AddressCandidates) -> Self {
-        Self(Box::new(candidates))
+    pub fn new(target: HostWithPort, candidates: impl AddressCandidates) -> Self {
+        Self {
+            target,
+            candidates: Box::new(candidates),
+        }
+    }
+
+    /// The endpoint these candidates were prepared for.
+    pub fn target(&self) -> &HostWithPort {
+        &self.target
+    }
+
+    /// Whether this source is valid for the current physical target.
+    ///
+    /// Check both the binding and source domain so a contradictory custom
+    /// source cannot be dialed after a routing change.
+    pub fn matches_target(&self, target: &HostWithPort) -> bool {
+        &self.target == target
+            && target
+                .host
+                .try_as_domain()
+                .is_ok_and(|domain| domain.as_ref() == self.domain())
     }
 
     /// Return the domain these candidates resolve.
     #[must_use]
     pub fn domain(&self) -> &Domain {
-        self.0.domain()
+        self.candidates.domain()
     }
 
     /// Stream the candidate addresses (see [`AddressCandidates::stream`]).
@@ -80,14 +103,14 @@ impl ConnectorTargetStream {
         &'a self,
         extensions: &'a Extensions,
     ) -> BoxStream<'a, Result<IpAddr, BoxError>> {
-        self.0.stream(extensions)
+        self.candidates.stream(extensions)
     }
 }
 
 impl core::fmt::Debug for ConnectorTargetStream {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ConnectorTargetStream")
-            .field("domain", &self.domain())
+            .field("target", &self.target)
             .finish_non_exhaustive()
     }
 }

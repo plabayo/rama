@@ -61,3 +61,43 @@ impl TlsPoolComponent for EchGrease {
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Copy)]
+struct RetryAuthentication(bool);
+
+static RETRY_AUTHENTICATION: std::sync::LazyLock<
+    Result<
+        rama_boring::ex_data::Index<rama_boring::ssl::Ssl, RetryAuthentication>,
+        rama_boring::error::ErrorStack,
+    >,
+> = std::sync::LazyLock::new(rama_boring::ssl::Ssl::new_ex_index);
+
+pub(super) fn bind_retry_authentication(
+    ssl: &mut rama_boring::ssl::SslRef,
+    authenticates: bool,
+) -> Result<(), BoxError> {
+    let index = RETRY_AUTHENTICATION.as_ref().map_err(Clone::clone)?;
+    ssl.set_ex_data(*index, RetryAuthentication(authenticates));
+    Ok(())
+}
+
+/// Extract replacement ECH data only from a verified native ECH rejection.
+/// Other TLS failures, disabled verification, and rollback-to-cleartext lists
+/// cannot authorize a reconnect. The connection must come from Rama's TLS setup.
+pub fn authenticated_retry_config(
+    ssl: &rama_boring::ssl::SslRef,
+    errors: impl IntoIterator<Item = (i32, i32)>,
+) -> Option<rama_tls::client::EchRetryConfig> {
+    if !ssl
+        .ex_data(*RETRY_AUTHENTICATION.as_ref().ok()?)
+        .is_some_and(|policy| policy.0)
+        || !errors
+            .into_iter()
+            .any(|(library, reason)| rama_boring::ssl::is_ech_rejected(library, reason))
+    {
+        return None;
+    }
+    rama_tls::client::EchRetryConfig::new(rama_core::bytes::Bytes::copy_from_slice(
+        ssl.get_ech_retry_configs()?,
+    ))
+}

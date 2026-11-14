@@ -18,7 +18,7 @@ use rama_crypto::dep::boring::{
 };
 use rama_net::{
     address::Host,
-    tls::{AlpnPolicy, TlsAlpn},
+    tls::{AlpnPolicy, TargetEchConfig, TlsAlpn},
 };
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
@@ -26,7 +26,7 @@ use rama_quic_proto::{
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     alpn::{self, AlpnError},
-    client::TlsClientConfig,
+    client::{EchRequirement, TlsClientConfig},
     server::TlsServerConfig,
 };
 use rama_tls_boring::{
@@ -136,11 +136,18 @@ static TICKET_INDEX: LazyLock<Result<Index<Ssl, TicketState>, ErrorStack>> =
     LazyLock::new(Ssl::new_ex_index::<TicketState>);
 
 pub(crate) struct QuicClientConfig {
+    ech: Option<ClientEchConfig>,
     context: TlsConnectorContext,
     sessions: Option<ClientSessions>,
     early_data: bool,
     initializer: Option<HandshakeInitializer>,
     prepared: Option<Box<PreparedClient>>,
+}
+
+/// Endpoint configuration and effective policy retained for fresh handshakes.
+struct ClientEchConfig {
+    config: TargetEchConfig,
+    requirement: EchRequirement,
 }
 
 /// Preparation retains the first native SSL object; retries use the same context
@@ -166,13 +173,14 @@ impl ClientSessions {
         ssl: &mut SslRef,
         host: &Host,
         version: Version,
+        ech: bool,
     ) -> Result<Option<TransportParameters>, BoxError> {
         let required = match self.offer {
             ClientHandshake::Auto => false,
             ClientHandshake::Full => return Ok(None),
             ClientHandshake::Resumed => true,
         };
-        if let Some(key) = context.session_key(host)
+        if let Some(key) = context.session_key(host).map(|key| key.with_ech(ech))
             && let Some(ticket) = self.tickets.pop(&(key, version))
         {
             ticket.session.resume_on(ssl)?;
@@ -214,6 +222,43 @@ impl QuicClientConfig {
         config: &TlsClientConfig,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
+        use rama_net::client::ConnectorTarget;
+        use rama_tls::client::{TlsEncryptedClientHello, target_ech_config};
+        let extensions = config.as_extensions();
+        let requirement = extensions
+            .get_ref::<EchRequirement>()
+            .copied()
+            .unwrap_or_default();
+        let intent = requirement.intent(extensions.get_ref::<TlsEncryptedClientHello>())?;
+        let requirement = if let Some(target) = extensions.get_ref::<ConnectorTarget>()
+            && rama_tls::client::target_ech_required(extensions, &target.0, true)?
+        {
+            EchRequirement::Required
+        } else {
+            requirement
+        };
+        let ech = if let Some(config) = extensions.get_ref::<TargetEchConfig>() {
+            if let Some(target) = extensions.get_ref::<ConnectorTarget>() {
+                target_ech_config(extensions, &target.0, true)?.map(|_| ClientEchConfig {
+                    config: config.clone(),
+                    requirement,
+                })
+            } else if requirement == EchRequirement::Required {
+                return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
+                    "required QUIC ECH needs an explicit physical endpoint",
+                )));
+            } else {
+                None
+            }
+        } else {
+            if requirement == EchRequirement::Required {
+                return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
+                    "required QUIC ECH has no endpoint configuration",
+                )));
+            }
+            None
+        };
+        debug_assert!(intent || ech.is_none());
         let pieces = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
         validate_versions(pieces.versions)?;
         validate_alpn(pieces.alpn, options)?;
@@ -260,11 +305,13 @@ impl QuicClientConfig {
         } else {
             None
         };
+        let early_data = options.early_data && ech.is_none();
         Ok(Self {
+            ech,
             context: builder.build(),
             prepared: None,
             sessions,
-            early_data: options.early_data,
+            early_data,
             initializer: config
                 .as_extensions()
                 .get_ref::<HandshakeInitializer>()
@@ -318,6 +365,13 @@ impl QuicClientConfig {
 
     fn configure_ssl(&self, peer: Host) -> Result<(Host, Ssl), BoxError> {
         let mut data = self.context.configure()?;
+        if let Some(ech) = &self.ech {
+            let extensions = Extensions::new();
+            extensions.insert(ech.config.clone());
+            extensions.insert(ech.requirement);
+            extensions.insert(rama_tls::client::TlsEncryptedClientHello(true));
+            data.configure_target_ech(&extensions, ech.config.target())?;
+        }
         let host = data.server_name.get_or_insert(peer).clone();
         Ok((host, data.into_ssl()?))
     }
@@ -369,7 +423,7 @@ impl crypto::ClientConfig for QuicClientConfig {
                 },
             );
             sessions
-                .resume(&self.context, &mut ssl, &host, version)
+                .resume(&self.context, &mut ssl, &host, version, self.ech.is_some())
                 .map_err(|error| ConnectError::Crypto(crypto_error(error)))?
         } else {
             None
@@ -399,7 +453,10 @@ impl crypto::ClientConfig for QuicClientConfig {
             return None;
         }
         let host = Host::try_from(server_name).ok()?;
-        let key = self.context.session_key(&host)?;
+        let key = self
+            .context
+            .session_key(&host)?
+            .with_ech(self.ech.is_some());
         let keys = [Version::V1, Version::V2].map(|version| (key.clone(), version));
         sessions
             .tickets
@@ -414,7 +471,11 @@ impl QuicClientConfig {
     #[cfg(test)]
     pub(super) fn relabel_tickets(&self, server_name: &str, from: Version, to: Version) {
         let host = Host::try_from(server_name).unwrap();
-        let key = self.context.session_key(&host).unwrap();
+        let key = self
+            .context
+            .session_key(&host)
+            .unwrap()
+            .with_ech(self.ech.is_some());
         let sessions = self.sessions.as_ref().unwrap();
         let mut tickets = Vec::new();
         while let Some(ticket) = sessions.tickets.pop(&(key.clone(), from)) {
@@ -785,3 +846,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod ech_tests;

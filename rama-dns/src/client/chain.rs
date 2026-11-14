@@ -1,3 +1,4 @@
+use crate::client::resolver::ServiceBindingRecord;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
@@ -11,7 +12,7 @@ use rand::RngExt;
 use super::resolver::{
     DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
 };
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::wire::{Name, Txt};
 
 fn gcd(mut a: usize, mut b: usize) -> usize {
     while b != 0 {
@@ -176,7 +177,7 @@ macro_rules! impl_chain_dns_service_binding_resolver {
         fn lookup_svcb(
             &self,
             domain: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream_fn(async move |mut yielder| {
                 let mut bindings = Vec::new();
                 for resolver in self {
@@ -200,7 +201,7 @@ macro_rules! impl_chain_dns_service_binding_resolver {
         fn lookup_https(
             &self,
             domain: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream_fn(async move |mut yielder| {
                 let mut bindings = Vec::new();
                 for resolver in self {
@@ -267,6 +268,7 @@ impl<R: DnsResolver, const N: usize> DnsResolver for [R; N] {}
 
 #[cfg(test)]
 mod tests {
+    use crate::wire::ServiceBinding;
     use ahash::{HashSet, HashSetExt as _};
     use rama_core::bytes::Bytes;
     use rama_core::error::{BoxError, BoxErrorExt as _};
@@ -353,7 +355,7 @@ mod tests {
         fn lookup_svcb(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(if self.fail {
                 Err(BoxError::from_static_str("malformed RRset"))
             } else {
@@ -364,7 +366,7 @@ mod tests {
         fn lookup_https(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(if self.fail {
                 Err(BoxError::from_static_str("malformed RRset"))
             } else {
@@ -373,10 +375,14 @@ mod tests {
         }
     }
 
-    fn binding(port: u16) -> ServiceBinding {
+    fn binding(port: u16) -> ServiceBindingRecord {
         let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
         rdata.extend_from_slice(&port.to_be_bytes());
-        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+        ServiceBindingRecord {
+            owner: crate::wire::Name::from(&Domain::example()),
+            binding: ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata))
+                .expect("valid service binding"),
+        }
     }
 
     #[tokio::test]
@@ -455,7 +461,7 @@ mod tests {
         ];
         let svcb: Vec<_> = resolvers
             .lookup_svcb(Domain::example())
-            .map(|result| result.expect("success").port().expect("port"))
+            .map(|result| result.expect("success").binding.port().expect("port"))
             .collect()
             .await;
         assert_eq!(svcb, [8443, 9443]);
@@ -463,7 +469,7 @@ mod tests {
         let array: [_; 2] = resolvers.try_into().expect("two resolvers");
         let https: Vec<_> = array
             .lookup_https(Domain::example())
-            .map(|result| result.expect("success").port().expect("port"))
+            .map(|result| result.expect("success").binding.port().expect("port"))
             .collect()
             .await;
         assert_eq!(https, [443, 444]);

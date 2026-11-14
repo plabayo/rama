@@ -31,6 +31,7 @@ use rama_utils::macros::generate_set_and_with;
 
 use super::resolver::{
     DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+    ServiceBindingRecord,
 };
 use crate::wire::{Name as WireName, ServiceBinding, Txt};
 
@@ -386,14 +387,14 @@ impl DnsServiceBindingResolver for HickoryDnsResolver {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send + '_ {
         self.lookup_service_bindings(domain, HickoryRecordType::SVCB)
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send + '_ {
         self.lookup_service_bindings(domain, HickoryRecordType::HTTPS)
     }
 }
@@ -405,7 +406,7 @@ impl HickoryDnsResolver {
         &self,
         domain: Domain,
         record_type: HickoryRecordType,
-    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send + '_ {
         stream_fn(async move |mut yielder| {
             let name = try_or_yield!(
                 yielder,
@@ -418,10 +419,7 @@ impl HickoryDnsResolver {
                 "resolve service binding record(s) for name",
                 "name" = name
             );
-            let bindings = decode_hickory_rrset(
-                record_type,
-                lookup.answers().iter().map(|answer| &answer.data),
-            );
+            let bindings = decode_hickory_records(record_type, lookup.answers());
             let bindings = match bindings {
                 Ok(bindings) => bindings,
                 Err(err) => {
@@ -436,6 +434,24 @@ impl HickoryDnsResolver {
     }
 }
 
+fn decode_hickory_records(
+    record_type: HickoryRecordType,
+    records: &[hickory_resolver::proto::rr::Record],
+) -> Result<Vec<ServiceBindingRecord>, BoxError> {
+    records
+        .iter()
+        .filter_map(|record| {
+            decode_hickory_rdata(record_type, &record.data).map(|binding| {
+                Ok(ServiceBindingRecord {
+                    owner: decode_hickory_name(&record.name)?,
+                    binding: binding?,
+                })
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn decode_hickory_rrset<'a>(
     record_type: HickoryRecordType,
     records: impl IntoIterator<Item = &'a RData>,
@@ -453,21 +469,57 @@ fn decode_hickory_rdata(
     match (record_type, data) {
         (HickoryRecordType::SVCB, RData::SVCB(svcb)) => Some(decode_hickory_service_binding(svcb)),
         (HickoryRecordType::HTTPS, RData::HTTPS(https)) => {
-            Some(decode_hickory_service_binding(https))
+            Some(decode_hickory_service_binding(&https.0))
         }
         _ => None,
     }
 }
 
-fn decode_hickory_service_binding(value: &impl BinEncodable) -> Result<ServiceBinding, BoxError> {
-    let mut rdata = Vec::new();
-    // A fresh encoder has no name-compression state, so TargetName is emitted
-    // in the uncompressed RDATA form required by the shared wire parser.
-    value
-        .emit(&mut BinEncoder::new(&mut rdata))
-        .context("encode Hickory service binding RDATA")?;
-    let rdata = Bytes::from(rdata);
-    ServiceBinding::parse_rdata_bytes(&rdata).context("validate Hickory service binding RDATA")
+fn decode_hickory_service_binding(
+    value: &hickory_resolver::proto::rr::rdata::SVCB,
+) -> Result<ServiceBinding, BoxError> {
+    use crate::wire::{AlpnList, SvcParam, SvcParamKey};
+    use hickory_resolver::proto::rr::rdata::svcb::SvcParamValue;
+    let target = decode_hickory_name(&value.target_name)?;
+    let mut params = Vec::with_capacity(value.svc_params.len());
+    for (key, value) in &value.svc_params {
+        let key = SvcParamKey::from(u16::from(*key));
+        let param = match value {
+            SvcParamValue::Mandatory(keys) => SvcParam::Mandatory(
+                keys.0
+                    .iter()
+                    .map(|key| SvcParamKey::from(u16::from(*key)))
+                    .collect(),
+            ),
+            SvcParamValue::Alpn(protocols) => SvcParam::Alpn(
+                AlpnList::from_protocols(protocols.0.iter().map(String::as_str))
+                    .ok_or_else(|| BoxError::from("invalid Hickory ALPN value"))?,
+            ),
+            SvcParamValue::NoDefaultAlpn => SvcParam::NoDefaultAlpn,
+            SvcParamValue::Port(port) => SvcParam::Port(*port),
+            SvcParamValue::Ipv4Hint(hints) => {
+                SvcParam::Ipv4Hint(hints.0.iter().map(|ip| ip.0).collect())
+            }
+            SvcParamValue::Ipv6Hint(hints) => {
+                SvcParam::Ipv6Hint(hints.0.iter().map(|ip| ip.0).collect())
+            }
+            SvcParamValue::EchConfigList(config) => {
+                SvcParam::Ech(Bytes::copy_from_slice(&config.0))
+            }
+            SvcParamValue::Unknown(value) => SvcParam::Unknown {
+                key,
+                value: Bytes::copy_from_slice(&value.0),
+            },
+        };
+        if param.key() != key {
+            return Err(BoxError::from(
+                "Hickory service parameter key/value mismatch",
+            ));
+        }
+        params.push(param);
+    }
+    ServiceBinding::from_parts(value.svc_priority, target, params)
+        .context("validate Hickory service binding")
 }
 
 fn name_from_domain(domain: Domain) -> Result<Name, BoxError> {
@@ -484,6 +536,115 @@ mod tests {
         CNAME, HTTPS, SVCB, TXT,
         svcb::{SvcParamKey, SvcParamValue},
     };
+
+    #[test]
+    fn typed_service_binding_matches_wire_validation_for_every_parameter() {
+        use hickory_resolver::proto::rr::rdata::svcb::{
+            Alpn, EchConfigList, IpHint, Mandatory, Unknown,
+        };
+        let record = SVCB::new(
+            1,
+            Name::from_ascii("target.example.").unwrap(),
+            vec![
+                (
+                    SvcParamKey::Mandatory,
+                    SvcParamValue::Mandatory(Mandatory(vec![SvcParamKey::Alpn, SvcParamKey::Port])),
+                ),
+                (
+                    SvcParamKey::Alpn,
+                    SvcParamValue::Alpn(Alpn(vec!["h3".into(), "h2".into()])),
+                ),
+                (SvcParamKey::NoDefaultAlpn, SvcParamValue::NoDefaultAlpn),
+                (SvcParamKey::Port, SvcParamValue::Port(8443)),
+                (
+                    SvcParamKey::Ipv4Hint,
+                    SvcParamValue::Ipv4Hint(IpHint(vec![A(Ipv4Addr::LOCALHOST)])),
+                ),
+                (
+                    SvcParamKey::EchConfigList,
+                    SvcParamValue::EchConfigList(EchConfigList(vec![0, 4, 0xfe, 0x0d, 0, 0])),
+                ),
+                (
+                    SvcParamKey::Ipv6Hint,
+                    SvcParamValue::Ipv6Hint(IpHint(vec![AAAA(Ipv6Addr::LOCALHOST)])),
+                ),
+                (
+                    SvcParamKey::Unknown(100),
+                    SvcParamValue::Unknown(Unknown(vec![1, 2, 3])),
+                ),
+            ],
+        );
+        let typed = decode_hickory_service_binding(&record).unwrap();
+        let mut wire = Vec::new();
+        record.emit(&mut BinEncoder::new(&mut wire)).unwrap();
+        assert_eq!(typed, ServiceBinding::parse_rdata(&wire).unwrap());
+    }
+
+    #[test]
+    fn typed_service_binding_rejects_invalid_provider_constructed_values() {
+        use hickory_resolver::proto::rr::rdata::svcb::{
+            Alpn, EchConfigList, IpHint, Mandatory, Unknown,
+        };
+        let cases = vec![
+            vec![(SvcParamKey::Port, SvcParamValue::NoDefaultAlpn)],
+            vec![(
+                SvcParamKey::Alpn,
+                SvcParamValue::Alpn(Alpn(vec![String::new()])),
+            )],
+            vec![(
+                SvcParamKey::Alpn,
+                SvcParamValue::Alpn(Alpn(vec!["x".repeat(256)])),
+            )],
+            vec![(
+                SvcParamKey::Mandatory,
+                SvcParamValue::Mandatory(Mandatory(vec![SvcParamKey::Mandatory])),
+            )],
+            vec![(
+                SvcParamKey::Ipv4Hint,
+                SvcParamValue::Ipv4Hint(IpHint(vec![])),
+            )],
+            vec![(
+                SvcParamKey::EchConfigList,
+                SvcParamValue::EchConfigList(EchConfigList(vec![0, 0])),
+            )],
+            vec![(
+                SvcParamKey::Port,
+                SvcParamValue::Unknown(Unknown(vec![0, 80])),
+            )],
+            vec![
+                (SvcParamKey::Port, SvcParamValue::Port(443)),
+                (SvcParamKey::Port, SvcParamValue::Port(8443)),
+            ],
+            vec![(
+                SvcParamKey::Unknown(100),
+                SvcParamValue::Unknown(Unknown(vec![0; 65535])),
+            )],
+        ];
+        for params in cases {
+            decode_hickory_service_binding(&SVCB::new(1, Name::root(), params)).unwrap_err();
+        }
+    }
+
+    #[test]
+    fn service_binding_uses_returned_owner_after_cname() {
+        use hickory_resolver::proto::rr::Record;
+        let records = [
+            Record::from_rdata(
+                Name::from_ascii("query.example.").unwrap(),
+                60,
+                RData::CNAME(CNAME(Name::from_ascii("owner.example.").unwrap())),
+            ),
+            Record::from_rdata(
+                Name::from_ascii("owner.example.").unwrap(),
+                60,
+                RData::HTTPS(HTTPS(SVCB::new(1, Name::root(), vec![]))),
+            ),
+        ];
+        let decoded = decode_hickory_records(HickoryRecordType::HTTPS, &records).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].owner.to_string(), "owner.example.");
+        assert!(decoded[0].binding.target().is_root());
+    }
 
     #[test]
     fn txt_bridge_preserves_record_boundaries_and_validates_input() {

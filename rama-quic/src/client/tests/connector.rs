@@ -119,12 +119,13 @@ async fn supplied_zero_cid_endpoint_retries_after_peer_refusal() {
         );
         let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()));
         input.extensions().insert(profile);
-        input
-            .extensions()
-            .insert(ConnectorTargetStream::new(RepeatedAddress {
+        input.extensions().insert(ConnectorTargetStream::new(
+            input.authority.clone(),
+            RepeatedAddress {
                 domain: "localhost".parse().unwrap(),
                 address: address.ip(),
-            }));
+            },
+        ));
         let connection = quic.serve(input).await.unwrap().conn;
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
         send.write_all(b"hello").await.unwrap();

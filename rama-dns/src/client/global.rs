@@ -1,3 +1,4 @@
+use crate::client::resolver::ServiceBindingRecord;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     sync::OnceLock,
@@ -10,7 +11,7 @@ use crate::client::resolver::{
     BoxDnsResolver, DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
     DnsTxtResolver,
 };
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::wire::{Name, Txt};
 
 #[cfg(all(
     not(target_vendor = "apple"),
@@ -122,7 +123,7 @@ impl DnsServiceBindingResolver for GlobalDnsResolver {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         global_dns_resolver().lookup_svcb(domain)
     }
 
@@ -130,7 +131,7 @@ impl DnsServiceBindingResolver for GlobalDnsResolver {
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         global_dns_resolver().lookup_https(domain)
     }
 }

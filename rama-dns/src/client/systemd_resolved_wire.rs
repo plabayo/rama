@@ -9,9 +9,12 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
 };
 
-#[cfg(any(target_os = "linux", all(test, target_family = "unix")))]
-use crate::wire::{Name, ServiceBinding};
 use crate::wire::{RecordType, Txt};
+#[cfg(any(target_os = "linux", all(test, target_family = "unix")))]
+use crate::{
+    client::resolver::ServiceBindingRecord,
+    wire::{Name, ServiceBinding},
+};
 
 pub(super) const DNS_CLASS_IN: u16 = 1;
 
@@ -59,7 +62,7 @@ pub(super) fn parse_cname_rr(raw: &Bytes) -> RrParse<Name> {
 pub(super) fn parse_service_binding_rr(
     raw: &Bytes,
     expected_type: RecordType,
-) -> RrParse<ServiceBinding> {
+) -> RrParse<ServiceBindingRecord> {
     let rr = match parse_rr(raw) {
         Ok(rr) => rr,
         Err(error) => return RrParse::Malformed(error),
@@ -67,9 +70,16 @@ pub(super) fn parse_service_binding_rr(
     if rr.record_type != u16::from(expected_type) || rr.class != DNS_CLASS_IN {
         return RrParse::Other;
     }
-    let rdata = raw.slice(rr.rdata);
+    let rdata = raw.slice(rr.rdata.clone());
+    let owner = match Name::from_wire(&raw[..rr.rdata.start - 10]) {
+        Ok(owner) => owner,
+        Err(error) => return RrParse::Malformed(error.into()),
+    };
     match ServiceBinding::parse_rdata_bytes(&rdata) {
-        Ok(value) => RrParse::Record { ttl: rr.ttl, value },
+        Ok(binding) => RrParse::Record {
+            ttl: rr.ttl,
+            value: ServiceBindingRecord { owner, binding },
+        },
         Err(error) => RrParse::Malformed(error.into()),
     }
 }

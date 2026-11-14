@@ -21,6 +21,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = []
+dns = ["dep:rama-dns", "tls"]
 inspect = ["dep:rama-inspect", "dep:arc-swap", "rama-net/inspect"]
 dial9 = ["rama-core/dial9", "dep:dial9-trace-format"]
 # Forward the typed header fuzz harnesses.
@@ -66,6 +67,7 @@ percent-encoding = { workspace = true, features = ["std"] }
 pin-project-lite = { workspace = true }
 quick-xml = { workspace = true, optional = true, features = ["async-tokio"] }
 rama-core = { workspace = true, features = ["std"] }
+rama-dns = { workspace = true, optional = true }
 rama-http-headers = { workspace = true }
 rama-http-hyperium = { workspace = true, optional = true }
 rama-http-macros = { workspace = true, optional = true }

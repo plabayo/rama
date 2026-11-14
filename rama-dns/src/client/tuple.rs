@@ -1,3 +1,4 @@
+use crate::client::resolver::ServiceBindingRecord;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
@@ -10,7 +11,7 @@ use rama_utils::macros::all_the_tuples_no_last_special_case;
 use super::resolver::{
     DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
 };
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::wire::{Name, Txt};
 
 macro_rules! dns_resolve_tuple_impl {
     ($($ty:ident),+ $(,)?) => {
@@ -191,7 +192,7 @@ macro_rules! dns_resolve_tuple_impl {
             fn lookup_svcb(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     let ($($ty,)+) = self;
                     let mut bindings = Vec::new();
@@ -217,7 +218,7 @@ macro_rules! dns_resolve_tuple_impl {
             fn lookup_https(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     let ($($ty,)+) = self;
                     let mut bindings = Vec::new();
@@ -254,6 +255,7 @@ all_the_tuples_no_last_special_case!(dns_resolve_tuple_impl);
 
 #[cfg(test)]
 mod tests {
+    use crate::wire::ServiceBinding;
     use std::convert::Infallible;
 
     use rama_core::{
@@ -354,14 +356,14 @@ mod tests {
         fn lookup_svcb(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(Ok(binding(self.0))))
         }
 
         fn lookup_https(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(Ok(binding(self.1))))
         }
     }
@@ -374,7 +376,7 @@ mod tests {
         fn lookup_svcb(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(Err(BoxError::from_static_str(
                 "malformed RRset",
             ))))
@@ -383,7 +385,7 @@ mod tests {
         fn lookup_https(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(Err(BoxError::from_static_str(
                 "malformed RRset",
             ))))
@@ -403,10 +405,14 @@ mod tests {
         }
     }
 
-    fn binding(port: u16) -> ServiceBinding {
+    fn binding(port: u16) -> ServiceBindingRecord {
         let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
         rdata.extend_from_slice(&port.to_be_bytes());
-        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+        ServiceBindingRecord {
+            owner: crate::wire::Name::from(&Domain::example()),
+            binding: ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata))
+                .expect("valid service binding"),
+        }
     }
 
     #[tokio::test]
@@ -427,14 +433,14 @@ mod tests {
         let resolvers = (BindingResolver(8443, 443), BindingResolver(9443, 444));
         let svcb: Vec<_> = resolvers
             .lookup_svcb(Domain::example())
-            .map(|result| result.expect("success").port().expect("port"))
+            .map(|result| result.expect("success").binding.port().expect("port"))
             .collect()
             .await;
         assert_eq!(svcb, [8443, 9443]);
 
         let https: Vec<_> = resolvers
             .lookup_https(Domain::example())
-            .map(|result| result.expect("success").port().expect("port"))
+            .map(|result| result.expect("success").binding.port().expect("port"))
             .collect()
             .await;
         assert_eq!(https, [443, 444]);

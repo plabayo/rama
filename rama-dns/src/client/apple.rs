@@ -29,6 +29,8 @@
 //! For the platform header itself, see the SDK copy at:
 //! `/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/dns_sd.h`
 
+use crate::client::resolver::ServiceBindingRecord;
+use crate::wire::ServiceBinding;
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::fmt;
@@ -59,7 +61,7 @@ use super::{
         DnsTxtResolver,
     },
 };
-use crate::wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
+use crate::wire::{Name, RecordType, Txt, parse_a_rdata, parse_aaaa_rdata};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -162,7 +164,7 @@ impl AppleDnsResolver {
     ) -> impl Stream<Item = Result<T, BoxError>> + Send + '_
     where
         T: fmt::Debug + Clone + Send + Sync + 'static,
-        P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
+        P: Fn(&[u8], &[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
     {
         if let Some(err) = leading_dot_refusal(&domain) {
             return Either::Left(stream::iter(Some(Err(err))));
@@ -196,7 +198,7 @@ fn limited_query_stream<T, P>(
 ) -> impl Stream<Item = Result<T, BoxError>> + Send
 where
     T: fmt::Debug + Send + 'static,
-    P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
+    P: Fn(&[u8], &[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
     stream_fn(async move |mut yielder| {
         let deadline = deadline_after(timeout);
@@ -268,14 +270,14 @@ impl DnsServiceBindingResolver for AppleDnsResolver {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send + '_ {
         self.query(domain, RecordType::SVCB.into(), parse_service_binding)
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send + '_ {
         self.query(domain, RecordType::HTTPS.into(), parse_service_binding)
     }
 }
@@ -293,7 +295,7 @@ fn query_record_stream<T, P>(
 ) -> impl Stream<Item = Result<T, BoxError>> + Send
 where
     T: fmt::Debug + Send + 'static,
-    P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
+    P: Fn(&[u8], &[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
 {
     stream_fn(async move |mut yielder| {
         let name = match dns_name_from_domain(domain.as_str()) {
@@ -488,7 +490,7 @@ fn dns_name_from_domain(domain: &str) -> Result<CString, BoxError> {
 fn queue_error<T, P>(state: &QueryState<T, P>, err: impl Into<BoxError>)
 where
     T: Send + 'static,
-    P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
+    P: Fn(&[u8], &[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
 {
     state.done.store(true, Ordering::SeqCst);
     state.more_coming.store(false, Ordering::SeqCst);
@@ -503,7 +505,7 @@ fn finish_empty<T, P>(
     code: ffi::DNSServiceErrorType,
 ) where
     T: Send + 'static,
-    P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
+    P: Fn(&[u8], &[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
 {
     state.done.store(true, Ordering::SeqCst);
     state.more_coming.store(false, Ordering::SeqCst);
@@ -556,7 +558,7 @@ unsafe extern "C" fn query_record_callback<T, P>(
     context: *mut c_void,
 ) where
     T: fmt::Debug + Send + 'static,
-    P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
+    P: Fn(&[u8], &[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
 {
     // SAFETY: `<*mut T>::as_ref` needs null or a pointer convertible to a
     // shared reference for the call: this fn's `context` precondition.
@@ -613,7 +615,19 @@ unsafe extern "C" fn query_record_callback<T, P>(
     // `rdlen <= u16::MAX`, far below `isize::MAX`.
     let rdata = unsafe { std::slice::from_raw_parts(rdata.cast::<u8>(), rdlen as usize) };
     let mut parsed = Vec::new();
-    match (state.parser)(rdata, &mut |record| parsed.push(record)) {
+    match (state.parser)(
+        // SAFETY: fullname is null or a readable NUL-terminated string for
+        // this callback. Preserve its bytes; the lossy domain above is logging only.
+        if fullname.is_null() {
+            &[]
+        } else {
+            // SAFETY: non-null fullname is readable through its NUL terminator
+            // for this callback, whose lifetime bounds the borrowed bytes.
+            unsafe { CStr::from_ptr(fullname) }.to_bytes()
+        },
+        rdata,
+        &mut |record| parsed.push(record),
+    ) {
         Ok(()) => {
             let mut queue = state.queue.lock();
             if state.done.load(Ordering::SeqCst) {
@@ -695,31 +709,35 @@ impl Drop for ServiceRef {
     }
 }
 
-fn parse_a(rdata: &[u8], emit: &mut dyn FnMut(Ipv4Addr)) -> Result<(), BoxError> {
+fn parse_a(_owner: &[u8], rdata: &[u8], emit: &mut dyn FnMut(Ipv4Addr)) -> Result<(), BoxError> {
     emit(parse_a_rdata(rdata)?);
     Ok(())
 }
 
-fn parse_aaaa(rdata: &[u8], emit: &mut dyn FnMut(Ipv6Addr)) -> Result<(), BoxError> {
+fn parse_aaaa(_owner: &[u8], rdata: &[u8], emit: &mut dyn FnMut(Ipv6Addr)) -> Result<(), BoxError> {
     emit(parse_aaaa_rdata(rdata)?);
     Ok(())
 }
 
-fn parse_txt(rdata: &[u8], emit: &mut dyn FnMut(Txt)) -> Result<(), BoxError> {
+fn parse_txt(_owner: &[u8], rdata: &[u8], emit: &mut dyn FnMut(Txt)) -> Result<(), BoxError> {
     emit(Txt::parse_rdata(rdata)?);
     Ok(())
 }
 
-fn parse_cname(rdata: &[u8], emit: &mut dyn FnMut(Name)) -> Result<(), BoxError> {
+fn parse_cname(_owner: &[u8], rdata: &[u8], emit: &mut dyn FnMut(Name)) -> Result<(), BoxError> {
     emit(Name::from_wire(rdata)?);
     Ok(())
 }
 
 fn parse_service_binding(
+    owner: &[u8],
     rdata: &[u8],
-    emit: &mut dyn FnMut(ServiceBinding),
+    emit: &mut dyn FnMut(ServiceBindingRecord),
 ) -> Result<(), BoxError> {
-    emit(ServiceBinding::parse_rdata(rdata)?);
+    emit(ServiceBindingRecord {
+        owner: Name::from_presentation(owner)?,
+        binding: ServiceBinding::parse_rdata(rdata)?,
+    });
     Ok(())
 }
 
@@ -1187,16 +1205,21 @@ mod tests {
     #[test]
     fn parse_a_record() {
         let mut records = Vec::new();
-        parse_a(&[127, 0, 0, 1], &mut |record| records.push(record)).unwrap();
+        parse_a(b"owner.example.", &[127, 0, 0, 1], &mut |record| {
+            records.push(record)
+        })
+        .unwrap();
         assert_eq!(records, vec![Ipv4Addr::LOCALHOST]);
     }
 
     #[test]
     fn parse_aaaa_record() {
         let mut records = Vec::new();
-        parse_aaaa(&Ipv6Addr::LOCALHOST.octets(), &mut |record| {
-            records.push(record)
-        })
+        parse_aaaa(
+            b"owner.example.",
+            &Ipv6Addr::LOCALHOST.octets(),
+            &mut |record| records.push(record),
+        )
         .unwrap();
         assert_eq!(records, vec![Ipv6Addr::LOCALHOST]);
     }
@@ -1204,9 +1227,13 @@ mod tests {
     #[test]
     fn parse_txt_record_chunks() {
         let mut txt = Vec::new();
-        parse_txt(&[3, b'f', b'o', b'o', 3, b'b', b'a', b'r'], &mut |record| {
-            txt.push(record);
-        })
+        parse_txt(
+            b"owner.example.",
+            &[3, b'f', b'o', b'o', 3, b'b', b'a', b'r'],
+            &mut |record| {
+                txt.push(record);
+            },
+        )
         .unwrap();
         assert_eq!(txt.len(), 1);
         assert_eq!(
@@ -1218,46 +1245,91 @@ mod tests {
     #[test]
     fn parse_cname_record() {
         let mut records = Vec::new();
-        parse_cname(b"\x05alias\x07example\x03com\0", &mut |record| {
-            records.push(record)
-        })
+        parse_cname(
+            b"owner.example.",
+            b"\x05alias\x07example\x03com\0",
+            &mut |record| records.push(record),
+        )
         .expect("valid CNAME");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].to_string(), "alias.example.com.");
 
-        parse_cname(&[0xc0, 0x0c], &mut |_| {}).expect_err("standalone RDATA is uncompressed");
+        parse_cname(b"owner.example.", &[0xc0, 0x0c], &mut |_| {})
+            .expect_err("standalone RDATA is uncompressed");
     }
 
     #[test]
     fn malformed_txt_record_is_rejected_without_emitting() {
         let mut emitted = false;
-        parse_txt(&[3, b'f', b'o'], &mut |_| emitted = true).expect_err("truncated TXT string");
+        parse_txt(b"owner.example.", &[3, b'f', b'o'], &mut |_| emitted = true)
+            .expect_err("truncated TXT string");
         assert!(!emitted);
     }
 
     #[test]
     fn parse_service_binding_record() {
         let mut records = Vec::new();
-        parse_service_binding(&[0, 1, 0, 0, 3, 0, 2, 0x20, 0xfb], &mut |record| {
-            records.push(record)
-        })
+        parse_service_binding(
+            b"owner.example.",
+            &[0, 1, 0, 0, 3, 0, 2, 0x20, 0xfb],
+            &mut |record| records.push(record),
+        )
         .expect("valid service binding");
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].priority(), 1);
-        assert_eq!(records[0].port(), Some(8443));
+        assert_eq!(records[0].owner.to_string(), "owner.example.");
+        assert_eq!(records[0].binding.priority(), 1);
+        assert_eq!(records[0].binding.port(), Some(8443));
     }
 
     #[test]
     fn malformed_service_binding_record_is_rejected() {
-        let err = parse_service_binding(&[0, 1], &mut |_| {}).expect_err("target name is required");
+        let err = parse_service_binding(b"owner.example.", &[0, 1], &mut |_| {})
+            .expect_err("target name is required");
         assert!(err.to_string().contains("target name"), "got: {err}");
     }
 
     #[test]
-    fn malformed_service_binding_discards_the_pending_rrset() {
-        type Parser = fn(&[u8], &mut dyn FnMut(ServiceBinding)) -> Result<(), BoxError>;
+    fn service_binding_callback_preserves_raw_owner_octets() {
+        type Parser =
+            fn(&[u8], &[u8], &mut dyn FnMut(ServiceBindingRecord)) -> Result<(), BoxError>;
+        let mut state = QueryState::<ServiceBindingRecord, Parser> {
+            queue: Mutex::new(VecDeque::new()),
+            done: AtomicBool::new(false),
+            more_coming: AtomicBool::new(false),
+            rrtype: RecordType::HTTPS.into(),
+            parser: parse_service_binding,
+        };
+        let owner = CString::new(b"other.\xff.example.".as_slice()).unwrap();
+        let rdata = [0_u8, 1, 0];
+        // SAFETY: state, owner and rdata are live exclusively accessed locals;
+        // owner is NUL-terminated and rdlen covers the initialized rdata.
+        unsafe {
+            query_record_callback::<ServiceBindingRecord, Parser>(
+                ptr::null_mut(),
+                0,
+                0,
+                ffi::K_DNS_SERVICE_ERR_NO_ERROR,
+                owner.as_ptr(),
+                RecordType::HTTPS.into(),
+                ffi::K_DNS_SERVICE_CLASS_IN,
+                rdata.len() as u16,
+                rdata.as_ptr().cast(),
+                60,
+                ptr::from_mut(&mut state).cast(),
+            );
+        }
+        let queue = state.queue.lock();
+        let record = queue[0].as_ref().unwrap();
+        assert_eq!(record.owner.as_wire(), b"\x05other\x01\xff\x07example\0");
+        assert!(record.binding.target().is_root());
+    }
 
-        let mut state = QueryState::<ServiceBinding, Parser> {
+    #[test]
+    fn malformed_service_binding_discards_the_pending_rrset() {
+        type Parser =
+            fn(&[u8], &[u8], &mut dyn FnMut(ServiceBindingRecord)) -> Result<(), BoxError>;
+
+        let mut state = QueryState::<ServiceBindingRecord, Parser> {
             queue: Mutex::new(VecDeque::new()),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(false),
@@ -1272,7 +1344,7 @@ mod tests {
         // `state`, exclusively borrowed only to form the pointer; `fullname` is
         // a live `CString` and `rdata` a live array of `rdlen` bytes.
         unsafe {
-            query_record_callback::<ServiceBinding, Parser>(
+            query_record_callback::<ServiceBindingRecord, Parser>(
                 ptr::null_mut(),
                 ffi::K_DNS_SERVICE_FLAGS_MORE_COMING,
                 0,
@@ -1294,10 +1366,14 @@ mod tests {
         );
         assert!(drain_completed_batch(&state).is_empty());
         assert_eq!(state.queue.lock().len(), 1);
+        assert_eq!(
+            state.queue.lock()[0].as_ref().unwrap().owner.to_string(),
+            "example.com."
+        );
 
         // SAFETY: same contract proof as the first callback invocation above.
         unsafe {
-            query_record_callback::<ServiceBinding, Parser>(
+            query_record_callback::<ServiceBindingRecord, Parser>(
                 ptr::null_mut(),
                 0,
                 0,
@@ -1316,7 +1392,7 @@ mod tests {
         // malformed member must observe the terminal latch and do nothing.
         // SAFETY: same contract proof as the first callback invocation above.
         unsafe {
-            query_record_callback::<ServiceBinding, Parser>(
+            query_record_callback::<ServiceBindingRecord, Parser>(
                 ptr::null_mut(),
                 0,
                 0,
@@ -1340,7 +1416,7 @@ mod tests {
         assert!(!state.more_coming.load(Ordering::SeqCst));
     }
 
-    type AParser = fn(&[u8], &mut dyn FnMut(Ipv4Addr)) -> Result<(), BoxError>;
+    type AParser = fn(&[u8], &[u8], &mut dyn FnMut(Ipv4Addr)) -> Result<(), BoxError>;
 
     fn a_query() -> QueryState<Ipv4Addr, AParser> {
         QueryState {
@@ -1483,13 +1559,15 @@ mod tests {
 
     #[test]
     fn terminal_callback_outcomes_discard_pending_records() {
-        type Parser = fn(&[u8], &mut dyn FnMut(ServiceBinding)) -> Result<(), BoxError>;
+        type Parser =
+            fn(&[u8], &[u8], &mut dyn FnMut(ServiceBindingRecord)) -> Result<(), BoxError>;
 
-        let pending = || {
-            ServiceBinding::parse_rdata(&[0, 1, 0, 0, 3, 0, 2, 0x20, 0xfb])
-                .expect("valid pending record")
+        let pending = || ServiceBindingRecord {
+            owner: Name::from(&Domain::example()),
+            binding: ServiceBinding::parse_rdata(&[0, 1, 0, 0, 3, 0, 2, 0x20, 0xfb])
+                .expect("valid pending record"),
         };
-        let state = QueryState::<ServiceBinding, Parser> {
+        let state = QueryState::<ServiceBindingRecord, Parser> {
             queue: Mutex::new(VecDeque::from([Ok(pending())])),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(true),
@@ -1509,7 +1587,7 @@ mod tests {
         assert!(state.done.load(Ordering::SeqCst));
         assert!(!state.more_coming.load(Ordering::SeqCst));
 
-        let state = QueryState::<ServiceBinding, Parser> {
+        let state = QueryState::<ServiceBindingRecord, Parser> {
             queue: Mutex::new(VecDeque::from([Ok(pending())])),
             done: AtomicBool::new(false),
             more_coming: AtomicBool::new(true),

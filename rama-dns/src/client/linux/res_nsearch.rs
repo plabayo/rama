@@ -1,3 +1,5 @@
+use crate::client::resolver::ServiceBindingRecord;
+use crate::wire::ServiceBinding;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     time::{Duration, Instant},
@@ -18,7 +20,7 @@ use self::walk::{Asked, Walk};
 use super::{LinuxDnsResolverError, LookupEvent, NativeConfig, dns_name_from_domain};
 use crate::{
     client::limit::{DnsTimeoutError, deadline_after},
-    wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata},
+    wire::{Name, RecordType, Txt, parse_a_rdata, parse_aaaa_rdata},
 };
 
 mod ffi;
@@ -88,7 +90,7 @@ pub(super) fn lookup_svcb_stream(
     domain: Domain,
     timeout: Duration,
     native: NativeConfig,
-) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     lookup_service_binding_stream(domain, timeout, native, RecordType::SVCB)
 }
 
@@ -96,7 +98,7 @@ pub(super) fn lookup_https_stream(
     domain: Domain,
     timeout: Duration,
     native: NativeConfig,
-) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     lookup_service_binding_stream(domain, timeout, native, RecordType::HTTPS)
 }
 
@@ -105,7 +107,7 @@ fn lookup_service_binding_stream(
     timeout: Duration,
     native: NativeConfig,
     record_type: RecordType,
-) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<ServiceBindingRecord>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
@@ -360,28 +362,28 @@ fn grow_response_buffer(
 }
 
 fn parse_a_response(packet: &[u8], emit: &mut dyn FnMut(Ipv4Addr, u32)) -> Result<(), BoxError> {
-    parse_answers(packet, ffi::NS_T_A, |packet, rdata, ttl| {
+    parse_answers(packet, ffi::NS_T_A, |packet, _owner, rdata, ttl| {
         emit(parse_a_rdata(&packet[rdata])?, ttl);
         Ok(())
     })
 }
 
 fn parse_aaaa_response(packet: &[u8], emit: &mut dyn FnMut(Ipv6Addr, u32)) -> Result<(), BoxError> {
-    parse_answers(packet, ffi::NS_T_AAAA, |packet, rdata, ttl| {
+    parse_answers(packet, ffi::NS_T_AAAA, |packet, _owner, rdata, ttl| {
         emit(parse_aaaa_rdata(&packet[rdata])?, ttl);
         Ok(())
     })
 }
 
 fn parse_txt_response(packet: &[u8], emit: &mut dyn FnMut(Txt, u32)) -> Result<(), BoxError> {
-    parse_answers(packet, ffi::NS_T_TXT, |packet, rdata, ttl| {
+    parse_answers(packet, ffi::NS_T_TXT, |packet, _owner, rdata, ttl| {
         emit(Txt::parse_rdata(&packet[rdata])?, ttl);
         Ok(())
     })
 }
 
 fn parse_cname_response(packet: &[u8], emit: &mut dyn FnMut(Name, u32)) -> Result<(), BoxError> {
-    parse_answers(packet, ffi::NS_T_CNAME, |packet, rdata, ttl| {
+    parse_answers(packet, ffi::NS_T_CNAME, |packet, _owner, rdata, ttl| {
         let rdata_len = rdata.len();
         let (name, consumed) = Name::from_message(packet, rdata.start)?;
         if consumed != rdata_len {
@@ -398,17 +400,23 @@ fn parse_cname_response(packet: &[u8], emit: &mut dyn FnMut(Name, u32)) -> Resul
 fn parse_service_binding_response(
     packet: &[u8],
     record_type: RecordType,
-    emit: &mut dyn FnMut(ServiceBinding, u32),
+    emit: &mut dyn FnMut(ServiceBindingRecord, u32),
 ) -> Result<(), BoxError> {
-    parse_answers(packet, record_type.into(), |packet, rdata, ttl| {
-        emit(ServiceBinding::parse_rdata(&packet[rdata])?, ttl);
+    parse_answers(packet, record_type.into(), |packet, owner, rdata, ttl| {
+        emit(
+            ServiceBindingRecord {
+                owner: Name::from_message(packet, owner)?.0,
+                binding: ServiceBinding::parse_rdata(&packet[rdata])?,
+            },
+            ttl,
+        );
         Ok(())
     })
 }
 
 fn parse_answers<P>(packet: &[u8], expected_type: u16, mut parser: P) -> Result<(), BoxError>
 where
-    P: FnMut(&[u8], std::ops::Range<usize>, u32) -> Result<(), BoxError>,
+    P: FnMut(&[u8], usize, std::ops::Range<usize>, u32) -> Result<(), BoxError>,
 {
     if packet.len() < DNS_HEADER_SIZE {
         return Err(LinuxDnsResolverError::message("short DNS response header").into());
@@ -427,6 +435,7 @@ where
     }
 
     for _ in 0..ancount {
+        let owner = offset;
         offset = skip_dns_name(packet, offset)?;
         if offset + 10 > packet.len() {
             return Err(LinuxDnsResolverError::message("truncated DNS answer").into());
@@ -448,7 +457,7 @@ where
         }
 
         if rrtype == expected_type && rrclass == ffi::NS_C_IN {
-            parser(packet, offset..offset + rdlen, ttl)?;
+            parser(packet, owner, offset..offset + rdlen, ttl)?;
         }
 
         offset += rdlen;
@@ -1356,9 +1365,29 @@ mod record_response_tests {
             .expect("valid response");
 
             assert_eq!(records.len(), 1);
-            assert_eq!(records[0].0.port(), Some(port));
+            assert_eq!(records[0].0.owner.to_string(), "example.com.");
+            assert_eq!(records[0].0.binding.port(), Some(port));
             assert_eq!(records[0].1, 123);
         }
+    }
+
+    #[test]
+    fn service_binding_owner_is_not_the_question_name() {
+        let mut packet = response(RecordType::HTTPS, &[0, 1, 0]);
+        // Replace the final RR owner (a pointer to the question) with an
+        // independent name, as returned after recursive CNAME processing.
+        let owner_offset = packet.len() - 3 - 10 - 2;
+        packet.splice(
+            owner_offset..owner_offset + 2,
+            b"\x05owner\x07example\0".iter().copied(),
+        );
+        let mut records = Vec::new();
+        parse_service_binding_response(&packet, RecordType::HTTPS, &mut |record, _| {
+            records.push(record)
+        })
+        .unwrap();
+        assert_eq!(records[0].owner.to_string(), "owner.example.");
+        assert!(records[0].binding.target().is_root());
     }
 
     #[test]

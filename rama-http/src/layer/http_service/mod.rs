@@ -36,7 +36,8 @@
 //! each candidate is reached through the configured routes, with a pool key that
 //! includes its physical target. Attempts fork the original connection input so
 //! failed attempts cannot leave routing state behind; the winner returns its own
-//! established input. One attempt is reserved for the original endpoint.
+//! established input. One attempt is reserved for the original endpoint when
+//! the discovery snapshot permits origin fallback.
 //!
 //! [RFC 7838 §2.4] permits fallback. Rama tries alternatives sequentially, with a
 //! per-alternative deadline and an optional overall deadline. Remote failures
@@ -52,8 +53,10 @@
 //!
 //! Discovery and use are separate: HTTP advertisements can be cached, but this
 //! selector currently uses alternatives only for HTTPS. It verifies the origin's
-//! authenticated identity ([RFC 7838 §2.1]), advertised ALPN and established HTTP
-//! version even on pool hits. Serving `http` origins over TLS additionally needs
+//! authenticated identity ([RFC 7838 §2.1]), protocol policy and established HTTP
+//! version even on pool hits. HTTPS records select a transport, leaving stream
+//! ALPN negotiation open (RFC 9460 §7.1.2); Alt-Svc remains protocol-specific.
+//! Serving `http` origins over TLS additionally needs
 //! the opt-in checks of [RFC 8164 §2], which are not implemented here. WebSocket
 //! handshakes can learn hints but do not select alternative endpoints here.
 //!
@@ -79,8 +82,8 @@ use rama_core::{
 use rama_http_types::{
     Version,
     conn::{
-        EstablishedHttpService, HttpOrigin, HttpServiceCandidate, HttpServiceCandidates,
-        HttpServiceSelection, HttpServiceSource, SelectedHttpService,
+        EstablishedHttpService, FallbackHttpVersion, HttpOrigin, HttpServiceCandidate,
+        HttpServiceCandidates, HttpServiceSelection, HttpServiceSource, SelectedHttpService,
     },
     proto::h2::alt_svc::AltSvcObserverExtension,
 };
@@ -88,11 +91,13 @@ use rama_net::{
     Protocol,
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-        ConnectionPolicyScope, ConnectorService, ConnectorTarget, EstablishedClientConnection,
-        ProxyRouteContext,
+        ConnectionPolicyScope, ConnectorService, ConnectorTarget, ConnectorTransportProtocol,
+        EstablishedClientConnection, ProxyRouteContext,
     },
     conn::ConnectionHealthWatcher,
     http::{HttpRequestVersion, TargetHttpVersion},
+    tls::ApplicationProtocol,
+    transport::TransportProtocol,
 };
 #[cfg(feature = "tls")]
 use rama_tls::client::{
@@ -313,7 +318,7 @@ fn origin(input: &ConnectRequest) -> Option<HttpOrigin> {
 /// prior knowledge in Rama. Ordinary H1/H2 metadata leaves negotiation open.
 /// `FallbackHttpVersion` is a connection default, not a constraint on discovery.
 /// This is client policy, not a version-selection rule imposed by RFC 7838.
-fn required_version(input: &ConnectRequest) -> Option<Version> {
+pub(super) fn required_version(input: &ConnectRequest) -> Option<Version> {
     input
         .extensions()
         .get_ref::<TargetHttpVersion>()
@@ -366,13 +371,21 @@ fn discard_connection(connection: &impl ExtensionsRef) {
     }
 }
 
+fn dns_stream(candidate: &HttpServiceCandidate) -> bool {
+    candidate.source == HttpServiceSource::Https
+        && matches!(
+            candidate.protocol,
+            ApplicationProtocol::HTTP_2 | ApplicationProtocol::HTTP_11
+        )
+}
+
 /// Validate the established peer, including pool hits: origin authentication
-/// (RFC 7838 §2.1), advertised ALPN (§2), and the actual HTTP connection version.
+/// (RFC 7838 §2.1), source-specific ALPN policy, and actual HTTP version.
 fn verify_alternative<C: ExtensionsRef>(
     connection: &C,
     origin: &HttpOrigin,
     candidate: &HttpServiceCandidate,
-) -> Result<(), ConnectionError> {
+) -> Result<ApplicationProtocol, ConnectionError> {
     if !authenticates(connection, origin) {
         // A pooled connection may have been opened explicitly under a policy
         // that cannot authenticate this origin. It remains valid for that use,
@@ -385,12 +398,28 @@ fn verify_alternative<C: ExtensionsRef>(
         ));
     }
     #[cfg(feature = "tls")]
-    if connection
+    let actual = connection
         .extensions()
         .get_ref::<NegotiatedTlsParameters>()
-        .and_then(|parameters| parameters.application_layer_protocol.as_ref())
-        != Some(&candidate.protocol)
-    {
+        .and_then(|parameters| {
+            parameters.application_layer_protocol.clone().or_else(|| {
+                // HTTPS over TLS without negotiated ALPN uses HTTP/1.1.
+                dns_stream(candidate).then_some(ApplicationProtocol::HTTP_11)
+            })
+        });
+    #[cfg(feature = "tls")]
+    let expected_protocol = if dns_stream(candidate) {
+        actual.as_ref().filter(|protocol| {
+            matches!(
+                protocol,
+                ApplicationProtocol::HTTP_2 | ApplicationProtocol::HTTP_11
+            )
+        })
+    } else {
+        Some(&candidate.protocol)
+    };
+    #[cfg(feature = "tls")]
+    if actual.is_none() || actual.as_ref() != expected_protocol {
         return Err(ConnectionError::application(
             BoxError::from_static_str(
                 "alternative service did not negotiate its advertised protocol",
@@ -398,11 +427,16 @@ fn verify_alternative<C: ExtensionsRef>(
             ConnectionErrorKind::Protocol,
         ));
     }
-    let expected = Version::try_from(&candidate.protocol).map_err(|error| {
+    #[cfg(feature = "tls")]
+    let protocol = expected_protocol.unwrap_or(&candidate.protocol);
+    #[cfg(not(feature = "tls"))]
+    let protocol = &candidate.protocol;
+    let expected = Version::try_from(protocol).map_err(|error| {
         ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
             .context("unsupported advertised HTTP protocol")
     })?;
-    verify_version(connection, expected)
+    verify_version(connection, expected)?;
+    Ok(protocol.clone())
 }
 
 /// Check the connection's negotiated version rather than trusting request intent.
@@ -487,7 +521,11 @@ where
     ) -> Option<Version> {
         let version = Version::try_from(&candidate.protocol).ok()?;
         required
-            .is_none_or(|required| required == version)
+            .is_none_or(|required| {
+                required == version
+                    || (dns_stream(candidate)
+                        && matches!(required, Version::HTTP_11 | Version::HTTP_2))
+            })
             .then_some(version)
     }
 
@@ -604,25 +642,46 @@ where
         let route = ProxyRouteContext::for_request(input.extensions());
         let (snapshot, from_cache) = self.candidates(&input, origin.as_ref(), route.is_some());
         let mut attempts = 0;
+        let fallback = snapshot.as_ref().is_none_or(|snapshot| {
+            Some(snapshot.origin()) != origin.as_ref() || snapshot.allows_origin_fallback()
+        });
+        let mut last_error = None;
 
         if let (Some(origin), Some(snapshot)) = (origin.as_ref(), snapshot.as_ref())
             && snapshot.origin() == origin
         {
             for (index, candidate) in snapshot.iter().enumerate().take(self.policy.max_candidates) {
-                // Always reserve the final attempt for the original endpoint.
-                if attempts >= self.policy.max_attempts.saturating_sub(1) {
+                // Reserve an origin attempt only when discovery permits one.
+                if attempts
+                    >= self
+                        .policy
+                        .max_attempts
+                        .saturating_sub(usize::from(fallback))
+                {
                     break;
                 }
                 let Some(version) = Self::candidate_version(candidate, required) else {
                     continue;
                 };
 
-                if from_cache
+                let advertisement = snapshot
+                    .candidate_extensions(index)
+                    .and_then(|ext| ext.get_ref::<HttpServiceSelection>())
+                    .filter(|selection| {
+                        selection.candidates.origin() == origin
+                            && selection.candidates.get(selection.index) == Some(candidate)
+                            && candidate.source == HttpServiceSource::AltSvc
+                    });
+                let (source_snapshot, source_index) = advertisement
+                    .map_or((snapshot, index), |selection| {
+                        (&selection.candidates, selection.index)
+                    });
+                if (from_cache || advertisement.is_some())
                     && let Some(cache) = &self.policy.cache
                     && !(if let Some(route) = &route {
-                        cache.route_usable(snapshot, index, route)
+                        cache.route_usable(source_snapshot, source_index, route)
                     } else {
-                        cache.is_usable(snapshot, index)
+                        cache.is_usable(source_snapshot, source_index)
                     })
                 {
                     continue;
@@ -635,11 +694,29 @@ where
                         .with_authenticated_peer(origin.authority().host.clone()),
                 );
                 let attempt = input.fork();
-                attempt.extensions().insert_arc(state.clone());
                 attempt
                     .extensions()
                     .insert(ConnectorTarget(candidate.target.clone()));
-                attempt.extensions().insert(TargetHttpVersion(version));
+                if let Some(extensions) = snapshot.candidate_extensions(index) {
+                    attempt.extensions().extend(extensions);
+                }
+                // Candidate settings may refine the physical endpoint, but
+                // cannot replace this attempt's observer or transport policy.
+                attempt.extensions().insert_arc(state.clone());
+                if dns_stream(candidate) && required.is_none() {
+                    // HTTPS records select a transport, not its ALPN offer (RFC 9460 §7.1.2).
+                    // Override an H3 connection default without constraining TLS negotiation.
+                    attempt
+                        .extensions()
+                        .insert(FallbackHttpVersion(Version::HTTP_11));
+                    attempt
+                        .extensions()
+                        .insert(ConnectorTransportProtocol(TransportProtocol::Tcp));
+                } else {
+                    attempt
+                        .extensions()
+                        .insert(TargetHttpVersion(required.unwrap_or(version)));
+                }
                 attempt
                     .extensions()
                     .insert(SelectedHttpService::new(origin.clone(), candidate.clone()));
@@ -651,7 +728,20 @@ where
                     .cache
                     .as_ref()
                     .map(|cache| (cache, cache.network_epoch(), StdInstant::now()));
-                match self.attempt(attempt, deadline, true).await {
+                match self
+                    .attempt(
+                        attempt,
+                        deadline,
+                        candidate.source != HttpServiceSource::Https
+                            && !snapshot
+                                .candidate_extensions(index)
+                                .is_some_and(|extensions| {
+                                    extensions.contains::<ConnectorTarget>()
+                                        || extensions.contains::<rama_net::tls::TargetEchConfig>()
+                                }),
+                    )
+                    .await
+                {
                     Ok(established) => {
                         // Pool hits carry the original connector's policy scope.
                         // Unknown custom policies never change shared backoff.
@@ -663,7 +753,15 @@ where
                                 .copied()
                                 .unwrap_or_else(|| state.policy_scope())
                                 == ConnectionPolicyScope::Connector;
+                        let mut negotiated_candidate = candidate.clone();
                         if let Err(error) = verify_alternative(&established.conn, origin, candidate)
+                            .and_then(|protocol| {
+                                if let Some(version) = required {
+                                    verify_version(&established.conn, version)?;
+                                }
+                                negotiated_candidate.protocol = protocol;
+                                Ok(())
+                            })
                         {
                             if error.domain() == ConnectionErrorDomain::Local
                                 && error.kind() == ConnectionErrorKind::Unavailable
@@ -681,9 +779,21 @@ where
                                 && let Some((cache, network, started)) = failure_context
                             {
                                 if let Some(route) = &route {
-                                    cache.failed_route(snapshot, index, network, started, route);
+                                    cache.failed_route(
+                                        source_snapshot,
+                                        source_index,
+                                        network,
+                                        started,
+                                        route,
+                                    );
                                 } else {
-                                    cache.failed_attempt(snapshot, index, network, started, true);
+                                    cache.failed_attempt(
+                                        source_snapshot,
+                                        source_index,
+                                        network,
+                                        started,
+                                        true,
+                                    );
                                 }
                             }
                             tracing::debug!(
@@ -691,6 +801,7 @@ where
                                 ?candidate,
                                 "alternative validation failed; trying next service"
                             );
+                            last_error = Some(error);
                             continue;
                         }
                         // A pool hit must describe this same service. Insert
@@ -703,7 +814,7 @@ where
                                 && candidate.source == HttpServiceSource::Configured
                                 && authenticates_alias(&established.conn, origin);
                             if (current.origin != *origin && !coalesced)
-                                || current.candidate.protocol != candidate.protocol
+                                || current.candidate.protocol != negotiated_candidate.protocol
                                 || current.candidate.target != candidate.target
                             {
                                 discard_connection(&established.conn);
@@ -717,12 +828,12 @@ where
                         } else {
                             extensions.insert(EstablishedHttpService::new(
                                 origin.clone(),
-                                candidate.clone(),
+                                negotiated_candidate,
                             ));
                         }
                         established.input.extensions().insert(HttpServiceSelection {
-                            candidates: snapshot.clone(),
-                            index,
+                            candidates: source_snapshot.clone(),
+                            index: source_index,
                             route: route.clone(),
                         });
                         return Ok(established);
@@ -755,11 +866,17 @@ where
                             && let Some((cache, network, started)) = failure_context
                         {
                             if let Some(route) = &route {
-                                cache.failed_route(snapshot, index, network, started, route);
+                                cache.failed_route(
+                                    source_snapshot,
+                                    source_index,
+                                    network,
+                                    started,
+                                    route,
+                                );
                             } else {
                                 cache.failed_attempt(
-                                    snapshot,
-                                    index,
+                                    source_snapshot,
+                                    source_index,
                                     network,
                                     started,
                                     !availability(&error),
@@ -771,9 +888,16 @@ where
                             ?candidate,
                             "HTTP alternative failed; trying next service"
                         );
+                        last_error = Some(error);
                     }
                 }
             }
+        }
+
+        if !fallback {
+            return Err(last_error.unwrap_or_else(|| {
+                invalid("HTTP discovery requires an advertised service but none is usable")
+            }));
         }
 
         // Alternatives were absent, filtered out, or failed. Try the original

@@ -6,7 +6,19 @@ use rama_core::{
 };
 use rama_net::address::{Domain, DomainTrie};
 
-use crate::wire::ServiceBinding;
+use crate::wire::{Name, ServiceBinding};
+
+/// A service binding and the actual owner of its DNS resource record.
+///
+/// The owner can differ from the queried name after CNAME processing. In
+/// ServiceMode a root TargetName refers to this owner (RFC 9460 section 2.5.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceBindingRecord {
+    /// Actual RR owner, preserved by the resolver rather than the query name.
+    pub owner: Name,
+    /// Decoded SVCB or HTTPS RDATA.
+    pub binding: ServiceBinding,
+}
 
 /// A resolver of domains into SVCB and HTTPS Service Binding records.
 pub trait DnsServiceBindingResolver: Sized + Send + Sync + 'static {
@@ -21,7 +33,7 @@ pub trait DnsServiceBindingResolver: Sized + Send + Sync + 'static {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_;
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_;
 
     /// Resolve the complete HTTPS RRset for the given domain.
     ///
@@ -31,7 +43,7 @@ pub trait DnsServiceBindingResolver: Sized + Send + Sync + 'static {
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_;
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_;
 
     /// Box this resolver to allow dynamic dispatch.
     fn into_box_dns_service_binding_resolver(self) -> BoxDnsServiceBindingResolver {
@@ -46,7 +58,7 @@ impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for Arc<R> {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         self.as_ref().lookup_svcb(domain)
     }
 
@@ -54,7 +66,7 @@ impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for Arc<R> {
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         self.as_ref().lookup_https(domain)
     }
 }
@@ -66,7 +78,7 @@ impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for Option<R> {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         stream::iter(self.as_ref().map(|resolver| resolver.lookup_svcb(domain))).flatten()
     }
 
@@ -74,7 +86,7 @@ impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for Option<R> {
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         stream::iter(self.as_ref().map(|resolver| resolver.lookup_https(domain))).flatten()
     }
 }
@@ -85,7 +97,7 @@ impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for DomainTrie<R> {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         stream::iter(self.match_exact(domain.clone()))
             .flat_map(move |resolver| resolver.lookup_svcb(domain.clone()))
     }
@@ -93,7 +105,7 @@ impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for DomainTrie<R> {
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         stream::iter(self.match_exact(domain.clone()))
             .flat_map(move |resolver| resolver.lookup_https(domain.clone()))
     }
@@ -103,19 +115,19 @@ trait DynDnsServiceBindingResolver {
     fn dyn_lookup_svcb(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBindingRecord, OpaqueError>> + Send + '_>>;
 
     fn dyn_lookup_https(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBindingRecord, OpaqueError>> + Send + '_>>;
 }
 
 impl<T: DnsServiceBindingResolver> DynDnsServiceBindingResolver for T {
     fn dyn_lookup_svcb(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBindingRecord, OpaqueError>> + Send + '_>> {
         Box::pin(
             self.lookup_svcb(domain)
                 .map_err(ErrorExt::into_opaque_error),
@@ -125,7 +137,7 @@ impl<T: DnsServiceBindingResolver> DynDnsServiceBindingResolver for T {
     fn dyn_lookup_https(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBindingRecord, OpaqueError>> + Send + '_>> {
         Box::pin(
             self.lookup_https(domain)
                 .map_err(ErrorExt::into_opaque_error),
@@ -172,7 +184,7 @@ impl DnsServiceBindingResolver for BoxDnsServiceBindingResolver {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         self.inner.dyn_lookup_svcb(domain)
     }
 
@@ -180,7 +192,7 @@ impl DnsServiceBindingResolver for BoxDnsServiceBindingResolver {
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         self.inner.dyn_lookup_https(domain)
     }
 
@@ -199,8 +211,8 @@ mod tests {
 
     #[derive(Clone)]
     struct StaticResolver {
-        svcb: ServiceBinding,
-        https: ServiceBinding,
+        svcb: ServiceBindingRecord,
+        https: ServiceBindingRecord,
     }
 
     impl StaticResolver {
@@ -218,36 +230,40 @@ mod tests {
         fn lookup_svcb(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(Ok(self.svcb.clone())))
         }
 
         fn lookup_https(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(Ok(self.https.clone())))
         }
     }
 
-    fn binding(port: u16) -> ServiceBinding {
+    fn binding(port: u16) -> ServiceBindingRecord {
         let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
         rdata.extend_from_slice(&port.to_be_bytes());
-        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+        ServiceBindingRecord {
+            owner: crate::wire::Name::from(&Domain::from_static("record.example")),
+            binding: ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata))
+                .expect("valid service binding"),
+        }
     }
 
     async fn first_port<S, E>(stream: S) -> u16
     where
-        S: Stream<Item = Result<ServiceBinding, E>>,
+        S: Stream<Item = Result<ServiceBindingRecord, E>>,
         E: std::fmt::Debug,
     {
-        std::pin::pin!(stream)
+        let record = std::pin::pin!(stream)
             .next()
             .await
             .expect("one record")
-            .expect("successful record")
-            .port()
-            .expect("port parameter")
+            .expect("successful record");
+        assert_eq!(record.owner.to_string(), "record.example.");
+        record.binding.port().expect("port parameter")
     }
 
     #[tokio::test]

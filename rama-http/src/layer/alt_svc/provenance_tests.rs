@@ -56,7 +56,11 @@ fn selected_request(candidate: HttpServiceCandidate) -> Request {
 
 #[tokio::test]
 async fn request_discovery_source_can_change_on_one_established_connection() {
-    for initial_source in [HttpServiceSource::Configured, HttpServiceSource::AltSvc] {
+    for initial_source in [
+        HttpServiceSource::Configured,
+        HttpServiceSource::AltSvc,
+        HttpServiceSource::Https,
+    ] {
         let extensions = Extensions::new();
         let established = extensions.insert_arc(Arc::new(EstablishedHttpService::new(
             origin(),
@@ -69,6 +73,7 @@ async fn request_discovery_source_can_change_on_one_established_connection() {
             HttpServiceSource::AltSvc,
             HttpServiceSource::Configured,
             HttpServiceSource::AltSvc,
+            HttpServiceSource::Https,
         ] {
             let response = service
                 .serve(selected_request(candidate(source)))
@@ -97,7 +102,11 @@ async fn request_discovery_source_can_change_on_one_established_connection() {
 
 #[tokio::test]
 async fn unrelated_selection_cannot_change_established_discovery_source() {
-    for initial_source in [HttpServiceSource::Configured, HttpServiceSource::AltSvc] {
+    for initial_source in [
+        HttpServiceSource::Configured,
+        HttpServiceSource::AltSvc,
+        HttpServiceSource::Https,
+    ] {
         let extensions = Extensions::new();
         extensions.insert(EstablishedHttpService::new(
             origin(),

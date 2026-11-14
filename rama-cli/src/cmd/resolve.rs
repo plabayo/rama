@@ -192,7 +192,9 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
 async fn resolve_service_bindings<E>(
     domain: &Domain,
     record_type: &'static str,
-    results: impl rama::futures::Stream<Item = Result<rama::dns::wire::ServiceBinding, E>>,
+    results: impl rama::futures::Stream<
+        Item = Result<rama::dns::client::resolver::ServiceBindingRecord, E>,
+    >,
     no_records_error: &'static str,
 ) -> Result<(), BoxError>
 where
@@ -205,7 +207,7 @@ where
         match result {
             Ok(record) => {
                 record_found = true;
-                println!("* {record}");
+                println!("* {} {}", record.owner, record.binding);
             }
             Err(err) => {
                 tracing::debug!("error while resolving {record_type} record: {err:?}");
@@ -492,21 +494,30 @@ impl ResolveCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama::{dns::wire::ServiceBinding, futures::stream};
+    use rama::{
+        dns::{
+            client::resolver::ServiceBindingRecord,
+            wire::{Name, ServiceBinding},
+        },
+        futures::stream,
+    };
 
     #[tokio::test]
     async fn service_binding_output_requires_at_least_one_record() {
         let error = resolve_service_bindings(
             &Domain::example(),
             "HTTPS",
-            stream::empty::<Result<ServiceBinding, std::convert::Infallible>>(),
+            stream::empty::<Result<ServiceBindingRecord, std::convert::Infallible>>(),
             "no HTTPS records",
         )
         .await
         .unwrap_err();
         assert_eq!(error.to_string(), "no HTTPS records");
 
-        let binding = ServiceBinding::parse_rdata(&[0, 1, 0]).unwrap();
+        let binding = ServiceBindingRecord {
+            owner: Name::root(),
+            binding: ServiceBinding::parse_rdata(&[0, 1, 0]).unwrap(),
+        };
         resolve_service_bindings(
             &Domain::example(),
             "SVCB",

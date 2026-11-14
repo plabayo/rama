@@ -73,6 +73,20 @@ impl AlpnList {
         })
     }
 
+    #[cfg(feature = "hickory")]
+    pub(crate) fn from_protocols<'a>(protocols: impl IntoIterator<Item = &'a str>) -> Option<Self> {
+        let mut wire = Vec::new();
+        for protocol in protocols {
+            let length = u8::try_from(protocol.len()).ok()?;
+            if length == 0 {
+                return None;
+            }
+            wire.push(length);
+            wire.extend_from_slice(protocol.as_bytes());
+        }
+        Self::from_wire(wire.into())
+    }
+
     /// Return the number of protocol identifiers.
     #[expect(
         clippy::len_without_is_empty,
@@ -326,6 +340,94 @@ impl ServiceBinding {
         };
         // AliasMode ignores parameter semantics, but malformed wire values
         // were already rejected above as required by RFC 9460 Section 2.2.
+        if binding.is_service_mode() {
+            binding.validate_self_consistency()?;
+        }
+        Ok(binding)
+    }
+
+    /// Validate already-decoded provider values without serializing whole RDATA.
+    #[cfg(feature = "hickory")]
+    pub(crate) fn from_parts(
+        priority: u16,
+        target: Name,
+        params: Vec<SvcParam>,
+    ) -> Result<Self, ServiceBindingParseError> {
+        let mut previous = None;
+        let mut size = 2 + target.as_wire().len();
+        for param in &params {
+            let key = param.key();
+            let number = u16::from(key);
+            let invalid =
+                || ServiceBindingParseError(ServiceBindingParseErrorKind::InvalidParamValue(key));
+            if key == SvcParamKey::Invalid {
+                return Err(ServiceBindingParseError(
+                    ServiceBindingParseErrorKind::InvalidParamKey,
+                ));
+            }
+            if previous.is_some_and(|last| number <= last) {
+                return Err(ServiceBindingParseError(
+                    ServiceBindingParseErrorKind::ParamKeyOrder,
+                ));
+            }
+            previous = Some(number);
+            let length = match param {
+                SvcParam::Mandatory(keys) => {
+                    if keys.contains(&SvcParamKey::Mandatory) {
+                        return Err(ServiceBindingParseError(
+                            ServiceBindingParseErrorKind::MandatoryIncludesItself,
+                        ));
+                    }
+                    if keys.is_empty()
+                        || keys.contains(&SvcParamKey::Invalid)
+                        || keys
+                            .windows(2)
+                            .any(|pair| u16::from(pair[0]) >= u16::from(pair[1]))
+                    {
+                        return Err(invalid());
+                    }
+                    keys.len().saturating_mul(2)
+                }
+                SvcParam::Alpn(protocols) => protocols.as_wire().len(),
+                SvcParam::NoDefaultAlpn => 0,
+                SvcParam::Port(_) => 2,
+                SvcParam::Ipv4Hint(hints) => {
+                    if hints.is_empty() {
+                        return Err(invalid());
+                    }
+                    hints.len().saturating_mul(4)
+                }
+                SvcParam::Ipv6Hint(hints) => {
+                    if hints.is_empty() {
+                        return Err(invalid());
+                    }
+                    hints.len().saturating_mul(16)
+                }
+                SvcParam::Ech(bytes) => {
+                    if !valid_ech_config_list(bytes) {
+                        return Err(invalid());
+                    }
+                    bytes.len()
+                }
+                SvcParam::Unknown { key, value } => {
+                    if !matches!(key, SvcParamKey::Unknown(_)) {
+                        return Err(invalid());
+                    }
+                    value.len()
+                }
+            };
+            size = size.saturating_add(4).saturating_add(length);
+            if size > usize::from(u16::MAX) {
+                return Err(ServiceBindingParseError(
+                    ServiceBindingParseErrorKind::RdataTooLong,
+                ));
+            }
+        }
+        let binding = Self {
+            priority,
+            target,
+            params: params.into_boxed_slice(),
+        };
         if binding.is_service_mode() {
             binding.validate_self_consistency()?;
         }

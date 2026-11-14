@@ -464,9 +464,26 @@ impl<S, K> TlsConnector<S, K> {
     /// retain their existing inner-connector override behavior.
     fn check_attempt_policy(
         &self,
-        input: &(impl AuthorityInputExt + ExtensionsRef),
+        input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
         secure: bool,
     ) -> Result<(), ConnectionError> {
+        let effective = input.extensions().fork();
+        let effective = match &self.base_config {
+            Some(base) => effective.with_base(base.as_extensions()),
+            None => effective,
+        };
+        if effective.get_ref::<rama_tls::client::EchRequirement>()
+            == Some(&rama_tls::client::EchRequirement::Required)
+        {
+            return Err(ConnectionError::local(
+                BoxError::from_static_str("required ECH is not supported by the rustls connector"),
+                ConnectionErrorKind::InvalidInput,
+            ));
+        }
+        if secure && let Some(target) = rama_net::ConnectorTargetInputExt::connector_target(input) {
+            rama_tls::client::target_ech_config(&effective, &target, false)
+                .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::Unavailable))?;
+        }
         let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() else {
             return Ok(());
         };

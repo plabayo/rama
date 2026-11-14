@@ -82,6 +82,11 @@ pub(super) fn build_client_config(
     value: &RustlsTlsConnectorConfig<'_>,
     provider: Option<Arc<rustls::crypto::CryptoProvider>>,
 ) -> Result<ClientConfig, BoxError> {
+    if value.ech_requirement == Some(&rama_tls::client::EchRequirement::Required) {
+        return Err(BoxError::from_static_str(
+            "required ECH is not supported by the rustls connector",
+        ));
+    }
     let server_verify_mode = value.verify.map(|verify| verify.0).unwrap_or_default();
 
     if server_verify_mode == ServerVerifyMode::Disable {
@@ -446,6 +451,17 @@ mod tests {
         TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
         TlsServerVerify, TlsStoreServerCertChain,
     };
+
+    #[test]
+    fn required_ech_is_rejected_by_low_level_config_builder() {
+        let config =
+            TlsClientConfig::new().with_ech_requirement(rama_tls::client::EchRequirement::Required);
+        let error = TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(
+            config.as_extensions(),
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("required ECH"));
+    }
 
     #[test]
     fn build_from_pieces_sets_alpn_and_flags() {
