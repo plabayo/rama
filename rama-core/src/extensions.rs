@@ -64,20 +64,28 @@ use rama_utils::macros::impl_deref;
 /// - TLS layered on top of TCP
 /// - HTTP layered on top of TLS
 /// - ...
+///
+/// A level created by [`Extensions::fork_nested_connection`] is the bottom of a
+/// new connection nested on top of the chain below it. Lookups of
+/// [`ExtensionScope::Connection`] types stop there instead of resolving a fact
+/// about the connection underneath, see [`Extension::scope`].
 pub struct Extensions {
     node: Arc<Node>,
 }
 
 /// One level of an [`Extensions`] chain, shared by all clones of its handle,
 /// so cloning a handle is a reference count and forking one allocation.
-// `repr(C)`: a lookup that skips the level reads the links and the filter
-// only, which share the first cache line with the first entries.
+// `repr(C)`: a lookup that skips the level reads the links, the boundary flag
+// and the filter only, which share the first cache line with the first entries.
 #[repr(C)]
 struct Node {
     /// The level whose entries a [`Extensions::with_base`] view shows instead
     /// of its own (always empty) ones. That level is never a view itself.
     view_of: Option<Extensions>,
     parent: Option<Extensions>,
+    /// Whether this level starts a connection nested on top of its parent, see
+    /// [`Extensions::fork_nested_connection`].
+    nested_connection: bool,
     entries: Store,
 }
 
@@ -153,6 +161,39 @@ fn type_bit(id: TypeId) -> usize {
     1 << type_slot(id)
 }
 
+/// One requested type of a multi-type lookup: its identity and its
+/// [`Extension::scope`], which single-value lookups read from the type itself.
+///
+/// Hidden and not part of the public API surface: built by
+/// `#[derive(FromExtensions)]` and the [`GetManyRef`] / [`GetManyArc`] impls.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct Target {
+    id: TypeId,
+    scope: ExtensionScope,
+}
+
+impl Target {
+    /// The target for `T`.
+    #[must_use]
+    pub fn of<T: Extension>() -> Self {
+        Self {
+            id: TypeId::of::<T>(),
+            scope: T::scope(),
+        }
+    }
+
+    /// A target no entry ever matches, to fill a buffer before the real ones
+    /// are written into it.
+    #[must_use]
+    pub const fn placeholder() -> Self {
+        Self {
+            id: TypeId::of::<()>(),
+            scope: ExtensionScope::Flow,
+        }
+    }
+}
+
 /// The target types of one multi-type lookup, indexed by [`type_slot`].
 ///
 /// Testing an entry against every target costs one comparison per target.
@@ -170,27 +211,43 @@ pub struct Targets<const N: usize> {
     next: [u16; N],
     /// The [`type_bit`] of every target, see [`Store::may_contain`].
     bits: usize,
+    /// Per target: whether it is [`ExtensionScope::Connection`] scoped and so
+    /// stops at a [`Extensions::fork_nested_connection`] boundary.
+    connection_scoped: [bool; N],
+    /// Whether any target is [`ExtensionScope::Connection`] scoped.
+    any_connection_scoped: bool,
 }
 
 impl<const N: usize> Targets<N> {
     #[inline(always)]
-    fn new(ids: [TypeId; N]) -> Self {
+    fn new(targets: [Target; N]) -> Self {
         const {
             assert!(N < u16::MAX as usize, "too many extension targets");
         }
-        let mut targets = Self {
-            ids,
+        let mut plan = Self {
+            ids: targets.map(|target| target.id),
             head: [0; usize::BITS as usize],
             next: [0; N],
             bits: 0,
+            connection_scoped: targets.map(|target| target.scope.is_connection()),
+            any_connection_scoped: false,
         };
-        for (i, &id) in ids.iter().enumerate() {
-            let slot = type_slot(id);
-            targets.next[i] = targets.head[slot];
-            targets.head[slot] = i as u16 + 1;
-            targets.bits |= 1 << slot;
+        for (i, target) in targets.iter().enumerate() {
+            let slot = type_slot(target.id);
+            plan.next[i] = plan.head[slot];
+            plan.head[slot] = i as u16 + 1;
+            plan.bits |= 1 << slot;
+            plan.any_connection_scoped |= plan.connection_scoped[i];
         }
-        targets
+        plan
+    }
+
+    /// Whether a target that is not connection scoped is still unfilled, so
+    /// walking past a nested-connection boundary can still fill something.
+    fn any_flow_unfilled(&self, out: &[Option<(&TypeErasedExtension, usize)>; N]) -> bool {
+        out.iter()
+            .zip(&self.connection_scoped)
+            .any(|(slot, connection_scoped)| slot.is_none() && !connection_scoped)
     }
 }
 
@@ -219,12 +276,12 @@ impl<const N: usize> TargetPlan<N> {
         }
     }
 
-    /// The targets, built from `ids` on the first call.
+    /// The targets, built from `requested` on the first call.
     #[inline]
-    pub fn get(&self, ids: impl FnOnce() -> [TypeId; N]) -> &Targets<N> {
+    pub fn get(&self, requested: impl FnOnce() -> [Target; N]) -> &Targets<N> {
         let targets = self.targets.load(Ordering::Acquire);
         if targets.is_null() {
-            return self.install(ids());
+            return self.install(requested());
         }
         // SAFETY: `&*targets` needs a non-null, aligned pointer to an initialized
         // `Targets<N>` that stays live and unmutated while `self` is borrowed.
@@ -236,8 +293,8 @@ impl<const N: usize> TargetPlan<N> {
     }
 
     #[cold]
-    fn install(&self, ids: [TypeId; N]) -> &Targets<N> {
-        let new = Box::into_raw(Box::new(Targets::new(ids)));
+    fn install(&self, requested: [Target; N]) -> &Targets<N> {
+        let new = Box::into_raw(Box::new(Targets::new(requested)));
         let targets = match self.targets.compare_exchange(
             core::ptr::null_mut(),
             new,
@@ -335,11 +392,11 @@ impl Extensions {
     #[inline(always)]
     #[must_use]
     pub fn new() -> Self {
-        Self::with_parent(None)
+        Self::with_parent(None, false)
     }
 
     #[inline(always)]
-    fn with_parent(parent: Option<Self>) -> Self {
+    fn with_parent(parent: Option<Self>, nested_connection: bool) -> Self {
         // Built in place: the inline entries are most of a node and stay
         // uninitialized, so there is nothing to move into the allocation.
         let node = Arc::into_raw(Arc::<Node>::new_uninit())
@@ -359,6 +416,10 @@ impl Extensions {
         let parent_slot = unsafe { &raw mut (*node).parent };
         // SAFETY: as for `view_of.write`: P.
         unsafe { parent_slot.write(parent) };
+        // SAFETY: as for `view_of`: P.
+        let nested_slot = unsafe { &raw mut (*node).nested_connection };
+        // SAFETY: as for `view_of.write`: P.
+        unsafe { nested_slot.write(nested_connection) };
         // SAFETY: as for `view_of`: P.
         let entries = unsafe { &raw mut (*node).entries.entries };
         // SAFETY: `init_in_place` needs `entries` valid for writes and aligned: a
@@ -396,7 +457,37 @@ impl Extensions {
     /// their interior state is visible through both parent and child.
     #[must_use]
     pub fn fork(&self) -> Self {
-        Self::with_parent(Some(self.clone()))
+        Self::with_parent(Some(self.clone()), false)
+    }
+
+    /// Create a fresh child [`Extensions`] that starts a new connection nested
+    /// on top of the connection this chain describes.
+    ///
+    /// Same as [`Self::fork`] for [`ExtensionScope::Flow`] types: config,
+    /// routing and other intent keeps resolving through. Lookups of
+    /// [`ExtensionScope::Connection`] types stop at this level instead, so a
+    /// fact about the connection underneath (its negotiated ALPN, its TLS
+    /// parameters, whether it may be reused, ...) does not answer for the
+    /// nested one. Use it where a new endpoint is established over an existing
+    /// connection: a `CONNECT` tunnel, a SOCKS5 stream, a CONNECT-UDP flow.
+    ///
+    /// [`Self::iter_ref`] and [`Self::iter_arc`] still walk past the boundary.
+    #[must_use]
+    pub fn fork_nested_connection(&self) -> Self {
+        Self::with_parent(Some(self.clone()), true)
+    }
+
+    /// Whether this level was created by [`Self::fork_nested_connection`].
+    #[inline(always)]
+    fn is_nested_connection(&self) -> bool {
+        self.node.nested_connection
+    }
+
+    /// Whether a lookup of `T` stops at this level instead of continuing into
+    /// the parent chain.
+    #[inline(always)]
+    fn ends_scope_of<T: Extension>(&self) -> bool {
+        T::scope().is_connection() && self.is_nested_connection()
     }
 
     /// The parent [`Extensions`] this blob was forked from, if any.
@@ -404,6 +495,22 @@ impl Extensions {
     #[must_use]
     pub fn parent(&self) -> Option<&Self> {
         self.node.parent.as_ref()
+    }
+
+    /// The extensions of the connection this one is nested on: the parent of
+    /// the nearest [`Self::fork_nested_connection`] level, if any.
+    ///
+    /// Lookups on the result stop at its own boundaries, so each answer is
+    /// about that one connection.
+    #[must_use]
+    pub fn outer_connection(&self) -> Option<&Self> {
+        let mut level = self;
+        loop {
+            if level.is_nested_connection() {
+                return level.parent();
+            }
+            level = level.parent()?;
+        }
     }
 
     /// Return a view of this [`Extensions`] chain layered on top of `base`.
@@ -424,6 +531,7 @@ impl Extensions {
             node: Arc::new(Node {
                 view_of: Some(self.owner().clone()),
                 parent: Some(parent),
+                nested_connection: self.node.nested_connection,
                 entries: Store::default(),
             }),
         }
@@ -520,7 +628,11 @@ impl Extensions {
     ///      (its own local first, then its wrappers, then its parent)
     ///      and return any match found,
     ///    - otherwise skip.
-    /// 2. If still not found, recurse into the parent (same rule applied).
+    /// 2. If still not found, recurse into the parent (same rule applied),
+    ///    unless `T` is [`ExtensionScope::Connection`] scoped and this level
+    ///    was created by [`Self::fork_nested_connection`]: then the search
+    ///    stops here, a fact about the connection underneath does not answer
+    ///    for the nested one.
     ///
     /// Wrappers are spliced into the local scan in insertion order, so a
     /// connection-pointer detour inserted on this blob is treated as part of
@@ -563,6 +675,9 @@ impl Extensions {
                     }
                 }
             }
+        }
+        if self.ends_scope_of::<T>() {
+            return None;
         }
         self.parent().and_then(|p| p.get_ref::<T>())
     }
@@ -619,6 +734,9 @@ impl Extensions {
                 }
             }
         }
+        if self.ends_scope_of::<T>() {
+            return None;
+        }
         self.parent().and_then(|p| p.get_arc::<T>())
     }
 
@@ -658,10 +776,11 @@ impl Extensions {
     /// and `#[derive(FromExtensions)]`. Hidden and not part of the public
     /// API surface: call `get_many_ref`/`get_many_arc` or the derive instead.
     ///
-    /// For each requested [`TypeId`] in `targets`, fill the matching slot in
+    /// For each requested [`Target`] in `targets`, fill the matching slot in
     /// `out` with the newest matching entry, walking wrappers and the parent
-    /// chain like [`Self::get_ref`]. Slots already `Some` are left untouched, so
-    /// callers may pre-fill or reuse the buffer. `targets[i]` fills `out[i]`.
+    /// chain like [`Self::get_ref`], each target up to its own scope boundary.
+    /// Slots already `Some` are left untouched, so callers may pre-fill or
+    /// reuse the buffer. `targets[i]` fills `out[i]`.
     ///
     /// Alongside the entry, each filled slot records its rank: the position of
     /// the entry in this single newest to oldest traversal. The newest entry
@@ -675,7 +794,7 @@ impl Extensions {
     #[inline]
     pub fn get_many_erased<'a, const N: usize>(
         &'a self,
-        targets: &[TypeId; N],
+        targets: &[Target; N],
         out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
     ) {
         self.get_many_targets(&Targets::new(*targets), out);
@@ -692,18 +811,24 @@ impl Extensions {
     ) {
         let mut rank = 0;
         let mut remaining = out.iter().filter(|slot| slot.is_none()).count();
-        self.get_many_erased_ranked(targets, out, &mut rank, &mut remaining);
+        self.get_many_erased_ranked(targets, out, &mut rank, &mut remaining, false);
     }
 
     /// One level of [`Self::get_many_erased`], then its wrappers and its parents
     /// in the order of [`Self::get_ref`]. `remaining` counts the slots of `out`
     /// that are still empty, and is kept up to date across the recursion.
+    ///
+    /// `past_boundary` says that a [`Self::fork_nested_connection`] level was
+    /// walked past to get here, which retires the connection-scoped targets for
+    /// this branch of the traversal only: a wrapper reached from a level above
+    /// the boundary still fills them.
     fn get_many_erased_ranked<'a, const N: usize>(
         &'a self,
         targets: &Targets<N>,
         out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
         rank: &mut usize,
         remaining: &mut usize,
+        past_boundary: bool,
     ) {
         if *remaining == 0 {
             return;
@@ -725,7 +850,10 @@ impl Extensions {
                     let mut target = targets.head[type_slot(ext.type_id)];
                     while target != 0 {
                         let i = usize::from(target) - 1;
-                        if out[i].is_none() && ext.type_id == targets.ids[i] {
+                        if out[i].is_none()
+                            && ext.type_id == targets.ids[i]
+                            && !(past_boundary && targets.connection_scoped[i])
+                        {
                             out[i] = Some((ext, current));
                             *remaining -= 1;
 
@@ -742,27 +870,27 @@ impl Extensions {
                     if ext.type_id == egress_id
                         && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
                     {
-                        eg.0.get_many_erased_ranked(targets, out, rank, remaining);
+                        eg.0.get_many_erased_ranked(targets, out, rank, remaining, past_boundary);
                         if *remaining == 0 {
                             return;
                         }
                     } else if ext.type_id == ingress_id
                         && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
                     {
-                        ig.0.get_many_erased_ranked(targets, out, rank, remaining);
+                        ig.0.get_many_erased_ranked(targets, out, rank, remaining, past_boundary);
                         if *remaining == 0 {
                             return;
                         }
                     }
                 }
             }
-        } else {
-            // Nothing in this level is a target or a wrapper. Still count its
-            // entries, so ranks stay the positions in the full traversal.
-            *rank += store.entries.len();
         }
         if let Some(parent) = self.parent() {
-            parent.get_many_erased_ranked(targets, out, rank, remaining);
+            let boundary = targets.any_connection_scoped && self.is_nested_connection();
+            if boundary && !targets.any_flow_unfilled(out) {
+                return;
+            }
+            parent.get_many_erased_ranked(targets, out, rank, remaining, past_boundary || boundary);
         }
     }
 
@@ -905,6 +1033,12 @@ impl Extensions {
     /// recurse into the parent.
     ///
     /// For a flat top-level-only iteration use [`Self::self_iter_ref`].
+    ///
+    /// Unlike [`Self::get_ref`] this walks past every
+    /// [`Self::fork_nested_connection`] boundary whatever the
+    /// [`ExtensionScope`] of `T`, so it yields the facts of the connections
+    /// underneath too, without telling which connection each belongs to. For
+    /// the facts of one connection underneath use [`Self::outer_connection`].
     ///
     /// The iterator type is left opaque (`impl Iterator`) so the internal
     /// representation can change without breaking callers.
@@ -1051,8 +1185,8 @@ impl Extensions {
 pub trait FromExtensionsGroup<'a>: Sized {
     /// Number of slots this group occupies in the shared single pass.
     const TARGETS: usize;
-    /// Write the group's candidate `TypeId`s into `targets[offset..offset + TARGETS]`.
-    fn from_ext_targets(targets: &mut [TypeId], offset: usize);
+    /// Write the group's candidate [`Target`]s into `targets[offset..offset + TARGETS]`.
+    fn from_ext_targets(targets: &mut [Target], offset: usize);
     /// Build the group value from the filled slots `out[offset..offset + TARGETS]`,
     /// or `None` if no candidate is present.
     fn from_ext_slots(
@@ -1092,7 +1226,7 @@ macro_rules! impl_get_many {
 
             const SEALED: seal::Seal = seal::Seal;
             fn get_many_ref(ext: &'a Extensions) -> Self::Output {
-                let targets = [$(TypeId::of::<$T>()),+];
+                let targets = [$(Target::of::<$T>()),+];
                 let mut out: [Option<(&'a TypeErasedExtension, usize)>; $n] = [None; $n];
                 ext.get_many_erased(&targets, &mut out);
                 ($(out[$idx].and_then(|(e, _)| e.downcast_ref::<$T>()),)+)
@@ -1104,7 +1238,7 @@ macro_rules! impl_get_many {
 
             const SEALED: seal::Seal = seal::Seal;
             fn get_many_arc(ext: &Extensions) -> Self::Output {
-                let targets = [$(TypeId::of::<$T>()),+];
+                let targets = [$(Target::of::<$T>()),+];
                 let mut out: [Option<(&TypeErasedExtension, usize)>; $n] = [None; $n];
                 ext.get_many_erased(&targets, &mut out);
                 ($(out[$idx].and_then(|(e, _)| e.cloned_downcast::<$T>()),)+)
@@ -1129,6 +1263,7 @@ impl_get_many!(12; A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 
 impl fmt::Debug for Extensions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = f.debug_struct("Extensions");
+        s.field("nested_connection", &self.node.nested_connection);
         if let Some(parent) = self.parent() {
             s.field("parent", parent);
         }
@@ -1261,7 +1396,47 @@ impl_deref!(Egress);
 /// impl Extension for MyType {}
 /// impl HttpExtension for MyType {}
 /// ```
-pub trait Extension: Any + Send + Sync + core::fmt::Debug + 'static {}
+///
+/// # Extension Scope
+///
+/// An extension is either flow data, which keeps resolving through every fork
+/// of the chain, or a fact about one connection, which must not answer for a
+/// connection nested on top of it. Facts opt out of that inheritance with
+/// `#[extension(scope(connection))]`, see [`ExtensionScope`] and
+/// [`Extensions::fork_nested_connection`].
+pub trait Extension: Any + Send + Sync + core::fmt::Debug + 'static {
+    /// How far up an [`Extensions`] chain a lookup of this type resolves,
+    /// [`ExtensionScope::Flow`] unless the type says otherwise.
+    #[inline(always)]
+    fn scope() -> ExtensionScope
+    where
+        Self: Sized,
+    {
+        ExtensionScope::Flow
+    }
+}
+
+/// How far up an [`Extensions`] chain a lookup of an [`Extension`] resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ExtensionScope {
+    /// Resolves through the whole chain: config, routing and any other intent
+    /// that stays true however often the chain is forked.
+    #[default]
+    Flow,
+    /// Resolves up to and including the nearest level created by
+    /// [`Extensions::fork_nested_connection`]: a fact about one connection,
+    /// which says nothing about a connection nested on top of it.
+    Connection,
+}
+
+impl ExtensionScope {
+    /// Whether this is [`Self::Connection`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_connection(self) -> bool {
+        matches!(self, Self::Connection)
+    }
+}
 
 /// TLS and secure transport related extensions.
 ///
@@ -2269,11 +2444,269 @@ mod tests {
     // with a plain reference walk that has no filter, over pseudo-random chains
     // with more types than the filter has bits, so collisions are exercised.
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+    #[extension(scope(connection))]
+    struct NegotiatedAlpn(u8);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+    #[extension(tags(net), scope(connection))]
+    struct Reuse(bool);
+
+    #[test]
+    fn scope_defaults_to_flow() {
+        assert_eq!(RetryBudget::scope(), ExtensionScope::Flow);
+        assert_eq!(NegotiatedAlpn::scope(), ExtensionScope::Connection);
+        assert_eq!(Reuse::scope(), ExtensionScope::Connection);
+    }
+
+    #[test]
+    fn flow_type_resolves_across_a_nested_connection() {
+        let proxy = Extensions::new();
+        proxy.insert(RetryBudget(3));
+
+        let origin = proxy.fork_nested_connection();
+        assert_eq!(origin.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
+        assert_eq!(
+            origin.fork().get_ref::<RetryBudget>(),
+            Some(&RetryBudget(3))
+        );
+    }
+
+    #[test]
+    fn connection_type_stops_at_a_nested_connection() {
+        let proxy = Extensions::new();
+        proxy.insert(NegotiatedAlpn(2));
+        assert_eq!(proxy.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
+
+        let origin = proxy.fork_nested_connection();
+        assert_eq!(origin.get_ref::<NegotiatedAlpn>(), None);
+        assert_eq!(origin.fork().get_ref::<NegotiatedAlpn>(), None);
+    }
+
+    #[test]
+    fn connection_type_written_on_the_boundary_level_is_found() {
+        let proxy = Extensions::new();
+        proxy.insert(NegotiatedAlpn(2));
+
+        let origin = proxy.fork_nested_connection();
+        origin.insert(NegotiatedAlpn(1));
+
+        assert_eq!(origin.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(1)));
+        assert_eq!(
+            origin.fork().get_ref::<NegotiatedAlpn>(),
+            Some(&NegotiatedAlpn(1))
+        );
+    }
+
+    #[test]
+    fn nested_boundaries_each_stop_the_search() {
+        let tcp = Extensions::new();
+        tcp.insert(NegotiatedAlpn(2));
+        tcp.insert(RetryBudget(3));
+
+        let first_tunnel = tcp.fork_nested_connection();
+        first_tunnel.insert(NegotiatedAlpn(1));
+
+        let second_tunnel = first_tunnel.fork_nested_connection();
+        assert_eq!(second_tunnel.get_ref::<NegotiatedAlpn>(), None);
+        assert_eq!(
+            second_tunnel.get_ref::<RetryBudget>(),
+            Some(&RetryBudget(3))
+        );
+    }
+
+    #[test]
+    fn outer_connection_reads_each_connection_underneath() {
+        let tcp = Extensions::new();
+        tcp.insert(NegotiatedAlpn(3));
+
+        let first_tunnel = tcp.fork_nested_connection();
+        first_tunnel.insert(NegotiatedAlpn(2));
+
+        let second_tunnel = first_tunnel.fork_nested_connection();
+        let origin = second_tunnel.fork();
+        origin.insert(NegotiatedAlpn(1));
+
+        let outer = origin.outer_connection().unwrap();
+        assert_eq!(outer.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
+        let outermost = outer.outer_connection().unwrap();
+        assert_eq!(
+            outermost.get_ref::<NegotiatedAlpn>(),
+            Some(&NegotiatedAlpn(3))
+        );
+        assert!(outermost.outer_connection().is_none());
+    }
+
+    #[test]
+    fn outer_connection_is_none_without_a_boundary() {
+        let tcp = Extensions::new();
+        let stream = tcp.fork();
+        assert!(stream.outer_connection().is_none());
+    }
+
+    #[test]
+    fn iter_reads_through_a_nested_connection_boundary() {
+        let proxy = Extensions::new();
+        proxy.insert(NegotiatedAlpn(2));
+
+        let origin = proxy.fork_nested_connection();
+        origin.insert(NegotiatedAlpn(1));
+
+        assert_eq!(
+            origin
+                .iter_ref::<NegotiatedAlpn>()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![NegotiatedAlpn(1), NegotiatedAlpn(2)]
+        );
+        assert_eq!(
+            origin
+                .iter_arc::<NegotiatedAlpn>()
+                .map(|alpn| *alpn)
+                .collect::<Vec<_>>(),
+            vec![NegotiatedAlpn(1), NegotiatedAlpn(2)]
+        );
+    }
+
+    #[derive(Debug, FromExtensions)]
+    struct ScopedView<'a> {
+        budget: Option<&'a RetryBudget>,
+        alpn: Option<&'a NegotiatedAlpn>,
+        reuse: Option<Arc<Reuse>>,
+    }
+
+    #[test]
+    fn every_lookup_honours_the_nested_connection_boundary() {
+        let proxy = Extensions::new();
+        proxy.insert(RetryBudget(3));
+        proxy.insert(NegotiatedAlpn(2));
+        proxy.insert(Reuse(true));
+
+        let origin = proxy.fork_nested_connection();
+
+        assert_eq!(origin.get_ref::<NegotiatedAlpn>(), None);
+        assert!(origin.get_arc::<NegotiatedAlpn>().is_none());
+        assert!(!origin.contains::<NegotiatedAlpn>());
+        assert_eq!(
+            origin.get_ref_or_insert(|| NegotiatedAlpn(1)),
+            &NegotiatedAlpn(1)
+        );
+        assert_eq!(
+            *origin.get_arc_or_insert(|| Arc::new(Reuse(false))),
+            Reuse(false)
+        );
+
+        let (budget, alpn) = origin.get_many_ref::<(RetryBudget, NegotiatedAlpn)>();
+        assert_eq!(budget, Some(&RetryBudget(3)));
+        assert_eq!(alpn, Some(&NegotiatedAlpn(1)));
+
+        let (budget, reuse) = origin.get_many_arc::<(RetryBudget, Reuse)>();
+        assert_eq!(budget.as_deref(), Some(&RetryBudget(3)));
+        assert_eq!(reuse.as_deref(), Some(&Reuse(false)));
+
+        let view = ScopedView::from_extensions(&origin);
+        assert_eq!(view.budget, Some(&RetryBudget(3)));
+        assert_eq!(view.alpn, Some(&NegotiatedAlpn(1)));
+        assert_eq!(view.reuse.as_deref(), Some(&Reuse(false)));
+
+        let target = Extensions::new();
+        let fresh = proxy.fork_nested_connection();
+        assert!(fresh.clone_to::<NegotiatedAlpn>(&target).is_none());
+        assert!(
+            fresh
+                .clone_to_if_absent::<NegotiatedAlpn>(&target)
+                .is_none()
+        );
+        assert_eq!(
+            fresh.clone_to::<RetryBudget>(&target).as_deref(),
+            Some(&RetryBudget(3))
+        );
+    }
+
+    #[test]
+    fn get_many_fills_a_connection_slot_from_a_wrapper_above_the_boundary() {
+        let peer = Extensions::new();
+        peer.insert(NegotiatedAlpn(7));
+
+        let below = Extensions::new();
+        below.insert(NegotiatedAlpn(2));
+        below.insert(RetryBudget(3));
+
+        let origin = below.fork_nested_connection();
+        origin.insert(Egress(peer));
+
+        assert_eq!(origin.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(7)));
+        let (budget, alpn) = origin.get_many_ref::<(RetryBudget, NegotiatedAlpn)>();
+        assert_eq!(budget, Some(&RetryBudget(3)));
+        assert_eq!(alpn, Some(&NegotiatedAlpn(7)));
+    }
+
+    #[test]
+    fn a_boundary_inside_a_wrapper_applies_to_the_wrapped_chain() {
+        let tcp = Extensions::new();
+        tcp.insert(NegotiatedAlpn(2));
+        tcp.insert(RetryBudget(3));
+        let tunnel = tcp.fork_nested_connection();
+
+        let req = Extensions::new();
+        req.insert(Egress(tunnel));
+
+        assert_eq!(req.get_ref::<NegotiatedAlpn>(), None);
+        assert_eq!(req.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
+        let (budget, alpn) = req.get_many_ref::<(RetryBudget, NegotiatedAlpn)>();
+        assert_eq!(budget, Some(&RetryBudget(3)));
+        assert_eq!(alpn, None);
+    }
+
+    #[test]
+    fn self_lookups_ignore_the_nested_connection_boundary() {
+        let proxy = Extensions::new();
+        proxy.insert(NegotiatedAlpn(2));
+
+        let origin = proxy.fork_nested_connection();
+        assert_eq!(origin.self_get_ref::<NegotiatedAlpn>(), None);
+        assert_eq!(
+            origin.self_get_ref_or_insert(|| NegotiatedAlpn(1)),
+            &NegotiatedAlpn(1)
+        );
+        assert_eq!(
+            origin.self_get_ref::<NegotiatedAlpn>(),
+            Some(&NegotiatedAlpn(1))
+        );
+    }
+
+    #[test]
+    fn with_base_keeps_the_nested_connection_boundary() {
+        let base = Extensions::new();
+        base.insert(NegotiatedAlpn(2));
+        base.insert(RetryBudget(3));
+
+        let origin = Extensions::new().fork_nested_connection();
+        let view = origin.with_base(&base);
+
+        assert_eq!(view.get_ref::<NegotiatedAlpn>(), None);
+        assert_eq!(view.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
+    }
+
     /// 72 distinct types: more than the bits of the `Store` filter.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct Filler<const N: usize>(u32);
 
-    impl<const N: usize> Extension for Filler<N> {}
+    /// Half the fillers are connection scoped, so every lookup shape is
+    /// exercised with and without a scope boundary.
+    const fn filler_scope(n: usize) -> ExtensionScope {
+        if n.is_multiple_of(2) {
+            ExtensionScope::Flow
+        } else {
+            ExtensionScope::Connection
+        }
+    }
+
+    impl<const N: usize> Extension for Filler<N> {
+        fn scope() -> ExtensionScope {
+            filler_scope(N)
+        }
+    }
 
     /// Calls the macro with the number of every [`Filler`] type.
     macro_rules! with_fillers {
@@ -2292,9 +2725,9 @@ mod tests {
         };
     }
 
-    macro_rules! filler_ids {
+    macro_rules! filler_targets {
         ($($n:literal)+) => {
-            [$(TypeId::of::<Filler<$n>>()),+]
+            [$(Target::of::<Filler<$n>>()),+]
         };
     }
 
@@ -2308,30 +2741,41 @@ mod tests {
     const FILLER_FINDERS: [fn(&Extensions) -> bool; 72] = with_fillers!(filler_finders);
 
     /// Newest-first entries in the same order as [`Extensions::get_ref`] walks
-    /// them, together with the rank they have in the traversal.
-    fn reference_walk<'a>(ext: &'a Extensions, out: &mut Vec<&'a TypeErasedExtension>) {
+    /// them, together with the rank they have in the traversal and whether a
+    /// connection scoped lookup still reaches them.
+    fn reference_walk<'a>(
+        ext: &'a Extensions,
+        past_boundary: bool,
+        out: &mut Vec<(&'a TypeErasedExtension, bool)>,
+    ) {
         let mut entries: Vec<_> = ext.self_iter_all().collect();
         entries.reverse();
         for entry in entries {
-            out.push(entry);
+            out.push((entry, !past_boundary));
             if let Some(eg) = entry.downcast_ref::<Egress<Extensions>>() {
-                reference_walk(&eg.0, out);
+                reference_walk(&eg.0, past_boundary, out);
             } else if let Some(ig) = entry.downcast_ref::<Ingress<Extensions>>() {
-                reference_walk(&ig.0, out);
+                reference_walk(&ig.0, past_boundary, out);
             }
         }
         if let Some(parent) = ext.parent() {
-            reference_walk(parent, out);
+            reference_walk(parent, past_boundary || ext.is_nested_connection(), out);
         }
     }
 
-    fn reference_get(ext: &Extensions, id: TypeId) -> Option<(&TypeErasedExtension, usize)> {
+    fn reference_get(
+        ext: &Extensions,
+        id: TypeId,
+        scope: ExtensionScope,
+    ) -> Option<(&TypeErasedExtension, usize)> {
         let mut walk = Vec::new();
-        reference_walk(ext, &mut walk);
+        reference_walk(ext, false, &mut walk);
         walk.into_iter()
             .enumerate()
-            .find(|(_, entry)| TypeErasedExtension::type_id(entry) == id)
-            .map(|(rank, entry)| (entry, rank))
+            .find(|(_, (entry, in_scope))| {
+                TypeErasedExtension::type_id(entry) == id && (*in_scope || !scope.is_connection())
+            })
+            .map(|(rank, (entry, _))| (entry, rank))
     }
 
     struct Xorshift(u64);
@@ -2365,6 +2809,7 @@ mod tests {
                     ext.insert(Ingress(random_chain(rng, depth - 1)));
                 }
                 2 if depth > 0 => ext = ext.fork(),
+                3 if depth > 0 => ext = ext.fork_nested_connection(),
                 _ => insert_filler(&ext, rng.next(), rng.next() as u32),
             }
         }
@@ -2381,7 +2826,7 @@ mod tests {
             let ext = random_chain(&mut rng, 3);
             macro_rules! check {
                 ($($t:ty),+) => {$(
-                    let expected = reference_get(&ext, TypeId::of::<$t>())
+                    let expected = reference_get(&ext, TypeId::of::<$t>(), <$t>::scope())
                         .and_then(|(entry, _)| entry.downcast_ref::<$t>());
                     assert_eq!(ext.get_ref::<$t>(), expected, "get_ref::<{}>", stringify!($t));
                     assert_eq!(ext.get_arc::<$t>().as_deref(), expected, "get_arc::<{}>", stringify!($t));
@@ -2399,10 +2844,47 @@ mod tests {
                 Filler<63>,
                 Filler<71>
             );
-            let egress = reference_get(&ext, TypeId::of::<Egress<Extensions>>()).is_some();
+            let egress = reference_get(
+                &ext,
+                TypeId::of::<Egress<Extensions>>(),
+                ExtensionScope::Flow,
+            )
+            .is_some();
             assert_eq!(ext.egress().is_some(), egress);
-            let ingress = reference_get(&ext, TypeId::of::<Ingress<Extensions>>()).is_some();
+            let ingress = reference_get(
+                &ext,
+                TypeId::of::<Ingress<Extensions>>(),
+                ExtensionScope::Flow,
+            )
+            .is_some();
             assert_eq!(ext.ingress().is_some(), ingress);
+        }
+    }
+
+    fn assert_matches_reference(
+        ext: &Extensions,
+        targets: &[Target],
+        out: &[Option<(&TypeErasedExtension, usize)>],
+    ) {
+        let expected: Vec<_> = targets
+            .iter()
+            .map(|target| reference_get(ext, target.id, target.scope))
+            .collect();
+        for (found, expected) in out.iter().zip(&expected) {
+            assert_eq!(
+                found.map(|(entry, _)| core::ptr::from_ref(entry)),
+                expected.map(|(entry, _)| core::ptr::from_ref(entry)),
+            );
+        }
+        let ranks = || {
+            out.iter()
+                .zip(&expected)
+                .filter_map(|(found, expected)| Some((found.as_ref()?.1, expected.as_ref()?.1)))
+        };
+        for (found_a, expected_a) in ranks() {
+            for (found_b, expected_b) in ranks() {
+                assert_eq!(found_a.cmp(&found_b), expected_a.cmp(&expected_b));
+            }
         }
     }
 
@@ -2412,24 +2894,18 @@ mod tests {
         for _ in 0..500 {
             let ext = random_chain(&mut rng, 3);
             let targets = [
-                TypeId::of::<Filler<2>>(),
-                TypeId::of::<Filler<19>>(),
-                TypeId::of::<Filler<33>>(),
-                TypeId::of::<Filler<48>>(),
-                TypeId::of::<Filler<60>>(),
-                TypeId::of::<Filler<70>>(),
-                TypeId::of::<Egress<Extensions>>(),
-                TypeId::of::<Ingress<Extensions>>(),
+                Target::of::<Filler<2>>(),
+                Target::of::<Filler<19>>(),
+                Target::of::<Filler<33>>(),
+                Target::of::<Filler<48>>(),
+                Target::of::<Filler<60>>(),
+                Target::of::<Filler<70>>(),
+                Target::of::<Egress<Extensions>>(),
+                Target::of::<Ingress<Extensions>>(),
             ];
             let mut out = [None; 8];
             ext.get_many_erased(&targets, &mut out);
-            for (target, found) in targets.iter().zip(out) {
-                let expected = reference_get(&ext, *target);
-                assert_eq!(
-                    found.map(|(entry, rank)| (core::ptr::from_ref(entry), rank)),
-                    expected.map(|(entry, rank)| (core::ptr::from_ref(entry), rank)),
-                );
-            }
+            assert_matches_reference(&ext, &targets, &out);
         }
     }
 
@@ -2438,20 +2914,14 @@ mod tests {
         let mut rng = Xorshift(0xA076_1D64_78BD_642F);
         // every filler once, then again: several targets share a slot, and
         // duplicates ask the same question twice
-        let mut targets = with_fillers!(filler_ids).to_vec();
+        let mut targets = with_fillers!(filler_targets).to_vec();
         targets.extend_from_slice(&targets.clone());
-        let targets: [TypeId; 144] = targets.try_into().unwrap();
+        let targets: [Target; 144] = targets.try_into().unwrap();
         for _ in 0..200 {
             let ext = random_chain(&mut rng, 3);
             let mut out = [None; 144];
             ext.get_many_erased(&targets, &mut out);
-            for (target, found) in targets.iter().zip(out) {
-                let expected = reference_get(&ext, *target);
-                assert_eq!(
-                    found.map(|(entry, rank)| (core::ptr::from_ref(entry), rank)),
-                    expected.map(|(entry, rank)| (core::ptr::from_ref(entry), rank)),
-                );
-            }
+            assert_matches_reference(&ext, &targets, &out);
         }
     }
 
@@ -2579,7 +3049,7 @@ mod tests {
                         scope.spawn(|| {
                             barrier.wait();
                             let targets =
-                                plan.get(|| [TypeId::of::<Filler<0>>(), TypeId::of::<Filler<1>>()]);
+                                plan.get(|| [Target::of::<Filler<0>>(), Target::of::<Filler<1>>()]);
                             assert_eq!(targets.ids[1], TypeId::of::<Filler<1>>());
                             core::ptr::from_ref(targets) as usize
                         })
@@ -2657,6 +3127,7 @@ mod tests {
     struct ModelExtensions {
         level: std::rc::Rc<std::cell::RefCell<Vec<ModelEntry>>>,
         parent: Option<Box<Self>>,
+        nested_connection: bool,
     }
 
     impl ModelExtensions {
@@ -2664,6 +3135,7 @@ mod tests {
             Self {
                 level: Default::default(),
                 parent: None,
+                nested_connection: false,
             }
         }
 
@@ -2671,6 +3143,15 @@ mod tests {
             Self {
                 level: Default::default(),
                 parent: Some(Box::new(self.clone())),
+                nested_connection: false,
+            }
+        }
+
+        fn fork_nested_connection(&self) -> Self {
+            Self {
+                level: Default::default(),
+                parent: Some(Box::new(self.clone())),
+                nested_connection: true,
             }
         }
 
@@ -2681,6 +3162,7 @@ mod tests {
                     Some(parent) => parent.with_base(base),
                     None => base.clone(),
                 })),
+                nested_connection: self.nested_connection,
             }
         }
 
@@ -2695,6 +3177,9 @@ mod tests {
                     }
                     ModelEntry::Value(..) => {}
                 }
+            }
+            if self.nested_connection && filler_scope(kind).is_connection() {
+                return None;
             }
             self.parent.as_ref().and_then(|parent| parent.get(kind))
         }
@@ -2741,9 +3226,9 @@ mod tests {
 
     /// Whether every lookup on `ext` answers what the model does.
     fn agrees_with_model(ext: &Extensions, model: &ModelExtensions) -> bool {
-        let ids: [TypeId; MODEL_KINDS] = model_kinds!(filler_ids);
+        let targets: [Target; MODEL_KINDS] = model_kinds!(filler_targets);
         let mut many = [None; MODEL_KINDS];
-        ext.get_many_erased(&ids, &mut many);
+        ext.get_many_erased(&targets, &mut many);
         (0..MODEL_KINDS).all(|kind| {
             let expected = model.get(kind);
             MODEL_GET[kind](ext) == expected
@@ -2767,7 +3252,7 @@ mod tests {
             let (a, b) = (usize::from(a), usize::from(b));
             let kind = usize::from(value) % MODEL_KINDS;
             let value = u32::from(value);
-            let touched = match op % 11 {
+            let touched = match op % 13 {
                 0 => {
                     conns.push((Extensions::new(), ModelExtensions::new()));
                     conns.last()
@@ -2831,10 +3316,22 @@ mod tests {
                         .push(ModelEntry::Value(kind, value));
                     Some(handle)
                 }
+                9 => {
+                    let (ext, model) = &conns[a % conns.len()];
+                    let forked = (ext.fork_nested_connection(), model.fork_nested_connection());
+                    conns.push(forked);
+                    conns.last()
+                }
+                10 => {
+                    let (ext, model) = &reqs[a % reqs.len()];
+                    let forked = (ext.fork_nested_connection(), model.fork_nested_connection());
+                    reqs.push(forked);
+                    reqs.last()
+                }
                 _ => {
                     let (conn, conn_model) = conns[b % conns.len()].clone();
                     let handle = &reqs[a % reqs.len()];
-                    if op % 11 == 9 {
+                    if op % 13 == 11 {
                         handle.0.insert(Egress(conn));
                     } else {
                         handle.0.insert(Ingress(conn));
