@@ -1,7 +1,8 @@
 use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
-    Layer, Service, error::BoxError, extensions::ExtensionsRef, io::Io, telemetry::tracing,
+    Layer, Service, combinators::Either, error::BoxError, extensions::ExtensionsRef, io::Io,
+    telemetry::tracing,
 };
 #[cfg(feature = "dns")]
 use rama_dns::client::{
@@ -16,6 +17,7 @@ use rama_net::{
         ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
         pool::ConnectionReuse,
     },
+    stream::NestedConnection,
     transport::TransportProtocol,
     user::ProxyCredential,
 };
@@ -319,7 +321,12 @@ where
     S: ConnectorService<Input, Connection: Io + Unpin>,
     Input: ConnectorTargetInputExt + Send + 'static,
 {
-    type Output = EstablishedClientConnection<S::Connection, Input>;
+    /// A direct connection is handed through untouched; a connection through a
+    /// proxy is a new endpoint nested on the proxy's transport.
+    // TODO: drop the `Either` once this connector is required-only, optional
+    // through `MaybeProxyConnector`, and no longer dials directly itself.
+    type Output =
+        EstablishedClientConnection<Either<S::Connection, NestedConnection<S::Connection>>, Input>;
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
@@ -347,7 +354,10 @@ where
                             .extensions()
                             .insert(EstablishedProxyRoute::Direct);
                     }
-                    Ok(established)
+                    Ok(EstablishedClientConnection {
+                        input: established.input,
+                        conn: Either::A(established.conn),
+                    })
                 };
             }
         };
@@ -474,17 +484,24 @@ where
             }
         }
 
-        // The established byte stream now addresses the destination rather
-        // than the proxy whose transport supplied the inherited policy.
-        let reuse = conn
+        // The established byte stream now addresses the destination rather than
+        // the proxy whose transport supplied the inherited policy. Read the proxy
+        // leg's requirements before nesting: they only reach the new endpoint by
+        // being carried onto it.
+        let proxy_reuse = conn
             .extensions()
             .get_ref::<ConnectionReuse>()
             .map(|policy| policy.clone().into_restriction());
-        if let Some(reuse) = reuse {
+
+        let conn = NestedConnection::new(conn);
+        if let Some(reuse) = proxy_reuse {
             conn.extensions().insert(reuse);
         }
         conn.extensions().insert(selected_route);
-        Ok(EstablishedClientConnection { input, conn })
+        Ok(EstablishedClientConnection {
+            input,
+            conn: Either::B(conn),
+        })
     }
 }
 

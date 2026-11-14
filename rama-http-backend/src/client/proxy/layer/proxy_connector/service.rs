@@ -420,28 +420,32 @@ where
             }
         }
 
-        let (headers, conn) = connector
+        // The inner connector classified the proxy endpoint. CONNECT changes the
+        // endpoint, so origin TLS must publish its own complete policy. Read the
+        // proxy leg's requirements here: the tunnel below is a nested connection,
+        // which they only reach by being carried onto it.
+        let proxy_reuse = conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .map(|policy| policy.clone().into_restriction());
+
+        let (headers, mut conn) = connector
             .handshake(conn)
             .await
             .map_err(ConnectionError::from)
             .map_err(|error| scope_tunnel_error(error.context("http proxy handshake")))?;
 
+        let tunnel_extensions = conn.extensions().fork_nested_connection();
+        conn.set_extensions(tunnel_extensions);
+
         let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn, proxy_info);
-        // The inner connector classified the proxy endpoint. CONNECT changes
-        // the endpoint, so origin TLS must publish its own complete policy.
-        let reuse = conn
-            .extensions()
-            .get_ref::<ConnectionReuse>()
-            .map(|policy| policy.clone().into_restriction());
-        if let Some(reuse) = reuse {
+        if let Some(reuse) = proxy_reuse {
             conn.extensions().insert(reuse);
         }
 
-        // A CONNECT upgrade inherits proxy-leg connection metadata. Shadow the
-        // proxy's wire version before the outer origin HTTP connector runs.
-        // A plaintext origin needs an explicit HTTP/1.1 default; for a TLS
-        // origin without a requested version, leave selection to origin ALPN.
-        if app_is_plaintext_http || (app_is_http && requested_http_version.is_some()) {
+        // A plaintext origin has no ALPN to select its wire version with, and the
+        // tunnel inherits none from the proxy leg.
+        if app_is_plaintext_http {
             conn.extensions().insert(TargetHttpVersion(
                 requested_http_version.unwrap_or(Version::HTTP_11),
             ));
