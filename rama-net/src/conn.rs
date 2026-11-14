@@ -70,7 +70,7 @@ fn is_pending_network_error(e: &io::Error) -> bool {
 }
 
 #[derive(Debug, Default, Extension)]
-#[extension(tags(net))]
+#[extension(tags(net), scope(connection))]
 /// Watcher that can update and read the [`ConnectionHealth`]
 ///
 /// Note: this should only be added once to extensions and
