@@ -28,27 +28,36 @@ class RunnerShutdownTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             ready = Path(temp) / "ready"
             stopped = Path(temp) / "stopped"
+            log = Path(temp) / "stderr"
+            # Both processes dump their stacks periodically, so a stall names its frame.
+            watchdog = "import faulthandler; faulthandler.dump_traceback_later(2, repeat=True); "
             child = (
-                "import signal,time; from pathlib import Path; "
+                f"{watchdog}import signal,time; from pathlib import Path; "
                 f"signal.signal(signal.SIGTERM, lambda *_: (Path({str(stopped)!r}).touch(), exit(0))); "
                 f"Path({str(ready)!r}).touch(); time.sleep(30)"
             )
             launcher = (
-                "import signal,sys; from run_interop import compose_override, inspect_image, run_managed, snapshot_container_logs\n"
+                f"{watchdog}import signal,sys; from run_interop import compose_override, inspect_image, run_managed, snapshot_container_logs\n"
                 "def stop(*_): raise KeyboardInterrupt()\n"
                 "signal.signal(signal.SIGTERM, stop)\n"
                 f"run_managed([sys.executable, '-c', {child!r}])\n"
             )
             env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent))
-            process = subprocess.Popen([sys.executable, "-c", launcher], env=env,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            with log.open("w") as stderr:
+                process = subprocess.Popen([sys.executable, "-c", launcher], env=env,
+                                           stdout=subprocess.DEVNULL, stderr=stderr)
             try:
                 deadline = time.monotonic() + 5
                 while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
                     time.sleep(0.01)
-                self.assertTrue(ready.exists(), "fake child did not start")
+                self.assertTrue(ready.exists(), f"fake child did not start\n{log.read_text()}")
                 process.send_signal(signal.SIGTERM)
-                self.assertNotEqual(process.wait(timeout=5), 0)
+                try:
+                    code = process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"runner alive 5s after SIGTERM, child stopped: {stopped.exists()}\n"
+                              f"{log.read_text()}")
+                self.assertNotEqual(code, 0)
                 self.assertTrue(stopped.exists(), "child survived runner interruption")
             finally:
                 if process.poll() is None:
