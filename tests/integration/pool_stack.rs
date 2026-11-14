@@ -1,14 +1,6 @@
 //! A custom connector that opens its transport through another HTTP client
 //! must fit a default worker stack, also unoptimized as in the `ci` profile.
 
-#![cfg(all(
-    feature = "http-backend",
-    feature = "tcp",
-    feature = "dns",
-    feature = "rustls",
-    feature = "ring"
-))]
-
 use rama::{
     Service, ServiceInput,
     graceful::WeakScope,
@@ -32,22 +24,22 @@ use std::{
 
 #[test]
 fn pooled_http1() {
-    check("pooled_http1", Version::HTTP_11, true);
+    check("pool_stack::pooled_http1", Version::HTTP_11, true);
 }
 
 #[test]
 fn pooled_http2() {
-    check("pooled_http2", Version::HTTP_2, true);
+    check("pool_stack::pooled_http2", Version::HTTP_2, true);
 }
 
 #[test]
 fn unpooled_http1() {
-    check("unpooled_http1", Version::HTTP_11, false);
+    check("pool_stack::unpooled_http1", Version::HTTP_11, false);
 }
 
 #[test]
 fn unpooled_http2() {
-    check("unpooled_http2", Version::HTTP_2, false);
+    check("pool_stack::unpooled_http2", Version::HTTP_2, false);
 }
 
 fn check(name: &str, version: Version, pooled: bool) {
