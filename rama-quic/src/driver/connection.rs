@@ -965,7 +965,7 @@ pub enum LocalMigrationCapability {
 
 /// QUIC facts of a connection, published in its extensions when the handshake completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
-#[extension(tags(net))]
+#[extension(tags(net), scope(connection))]
 pub struct QuicConnectionInfo {
     /// See [`Connection::version`].
     pub version: Version,

@@ -102,6 +102,7 @@ pub trait ConnectionAdmissionPolicy: fmt::Debug + Send + Sync + 'static {
 
 /// Resource admission published on an established connection's extensions.
 #[derive(Clone, Debug, Extension)]
+#[extension(scope(connection))]
 pub struct ConnectionAdmission(Arc<dyn ConnectionAdmissionPolicy>);
 
 impl ConnectionAdmission {

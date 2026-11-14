@@ -167,7 +167,7 @@ impl ReactiveRepr for ConnectionHealth {
 }
 
 #[derive(Debug, Extension)]
-#[extension(tags(net))]
+#[extension(tags(net), scope(connection))]
 /// Hint for the maximum number of concurrent requests/streams a connection can
 /// serve at once.
 ///
