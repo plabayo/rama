@@ -8,7 +8,6 @@
     feature = "rustls",
     feature = "ring"
 ))]
-#![expect(clippy::unwrap_used, reason = "test setup and assertions")]
 
 use rama::{
     Service, ServiceInput,
