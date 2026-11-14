@@ -401,6 +401,9 @@ where
             peer.into_canonical_ip_addr(),
         );
         let native = session.native().cloned();
+        // The tunnel is a new endpoint over the carrier: flow data keeps resolving
+        // through, the carrier's own connection facts do not answer for it.
+        let extensions = session.extensions().fork_nested_connection();
         let (sender, receiver) = session.split();
         let shared = Arc::new(Shared {
             native,
@@ -429,7 +432,7 @@ where
             shared,
             tx,
             local,
-            extensions: Extensions::new(),
+            extensions,
         }
     }
 }

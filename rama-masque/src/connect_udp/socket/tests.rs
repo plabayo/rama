@@ -33,6 +33,32 @@ fn kib(n: usize) -> usize {
     n * 1024
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, rama_core::extensions::Extension)]
+#[extension(scope(connection))]
+struct CarrierAlpn(u8);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, rama_core::extensions::Extension)]
+struct FlowTag(u32);
+
+#[tokio::test]
+async fn the_tunnel_is_nested_on_its_carrier() {
+    let (a, _b) = tokio::io::duplex(kib(1));
+    let carrier = ServiceInput::new(a);
+    carrier.extensions().insert(CarrierAlpn(2));
+    carrier.extensions().insert(FlowTag(7));
+
+    let socket = ConnectUdpSocket::new(
+        &Scope::new(),
+        HttpDatagramSession::with_config(carrier, session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+    );
+
+    assert_eq!(socket.extensions().get_ref::<FlowTag>(), Some(&FlowTag(7)));
+    assert_eq!(socket.extensions().get_ref::<CarrierAlpn>(), None);
+}
+
 fn context0(payload: &[u8]) -> Bytes {
     let mut encoded = vec![0x00];
     encoded.extend_from_slice(payload);
