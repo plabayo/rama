@@ -11,6 +11,10 @@ mod socket;
 #[doc(inline)]
 pub use socket::{Socket, SocketAddresses, SocketInfo};
 
+mod nested;
+#[doc(inline)]
+pub use nested::NestedConnection;
+
 /// Implements [`tokio::io::AsyncRead`] and [`tokio::io::AsyncWrite`] for a
 /// pin-projected newtype by delegating every method to the named inner field.
 ///
