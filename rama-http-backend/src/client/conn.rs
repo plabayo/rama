@@ -931,15 +931,17 @@ where
             ));
         }
 
-        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
+        // Boxed so that neither transport nor handshake grows every future wrapping this one.
+        let EstablishedClientConnection { input, conn } =
+            Box::pin(self.inner.connect(input)).await?;
         let version = resolve_target_http_version(&conn, &input);
-        http_connect_with(
+        Box::pin(http_connect_with(
             conn,
             input,
             self.scope.clone(),
             self.max_informational_responses,
             self.refused_stream_budget,
-        )
+        ))
         .await
         .map_err(|error| {
             if matches!(

@@ -326,8 +326,9 @@ where
                     trace!(
                         "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
                     );
+                    // Boxed so that a deep connector does not grow every future wrapping the pool.
                     let EstablishedClientConnection { input, conn } =
-                        match self.inner.connect(input).await {
+                        match Box::pin(self.inner.connect(input)).await {
                             Ok(established) => established,
                             Err(error) => {
                                 pool.abandon(permit, &error);
