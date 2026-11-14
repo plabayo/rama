@@ -43,7 +43,7 @@ jobs:
             id="${job%%$'\t'*}"
             name="${job#*$'\t'}"
             annotations=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/check-runs/${id}/annotations" --jq '.[].message')
-            if ! grep -qiE 'lost communication|shutdown signal|apt-install: could not fetch packages|unexpected http response: 5[0-9]{2}|failed to download archive' <<< "$annotations"; then
+            if ! grep -qiE 'lost communication|shutdown signal|apt-install: could not fetch packages|cargo-fetch: could not fetch dependencies|unexpected http response: 5[0-9]{2}|failed to download archive' <<< "$annotations"; then
               echo "job '${name}' failed on its own (not runner infra); not retrying"
               exit 0
             fi

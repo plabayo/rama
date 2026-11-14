@@ -343,6 +343,16 @@ jobs:
       - name: Build the aioquic peer's locked environment
         working-directory: rama-quic/e2e/aioquic-interop
         run: uv sync --frozen
+      # Later checks first reach the registry long into the job; fetch while a retry is cheap.
+      - name: Fetch the locked dependencies of every project
+        shell: bash
+        run: >-
+          bash scripts/ci/cargo-fetch-locked.sh .
+          rama-quic/e2e/interop-common
+          rama-quic/e2e/quinn-interop
+          rama-quic/e2e/quiche-interop
+          rama-quic/e2e/aioquic-interop
+          rama-quic/e2e/interop-runner
       # Checks below keep going after a failed check, but never after a failed setup.
       - name: Setup complete
         id: setup
