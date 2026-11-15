@@ -69,6 +69,16 @@ impl HttpsServiceBindings {
         self.ech_reliant
     }
 
+    /// Require successful discovery, preserving the original resolver or record error.
+    /// Successful empty answers remain valid. This is caller policy, not evidence
+    /// that the resolver authenticated its answer.
+    pub fn into_result(mut self) -> Result<Self, BoxError> {
+        match self.failure.take() {
+            Some(error) => Err(error),
+            None => Ok(self),
+        }
+    }
+
     /// Actual resolver/record failure. Loops and chain exhaustion act as absence.
     pub fn failure(&self) -> Option<&(dyn std::error::Error + Send + Sync + 'static)> {
         self.failure.as_deref()

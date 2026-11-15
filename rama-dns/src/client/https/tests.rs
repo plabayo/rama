@@ -652,3 +652,131 @@ fn pure_conversion_rejects_aliases_and_preserves_record_owner() {
     .unwrap();
     assert_eq!(binding.target.to_string(), "owner.example.:8443");
 }
+
+#[test]
+fn discovery_result_preserves_success_data_and_original_errors() {
+    let endpoint = authority();
+    let success = HttpsServiceBindings {
+        alias_target: Some(endpoint.clone()),
+        alias_followed: true,
+        ech_reliant: true,
+        ..Default::default()
+    }
+    .into_result()
+    .unwrap();
+    assert_eq!(success.alias_target(), Some(&endpoint));
+    assert!(success.followed_alias());
+    assert!(success.ech_reliant());
+    assert!(
+        HttpsServiceBindings::default()
+            .into_result()
+            .unwrap()
+            .bindings()
+            .is_empty()
+    );
+
+    let failure = HttpsServiceBindings {
+        failure: Some(std::io::Error::other("resolver failure").into()),
+        ..Default::default()
+    }
+    .into_result()
+    .unwrap_err();
+    assert!(failure.is::<std::io::Error>());
+    assert_eq!(failure.to_string(), "resolver failure");
+}
+
+const THREE_ITEM_PERMUTATIONS: [[usize; 3]; 6] = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+];
+
+#[tokio::test]
+async fn priority_ordering_preserves_every_record_for_all_input_permutations() {
+    for priorities in [[3, 1, 2], [2, 1, 1], [1, 1, 1]] {
+        let records = ["a.example", "b.example", "c.example"]
+            .into_iter()
+            .zip(priorities)
+            .map(|(target, priority)| record("origin.example", priority, target, &[]))
+            .collect::<Vec<_>>();
+        for permutation in THREE_ITEM_PERMUTATIONS {
+            let input =
+                stream::iter(permutation.map(|index| Ok::<_, BoxError>(records[index].clone())));
+            let ordered = order_service_binding_records(input).await.unwrap();
+            assert_eq!(ordered.len(), records.len());
+            assert!(
+                ordered
+                    .windows(2)
+                    .all(|pair| pair[0].binding.priority() <= pair[1].binding.priority())
+            );
+            let mut targets: Vec<_> = ordered
+                .iter()
+                .map(|record| record.binding.target().to_string())
+                .collect();
+            targets.sort();
+            assert_eq!(targets, ["a.example.", "b.example.", "c.example."]);
+        }
+    }
+}
+
+#[test]
+fn alpn_compatibility_matches_all_protocol_subsets_and_preference_orders() {
+    let protocols = [
+        ApplicationProtocol::HTTP_11,
+        ApplicationProtocol::HTTP_2,
+        ApplicationProtocol::HTTP_3,
+    ];
+    let wire_protocols: [&[u8]; 3] = [b"http/1.1", b"h2", b"h3"];
+    for advertised in 0..8 {
+        for no_default in [false, true] {
+            // no-default-alpn requires a nonempty alpn parameter on the wire.
+            if advertised == 0 && no_default {
+                continue;
+            }
+            let mut encoded = Vec::new();
+            for (index, protocol) in wire_protocols.iter().enumerate() {
+                if advertised & (1 << index) != 0 {
+                    encoded.push(protocol.len() as u8);
+                    encoded.extend_from_slice(protocol);
+                }
+            }
+            let mut params = Vec::new();
+            if advertised != 0 {
+                params.push((1, encoded.as_slice()));
+            }
+            if no_default {
+                params.push((2, &[]));
+            }
+            let record = record("origin.example", 1, ".", &params);
+            for supported in 0..8 {
+                for order in THREE_ITEM_PERMUTATIONS {
+                    let mut preferences = Vec::new();
+                    let mut expected = Vec::new();
+                    for index in order {
+                        if supported & (1 << index) != 0 {
+                            preferences.push(protocols[index].clone());
+                            if advertised & (1 << index) != 0 || (index == 0 && !no_default) {
+                                expected.push(protocols[index].clone());
+                            }
+                        }
+                    }
+                    // Repeated preferences must neither duplicate routes nor
+                    // change the caller's ordering of compatible protocols.
+                    if let Some(first) = preferences.first().cloned() {
+                        preferences.push(first);
+                    }
+                    let binding =
+                        HttpsServiceBinding::from_record(record.clone(), 443, &preferences, false);
+                    assert_eq!(binding.is_some(), !expected.is_empty());
+                    match binding {
+                        Some(binding) => assert_eq!(binding.protocols, expected),
+                        None => assert!(expected.is_empty()),
+                    }
+                }
+            }
+        }
+    }
+}

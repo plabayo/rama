@@ -17,6 +17,7 @@ struct Resolver {
     records: HashMap<Domain, Vec<ServiceBindingRecord>>,
     queries: Arc<Mutex<Vec<String>>>,
     pending: Option<Domain>,
+    failure: Option<Domain>,
     delay_address: bool,
 }
 
@@ -30,11 +31,17 @@ impl DnsServiceBindingResolver for Resolver {
         self.queries.lock().push(format!("HTTPS {domain}"));
         let records = self.records.get(&domain).cloned().unwrap_or_default();
         let pending = self.pending.as_ref() == Some(&domain);
+        let fail = self.failure.as_ref() == Some(&domain);
         rama_core::futures::StreamExt::flatten(stream::once(async move {
             if pending {
                 std::future::pending::<()>().await;
             }
-            stream::iter(records.into_iter().map(Ok))
+            // Append errors after records to exercise atomic RRset rejection.
+            stream::iter(
+                records.into_iter().map(Ok).chain(
+                    fail.then(|| Err(std::io::Error::other("test resolver failure").into())),
+                ),
+            )
         }))
     }
 
@@ -712,4 +719,127 @@ async fn discovery_timeout_retains_lazy_origin_resolver() {
         *resolver.queries.lock(),
         ["HTTPS origin.example", "A origin.example"]
     );
+}
+
+async fn serve_discovery<R>(layer: HttpsServiceLayer<R>) -> (Result<(), ConnectionError>, usize)
+where
+    R: DnsServiceBindingResolver + DnsAddressResolver + Clone,
+{
+    let calls = Arc::new(Mutex::new(0));
+    let inner = rama_core::service::service_fn({
+        let calls = calls.clone();
+        move |_: ConnectRequest| {
+            *calls.lock() += 1;
+            async { Ok::<_, ConnectionError>(()) }
+        }
+    });
+    let result = layer.layer(inner).serve(input()).await;
+    let count = *calls.lock();
+    (result, count)
+}
+
+fn with_test_advertisement(layer: HttpsServiceLayer<Resolver>) -> HttpsServiceLayer<Resolver> {
+    let cache = AltSvcCache::default();
+    cache.record_frame(
+        &HttpOrigin::new(Protocol::HTTPS, input().authority).unwrap(),
+        rama_core::bytes::Bytes::from_static(b"h2=\"alt.example:443\""),
+        std::time::Instant::now(),
+    );
+    layer.with_cache(cache)
+}
+
+#[tokio::test]
+async fn strict_discovery_rejects_origin_and_alternative_errors_before_inner() {
+    for name in ["origin.example", "alt.example"] {
+        for strict in [false, true] {
+            let mut layer =
+                with_test_advertisement(setup(false)).with_fail_on_discovery_error(strict);
+            layer.resolver.failure = Some(Domain::from_static(name));
+            let (result, calls) = serve_discovery(layer).await;
+            assert_eq!(calls, usize::from(!strict));
+            if strict {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+                let mut cause: &(dyn std::error::Error + 'static) = &error;
+                while !cause.is::<std::io::Error>() {
+                    cause = cause.source().expect("retain resolver failure cause");
+                }
+                assert_eq!(cause.to_string(), "test resolver failure");
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn strict_discovery_timeouts_do_not_use_primary_checkpoints() {
+    for name in ["origin.example", "alt.example"] {
+        for strict in [false, true] {
+            let mut layer = with_test_advertisement(setup(false))
+                .with_timeout(Duration::from_millis(10))
+                .with_fail_on_discovery_error(strict);
+            layer.resolver.pending = Some(Domain::from_static(name));
+            let (result, calls) = serve_discovery(layer).await;
+            assert_eq!(calls, usize::from(!strict));
+            if strict {
+                assert_eq!(result.unwrap_err().kind(), ConnectionErrorKind::Timeout);
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn strict_discovery_accepts_empty_and_incompatible_answers() {
+    for incompatible in [false, true] {
+        let mut resolver = Resolver::default();
+        if incompatible {
+            resolver.records.insert(
+                Domain::from_static("origin.example"),
+                vec![record(
+                    "origin.example",
+                    ".",
+                    &[(1, b"\x07unknown"), (2, b"")],
+                )],
+            );
+        }
+        // Changing the resolver must preserve the configured failure policy.
+        let layer = HttpsServiceLayer::new()
+            .with_fail_on_discovery_error(true)
+            .with_resolver(resolver);
+        assert!(layer.fail_on_discovery_error);
+        let request = input();
+        layer.discover(&request).await.unwrap();
+        assert!(!request.extensions().contains::<HttpServiceCandidates>());
+        let (result, calls) = serve_discovery(layer).await;
+        result.unwrap();
+        assert_eq!(calls, 1);
+    }
+}
+
+#[tokio::test]
+async fn strict_discovery_rejects_bounded_rrsets_without_dialing() {
+    let mut layer = setup(false);
+    let records = layer
+        .resolver
+        .records
+        .get_mut(&Domain::from_static("origin.example"))
+        .unwrap();
+    records.push(records[0].clone());
+    let bounded = rama_dns::client::resolver::BoundedDnsResolver::bounded(
+        layer.resolver.clone(),
+        std::num::NonZeroUsize::new(1).unwrap(),
+    );
+    let layer = layer
+        .with_fail_on_discovery_error(true)
+        .with_resolver(bounded);
+    let (result, calls) = serve_discovery(layer).await;
+    assert_eq!(calls, 0);
+    let error = result.unwrap_err();
+    let mut cause: &(dyn std::error::Error + 'static) = &error;
+    while !cause.is::<rama_dns::client::resolver::DnsAnswerLimitReached>() {
+        cause = cause.source().expect("retain bounded resolver cause");
+    }
 }

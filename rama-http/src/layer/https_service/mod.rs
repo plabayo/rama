@@ -43,7 +43,8 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_dns::client::{
-    DEFAULT_HTTPS_ALIAS_LIMIT, DnsAddressSource, GlobalDnsResolver, lookup_https_service_bindings,
+    DEFAULT_HTTPS_ALIAS_LIMIT, DnsAddressSource, GlobalDnsResolver, HttpsServiceBindings,
+    lookup_https_service_bindings,
     resolver::{DnsAddressResolver, DnsServiceBindingResolver},
 };
 use rama_http_types::conn::{
@@ -73,6 +74,7 @@ pub struct HttpsServiceLayer<R = GlobalDnsResolver> {
     protocols: Vec<ApplicationProtocol>,
     ech_capable: bool,
     proxy_discovery: bool,
+    fail_on_discovery_error: bool,
     timeout: Duration,
     max_candidates: usize,
 }
@@ -98,6 +100,7 @@ impl HttpsServiceLayer {
             ],
             ech_capable: false,
             proxy_discovery: false,
+            fail_on_discovery_error: false,
             timeout: Duration::from_secs(5),
             max_candidates: 64,
         }
@@ -118,6 +121,18 @@ impl<R> HttpsServiceLayer<R> {
         }
     }
 
+    generate_set_and_with! {
+        /// Reject HTTPS resolver/record errors and discovery timeouts (default false).
+        /// Applies to the origin and each consulted Alt-Svc authority. Successful
+        /// empty or incompatible answers still permit ordinary optional fallback.
+        /// Enable this when resolver failures must not permit DNS fallback; this
+        /// setting does not infer whether a resolver authenticates its answers.
+        pub fn fail_on_discovery_error(mut self, enabled: bool) -> Self {
+            self.fail_on_discovery_error = enabled;
+            self
+        }
+    }
+
     /// Resolve both HTTPS and address records with this resolver.
     pub fn with_resolver<T>(self, resolver: T) -> HttpsServiceLayer<T> {
         HttpsServiceLayer {
@@ -128,6 +143,7 @@ impl<R> HttpsServiceLayer<R> {
             protocols: self.protocols,
             ech_capable: self.ech_capable,
             proxy_discovery: self.proxy_discovery,
+            fail_on_discovery_error: self.fail_on_discovery_error,
             timeout: self.timeout,
             max_candidates: self.max_candidates,
         }
@@ -232,6 +248,19 @@ fn invalid(message: &'static str) -> ConnectionError {
 }
 
 impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLayer<R> {
+    fn check_discovery(
+        &self,
+        result: HttpsServiceBindings,
+    ) -> Result<HttpsServiceBindings, ConnectionError> {
+        if self.fail_on_discovery_error {
+            result
+                .into_result()
+                .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::Unavailable))
+        } else {
+            Ok(result)
+        }
+    }
+
     async fn discover(&self, input: &ConnectRequest) -> Result<(), ConnectionError> {
         let effective = input
             .extensions()
@@ -242,6 +271,9 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
         let mut reliant = required;
         match tokio::time::timeout(self.timeout, self.prepare(input, &mut reliant)).await {
             Ok(result) => result,
+            Err(error) if self.fail_on_discovery_error => {
+                Err(ConnectionError::local(error, ConnectionErrorKind::Timeout))
+            }
             // A slow alternative must not discard completed primary discovery.
             Err(_)
                 if input
@@ -345,6 +377,7 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
             DEFAULT_HTTPS_ALIAS_LIMIT,
         )
         .await;
+        let primary = self.check_discovery(primary)?;
         let fallback = required != EchRequirement::Required;
         *reliant |= primary.ech_reliant();
         if primary.ech_reliant() {
@@ -402,6 +435,7 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                     DEFAULT_HTTPS_ALIAS_LIMIT,
                 )
                 .await;
+                let result = self.check_discovery(result)?;
                 // A later timeout must suppress cached bare authorities whose
                 // records already established conditional ECH reliance.
                 *reliant |= result.ech_reliant();
