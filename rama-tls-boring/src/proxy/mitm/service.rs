@@ -174,8 +174,13 @@ impl<Issuer, Inner> TlsMitmRelayService<Issuer, Inner> {
                 );
                 // Keep identity, relay policy, and per-flow preferences; only
                 // discard fingerprint pieces which BoringSSL could not model.
-                let fallback =
+                let mut fallback =
                     egress_tls_client_config(None, server_name, keylog, server_auth);
+                // Dropping unsupported wire details must not enable ECH for a
+                // mirrored client which did not offer it.
+                if let Some(hello) = client_hello {
+                    fallback.set_encrypted_client_hello(hello.has_encrypted_client_hello());
+                }
                 #[cfg(feature = "http")]
                 apply_target_http_version(client_hello, input.extensions(), &fallback);
                 TlsConnectorData::try_from(&fallback)

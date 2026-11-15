@@ -86,7 +86,18 @@ caching and optional answer limits stay in the configured resolver. Address quer
 start after service discovery; cached answers and hints can avoid that extra wait. With the
 `quic` feature, the easy client's default DNS path enables HTTPS discovery;
 `with_dns_resolver` shares a custom resolver with discovery and transport, while
-`with_https_resolver` configures discovery explicitly.
+`with_https_resolver` configures discovery explicitly. Custom stacks compose
+`HttpsServiceLayer` with the existing `HttpServiceConnector`; there is no separate
+HTTPS connector with its own ALPN registry or retry loop. This layer does not
+upgrade `http://` requests to HTTPS.
+
+Named-proxy routes disable local HTTPS discovery by default to preserve remote-DNS
+privacy. Use `with_proxy_discovery(true)` only with an appropriate resolver, or
+provide endpoint-bound preknowledge. Required ECH needs that configuration even
+when the destination is reached through a proxy. Applications that require DNS
+errors to be fatal can set `with_fail_on_discovery_error(true)` on the discovery
+layer; the default permits optional fallback. This setting does not infer DNSSEC
+validation and does not reject successful empty answers.
 
 HTTPS records select transports: a TCP candidate preserves the client's normal
 H2/H1 ALPN offer, including emulated profiles. Alt-Svc advertisements and explicit
@@ -94,7 +105,10 @@ caller version requirements still constrain the exact HTTP protocol.
 
 TLS enables opportunistic ECH by default when a capable backend has matching
 endpoint configuration. Explicitly disabling ECH and emulated profile settings
-override that default. Discovery facts remain separate from caller policy; final
+override that default; an explicit caller setting takes precedence over a profile.
+Real ECH needs configuration from HTTPS discovery, `TargetEchConfigLayer`, or custom
+preknowledge. Without the `quic` feature, easy-client automatic discovery is absent;
+TLS defaults alone do not perform DNS queries. Discovery facts remain separate from caller policy; final
 TLS/profile settings determine ECH requirements for new handshakes. `EchRequirement::Required`
 also restricts pooled reuse to authenticated connections that accepted real ECH.
 `Optional` adds no caller requirement; DNS-derived rules still govern new handshakes.

@@ -11,7 +11,11 @@ use rama_boring::{
     x509::X509,
 };
 use rama_core::{
-    Service, ServiceInput, bytes::Bytes, extensions::ExtensionsRef, service::service_fn,
+    Layer, Service, ServiceInput,
+    bytes::Bytes,
+    extensions::{Extensions, ExtensionsRef},
+    io::BridgeIo,
+    service::service_fn,
 };
 use rama_crypto::{
     cert::{GeneratedServerAuthConfig, generate_server_auth},
@@ -30,8 +34,11 @@ use rama_tls::client::{
     ServerVerifyMode, TlsClientConfig, TlsEchAccepted, TlsEncryptedClientHello,
     TlsServerCertChainPolicy, TlsServerCertPin, TlsServerCertPins, TlsServerTrust,
 };
+use rama_tls::server::InputWithClientHello;
 
 use crate::client::{BoringClientConfigExt as _, TlsConnector, TlsConnectorData, tls_connect};
+use crate::proxy::{TlsMitmEgressServerAuth, TlsMitmRelay};
+use rama_crypto::cert::SelfSignedCaConfig;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -582,5 +589,211 @@ async fn mirrored_final_intent_controls_bare_endpoint_reliance_before_dial() {
             .unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
         assert_eq!(calls.load(Ordering::SeqCst), usize::from(!ech));
+    }
+}
+
+#[tokio::test]
+async fn relay_consumes_endpoint_ech_and_enforces_required_before_io() {
+    for (required, matching, authenticated, mirrored) in [
+        (false, true, false, None),
+        (true, true, true, None),
+        (true, false, true, None),
+        (true, true, false, None),
+        (false, true, true, Some(true)),
+        (false, true, true, Some(false)),
+    ] {
+        let (chain, key) = generate_server_auth(GeneratedServerAuthConfig::generated_ca_for(
+            Domain::from_static(ORIGIN),
+        ))
+        .unwrap();
+        let mut keys = SslEchKeys::builder().unwrap();
+        keys.add_key(
+            true,
+            SERVER_ECH_CONFIG,
+            HpkeKey::dhkem_p256_sha256(SERVER_ECH_KEY).unwrap(),
+        )
+        .unwrap();
+        let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+        acceptor
+            .set_certificate(&X509::from_der(&chain[0]).unwrap())
+            .unwrap();
+        acceptor
+            .add_extra_chain_cert(X509::from_der(&chain[1]).unwrap())
+            .unwrap();
+        acceptor
+            .set_private_key(&PKey::private_key_from_der(key.secret_der()).unwrap())
+            .unwrap();
+        acceptor.set_ech_keys(&keys.build()).unwrap();
+        let acceptor = acceptor.build();
+        let mut relay =
+            TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+                .unwrap()
+                .with_egress_server_auth(
+                    TlsMitmEgressServerAuth::new().with_server_name(Host::from_static(ORIGIN)),
+                );
+        if authenticated {
+            relay = relay.with_egress_server_auth(
+                TlsMitmEgressServerAuth::new()
+                    .with_server_name(Host::from_static(ORIGIN))
+                    .with_server_verify(ServerVerifyMode::Auto)
+                    .try_with_server_trust_anchors([chain[1].clone()])
+                    .unwrap(),
+            );
+        }
+        let (client, ingress) = tokio::io::duplex(65536);
+        let (egress, mut upstream) = tokio::io::duplex(65536);
+        let ingress = ServiceInput::new(ingress);
+        ingress
+            .extensions()
+            .insert(ConnectorTarget(format!("{ORIGIN}:443").parse().unwrap()));
+        let mut list = (SERVER_ECH_CONFIG.len() as u16).to_be_bytes().to_vec();
+        list.extend_from_slice(SERVER_ECH_CONFIG);
+        ingress.extensions().insert(TargetEchConfig::new(
+            if matching {
+                format!("{ORIGIN}:443")
+            } else {
+                "other.example:443".to_owned()
+            }
+            .parse()
+            .unwrap(),
+            list,
+        ));
+        if required {
+            ingress.extensions().insert(EchRequirement::Required);
+        }
+        if required && (!matching || !authenticated) {
+            let error = relay
+                .handshake(BridgeIo(ingress, ServiceInput::new(egress)), None)
+                .await
+                .err()
+                .expect("required relay ECH rejects before I/O");
+            assert!(format!("{error:?}").contains("ECH"), "{error:?}");
+            let mut bytes = Vec::new();
+            upstream.read_to_end(&mut bytes).await.unwrap();
+            assert!(bytes.is_empty());
+            continue;
+        }
+        let server = tokio::spawn(async move {
+            rama_boring_tokio::accept(&acceptor, upstream)
+                .await
+                .unwrap()
+        });
+        let client_data = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_name(Host::from_static(ORIGIN))
+                .with_server_verify(ServerVerifyMode::Disable),
+        )
+        .unwrap();
+        let expected = mirrored.unwrap_or(true);
+        let relay = async {
+            let bridge = BridgeIo(ingress, ServiceInput::new(egress));
+            if let Some(ech) = mirrored {
+                let capture = crate::client::tests::emitted_with(
+                    &TlsClientConfig::new()
+                        .with_server_name(Host::from_static(ORIGIN))
+                        .with_encrypted_client_hello(ech),
+                );
+                let service = relay.into_layer(service_fn(
+                    move |bridge: BridgeIo<
+                        crate::TlsStream<ServiceInput<tokio::io::DuplexStream>>,
+                        crate::TlsStream<ServiceInput<tokio::io::DuplexStream>>,
+                    >| async move {
+                        assert_eq!(bridge.1.ssl_ref().ech_accepted(), expected);
+                        assert_eq!(
+                            bridge.1.extensions().get_ref::<TlsEchAccepted>().unwrap().0,
+                            expected
+                        );
+                        Ok::<_, std::convert::Infallible>(())
+                    },
+                ));
+                service
+                    .serve(InputWithClientHello {
+                        input: bridge,
+                        client_hello: capture,
+                    })
+                    .await
+            } else {
+                relay.handshake(bridge, None).await.map(|bridge| {
+                    assert!(bridge.1.ssl_ref().ech_accepted());
+                    assert!(bridge.1.extensions().get_ref::<TlsEchAccepted>().unwrap().0);
+                })
+            }
+        };
+        let (result, client) = tokio::join!(
+            relay,
+            tls_connect(ServiceInput::new(client), Some(client_data))
+        );
+        result.unwrap();
+        client.unwrap();
+        assert_eq!(server.await.unwrap().ssl().ech_accepted(), expected);
+    }
+}
+
+#[test]
+fn prepared_endpoint_ech_retains_scope_and_rejects_conflicting_overrides() {
+    let target: HostWithPort = format!("{ORIGIN}:443").parse().unwrap();
+    for changed_target in [false, true] {
+        for disabled in [false, true] {
+            let policy = TlsClientConfig::new().with_server_name(Host::from_static(ORIGIN));
+            let mut data = TlsConnectorData::try_from(&policy).unwrap();
+            let original = Extensions::new();
+            original.insert(TargetEchConfig::new(
+                target.clone(),
+                Bytes::from_static(ECH_CONFIG_LIST),
+            ));
+            data.configure_target_ech(&original, &target).unwrap();
+            let overrides = Extensions::new();
+            overrides.insert(EchRequirement::Required);
+            if disabled {
+                overrides.insert(TlsEncryptedClientHello(false));
+            }
+            let actual = if changed_target {
+                "other.example:443".parse().unwrap()
+            } else {
+                target.clone()
+            };
+            let result = data.configure_target_ech(&overrides, &actual);
+            assert_eq!(result.is_err(), changed_target || disabled);
+            if result.is_ok() {
+                data.into_ssl().unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn relay_rejection_ends_the_single_stream_without_retry() {
+    let (server, ca) = retry_test_server("ech.com", 7);
+    let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+        .unwrap()
+        .with_egress_server_auth(
+            TlsMitmEgressServerAuth::new()
+                .with_server_name(Host::from_static(ORIGIN))
+                .with_server_verify(ServerVerifyMode::Auto)
+                .try_with_server_trust_anchors([ca])
+                .unwrap(),
+        );
+    let (_client, ingress) = tokio::io::duplex(65536);
+    let (egress, upstream) = tokio::io::duplex(65536);
+    let ingress = ServiceInput::new(ingress);
+    let target: HostWithPort = format!("{ORIGIN}:443").parse().unwrap();
+    ingress.extensions().insert(ConnectorTarget(target.clone()));
+    ingress.extensions().insert(TargetEchConfig::new(
+        target,
+        Bytes::from_static(ECH_CONFIG_LIST),
+    ));
+    let upstream = tokio::spawn(async move { rama_boring_tokio::accept(&server, upstream).await });
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        relay.handshake(BridgeIo(ingress, ServiceInput::new(egress)), None),
+    )
+    .await
+    .expect("relay rejection must not wait for another ClientHello")
+    .err()
+    .unwrap();
+    assert!(format!("{error:?}").contains("ECH_REJECTED"), "{error:?}");
+    if let Ok(mut stream) = upstream.await.unwrap() {
+        let mut application = [0; 1];
+        assert!(!matches!(stream.read(&mut application).await, Ok(n) if n > 0));
     }
 }

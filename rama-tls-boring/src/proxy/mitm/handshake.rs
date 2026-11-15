@@ -29,10 +29,15 @@ use rama_core::{
 #[cfg(feature = "http")]
 use rama_net::http::{TargetHttpVersion, Version};
 use rama_net::{
-    address::Domain, client::ConnectorTarget, extensions::StreamTransformed,
-    tls::ApplicationProtocol,
+    address::Domain,
+    client::ConnectorTarget,
+    extensions::StreamTransformed,
+    tls::{ApplicationProtocol, TargetEchConfig, TargetEchServiceBinding},
 };
-use rama_tls::{CertificateCompressionAlgorithm, SecureTransport, client::NegotiatedTlsParameters};
+use rama_tls::{
+    CertificateCompressionAlgorithm, SecureTransport,
+    client::{EchRequirement, NegotiatedTlsParameters, TlsEncryptedClientHello, TlsServerVerify},
+};
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
@@ -201,6 +206,45 @@ where
                 .context("tls mitm relay: build direct egress connector data")
                 .map_err(TlsMitmRelayError::config)?
         };
+        if data.ech_required
+            || data.has_target_ech()
+            || input.extensions().contains::<EchRequirement>()
+            || input.extensions().contains::<TlsEncryptedClientHello>()
+            || input.extensions().contains::<TargetEchConfig>()
+            || input.extensions().contains::<TargetEchServiceBinding>()
+        {
+            // Bridge knowledge describes the upstream hop, while authentication stays
+            // owned by the relay's resolved egress policy. A single stream cannot retry.
+            let effective = input.extensions().fork();
+            if !effective.contains::<TlsEncryptedClientHello>()
+                && let Some(intent) = data.ech_intent
+            {
+                effective.insert(TlsEncryptedClientHello(intent));
+            }
+            effective.insert(TlsServerVerify(data.server_verify_mode));
+            if !effective.contains::<EchRequirement>() && data.ech_required {
+                effective.insert(EchRequirement::Required);
+            }
+            let requirement = effective
+                .get_ref::<EchRequirement>()
+                .copied()
+                .unwrap_or_default();
+            requirement
+                .intent(effective.get_ref::<TlsEncryptedClientHello>())
+                .map_err(TlsMitmRelayError::config)?;
+            if let Some(target) = effective.get_ref::<ConnectorTarget>() {
+                data.configure_target_ech(&effective, &target.0)
+                    .map_err(TlsMitmRelayError::config)?;
+            } else if requirement == EchRequirement::Required || data.has_target_ech() {
+                return Err(TlsMitmRelayError::config(BoxError::from_static_str(
+                    "configured or required relay ECH needs an explicit upstream endpoint",
+                )));
+            }
+            if let Some(intent) = effective.get_ref::<TlsEncryptedClientHello>() {
+                data.config.set_enable_ech_grease(intent.0);
+            }
+        }
+
         if data.config.session().is_some() || data.resumes_sessions() {
             return Err(TlsMitmRelayError::config(BoxError::from_static_str(
                 "tls mitm client auth: preselected egress sessions can bypass authentication",
