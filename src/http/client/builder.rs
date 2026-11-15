@@ -1806,8 +1806,6 @@ mod tests {
             {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 stream::once(async {
-                    // Give the concurrently started address lookup time to run.
-                    tokio::task::yield_now().await;
                     Ok(ServiceBindingRecord {
                         owner: Name::from_presentation("origin.example").unwrap(),
                         binding: ServiceBinding::parse_rdata(&[0, 1, 0, 0, 1, 0, 3, 2, b'h', b'2'])
@@ -1887,7 +1885,8 @@ mod tests {
             assert!(!error.to_string().is_empty());
             assert_eq!(resolver.0.load(Ordering::SeqCst), usize::from(enabled));
             assert_eq!(selected.load(Ordering::SeqCst), enabled);
-            assert_eq!(resolver.1.load(Ordering::SeqCst), usize::from(enabled));
+            // This connector stops before transport: discovery must not start A/AAAA.
+            assert_eq!(resolver.1.load(Ordering::SeqCst), 0);
         }
     }
 }
