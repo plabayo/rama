@@ -14,7 +14,7 @@
 
 use divan::{black_box, counter::ItemsCount};
 use rama::{
-    extensions::{Egress, Extension, Extensions, Ingress},
+    extensions::{Egress, Extension, Extensions, Ingress, NoConnectionTransfer},
     tls::{boring::client::BoringTlsClientConfigProvider, client::TlsClientConfigProvider as _},
 };
 
@@ -247,4 +247,59 @@ fn level(n: usize) -> Extensions {
 fn get_ref_full_level_scan(bencher: divan::Bencher, n: usize) {
     let ext = level(n);
     bencher.bench_local(|| black_box(ext.get_ref::<Marker<0>>()));
+}
+
+/// Stand-in for a fact about one connection, such as a negotiated ALPN.
+#[derive(Debug, Clone, Copy, Extension)]
+#[extension(scope(connection))]
+struct ConnFact<const N: usize>;
+
+/// Four levels, the deepest holding the facts, as a proxied connection stacks
+/// transport, TLS and HTTP state. `nested` makes the top level a nested
+/// connection, which connection-scoped lookups stop at.
+fn stack(nested: bool) -> Extensions {
+    let ext = Extensions::new();
+    insert_all!(ext, Marker, 0; 0 1 2 3 4 5);
+    ext.insert(ConnFact::<0>);
+    ext.insert(ConnFact::<1>);
+    let ext = ext.fork();
+    insert_all!(ext, Marker, 0; 10 11 12);
+    let ext = ext.fork();
+    insert_all!(ext, Marker, 0; 20 21 22);
+    if nested {
+        ext.fork_nested_connection(&NoConnectionTransfer)
+    } else {
+        ext.fork()
+    }
+}
+
+/// A flow type found three levels down: the cost the scope check must not add.
+#[divan::bench(args = [false, true])]
+fn flow_get_ref_hit(bencher: divan::Bencher, nested: bool) {
+    let ext = stack(nested);
+    bencher.bench_local(|| black_box(ext.get_ref::<Marker<0>>()));
+}
+
+/// A flow type that is nowhere: the full walk, the common optional-extension case.
+#[divan::bench(args = [false, true])]
+fn flow_get_ref_miss(bencher: divan::Bencher, nested: bool) {
+    let ext = stack(nested);
+    bencher.bench_local(|| black_box(ext.get_ref::<Absent<0>>()));
+}
+
+/// A connection-scoped type three levels down: found without a boundary in the
+/// chain, stopped at the top level with one.
+#[divan::bench(args = [false, true])]
+fn connection_get_ref(bencher: divan::Bencher, nested: bool) {
+    let ext = stack(nested);
+    bencher.bench_local(|| black_box(ext.get_ref::<ConnFact<0>>()));
+}
+
+/// Two flow types and two connection-scoped ones in a single pass.
+#[divan::bench(args = [false, true])]
+fn get_many_mixed_scopes(bencher: divan::Bencher, nested: bool) {
+    let ext = stack(nested);
+    bencher.counter(ItemsCount::new(4usize)).bench_local(|| {
+        black_box(ext.get_many_ref::<(Marker<0>, Marker<20>, ConnFact<0>, ConnFact<1>)>())
+    });
 }
