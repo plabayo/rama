@@ -25,13 +25,13 @@ pub(crate) fn configure_server_ech_from_env(
     };
     let path = std::path::PathBuf::from(path);
     let provider = ReloadableEchServerKeys::new(load(&path)?);
-    config.set_ech_keys(provider.clone());
     #[cfg(unix)]
     {
         use rama::telemetry::tracing;
 
         let mut reload = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
             .context("register ECH key reload signal")?;
+        let provider = provider.clone();
         scope.try_hold()?.into_spawn_task(async move {
             while reload.recv().await.is_some() {
                 let path = path.clone();
@@ -50,5 +50,7 @@ pub(crate) fn configure_server_ech_from_env(
     }
     #[cfg(not(unix))]
     let _ = scope;
+
+    config.set_ech_keys(provider);
     Ok(true)
 }
