@@ -891,3 +891,25 @@ fn replayed_grease_slots_draw_fresh_values_per_connection() {
     }
     assert!(drawn.len() > 1, "{drawn:?}");
 }
+
+#[test]
+fn profile_without_ech_explicitly_disables_opportunistic_default() {
+    let source = wire_variant().with_encrypted_client_hello(false);
+    let captured = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello_from_data(TlsConnectorData::try_from(&source).unwrap()),
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    let (config, _) = compile_tcp(&captured, None).unwrap();
+    let intent = config
+        .as_extensions()
+        .get_ref::<rama_tls::client::TlsEncryptedClientHello>();
+    assert!(intent.is_some_and(|intent| !intent.0));
+    assert!(
+        !rama_tls::client::EchRequirement::Optional
+            .intent(intent)
+            .unwrap()
+    );
+}

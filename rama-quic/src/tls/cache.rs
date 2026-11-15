@@ -62,7 +62,7 @@ impl ClientConfigCache {
             || (self.provider.supports_ech()
                 && ext
                     .get_ref::<TlsEncryptedClientHello>()
-                    .is_some_and(|intent| intent.0)
+                    .is_none_or(|intent| intent.0)
                 && ext.contains::<rama_net::tls::TargetEchConfig>())
     }
 
@@ -412,6 +412,27 @@ mod tests {
     }
 
     impl QuicClientConfigProvider for TestProvider {
+        fn supports_ech(&self) -> bool {
+            true
+        }
+
+        fn prepare_client_config(
+            &self,
+            policy: &TlsClientConfig,
+            options: TlsOptions,
+            _: Host,
+            _: ClientHandshake,
+        ) -> Result<Option<ClientConfig>, TlsConfigError> {
+            if policy
+                .as_extensions()
+                .contains::<rama_net::tls::TargetEchConfig>()
+            {
+                self.client_config(policy, options).map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+
         fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
             false
         }
@@ -609,6 +630,27 @@ mod tests {
         let first = cache.client_config(&config, &defaults).unwrap();
         let replacement = cache.client_config(&changed, &defaults).unwrap();
         assert!(!Arc::ptr_eq(&first.crypto, &replacement.crypto));
+    }
+
+    #[test]
+    fn opportunistic_endpoint_ech_is_uncached_and_disables_early_data() {
+        let provider = Arc::new(TestProvider::default());
+        let cache = ClientConfigCache::new(provider, TlsOptions::default().with_early_data(true));
+        let tls = TlsClientConfig::new().with_server_name(Host::from_static("origin.example"));
+        tls.as_extensions()
+            .insert(rama_net::tls::TargetEchConfig::new(
+                "origin.example:443".parse().unwrap(),
+                vec![0, 1, 2],
+            ));
+        assert!(!cache.allows_early_data(&tls));
+        let first = cache.client_config(&tls, tls.as_extensions()).unwrap();
+        let second = cache.client_config(&tls, tls.as_extensions()).unwrap();
+        assert!(!Arc::ptr_eq(&first.crypto, &second.crypto));
+        tls.as_extensions().insert(TlsEncryptedClientHello(false));
+        assert!(cache.allows_early_data(&tls));
+        let first = cache.client_config(&tls, tls.as_extensions()).unwrap();
+        let second = cache.client_config(&tls, tls.as_extensions()).unwrap();
+        assert!(Arc::ptr_eq(&first.crypto, &second.crypto));
     }
 
     #[test]

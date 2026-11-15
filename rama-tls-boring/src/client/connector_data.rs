@@ -760,11 +760,13 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
                 .map(|shape| shape.native_shape())
                 .transpose()?
                 .flatten(),
+            // Default intent consumes real endpoint ECH; GREASE stays explicit.
             encrypted_client_hello: value
                 .ech_requirement
                 .copied()
                 .unwrap_or_default()
-                .intent(value.encrypted_client_hello)?,
+                .intent(value.encrypted_client_hello)?
+                && value.encrypted_client_hello.is_some_and(|intent| intent.0),
         };
 
         Ok(Self {

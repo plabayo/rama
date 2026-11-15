@@ -310,9 +310,11 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
-        /// Offer Encrypted ClientHello (ECH). Without an ECH configuration
-        /// published by the target, the offer is ECH GREASE. Backends without
-        /// ECH support (rustls) ignore it.
+        /// Enable or disable Encrypted ClientHello (ECH).
+        /// When unspecified, a capable backend uses matching target ECH information.
+        /// Explicit `true` also enables GREASE when no real configuration is available.
+        /// Sparse configurations retain no explicit intent until this setter is used.
+        /// Backends without ECH support ignore optional ECH.
         pub fn encrypted_client_hello(mut self, enabled: bool) -> Self {
             self.0.insert(TlsEncryptedClientHello(enabled));
             self
@@ -842,6 +844,10 @@ pub struct TlsStoreServerCertChain(pub bool);
 pub struct TlsStoreServerHello(pub bool);
 
 /// Whether to offer Encrypted ClientHello (ECH).
+///
+/// Absence enables opportunistic real ECH with matching target information.
+/// Explicit `false` disables it; explicit `true` also enables ECH GREASE.
+/// Requiring acceptance is a separate [`super::EchRequirement`] policy.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsEncryptedClientHello(pub bool);

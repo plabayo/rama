@@ -215,57 +215,61 @@ async fn rustls_stream_policy_is_independent_of_boring_quic() {
 
 #[tokio::test]
 async fn conditional_ech_reliance_uses_each_selected_backend_capability() {
-    let (auth, tls) = credentials();
-    let origin = Server::start(auth.clone(), Version::HTTP_2).await;
-    let alternative = Server::start(auth, Version::HTTP_3).await;
-    let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
-        .await
-        .unwrap();
-    let h3 = Http3Connector::builder(WeakScope::detached())
-        .with_endpoint(endpoint.clone())
-        .with_tls_config(tls.clone())
-        .with_tls_provider(Arc::new(BoringTlsProvider))
-        .build()
-        .await
-        .unwrap();
-    let client = EasyHttpConnectorBuilder::new()
-        .with_default_transport_connector()
-        .with_default_dns_connector()
-        .without_tls_proxy_support()
-        .without_proxy_support()
-        .with_tls_support_using_rustls(tls)
-        .with_default_http_connector::<Body>(WeakScope::detached())
-        .with_http3_support(h3)
-        .without_connection_pool()
-        .build_client();
-    let request = origin.request();
-    request.extensions().insert(TlsEncryptedClientHello(true));
-    let candidates = [
-        (ApplicationProtocol::HTTP_3, alternative.address),
-        (ApplicationProtocol::HTTP_2, origin.address),
-    ]
-    .map(|(protocol, address)| {
-        let target = address.to_string().parse().unwrap();
-        let candidate = HttpServiceCandidate::new(protocol, target);
-        let facts = Extensions::new();
-        facts.insert(TargetEchServiceBinding {
-            target: candidate.target.clone(),
-            reliant: true,
-            mandatory: false,
+    for intent in [None, Some(true)] {
+        let (auth, tls) = credentials();
+        let origin = Server::start(auth.clone(), Version::HTTP_2).await;
+        let alternative = Server::start(auth, Version::HTTP_3).await;
+        let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let h3 = Http3Connector::builder(WeakScope::detached())
+            .with_endpoint(endpoint.clone())
+            .with_tls_config(tls.clone())
+            .with_tls_provider(Arc::new(BoringTlsProvider))
+            .build()
+            .await
+            .unwrap();
+        let client = EasyHttpConnectorBuilder::new()
+            .with_default_transport_connector()
+            .with_default_dns_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .with_tls_support_using_rustls(tls)
+            .with_default_http_connector::<Body>(WeakScope::detached())
+            .with_http3_support(h3)
+            .without_connection_pool()
+            .build_client();
+        let request = origin.request();
+        if let Some(intent) = intent {
+            request.extensions().insert(TlsEncryptedClientHello(intent));
+        }
+        let candidates = [
+            (ApplicationProtocol::HTTP_3, alternative.address),
+            (ApplicationProtocol::HTTP_2, origin.address),
+        ]
+        .map(|(protocol, address)| {
+            let target = address.to_string().parse().unwrap();
+            let candidate = HttpServiceCandidate::new(protocol, target);
+            let facts = Extensions::new();
+            facts.insert(TargetEchServiceBinding {
+                target: candidate.target.clone(),
+                reliant: true,
+                mandatory: false,
+            });
+            (candidate, facts)
         });
-        (candidate, facts)
-    });
-    request.extensions().insert(
-        HttpServiceCandidates::new_with_extensions(origin.origin(), candidates)
-            .with_origin_fallback(false),
-    );
-    // Boring H3 refuses the bare ECH-reliant endpoint locally. Rustls H2 does
-    // not offer ECH, so conditional reliance does not require ECH on that hop.
-    assert_eq!(complete(&client, request).await.1, Version::HTTP_2);
-    assert_eq!(alternative.accepted.load(Ordering::SeqCst), 0);
-    assert_eq!(origin.request_count(), 1);
-    drop(client);
-    close_client_endpoint(endpoint).await;
-    origin.close().await;
-    alternative.close().await;
+        request.extensions().insert(
+            HttpServiceCandidates::new_with_extensions(origin.origin(), candidates)
+                .with_origin_fallback(false),
+        );
+        // Boring H3 refuses the bare ECH-reliant endpoint locally. Rustls H2 does
+        // not offer ECH, so conditional reliance does not require ECH on that hop.
+        assert_eq!(complete(&client, request).await.1, Version::HTTP_2);
+        assert_eq!(alternative.accepted.load(Ordering::SeqCst), 0);
+        assert_eq!(origin.request_count(), 1);
+        drop(client);
+        close_client_endpoint(endpoint).await;
+        origin.close().await;
+        alternative.close().await;
+    }
 }

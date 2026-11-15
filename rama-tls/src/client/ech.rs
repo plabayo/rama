@@ -11,8 +11,8 @@ use rama_net::{
 
 /// Caller policy for requiring successful ECH negotiation.
 ///
-/// `Required` enables ECH when intent is unspecified. Explicitly disabling ECH
-/// conflicts with this policy and fails before network I/O. Backends without
+/// ECH is enabled opportunistically when intent is unspecified. Explicitly disabling
+/// ECH conflicts with `Required` and fails before network I/O. Backends without
 /// ECH support must reject `Required`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
@@ -31,8 +31,8 @@ impl EchRequirement {
             (Self::Required, Some(false)) => Err(BoxError::from_static_str(
                 "required ECH conflicts with disabled ECH intent",
             )),
-            (Self::Required, _) | (_, Some(true)) => Ok(true),
-            _ => Ok(false),
+            (_, Some(false)) => Ok(false),
+            _ => Ok(true),
         }
     }
 }
@@ -212,7 +212,7 @@ mod tests {
                             Bytes::from_static(b"config"),
                         ));
                         let result = target_ech_config(&extensions, &target, capable);
-                        let enabled = intent.unwrap_or(required);
+                        let enabled = intent.unwrap_or(true);
                         assert_eq!(
                             result.is_err(),
                             required && (!enabled || !capable || !matching)
@@ -224,6 +224,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sparse_configuration_enables_only_available_real_ech() {
+        let base = super::super::TlsClientConfig::new().with_encrypted_client_hello(false);
+        let request = super::super::TlsClientConfig::new();
+        assert!(
+            !request
+                .as_extensions()
+                .contains::<TlsEncryptedClientHello>()
+        );
+        assert!(EchRequirement::Optional.intent(None).unwrap());
+        assert!(
+            target_ech_config(
+                request.as_extensions(),
+                &"origin.example:443".parse().unwrap(),
+                true
+            )
+            .unwrap()
+            .is_none()
+        );
+        let effective = base.with_overrides(request.as_extensions());
+        assert!(
+            !EchRequirement::Optional
+                .intent(
+                    effective
+                        .as_extensions()
+                        .get_ref::<TlsEncryptedClientHello>()
+                )
+                .unwrap()
+        );
     }
 
     #[test]
@@ -274,12 +305,6 @@ mod tests {
             reliant: true,
             mandatory: false,
         });
-        assert!(
-            target_ech_config(&request, &target, true)
-                .unwrap()
-                .is_none()
-        );
-        request.insert(TlsEncryptedClientHello(true));
         target_ech_config(&request, &target, true).unwrap_err();
         request.insert(TargetEchConfig::new(target.clone(), vec![0, 1, 2]));
         assert!(target_ech_required(&request, &target, true).unwrap());
@@ -319,6 +344,12 @@ mod tests {
             mandatory: true,
         });
         request.insert(TargetEchConfig::new(target.clone(), vec![0, 1, 2]));
+        assert!(
+            target_ech_config(&request, &target, true)
+                .unwrap()
+                .is_some()
+        );
+        request.insert(TlsEncryptedClientHello(false));
         target_ech_config(&request, &target, true).unwrap_err();
         request.insert(TlsEncryptedClientHello(true));
         target_ech_config(&request, &target, false).unwrap_err();

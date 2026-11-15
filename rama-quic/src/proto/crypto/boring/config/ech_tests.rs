@@ -74,7 +74,8 @@ fn real_ech_resumes_only_in_the_ech_partition_and_disables_early_data() {
         .as_extensions()
         .extend(&SharedClientSessions::defaults());
     let plain = Arc::new(QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap());
-    client.as_extensions().insert(EchRequirement::Required);
+    // Opportunistic ECH uses endpoint knowledge without an explicit intent.
+
     client
         .as_extensions()
         .insert(rama_net::client::ConnectorTarget(

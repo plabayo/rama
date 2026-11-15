@@ -23,7 +23,7 @@ async fn main() -> Result<(), BoxError> {
         .with_dns_resolver(resolver)
         .without_tls_proxy_support()
         .without_proxy_support()
-        .with_tls_support_using_boringssl(TlsClientConfig::new().with_encrypted_client_hello(true))
+        .with_tls_support_using_boringssl(TlsClientConfig::new())
         .with_default_http_connector::<Body>(WeakScope::detached())
         .with_default_connection_pool()
         .build_client();

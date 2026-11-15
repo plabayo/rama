@@ -262,7 +262,12 @@ async fn inapplicable_pins_preserve_explicitly_disabled_ech_verification() {
 
 #[tokio::test]
 async fn endpoint_ech_is_accepted_and_required_pool_reuse_works() {
-    for (required, insecure) in [(false, false), (true, false), (false, true)] {
+    for (required, insecure, emulated) in [
+        (false, false, false),
+        (false, false, true),
+        (true, false, false),
+        (false, true, false),
+    ] {
         for rewrite_transport_target in [false, true] {
             let (chain, key) = generate_server_auth(GeneratedServerAuthConfig::generated_ca_for(
                 Domain::from_static(ORIGIN),
@@ -308,7 +313,7 @@ async fn endpoint_ech_is_accepted_and_required_pool_reuse_works() {
                     })
                 }
             });
-            let base = if required {
+            let base = if !emulated {
                 TlsClientConfig::new()
             } else {
                 let captured = crate::client::tests::emitted_with(

@@ -138,7 +138,7 @@ async fn intent_and_required_ech_control_reliance() {
         (Some(true), false, true),
         (Some(false), false, false),
         (None, true, true),
-        (None, false, false),
+        (None, false, true),
     ] {
         let layer = setup(true);
         let request = input();
@@ -291,9 +291,21 @@ async fn alt_svc_and_https_intersect_protocols_and_preserve_advertisements() {
         .extensions()
         .get_ref::<HttpServiceCandidates>()
         .unwrap();
+    // RFC 9460 §9.3: HTTPS refines the endpoint, never the Alt-Svc protocol.
+    let mut attempts = Vec::new();
     let mut redirected = false;
     for (index, candidate) in snapshot.iter().enumerate() {
         let extensions = snapshot.candidate_extensions(index).unwrap();
+        let endpoint = extensions
+            .get_ref::<ConnectorTarget>()
+            .map_or(&candidate.target, |target| &target.0);
+        attempts.push((
+            candidate.protocol.to_string(),
+            endpoint.host.to_string().trim_end_matches('.').to_owned(),
+            endpoint.port,
+        ));
+        let selection = extensions.get_ref::<HttpServiceSelection>().unwrap();
+        assert_eq!(selection.candidates.get(selection.index), Some(candidate));
         if let Some(target) = extensions.get_ref::<ConnectorTarget>() {
             assert!(!target.0.to_string().starts_with("alt2b"));
             if target.0.to_string() == "alt3.example.:9443" {
@@ -305,6 +317,18 @@ async fn alt_svc_and_https_intersect_protocols_and_preserve_advertisements() {
         }
     }
     assert!(redirected);
+    attempts.sort_unstable();
+    attempts.dedup();
+    let mut expected = [
+        (ApplicationProtocol::HTTP_2, "alt.example", 443),
+        // Bare authorities remain allowed for SVCB-optional fallback.
+        (ApplicationProtocol::HTTP_2, "alt2.example", 443),
+        (ApplicationProtocol::HTTP_3, "alt3.example", 9443),
+        (ApplicationProtocol::HTTP_3, "origin.example", 8443),
+    ]
+    .map(|(protocol, host, port)| (protocol.to_string(), host.to_owned(), port));
+    expected.sort_unstable();
+    assert_eq!(attempts, expected);
 }
 
 #[tokio::test]
@@ -485,7 +509,7 @@ async fn stream_tls_defaults_do_not_hide_a_separate_h3_transport() {
 
 #[tokio::test]
 async fn final_profile_intent_controls_origin_fallback_without_extra_dials() {
-    for ech in [false, true] {
+    for ech in [None, Some(false), Some(true)] {
         let request = input();
         request.extensions().insert(TlsAlpn::http_2());
         let dials = Arc::new(Mutex::new(Vec::new()));
@@ -494,8 +518,10 @@ async fn final_profile_intent_controls_origin_fallback_without_extra_dials() {
             move |request: ConnectRequest| {
                 let dials = dials.clone();
                 async move {
-                    // Installed by a per-candidate profile compiler after discovery.
-                    request.extensions().insert(TlsEncryptedClientHello(ech));
+                    // A profile may override the default after discovery.
+                    if let Some(ech) = ech {
+                        request.extensions().insert(TlsEncryptedClientHello(ech));
+                    }
                     let target = request.connector_target().unwrap();
                     rama_tls::client::target_ech_config(request.extensions(), &target, true)
                         .map_err(|error| {
@@ -516,9 +542,9 @@ async fn final_profile_intent_controls_origin_fallback_without_extra_dials() {
         let error = service.serve(request).await.unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
         let dials = dials.lock();
-        assert_eq!(dials.len(), if ech { 1 } else { 2 });
+        assert_eq!(dials.len(), if ech.unwrap_or(true) { 1 } else { 2 });
         assert_eq!(dials[0].to_string(), "physical.example.:9443");
-        if !ech {
+        if ech == Some(false) {
             assert_eq!(dials[1].to_string(), "origin.example:443");
         }
     }

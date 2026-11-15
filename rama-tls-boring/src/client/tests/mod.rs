@@ -30,6 +30,19 @@ use super::{
 };
 
 #[test]
+fn opportunistic_ech_without_target_does_not_add_grease() {
+    assert!(!emitted_with(&TlsClientConfig::new()).has_encrypted_client_hello());
+    assert!(
+        emitted_with(&TlsClientConfig::new().with_encrypted_client_hello(true))
+            .has_encrypted_client_hello()
+    );
+    assert!(
+        !emitted_with(&TlsClientConfig::new().with_encrypted_client_hello(false))
+            .has_encrypted_client_hello()
+    );
+}
+
+#[test]
 fn permutation_is_per_handshake_and_takes_precedence_over_explicit_order() {
     let declared = [43u16, 10, 13, 16];
     let mut membership = None;
