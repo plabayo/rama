@@ -46,7 +46,7 @@ learns alternative services from response headers or HTTP/2 ALTSVC frames by
 default. Advertisements are kept in memory for that command only, so a redirect
 can use an alternative learned from an earlier response. No cache file is read
 or written. `--no-alt-svc` disables advertisement learning and use; HTTPS DNS
-discovery remains enabled. The legacy `--alt-svc` flag is accepted as a no-op.
+discovery remains enabled.
 
 `--http3` requires HTTP/3 directly, without an advertisement. Explicit HTTP
 version flags continue to constrain selection. `rama send --http3 wss://...`

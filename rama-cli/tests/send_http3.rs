@@ -513,19 +513,15 @@ async fn alternative_services_respect_explicit_versions() -> TestResult {
     let origin = Server::start(fixture.auth.clone(), Version::HTTP_2).await?;
     let alternative = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
 
-    for args in [
-        vec!["--location", "--http2"],
-        vec!["--location", "--alt-svc", "--http2"],
-    ] {
-        origin.reply(Reply::redirect(Some(alternative.address)));
-        let before = origin.requests.lock().len();
-        let output = fixture.send(origin.url(), &args).await?;
-        succeeded(&output);
-        assert_eq!(output.stdout, b"hello from rama");
-        assert_eq!(origin.requests.lock().len(), before + 2);
-        assert!(alternative.requests.lock().is_empty());
-        assert_eq!(alternative.accepted.load(Ordering::Relaxed), 0);
-    }
+    origin.reply(Reply::redirect(Some(alternative.address)));
+    let output = fixture
+        .send(origin.url(), &["--location", "--http2"])
+        .await?;
+    succeeded(&output);
+    assert_eq!(output.stdout, b"hello from rama");
+    assert_eq!(origin.requests.lock().len(), 2);
+    assert!(alternative.requests.lock().is_empty());
+    assert_eq!(alternative.accepted.load(Ordering::Relaxed), 0);
 
     origin.close().await?;
     alternative.close().await
@@ -560,8 +556,7 @@ async fn h2_alternatives_default_on_with_explicit_opt_out() -> TestResult {
 
     for (args, expected_alternative_requests) in [
         (vec!["--location"], 1),
-        (vec!["--location", "--alt-svc"], 2),
-        (vec!["--location", "--no-alt-svc"], 2),
+        (vec!["--location", "--no-alt-svc"], 1),
     ] {
         let mut redirect = Reply::redirect(None);
         redirect.headers.insert(

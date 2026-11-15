@@ -154,7 +154,7 @@ Connectors report unsupported protocols or routes as local capability failures;
 clients need no separate protocol-support list. These refusals preserve cache health.
 The CLI enables command-local discovery by default; `--http3` requires H3
 directly. `--no-alt-svc` disables advertisement learning and use, independently
-of HTTPS DNS discovery. The legacy `--alt-svc` flag is accepted as a no-op.
+of HTTPS DNS discovery.
 Disk persistence is not implemented.
 
 ## Server certificate pinning

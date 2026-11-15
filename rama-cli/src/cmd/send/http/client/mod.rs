@@ -565,7 +565,6 @@ mod tests {
     fn quic_is_used_only_where_http3_may_be_selected() {
         for (args, expected) in [
             (&["--http3", "https://example.com/"][..], true),
-            (&["--alt-svc", "https://example.com/"], true),
             (&["https://example.com/"], true),
             (&["--no-alt-svc", "https://example.com/"], true),
             (&["http://example.com/"], true),
@@ -584,16 +583,6 @@ mod tests {
             let uri = parse_user_uri(&cfg.req.uri).unwrap();
             assert_eq!(uses_quic(&cfg, &uri), expected, "{args:?}");
         }
-    }
-
-    #[test]
-    fn legacy_alt_svc_flag_is_hidden_from_help() {
-        let help = <TestCli as clap::CommandFactory>::command()
-            .render_long_help()
-            .to_string();
-        assert!(!help.contains("--alt-svc"));
-        assert!(help.contains("--no-alt-svc"));
-        let _ = send_cfg(&["--alt-svc", "https://example.com/"]);
     }
 
     #[test]

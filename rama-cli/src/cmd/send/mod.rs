@@ -279,10 +279,6 @@ pub struct SendCommand {
     /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http2
     http_3: bool,
 
-    #[arg(long = "alt-svc", hide = true)]
-    /// Accepted for compatibility; alternative-service discovery is enabled by default.
-    _alt_svc: bool,
-
     #[arg(long)]
     /// (HTTP) disable learning and use of Alt-Svc advertisements.
     /// HTTPS DNS service discovery and explicit --http3 remain available.
