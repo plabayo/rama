@@ -798,7 +798,17 @@ async fn default_h3_discovery_falls_back_through_the_configured_proxy() -> TestR
         client
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await?;
-        copy_bidirectional(&mut client, &mut upstream).await?;
+
+        // The CLI exits after reading the response; Windows can abort the tunnel
+        // instead of closing it cleanly. Response and routing checks below still apply.
+        if let Err(error) = copy_bidirectional(&mut client, &mut upstream).await
+            && !matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::ConnectionReset
+            )
+        {
+            return Err(error.into());
+        }
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     });
 
