@@ -397,24 +397,53 @@ fn multi<T: ToString>(v: &[T]) -> Option<TlsDisplayInfoExtensionData> {
 pub(super) async fn get_tls_display_info(
     extensions: &Extensions,
 ) -> Result<Option<TlsDisplayInfo>, BoxError> {
-    let hello: &ClientHello = match extensions
-        .get_ref::<SecureTransport>()
-        .and_then(|st| st.client_hello())
-    {
-        Some(hello) => hello,
-        None => return Ok(None),
+    let accepted = extensions
+        .get_ref::<rama::tls::server::ServerEchAccepted>()
+        .is_some_and(|value| value.0);
+    let hello = if accepted {
+        extensions
+            .get_ref::<rama::tls::server::EchServerObservation>()
+            .map(|value| &value.outer)
+    } else {
+        extensions
+            .get_ref::<SecureTransport>()
+            .and_then(SecureTransport::client_hello)
     };
+    hello
+        .map(|hello| tls_display_info(extensions, hello))
+        .transpose()
+}
 
+pub(super) async fn get_tls_inner_display_info(
+    extensions: &Extensions,
+) -> Result<Option<TlsDisplayInfo>, BoxError> {
+    if !extensions
+        .get_ref::<rama::tls::server::ServerEchAccepted>()
+        .is_some_and(|value| value.0)
+    {
+        return Ok(None);
+    }
+    extensions
+        .get_ref::<SecureTransport>()
+        .and_then(SecureTransport::client_hello)
+        .map(|hello| tls_display_info(extensions, hello))
+        .transpose()
+}
+
+fn tls_display_info(
+    extensions: &Extensions,
+    hello: &ClientHello,
+) -> Result<TlsDisplayInfo, BoxError> {
     // TLS fingerprint display distinguishes the QUIC and TCP ClientHello namespaces.
     let from_quic = hello
         .extensions()
         .iter()
         .any(|ext| ext.id() == ExtensionId::QUIC_TRANSPORT_PARAMETERS);
-    let ja4 = Ja4::compute(extensions).context("ja4 compute")?;
-    let ja3 = Ja3::compute(extensions).context("ja3 compute")?;
-    let peet = PeetPrint::compute(extensions).context("peet print compute")?;
+    let ja4 = Ja4::compute_from_client_hello(hello).context("ja4 compute")?;
+    let ja3 = Ja3::compute_from_client_hello(hello).context("ja3 compute")?;
+    let peet = PeetPrint::compute_from_client_hello(hello).context("peet print compute")?;
 
-    Ok(Some(TlsDisplayInfo {
+    Ok(TlsDisplayInfo {
         transport: if from_quic { "quic" } else { "tcp" },
         completeness: extensions
             .get_ref::<QuicObservation>()
@@ -520,7 +549,7 @@ pub(super) async fn get_tls_display_info(
                 },
             })
             .collect::<Vec<_>>(),
-    }))
+    })
 }
 
 #[cfg(test)]

@@ -487,12 +487,13 @@ impl QuicClientConfig {
 }
 
 pub(crate) struct QuicServerConfig {
+    ech: bool,
     /// The certificate issued for this connection, installed on its session; without one the
     /// contexts carry the identity.
     issued: Option<IssuedCertificate>,
     /// One context per standardized version: BoringSSL resumes a session only under the
     /// session-ID context that issued it, which scopes tickets by version (RFC 9369 §5).
-    contexts: [SslContext; 2],
+    contexts: [Arc<SslContext>; 2],
     early_data: bool,
     early_data_context: Option<[u8; 32]>,
     store_peer_chain: bool,
@@ -503,7 +504,7 @@ pub(crate) struct QuicServerConfig {
 /// the contexts, and with them the session tickets they issue.
 pub(crate) struct QuicServerCertIssuer {
     data: TlsAcceptorData,
-    contexts: [SslContext; 2],
+    contexts: [Arc<SslContext>; 2],
     early_data: bool,
     early_data_context: Option<[u8; 32]>,
     initializer: Option<HandshakeInitializer>,
@@ -520,9 +521,20 @@ pub(crate) fn server_config_from_rama(
         .as_extensions()
         .get_ref::<HandshakeInitializer>()
         .cloned();
+    if let Some(provider) = config
+        .as_extensions()
+        .get_ref::<rama_tls_boring::server::BoringServerEchKeys>()
+    {
+        return Ok(ServerCrypto::Fixed(Arc::new(QuicServerConfig::with_ech(
+            &data,
+            provider,
+            options,
+            initializer,
+        )?)));
+    }
     Ok(if data.issues_certificates() {
         ServerCrypto::Resolver(Arc::new(QuicServerCertIssuer {
-            contexts: contexts(|| data.acceptor_builder_without_identity(), options)?,
+            contexts: contexts(|| data.acceptor_builder_without_identity(), options)?.map(Arc::new),
             data,
             early_data: options.early_data,
             early_data_context: options.early_data_context,
@@ -549,6 +561,25 @@ fn acceptor_data(
 }
 
 impl QuicServerConfig {
+    fn with_ech(
+        data: &TlsAcceptorData,
+        provider: &rama_tls_boring::server::BoringServerEchKeys,
+        options: TlsOptions,
+        initializer: Option<HandshakeInitializer>,
+    ) -> Result<Self, TlsConfigError> {
+        let [v1, v2] = contexts(|| data.callback_acceptor_builder(true), options)?;
+        let native = [provider.0.bind_context(v1)?, provider.0.bind_context(v2)?];
+        Ok(Self {
+            ech: true,
+            issued: None,
+            contexts: native,
+            early_data: options.early_data,
+            early_data_context: options.early_data_context,
+            store_peer_chain: data.stores_client_certificate_chain(),
+            initializer,
+        })
+    }
+
     /// A fixed identity; [`server_config_from_rama`] also takes certificate issuers.
     #[cfg(test)]
     pub(crate) fn from_rama(
@@ -556,6 +587,12 @@ impl QuicServerConfig {
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
         let data = acceptor_data(config, options)?;
+        if let Some(provider) = config
+            .as_extensions()
+            .get_ref::<rama_tls_boring::server::BoringServerEchKeys>()
+        {
+            return Self::with_ech(&data, provider, options, None);
+        }
         if data.issues_certificates() {
             return Err(TlsConfigError::UnsupportedDynamicConfig);
         }
@@ -568,8 +605,10 @@ impl QuicServerConfig {
         initializer: Option<HandshakeInitializer>,
     ) -> Result<Self, TlsConfigError> {
         Ok(Self {
+            ech: false,
             issued: None,
-            contexts: contexts(|| data.clone().into_static_acceptor_builder(), options)?,
+            contexts: contexts(|| data.clone().into_static_acceptor_builder(), options)?
+                .map(Arc::new),
             early_data: options.early_data,
             early_data_context: options.early_data_context,
             store_peer_chain: data.stores_client_certificate_chain(),
@@ -708,6 +747,7 @@ impl crypto::ServerConfigResolver for QuicServerCertIssuer {
 impl QuicServerCertIssuer {
     fn config_with(&self, certificate: IssuedCertificate) -> Arc<dyn crypto::ServerConfig> {
         Arc::new(QuicServerConfig {
+            ech: false,
             issued: Some(certificate),
             contexts: self.contexts.clone(),
             early_data: self.early_data,
@@ -728,11 +768,14 @@ impl QuicServerConfig {
         let unsupported = || TransportError::INTERNAL_ERROR("unsupported QUIC version");
         let wire = packet::wire(negotiated).ok_or_else(unsupported)?;
         let early_wire = packet::wire(original).ok_or_else(unsupported)?;
-        let context = match negotiated {
-            Version::V2 => &self.contexts[1],
-            _ => &self.contexts[0],
-        };
+        let context = &self.contexts[usize::from(negotiated == Version::V2)];
         let mut ssl = Ssl::new(context).map_err(|error| crypto_error(error.into()))?;
+        if self.ech {
+            rama_tls_boring::server::capture_client_hello(&mut ssl).map_err(|error| {
+                TransportError::INTERNAL_ERROR("capture effective ClientHello")
+                    .with_cause(ArcError::from_box_error(error))
+            })?;
+        }
         if let Some(certificate) = &self.issued {
             certificate.install(&mut ssl).map_err(|error| {
                 TransportError::INTERNAL_ERROR("install the issued certificate")

@@ -404,8 +404,18 @@ impl UserAgentDatabase {
         // needs a captured connection for this transport and context.
         if request.pins.connection.is_none() {
             let context = flow_connection_context(&request.flow);
-            matching.retain(|(_profile, analysis, _distance)| {
-                !connection_candidates(analysis, &context, request.required, true).is_empty()
+            matching.retain(|(profile, analysis, _distance)| {
+                self.request_shape_cache(profile).is_some_and(|shapes| {
+                    !connection_candidates(
+                        analysis,
+                        &shapes,
+                        &context,
+                        request.required,
+                        true,
+                        false,
+                    )
+                    .is_empty()
+                })
             });
             if matching.is_empty() {
                 return Err(SelectionError::IncompatibleConnectionContext);
@@ -522,6 +532,18 @@ impl SelectedProfile {
         seed: ProfileSeed,
         key: DrawKey,
     ) -> Result<ConnectionSelection, SelectionError> {
+        self.connection_with_ech(context, seed, key, false)
+    }
+
+    /// Prefer matched ECH pairs only when the backend has a matching endpoint
+    /// configuration and caller policy enables ECH. Otherwise draw the ordinary offer.
+    pub fn connection_with_ech(
+        &self,
+        context: &ConnectionContext,
+        seed: ProfileSeed,
+        key: DrawKey,
+        ech: bool,
+    ) -> Result<ConnectionSelection, SelectionError> {
         let analysis = self
             .profile
             .captured
@@ -529,9 +551,11 @@ impl SelectedProfile {
             .ok_or(SelectionError::MissingProfile)?;
         let mut scopes = connection_candidates(
             analysis,
+            &self.request_shapes,
             context,
             self.required,
             self.pins.connection.is_none(),
+            ech,
         );
         if let Some(pin) = self.pins.connection {
             scopes.retain(|(_index, scope)| {
@@ -546,6 +570,12 @@ impl SelectedProfile {
             }
         } else if scopes.is_empty() {
             return Err(SelectionError::IncompatibleConnectionContext);
+        } else if ech
+            && scopes
+                .iter()
+                .any(|(index, _)| self.request_shapes.ech_connection(analysis, *index))
+        {
+            scopes.retain(|(index, _)| self.request_shapes.ech_connection(analysis, *index));
         }
         scopes.sort_unstable_by_key(|(_index, scope)| scope.id);
         let mut scope_draw = ProfileDraw::new(
@@ -609,7 +639,7 @@ impl SelectedProfile {
         let variant = capture.id;
         #[cfg(feature = "tls")]
         let capture = extension_order::draw_extension_order(
-            scope,
+            self.request_shapes.tls_order_scope(analysis, scope_index),
             capture,
             &mut ProfileDraw::new(
                 seed,
@@ -982,9 +1012,11 @@ fn request_scope_usable(analysis: &AnalyzedProfile, index: usize, protocol: Vers
 /// Connection scopes of `analysis` that can open a connection for `required` in `context`.
 fn connection_candidates<'a>(
     analysis: &'a AnalyzedProfile,
+    shapes: &RequestShapeCache,
     context: &ConnectionContext,
     required: CapabilitySet,
     lower_h2: bool,
+    ech: bool,
 ) -> Vec<(usize, &'a AnalyzedProfileScope)> {
     let candidates = |required| {
         analysis
@@ -993,6 +1025,8 @@ fn connection_candidates<'a>(
             .enumerate()
             .filter(|(index, scope)| {
                 scope.context.flow.is_none()
+                    && (shapes.ordinary_connection(analysis, *index)
+                        || (ech && shapes.ech_connection(analysis, *index)))
                     && connection_context_matches(&scope.context.connection, context)
                     && scope.observations.domain == CanonicalDomain::Joint
                     && connection_scope_supports(analysis, *index, required)

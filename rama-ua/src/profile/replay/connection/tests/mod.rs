@@ -257,6 +257,8 @@ fn selected_h3_settings_keep_reserved_literals_and_order() {
 fn unsupported_connection_components_never_certify_exact_replay() {
     let prepared = PreparedConnectionComponents {
         #[cfg(feature = "tls")]
+        tls_outer: None,
+        #[cfg(feature = "tls")]
         tls: None,
         quic_parameters: None,
         h3_peer_settings: None,
@@ -580,4 +582,85 @@ fn h3_settings_generation_requires_enough_samples_and_exact_binding() {
     let second =
         OrderedProtocolCapture::from_canonical(&values[1], OrderCaptureLimits::default()).unwrap();
     evidence.compile(&second, &mut test_draw()).unwrap_err();
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn unsupported_ech_cipher_is_reported_and_outer_order_still_transforms() {
+    use crate::profile::capture::tls::{
+        TlsCaptureTransport, TlsCapturedExtension, TlsCapturedExtensionValue as Value,
+    };
+    use crate::profile::replay::request::LoweredProfileItem;
+    use rama_tls::{CipherSuite, ExtensionId, ProtocolVersion};
+
+    let limits = TlsCaptureLimits::default();
+    let mut outer = TlsCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        transport: TlsCaptureTransport::Tcp,
+        protocol_version: u16::from(ProtocolVersion::TLSv1_2),
+        ciphers: vec![u16::from(CipherSuite::TLS13_AES_128_GCM_SHA256)].into(),
+        compression: vec![0].into(),
+        extensions: vec![
+            TlsCapturedExtension {
+                id: u16::from(ExtensionId::ENCRYPTED_CLIENT_HELLO),
+                value: Value::EchOuter {
+                    kdf: 1,
+                    aead: 1,
+                    enc: 32,
+                    payload: 144,
+                },
+            },
+            TlsCapturedExtension {
+                id: u16::from(ExtensionId::SUPPORTED_VERSIONS),
+                value: Value::U16List(vec![u16::from(ProtocolVersion::TLSv1_3)].into()),
+            },
+        ]
+        .into(),
+    };
+    let inner = outer
+        .ech_inner_from_outer()
+        .unwrap()
+        .canonical(limits)
+        .unwrap();
+    // SCSV is named by Rama but is not an ordinary native cipher-table entry.
+    // The raw native path retains it; never silently project it away.
+    outer.ciphers = vec![0x1301, 0x00ff].into();
+    assert!(outer.ech_inner_from_outer().is_none());
+    let mut pair = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Connection,
+        slots: vec![
+            CapturedSlot {
+                kind: CapturedSlotKind::TcpTls,
+                value: inner.clone(),
+            },
+            CapturedSlot {
+                kind: CapturedSlotKind::TlsOuter,
+                value: outer.canonical(limits).unwrap(),
+            },
+        ]
+        .into(),
+    };
+    assert!(
+        !pair
+            .map_ech_pair(limits, |outer| outer.extensions.reverse())
+            .unwrap()
+    );
+    assert_eq!(pair.slots[0].value.bytes, inner.bytes);
+    outer.extensions.reverse();
+    assert_eq!(
+        pair.slots[1].value.bytes,
+        outer.canonical(limits).unwrap().bytes
+    );
+    let mut prepared = selection(pair.canonical(JointCaptureLimits::default()).unwrap())
+        .prepare_components()
+        .unwrap();
+    prepared.use_ech_outer_for_replay().unwrap();
+    assert_eq!(prepared.tls, Some(outer));
+    assert!(prepared.tls_outer.is_none());
+    assert!(prepared.preservation_report.differences.contains(
+        &ProfilePreservationDifference::LoweredProfileItem {
+            item: LoweredProfileItem::TlsEchInner
+        }
+    ));
 }

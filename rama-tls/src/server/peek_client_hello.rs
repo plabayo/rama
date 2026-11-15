@@ -419,6 +419,61 @@ pub struct InputWithClientHello<Input> {
     pub client_hello: ClientHello,
 }
 
+/// Store the outer, wire ClientHello before passing the replayable input to a TLS
+/// acceptor. This layer does not decrypt ECH: the TLS backend supplies the
+/// effective inner ClientHello after accepting ECH. Without ECH, the wire hello
+/// is the ordinary ClientHello.
+///
+/// Enable only when the wire view is needed in addition to the backend's
+/// effective ClientHello.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct StoreOuterClientHelloLayer;
+
+impl StoreOuterClientHelloLayer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl<S: Clone> rama_core::Layer<S> for StoreOuterClientHelloLayer {
+    type Service = PeekTlsClientHelloService<StoreOuterClientHelloService<S>, S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        PeekTlsClientHelloService::new(StoreOuterClientHelloService(inner.clone()))
+            .with_fallback(inner)
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        self.layer(inner)
+    }
+}
+
+/// Adapter used by [`StoreOuterClientHelloLayer`].
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct StoreOuterClientHelloService<S>(S);
+
+impl<S, Input> Service<InputWithClientHello<Input>> for StoreOuterClientHelloService<S>
+where
+    Input: ExtensionsRef + Send + 'static,
+    S: Service<Input>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, input: InputWithClientHello<Input>) -> Result<Self::Output, Self::Error> {
+        input
+            .input
+            .extensions()
+            .insert(crate::SecureTransport::with_client_hello(
+                input.client_hello,
+            ));
+        self.0.serve(input.input).await
+    }
+}
+
 #[cfg(test)]
 mod test {
     use rama_core::{
@@ -448,6 +503,35 @@ mod test {
     use super::*;
 
     type PeekedCursor = TlsClientHelloPrefixedIo<ServiceInput<std::io::Cursor<Vec<u8>>>>;
+
+    #[tokio::test]
+    async fn outer_capture_preserves_input_on_success_and_peek_failure() {
+        use rama_core::Layer as _;
+
+        for (bytes, maximum, captured) in [
+            (CH_ONE_ONE_ONE_ONE.to_vec(), kib(256), true),
+            (CH_ONE_ONE_ONE_ONE.to_vec(), 32, false),
+            (CH_ONE_ONE_ONE_ONE[..64].to_vec(), kib(256), false),
+            (vec![0x16, 3, 3, 0, 4, 2, 0, 0, 0], kib(256), false),
+            (b"plain input".to_vec(), kib(256), false),
+        ] {
+            let service = StoreOuterClientHelloLayer::new()
+                .into_layer(service_fn(|mut input: PeekedCursor| async move {
+                    let captured = input.extensions().contains::<crate::SecureTransport>();
+                    let mut bytes = Vec::new();
+                    input.read_to_end(&mut bytes).await?;
+                    Ok::<_, std::io::Error>((bytes, captured))
+                }))
+                .with_reassembly_config(
+                    ClientHelloReassemblyConfig::default().with_max_handshake_size(maximum),
+                );
+            let observed = service
+                .serve(ServiceInput::new(std::io::Cursor::new(bytes.clone())))
+                .await
+                .unwrap();
+            assert_eq!(observed, (bytes, captured));
+        }
+    }
 
     const CH_ONE_ONE_ONE_ONE: &[u8] = &[
         0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc, 0x03, 0x03, 0x02, 0x15, 0xfd, 0xe2,

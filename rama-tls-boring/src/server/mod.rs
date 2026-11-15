@@ -13,15 +13,20 @@
 mod acceptor_data;
 pub(crate) use acceptor_data::select_alpn_by_server_preference;
 #[doc(inline)]
-pub use acceptor_data::{IssuedCertificate, TlsAcceptorData};
+pub use acceptor_data::{
+    IssuedCertificate, TlsAcceptorData, capture_client_hello, captured_client_hello,
+};
 
 mod config;
+pub(crate) mod ech;
 #[doc(inline)]
 pub use config::{
     BoringServerCertCompression, BoringServerCertIssuer, BoringServerCipherSuites,
-    BoringServerConfigExt, BoringServerSignatureSchemes, BoringServerSupportedGroups,
-    BoringTlsAcceptorConfig, BoringTlsAuth,
+    BoringServerConfigExt, BoringServerEchKeys, BoringServerSignatureSchemes,
+    BoringServerSupportedGroups, BoringTlsAcceptorConfig, BoringTlsAuth,
 };
+#[doc(inline)]
+pub use ech::{EchServerKey, EchServerKeys, EchServerKeysProvider, ReloadableEchServerKeys};
 
 mod cert_issuer;
 #[doc(inline)]

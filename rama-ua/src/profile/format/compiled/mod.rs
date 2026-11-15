@@ -35,8 +35,10 @@ use crate::profile::{
 };
 
 const MAGIC: &[u8; 7] = b"RAMAUAC";
-/// Bumped whenever the encoding changes; sets in another version must be re-exported.
+/// Baseline encoding, retained byte-for-byte for existing embedded sets.
 const FORMAT_VERSION: u8 = 4;
+/// Same encoding with paired ECH slots, requiring a reader that understands tag 13.
+const ECH_FORMAT_VERSION: u8 = 5;
 // Fixed single-threaded parameters keep the output reproducible. The long window
 // lets identical captures shared by several profiles compress to back-references.
 const LEVEL: i32 = 19;
@@ -66,7 +68,22 @@ pub fn encode_compiled_profiles(profiles: &[AnalyzedProfile]) -> Result<Vec<u8>,
         );
     }
     let profiles: Vec<_> = profiles.iter().map(retained).collect();
-    let output = frame(&compile_set(&profiles)?)?;
+    let mut output = frame(&compile_set(&profiles)?)?;
+    for scope in profiles
+        .iter()
+        .flat_map(|profile| &profile.scopes)
+        .filter(|scope| {
+            scope.observations.domain == crate::profile::format::canonical::CanonicalDomain::Joint
+        })
+    {
+        if let Some(variant) = scope.observations.variants.first() {
+            let value = variant.value.canonical()?;
+            if crate::profile::capture::joint::has_ech_outer(value.as_ref())? {
+                output[MAGIC.len()] = ECH_FORMAT_VERSION;
+                break;
+            }
+        }
+    }
     // Ids not stored are recomputed at load, so export proves they come back exactly.
     let loaded = decode_compiled_profiles(&output)?;
     if loaded.len() != profiles.len() {
@@ -107,7 +124,7 @@ pub fn decode_compiled_profiles(bytes: &[u8]) -> Result<Vec<AnalyzedProfile>, Bo
         .strip_prefix(MAGIC)
         .and_then(<[u8]>::split_first)
         .ok_or(ProfileDataError::Invalid("compiled profile set magic"))?;
-    if version != FORMAT_VERSION {
+    if !matches!(version, FORMAT_VERSION | ECH_FORMAT_VERSION) {
         return Err(
             BoxError::from_static_str("unsupported compiled profile set format version")
                 .context_field("version", version)

@@ -10,6 +10,7 @@ app_insecure = "serve fp --bind 0.0.0.0:8080 -c 2048 -t 120 --rate 100 --throttl
 dockerfile = '../Dockerfile.h3'
 
 [env]
+RAMA_TLS_ECH_KEYS_FILE = '/app/ech-keys.json'
 # Recording remains opt-in through the DIAL9_ENABLED Fly secret.
 DIAL9_TRACE_DIR = '/tmp/dial9-traces'
 DIAL9_ROTATION_SECS = '60'
@@ -72,3 +73,8 @@ port = 443
 memory = '256mb'
 cpu_kind = 'shared'
 cpus = 1
+
+# Private key generations come from Fly secrets; DNS contains only retry_configs.
+[[files]]
+guest_path = '/app/ech-keys.json'
+secret_name = 'RAMA_TLS_ECH_KEYS'

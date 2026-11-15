@@ -462,6 +462,15 @@ impl crypto::Session for TlsSession {
             .is_init_finished()
             .then(|| self.inner.ssl().ech_accepted())
     }
+
+    fn effective_client_hello(&self) -> Option<rama_tls::client::ClientHello> {
+        self.inner
+            .ssl()
+            .is_init_finished()
+            .then(|| rama_tls_boring::server::captured_client_hello(self.inner.ssl()))
+            .flatten()
+    }
+
     fn handshake_summary(&self) -> Option<crypto::NegotiatedTlsParameters> {
         self.got_handshake_data
             .then(|| crypto::NegotiatedTlsParameters {

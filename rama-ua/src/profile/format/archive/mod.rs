@@ -1,5 +1,9 @@
 //! Portable retained evidence. Stored analysis is diagnostic; imports reanalyze
 //! the evidence under the caller's authorization partition and freshness window.
+//!
+//! Optional joint slots, including matched ECH outer evidence, retain archive
+//! version 1. Readers predating a slot reject that archive instead of silently
+//! discarding evidence. The capture revision is independent of this container.
 
 use ahash::{HashSet, HashSetExt as _};
 use std::{fmt, marker::PhantomData};

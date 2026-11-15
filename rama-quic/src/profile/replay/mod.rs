@@ -99,12 +99,44 @@ where
 {
     type Compiled = CompiledConnection;
 
+    fn ech_ready(&self, input: &Input) -> bool {
+        #[cfg(feature = "boring")]
+        {
+            if self.provider.pool_classifier() != BoringTlsProvider.pool_classifier()
+                || input
+                    .target_protocol()
+                    .is_none_or(|protocol| !protocol.is_secure())
+            {
+                return false;
+            }
+            let Some(target) = rama_net::ConnectorTargetInputExt::connector_target(input) else {
+                return false;
+            };
+            let effective = input.extensions().with_base(self.policy.as_extensions());
+            rama_tls::client::target_ech_config(&effective, &target, true)
+                .is_ok_and(|config| config.is_some())
+        }
+        #[cfg(not(feature = "boring"))]
+        {
+            let _ = input;
+            false
+        }
+    }
+
     fn compile(
         &self,
         input: &Input,
         selection: &ConnectionSelection,
         components: &mut PreparedConnectionComponents,
     ) -> Result<CompiledConnection, BoxError> {
+        if components.tls_outer.is_some() {
+            if !self.ech_ready(input) {
+                return Err(BoxError::from_static_str(
+                    "matched ECH profile needs an enabled endpoint configuration",
+                ));
+            }
+            components.use_ech_outer_for_replay()?;
+        }
         self.compile_recipe(input, selection, components)
     }
 }
@@ -157,7 +189,7 @@ impl CompiledConnectionProfile for CompiledConnection {
             ) && self.caller_tls_transport.is_some();
         };
         match component {
-            CapturedSlotKind::QuicTls => true,
+            CapturedSlotKind::QuicTls | CapturedSlotKind::TlsOuter => true,
             CapturedSlotKind::QuicFirstFlight => native.transport.as_ref().is_some_and(|profile| {
                 matches!(
                     profile.packetization().layout(),

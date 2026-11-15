@@ -226,8 +226,23 @@ pub(super) async fn get_report(
     {
         state.storage = None;
     }
+    let connection_only = parts.uri.query().is_some_and(|query| {
+        query
+            .as_encoded_str()
+            .split('&')
+            .any(|pair| pair == "connection_only=1")
+    });
+    let ech_accepted = parts
+        .extensions
+        .get_ref::<rama::tls::server::ServerEchAccepted>()
+        .map_or(
+            "unknown",
+            |accepted| if accepted.0 { "true" } else { "false" },
+        );
     let ja4h = get_ja4h_info(&parts);
-    let site_probes = site_probes(&state, &parts);
+    let site_probes = (!connection_only)
+        .then(|| site_probes(&state, &parts))
+        .flatten();
 
     let mut request_info = get_request_info(
         SecFetchMode::Navigate,
@@ -306,6 +321,25 @@ pub(super) async fn get_report(
         let mut tls_tables = tls_info.into();
         tables.append(&mut tls_tables);
     }
+    if let Some(accepted) = parts
+        .extensions
+        .get_ref::<rama::tls::server::ServerEchAccepted>()
+    {
+        tables.push(Table {
+            title: "Encrypted ClientHello".to_owned(),
+            rows: vec![("Accepted".to_owned(), accepted.0.to_string())],
+        });
+    }
+    if let Some(inner) = super::data::get_tls_inner_display_info(&parts.extensions)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?
+    {
+        let mut inner_tables: Vec<Table> = inner.into();
+        for table in &mut inner_tables {
+            table.title = format!("ECH Inner — {}", table.title);
+        }
+        tables.append(&mut inner_tables);
+    }
 
     if let Some(geo) = &geo {
         tables.extend(geo_tables(geo));
@@ -322,7 +356,8 @@ pub(super) async fn get_report(
     Ok(page(
         "🕵️ Fingerprint Report",
         (
-            script!(src = "/assets/script.js"),
+            (!connection_only).then(|| script!(src = "/assets/script.js")),
+            meta!(name = "rama-ech-accepted", content = ech_accepted),
             meta!(
                 name = "rama-h3-probe",
                 content = if state.probe_http3 {
@@ -648,6 +683,9 @@ pub(super) async fn post_api_fetch_number(
             "user_agent_info": user_agent_info,
             "request_info": request_info,
             "tls_info": tls_info,
+            "tls_inner_info": super::data::get_tls_inner_display_info(&parts.extensions).await
+                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?,
+            "ech_accepted": parts.extensions.get_ref::<rama::tls::server::ServerEchAccepted>().map(|value| value.0),
             "quic": http_info.quic,
             "quic_connection": http_info.quic_connection,
             "http_info": json!({
@@ -703,6 +741,9 @@ pub(super) async fn post_api_xml_http_request_number(
             "user_agent_info": user_agent_info,
             "request_info": request_info,
             "tls_info": tls_info,
+            "tls_inner_info": super::data::get_tls_inner_display_info(&parts.extensions).await
+                .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?,
+            "ech_accepted": parts.extensions.get_ref::<rama::tls::server::ServerEchAccepted>().map(|value| value.0),
             "quic": http_info.quic,
             "quic_connection": http_info.quic_connection,
             "http_info": json!({
@@ -803,6 +844,25 @@ pub(super) async fn form(
     if let Some(tls_info) = tls_info {
         let mut tls_tables = tls_info.into();
         tables.append(&mut tls_tables);
+    }
+    if let Some(accepted) = parts
+        .extensions
+        .get_ref::<rama::tls::server::ServerEchAccepted>()
+    {
+        tables.push(Table {
+            title: "Encrypted ClientHello".to_owned(),
+            rows: vec![("Accepted".to_owned(), accepted.0.to_string())],
+        });
+    }
+    if let Some(inner) = super::data::get_tls_inner_display_info(&parts.extensions)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?
+    {
+        let mut inner_tables: Vec<Table> = inner.into();
+        for table in &mut inner_tables {
+            table.title = format!("ECH Inner — {}", table.title);
+        }
+        tables.append(&mut inner_tables);
     }
 
     if let Some(geo) = &geo {
@@ -1386,14 +1446,15 @@ mod tests {
             .unwrap(),
         })
         .with_get("/report", get_report);
-        for (host, advertised) in [
-            ("fp.example.org", true),
-            ("fp.ss.example.org", false),
-            ("fp.xss.example.com", false),
+        for (host, path, advertised) in [
+            ("fp.example.org", "/report", true),
+            ("fp.ss.example.org", "/report", false),
+            ("fp.xss.example.com", "/report", false),
+            ("fp.example.org", "/report?connection_only=1", false),
         ] {
             let response = service
                 .serve(
-                    Request::get("/report")
+                    Request::get(path)
                         .header("host", host)
                         .header("user-agent", "site-probe-regression/1")
                         .body(Default::default())
@@ -1403,6 +1464,8 @@ mod tests {
                 .unwrap();
             let html = response.into_body().collect().await.unwrap().to_bytes();
             let html = std::str::from_utf8(&html).unwrap();
+            assert_eq!(html.contains("/assets/script.js"), path == "/report");
+            assert!(html.contains(r#"name="rama-ech-accepted""#));
             assert_eq!(
                 html.contains(r#"name="rama-fp-sites""#),
                 advertised,

@@ -201,12 +201,35 @@ where
 {
     type Compiled = CompiledConnection;
 
+    fn ech_ready(&self, input: &Input) -> bool {
+        if input
+            .target_protocol()
+            .is_none_or(|protocol| !protocol.is_secure())
+        {
+            return false;
+        }
+        let Some(target) = rama_net::ConnectorTargetInputExt::connector_target(input) else {
+            return false;
+        };
+        let effective = input.extensions().with_base(self.policy.as_extensions());
+        rama_tls::client::target_ech_config(&effective, &target, true)
+            .is_ok_and(|config| config.is_some())
+    }
+
     fn compile(
         &self,
         input: &Input,
         _selection: &ConnectionSelection,
         components: &mut PreparedConnectionComponents,
     ) -> Result<Self::Compiled, BoxError> {
+        if components.tls_outer.is_some() {
+            if !self.ech_ready(input) {
+                return Err(BoxError::from_static_str(
+                    "matched ECH profile needs an enabled endpoint configuration",
+                ));
+            }
+            components.use_ech_outer_for_replay()?;
+        }
         let Some(capture) = components.tls.as_ref() else {
             return Ok(CompiledConnection { tls: None });
         };
@@ -258,7 +281,11 @@ struct InputBindings {
 
 impl CompiledConnectionProfile for CompiledConnection {
     fn supports(&self, component: CapturedSlotKind) -> bool {
-        self.tls.is_some() && component == CapturedSlotKind::TcpTls
+        self.tls.is_some()
+            && matches!(
+                component,
+                CapturedSlotKind::TcpTls | CapturedSlotKind::TlsOuter
+            )
     }
 }
 

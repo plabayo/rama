@@ -34,7 +34,7 @@ pub struct TlsAcceptorService<S> {
 /// A native server context with the connection settings it was built for.
 #[derive(Debug, Clone)]
 struct Acceptor {
-    context: SslContext,
+    context: Arc<SslContext>,
     store_client_certificate_chain: bool,
 }
 
@@ -67,7 +67,12 @@ impl<S> TlsAcceptorService<S> {
 
     define_inner_service_accessors!();
 
-    fn acceptor(&self, extensions: &Extensions, resumable: bool) -> Result<Acceptor, BoxError> {
+    fn acceptor(
+        &self,
+        extensions: &Extensions,
+        resumable: bool,
+        shared: bool,
+    ) -> Result<Acceptor, BoxError> {
         let tls_config =
             TlsAcceptorData::try_from(BoringTlsAcceptorConfig::from_extensions(extensions))
                 .context("boring acceptor: build acceptor data from config")?
@@ -83,8 +88,19 @@ impl<S> TlsAcceptorService<S> {
             self.store_client_hello,
             tls_config.require_alpn,
         )?;
+        let context = builder.build().into_context();
+        let context = match extensions.get_ref::<super::BoringServerEchKeys>() {
+            Some(provider) if shared => provider.0.bind_context(context)?,
+            Some(provider) => {
+                // A connection override has only one handshake. Install its
+                // current generation without registering a short-lived context.
+                provider.0.snapshot().install(&context)?;
+                Arc::new(context)
+            }
+            None => Arc::new(context),
+        };
         Ok(Acceptor {
-            context: builder.build().into_context(),
+            context,
             store_client_certificate_chain: tls_config.store_client_certificate_chain,
         })
     }
@@ -96,12 +112,12 @@ impl<S> TlsAcceptorService<S> {
         merged: &Extensions,
     ) -> Result<Acceptor, BoxError> {
         if !BoringTlsAcceptorConfig::from_extensions(connection).is_empty() {
-            return self.acceptor(merged, false);
+            return self.acceptor(merged, false, false);
         }
         if let Some(acceptor) = self.shared.get() {
             return Ok(acceptor.clone());
         }
-        let acceptor = self.acceptor(merged, self.resumption)?;
+        let acceptor = self.acceptor(merged, self.resumption, true)?;
         Ok(self.shared.get_or_init(|| acceptor).clone())
     }
 }
@@ -132,7 +148,6 @@ where
             }
 
             let acceptor = self.connection_acceptor(stream.extensions(), &merged)?;
-
             let target_identity = stream
                 .extensions()
                 .get_ref::<SecureTransport>()
@@ -233,7 +248,26 @@ where
                 .map(SecureTransport::with_client_hello)
                 .unwrap_or_default();
 
+            let ech_accepted =
+                rama_tls::server::ServerEchAccepted::new(stream.ssl().ech_accepted());
             let stream = TlsStream::new(stream);
+            if merged.contains::<super::BoringServerEchKeys>() {
+                stream.extensions().insert(ech_accepted);
+            }
+            if ech_accepted.0
+                && let Some(outer) = stream
+                    .extensions()
+                    .get_ref::<SecureTransport>()
+                    .and_then(SecureTransport::client_hello)
+                    .cloned()
+            {
+                stream
+                    .extensions()
+                    .insert(rama_tls::server::EchServerObservation::new(
+                        outer,
+                        ech_accepted.0,
+                    ));
+            }
             stream.extensions().insert(secure_transport);
             stream.extensions().insert(negotiated_tls_params);
             stream.extensions().insert(StreamTransformed {

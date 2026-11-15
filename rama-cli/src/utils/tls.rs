@@ -23,6 +23,9 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use std::path::Path;
 
+mod ech;
+pub(crate) use ech::configure_server_ech_from_env;
+
 pub fn try_new_server_config(
     alpn: Option<Vec<ApplicationProtocol>>,
     scope: impl Into<WeakScope>,

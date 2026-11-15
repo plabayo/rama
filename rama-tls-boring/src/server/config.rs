@@ -23,6 +23,7 @@ pub struct BoringTlsAcceptorConfig<'a> {
     pub supported_groups: Option<&'a BoringServerSupportedGroups>,
     pub signature_schemes: Option<&'a BoringServerSignatureSchemes>,
     pub cert_compression: Option<&'a BoringServerCertCompression>,
+    pub ech_keys: Option<&'a BoringServerEchKeys>,
 }
 
 #[derive(FromExtensions)]
@@ -34,6 +35,10 @@ pub enum BoringTlsAuth<'a> {
 
 /// Boring specific tls setters.
 pub trait BoringServerConfigExt: Sized {
+    generate_set_and_with! {
+        /// Use prepared ECH server keys, shared with QUIC where configured.
+        fn ech_keys(self, provider: impl super::EchServerKeysProvider) -> Self;
+    }
     generate_set_and_with! {
         /// Issue server certs on the fly (from a CA or a custom [`DynamicCertIssuer`]),
         /// with optional in-memory caching.
@@ -62,6 +67,12 @@ pub trait BoringServerConfigExt: Sized {
 }
 
 impl BoringServerConfigExt for TlsServerConfig {
+    generate_set_and_with! {
+        fn ech_keys(mut self, provider: impl super::EchServerKeysProvider) -> Self {
+            self.insert(BoringServerEchKeys(std::sync::Arc::new(provider)));
+            self
+        }
+    }
     generate_set_and_with! {
         fn cert_issuer(mut self, data: ServerCertIssuerData) -> Self {
             self.insert(BoringServerCertIssuer(data));
@@ -118,3 +129,16 @@ pub struct BoringServerSignatureSchemes(pub Vec<SignatureScheme>);
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringServerCertCompression(pub Vec<CertificateCompressionAlgorithm>);
+
+/// A synchronous source of immutable prepared ECH key generations.
+#[derive(Clone, Extension)]
+#[extension(tags(tls))]
+#[non_exhaustive]
+pub struct BoringServerEchKeys(pub std::sync::Arc<dyn super::EchServerKeysProvider>);
+
+impl std::fmt::Debug for BoringServerEchKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoringServerEchKeys")
+            .finish_non_exhaustive()
+    }
+}

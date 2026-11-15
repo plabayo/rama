@@ -546,3 +546,68 @@ async fn selected_evidence_counts_each_request_and_keeps_retry_atomic() {
             .is_none()
     );
 }
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn accepted_ech_without_outer_keeps_requests_and_skips_only_that_connection() {
+    let ua = "ech-export/1";
+    let (database, hello) = tls_profile_database(ua);
+    let store = store(database);
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
+            request.into_body().collect().await.unwrap();
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+    for accepted in [false, true] {
+        let connection = store
+            .begin_connection_if_enabled(None, Protocol::HTTPS, None)
+            .unwrap();
+        service
+            .serve(
+                Request::builder()
+                    .uri("https://example.test/")
+                    .header("user-agent", ua)
+                    .header("sec-fetch-mode", "navigate")
+                    .extension(ConnectionId(connection))
+                    .extension(SecureTransport::with_client_hello(hello.clone()))
+                    .extension(rama_tls::server::ServerEchAccepted::new(accepted))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+    }
+    let day = profile_utc_day(SystemTime::now()).unwrap();
+    let mut export = ProfileExport::new(&store, &[1, 2].into(), &BTreeSet::new());
+    let compiled = export
+        .next_evidence(day, 14, [3; 32], ProfileAnalysisLimits::default())
+        .await
+        .unwrap()
+        .unwrap()
+        .analyze(false, day, 14, ProfileAnalysisLimits::default())
+        .unwrap();
+    for (requests, expected) in [(false, 1), (true, 2)] {
+        let total: u64 = compiled
+            .analysis
+            .scopes
+            .iter()
+            .filter(|scope| {
+                scope.flow.is_some() == requests
+                    && scope.observations.domain == CanonicalDomain::Joint
+            })
+            .map(|scope| scope.observations.counts.total)
+            .sum();
+        assert_eq!(total, expected);
+    }
+    assert!(
+        export
+            .next_evidence(day, 14, [3; 32], ProfileAnalysisLimits::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

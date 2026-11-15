@@ -64,6 +64,15 @@ pub mod dep {
     //!
     //! Exported for your convenience
 
+    pub mod zeroize {
+        //! Memory-clearing primitives for secret buffers and owned key material.
+        //!
+        //! Re-export of the [`zeroize`] crate.
+
+        #[doc(inline)]
+        pub use zeroize::*;
+    }
+
     #[cfg(feature = "aws-lc")]
     #[cfg_attr(docsrs, doc(cfg(feature = "aws-lc")))]
     pub mod aws_lc_rs {

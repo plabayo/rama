@@ -216,3 +216,49 @@ never `cp` or download onto the live path.
 
 > IP2Location LITE caps a token at **5 downloads / 24h**; if that (or any
 > download) fails, the script reuses the previously fetched file and carries on.
+
+## Encrypted ClientHello
+
+The four fp deployments accept ECH on `ech.fp.ramaproxy.org`,
+`h1.ech.fp.ramaproxy.org`, `h2.ech.fp.ramaproxy.org` and
+`h3.ech.fp.ramaproxy.org`. Their existing origins remain the baseline captures.
+Echo accepts ECH on its existing `echo.ramaproxy.org` hostname. Each deployment
+uses its existing baseline hostname as the ECH public name, which must also
+have a valid certificate for authenticated rejection and retry.
+
+Generate each application's key file with OpenSSL 3:
+
+```sh
+python3 scripts/ech_keygen.py --public-name fp.ramaproxy.org --output /secure/ech-keys.json
+```
+
+The command writes a mode-0600 private JSON file and prints only the public
+ECHConfigList for the DNS HTTPS record's `ech` parameter. It refuses to overwrite
+an existing file. Set the base64-encoded JSON as the Fly `RAMA_TLS_ECH_KEYS`
+secret using `fly secrets import --stage` through standard input. Do not put
+private key material in command arguments, source control, logs or DNS.
+The deployment mounts that secret at `RAMA_TLS_ECH_KEYS_FILE` and the entrypoint
+restricts access to the service user. Stage the secret before deploying these
+configs. Publish the HTTPS record only after acceptance is verified directly.
+
+The file is an array of `{ "config": "base64 ECHConfig", "private_key":
+"base64 raw X25519 key", "retry": true }` entries. It is bounded to one MiB;
+startup rejects malformed files, duplicate config IDs, mismatched keys, and
+sets with no retry key. `retry_configs()` is the exact public ECHConfigList
+advertised after rejection. DNS must publish that same list.
+
+For rotation, install both the old and new key, marking only the new one
+`retry: true`, then publish the new HTTPS record. Keep the old key through the
+DNS TTL and cache grace period before removing it. Never reuse an active config
+ID. For a running process, atomically replace the file and send SIGHUP; a failed
+reload retains the complete previous generation. Fly secret updates normally
+roll the Machine; stage the replacement secret first and deploy it. Existing
+native contexts retain their session state during in-process rotation.
+
+Profile capture revision remains unchanged: the matched inner/outer TLS slot
+adds evidence to the same UA profile without discarding its existing HTTP flows.
+Old observations and GREASE alone establish neither support nor non-support
+for real ECH, and cannot be counted as failed ECH attempts. Live `ech_accepted`
+is null when unmeasured, false for an observed non-accepted handshake, and true
+only when the backend accepted ECH. A complete accepted pair supplies the new
+TLS replay evidence; it does not require repeating every request flow.

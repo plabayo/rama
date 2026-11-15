@@ -59,21 +59,37 @@ impl CaptureLevel {
     }
 }
 
+// Append new kinds: declaration order and numeric tags are both wire contracts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum CapturedSlotKind {
+    /// Request header names, order and capture-safe value bindings.
     Headers,
+    /// Ordered QUIC transport parameters offered by the client.
     QuicParameters,
+    /// HTTP/3 SETTINGS sent on the client's control stream.
     Http3Settings,
+    /// QUIC version-negotiation information advertised by the client.
     QuicVersions,
+    /// Effective ClientHello over TCP; the decrypted inner when ECH is accepted.
     TcpTls,
+    /// Effective ClientHello over QUIC; the decrypted inner when ECH is accepted.
     QuicTls,
+    /// Initial HTTP/2 frames, including SETTINGS and connection flow control.
     Http2EarlyFrames,
+    /// Request pseudo-header names and their wire order.
     PseudoHeaders,
+    /// Request runtime observations that supplement the protocol captures.
     RuntimeMetadata,
+    /// Layout of the client's first QUIC flight, including packet and frame sizes.
     QuicFirstFlight,
+    /// Initial HTTP/3 stream, control-frame and QPACK instruction sequence.
     Http3Sequence,
+    /// One field imported from a legacy profile, with its original provenance.
     LegacyField,
+    /// Correlation between HTTP/3 startup state and the initial request.
     Http3Bootstrap,
+    /// Wire outer paired with the effective inner in the TLS slot of this connection.
+    TlsOuter,
 }
 
 impl CapturedSlotKind {
@@ -92,6 +108,7 @@ impl CapturedSlotKind {
             Self::Http3Sequence => 10,
             Self::LegacyField => 11,
             Self::Http3Bootstrap => 12,
+            Self::TlsOuter => 13,
         }
     }
 
@@ -110,6 +127,7 @@ impl CapturedSlotKind {
             10 => Ok(Self::Http3Sequence),
             11 => Ok(Self::LegacyField),
             12 => Ok(Self::Http3Bootstrap),
+            13 => Ok(Self::TlsOuter),
             _ => Err(ProfileDataError::Unsupported("joint slot kind")),
         }
     }
@@ -131,6 +149,7 @@ impl CapturedSlotKind {
             | Self::QuicFirstFlight
             | Self::RuntimeMetadata
             | Self::PseudoHeaders
+            | Self::TlsOuter
             | Self::TcpTls
             | Self::QuicTls
             | Self::Http2EarlyFrames => None,
@@ -195,7 +214,7 @@ impl CapturedSlot {
         }
         if matches!(
             self.kind,
-            CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
+            CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls | CapturedSlotKind::TlsOuter
         ) {
             #[cfg(feature = "tls")]
             {
@@ -267,7 +286,7 @@ fn validate_slot(
     }
     if matches!(
         slot.kind,
-        CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
+        CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls | CapturedSlotKind::TlsOuter
     ) {
         #[cfg(feature = "tls")]
         {
@@ -284,7 +303,8 @@ fn validate_slot(
             };
             if !matches!(
                 (slot.kind, capture.transport),
-                (CapturedSlotKind::TcpTls, TlsCaptureTransport::Tcp)
+                (CapturedSlotKind::TlsOuter, _)
+                    | (CapturedSlotKind::TcpTls, TlsCaptureTransport::Tcp)
                     | (CapturedSlotKind::QuicTls, TlsCaptureTransport::Quic)
             ) {
                 return Err(ProfileDataError::Invalid("joint TLS transport"));
@@ -401,6 +421,7 @@ fn encode_joint(
     for slot in &capture.slots {
         let current = match slot.kind {
             CapturedSlotKind::Headers
+            | CapturedSlotKind::TlsOuter
             | CapturedSlotKind::PseudoHeaders
             | CapturedSlotKind::RuntimeMetadata
             | CapturedSlotKind::LegacyField => None,
@@ -454,7 +475,73 @@ fn encode_joint(
         writer.bytes(&slot.value.bytes)?;
         previous = Some(slot.kind);
     }
+    #[cfg(feature = "tls")]
+    validate_ech_pair(capture, structural, limits.value_bytes)?;
     Ok(writer.finish())
+}
+
+#[cfg(feature = "tls")]
+fn validate_ech_pair(
+    joint: &JointCapture,
+    structural: bool,
+    maximum: usize,
+) -> Result<(), ProfileDataError> {
+    use crate::profile::capture::tls::TlsCapturedExtensionValue;
+    let Some(outer) = joint
+        .slots
+        .iter()
+        .find(|slot| slot.kind == CapturedSlotKind::TlsOuter)
+    else {
+        // Older evidence may contain an unpaired inner; selection must not use
+        // it as an ordinary wire offer.
+        return Ok(());
+    };
+    let decode = |slot: &CapturedSlot| {
+        if structural {
+            decode_tls_structure(&slot.value, maximum)
+        } else {
+            TlsCapture::from_canonical(
+                &slot.value,
+                TlsCaptureLimits {
+                    elements: maximum,
+                    bytes: maximum,
+                },
+            )
+        }
+    };
+    let outer = decode(outer)?;
+    let inner = joint
+        .slots
+        .iter()
+        .find(|slot| {
+            matches!(
+                slot.kind,
+                CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
+            )
+        })
+        .ok_or(ProfileDataError::Invalid(
+            "ECH outer without effective TLS companion",
+        ))?;
+    let inner = decode(inner)?;
+    fn ech(capture: &TlsCapture) -> Option<&TlsCapturedExtensionValue> {
+        capture
+            .extensions
+            .iter()
+            .find(|extension| {
+                extension.id == u16::from(rama_tls::ExtensionId::ENCRYPTED_CLIENT_HELLO)
+            })
+            .map(|extension| &extension.value)
+    }
+    if outer.transport != inner.transport
+        || !matches!(
+            ech(&outer),
+            Some(TlsCapturedExtensionValue::EchOuter { .. })
+        )
+        || !matches!(ech(&inner), Some(TlsCapturedExtensionValue::EchInner))
+    {
+        return Err(ProfileDataError::Invalid("invalid ECH inner/outer pair"));
+    }
+    Ok(())
 }
 
 fn decode_joint(
@@ -512,9 +599,24 @@ fn decode_joint(
     Ok(capture)
 }
 
-/// The slot values of a trusted joint capture, sharing its buffer. Unlike
-/// [`JointCapture::from_canonical`] the slots are not revalidated, so this needs
-/// no protocol support and suits sets validated when they were exported.
+/// Inspect the slot tags of an already validated tuple without requiring TLS support.
+#[cfg(feature = "embed-profiles")]
+pub(in crate::profile) fn has_ech_outer(value: &CanonicalValue) -> Result<bool, ProfileDataError> {
+    let limits = JointCaptureLimits::default();
+    let mut reader = CanonicalReader::new(&value.bytes, JOINT_DOMAIN)?;
+    let _level = reader.u8()?;
+    let _completeness = reader.u8()?;
+    let count = reader.count(limits.slots)?;
+    let mut paired = false;
+    for _ in 0..count {
+        paired |= reader.u16()? == CapturedSlotKind::TlsOuter.tag();
+        let _bytes = reader.bytes(limits.value_bytes)?;
+    }
+    reader.finish()?;
+    Ok(paired)
+}
+
+/// The slot values of a trusted joint capture, sharing its buffer without decoding TLS.
 #[cfg(feature = "embed-profiles")]
 pub(in crate::profile) fn joint_slot_values(
     value: &CanonicalValue,
@@ -538,6 +640,52 @@ pub(in crate::profile) fn joint_slot_values(
 }
 
 impl JointCapture {
+    /// Transform an outer order and regenerate its correlated native inner.
+    /// For unsupported pairs only the outer changes; captured inner evidence is
+    /// retained and the backend reports the mismatch during replay preparation.
+    #[cfg(feature = "tls")]
+    pub(in crate::profile) fn map_ech_pair(
+        &mut self,
+        limits: TlsCaptureLimits,
+        map: impl FnOnce(&mut TlsCapture),
+    ) -> Result<bool, ProfileDataError> {
+        let Some(outer_index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.kind == CapturedSlotKind::TlsOuter)
+        else {
+            return Ok(false);
+        };
+        let inner_index = self
+            .slots
+            .iter()
+            .position(|slot| {
+                matches!(
+                    slot.kind,
+                    CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
+                )
+            })
+            .ok_or(ProfileDataError::Invalid(
+                "ECH pair missing effective hello",
+            ))?;
+        let mut outer = TlsCapture::from_canonical(&self.slots[outer_index].value, limits)?;
+        let inner = TlsCapture::from_canonical(&self.slots[inner_index].value, limits)?;
+        let expected = outer
+            .ech_inner_from_outer()
+            .map(TlsCapture::with_grease_placeholders)
+            .transpose()?;
+        let compatible = expected.as_ref() == Some(&inner.with_grease_placeholders()?);
+        map(&mut outer);
+        if compatible {
+            let inner = outer
+                .ech_inner_from_outer()
+                .ok_or(ProfileDataError::Invalid("ECH order transformation"))?;
+            self.slots[inner_index].value = inner.canonical(limits)?;
+        }
+        self.slots[outer_index].value = outer.canonical(limits)?;
+        Ok(compatible)
+    }
+
     pub fn canonical(
         &self,
         limits: JointCaptureLimits,
@@ -625,7 +773,9 @@ pub(in crate::profile) fn normalize_stored_structure(
                         slot.value = normalize_header_structure(&slot.value, maximum)?;
                     }
                     #[cfg(feature = "tls")]
-                    CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls => {
+                    CapturedSlotKind::TcpTls
+                    | CapturedSlotKind::QuicTls
+                    | CapturedSlotKind::TlsOuter => {
                         slot.value = decode_tls_structure(&slot.value, maximum)?.structural(
                             TlsCaptureLimits {
                                 elements: maximum,

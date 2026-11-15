@@ -123,6 +123,19 @@ pub struct TlsAcceptorData {
 }
 
 impl TlsAcceptorData {
+    /// Install certificate selection after ECH decryption, including asynchronous
+    /// issuers. The transport must drive BoringSSL's asynchronous handshake API.
+    pub fn callback_acceptor_builder(
+        &self,
+        store_client_hello: bool,
+    ) -> Result<SslAcceptorBuilder, BoxError> {
+        self.config.cert_source.clone().install(
+            self.config.acceptor_builder()?,
+            store_client_hello,
+            self.config.require_alpn,
+        )
+    }
+
     /// Whether certificates are issued per handshake, which needs its ClientHello first.
     #[must_use]
     pub fn issues_certificates(&self) -> bool {
@@ -619,6 +632,28 @@ fn connection_state_index() -> Result<Index<Ssl, ConnectionState>, BoxError> {
 pub(super) fn bind_connection(ssl: &mut SslRef, state: ConnectionState) -> Result<(), BoxError> {
     ssl.set_ex_data(connection_state_index()?, state);
     Ok(())
+}
+
+/// Enable effective ClientHello capture on a session using the certificate
+/// callback installed by [`TlsAcceptorData::callback_acceptor_builder`].
+pub fn capture_client_hello(ssl: &mut SslRef) -> Result<(), BoxError> {
+    bind_connection(
+        ssl,
+        ConnectionState {
+            client_hello: Some(Arc::new(Mutex::new(None))),
+            target_identity: None,
+        },
+    )
+}
+
+/// The effective hello observed by the certificate callback; after accepted
+/// ECH this is the decrypted inner, never the wire outer.
+pub fn captured_client_hello(ssl: &SslRef) -> Option<RamaClientHello> {
+    ssl.ex_data(connection_state_index().ok()?)?
+        .client_hello
+        .as_ref()?
+        .lock()
+        .clone()
 }
 
 impl TryFrom<&rama_tls::server::TlsServerConfig> for TlsAcceptorData {

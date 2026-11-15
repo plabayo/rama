@@ -30,6 +30,10 @@ for arg do
         *) set -- "$@" "$arg" ;;
     esac
 done
+if [ -n "${RAMA_TLS_ECH_KEYS_FILE:-}" ]; then
+    chown 1000:1000 "$RAMA_TLS_ECH_KEYS_FILE"
+    chmod 0600 "$RAMA_TLS_ECH_KEYS_FILE"
+fi
 exec setpriv --reuid=1000 --regid=1000 --init-groups /app/rama "$@"
 EOF
 ENTRYPOINT ["/app/fly-entrypoint"]

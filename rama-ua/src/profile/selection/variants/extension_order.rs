@@ -80,6 +80,16 @@ pub(super) fn draw_extension_order(
     let limits = JointCaptureLimits::default();
     let tls_limits = TlsCaptureLimits::default();
     let mut joint = JointCapture::from_canonical(&capture, limits)?;
+    if joint
+        .slots
+        .iter()
+        .any(|slot| slot.kind == CapturedSlotKind::TlsOuter)
+    {
+        joint.map_ech_pair(tls_limits, |outer| {
+            outer.extensions = shuffle(&outer.extensions, pinned, draw);
+        })?;
+        return joint.canonical(limits);
+    }
     for slot in &mut joint.slots {
         if matches!(
             slot.kind,
@@ -177,10 +187,19 @@ mod tests {
 
     /// Raw evidence of every order, analyzed as an export would.
     fn analyzed() -> AnalyzedProfile {
+        analyzed_slots(
+            permutations(&FLOATING)
+                .iter()
+                .enumerate()
+                .map(|(connection, order)| vec![hello(order, connection)]),
+        )
+    }
+
+    fn analyzed_slots(captures: impl IntoIterator<Item = Vec<CapturedSlot>>) -> AnalyzedProfile {
         let key = ProfileKey::new("shuffling-browser");
         let mut profile = None;
         let mut windows = BTreeMap::<ValueId, (ProfileScopeEvidence, RetainedBucketWindow)>::new();
-        for (connection, order) in permutations(&FLOATING).iter().enumerate() {
+        for (connection, slots) in captures.into_iter().enumerate() {
             let prepared = ProfileCapture {
                 revision: CAPTURE_REVISION,
                 profile: key.clone(),
@@ -189,7 +208,7 @@ mod tests {
                 joint: JointCapture {
                     completeness: ProfileCaptureCompleteness::Complete,
                     level: CaptureLevel::Connection,
-                    slots: vec![hello(order, connection)].into(),
+                    slots: slots.into(),
                 },
             }
             .prepare(false, JointCaptureLimits::default())
@@ -236,7 +255,7 @@ mod tests {
                 })
                 .collect(),
         };
-        analyze_profile_evidence(
+        let analysis = analyze_profile_evidence(
             &evidence,
             false,
             [3; 32],
@@ -244,7 +263,152 @@ mod tests {
             14,
             ProfileAnalysisLimits::default(),
         )
-        .unwrap()
+        .unwrap();
+        // Keep old and new connection evidence together through the public archive path.
+        use crate::profile::format::archive::{
+            ProfileArchiveEntry, ProfileArchiveLimits, load_profile_archive_snapshot,
+        };
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "format_version": 1, "generated_day": 100, "horizon": 14,
+            "profiles": [ProfileArchiveEntry { evidence, sampler_seed: [3; 32] }],
+        }))
+        .unwrap();
+        let mut loaded =
+            load_profile_archive_snapshot(&bytes, false, ProfileArchiveLimits::default())
+                .unwrap()
+                .into_vec();
+        let restored = loaded.remove(0).analysis;
+        assert_eq!(
+            serde_json::to_value(&analysis).unwrap(),
+            serde_json::to_value(&restored).unwrap()
+        );
+        restored
+    }
+
+    #[test]
+    fn sparse_ech_pair_reuses_baseline_shuffle_and_keeps_inner_correlated() {
+        use super::super::shapes::RequestShapeCache;
+        use TlsCapturedExtensionValue as Value;
+        use rama_tls::{ExtensionId, ProtocolVersion};
+
+        let ids = [
+            ExtensionId::SERVER_NAME,
+            ExtensionId::ENCRYPTED_CLIENT_HELLO,
+            ExtensionId::SUPPORTED_VERSIONS,
+            ExtensionId::SUPPORTED_GROUPS,
+            ExtensionId::SIGNATURE_ALGORITHMS,
+        ]
+        .map(u16::from);
+        let mut captures = Vec::new();
+        for (connection, order) in permutations(&ids).iter().enumerate() {
+            let mut slot = hello(&FLOATING, connection);
+            let mut tls =
+                TlsCapture::from_canonical(&slot.value, TlsCaptureLimits::default()).unwrap();
+            for (extension, id) in tls.extensions[1..6].iter_mut().zip(order) {
+                extension.id = *id;
+                extension.value = match ExtensionId::from(extension.id) {
+                    ExtensionId::SERVER_NAME => Value::ServerName { present: true },
+                    ExtensionId::ENCRYPTED_CLIENT_HELLO => Value::EchOuter {
+                        kdf: 1,
+                        aead: 1,
+                        enc: 32,
+                        payload: 144,
+                    },
+                    ExtensionId::SUPPORTED_VERSIONS => Value::U16List(
+                        vec![
+                            u16::from(ProtocolVersion::TLSv1_3),
+                            u16::from(ProtocolVersion::TLSv1_2),
+                        ]
+                        .into(),
+                    ),
+                    ExtensionId::SUPPORTED_GROUPS => Value::U16List(vec![29, 23].into()),
+                    ExtensionId::SIGNATURE_ALGORITHMS => {
+                        Value::U16List(vec![0x0403, 0x0804].into())
+                    }
+                    _ => extension.value.clone(),
+                };
+            }
+            slot.value = tls.canonical(TlsCaptureLimits::default()).unwrap();
+            if connection == 0 {
+                captures.push(vec![
+                    CapturedSlot {
+                        kind: CapturedSlotKind::TcpTls,
+                        value: tls
+                            .ech_inner_from_outer()
+                            .unwrap()
+                            .canonical(TlsCaptureLimits::default())
+                            .unwrap(),
+                    },
+                    CapturedSlot {
+                        kind: CapturedSlotKind::TlsOuter,
+                        value: slot.value.clone(),
+                    },
+                ]);
+            }
+            captures.push(vec![slot]);
+        }
+        let analysis = analyzed_slots(captures);
+        #[cfg(feature = "embed-profiles")]
+        let analysis = {
+            let bytes = encode_compiled_profiles(slice::from_ref(&analysis)).unwrap();
+            let mut decoded = decode_compiled_profiles(&bytes).unwrap();
+            let restored = decoded.remove(0);
+            assert_eq!(analysis.scopes.len(), restored.scopes.len());
+            restored
+        };
+        let cache = RequestShapeCache::default();
+        let index = analysis
+            .scopes
+            .iter()
+            .enumerate()
+            .find(|(index, _)| cache.ech_connection(&analysis, *index))
+            .unwrap()
+            .0;
+        let paired = &analysis.scopes[index];
+        assert!(!paired.observations.shuffles_tls_extensions());
+        let baseline = cache.tls_order_scope(&analysis, index);
+        assert_ne!(baseline.id, paired.id);
+        assert!(baseline.observations.shuffles_tls_extensions());
+        let capture = paired.observations.variants[0]
+            .value
+            .canonical()
+            .unwrap()
+            .into_owned();
+        let mut orders = BTreeSet::new();
+        for key in 0..64 {
+            let mut draw = ProfileDraw::new(
+                ProfileSeed([5; 32]),
+                ProfileDrawContext {
+                    profile: analysis.id,
+                    analysis_revision: 4,
+                    scope: paired.id,
+                    key: DrawKey([key; 32]),
+                    domain: DrawDomain::TlsExtensions,
+                    slot: 0,
+                },
+            );
+            let drawn = draw_extension_order(baseline, capture.clone(), &mut draw).unwrap();
+            let joint =
+                JointCapture::from_canonical(&drawn, JointCaptureLimits::default()).unwrap();
+            let inner =
+                TlsCapture::from_canonical(&joint.slots[0].value, TlsCaptureLimits::default())
+                    .unwrap();
+            let outer =
+                TlsCapture::from_canonical(&joint.slots[1].value, TlsCaptureLimits::default())
+                    .unwrap();
+            assert_eq!(Some(inner), outer.ech_inner_from_outer());
+            let ids: Vec<_> = outer
+                .extensions
+                .iter()
+                .map(|extension| extension.id)
+                .collect();
+            assert!(is_grease_u16(ids[0]) && is_grease_u16(*ids.last().unwrap()));
+            orders.insert(ids);
+        }
+        assert!(
+            orders.len() > 16,
+            "sparse ECH evidence must not freeze extension order"
+        );
     }
 
     fn drawn_ids(scope: &AnalyzedProfileScope, key: u8) -> Vec<u16> {

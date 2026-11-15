@@ -44,6 +44,12 @@ impl TlsObservation {
     /// Retain one typed observation per observed connection. Repeated HTTP streams
     /// share this value instead of copying TLS fingerprints into every exchange.
     pub fn capture(source: &Extensions, observations: &rama_inspect::Observations) {
+        if let Some(accepted) = source.get_ref::<crate::server::ServerEchAccepted>() {
+            observations.get_or_insert(|| *accepted);
+        }
+        if let Some(outer) = source.get_ref::<crate::server::EchServerObservation>() {
+            observations.get_or_insert(|| outer.clone());
+        }
         if observations.contains::<Self>() {
             return;
         }

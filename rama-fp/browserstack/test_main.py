@@ -70,6 +70,30 @@ class NightlyTests(unittest.TestCase):
         self.assertEqual(receipts["000-0"]["status"], "failed")
         self.assertEqual(receipts["000-1"]["status"], "passed")
 
+    def test_ech_observation_reuses_completed_baseline_journey(self):
+        origin = "https://h3.fp.ramaproxy.org/"
+        observation = {"accepted": False, "status": "not_observed", "protocol": "h3"}
+        with patch.object(main, "run_ech_capture", return_value=observation) as capture:
+            code, receipts, _ = self.collect(
+                lambda *_args, **_kwargs: self.completed,
+                entrypoints=[(origin, "h3")],
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(receipts["000-0"]["ech"], observation)
+        self.assertTrue(receipts["000-0"]["journey_completed"])
+        capture.assert_called_once()
+        self.assertEqual(capture.call_args.args[1], main.ECH_ENTRYPOINTS[origin])
+
+    def test_ech_failure_does_not_erase_completed_baseline_evidence(self):
+        with patch.object(main, "run_ech_capture", side_effect=ValueError("no evidence")):
+            code, receipts, _ = self.collect(
+                lambda *_args, **_kwargs: self.completed,
+                entrypoints=[("https://h3.fp.ramaproxy.org/", "h3")],
+            )
+        self.assertEqual(code, 1)
+        self.assertTrue(receipts["000-0"]["journey_completed"])
+        self.assertEqual(receipts["000-0"]["failure_stage"], "ech_connection")
+
     def test_failed_cells_within_the_budget_are_reported_without_failing_the_job(self):
         def journey(_driver, origin, **_kwargs):
             if origin == "https://broken-0.invalid/":

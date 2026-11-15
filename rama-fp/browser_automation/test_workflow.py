@@ -68,6 +68,31 @@ def page_results(*, fetch="h3", xhr="h3", websocket="h2", probe="owned page echo
     }
 
 
+class EchCaptureTests(unittest.TestCase):
+    def test_acceptance_is_observed_without_repeating_http_flows(self):
+        driver = Mock()
+        result = Mock(protocols={"navigate": "h2"})
+        for accepted, status in (("true", "accepted"), ("false", "not_observed")):
+            driver.execute_script.return_value = accepted
+            with patch.object(workflow, "run_capture_flow", return_value=result) as capture:
+                observation = workflow.run_ech_capture(
+                    driver, "https://ech.example/", cookies={"storage": "value"},
+                    expected_protocol="h2",
+                )
+            self.assertEqual(observation["status"], status)
+            self.assertEqual(observation["accepted"], accepted == "true")
+            self.assertEqual(observation["protocol"], "h2")
+            self.assertFalse(capture.call_args.kwargs["all_flows"])
+            self.assertEqual(capture.call_args.kwargs["cookies"], {"storage": "value"})
+
+    def test_missing_server_evidence_is_not_classified_as_non_acceptance(self):
+        driver = Mock()
+        for value in (None, "", "unknown", "True"):
+            driver.execute_script.return_value = value
+            with patch.object(workflow, "run_capture_flow"), self.assertRaises(ValueError):
+                workflow.run_ech_capture(driver, "https://ech.example/")
+
+
 class PageResultTests(unittest.TestCase):
     def test_result_decodes_original_response_text_and_keeps_exact_probe(self):
         value = page_results(probe="per-page echo 🐢")
