@@ -64,3 +64,9 @@ x509-ocsp-der = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "browser-reference"
+path = "tests/browser-reference/main.rs"
+# A server fixture driven by rama-fp/browser_automation/ech_reference.py.
+test = false

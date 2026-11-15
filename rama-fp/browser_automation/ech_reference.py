@@ -75,7 +75,7 @@ def main():
         with (root / "server.log").open("w") as log:
             server = subprocess.Popen([
                 "cargo", "test", "-p", "rama-tls-boring", "--all-features",
-                "browser_ech_reference", "--lib", "--", "--ignored", "--nocapture",
+                "--test", "browser-reference", "--", "--nocapture",
             ], env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.monotonic() + 180
         while not (root / "ready.json").exists():

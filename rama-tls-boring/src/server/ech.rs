@@ -222,21 +222,14 @@ impl EchServerKeysProvider for ReloadableEchServerKeys {
 }
 
 #[cfg(test)]
+#[path = "../../tests/support/ech_keys.rs"]
+mod fixtures;
+
+#[cfg(test)]
 pub(crate) mod tests {
+    pub(crate) use super::fixtures::{SERVER_ECH_CONFIG, SERVER_ECH_KEY};
     use super::*;
     use rama_utils::octets::kib;
-    pub(crate) const SERVER_ECH_CONFIG: &[u8] = &[
-        0xfe, 0x0d, 0x00, 0x3a, 0x01, 0x00, 0x20, 0x00, 0x20, 0x7e, 0xfb, 0x5f, 0xee, 0xa2, 0xa2,
-        0x74, 0xb3, 0xff, 0xfe, 0x69, 0x51, 0x9e, 0xfa, 0xe1, 0xfa, 0x49, 0x8c, 0x61, 0x2c, 0xfa,
-        0xd0, 0x0f, 0x8c, 0x22, 0x87, 0x0e, 0xbc, 0xb0, 0x2d, 0x76, 0x25, 0x00, 0x08, 0x00, 0x01,
-        0x00, 0x01, 0x00, 0x01, 0x00, 0x03, 0x00, 0x07, 0x65, 0x63, 0x68, 0x2e, 0x63, 0x6f, 0x6d,
-        0x00, 0x00,
-    ];
-    pub(crate) const SERVER_ECH_KEY: &[u8] = &[
-        0xa7, 0x35, 0x44, 0x24, 0x6c, 0xfe, 0xb0, 0x53, 0x4c, 0x62, 0x7e, 0xca, 0x2e, 0x11, 0x8f,
-        0x56, 0x3c, 0xc0, 0x2e, 0x6a, 0xa2, 0xe7, 0xaf, 0x3a, 0x7d, 0xb4, 0x72, 0x13, 0x1e, 0x88,
-        0xb6, 0x85,
-    ];
 
     fn key(config: &[u8], retry: bool) -> EchServerKey<'_> {
         EchServerKey {
@@ -475,158 +468,5 @@ pub(crate) mod tests {
         assert!(!ssl.ech_accepted());
         assert_eq!(ssl.get_ech_retry_configs(), Some(current.retry_configs()));
         assert!(!server.unwrap());
-    }
-
-    #[tokio::test]
-    #[ignore = "driven by rama-fp/browser_automation/ech_reference.py with a fresh browser"]
-    async fn browser_ech_reference() {
-        use super::super::{BoringServerConfigExt as _, TlsAcceptorService};
-        use rama_core::{Service, ServiceInput, extensions::ExtensionsRef, service::service_fn};
-        use rama_net::address::Domain;
-        use rama_tls::{
-            SecureTransport,
-            server::{
-                GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData, ServerEchAccepted,
-                TlsServerConfig,
-            },
-        };
-        use rama_ua::profile::{
-            capture::completeness::ProfileCaptureCompleteness,
-            capture::tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
-        };
-        use tokio::{
-            io::{AsyncReadExt as _, AsyncWriteExt as _},
-            net::{TcpListener, TcpStream},
-        };
-
-        let dir = std::path::PathBuf::from(
-            std::env::var_os("RAMA_ECH_BROWSER_EVIDENCE").expect("evidence directory"),
-        );
-        let leaf = LeafCertRequest {
-            identities: ["origin.test", "baseline.test", "doh.test", "ech.com"]
-                .map(|host| Domain::try_from(host).unwrap().into())
-                .to_vec(),
-            ..Default::default()
-        };
-        let auth =
-            ServerAuthData::new_generated(GeneratedServerAuthConfig::SelfSignedLeaf(leaf)).unwrap();
-        let cert = rama_boring::x509::X509::from_der(&auth.cert_chain[0]).unwrap();
-        let private =
-            rama_boring::pkey::PKey::private_key_from_der(auth.private_key.secret_der()).unwrap();
-        std::fs::write(dir.join("server.pem"), cert.to_pem().unwrap()).unwrap();
-        std::fs::write(
-            dir.join("server-key.pem"),
-            private.private_key_to_pem_pkcs8().unwrap(),
-        )
-        .unwrap();
-        let keys = EchServerKeys::new([key(SERVER_ECH_CONFIG, true)]).unwrap();
-        std::fs::write(dir.join("ech-config.bin"), keys.retry_configs()).unwrap();
-        let output = dir.clone();
-        let service =
-            TlsAcceptorService::new(
-                TlsServerConfig::new()
-                    .with_server_auth(auth)
-                    .with_alpn_http_1()
-                    .with_ech_keys(keys),
-                service_fn(
-                    move |mut stream: crate::TlsStream<ServiceInput<TcpStream>>| -> std::pin::Pin<
-                        Box<dyn Future<Output = Result<(), BoxError>> + Send>,
-                    > {
-                        let dir = output.clone();
-                        Box::pin(async move {
-                            let accepted = stream
-                                .extensions()
-                                .get_ref::<ServerEchAccepted>()
-                                .unwrap()
-                                .0;
-                            let hello = stream
-                                .extensions()
-                                .get_ref::<SecureTransport>()
-                                .unwrap()
-                                .client_hello()
-                                .unwrap();
-                            let name = if accepted { "inner" } else { "baseline" };
-                            let capture = TlsCapture::capture(
-                                ProfileCaptureCompleteness::Complete,
-                                TlsCaptureTransport::Tcp,
-                                hello,
-                                TlsCaptureLimits::default(),
-                            )?;
-                            std::fs::write(
-                                dir.join(format!("{name}.json")),
-                                serde_json::to_vec_pretty(&capture)?,
-                            )?;
-                            std::fs::write(
-                                dir.join(format!("{name}.canonical")),
-                                &capture.canonical(TlsCaptureLimits::default())?.bytes,
-                            )?;
-                            if let Some(observation) = stream
-                                .extensions()
-                                .get_ref::<rama_tls::server::EchServerObservation>(
-                            ) {
-                                let outer = TlsCapture::capture(
-                                    ProfileCaptureCompleteness::Complete,
-                                    TlsCaptureTransport::Tcp,
-                                    &observation.outer,
-                                    TlsCaptureLimits::default(),
-                                )?;
-                                std::fs::write(
-                                    dir.join(format!("{name}-outer.json")),
-                                    serde_json::to_vec_pretty(&outer)?,
-                                )?;
-                                std::fs::write(
-                                    dir.join(format!("{name}-outer.canonical")),
-                                    &outer.canonical(TlsCaptureLimits::default())?.bytes,
-                                )?;
-                            }
-                            let mut bytes = [0; kib(16)];
-                            let n = stream.read(&mut bytes).await?;
-                            if n != 0 {
-                                let body = format!("ECH accepted: {accepted}");
-                                let response = format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                                    body.len()
-                                );
-                                stream.write_all(response.as_bytes()).await?;
-                                stream.flush().await?;
-                            }
-                            Ok::<_, BoxError>(())
-                        })
-                    },
-                ),
-                true,
-            );
-        let service = service.boxed();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        std::fs::write(
-            dir.join("ready.json"),
-            serde_json::to_vec(&serde_json::json!({"port": listener.local_addr().unwrap().port()}))
-                .unwrap(),
-        )
-        .unwrap();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
-        while let Ok(Ok((stream, _))) = tokio::time::timeout_at(deadline, listener.accept()).await {
-            let service = service.clone();
-            tokio::spawn(async move {
-                let mut raw = vec![0; kib(64)];
-                let hello = loop {
-                    let n = stream.peek(&mut raw).await.unwrap();
-                    if n == 0 {
-                        return;
-                    }
-                    if let Ok(hello) = rama_tls::client::parse_client_hello_handshake(&raw[..n]) {
-                        break hello;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                };
-                let input = ServiceInput::new(stream);
-                input
-                    .extensions()
-                    .insert(SecureTransport::with_client_hello(hello));
-                if let Err(error) = service.serve(input).await {
-                    eprintln!("reference handshake failed: {error}");
-                }
-            });
-        }
     }
 }
