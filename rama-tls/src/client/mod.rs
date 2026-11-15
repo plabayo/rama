@@ -75,9 +75,10 @@ use rama_crypto::pki_types::CertificateDer;
 use super::{
     CertificateCompressionAlgorithm, CipherSuite, ProtocolVersion, SignatureScheme, SupportedGroup,
 };
+use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_core::extensions::{Extension, Extensions};
-use rama_net::address::{Domain, Host};
-use rama_net::client::pool::ReuseKey;
+use rama_net::address::{Domain, Host, ProxyAddress};
+use rama_net::client::{ConnectionError, ConnectionErrorKind, pool::ReuseKey};
 use rama_net::tls::ApplicationProtocol;
 use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
@@ -115,6 +116,20 @@ pub struct NegotiatedTlsParameters {
     /// The ServerHello a client received, when its configuration asked to store it and the
     /// backend can observe handshake messages.
     pub server_hello: Option<crate::server::ServerHello>,
+}
+
+/// Refuse a connection to a TLS `proxy` that shows no [`NegotiatedTlsParameters`].
+///
+/// Credentials must not travel over a connection that cannot be shown to be encrypted, so
+/// no evidence of TLS counts as no TLS. A proxy reached in plaintext passes.
+pub fn verify_proxy_tls(proxy: &ProxyAddress, conn: &Extensions) -> Result<(), ConnectionError> {
+    if !proxy.protocol.is_secure() || conn.contains::<NegotiatedTlsParameters>() {
+        return Ok(());
+    }
+    Err(ConnectionError::transport(
+        BoxError::from_static_str("TLS proxy connection is missing negotiated TLS parameters"),
+        ConnectionErrorKind::Protocol,
+    ))
 }
 
 /// Algorithms selected by a TLS handshake.

@@ -228,6 +228,19 @@ pub struct PooledConnector<S, P, R> {
     wait_for_pool_timeout: Option<Duration>,
 }
 
+/// Clones share the pool, so the connectors of several users of one peer reuse each
+/// other's connections to it.
+impl<S: Clone, P: Clone, R: Clone> Clone for PooledConnector<S, P, R> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            pool: self.pool.clone(),
+            req_to_conn_id: self.req_to_conn_id.clone(),
+            wait_for_pool_timeout: self.wait_for_pool_timeout,
+        }
+    }
+}
+
 impl<S, P, R> PooledConnector<S, P, R> {
     define_inner_service_accessors!();
 

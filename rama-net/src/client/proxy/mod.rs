@@ -8,6 +8,18 @@ mod bypass;
 #[doc(inline)]
 pub use bypass::{BypassRules, ProxyBypassLayer, ProxyBypassService};
 
+mod connect;
+#[doc(inline)]
+pub use connect::{connect_to_proxy, proxy_http_version, proxy_request};
+
+mod direct;
+#[doc(inline)]
+pub use direct::{DirectOnlyConnector, DirectOnlyConnectorLayer};
+
+mod maybe;
+#[doc(inline)]
+pub use maybe::{MaybeProxied, MaybeProxiedConnector, ProxiedRoute, ProxySelector};
+
 mod env;
 #[doc(inline)]
 pub use env::{NoProxyEnvLayer, NoProxyEnvService, ProxyEnvLayer, ProxyEnvService};

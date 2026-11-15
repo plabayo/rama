@@ -59,6 +59,8 @@ pub use peek::{DatagramPeekInput, PrefixedDatagramSocket, RetainedDatagram};
 mod packet;
 pub use packet::SendDatagram;
 
+mod maybe_proxied;
+
 mod packet_socket;
 pub use packet_socket::{UdpPacketSender, UdpPacketSocket};
 

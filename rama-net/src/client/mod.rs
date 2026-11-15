@@ -44,15 +44,17 @@ pub use connect_request::ConnectRequest;
 mod proxy;
 #[doc(inline)]
 pub use proxy::{
-    BypassRules, DEFAULT_SYSTEM_PROXY_CONFIG_TTL, EstablishedProxyRoute, LazyProxyAddressLayer,
-    LazyProxyAddressService, NoProxyEnvLayer, NoProxyEnvService, ProxyAddressLayer,
+    BypassRules, DEFAULT_SYSTEM_PROXY_CONFIG_TTL, DirectOnlyConnector, DirectOnlyConnectorLayer,
+    EstablishedProxyRoute, LazyProxyAddressLayer, LazyProxyAddressService, MaybeProxied,
+    MaybeProxiedConnector, NoProxyEnvLayer, NoProxyEnvService, ProxiedRoute, ProxyAddressLayer,
     ProxyAddressService, ProxyBypassLayer, ProxyBypassService, ProxyEnvLayer, ProxyEnvService,
     ProxyRoute, ProxyRouteConnectError, ProxyRouteContext, ProxyRouteFailureCache,
     ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheConnector, ProxyRouteFailureCacheLayer,
     ProxyRouteFailureCacheScope, ProxyRouteFailureCachedError, ProxyRouteIndex, ProxyRoutes,
     ProxyRoutesConnector, ProxyRoutesConnectorLayer, ProxyRoutesLayer, ProxyRoutesService,
-    SystemProxyConfig, SystemProxyConnectLayer, SystemProxyConnectService,
+    ProxySelector, SystemProxyConfig, SystemProxyConnectLayer, SystemProxyConnectService,
     SystemProxyInvalidBypassRulePolicy, SystemProxyLayer, SystemProxyPacDisabled,
     SystemProxyPacDisabledResolver, SystemProxyPacRequest, SystemProxyPacResolver,
-    SystemProxyPacService, SystemProxyService, proxy_request_uri,
+    SystemProxyPacService, SystemProxyService, connect_to_proxy, proxy_http_version, proxy_request,
+    proxy_request_uri,
 };
