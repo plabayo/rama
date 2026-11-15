@@ -274,17 +274,19 @@ pub struct SendCommand {
     /// (HTTP) require HTTP/3 over QUIC for an HTTPS origin.
     ///
     /// Fails if HTTP/3 cannot be established; does not fall back to HTTP/1 or HTTP/2.
-    /// With --alt-svc and no forced version, HTTP/3 can be selected from advertisements.
+    /// Without a forced version, HTTP/3 can be selected automatically from discovery.
     ///
     /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http2
     http_3: bool,
 
+    #[arg(long = "alt-svc", hide = true)]
+    /// Accepted for compatibility; alternative-service discovery is enabled by default.
+    _alt_svc: bool,
+
     #[arg(long)]
-    /// (HTTP) learn and use advertised alternative services for this command.
-    ///
-    /// Keeps advertisements in memory only, including across redirects. Explicit
-    /// HTTP version flags still apply. Disabled by default.
-    alt_svc: bool,
+    /// (HTTP) disable learning and use of Alt-Svc advertisements.
+    /// HTTPS DNS service discovery and explicit --http3 remain available.
+    no_alt_svc: bool,
 
     #[arg(long, short = '4')]
     /// Use IPv4 addresses only when resolving hostnames, and not for example try IPv6.

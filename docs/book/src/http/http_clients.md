@@ -92,10 +92,16 @@ HTTPS records select transports: a TCP candidate preserves the client's normal
 H2/H1 ALPN offer, including emulated profiles. Alt-Svc advertisements and explicit
 caller version requirements still constrain the exact HTTP protocol.
 
-Caller ECH policy is separate from discovered endpoint facts. Final TLS/profile
-settings determine ECH requirements for new handshakes. `EchRequirement::Required`
+TLS enables opportunistic ECH by default when a capable backend has matching
+endpoint configuration. Explicitly disabling ECH and emulated profile settings
+override that default. Discovery facts remain separate from caller policy; final
+TLS/profile settings determine ECH requirements for new handshakes. `EchRequirement::Required`
 also restricts pooled reuse to authenticated connections that accepted real ECH.
 `Optional` adds no caller requirement; DNS-derived rules still govern new handshakes.
+An ECH-capable client discovering only ECH-bearing compatible services therefore
+fails closed instead of falling back without ECH. Real ECH also disables QUIC
+early data for that endpoint; endpoints without ECH configuration keep their
+existing early-data policy.
 See the [custom resolver](https://github.com/plabayo/rama/tree/main/examples/src/http_https_discovery_custom_resolver.rs)
 and [ECH preknowledge](https://github.com/plabayo/rama/tree/main/examples/src/http_ech_preknowledge.rs)
 examples for both integration paths.
@@ -146,8 +152,10 @@ middleware outside the pool so lookup and establishment see the same input.
 Unclassified policy failures never suppress shared alternatives.
 Connectors report unsupported protocols or routes as local capability failures;
 clients need no separate protocol-support list. These refusals preserve cache health.
-In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3
-directly. Disk persistence is not implemented.
+The CLI enables command-local discovery by default; `--http3` requires H3
+directly. `--no-alt-svc` disables advertisement learning and use, independently
+of HTTPS DNS discovery. The legacy `--alt-svc` flag is accepted as a no-op.
+Disk persistence is not implemented.
 
 ## Server certificate pinning
 
