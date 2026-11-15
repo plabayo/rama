@@ -139,8 +139,11 @@ Accept-Language part follows the device locale.
 
 The iOS runner waits for `bootstatus`, then probes Safari through the same
 WebDriver session owner used by the collector: open `about:blank`, execute
-JavaScript, and quit successfully. A booted simulator or a launched Safari process
-alone does not establish remote automation readiness. The probe has a ten-minute
+JavaScript, and quit successfully. A `bootstatus` timeout is tolerated only when
+the same simulator UDID reports `Booted`; the Safari probe then decides readiness.
+The lifecycle receipt records this timeout in `bootstatus_timed_out`. A booted
+simulator or a launched Safari process alone does not establish remote automation
+readiness. The probe has a ten-minute
 readiness budget and a separate 660-second process limit for blocked driver calls;
 it never visits a capture origin. Journey failures are not retried by the runtime
 runner. Both child commands kill their process group on timeout, and each runtime
