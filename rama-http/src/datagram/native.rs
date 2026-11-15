@@ -158,7 +158,7 @@ impl fmt::Debug for NativeSendReady {
 
 /// A request's native datagram carrier, published on the upgraded I/O's extensions.
 #[derive(Clone, Extension)]
-#[extension(tags(http))]
+#[extension(tags(http), scope(connection))]
 pub struct NativeDatagrams(Arc<dyn NativeDatagramChannel>);
 
 impl NativeDatagrams {

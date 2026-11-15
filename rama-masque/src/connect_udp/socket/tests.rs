@@ -1,10 +1,12 @@
 use super::*;
 use crate::budget::{DatagramRate, PrincipalBudget};
+use rama_core::extensions::Extensions;
 use rama_core::{ServiceInput, futures::poll, graceful::Cause};
 use rama_http::{
     datagram::{DatagramTransport, NativeDatagramChannel, NativeRecvError, NativeSendReady},
     proto::capsule::CapsuleType,
 };
+use rama_net::client::pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey};
 use rama_udp::{DatagramSenderExt as _, DatagramSocketExt as _};
 use rama_utils::rate::Rate;
 use std::sync::atomic::AtomicUsize;
@@ -31,6 +33,57 @@ fn pair(config: ConnectUdpSocketConfig) -> (ConnectUdpSocket<Io>, HttpDatagramSe
 
 fn kib(n: usize) -> usize {
     n * 1024
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, rama_core::extensions::Extension)]
+#[extension(scope(connection))]
+struct CarrierAlpn(u8);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, rama_core::extensions::Extension)]
+struct FlowTag(u32);
+
+#[derive(Debug)]
+struct AlwaysReusable;
+
+impl ConnectionReusePolicy for AlwaysReusable {
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::of::<Self>())
+    }
+
+    fn request_key(&self, _input: &Extensions) -> Option<ReuseKey> {
+        Some(ReuseKey::of::<Self>())
+    }
+}
+
+#[tokio::test]
+async fn the_tunnel_is_nested_on_its_carrier() {
+    let (a, _b) = tokio::io::duplex(kib(1));
+    let carrier = ServiceInput::new(a);
+    carrier.extensions().insert(CarrierAlpn(2));
+    carrier.extensions().insert(FlowTag(7));
+    carrier
+        .extensions()
+        .insert(ConnectionReuse::new(AlwaysReusable));
+
+    let socket = ConnectUdpSocket::new(
+        &Scope::new(),
+        HttpDatagramSession::with_config(carrier, session_config()),
+        LOCAL,
+        PEER,
+        ConnectUdpSocketConfig::default(),
+    );
+
+    assert_eq!(socket.extensions().get_ref::<FlowTag>(), Some(&FlowTag(7)));
+    assert_eq!(socket.extensions().get_ref::<CarrierAlpn>(), None);
+    let reuse = socket
+        .extensions()
+        .get_ref::<ConnectionReuse>()
+        .expect("the default transfer carries the carrier's reuse requirements");
+    assert!(!reuse.is_complete());
 }
 
 fn context0(payload: &[u8]) -> Bytes {

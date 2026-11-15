@@ -11,7 +11,7 @@ use rama_net::address::Host;
 /// [`TlsServerAuthentication`], only after checking each name against the
 /// actual peer certificate. The fact is bound to that primary name.
 #[derive(Debug, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsServerAuthenticatedAliases {
     primary: Host,
     aliases: Box<[Host]>,

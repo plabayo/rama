@@ -4,7 +4,10 @@ use crate::datagram::{
     capsule::{CapsuleError, UnknownCapsules, encode_capsule},
 };
 use parking_lot::Mutex;
-use rama_core::{ServiceInput, extensions::Extensions, extensions::ExtensionsRef};
+use rama_core::{
+    ServiceInput,
+    extensions::{Extensions, ExtensionsRef, NoConnectionTransfer},
+};
 use std::assert_matches;
 use std::{
     collections::VecDeque,
@@ -217,6 +220,50 @@ fn native_pair(
         HttpDatagramSession::with_config(a, config()),
         HttpDatagramSession::with_config(ServiceInput::new(b), config()),
     )
+}
+
+#[tokio::test]
+async fn a_nested_session_does_not_reach_the_outer_streams_native_carrier() {
+    let native = FakeNative::default();
+    native.0.lock().max = Some(64);
+    let stream = Extensions::new();
+    stream.insert(NativeDatagrams::new(native.clone()));
+
+    let (a, b) = tokio::io::duplex(256);
+    let mut io = ServiceInput::new(a);
+    io.extensions = stream.fork_nested_connection(&NoConnectionTransfer);
+    let mut local = HttpDatagramSession::with_config(io, config());
+    let mut peer = HttpDatagramSession::with_config(ServiceInput::new(b), config());
+
+    assert!(local.native().is_none());
+    assert_eq!(
+        local.send_datagram(Bytes::from_static(b"x")).await.unwrap(),
+        DatagramTransport::Capsule
+    );
+    assert_eq!(
+        peer.recv().await.unwrap(),
+        Some(datagram(b"x", DatagramTransport::Capsule))
+    );
+    assert!(native.0.lock().sent.is_empty());
+}
+
+#[tokio::test]
+async fn a_plain_fork_still_reaches_the_streams_native_carrier() {
+    let native = FakeNative::default();
+    native.0.lock().max = Some(64);
+    let stream = Extensions::new();
+    stream.insert(NativeDatagrams::new(native.clone()));
+
+    let (a, _b) = tokio::io::duplex(256);
+    let mut io = ServiceInput::new(a);
+    io.extensions = stream.fork();
+    let mut local = HttpDatagramSession::with_config(io, config());
+
+    assert!(local.native().is_some());
+    assert_eq!(
+        local.send_datagram(Bytes::from_static(b"x")).await.unwrap(),
+        DatagramTransport::Native
+    );
 }
 
 #[tokio::test]

@@ -1,6 +1,7 @@
 use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     Layer, Service,
+    combinators::Either,
     error::{BoxError, BoxErrorExt},
     extensions::{Extensions, ExtensionsRef},
     http::client::proxy::layer::{
@@ -14,6 +15,7 @@ use crate::{
             ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
             EstablishedProxyRoute, ProxyRoute,
         },
+        stream::NestedConnection,
     },
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
     telemetry::tracing,
@@ -191,7 +193,9 @@ impl<S: ExtensionsRef> MaybeProxiedConnection<S> {
         }
     }
 
-    pub fn socks(conn: S) -> Self {
+    /// A SOCKS5 proxy connection, which is nested on the proxy's transport
+    /// unless the connector was asked for a direct one.
+    pub fn socks(conn: Either<S, NestedConnection<S>>) -> Self {
         Self {
             inner: Connection::Socks { conn },
         }
@@ -215,7 +219,8 @@ impl<S: Debug> Debug for MaybeProxiedConnection<S> {
 impl<S: ExtensionsRef> ExtensionsRef for MaybeProxiedConnection<S> {
     fn extensions(&self) -> &Extensions {
         match &self.inner {
-            Connection::Direct { conn } | Connection::Socks { conn } => conn.extensions(),
+            Connection::Direct { conn } => conn.extensions(),
+            Connection::Socks { conn } => conn.extensions(),
             Connection::Http { conn } => conn.extensions(),
         }
     }
@@ -225,7 +230,7 @@ pin_project! {
     #[project = ConnectionProj]
     enum Connection<S> {
         Direct{ #[pin] conn: S },
-        Socks{ #[pin] conn: S },
+        Socks{ #[pin] conn: Either<S, NestedConnection<S>> },
         Http{ #[pin] conn: MaybeHttpProxiedConnection<S> },
 
     }
@@ -249,9 +254,8 @@ impl<Conn: AsyncWrite> AsyncWrite for MaybeProxiedConnection<Conn> {
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
         match self.project().inner.project() {
-            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => {
-                conn.poll_write(cx, buf)
-            }
+            ConnectionProj::Direct { conn } => conn.poll_write(cx, buf),
+            ConnectionProj::Socks { conn } => conn.poll_write(cx, buf),
             ConnectionProj::Http { conn } => conn.poll_write(cx, buf),
         }
     }
@@ -261,7 +265,8 @@ impl<Conn: AsyncWrite> AsyncWrite for MaybeProxiedConnection<Conn> {
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         match self.project().inner.project() {
-            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => conn.poll_flush(cx),
+            ConnectionProj::Direct { conn } => conn.poll_flush(cx),
+            ConnectionProj::Socks { conn } => conn.poll_flush(cx),
             ConnectionProj::Http { conn } => conn.poll_flush(cx),
         }
     }
@@ -271,16 +276,16 @@ impl<Conn: AsyncWrite> AsyncWrite for MaybeProxiedConnection<Conn> {
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         match self.project().inner.project() {
-            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => {
-                conn.poll_shutdown(cx)
-            }
+            ConnectionProj::Direct { conn } => conn.poll_shutdown(cx),
+            ConnectionProj::Socks { conn } => conn.poll_shutdown(cx),
             ConnectionProj::Http { conn } => conn.poll_shutdown(cx),
         }
     }
 
     fn is_write_vectored(&self) -> bool {
         match &self.inner {
-            Connection::Direct { conn } | Connection::Socks { conn } => conn.is_write_vectored(),
+            Connection::Direct { conn } => conn.is_write_vectored(),
+            Connection::Socks { conn } => conn.is_write_vectored(),
             Connection::Http { conn } => conn.is_write_vectored(),
         }
     }
@@ -291,9 +296,8 @@ impl<Conn: AsyncWrite> AsyncWrite for MaybeProxiedConnection<Conn> {
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<Result<usize, std::io::Error>> {
         match self.project().inner.project() {
-            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => {
-                conn.poll_write_vectored(cx, bufs)
-            }
+            ConnectionProj::Direct { conn } => conn.poll_write_vectored(cx, bufs),
+            ConnectionProj::Socks { conn } => conn.poll_write_vectored(cx, bufs),
             ConnectionProj::Http { conn } => conn.poll_write_vectored(cx, bufs),
         }
     }
@@ -307,9 +311,8 @@ impl<Conn: AsyncRead> AsyncRead for MaybeProxiedConnection<Conn> {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         match self.project().inner.project() {
-            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => {
-                conn.poll_read(cx, buf)
-            }
+            ConnectionProj::Direct { conn } => conn.poll_read(cx, buf),
+            ConnectionProj::Socks { conn } => conn.poll_read(cx, buf),
             ConnectionProj::Http { conn } => conn.poll_read(cx, buf),
         }
     }

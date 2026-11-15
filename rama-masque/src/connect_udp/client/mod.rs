@@ -93,7 +93,7 @@ impl<S: Clone, C: Clone> Clone for ConnectUdpConnector<S, C> {
             client: self.client.clone(),
             inner: self.inner.clone(),
             scope: self.scope.clone(),
-            socket: self.socket,
+            socket: self.socket.clone(),
             version: self.version,
         }
     }
@@ -186,7 +186,7 @@ where
             HttpDatagramSession::with_config(upgraded, session_config()),
             local,
             peer,
-            self.socket,
+            self.socket.clone(),
         );
         socket
             .extensions()
@@ -263,7 +263,7 @@ impl<S: Clone> Clone for ConnectUdpConnectorLayer<S> {
         Self {
             client: self.client.clone(),
             scope: self.scope.clone(),
-            socket: self.socket,
+            socket: self.socket.clone(),
             version: self.version,
         }
     }
@@ -306,7 +306,7 @@ impl<S: Clone, C> Layer<C> for ConnectUdpConnectorLayer<S> {
             client: self.client.clone(),
             inner,
             scope: self.scope.clone(),
-            socket: self.socket,
+            socket: self.socket.clone(),
             version: self.version,
         }
     }
@@ -316,7 +316,7 @@ impl<S: Clone, C> Layer<C> for ConnectUdpConnectorLayer<S> {
             client: self.client,
             inner,
             scope: self.scope,
-            socket: self.socket,
+            socket: self.socket.clone(),
             version: self.version,
         }
     }

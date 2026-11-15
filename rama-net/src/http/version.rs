@@ -16,7 +16,7 @@ use crate::tls::ApplicationProtocol;
 pub struct Version(Http);
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Extension)]
-#[extension(tags(http))]
+#[extension(tags(http), scope(connection))]
 /// Target http version
 ///
 /// This can be set manually to enforce a specific version,
@@ -187,6 +187,7 @@ impl TryFrom<&ApplicationProtocol> for Version {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::extensions::{Extensions, NoConnectionTransfer};
 
     #[test]
     fn http_versions_and_application_protocols_round_trip() {
@@ -207,5 +208,24 @@ mod tests {
     fn non_http_application_protocol_is_not_an_http_version() {
         Version::try_from(ApplicationProtocol::DNS_OVER_TLS).unwrap_err();
         Version::try_from(ApplicationProtocol::from(b"h3-29")).unwrap_err();
+    }
+
+    #[test]
+    fn target_http_version_does_not_resolve_through_a_nested_connection() {
+        let proxy = Extensions::new();
+        proxy.insert(TargetHttpVersion(Version::HTTP_2));
+
+        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
+        assert_eq!(origin.get_ref::<TargetHttpVersion>(), None);
+        assert_eq!(
+            proxy.get_ref::<TargetHttpVersion>(),
+            Some(&TargetHttpVersion(Version::HTTP_2))
+        );
+
+        origin.insert(TargetHttpVersion(Version::HTTP_11));
+        assert_eq!(
+            origin.get_ref::<TargetHttpVersion>(),
+            Some(&TargetHttpVersion(Version::HTTP_11))
+        );
     }
 }

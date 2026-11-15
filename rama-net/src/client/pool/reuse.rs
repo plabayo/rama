@@ -254,6 +254,7 @@ pub trait ConnectionReusePolicy: fmt::Debug + Send + Sync + 'static {
 /// Layered transports can combine requirements once with [`Self::and`]. Pools
 /// read it once, when the connection is added.
 #[derive(Clone, Debug, Extension)]
+#[extension(scope(connection))]
 pub struct ConnectionReuse {
     policy: Arc<dyn ConnectionReusePolicy>,
     classifier: ReuseKey,

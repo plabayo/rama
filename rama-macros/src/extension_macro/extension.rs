@@ -6,6 +6,16 @@ use crate::utils::support_root_ts;
 
 const KNOWN_TAGS: &[&str] = &["tls", "http", "net", "ua", "proxy", "ws", "dns", "grpc"];
 
+const KNOWN_SCOPES: &[&str] = &["flow", "connection"];
+
+fn scope_to_variant_name(scope: &str) -> Option<&'static str> {
+    match scope {
+        "flow" => Some("Flow"),
+        "connection" => Some("Connection"),
+        _ => None,
+    }
+}
+
 fn tag_to_trait_name(tag: &str) -> Option<&'static str> {
     match tag {
         "tls" => Some("TlsExtension"),
@@ -30,7 +40,7 @@ pub(crate) fn expand(mut item: DeriveInput) -> syn::Result<TokenStream> {
         }
     }
 
-    let tags = parse_tags(&item)?;
+    let Attrs { tags, scope } = parse_attrs(&item)?;
 
     // This will go over all generics in the struct eg item: S, code: T
     // and will for each generic add these bound S: Any + Send + Sync + Debug + 'static
@@ -50,8 +60,23 @@ pub(crate) fn expand(mut item: DeriveInput) -> syn::Result<TokenStream> {
     let ident = item.ident;
     let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
 
+    let scope_body = scope.map(|scope| {
+        let variant = Ident::new(
+            scope_to_variant_name(&scope).expect("scope should have been validated during parsing"),
+            Span::call_site(),
+        );
+        quote! {
+            #[inline(always)]
+            fn scope() -> #root_crate::extensions::ExtensionScope {
+                #root_crate::extensions::ExtensionScope::#variant
+            }
+        }
+    });
+
     let mut output = quote! {
-        impl #impl_generics #root_crate::extensions::Extension for #ident #ty_generics #where_clause {}
+        impl #impl_generics #root_crate::extensions::Extension for #ident #ty_generics #where_clause {
+            #scope_body
+        }
     };
 
     for tag in &tags {
@@ -66,8 +91,14 @@ pub(crate) fn expand(mut item: DeriveInput) -> syn::Result<TokenStream> {
     Ok(output)
 }
 
-fn parse_tags(item: &DeriveInput) -> syn::Result<Vec<String>> {
-    let mut tags = Vec::new();
+#[derive(Debug, Default)]
+struct Attrs {
+    tags: Vec<String>,
+    scope: Option<String>,
+}
+
+fn parse_attrs(item: &DeriveInput) -> syn::Result<Attrs> {
+    let mut attrs = Attrs::default();
 
     for attr in &item.attrs {
         if !attr.path().is_ident("extension") {
@@ -94,28 +125,55 @@ fn parse_tags(item: &DeriveInput) -> syn::Result<Vec<String>> {
                         ));
                     }
 
-                    if tags.contains(&tag) {
+                    if attrs.tags.contains(&tag) {
                         return Err(syn::Error::new_spanned(
                             ident,
                             format!("duplicate extension tag `{tag}`"),
                         ));
                     }
-                    tags.push(tag);
+                    attrs.tags.push(tag);
+                    Ok(())
+                })?;
+            } else if meta.path.is_ident("scope") {
+                // parse: scope(connection)
+                let before = attrs.scope.take();
+                meta.parse_nested_meta(|scope_meta| {
+                    let ident = scope_meta
+                        .path
+                        .get_ident()
+                        .ok_or_else(|| scope_meta.error("expected a scope name"))?;
+
+                    let scope = ident.to_string();
+                    if scope_to_variant_name(&scope).is_none() {
+                        return Err(syn::Error::new_spanned(
+                            ident,
+                            format!(
+                                "unknown extension scope `{scope}`. Known scopes: {}",
+                                KNOWN_SCOPES.join(", ")
+                            ),
+                        ));
+                    }
+                    if before.is_some() || attrs.scope.replace(scope).is_some() {
+                        return Err(syn::Error::new_spanned(
+                            ident,
+                            "expected exactly one extension scope",
+                        ));
+                    }
                     Ok(())
                 })?;
             } else {
-                return Err(meta.error("unknown extension attribute, expected `tags`"));
+                return Err(meta.error("unknown extension attribute, expected `tags` or `scope`"));
             }
             Ok(())
         })?;
     }
 
-    Ok(tags)
+    Ok(attrs)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{expand, parse_tags};
+    use super::{expand, parse_attrs};
     use syn::parse_quote;
 
     #[test]
@@ -124,7 +182,7 @@ mod tests {
             struct MyExt;
         };
 
-        let tags = parse_tags(&item).unwrap();
+        let tags = parse_attrs(&item).unwrap().tags;
         assert!(tags.is_empty());
     }
 
@@ -135,7 +193,7 @@ mod tests {
             struct MyExt;
         };
 
-        let tags = parse_tags(&item).unwrap();
+        let tags = parse_attrs(&item).unwrap().tags;
         assert_eq!(tags, vec!["http".to_owned(), "proxy".to_owned()]);
     }
 
@@ -146,7 +204,7 @@ mod tests {
             struct MyExt;
         };
 
-        let err = parse_tags(&item).unwrap_err();
+        let err = parse_attrs(&item).unwrap_err();
         assert!(
             err.to_string().contains("unknown extension tag `banana`"),
             "unexpected error: {err}"
@@ -160,11 +218,84 @@ mod tests {
             struct MyExt;
         };
 
-        let err = parse_tags(&item).unwrap_err();
+        let err = parse_attrs(&item).unwrap_err();
         assert!(
             err.to_string().contains("duplicate extension tag `http`"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn parse_attrs_collects_scope_with_tags() {
+        let item: syn::DeriveInput = parse_quote! {
+            #[extension(tags(http), scope(connection))]
+            struct MyExt;
+        };
+
+        let attrs = parse_attrs(&item).unwrap();
+        assert_eq!(attrs.tags, vec!["http".to_owned()]);
+        assert_eq!(attrs.scope.as_deref(), Some("connection"));
+    }
+
+    #[test]
+    fn parse_attrs_rejects_unknown_scope() {
+        let item: syn::DeriveInput = parse_quote! {
+            #[extension(scope(banana))]
+            struct MyExt;
+        };
+
+        let err = parse_attrs(&item).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown extension scope `banana`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_attrs_rejects_several_scopes() {
+        let item: syn::DeriveInput = parse_quote! {
+            #[extension(scope(flow, connection))]
+            struct MyExt;
+        };
+
+        let err = parse_attrs(&item).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected exactly one extension scope"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_attrs_rejects_empty_scope() {
+        let item: syn::DeriveInput = parse_quote! {
+            #[extension(scope())]
+            struct MyExt;
+        };
+
+        parse_attrs(&item).unwrap_err();
+    }
+
+    #[test]
+    fn expand_without_scope_emits_no_scope_override() {
+        let out = expand(parse_quote! {
+            struct MyExt;
+        })
+        .unwrap()
+        .to_string();
+        assert!(!out.contains("fn scope"), "{out}");
+    }
+
+    #[test]
+    fn expand_connection_scope_overrides_scope() {
+        let out = expand(parse_quote! {
+            #[extension(scope(connection))]
+            struct MyExt;
+        })
+        .unwrap()
+        .to_string();
+        assert!(out.contains("fn scope"), "{out}");
+        assert!(out.contains("ExtensionScope :: Connection"), "{out}");
     }
 
     /// A `where`-clause on the deriving type must survive the expansion
@@ -278,7 +409,7 @@ mod tests {
             struct MyExt;
         };
 
-        let err = parse_tags(&item).unwrap_err();
+        let err = parse_attrs(&item).unwrap_err();
         assert!(
             err.to_string()
                 .contains("unknown extension attribute, expected `tags`"),

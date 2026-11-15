@@ -124,7 +124,7 @@ fn expand_struct(
                 };
                 contribs.push(quote!(1usize));
                 target_fills.push(quote! {
-                    __targets[__off] = ::core::any::TypeId::of::<#inner>();
+                    __targets[__off] = #root::extensions::Target::of::<#inner>();
                     __off += 1;
                 });
                 field_lets.push(quote! {
@@ -169,7 +169,7 @@ fn expand_struct(
                 static __PLAN: #root::extensions::TargetPlan<__N> =
                     #root::extensions::TargetPlan::new();
                 let __plan = __PLAN.get(|| {
-                    let mut __targets = [::core::any::TypeId::of::<()>(); __N];
+                    let mut __targets = [#root::extensions::Target::placeholder(); __N];
                     let mut __off = 0usize;
                     #( #target_fills )*
                     let _ = __off;
@@ -237,7 +237,7 @@ fn expand_enum(
         let idx = Literal::usize_unsuffixed(i);
         let downcast = downcast_expr(&spec, root);
         target_writes.push(quote! {
-            __targets[__offset + #idx] = ::core::any::TypeId::of::<#inner>();
+            __targets[__offset + #idx] = #root::extensions::Target::of::<#inner>();
         });
         builders.push(if spec.indexed {
             quote!(__out[__offset + #idx].and_then(|(__e, __rank)| #downcast.map(|__v| (Self::#vname((__v, __rank)), __rank))))
@@ -265,7 +265,7 @@ fn expand_enum(
         {
             const TARGETS: usize = #n;
 
-            fn from_ext_targets(__targets: &mut [::core::any::TypeId], __offset: usize) {
+            fn from_ext_targets(__targets: &mut [#root::extensions::Target], __offset: usize) {
                 #( #target_writes )*
             }
 
@@ -305,7 +305,7 @@ fn expand_enum(
                 static __PLAN: #root::extensions::TargetPlan<#n> =
                     #root::extensions::TargetPlan::new();
                 let __plan = __PLAN.get(|| {
-                    let mut __targets = [::core::any::TypeId::of::<()>(); #n];
+                    let mut __targets = [#root::extensions::Target::placeholder(); #n];
                     <Self as #root::extensions::FromExtensionsGroup<#lt>>::from_ext_targets(
                         &mut __targets, 0,
                     );

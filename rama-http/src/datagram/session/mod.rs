@@ -9,7 +9,7 @@ use crate::io::upgrade::{OnMalformedMessage, Upgraded};
 use parking_lot::Mutex;
 use rama_core::{
     bytes::{Buf as _, Bytes, BytesMut},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     stream::io::poll_read_buf,
 };
 use rama_http_types::proto::capsule::{CapsuleHeader, CapsuleType, InvalidCapsule};
@@ -190,6 +190,7 @@ impl From<InvalidCapsule> for SessionError {
 pub struct HttpDatagramSession<T = Upgraded> {
     sender: SessionSender<T>,
     receiver: SessionReceiver<T>,
+    extensions: Extensions,
 }
 
 impl<T> fmt::Debug for HttpDatagramSession<T> {
@@ -211,6 +212,7 @@ where
 
     /// A session with `config`.
     pub fn with_config(io: T, config: SessionConfig) -> Self {
+        let extensions = io.extensions().clone();
         let native = io.extensions().get_ref::<NativeDatagrams>().cloned();
         let malformed = io.extensions().get_arc::<OnMalformedMessage>();
         let observation = io.extensions().get_ref::<CapsuleObservation>().cloned();
@@ -240,7 +242,14 @@ where
                 stream_ended: false,
                 end: None,
             },
+            extensions,
         }
+    }
+
+    /// The extensions of the transport carrying this session.
+    #[must_use]
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
     }
 
     /// The negotiated native carrier, if the transport offers one.

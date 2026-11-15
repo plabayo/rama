@@ -193,7 +193,7 @@ where
 /// read and/or written even though the tracker is consumed by a protocol
 /// consumer.
 #[derive(Debug, Clone, Extension)]
-#[extension(tags(net))]
+#[extension(tags(net), scope(connection))]
 pub struct BytesRWTrackerHandle {
     read: Arc<AtomicUsize>,
     written: Arc<AtomicUsize>,

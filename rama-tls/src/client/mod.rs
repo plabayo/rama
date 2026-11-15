@@ -82,7 +82,7 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 /// TLS parameters reported by either endpoint and stored in connection extensions.
 /// QUIC can expose this while the handshake progresses; optional values may
 /// become available later and do not imply handshake completion.
@@ -140,7 +140,7 @@ pub struct NegotiatedTlsAlgorithms {
 /// shadows older connection metadata when verification was disabled; negotiated
 /// ALPN or a received certificate alone does not prove server authentication.
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsServerAuthentication(pub Option<rama_net::address::Host>);
 
 /// Merge extension lists A and B, with

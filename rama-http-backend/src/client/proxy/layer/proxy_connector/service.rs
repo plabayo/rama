@@ -2,6 +2,7 @@ use rama_core::error::BoxErrorExt as _;
 
 use super::{HttpProxyVersionPolicy, InnerHttpProxyConnector};
 use pin_project_lite::pin_project;
+use rama_core::extensions::{NestedConnectionTransfer, SharedNestedConnectionTransfer};
 use rama_core::{
     Service,
     error::BoxError,
@@ -22,9 +23,10 @@ use rama_net::{
     client::{
         ConnectionError, ConnectionErrorKind, ConnectionPolicyScope, ConnectorService,
         ConnectorTarget, ConnectorTransportProtocol, EstablishedClientConnection,
-        EstablishedProxyRoute, ProxyRoute, pool::ConnectionReuse,
+        EstablishedProxyRoute, ProxyRoute,
     },
     http::TargetHttpVersion,
+    stream::DefaultConnectionTransfer,
     transport::TransportProtocol,
     user::ProxyCredential,
 };
@@ -52,6 +54,7 @@ pub struct HttpProxyConnector<S> {
     pub(super) tls_proxy_supported: bool,
     pub(super) version_policy: HttpProxyVersionPolicy,
     pub(super) headers: Option<HeaderMap>,
+    pub(super) nested_connection_transfer: SharedNestedConnectionTransfer,
 }
 
 impl<S> HttpProxyConnector<S> {
@@ -68,6 +71,20 @@ impl<S> HttpProxyConnector<S> {
                 connect_fallback: Some(Version::HTTP_11),
             },
             headers: None,
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set what a CONNECT tunnel keeps from the proxy connection it is
+        /// nested on.
+        ///
+        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
+        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// extension types across the tunnel.
+        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
+            self.nested_connection_transfer = transfer.into_shared();
+            self
         }
     }
 
@@ -420,28 +437,24 @@ where
             }
         }
 
-        let (headers, conn) = connector
+        let (headers, mut conn) = connector
             .handshake(conn)
             .await
             .map_err(ConnectionError::from)
             .map_err(|error| scope_tunnel_error(error.context("http proxy handshake")))?;
 
-        let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn, proxy_info);
-        // The inner connector classified the proxy endpoint. CONNECT changes
-        // the endpoint, so origin TLS must publish its own complete policy.
-        let reuse = conn
+        // The upgraded transport forks the proxy connection's chain, so the
+        // proxy leg's facts are still what this boundary forks from.
+        let tunnel_extensions = conn
             .extensions()
-            .get_ref::<ConnectionReuse>()
-            .map(|policy| policy.clone().into_restriction());
-        if let Some(reuse) = reuse {
-            conn.extensions().insert(reuse);
-        }
+            .fork_nested_connection(&self.nested_connection_transfer);
+        conn.set_extensions(tunnel_extensions);
 
-        // A CONNECT upgrade inherits proxy-leg connection metadata. Shadow the
-        // proxy's wire version before the outer origin HTTP connector runs.
-        // A plaintext origin needs an explicit HTTP/1.1 default; for a TLS
-        // origin without a requested version, leave selection to origin ALPN.
-        if app_is_plaintext_http || (app_is_http && requested_http_version.is_some()) {
+        let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn, proxy_info);
+
+        // A plaintext origin has no ALPN to select its wire version with, and the
+        // tunnel inherits none from the proxy leg.
+        if app_is_plaintext_http {
             conn.extensions().insert(TargetHttpVersion(
                 requested_http_version.unwrap_or(Version::HTTP_11),
             ));
@@ -778,6 +791,7 @@ mod tests {
     };
     use rama_core::{
         Layer,
+        extensions::Extensions,
         futures::{Stream, stream},
         graceful::WeakScope,
         layer::MapOutputLayer,
@@ -797,7 +811,7 @@ mod tests {
         client::{
             AddressCandidates, ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind,
             ConnectorService, ConnectorTargetStream, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
-            pool::{ConnectionReusePolicy, ReuseKey},
+            pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
         },
         http::HttpRequestVersion,
         test_utils::client::{MockConnectorService, MockSocket},
@@ -2135,6 +2149,99 @@ mod tests {
                 .is_reusable(),
             "an unclassified secure origin must not borrow the proxy's complete policy"
         );
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, rama_core::extensions::Extension)]
+    #[extension(scope(connection))]
+    struct ProxyLegFact(u8);
+
+    #[tokio::test]
+    async fn a_custom_transfer_carries_a_connection_scoped_type_across_connect() {
+        let http_server =
+            HttpServer::auto(WeakScope::detached()).service(service_fn(async |_req: Request| {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+
+        let carry_fact = |outer: &Extensions, nested: &Extensions| {
+            if let Some(fact) = outer.get_ref::<ProxyLegFact>() {
+                nested.insert(*fact);
+            }
+        };
+
+        let proxy_connector = (
+            HttpProxyConnectorLayer::required()
+                .with_nested_connection_transfer(DefaultConnectionTransfer.and(carry_fact)),
+            MapOutputLayer::new(|out: EstablishedClientConnection<MockSocket, Request>| {
+                out.conn.extensions().insert(ProxyLegFact(7));
+                out.conn
+                    .extensions()
+                    .insert(ConnectionReuse::new(FixedProxyPolicy));
+                out
+            }),
+        )
+            .into_layer(MockConnectorService::new(move || http_server.clone()));
+
+        let req = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+            template: None,
+        }));
+
+        let EstablishedClientConnection { conn, .. } = proxy_connector
+            .serve(req)
+            .await
+            .expect("proxy CONNECT handshake succeeds");
+
+        assert_eq!(
+            conn.extensions().get_ref::<ProxyLegFact>(),
+            Some(&ProxyLegFact(7)),
+            "the configured transfer carries it onto the tunnel"
+        );
+        let reuse = conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .expect("the default transfer still runs");
+        assert!(!reuse.is_complete());
+    }
+
+    #[tokio::test]
+    async fn without_a_transfer_a_connection_scoped_type_stops_at_the_tunnel() {
+        let http_server =
+            HttpServer::auto(WeakScope::detached()).service(service_fn(async |_req: Request| {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+
+        let proxy_connector = (
+            HttpProxyConnectorLayer::required(),
+            MapOutputLayer::new(|out: EstablishedClientConnection<MockSocket, Request>| {
+                out.conn.extensions().insert(ProxyLegFact(7));
+                out
+            }),
+        )
+            .into_layer(MockConnectorService::new(move || http_server.clone()));
+
+        let req = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+            template: None,
+        }));
+
+        let EstablishedClientConnection { conn, .. } = proxy_connector
+            .serve(req)
+            .await
+            .expect("proxy CONNECT handshake succeeds");
+
+        assert_eq!(conn.extensions().get_ref::<ProxyLegFact>(), None);
     }
 
     #[test]

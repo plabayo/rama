@@ -1,7 +1,9 @@
 use super::{HttpProxyConnector, HttpProxyVersionPolicy};
 use rama_core::Layer;
+use rama_core::extensions::{NestedConnectionTransfer, SharedNestedConnectionTransfer};
 use rama_http::{HeaderMap, HeaderValue, header::IntoHeaderName};
 use rama_http_types::Version;
+use rama_net::stream::DefaultConnectionTransfer;
 use rama_utils::macros::generate_set_and_with;
 
 #[derive(Debug, Clone)]
@@ -13,6 +15,7 @@ pub struct HttpProxyConnectorLayer {
     tls_proxy_supported: bool,
     version_policy: HttpProxyVersionPolicy,
     headers: Option<HeaderMap>,
+    nested_connection_transfer: SharedNestedConnectionTransfer,
 }
 
 impl HttpProxyConnectorLayer {
@@ -31,6 +34,7 @@ impl HttpProxyConnectorLayer {
                 connect_fallback: Some(Version::HTTP_11),
             },
             headers: None,
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
         }
     }
 
@@ -49,6 +53,20 @@ impl HttpProxyConnectorLayer {
                 connect_fallback: Some(Version::HTTP_11),
             },
             headers: None,
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set what a CONNECT tunnel keeps from the proxy connection it is
+        /// nested on.
+        ///
+        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
+        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// extension types across the tunnel.
+        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
+            self.nested_connection_transfer = transfer.into_shared();
+            self
         }
     }
 
@@ -103,6 +121,7 @@ impl<S> Layer<S> for HttpProxyConnectorLayer {
             tls_proxy_supported: self.tls_proxy_supported,
             version_policy: self.version_policy,
             headers: self.headers.clone(),
+            nested_connection_transfer: self.nested_connection_transfer.clone(),
         }
     }
 }
@@ -116,6 +135,7 @@ impl Default for HttpProxyConnectorLayer {
                 connect_fallback: None,
             },
             headers: None,
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
         }
     }
 }
