@@ -1901,9 +1901,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd141d17e61eac168a778498d58350585c1e7491fe354ac8a39ea97df89be879"
+checksum = "bd02e0b963c75d91700e50d9640928ba14033d072b5ca9bb173616739a56a497"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -1914,9 +1914,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78d240380c94bd3c77e543992bec048f14269511e33dda9a02be622d29af2823"
+checksum = "d10c0a84abbc809acc06a0c314faef4458d777eafe08743e64fda1e0299dd1a6"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -1926,9 +1926,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7631a9ac19e6b3a5cbbd0c9e7266a685973954f7345ae80c08a14f76258e288a"
+checksum = "4050a4b4fbbd3758be341fe53adef15c38986d64512c701c24a294475582814f"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -1991,6 +1991,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "x509-parser",
  "yasna",
+ "zeroize",
 ]
 
 [[package]]
@@ -2460,6 +2461,8 @@ name = "rama-tls-boring"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "arc-swap",
+ "base64",
  "brotli",
  "flate2",
  "itertools 0.15.0",
@@ -2473,6 +2476,8 @@ dependencies = [
  "rama-net",
  "rama-tls",
  "rama-utils",
+ "serde",
+ "serde_json",
  "tokio",
  "zstd",
 ]
@@ -3796,6 +3801,9 @@ name = "zeroize"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "zerotrie"
