@@ -992,7 +992,8 @@ impl<T> EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage> {
     }
 
     generate_set_and_with! {
-        /// Share an alternative-service cache across HTTP clients; `None` disables discovery.
+        /// Share an Alt-Svc cache across HTTP clients; `None` disables Alt-Svc only.
+        /// HTTPS-record discovery is configured separately.
         pub fn alt_svc_cache(mut self, cache: Option<AltSvcCache>) -> Self {
             self.service_selector_mut().maybe_set_cache(cache.clone());
             #[cfg(feature = "quic")]

@@ -23,7 +23,7 @@ use super::{
 ///
 /// The produced [`DnsConnector`] resolves a domain
 /// [`ConnectorTargetInputExt::connector_target`] into a lazy, happy-eyeballs-
-/// ordered stream of IP targets, puts it into the [`Extensions`] as a
+/// ordered stream of IP targets, puts it into the [`Extensions`](rama_core::extensions::Extensions) as a
 /// [`ConnectorTargetStream`], and forwards the (untouched) input to the inner
 /// transport connector, which then dials/races the candidate addresses.
 pub struct DnsConnectorLayer<R = GlobalDnsResolver> {
