@@ -60,6 +60,11 @@ pub trait Session: Send + Sync + 'static {
     /// emits `HandshakeDataReady`.
     fn handshake_summary(&self) -> Option<NegotiatedTlsParameters>;
 
+    /// ECH acceptance after authenticated handshake completion; unknown by default.
+    fn ech_accepted(&self) -> Option<bool> {
+        None
+    }
+
     /// Borrow negotiated ALPN bytes for diagnostics without allocating a handshake summary.
     fn negotiated_alpn(&self) -> Option<&[u8]>;
 

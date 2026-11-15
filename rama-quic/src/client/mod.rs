@@ -27,7 +27,7 @@ use std::{
 
 use parking_lot::Mutex;
 use rama_core::{
-    Service,
+    Fork as _, Service,
     error::{ArcError, BoxError, BoxErrorExt as _, CauseExt as _, ErrorList, error_chain},
     extensions::ExtensionsRef,
     futures::{StreamExt as _, stream},
@@ -229,6 +229,38 @@ impl<E> QuicConnector<E> {
     fn prepare(&self, input: &ConnectRequest) -> Result<Prepared, ConnectionError> {
         let profile = input.extensions().get_arc::<QuicProfile>();
         let tls = self.tls_config_for(input);
+        let target = input.connector_target().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("QUIC connector target is missing"),
+                InvalidInput,
+            )
+        })?;
+        // Conditional DNS reliance makes this endpoint locally unavailable;
+        // another candidate/backend may still be usable. Caller policy errors
+        // retain the existing invalid-input classification.
+        let ech_error_kind = if tls
+            .as_extensions()
+            .get_ref::<rama_tls::client::EchRequirement>()
+            == Some(&rama_tls::client::EchRequirement::Required)
+        {
+            InvalidInput
+        } else {
+            rama_net::client::ConnectionErrorKind::Unavailable
+        };
+        rama_tls::client::target_ech_config(
+            tls.as_extensions(),
+            &target,
+            self.tls_provider().supports_ech(),
+        )
+        .map_err(|error| ConnectionError::local(error, ech_error_kind))?;
+        let ech_required = rama_tls::client::target_ech_required(
+            tls.as_extensions(),
+            &target,
+            self.tls_provider().supports_ech(),
+        )
+        .map_err(|error| ConnectionError::local(error, ech_error_kind))?;
+        tls.as_extensions()
+            .insert(rama_net::client::ConnectorTarget(target));
         let alpn_policy = tls
             .as_extensions()
             .get_ref::<AlpnPolicy>()
@@ -288,6 +320,7 @@ impl<E> QuicConnector<E> {
                 .to_string()
         };
         Ok(Prepared {
+            ech_required,
             early_data,
             alpn_policy,
             alpn_offered,
@@ -351,6 +384,17 @@ impl<E> QuicConnector<E> {
         };
         let connection = connecting.await?;
         connection.handshake_confirmed().await?;
+        if prepared.ech_required
+            && connection
+                .extensions()
+                .get_ref::<rama_tls::client::TlsEchAccepted>()
+                != Some(&rama_tls::client::TlsEchAccepted(true))
+        {
+            connection.close(0u32, b"ECH required");
+            return Err(BoxError::from_static_str(
+                "QUIC server did not accept required ECH",
+            ));
+        }
         check_negotiated_alpn(
             &connection,
             self.served_alpn(),
@@ -397,6 +441,7 @@ fn serves(served: &TlsAlpn, protocol: &ApplicationProtocol) -> bool {
 
 /// Values derived once from the effective TLS configuration for one connection.
 struct Prepared {
+    ech_required: bool,
     early_data: bool,
     alpn_policy: AlpnPolicy,
     alpn_offered: bool,
@@ -503,7 +548,7 @@ where
             )
             .await
         } else {
-            let domain = target.host.try_as_domain().map_err(|_error| {
+            let _domain = target.host.try_as_domain().map_err(|_error| {
                 ConnectionError::local(
                     BoxError::from_static_str("unsupported QUIC target host"),
                     InvalidInput,
@@ -512,7 +557,7 @@ where
             let candidates = input
                 .extensions()
                 .get_ref::<ConnectorTargetStream>()
-                .filter(|c| c.domain() == domain.as_ref())
+                .filter(|c| c.matches_target(&target))
                 .ok_or_else(|| {
                     ConnectionError::local(
                         BoxError::from_static_str(
@@ -543,6 +588,48 @@ where
     }
 }
 
+impl<E> QuicConnector<E>
+where
+    E: ConnectorService<ConnectRequest, Connection = ClientEndpoint>,
+{
+    async fn establish(&self, input: &ConnectRequest) -> Result<Connection, ConnectionError> {
+        let route = input.extensions().get_ref::<ProxyRoute>().cloned();
+        let proxy = route.as_ref().and_then(ProxyRoute::proxy_address).cloned();
+        let prepared = self.prepare(input)?;
+        // Keep QUIC address-race and handshake state out of enclosing pool and
+        // service-selection futures.
+        let (connection, established) = match (&route, proxy) {
+            (Some(route), Some(proxy)) if route.addresses_proxy(&input.authority) => (
+                Box::pin(self.connect_direct(input, &prepared)).await?,
+                Some(EstablishedProxyRoute::Forward(proxy)),
+            ),
+            (_, Some(proxy)) => {
+                let (connection, route) =
+                    Box::pin(self.connect_through(input, &prepared, &proxy)).await?;
+                (connection, Some(route))
+            }
+            (Some(_), None) => (
+                Box::pin(self.connect_direct(input, &prepared)).await?,
+                Some(EstablishedProxyRoute::Direct),
+            ),
+            (None, None) => (Box::pin(self.connect_direct(input, &prepared)).await?, None),
+        };
+        // Populate only connection facts: inheriting the request store here would
+        // retain request metadata and could create a cycle through Egress.
+        let extensions = connection.extensions();
+        extensions.insert(prepared.alpn_policy);
+        if connection.is_handshake_confirmed() {
+            extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
+        }
+        prepared.reuse.publish(extensions, Some(&self.tls));
+        extensions.insert(prepared.policy_scope);
+        if let Some(established) = established {
+            extensions.insert(established);
+        }
+        Ok(connection)
+    }
+}
+
 impl<E> Service<ConnectRequest> for QuicConnector<E>
 where
     E: ConnectorService<ConnectRequest, Connection = ClientEndpoint>,
@@ -551,46 +638,30 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
-        let route = input.extensions().get_ref::<ProxyRoute>().cloned();
-        let proxy = route.as_ref().and_then(ProxyRoute::proxy_address).cloned();
-        let prepared = self.prepare(&input)?;
-        // Keep QUIC address-race and handshake state out of enclosing pool and
-        // service-selection futures.
-        let (connection, established) = match (&route, proxy) {
-            (Some(route), Some(proxy)) if route.addresses_proxy(&input.authority) => (
-                Box::pin(self.connect_direct(&input, &prepared)).await?,
-                Some(EstablishedProxyRoute::Forward(proxy)),
-            ),
-            (_, Some(proxy)) => {
-                let (connection, route) =
-                    Box::pin(self.connect_through(&input, &prepared, &proxy)).await?;
-                (connection, Some(route))
+        match self.establish(&input).await {
+            Ok(conn) => Ok(EstablishedClientConnection { input, conn }),
+            Err(error) => {
+                if let Some(retry) = error.find_cause::<rama_tls::client::EchRetryConfig>()
+                    && let Some(target) = input.connector_target()
+                {
+                    // Fresh QUIC connection, within this same caller deadline.
+                    // ECH preparation disables early data, so nothing is replayed.
+                    let retry_input = input.fork();
+                    retry_input
+                        .extensions()
+                        .insert(rama_tls::client::EchRequirement::Required);
+                    retry_input
+                        .extensions()
+                        .insert(rama_net::tls::TargetEchConfig::new(
+                            target,
+                            retry.config_list().clone(),
+                        ));
+                    let conn = self.establish(&retry_input).await?;
+                    return Ok(EstablishedClientConnection { input, conn });
+                }
+                Err(error)
             }
-            (Some(_), None) => (
-                Box::pin(self.connect_direct(&input, &prepared)).await?,
-                Some(EstablishedProxyRoute::Direct),
-            ),
-            (None, None) => (
-                Box::pin(self.connect_direct(&input, &prepared)).await?,
-                None,
-            ),
-        };
-        // Populate only connection facts: inheriting the request store here would
-        // retain request metadata and could create a cycle through Egress.
-        let extensions = connection.extensions();
-        prepared.reuse.publish(extensions);
-        extensions.insert(prepared.alpn_policy);
-        if connection.is_handshake_confirmed() {
-            extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         }
-        extensions.insert(prepared.policy_scope);
-        if let Some(established) = established {
-            extensions.insert(established);
-        }
-        Ok(EstablishedClientConnection {
-            input,
-            conn: connection,
-        })
     }
 }
 

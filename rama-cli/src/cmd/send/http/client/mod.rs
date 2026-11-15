@@ -274,7 +274,7 @@ fn uses_quic(cfg: &SendCommand, uri: &Uri) -> bool {
         && !cfg.http_10
         && !cfg.http_11
         && !cfg.http_2
-        && (cfg.http_3 || (cfg.alt_svc && matches!(cfg.tls_max, None | Some(TlsVersion::V13))))
+        && (cfg.http_3 || matches!(cfg.tls_max, None | Some(TlsVersion::V13)))
 }
 
 /// The certificates of a PEM CA bundle.
@@ -415,10 +415,10 @@ async fn new_inner_client(
             },
         )
         .with_default_connection_pool();
-    let builder = if cfg.alt_svc {
-        builder
-    } else {
+    let builder = if cfg.no_alt_svc {
         builder.without_alt_svc()
+    } else {
+        builder
     };
 
     let client = builder
@@ -565,18 +565,19 @@ mod tests {
     fn quic_is_used_only_where_http3_may_be_selected() {
         for (args, expected) in [
             (&["--http3", "https://example.com/"][..], true),
-            (&["--alt-svc", "https://example.com/"], true),
-            (&["https://example.com/"], false),
-            (&["--alt-svc", "--http2", "https://example.com/"], false),
-            (
-                &["--alt-svc", "--tls-max", "1.2", "https://example.com/"],
-                false,
-            ),
+            (&["https://example.com/"], true),
+            (&["--no-alt-svc", "https://example.com/"], true),
+            (&["http://example.com/"], true),
+            (&["--http1.1", "https://example.com/"], false),
+            (&["--http1.0", "https://example.com/"], false),
+            (&["--http0.9", "https://example.com/"], false),
+            (&["--http2", "https://example.com/"], false),
+            (&["--tls-max", "1.2", "https://example.com/"], false),
             (&["--http3", "wss://example.com/"], true),
             // RFC 9220 needs explicit prior knowledge: discovery never moves a WebSocket.
-            (&["--alt-svc", "wss://example.com/"], false),
-            (&["--alt-svc", "ws://example.com/"], false),
-            (&["--alt-svc", "file:///tmp/request.txt"], false),
+            (&["wss://example.com/"], false),
+            (&["ws://example.com/"], false),
+            (&["file:///tmp/request.txt"], false),
         ] {
             let cfg = send_cfg(args);
             let uri = parse_user_uri(&cfg.req.uri).unwrap();
@@ -585,8 +586,8 @@ mod tests {
     }
 
     #[test]
-    fn alt_svc_client_construction_needs_no_udp_socket_or_runtime() {
-        let cfg = send_cfg(&["--alt-svc", "https://example.com/"]);
+    fn default_client_construction_needs_no_udp_socket_or_runtime() {
+        let cfg = send_cfg(&["https://example.com/"]);
         let _client = new_inner_client(&cfg, WeakScope::detached(), false)
             .now_or_never()
             .expect("construct the client without binding a QUIC endpoint")

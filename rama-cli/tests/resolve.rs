@@ -56,7 +56,7 @@ fn resolves_supported_records_with_local_dns_server() -> TestResult {
         "output: {output}"
     );
     assert!(
-        output.contains("* 1 . alpn=\"h2\",\"h3\" port=8443"),
+        output.contains("* example.test. 1 . alpn=\"h2\",\"h3\" port=8443"),
         "output: {output}"
     );
 
@@ -70,7 +70,10 @@ fn resolves_supported_records_with_local_dns_server() -> TestResult {
         output.contains("Resolving HTTPS for domain: example.test"),
         "output: {output}"
     );
-    assert!(output.contains("* 0 svc.example.test."), "output: {output}");
+    assert!(
+        output.contains("* example.test. 0 svc.example.test."),
+        "output: {output}"
+    );
     Ok(())
 }
 

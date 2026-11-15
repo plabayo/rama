@@ -190,8 +190,8 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.5.0", path = ".", default-features = false }
-rama-boring = { version = "0.7.0", default-features = false }
-rama-boring-tokio = { version = "0.7.0", default-features = false }
+rama-boring = { version = "0.7.1", default-features = false }
+rama-boring-tokio = { version = "0.7.1", default-features = false }
 rama-core = { version = "0.5.0", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.5.0", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.5.0", path = "./rama-dns", default-features = false }
@@ -506,7 +506,7 @@ inspect = [
 idna = ["net", "rama-net?/idna"]
 # memory-map IP geolocation databases (only takes effect when rama-net is enabled)
 mmap = ["std", "rama-net?/mmap"]
-dns = ["std", "net", "dep:rama-dns", "rama-socks5?/dns"]
+dns = ["std", "net", "dep:rama-dns", "rama-socks5?/dns", "rama-tls?/dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
@@ -520,6 +520,7 @@ quic = [
     "dep:rama-quic-proto",
     "rama-http-core?/quic",
     "rama-http-backend?/quic",
+    "rama-http?/dns",
 ]
 ws = ["std", "dep:rama-ws", "http"]
 masque = ["std", "http", "udp", "dns", "dep:rama-masque"]

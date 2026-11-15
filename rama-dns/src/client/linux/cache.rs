@@ -1,3 +1,4 @@
+use crate::client::resolver::ServiceBindingRecord;
 use std::{
     hash::{Hash, Hasher},
     sync::Arc,
@@ -7,7 +8,7 @@ use std::{
 use moka::{Equivalent, Expiry, sync::Cache};
 use rama_net::address::Domain;
 
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::wire::{Name, Txt};
 
 /// Linux-only DNS response cache.
 ///
@@ -106,7 +107,7 @@ impl LinuxDnsCache {
         );
     }
 
-    pub(super) fn get_svcb(&self, domain: &Domain) -> Option<CacheLookup<ServiceBinding>> {
+    pub(super) fn get_svcb(&self, domain: &Domain) -> Option<CacheLookup<ServiceBindingRecord>> {
         self.lookup(domain, RecordKind::Svcb, |value| match value {
             CacheValue::Svcb(values) => Some(values.clone()),
             _ => None,
@@ -116,7 +117,7 @@ impl LinuxDnsCache {
     pub(super) fn insert_svcb(
         &self,
         domain: Domain,
-        values: Vec<ServiceBinding>,
+        values: Vec<ServiceBindingRecord>,
         ttl: Option<Duration>,
     ) {
         self.insert(
@@ -127,7 +128,7 @@ impl LinuxDnsCache {
         );
     }
 
-    pub(super) fn get_https(&self, domain: &Domain) -> Option<CacheLookup<ServiceBinding>> {
+    pub(super) fn get_https(&self, domain: &Domain) -> Option<CacheLookup<ServiceBindingRecord>> {
         self.lookup(domain, RecordKind::Https, |value| match value {
             CacheValue::Https(values) => Some(values.clone()),
             _ => None,
@@ -137,7 +138,7 @@ impl LinuxDnsCache {
     pub(super) fn insert_https(
         &self,
         domain: Domain,
-        values: Vec<ServiceBinding>,
+        values: Vec<ServiceBindingRecord>,
         ttl: Option<Duration>,
     ) {
         self.insert(
@@ -295,8 +296,8 @@ enum CacheValue {
     Ipv6(Arc<[std::net::Ipv6Addr]>),
     Cname(Arc<[Name]>),
     Txt(Arc<[Txt]>),
-    Svcb(Arc<[ServiceBinding]>),
-    Https(Arc<[ServiceBinding]>),
+    Svcb(Arc<[ServiceBindingRecord]>),
+    Https(Arc<[ServiceBindingRecord]>),
     Negative,
 }
 

@@ -5,7 +5,9 @@ use std::{collections::VecDeque, fmt, sync::Arc};
 use parking_lot::Mutex;
 use rama_core::{error::BoxError, extensions::Extensions};
 use rama_net::{address::Host, tls::AlpnPolicy};
-use rama_tls::client::{TlsClientConfig, TlsPoolId, TlsServerName};
+use rama_tls::client::{
+    EchRequirement, TlsClientConfig, TlsEncryptedClientHello, TlsPoolId, TlsServerName,
+};
 
 use super::{
     ClientHandshake, ClientSessionPolicy, QuicClientConfigProvider, TlsConfigError, TlsOptions,
@@ -54,11 +56,26 @@ impl fmt::Debug for ClientConfigCache {
 }
 
 impl ClientConfigCache {
+    fn needs_endpoint_ech(&self, config: &TlsClientConfig) -> bool {
+        let ext = config.as_extensions();
+        ext.get_ref::<EchRequirement>() == Some(&EchRequirement::Required)
+            || (self.provider.supports_ech()
+                && ext
+                    .get_ref::<TlsEncryptedClientHello>()
+                    .is_none_or(|intent| intent.0)
+                && ext.contains::<rama_net::tls::TargetEchConfig>())
+    }
+
     fn effective_options(&self, config: &TlsClientConfig) -> TlsOptions {
+        let options = if self.needs_endpoint_ech(config) {
+            self.options.with_early_data(false)
+        } else {
+            self.options
+        };
         let options = config
             .as_extensions()
             .get_ref::<AlpnPolicy>()
-            .map_or(self.options, |policy| self.options.with_alpn(*policy));
+            .map_or(options, |policy| options.with_alpn(*policy));
 
         #[cfg(feature = "boring")]
         if self.provider.pool_classifier() == BoringTlsProvider.pool_classifier() {
@@ -139,6 +156,18 @@ impl ClientConfigCache {
         config: &TlsClientConfig,
         overrides: &Extensions,
     ) -> Result<ClientConfig, TlsConfigError> {
+        if self.needs_endpoint_ech(config) {
+            let peer = config
+                .as_extensions()
+                .get_ref::<TlsServerName>()
+                .map(|name| name.0.clone())
+                .ok_or_else(|| {
+                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                        "endpoint ECH requires a peer identity",
+                    ))
+                })?;
+            return self.client_config_for_peer(config, overrides, &peer);
+        }
         if config
             .as_extensions()
             .get_ref::<ClientHandshake>()
@@ -167,6 +196,23 @@ impl ClientConfigCache {
         overrides: &Extensions,
         peer: &Host,
     ) -> Result<ClientConfig, TlsConfigError> {
+        if self.needs_endpoint_ech(config) {
+            return self
+                .prepare_client_config(
+                    config,
+                    peer.clone(),
+                    config
+                        .as_extensions()
+                        .get_ref::<ClientHandshake>()
+                        .copied()
+                        .unwrap_or_default(),
+                )?
+                .ok_or_else(|| {
+                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                        "TLS provider cannot prepare endpoint ECH",
+                    ))
+                });
+        }
         if let Some(handshake) = config
             .as_extensions()
             .get_ref::<ClientHandshake>()
@@ -366,6 +412,27 @@ mod tests {
     }
 
     impl QuicClientConfigProvider for TestProvider {
+        fn supports_ech(&self) -> bool {
+            true
+        }
+
+        fn prepare_client_config(
+            &self,
+            policy: &TlsClientConfig,
+            options: TlsOptions,
+            _: Host,
+            _: ClientHandshake,
+        ) -> Result<Option<ClientConfig>, TlsConfigError> {
+            if policy
+                .as_extensions()
+                .contains::<rama_net::tls::TargetEchConfig>()
+            {
+                self.client_config(policy, options).map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+
         fn peer_matches_name(&self, _: &Extensions, _: &CertificateDer<'_>, _: &Host) -> bool {
             false
         }
@@ -563,6 +630,27 @@ mod tests {
         let first = cache.client_config(&config, &defaults).unwrap();
         let replacement = cache.client_config(&changed, &defaults).unwrap();
         assert!(!Arc::ptr_eq(&first.crypto, &replacement.crypto));
+    }
+
+    #[test]
+    fn opportunistic_endpoint_ech_is_uncached_and_disables_early_data() {
+        let provider = Arc::new(TestProvider::default());
+        let cache = ClientConfigCache::new(provider, TlsOptions::default().with_early_data(true));
+        let tls = TlsClientConfig::new().with_server_name(Host::from_static("origin.example"));
+        tls.as_extensions()
+            .insert(rama_net::tls::TargetEchConfig::new(
+                "origin.example:443".parse().unwrap(),
+                vec![0, 1, 2],
+            ));
+        assert!(!cache.allows_early_data(&tls));
+        let first = cache.client_config(&tls, tls.as_extensions()).unwrap();
+        let second = cache.client_config(&tls, tls.as_extensions()).unwrap();
+        assert!(!Arc::ptr_eq(&first.crypto, &second.crypto));
+        tls.as_extensions().insert(TlsEncryptedClientHello(false));
+        assert!(cache.allows_early_data(&tls));
+        let first = cache.client_config(&tls, tls.as_extensions()).unwrap();
+        let second = cache.client_config(&tls, tls.as_extensions()).unwrap();
+        assert!(Arc::ptr_eq(&first.crypto, &second.crypto));
     }
 
     #[test]

@@ -44,18 +44,26 @@ async fn dispatch(
 #[derive(Debug, Clone, Extension)]
 struct AttemptMarker;
 
+#[cfg(feature = "tls")]
+#[derive(Debug, Extension)]
+struct CandidateSetting(u8);
+
 #[derive(Debug)]
 struct Record {
     target: HostWithPort,
     origin: HostWithPort,
     required: Option<Version>,
     prior_attempt_marker: bool,
+    #[cfg(feature = "tls")]
+    candidate_setting: Option<u8>,
     proxy: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 enum Outcome {
     Success(ApplicationProtocol),
+    #[cfg(feature = "tls")]
+    NoAlpn,
     #[cfg(feature = "tls")]
     Failure(ConnectionErrorDomain, ConnectionErrorKind),
     #[cfg(feature = "tls")]
@@ -191,6 +199,11 @@ impl Service<ConnectRequest> for FakeConnector {
                 .get_ref::<TargetHttpVersion>()
                 .map(|version| version.0),
             prior_attempt_marker: input.extensions().contains::<AttemptMarker>(),
+            #[cfg(feature = "tls")]
+            candidate_setting: input
+                .extensions()
+                .get_ref::<CandidateSetting>()
+                .map(|setting| setting.0),
             proxy: input
                 .extensions()
                 .get_ref::<rama_net::client::ProxyRoute>()
@@ -240,6 +253,8 @@ impl Service<ConnectRequest> for FakeConnector {
             }
             Outcome::Success(protocol) => protocol,
             #[cfg(feature = "tls")]
+            Outcome::NoAlpn => ApplicationProtocol::HTTP_11,
+            #[cfg(feature = "tls")]
             Outcome::WrongIdentity | Outcome::WrongAlpn => ApplicationProtocol::HTTP_2,
         };
         let extensions = Extensions::new();
@@ -258,11 +273,15 @@ impl Service<ConnectRequest> for FakeConnector {
             extensions.insert(rama_tls::client::TlsServerAuthentication(Some(identity)));
             extensions.insert(rama_tls::client::NegotiatedTlsParameters {
                 protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
-                application_layer_protocol: Some(if matches!(outcome, Outcome::WrongAlpn) {
-                    ApplicationProtocol::HTTP_11
+                application_layer_protocol: if matches!(outcome, Outcome::NoAlpn) {
+                    None
                 } else {
-                    protocol
-                }),
+                    Some(if matches!(outcome, Outcome::WrongAlpn) {
+                        ApplicationProtocol::HTTP_11
+                    } else {
+                        protocol
+                    })
+                },
                 peer_certificate_chain: None,
                 server_name: None,
                 resumed: None,
@@ -1941,4 +1960,407 @@ async fn custom_observer_can_consume_selection_without_ramas_http_wrapper() {
             .extensions()
             .contains::<HttpServiceSelection>()
     );
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn candidate_extensions_refine_target_without_leaking_into_fallback() {
+    let request = input();
+    request.extensions().insert(CandidateSetting(1));
+    let settings = Extensions::new();
+    settings.insert(CandidateSetting(2));
+    settings.insert(AttemptMarker);
+    settings.insert(ConnectorTarget("physical.example:9443".parse().unwrap()));
+    // Selection owns the protocol, even if candidate settings contain a stale one.
+    settings.insert(TargetHttpVersion(Version::HTTP_11));
+    let candidates = HttpServiceCandidates::new_with_extensions(
+        origin(&request).unwrap(),
+        [
+            (
+                HttpServiceCandidate::new(
+                    ApplicationProtocol::HTTP_2,
+                    "first.example:443".parse().unwrap(),
+                ),
+                Some(settings),
+            ),
+            (
+                HttpServiceCandidate::new(
+                    ApplicationProtocol::HTTP_2,
+                    "second.example:443".parse().unwrap(),
+                ),
+                None,
+            ),
+        ],
+    );
+    request.extensions().insert(candidates);
+    let inner = FakeConnector::new([
+        Outcome::Failure(
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Unavailable,
+        ),
+        Outcome::Failure(
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Unavailable,
+        ),
+        Outcome::Success(ApplicationProtocol::HTTP_2),
+    ]);
+    let records = inner.records.clone();
+    let established = HttpServiceConnector::new(inner)
+        .serve(request)
+        .await
+        .unwrap();
+    let records = records.lock();
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.candidate_setting)
+            .collect::<Vec<_>>(),
+        [Some(2), Some(1), Some(1)]
+    );
+    assert_eq!(records[0].target.to_string(), "physical.example:9443");
+    assert_eq!(records[0].required, Some(Version::HTTP_2));
+    assert!(records[0].prior_attempt_marker);
+    assert_eq!(records[1].target.to_string(), "second.example:443");
+    assert!(!records[1].prior_attempt_marker);
+    assert_eq!(records[2].target.to_string(), "origin.example:443");
+    assert!(!records[2].prior_attempt_marker);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.origin.to_string() == "origin.example:443")
+    );
+    assert!(
+        !established
+            .input
+            .extensions()
+            .contains::<SelectedHttpService>()
+    );
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn discovery_can_forbid_origin_fallback_without_reserving_an_attempt() {
+    for empty in [false, true] {
+        let request = input();
+        let candidates = if empty {
+            vec![]
+        } else {
+            vec![
+                HttpServiceCandidate::new(
+                    ApplicationProtocol::HTTP_2,
+                    "dns.example:443".parse().unwrap(),
+                )
+                .with_source(HttpServiceSource::Https),
+            ]
+        };
+        request.extensions().insert(
+            HttpServiceCandidates::new(origin(&request).unwrap(), candidates)
+                .with_origin_fallback(false),
+        );
+        let inner = FakeConnector::new([Outcome::Failure(
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Unavailable,
+        )]);
+        let records = inner.records.clone();
+        let error = HttpServiceConnector::new(inner)
+            .with_max_attempts(1)
+            .serve(request)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.domain(),
+            if empty {
+                ConnectionErrorDomain::Local
+            } else {
+                ConnectionErrorDomain::Transport
+            }
+        );
+        let records = records.lock();
+        assert_eq!(records.len(), usize::from(!empty));
+        assert!(
+            records
+                .iter()
+                .all(|record| record.target.to_string() == "dns.example:443")
+        );
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn composed_dns_target_retains_original_advertisement_selection() {
+    let request = input();
+    let origin = origin(&request).unwrap();
+    let cache = AltSvcCache::default();
+    cache.record_frame(
+        &origin,
+        Bytes::from_static(b"h2=\"alt.example:443\""),
+        StdInstant::now(),
+    );
+    let advertised = cache.lookup(&origin).unwrap();
+    let extensions = Extensions::new();
+    extensions.insert(ConnectorTarget("physical.example:9443".parse().unwrap()));
+    extensions.insert(HttpServiceSelection {
+        candidates: advertised.clone(),
+        index: 0,
+        route: None,
+    });
+    request
+        .extensions()
+        .insert(HttpServiceCandidates::new_with_extensions(
+            origin,
+            [(advertised.get(0).unwrap().clone(), extensions)],
+        ));
+    let inner = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
+    let records = inner.records.clone();
+    let established = HttpServiceConnector::new(inner)
+        .with_cache(cache.clone())
+        .serve(request)
+        .await
+        .unwrap();
+    let selection = established
+        .input
+        .extensions()
+        .get_ref::<HttpServiceSelection>()
+        .unwrap();
+    assert!(Arc::ptr_eq(&selection.candidates, &advertised));
+    assert_eq!(
+        records.lock()[0].target.to_string(),
+        "physical.example:9443"
+    );
+    dispatch(established, Some(cache)).await;
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test(start_paused = true)]
+async fn dns_primary_is_not_limited_by_speculation_timeout() {
+    let request = input();
+    request.extensions().insert(
+        HttpServiceCandidates::new(
+            origin(&request).unwrap(),
+            [HttpServiceCandidate::new(
+                ApplicationProtocol::HTTP_2,
+                "dns.example:443".parse().unwrap(),
+            )
+            .with_source(HttpServiceSource::Https)],
+        )
+        .with_origin_fallback(false),
+    );
+    let fake = FakeConnector::new([Outcome::Success(ApplicationProtocol::HTTP_2)]);
+    let inner = rama_core::service::service_fn(move |request| {
+        let fake = fake.clone();
+        async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            fake.serve(request).await
+        }
+    });
+    HttpServiceConnector::new(inner)
+        .serve(request)
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn redirected_failure_updates_original_advertisement_backoff() {
+    let request = input();
+    let origin = origin(&request).unwrap();
+    let cache = AltSvcCache::default();
+    cache.record_frame(
+        &origin,
+        Bytes::from_static(b"h2=\"alt.example:443\""),
+        StdInstant::now(),
+    );
+    let advertised = cache.lookup(&origin).unwrap();
+    let extensions = Extensions::new();
+    extensions.insert(ConnectorTarget("physical.example:9443".parse().unwrap()));
+    extensions.insert(HttpServiceSelection {
+        candidates: advertised.clone(),
+        index: 0,
+        route: None,
+    });
+    request
+        .extensions()
+        .insert(HttpServiceCandidates::new_with_extensions(
+            origin,
+            [(advertised.get(0).unwrap().clone(), extensions)],
+        ));
+    let inner = FakeConnector::new([
+        Outcome::Failure(
+            ConnectionErrorDomain::Transport,
+            ConnectionErrorKind::Unavailable,
+        ),
+        Outcome::Success(ApplicationProtocol::HTTP_2),
+    ]);
+    HttpServiceConnector::new(inner)
+        .with_cache(cache.clone())
+        .serve(request)
+        .await
+        .unwrap();
+    assert!(!cache.is_usable(&advertised, 0));
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test(start_paused = true)]
+async fn composed_bare_advertisement_retains_speculative_deadline() {
+    let request = input();
+    let origin = origin(&request).unwrap();
+    let cache = AltSvcCache::default();
+    cache.record_frame(
+        &origin,
+        Bytes::from_static(b"h2=\"alt.example:443\""),
+        StdInstant::now(),
+    );
+    let advertised = cache.lookup(&origin).unwrap();
+    let extensions = Extensions::new();
+    extensions.insert(HttpServiceSelection {
+        candidates: advertised.clone(),
+        index: 0,
+        route: None,
+    });
+    request
+        .extensions()
+        .insert(HttpServiceCandidates::new_with_extensions(
+            origin,
+            [(advertised.get(0).unwrap().clone(), extensions)],
+        ));
+    let inner = FakeConnector::new([
+        Outcome::Pending(false),
+        Outcome::Success(ApplicationProtocol::HTTP_2),
+    ]);
+    let records = inner.records.clone();
+    let started = Instant::now();
+    HttpServiceConnector::new(inner)
+        .with_cache(cache)
+        .serve(request)
+        .await
+        .unwrap();
+    assert_eq!(Instant::now() - started, DEFAULT_ATTEMPT_TIMEOUT);
+    assert_eq!(records.lock().len(), 2);
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn dns_stream_candidate_preserves_alpn_negotiation() {
+    for (preferred, negotiated, required, source, succeeds) in [
+        (
+            ApplicationProtocol::HTTP_11,
+            ApplicationProtocol::HTTP_2,
+            None,
+            HttpServiceSource::Https,
+            true,
+        ),
+        (
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_11,
+            None,
+            HttpServiceSource::Https,
+            true,
+        ),
+        (
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_11,
+            Some(Version::HTTP_2),
+            HttpServiceSource::Https,
+            false,
+        ),
+        (
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_11,
+            None,
+            HttpServiceSource::AltSvc,
+            false,
+        ),
+        (
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_11,
+            None,
+            HttpServiceSource::Configured,
+            false,
+        ),
+        (
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_3,
+            None,
+            HttpServiceSource::Https,
+            false,
+        ),
+    ] {
+        let request = input();
+        request
+            .extensions()
+            .insert(FallbackHttpVersion(Version::HTTP_3));
+        if let Some(required) = required {
+            request.extensions().insert(TargetHttpVersion(required));
+        }
+        request.extensions().insert(
+            HttpServiceCandidates::new(
+                origin(&request).unwrap(),
+                [
+                    HttpServiceCandidate::new(
+                        preferred.clone(),
+                        "dns.example:443".parse().unwrap(),
+                    )
+                    .with_source(source),
+                ],
+            )
+            .with_origin_fallback(false),
+        );
+        let fake = FakeConnector::new([Outcome::Success(negotiated.clone())]);
+        let result = HttpServiceConnector::new(fake.clone()).serve(request).await;
+        assert_eq!(
+            result.is_ok(),
+            succeeds,
+            "{preferred:?} -> {negotiated:?}, {source:?}, {required:?}"
+        );
+        if let Ok(result) = result {
+            assert_eq!(fake.records.lock()[0].required, None);
+            assert_ne!(
+                result
+                    .input
+                    .extensions()
+                    .get_ref::<FallbackHttpVersion>()
+                    .unwrap()
+                    .0,
+                Version::HTTP_3
+            );
+            assert_eq!(
+                result
+                    .conn
+                    .extensions()
+                    .get_ref::<EstablishedHttpService>()
+                    .unwrap()
+                    .candidate
+                    .protocol,
+                negotiated
+            );
+        }
+    }
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn only_dns_stream_candidates_allow_http1_without_alpn() {
+    for source in [
+        HttpServiceSource::Https,
+        HttpServiceSource::AltSvc,
+        HttpServiceSource::Configured,
+    ] {
+        let request = input();
+        request.extensions().insert(
+            HttpServiceCandidates::new(
+                origin(&request).unwrap(),
+                [HttpServiceCandidate::new(
+                    ApplicationProtocol::HTTP_11,
+                    "dns.example:443".parse().unwrap(),
+                )
+                .with_source(source)],
+            )
+            .with_origin_fallback(false),
+        );
+        let result = HttpServiceConnector::new(FakeConnector::new([Outcome::NoAlpn]))
+            .serve(request)
+            .await;
+        assert_eq!(result.is_ok(), source == HttpServiceSource::Https);
+    }
 }

@@ -63,6 +63,46 @@ pub struct EasyHttpConnectorBuilder<C = (), S = (), D = ()> {
     stage: S,
     // Retain the layer so both transports apply exactly the same DNS policy.
     dns: D,
+    discovery: HttpsDiscovery,
+}
+
+// Retained alongside transport DNS until the pre-pool selector is assembled.
+#[derive(Debug, Clone)]
+struct HttpsDiscovery {
+    #[cfg(feature = "quic")]
+    layer: rama_http::layer::https_service::HttpsServiceLayer<
+        rama_dns::client::resolver::BoxDnsResolver,
+    >,
+}
+impl Default for HttpsDiscovery {
+    fn default() -> Self {
+        Self {
+            #[cfg(feature = "quic")]
+            layer: rama_http::layer::https_service::HttpsServiceLayer::new().with_resolver(
+                rama_dns::client::resolver::BoxDnsResolver::new(GlobalDnsResolver::new()),
+            ),
+        }
+    }
+}
+
+#[cfg(any(feature = "boring", feature = "rustls"))]
+impl HttpsDiscovery {
+    fn with_tls(self, config: &TlsClientConfig, capable: bool) -> Self {
+        #[cfg(feature = "quic")]
+        {
+            Self {
+                layer: self
+                    .layer
+                    .with_tls(config.clone())
+                    .with_ech_capable(capable),
+            }
+        }
+        #[cfg(not(feature = "quic"))]
+        {
+            let _ = (config, capable);
+            self
+        }
+    }
 }
 
 #[non_exhaustive]
@@ -110,6 +150,7 @@ impl EasyHttpConnectorBuilder {
         let connector = TcpConnector::default();
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -122,6 +163,7 @@ impl EasyHttpConnectorBuilder {
     ) -> EasyHttpConnectorBuilder<C, TransportStage> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -154,6 +196,7 @@ impl<T, Stage, D> EasyHttpConnectorBuilder<T, Stage, D> {
         let connector = map_fn(self.connector);
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: self.stage,
         }
@@ -165,10 +208,32 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
     pub fn with_default_dns_connector(
         self,
     ) -> EasyHttpConnectorBuilder<DnsConnector<T>, DnsStage, DnsConnectorLayer> {
-        self.with_dns_address_resolver(GlobalDnsResolver::new())
+        self.with_dns_resolver(GlobalDnsResolver::new())
+    }
+
+    /// Share one resolver between transport address resolution and HTTPS discovery.
+    pub fn with_dns_resolver<R: rama_dns::client::resolver::DnsResolver + Clone>(
+        self,
+        resolver: R,
+    ) -> EasyHttpConnectorBuilder<DnsConnector<T, R>, DnsStage, DnsConnectorLayer<R>> {
+        let builder = self.with_dns_address_resolver(resolver.clone());
+        #[cfg(feature = "quic")]
+        let builder = {
+            let mut builder = builder;
+            builder.discovery.layer = builder
+                .discovery
+                .layer
+                .with_resolver(rama_dns::client::resolver::BoxDnsResolver::new(resolver))
+                .with_enabled(true);
+            builder
+        };
+        builder
     }
 
     /// Add a custom address resolver to both the stream and built-in QUIC transports.
+    /// Automatic HTTPS discovery is disabled because this resolver need not support
+    /// HTTPS records. Use `with_dns_resolver` to share an aggregate resolver, or
+    /// explicitly opt in with `with_https_resolver` after configuring the pool.
     pub fn with_dns_address_resolver<R: DnsAddressResolver + Clone>(
         self,
         resolver: R,
@@ -176,7 +241,8 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
         self.with_dns_connector(DnsConnectorLayer::with_resolver(resolver))
     }
 
-    /// Omit DNS resolution. Transports require IP targets or their own resolution.
+    /// Omit DNS resolution and automatic HTTPS discovery.
+    /// Transports require IP targets or their own resolution.
     pub fn without_dns_connector(self) -> EasyHttpConnectorBuilder<T, DnsStage> {
         self.with_dns_connector(())
     }
@@ -186,16 +252,23 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
     /// The layer is applied to the stream transport here and to the built-in
     /// QUIC connector when `with_http3_support` is called. A layer specific to
     /// the stream transport can instead be paired with `with_http3_connector`,
-    /// whose supplied connector owns its DNS policy independently.
+    /// whose supplied connector owns its DNS policy independently. Automatic HTTPS
+    /// discovery is disabled: an opaque layer cannot authorize global DNS queries.
     pub fn with_dns_connector<L: Layer<T>>(
         self,
         layer: L,
     ) -> EasyHttpConnectorBuilder<L::Service, DnsStage, L> {
         let connector = layer.layer(self.connector);
+        let discovery = self.discovery;
+        #[cfg(feature = "quic")]
+        let discovery = HttpsDiscovery {
+            layer: discovery.layer.with_enabled(false),
+        };
         EasyHttpConnectorBuilder {
             connector,
             stage: DnsStage,
             dns: layer,
+            discovery,
         }
     }
 }
@@ -217,6 +290,7 @@ impl<T, D> EasyHttpConnectorBuilder<T, DnsStage, D> {
         let connector = connector_layer.into_layer(self.connector);
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -239,6 +313,7 @@ impl<T, D> EasyHttpConnectorBuilder<T, DnsStage, D> {
         let connector = boring_client::TlsConnector::tunnel(self.connector, None);
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -263,6 +338,7 @@ impl<T, D> EasyHttpConnectorBuilder<T, DnsStage, D> {
             boring_client::TlsConnector::tunnel(self.connector, None).with_base_config(config);
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -286,6 +362,7 @@ impl<T, D> EasyHttpConnectorBuilder<T, DnsStage, D> {
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -311,6 +388,7 @@ impl<T, D> EasyHttpConnectorBuilder<T, DnsStage, D> {
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -326,6 +404,7 @@ impl<T, D> EasyHttpConnectorBuilder<T, DnsStage, D> {
     ) -> EasyHttpConnectorBuilder<T, ProxyTunnelStage<false>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector: self.connector,
             stage: Default::default(),
         }
@@ -344,6 +423,7 @@ impl<T, D, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<T
         let connector = connector_layer.into_layer(self.connector);
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -380,6 +460,7 @@ impl<T, D, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<T
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -397,6 +478,7 @@ impl<T, D, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<T
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -406,6 +488,7 @@ impl<T, D, const TLS_PROXY: bool> EasyHttpConnectorBuilder<T, ProxyTunnelStage<T
     pub fn without_proxy_support(self) -> EasyHttpConnectorBuilder<T, ProxyStage<false>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector: self.connector,
             stage: Default::default(),
         }
@@ -438,6 +521,7 @@ impl<T: Clone, D, const TLS_PROXY: bool>
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -465,6 +549,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: Default::default(),
         }
@@ -480,10 +565,12 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         self,
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<boring_client::TlsConnector<T>, TlsStage<PROXY>, D> {
+        let discovery = self.discovery.with_tls(&config, true);
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery,
             connector,
             stage: Default::default(),
         }
@@ -509,6 +596,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         TlsStage<PROXY>,
         D,
     > {
+        let discovery = self.discovery.with_tls(&config, true);
         let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
@@ -516,6 +604,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery,
             connector,
             stage: Default::default(),
         }
@@ -531,10 +620,12 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         self,
         config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<rustls_client::TlsConnector<T>, TlsStage<PROXY>, D> {
+        let discovery = self.discovery.with_tls(&config, false);
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery,
             connector,
             stage: Default::default(),
         }
@@ -560,6 +651,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
         TlsStage<PROXY>,
         D,
     > {
+        let discovery = self.discovery.with_tls(&config, false);
         let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             AddInputExtension::new(connector, FallbackHttpVersion(default_http_version))
@@ -567,6 +659,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery,
             connector,
             stage: Default::default(),
         }
@@ -576,6 +669,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
     pub fn without_tls_support(self) -> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector: self.connector,
             stage: Default::default(),
         }
@@ -613,6 +707,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: HttpStage,
         }
@@ -630,6 +725,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, TlsStage<PROXY>, D> {
 
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector,
             stage: HttpStage,
         }
@@ -656,6 +752,7 @@ impl<T, Body, D, const PROXY: bool>
     > {
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector: self.connector.with_http3_connector(connector),
             stage: self.stage,
         }
@@ -667,7 +764,7 @@ impl<T, Body, D, const PROXY: bool>
     /// This does not copy a custom stream transport or its routing policy.
     /// Use [`Self::with_http3_connector`] for an equivalent custom QUIC path.
     pub fn with_http3_support<E>(
-        self,
+        mut self,
         connector: super::Http3Connector<E>,
     ) -> EasyHttpConnectorBuilder<
         HttpConnector<super::HttpTransportConnector<T, D::Service>, Body>,
@@ -677,6 +774,9 @@ impl<T, Body, D, const PROXY: bool>
     where
         D: Layer<super::Http3Connector<E>>,
     {
+        let capable =
+            self.discovery.layer.is_ech_capable() || connector.tls_provider().supports_ech();
+        self.discovery.layer.set_ech_capable(capable);
         let connector = self.dns.layer(connector);
         self.with_http3_connector(connector)
     }
@@ -724,12 +824,17 @@ impl<T, Body, D, const PROXY: bool>
 /// per connection, or a CONNECT-UDP tunnel opened with `S` on a MASQUE proxy route.
 pub type MasqueQuicEndpoints<S> = QuicEndpointConnector<ConnectUdpConnector<S, UdpConnector>>;
 
+#[cfg(feature = "quic")]
+type SelectedConnector<T> = rama_http::layer::https_service::HttpsService<
+    HttpServiceConnector<ProxyRoutesConnector<T>>,
+    rama_dns::client::resolver::BoxDnsResolver,
+>;
+#[cfg(not(feature = "quic"))]
+type SelectedConnector<T> = HttpServiceConnector<ProxyRoutesConnector<T>>;
+
 type DefaultHttpConnector<T> = RequestVersionAdapter<
     HttpConnectRequestAdapter<
-        MapEstablishedConnection<
-            HttpServiceConnector<ProxyRoutesConnector<T>>,
-            AltSvcConnectionLayer,
-        >,
+        MapEstablishedConnection<SelectedConnector<T>, AltSvcConnectionLayer>,
     >,
 >;
 
@@ -797,15 +902,19 @@ where
     ConnectorServiceAdapter(connector).boxed()
 }
 
-fn finalize_http_connector<T>(connector: T) -> DefaultHttpConnector<T> {
+fn finalize_http_connector<T>(connector: T, discovery: HttpsDiscovery) -> DefaultHttpConnector<T> {
     let connector = ProxyRoutesConnector::new(connector);
     let cache = AltSvcCache::default();
     let connector = HttpServiceConnector::new(connector).with_cache(cache.clone());
+    #[cfg(feature = "quic")]
+    let connector = discovery.layer.with_cache(cache.clone()).layer(connector);
+    #[cfg(not(feature = "quic"))]
+    let _ = discovery;
     adapt_http_service_connector(connector, Some(cache))
 }
 
 fn adapt_http_service_connector<T>(
-    connector: HttpServiceConnector<ProxyRoutesConnector<T>>,
+    connector: SelectedConnector<T>,
     cache: Option<AltSvcCache>,
 ) -> DefaultHttpConnector<T> {
     let connector = MapEstablishedConnection::new(connector, AltSvcConnectionLayer { cache });
@@ -813,6 +922,69 @@ fn adapt_http_service_connector<T>(
 }
 
 impl<T> EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage> {
+    fn selected_connector_mut(&mut self) -> &mut SelectedConnector<T> {
+        self.connector.get_mut().get_mut().get_mut()
+    }
+
+    fn service_selector_mut(&mut self) -> &mut HttpServiceConnector<ProxyRoutesConnector<T>> {
+        let connector = self.selected_connector_mut();
+        #[cfg(feature = "quic")]
+        let connector = connector.get_mut();
+        connector
+    }
+
+    /// Configure HTTP service selection, including attempt timeouts and budgets.
+    #[must_use]
+    pub fn configure_http_service(
+        mut self,
+        configure: impl FnOnce(&mut HttpServiceConnector<ProxyRoutesConnector<T>>),
+    ) -> Self {
+        configure(self.service_selector_mut());
+        self
+    }
+
+    #[cfg(feature = "quic")]
+    /// Disable HTTPS discovery while retaining independently configured Alt-Svc.
+    #[must_use]
+    pub fn without_https_discovery(mut self) -> Self {
+        self.selected_connector_mut()
+            .config_mut()
+            .set_enabled(false);
+        self
+    }
+
+    #[cfg(feature = "quic")]
+    /// Enable HTTPS discovery with this resolver for HTTPS and A/AAAA records.
+    /// Its lazy address source takes precedence over the transport resolver for
+    /// matching HTTPS endpoints. Use `with_dns_resolver` to share one DNS policy.
+    #[must_use]
+    pub fn with_https_resolver<R: rama_dns::client::resolver::DnsResolver>(
+        mut self,
+        resolver: R,
+    ) -> Self {
+        let config = self.selected_connector_mut().config_mut();
+        *config = config
+            .clone()
+            .with_resolver(rama_dns::client::resolver::BoxDnsResolver::new(resolver))
+            .with_enabled(true);
+        self
+    }
+
+    #[cfg(feature = "quic")]
+    /// Configure the reusable discovery layer, including proxy permission and limits.
+    #[must_use]
+    pub fn configure_https_discovery(
+        mut self,
+        configure: impl FnOnce(
+            &mut rama_http::layer::https_service::HttpsServiceLayer<
+                rama_dns::client::resolver::BoxDnsResolver,
+            >,
+        ),
+    ) -> Self {
+        configure(self.selected_connector_mut().config_mut());
+        self
+    }
+
     /// Disable advertised alternatives and response learning for every HTTP version.
     #[must_use]
     pub fn without_alt_svc(self) -> Self {
@@ -820,11 +992,13 @@ impl<T> EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage> {
     }
 
     generate_set_and_with! {
-        /// Share an alternative-service cache across HTTP clients; `None` disables discovery.
+        /// Share an Alt-Svc cache across HTTP clients; `None` disables Alt-Svc only.
+        /// HTTPS-record discovery is configured separately.
         pub fn alt_svc_cache(mut self, cache: Option<AltSvcCache>) -> Self {
-            let connector = self.connector.get_mut().get_mut();
-            connector.get_mut().maybe_set_cache(cache.clone());
-            connector.layer_mut().cache = cache;
+            self.service_selector_mut().maybe_set_cache(cache.clone());
+            #[cfg(feature = "quic")]
+            self.selected_connector_mut().config_mut().maybe_set_cache(cache.clone());
+            self.connector.get_mut().get_mut().layer_mut().cache = cache;
             self
         }
     }
@@ -838,7 +1012,8 @@ where
 {
     EasyHttpConnectorBuilder {
         dns: (),
-        connector: finalize_http_connector(builder.connector),
+        discovery: HttpsDiscovery::default(),
+        connector: finalize_http_connector(builder.connector, builder.discovery),
         stage: Default::default(),
     }
 }
@@ -852,7 +1027,11 @@ where
 {
     EasyHttpConnectorBuilder {
         dns: (),
-        connector: finalize_http_connector(config.build_connector(builder.connector)),
+        discovery: HttpsDiscovery::default(),
+        connector: finalize_http_connector(
+            config.build_connector(builder.connector),
+            builder.discovery,
+        ),
         stage: Default::default(),
     }
 }
@@ -867,6 +1046,7 @@ fn finish_with_custom_connection_pool<T, Stage, D, P, R>(
         .maybe_with_wait_for_pool_timeout(wait_for_pool_timeout);
     EasyHttpConnectorBuilder {
         dns: (),
+        discovery: HttpsDiscovery::default(),
         connector,
         stage: Default::default(),
     }
@@ -892,6 +1072,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>, D> {
     {
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector: ProxyRouteFailureCacheConnector::new(erase_connector(self.connector), cache),
             stage: ProxyRouteFailureCacheStage,
         }
@@ -904,6 +1085,7 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, HttpStage<PROXY>, D> {
     ) -> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage, D> {
         EasyHttpConnectorBuilder {
             dns: self.dns,
+            discovery: self.discovery,
             connector: self.connector,
             stage: ProxyRouteFailureCacheStage,
         }
@@ -1212,20 +1394,9 @@ mod tests {
     use {
         crate::http::client::Http3Connector,
         crate::quic::Endpoint,
-        rama_core::futures::{Stream, stream},
         rama_http::layer::http_service::HttpServiceAttempt,
-        rama_net::{
-            address::{Domain, SocketAddress},
-            client::ConnectionErrorKind,
-            http::TargetHttpVersion as RequestedVersion,
-        },
-        std::{
-            net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-            sync::{
-                Arc,
-                atomic::{AtomicUsize, Ordering},
-            },
-        },
+        rama_net::{address::SocketAddress, http::TargetHttpVersion as RequestedVersion},
+        std::net::SocketAddr,
     };
     #[cfg(feature = "tls")]
     use {
@@ -1251,6 +1422,22 @@ mod tests {
             client::{NegotiatedTlsParameters, TlsServerAuthentication},
         },
         std::convert::Infallible,
+    };
+    #[cfg(feature = "quic")]
+    use {
+        rama_core::futures::{Stream, stream},
+        rama_dns::{
+            client::resolver::*,
+            wire::{Name, ServiceBinding, Txt},
+        },
+        rama_net::{address::Domain, client::ConnectionErrorKind},
+        std::{
+            net::{Ipv4Addr, Ipv6Addr},
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+        },
     };
 
     fn assert_future_budget(connector: &impl Service<Request>, name: &str) {
@@ -1563,5 +1750,143 @@ mod tests {
             "a mismatched candidate family must not turn the IPv4 timeout into an authentication failure"
         );
         endpoint.close(0u32, b"test complete");
+    }
+    #[cfg(feature = "quic")]
+    #[tokio::test]
+    async fn default_https_discovery_accepts_a_custom_resolver_and_can_be_disabled() {
+        #[derive(Clone, Default)]
+        struct Resolver(Arc<AtomicUsize>, Arc<AtomicUsize>);
+        impl DnsAddressResolver for Resolver {
+            type Error = BoxError;
+            fn lookup_ipv4(
+                &self,
+                _: Domain,
+            ) -> impl Stream<Item = Result<Ipv4Addr, BoxError>> + Send + '_ {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                stream::empty()
+            }
+            fn lookup_ipv6(
+                &self,
+                _: Domain,
+            ) -> impl Stream<Item = Result<Ipv6Addr, BoxError>> + Send + '_ {
+                stream::empty()
+            }
+        }
+        impl DnsCnameResolver for Resolver {
+            type Error = BoxError;
+            fn lookup_cname(
+                &self,
+                _: Domain,
+            ) -> impl Stream<Item = Result<Name, BoxError>> + Send + '_ {
+                stream::empty()
+            }
+        }
+        impl DnsTxtResolver for Resolver {
+            type Error = BoxError;
+            fn lookup_txt(
+                &self,
+                _: Domain,
+            ) -> impl Stream<Item = Result<Txt, BoxError>> + Send + '_ {
+                stream::empty()
+            }
+        }
+        impl DnsServiceBindingResolver for Resolver {
+            type Error = BoxError;
+            fn lookup_svcb(
+                &self,
+                _: Domain,
+            ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send + '_
+            {
+                stream::empty()
+            }
+            fn lookup_https(
+                &self,
+                _: Domain,
+            ) -> impl Stream<Item = Result<ServiceBindingRecord, BoxError>> + Send + '_
+            {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                stream::once(async {
+                    Ok(ServiceBindingRecord {
+                        owner: Name::from_presentation("origin.example").unwrap(),
+                        binding: ServiceBinding::parse_rdata(&[0, 1, 0, 0, 1, 0, 3, 2, b'h', b'2'])
+                            .unwrap(),
+                    })
+                })
+            }
+        }
+        impl DnsResolver for Resolver {}
+        for (shared, override_https, disabled) in [
+            (true, false, false),
+            (true, false, true),
+            (false, false, false),
+            (false, true, false),
+        ] {
+            let enabled = (shared || override_https) && !disabled;
+            let resolver = Resolver::default();
+            let selected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let builder = EasyHttpConnectorBuilder::new().with_custom_transport_connector(());
+            let builder = if shared {
+                builder.with_dns_resolver(resolver.clone())
+            } else {
+                builder.with_dns_address_resolver(resolver.clone())
+            };
+            let builder = builder
+                .without_tls_proxy_support()
+                .without_proxy_support()
+                .without_tls_support()
+                .with_custom_http_connector(layer_fn({
+                    let selected = selected.clone();
+                    move |_inner| {
+                        let selected = selected.clone();
+                        service_fn(move |input: ConnectRequest| {
+                            if input
+                                .extensions()
+                                .get_ref::<SelectedHttpService>()
+                                .is_some_and(|service| {
+                                    service.candidate.source
+                                        == rama_http::conn::HttpServiceSource::Https
+                                })
+                            {
+                                selected.store(true, Ordering::SeqCst);
+                            }
+                            async {
+                                Err::<
+                                    EstablishedClientConnection<ServiceInput<()>, ConnectRequest>,
+                                    _,
+                                >(ConnectionError::local(
+                                    BoxError::from("test stopped before transport"),
+                                    ConnectionErrorKind::Unavailable,
+                                ))
+                            }
+                        })
+                    }
+                }))
+                .without_connection_pool();
+            let builder = if override_https {
+                builder.with_https_resolver(resolver.clone())
+            } else {
+                builder
+            };
+            let builder = if disabled {
+                builder.without_https_discovery()
+            } else {
+                builder
+            };
+            let error = builder
+                .build_connector()
+                .serve(
+                    Request::builder()
+                        .uri("https://origin.example/")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap_err();
+            assert!(!error.to_string().is_empty());
+            assert_eq!(resolver.0.load(Ordering::SeqCst), usize::from(enabled));
+            assert_eq!(selected.load(Ordering::SeqCst), enabled);
+            // This connector stops before transport: discovery must not start A/AAAA.
+            assert_eq!(resolver.1.load(Ordering::SeqCst), 0);
+        }
     }
 }

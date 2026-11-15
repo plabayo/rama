@@ -302,9 +302,19 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
-        /// Offer Encrypted ClientHello (ECH). Without an ECH configuration
-        /// published by the target, the offer is ECH GREASE. Backends without
-        /// ECH support (rustls) ignore it.
+        /// Require real ECH acceptance before application data or connection reuse.
+        pub fn ech_requirement(mut self, requirement: super::EchRequirement) -> Self {
+            self.0.insert(requirement);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Enable or disable Encrypted ClientHello (ECH).
+        /// When unspecified, a capable backend uses matching target ECH information.
+        /// Explicit `true` also enables GREASE when no real configuration is available.
+        /// Sparse configurations retain no explicit intent until this setter is used.
+        /// Backends without ECH support ignore optional ECH.
         pub fn encrypted_client_hello(mut self, enabled: bool) -> Self {
             self.0.insert(TlsEncryptedClientHello(enabled));
             self
@@ -834,6 +844,10 @@ pub struct TlsStoreServerCertChain(pub bool);
 pub struct TlsStoreServerHello(pub bool);
 
 /// Whether to offer Encrypted ClientHello (ECH).
+///
+/// Absence enables opportunistic real ECH with matching target information.
+/// Explicit `false` disables it; explicit `true` also enables ECH GREASE.
+/// Requiring acceptance is a separate [`super::EchRequirement`] policy.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsEncryptedClientHello(pub bool);
@@ -876,7 +890,8 @@ pub enum ServerVerifyMode {
     ///
     /// Applicable server certificate pin sets remain enforced. Any other
     /// verification config (trust anchors, backend-specific verifiers or
-    /// stores) is ignored.
+    /// stores) is ignored. Optional ECH can still encrypt the ClientHello, but
+    /// this mode cannot authenticate ECH recovery or satisfy required ECH.
     Disable,
 }
 

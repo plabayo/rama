@@ -1,7 +1,8 @@
 use super::{
     DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
 };
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::client::resolver::ServiceBindingRecord;
+use crate::wire::{Name, Txt};
 use rama_core::{error::BoxError, futures::Stream};
 use rama_net::address::Domain;
 use rama_utils::macros::{error::static_str_error, generate_set_and_with};
@@ -205,14 +206,14 @@ impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for BoundedDnsResol
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         bounded(self.inner.lookup_svcb(domain), self.svcb_limit)
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         bounded(self.inner.lookup_https(domain), self.https_limit)
     }
 }

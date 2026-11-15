@@ -7,7 +7,9 @@ use crate::client::BoringExtensionPresence;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::{
     CipherSuite, ExtensionId, ProtocolVersion, SupportedGroup,
-    client::{ClientHandshake, ClientHello, ClientHelloExtension},
+    client::{
+        ClientHandshake, ClientHello, ClientHelloExtension, EchRequirement, TlsEncryptedClientHello,
+    },
     is_grease_u16,
 };
 use rama_ua::profile::capture::tls::TlsCapturedExtension;
@@ -890,4 +892,81 @@ fn replayed_grease_slots_draw_fresh_values_per_connection() {
         );
     }
     assert!(drawn.len() > 1, "{drawn:?}");
+}
+
+#[test]
+fn profile_without_ech_explicitly_disables_opportunistic_default() {
+    let source = wire_variant().with_encrypted_client_hello(false);
+    let captured = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello_from_data(TlsConnectorData::try_from(&source).unwrap()),
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    let (config, _) = compile_tcp(&captured, None).unwrap();
+    let intent = config
+        .as_extensions()
+        .get_ref::<rama_tls::client::TlsEncryptedClientHello>();
+    assert!(intent.is_some_and(|intent| !intent.0));
+    assert!(
+        !rama_tls::client::EchRequirement::Optional
+            .intent(intent)
+            .unwrap()
+    );
+}
+
+#[test]
+fn caller_ech_policy_survives_profile_compilation() {
+    for captured_ech in [false, true] {
+        let source = wire_variant().with_encrypted_client_hello(captured_ech);
+        let capture = TlsCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            TlsCaptureTransport::Tcp,
+            &hello_from_data(TlsConnectorData::try_from(&source).unwrap()),
+            TlsCaptureLimits::default(),
+        )
+        .unwrap();
+        for intent in [None, Some(false), Some(true)] {
+            for requirement in [EchRequirement::Optional, EchRequirement::Required] {
+                let mut caller = TlsClientConfig::new().with_ech_requirement(requirement);
+                if let Some(intent) = intent {
+                    caller.set_encrypted_client_hello(intent);
+                }
+                let mut report = ProfilePreservationReport::default();
+                let result = wire::compile_for_policy(
+                    wire::TransportShape::Tcp,
+                    &capture,
+                    &BoringTlsConnectorConfig::from_extensions(caller.as_extensions()),
+                    &mut report,
+                );
+                if requirement == EchRequirement::Required && intent == Some(false) {
+                    assert!(result.is_err());
+                    continue;
+                }
+                let compiled = result.unwrap();
+                let effective = caller.with_overrides(compiled.as_extensions());
+                let actual = effective
+                    .as_extensions()
+                    .get_ref::<TlsEncryptedClientHello>()
+                    .unwrap();
+                assert_eq!(actual.0, intent.unwrap_or(captured_ech));
+                assert_eq!(
+                    lowered(&report).contains(&LoweredProfileItem::TlsExtension {
+                        extension: ExtensionId::ENCRYPTED_CLIENT_HELLO.into(),
+                    }),
+                    intent.is_some_and(|intent| intent != captured_ech),
+                );
+                if requirement == EchRequirement::Required {
+                    // Without endpoint preknowledge no required offer may start.
+                    TlsConnectorData::try_from(&effective)
+                        .and_then(|data| data.into_ssl())
+                        .unwrap_err();
+                } else {
+                    let hello = hello_from_data(TlsConnectorData::try_from(&effective).unwrap());
+                    assert_eq!(hello.has_encrypted_client_hello(), actual.0);
+                }
+            }
+        }
+    }
 }

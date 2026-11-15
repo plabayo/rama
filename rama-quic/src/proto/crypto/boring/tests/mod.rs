@@ -52,7 +52,7 @@ pub(super) fn configs() -> (TlsClientConfig, TlsServerConfig) {
 
 /// The same pair, with a leaf certificate naming every host the test connects to. Server
 /// identity is verified as usual, so a test that needs several names has to ask for them.
-fn configs_for(
+pub(super) fn configs_for(
     hosts: impl IntoIterator<Item = rama_net::address::Domain>,
 ) -> (TlsClientConfig, TlsServerConfig) {
     configs_from(generated_auth(hosts))

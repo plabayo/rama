@@ -1053,12 +1053,13 @@ mod tests {
         let connector = HttpProxyConnector::required(transport);
         let input = ConnectRequest::new(HostWithPort::example_domain_http())
             .with_application_protocol(Protocol::HTTP);
-        input
-            .extensions
-            .insert(ConnectorTargetStream::new(OneCandidate {
+        input.extensions.insert(ConnectorTargetStream::new(
+            input.authority.clone(),
+            OneCandidate {
                 domain: Domain::example(),
                 ip_addr: origin_ip,
-            }));
+            },
+        ));
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: proxy_addr.into(),
             credential: None,

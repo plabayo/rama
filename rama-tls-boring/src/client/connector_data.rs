@@ -39,10 +39,14 @@ use rama_core::{
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_crypto::platform_verifier::PlatformVerifier;
-use rama_net::{address::Host, tls::ApplicationProtocol};
+use rama_net::{
+    address::Host,
+    tls::{ApplicationProtocol, TargetEchConfig},
+};
 use rama_tls::client::{
     ClientAuth, ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, ServerVerifyMode,
     TlsClientConfig, TlsPoolId, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
+    target_ech_config, target_ech_required,
 };
 use rama_tls::{ExtensionId, KeyLogIntent, SignatureScheme, SupportedGroup};
 use rama_utils::macros::generate_set_and_with;
@@ -56,6 +60,9 @@ use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 /// The resolved native BoringSSL config consumed by [`super::TlsConnector`].
 pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
+    pub(crate) ech_required: bool,
+    pub(crate) ech_intent: Option<bool>,
+    ech_configured: Option<TargetEchConfig>,
     pub store_server_certificate_chain: bool,
     /// Record the ServerHello for the connection's negotiated parameters.
     pub store_server_hello: bool,
@@ -92,6 +99,8 @@ impl fmt::Debug for TlsConnectorContextBuilder {
 
 #[derive(Clone, Debug)]
 struct ConnectorOptions {
+    ech_required: bool,
+    ech_intent: Option<bool>,
     store_server_certificate_chain: bool,
     store_server_hello: bool,
     server_name: Option<Host>,
@@ -365,6 +374,9 @@ impl TlsConnectorContext {
         self.options.wire.apply(&mut cfg)?;
         Ok(TlsConnectorData {
             config: cfg,
+            ech_required: self.options.ech_required,
+            ech_intent: self.options.ech_intent,
+            ech_configured: None,
             store_server_certificate_chain: self.options.store_server_certificate_chain,
             store_server_hello: self.options.store_server_hello,
             server_name: self.options.server_name.clone(),
@@ -380,10 +392,57 @@ impl TlsConnectorContext {
 }
 
 impl TlsConnectorData {
+    pub(crate) fn has_target_ech(&self) -> bool {
+        self.ech_configured.is_some()
+    }
+
+    /// Apply endpoint ECH data to this connection, independently of shared contexts.
+    /// Call before `into_ssl`, using the actual TLS hop's physical endpoint.
+    pub fn configure_target_ech(
+        &mut self,
+        extensions: &rama_core::extensions::Extensions,
+        target: &rama_net::address::HostWithPort,
+    ) -> Result<(), BoxError> {
+        let inherited;
+        let effective = if !extensions.contains::<TargetEchConfig>()
+            && let Some(config) = &self.ech_configured
+        {
+            inherited = extensions.fork();
+            inherited.insert(config.clone());
+            &inherited
+        } else {
+            extensions
+        };
+        let config = target_ech_config(effective, target, true)?;
+        self.ech_required = target_ech_required(effective, target, true)?;
+        if config.is_none() && self.ech_configured.is_some() {
+            return Err(BoxError::from_static_str(
+                "prepared ECH configuration conflicts with the target or disabled intent",
+            ));
+        }
+        if let Some(config) = config {
+            if self.ech_required && self.server_verify_mode == ServerVerifyMode::Disable {
+                return Err(BoxError::from_static_str(
+                    "real ECH requires authenticated server verification",
+                ));
+            }
+            self.config
+                .set_ech_config_list(&config)
+                .context("configure target ECH")?;
+            self.ech_configured = Some(TargetEchConfig::new(target.clone(), config));
+        }
+        Ok(())
+    }
+
     /// Prepare one TLS session, including peer identity verification and certificate pins.
     /// The caller selects its transport and starts the handshake. A transport
     /// requiring a stored session must supply it before emitting handshake output.
     pub fn into_ssl(mut self) -> Result<rama_boring::ssl::Ssl, BoxError> {
+        if self.ech_required && self.ech_configured.is_none() {
+            return Err(BoxError::from_static_str(
+                "required ECH has no endpoint configuration",
+            ));
+        }
         if self.server_verify_mode == ServerVerifyMode::Auto && self.server_name.is_none() {
             return Err(BoxError::from_static_str(
                 "server identity required when server verification is enabled",
@@ -408,12 +467,18 @@ impl TlsConnectorData {
             .config
             .into_ssl(identity.as_deref())
             .context("prepare boring client TLS session")?;
+        ssl.set_reject_unusable_ech_config(self.ech_required);
+        super::ech::bind_retry_authentication(
+            &mut ssl,
+            self.server_verify_mode != ServerVerifyMode::Disable,
+        )?;
         if self.store_server_hello {
             ServerAnswerRecorder::of(&mut ssl)?;
         }
         if self.remembers_sessions
             && let Some(server) = &self.server_name
-            && let Some(key) = session::bind_session_key(&mut ssl, server)?
+            && let Some(key) =
+                session::bind_session_key(&mut ssl, server, self.ech_configured.is_some())?
             && self.client_handshake != ClientHandshake::Full
             && let Some(SessionStore(store)) = &self.session_store
             && let Some(session) = store.take(&key)
@@ -721,13 +786,19 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
                 .map(|shape| shape.native_shape())
                 .transpose()?
                 .flatten(),
+            // Default intent consumes real endpoint ECH; GREASE stays explicit.
             encrypted_client_hello: value
-                .encrypted_client_hello
-                .map(|p| p.0)
-                .unwrap_or_default(),
+                .ech_requirement
+                .copied()
+                .unwrap_or_default()
+                .intent(value.encrypted_client_hello)?
+                && value.encrypted_client_hello.is_some_and(|intent| intent.0),
         };
 
         Ok(Self {
+            ech_intent: value.encrypted_client_hello.map(|intent| intent.0),
+            ech_required: value.ech_requirement
+                == Some(&rama_tls::client::EchRequirement::Required),
             store_server_certificate_chain: value.store_chain.map(|p| p.0).unwrap_or_default(),
             store_server_hello: value.store_server_hello.map(|p| p.0).unwrap_or_default(),
             server_name: value.server_name.map(|s| s.0.clone()),

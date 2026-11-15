@@ -27,6 +27,61 @@ pub struct Name(Bytes);
 const MAX_COMPRESSION_POINTERS: usize = 128;
 
 impl Name {
+    /// Decode a DNS presentation name, including escaped label octets.
+    ///
+    /// Native resolver APIs return owners in this form. A final root dot is
+    /// optional; `\DDD` escapes encode one decimal octet and a backslash before
+    /// a non-digit quotes that character. This does not perform IDNA conversion.
+    pub fn from_presentation(name: impl AsRef<[u8]>) -> Result<Self, NameParseError> {
+        let name = name.as_ref();
+        if name == b"." {
+            return Ok(Self::root());
+        }
+        let invalid = || NameParseError(NameParseErrorKind::InvalidPresentation);
+        if name.is_empty() {
+            return Err(invalid());
+        }
+        let mut wire = BytesMut::with_capacity(name.len().min(Self::MAX_WIRE_LEN));
+        wire.extend_from_slice(&[0]);
+        let mut label = 0;
+        let mut bytes = name.iter().copied();
+        while let Some(mut byte) = bytes.next() {
+            if byte == b'.' {
+                let len = wire.len() - label - 1;
+                if len == 0 || len > 63 {
+                    return Err(invalid());
+                }
+                wire[label] = len as u8;
+                label = wire.len();
+                wire.extend_from_slice(&[0]);
+                continue;
+            }
+            if byte == b'\\' {
+                byte = bytes.next().ok_or_else(invalid)?;
+                if byte.is_ascii_digit() {
+                    let mut value = u16::from(byte - b'0');
+                    for _ in 0..2 {
+                        let digit = bytes
+                            .next()
+                            .filter(u8::is_ascii_digit)
+                            .ok_or_else(invalid)?;
+                        value = value * 10 + u16::from(digit - b'0');
+                    }
+                    byte = u8::try_from(value).map_err(|_overflow| invalid())?;
+                }
+            }
+            wire.extend_from_slice(&[byte]);
+            if wire.len() - label - 1 > 63 || wire.len() >= Self::MAX_WIRE_LEN {
+                return Err(invalid());
+            }
+        }
+        if wire.len() > label + 1 {
+            wire[label] = (wire.len() - label - 1) as u8;
+            wire.extend_from_slice(&[0]);
+        }
+        Self::from_wire_bytes(&wire.freeze())
+    }
+
     /// Maximum encoded length of a DNS name, including the root label.
     pub const MAX_WIRE_LEN: usize = 255;
 
@@ -309,6 +364,7 @@ pub struct NameParseError(NameParseErrorKind);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NameParseErrorKind {
+    InvalidPresentation,
     MissingRootLabel,
     TruncatedLabel,
     CompressedLabel,
@@ -323,6 +379,7 @@ enum NameParseErrorKind {
 impl fmt::Display for NameParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self.0 {
+            NameParseErrorKind::InvalidPresentation => "invalid DNS presentation name",
             NameParseErrorKind::MissingRootLabel => "DNS name has no terminating root label",
             NameParseErrorKind::TruncatedLabel => "DNS name ends within a label",
             NameParseErrorKind::CompressedLabel => {
@@ -345,3 +402,51 @@ impl fmt::Display for NameParseError {
 }
 
 impl core::error::Error for NameParseError {}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    #[test]
+    fn native_owners_preserve_labels_and_escaped_octets() {
+        for (text, wire) in [
+            (".", b"\0".as_slice()),
+            ("Alias.Example.", b"\x05Alias\x07Example\0".as_slice()),
+            ("Alias.Example", b"\x05Alias\x07Example\0".as_slice()),
+            (r"a\.b.\000\255.", b"\x03a.b\x02\0\xff\0".as_slice()),
+            (r"a\\b.example.", b"\x03a\\b\x07example\0".as_slice()),
+        ] {
+            let name = Name::from_presentation(text).unwrap();
+            assert_eq!(name.as_wire(), wire, "{text}");
+            assert_eq!(Name::from_presentation(name.to_string()).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn malformed_native_owners_are_not_silently_replaced() {
+        for text in [
+            "",
+            ".example",
+            "a..example",
+            "a\\",
+            r"a\12",
+            r"a\256",
+            r"a\1xy",
+        ] {
+            assert!(Name::from_presentation(text).is_err(), "{text:?}");
+        }
+        Name::from_presentation("a".repeat(64)).unwrap_err();
+        let longest = format!(
+            "{}.{}.{}.{}.",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        assert_eq!(
+            Name::from_presentation(&longest).unwrap().as_wire().len(),
+            255
+        );
+        Name::from_presentation(format!("x{longest}")).unwrap_err();
+    }
+}

@@ -17,6 +17,16 @@ allowed = []
 ignored = ["rama-grpc-build", "rama-ttrpc-build"]
 
 [[bin]]
+name = "http_https_discovery_custom_resolver"
+path = "src/http_https_discovery_custom_resolver.rs"
+required-features = ["http-full", "boring", "dns-hickory"]
+
+[[bin]]
+name = "http_ech_preknowledge"
+path = "src/http_ech_preknowledge.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
 name = "http_version_proxy"
 path = "src/http_version_proxy.rs"
 required-features = ["http-full", "boring"]
@@ -576,6 +586,7 @@ tcp = ["rama/tcp"]
 udp = ["rama/udp"]
 quic = ["rama/quic", "tls"]
 dns = ["rama/dns"]
+dns-hickory = ["dns", "rama/dns-hickory"]
 unix = ["rama/unix"]
 http-full = ["rama/http-full", "dns", "compression"]
 ua = ["rama/ua"]

@@ -41,16 +41,16 @@ Some things it can do on top of that:
 
 ### Alternative HTTP services
 
-`rama send --alt-svc --location https://example.com` opts in to learning and
-using alternative services advertised through response headers or HTTP/2 ALTSVC
-frames. Advertisements are kept in memory for that command only, so a redirect
+`rama send --location https://example.com` discovers HTTPS DNS services and
+learns alternative services from response headers or HTTP/2 ALTSVC frames by
+default. Advertisements are kept in memory for that command only, so a redirect
 can use an alternative learned from an earlier response. No cache file is read
-or written. Alternative-service discovery is disabled by default in the CLI.
+or written. `--no-alt-svc` disables advertisement learning and use; HTTPS DNS
+discovery remains enabled.
 
-`--http3` requires HTTP/3 directly, without an advertisement or `--alt-svc`.
-Explicit HTTP version flags continue to constrain selection when `--alt-svc`
-is enabled. `rama send --http3 wss://...` opens a WebSocket over HTTP/3 with
-Extended CONNECT (RFC 9220) when the server enables it; WebSockets use HTTP/3
+`--http3` requires HTTP/3 directly, without an advertisement. Explicit HTTP
+version flags continue to constrain selection. `rama send --http3 wss://...`
+opens a WebSocket over HTTP/3 with Extended CONNECT (RFC 9220) when the server enables it; WebSockets use HTTP/3
 only with `--http3`, never through alternative-service discovery. Without a
 terminal on stdin and stdout, `rama send ws(s)://...` sends each input line as a
 text message and prints received messages, which suits scripts and pipes.

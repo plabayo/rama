@@ -4718,9 +4718,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28b76d879a3b561760d7463249c8a38ba0296c4aceeb716e7a31cbe3f55b5459"
+checksum = "dd141d17e61eac168a778498d58350585c1e7491fe354ac8a39ea97df89be879"
 dependencies = [
  "bitflags 2.13.2",
  "foreign-types",
@@ -4731,9 +4731,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef678124c4b9f6bee7238537229f25636a57cd669c612beb03c44c96aa3d9b67"
+checksum = "78d240380c94bd3c77e543992bec048f14269511e33dda9a02be622d29af2823"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -4743,9 +4743,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "046f607508f4fc227a319d896f6f453b5ab2f281adc4736e3400366e5fed2e15"
+checksum = "7631a9ac19e6b3a5cbbd0c9e7266a685973954f7345ae80c08a14f76258e288a"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -5063,6 +5063,7 @@ dependencies = [
  "quickcheck",
  "quickcheck_macros",
  "rama-core",
+ "rama-dns",
  "rama-http-headers",
  "rama-http-hyperium",
  "rama-http-macros",
@@ -5549,6 +5550,7 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-crypto",
+ "rama-dns",
  "rama-inspect",
  "rama-net",
  "rama-utils",

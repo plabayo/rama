@@ -114,7 +114,7 @@ where
         let (conn, addr) = if let Some(candidates) = input
             .extensions()
             .get_ref::<ConnectorTargetStream>()
-            .filter(|candidates| candidate_domain_matches_target(candidates, &authority))
+            .filter(|candidates| candidate_matches_target(candidates, &authority))
         {
             let port = authority.port;
             // A resolver chooses addresses, never permission to dial their
@@ -170,14 +170,11 @@ where
     }
 }
 
-fn candidate_domain_matches_target(
+fn candidate_matches_target(
     candidates: &ConnectorTargetStream,
     target: &rama_net::address::HostWithPort,
 ) -> bool {
-    target
-        .host
-        .try_as_domain()
-        .is_ok_and(|domain| domain.as_ref() == candidates.domain())
+    candidates.matches_target(target)
 }
 
 // Preserve policy/capability failures emitted before a dial. Unclassified
@@ -330,12 +327,13 @@ mod tests {
                     let input = ConnectRequest::new(target);
                     input.extensions.insert(mode);
                     if domain {
-                        input
-                            .extensions
-                            .insert(ConnectorTargetStream::new(OneCandidate {
+                        input.extensions.insert(ConnectorTargetStream::new(
+                            HostWithPort::example_domain_https(),
+                            OneCandidate {
                                 domain: Domain::example(),
                                 ip_addr: ip,
-                            }));
+                            },
+                        ));
                     }
                     let error = connector.serve(input).await.unwrap_err();
                     if mode.validate_ip(ip).is_err() {
@@ -359,28 +357,31 @@ mod tests {
     }
 
     #[test]
-    fn candidate_correlation_uses_domain_but_not_port() {
-        let candidates = ConnectorTargetStream::new(OneCandidate {
-            domain: Domain::example(),
-            ip_addr: [127, 0, 0, 1].into(),
-        });
+    fn candidate_correlation_requires_the_complete_target() {
+        let candidates = ConnectorTargetStream::new(
+            HostWithPort::example_domain_https(),
+            OneCandidate {
+                domain: Domain::example(),
+                ip_addr: [127, 0, 0, 1].into(),
+            },
+        );
 
-        assert!(candidate_domain_matches_target(
+        assert!(candidate_matches_target(
             &candidates,
             &HostWithPort::example_domain_https(),
         ));
-        assert!(candidate_domain_matches_target(
+        assert!(!candidate_matches_target(
             &candidates,
             &HostWithPort::example_domain_with_port(8443),
         ));
-        assert!(!candidate_domain_matches_target(
+        assert!(!candidate_matches_target(
             &candidates,
             &HostWithPort::new(
                 rama_net::address::Host::Name(Domain::from_static("other.test")),
                 443,
             ),
         ));
-        assert!(!candidate_domain_matches_target(
+        assert!(!candidate_matches_target(
             &candidates,
             &HostWithPort::local_ipv4(443),
         ));
@@ -399,11 +400,13 @@ mod tests {
         });
         let req = ConnectRequest::new(HostWithPort::example_domain_https());
         req.extensions.insert(ConnectorTarget(proxy_addr.into()));
-        req.extensions
-            .insert(ConnectorTargetStream::new(OneCandidate {
+        req.extensions.insert(ConnectorTargetStream::new(
+            HostWithPort::example_domain_https(),
+            OneCandidate {
                 domain: Domain::example(),
                 ip_addr: [127, 0, 0, 1].into(),
-            }));
+            },
+        ));
 
         let error = connector.serve(req).await.unwrap_err();
         assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
@@ -431,11 +434,13 @@ mod tests {
                         target_port,
                     )));
             }
-            req.extensions
-                .insert(ConnectorTargetStream::new(OneCandidate {
+            req.extensions.insert(ConnectorTargetStream::new(
+                HostWithPort::example_domain_with_port(target_port),
+                OneCandidate {
                     domain: Domain::example(),
                     ip_addr: candidate_ip,
-                }));
+                },
+            ));
 
             let error = connector.serve(req).await.unwrap_err();
             assert_eq!(error.domain(), ConnectionErrorDomain::Transport);

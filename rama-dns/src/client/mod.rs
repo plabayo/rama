@@ -6,6 +6,15 @@ mod limit;
 #[doc(inline)]
 pub use self::limit::DnsTimeoutError;
 
+mod https;
+pub use https::{
+    DEFAULT_HTTPS_ALIAS_LIMIT, HttpsServiceBinding, HttpsServiceBindings,
+    lookup_https_service_bindings, order_service_binding_records,
+};
+
+mod address_source;
+pub use address_source::DnsAddressSource;
+
 mod connector;
 #[doc(inline)]
 pub use connector::{DnsConnector, DnsConnectorLayer};

@@ -44,6 +44,14 @@ pub use chain_policy::{
     ServerChainCertificate, TlsServerCertChainPolicy,
 };
 
+#[cfg(feature = "dns")]
+pub mod ech_discovery;
+
+mod ech;
+pub use ech::{
+    EchRequirement, EchRetryConfig, TlsEchAccepted, target_ech_config, target_ech_required,
+};
+
 mod config;
 #[cfg(feature = "http")]
 mod http;

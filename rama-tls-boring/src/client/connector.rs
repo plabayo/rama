@@ -4,7 +4,7 @@ use rama_net::tls::AlpnPolicy;
 use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::{RamaInto as _, RamaTryInto};
 use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, CauseExt as _, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
@@ -255,6 +255,7 @@ where
             &input,
             input.target_protocol().is_some_and(Protocol::is_secure),
         )?;
+        let ech_target = rama_net::ConnectorTargetInputExt::connector_target(&input);
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
         let authority = input.target_authority().ok_or_else(|| {
@@ -276,25 +277,15 @@ where
             return Ok(EstablishedClientConnection { input, conn });
         }
 
-        // Use the authority host as the certificate identity unless overridden.
-        let connector_data = self
-            .connector_data(input.extensions(), app_protocol, Some(&authority.host))
-            .map_err(|error| {
-                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                    .context("TlsConnector(auto): build connector configuration")
-            })?;
-
-        let verify_mode = connector_data.server_verify_mode;
-        let server_name = connector_data.server_name.as_ref();
-        let scope =
-            Self::check_connection_identity(&input, verify_mode, server_name, &authority.host)?;
-        let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
-
-        let (stream, negotiated_params) =
-            handshake(connector_data, conn).await.map_err(|error| {
-                ConnectionError::application(error, ConnectionErrorKind::Protocol)
-                    .context("TlsConnector(auto): TLS handshake")
-            })?;
+        let OriginHandshake {
+            input,
+            stream,
+            negotiated_params,
+            reuse,
+            scope,
+        } = self.handshake_origin(input, conn, ech_target).await?;
+        #[cfg(feature = "http")]
+        let app_protocol = input.target_protocol();
 
         tracing::trace!(
             server.address = %authority.host,
@@ -325,7 +316,7 @@ where
                 .context("TlsConnector(auto): validate negotiated HTTP version")
         })?;
 
-        reuse.publish(conn.extensions());
+        reuse.publish(conn.extensions(), self.base_config.as_ref());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -345,6 +336,7 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         self.check_attempt_policy(&input, true)?;
+        let ech_target = rama_net::ConnectorTargetInputExt::connector_target(&input);
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
 
         let authority = input.target_authority().ok_or_else(|| {
@@ -360,25 +352,16 @@ where
             input.target_protocol(),
         );
 
+        let OriginHandshake {
+            input,
+            stream,
+            negotiated_params,
+            reuse,
+            scope,
+        } = self.handshake_origin(input, conn, ech_target).await?;
+        #[cfg(feature = "http")]
         let app_protocol = input.target_protocol();
-        let connector_data = self
-            .connector_data(input.extensions(), app_protocol, Some(&authority.host))
-            .map_err(|error| {
-                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                    .context("TlsConnector(secure): build connector configuration")
-            })?;
-
-        let verify_mode = connector_data.server_verify_mode;
-        let server_name = connector_data.server_name.as_ref();
-        let scope =
-            Self::check_connection_identity(&input, verify_mode, server_name, &authority.host)?;
-        let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
-
-        let (conn, negotiated_params) = handshake(connector_data, conn).await.map_err(|error| {
-            ConnectionError::application(error, ConnectionErrorKind::Protocol)
-                .context("TlsConnector(secure): TLS handshake")
-        })?;
-        let conn = TlsStream::new(conn);
+        let conn = TlsStream::new(stream);
 
         #[cfg(feature = "http")]
         set_target_http_version(
@@ -401,7 +384,7 @@ where
                 .context("TlsConnector(secure): validate negotiated HTTP version")
         })?;
 
-        reuse.publish(conn.extensions());
+        reuse.publish(conn.extensions(), self.base_config.as_ref());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -431,7 +414,7 @@ where
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
-            reuse.publish(conn.extensions());
+            reuse.publish(conn.extensions(), None);
             return Ok(EstablishedClientConnection {
                 input,
                 conn: AutoTlsStream::plain(conn),
@@ -455,7 +438,7 @@ where
             })?;
         let conn = AutoTlsStream::secure(stream);
 
-        reuse.publish(conn.extensions());
+        reuse.publish(conn.extensions(), None);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
             by: "rama-tls-boring::TlsConnector",
@@ -507,7 +490,105 @@ fn set_target_http_version(
     Ok(())
 }
 
+struct OriginHandshake<Input, Conn> {
+    input: Input,
+    stream: SslStream<Conn>,
+    negotiated_params: NegotiatedTlsParameters,
+    reuse: TlsConnectionReuse<BoringTlsClientConfigProvider>,
+    scope: ConnectionPolicyScope,
+}
+
 impl<S, K> TlsConnector<S, K> {
+    // One authentication-driven retry, still inside the caller's original
+    // connection future/deadline. No HTTP data or single-use relay is replayed.
+    async fn handshake_origin<Input>(
+        &self,
+        mut input: Input,
+        mut conn: S::Connection,
+        target: Option<rama_net::address::HostWithPort>,
+    ) -> Result<OriginHandshake<Input, S::Connection>, ConnectionError>
+    where
+        S: ConnectorService<Input, Connection: Io + Unpin>,
+        K: Send + Sync,
+        Input: AuthorityInputExt + ProtocolInputExt + ExtensionsRef + Send + 'static,
+    {
+        let mut retry_config: Option<rama_core::bytes::Bytes> = None;
+        loop {
+            let authority = input.target_authority().ok_or_else(|| {
+                ConnectionError::local(
+                    BoxError::from_static_str("TLS origin authority missing"),
+                    ConnectionErrorKind::InvalidInput,
+                )
+            })?;
+            let mut data = self
+                .connector_data(
+                    input.extensions(),
+                    input.target_protocol(),
+                    Some(&authority.host),
+                )
+                .map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                })?;
+            let effective = input.extensions().fork();
+            let effective = match &self.base_config {
+                Some(base) => effective.with_base(base.as_extensions()),
+                None => effective,
+            };
+            if let Some(target) = &target {
+                if let Some(config) = &retry_config {
+                    // Authenticated replacement data never authorizes a clear retry.
+                    effective.insert(rama_tls::client::EchRequirement::Required);
+                    effective.insert(rama_net::tls::TargetEchConfig::new(
+                        target.clone(),
+                        config.clone(),
+                    ));
+                }
+                data.configure_target_ech(&effective, target)
+                    .map_err(|error| {
+                        ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    })?;
+            }
+            let scope = Self::check_connection_identity(
+                &input,
+                data.server_verify_mode,
+                data.server_name.as_ref(),
+                &authority.host,
+            )?;
+            let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
+            match handshake(data, conn).await {
+                Ok((stream, negotiated_params)) => {
+                    return Ok(OriginHandshake {
+                        input,
+                        stream,
+                        negotiated_params,
+                        reuse,
+                        scope,
+                    });
+                }
+                Err(error) => {
+                    if retry_config.is_none()
+                        && let Some(target) = &target
+                        && let Some(retry) = error.find_cause::<rama_tls::client::EchRetryConfig>()
+                    {
+                        retry_config = Some(retry.config_list().clone());
+                        // A proxy may have replaced this with its dial target.
+                        input
+                            .extensions()
+                            .insert(rama_net::client::ConnectorTarget(target.clone()));
+                        let next = self.inner.connect(input).await?;
+                        input = next.input;
+                        conn = next.conn;
+                        continue;
+                    }
+                    return Err(
+                        ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                            .context("TLS origin handshake"),
+                    );
+                }
+            }
+        }
+    }
+
     fn build_connector_data(
         &self,
         config: BoringTlsConnectorConfig<'_>,
@@ -555,9 +636,47 @@ impl<S, K> TlsConnector<S, K> {
     /// retain their existing inner-connector override behavior.
     fn check_attempt_policy(
         &self,
-        input: &(impl AuthorityInputExt + ExtensionsRef),
+        input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
         secure: bool,
     ) -> Result<(), ConnectionError> {
+        let effective = input.extensions().fork();
+        let effective = match &self.base_config {
+            Some(base) => effective.with_base(base.as_extensions()),
+            None => effective,
+        };
+        let requirement = effective
+            .get_ref::<rama_tls::client::EchRequirement>()
+            .copied()
+            .unwrap_or_default();
+        requirement
+            .intent(effective.get_ref::<rama_tls::client::TlsEncryptedClientHello>())
+            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
+        if requirement == rama_tls::client::EchRequirement::Required {
+            if !secure
+                || BoringTlsConnectorConfig::from_extensions(&effective)
+                    .verify
+                    .is_some_and(|verify| verify.0 == ServerVerifyMode::Disable)
+            {
+                return Err(ConnectionError::local(
+                    BoxError::from_static_str("required ECH needs authenticated TLS"),
+                    ConnectionErrorKind::InvalidInput,
+                ));
+            }
+            let target =
+                rama_net::ConnectorTargetInputExt::connector_target(input).ok_or_else(|| {
+                    ConnectionError::local(
+                        BoxError::from_static_str("required ECH needs a target"),
+                        ConnectionErrorKind::InvalidInput,
+                    )
+                })?;
+            rama_tls::client::target_ech_config(&effective, &target, true).map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+            })?;
+        }
+        if secure && let Some(target) = rama_net::ConnectorTargetInputExt::connector_target(input) {
+            rama_tls::client::target_ech_config(&effective, &target, true)
+                .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::Unavailable))?;
+        }
         let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>() else {
             return Ok(());
         };
@@ -834,6 +953,17 @@ where
                         error_kind,
                         io_error_kind,
                     );
+                }
+                if let TlsConnectError::Handshake { error, .. } = &err
+                    && let (Some(ssl), Some(errors)) = (error.ssl(), error.as_ssl_error_stack())
+                    && let Some(retry) = super::ech::authenticated_retry_config(
+                        ssl,
+                        errors
+                            .iter()
+                            .map(|error| (error.library_code(), error.reason_code())),
+                    )
+                {
+                    return Err(Box::new(retry) as BoxError);
                 }
                 return Err(match err {
                     TlsConnectError::Builder(error) => error.context("tls connect builder error"),

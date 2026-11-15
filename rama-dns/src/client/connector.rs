@@ -1,27 +1,20 @@
-use std::net::IpAddr;
-
 use rama_core::{
     Layer, Service,
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
-    extensions::Extensions,
+    error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
-    futures::{StreamExt, stream::BoxStream},
 };
 use rama_net::{
     ConnectorTargetInputExt,
-    address::{Domain, Host, HostWithPort},
     client::{
-        AddressCandidates, ConnectionAttempt, ConnectionError, ConnectionErrorKind,
-        ConnectorService, ConnectorTargetStream, EstablishedClientConnection,
+        ConnectionAttempt, ConnectionError, ConnectionErrorKind, ConnectorService,
+        ConnectorTargetStream, EstablishedClientConnection,
     },
     mode::{ConnectIpMode, DnsResolveIpMode},
 };
 use rama_utils::macros::define_inner_service_accessors;
 
-use crate::client::resolver::HappyEyeballAddressResolverExt;
-
 use super::{
-    GlobalDnsResolver,
+    DnsAddressSource, GlobalDnsResolver,
     resolver::{DnsAddressResolver, DnsAddresssResolverOverwrite},
 };
 
@@ -30,7 +23,7 @@ use super::{
 ///
 /// The produced [`DnsConnector`] resolves a domain
 /// [`ConnectorTargetInputExt::connector_target`] into a lazy, happy-eyeballs-
-/// ordered stream of IP targets, puts it into the [`Extensions`] as a
+/// ordered stream of IP targets, puts it into the [`Extensions`](rama_core::extensions::Extensions) as a
 /// [`ConnectorTargetStream`], and forwards the (untouched) input to the inner
 /// transport connector, which then dials/races the candidate addresses.
 pub struct DnsConnectorLayer<R = GlobalDnsResolver> {
@@ -131,7 +124,7 @@ where
                 extensions.insert(attempt);
             }
         }
-        let HostWithPort { host, .. } = input.connector_target().ok_or_else(|| {
+        let target = input.connector_target().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("dns connector: connector target missing from input"),
                 ConnectionErrorKind::InvalidInput,
@@ -139,51 +132,33 @@ where
         })?;
 
         // Already an IP target: nothing to resolve, forward the input untouched.
-        if host.try_as_ip().is_ok() {
+        if target.is_ip() {
+            return self.inner.connect(input).await;
+        }
+
+        // Keep an endpoint-matched upstream source. A request resolver overwrite
+        // rebuilds it using the normal overwrite-first resolver path, without
+        // discovery hints; the configured resolver remains its fallback.
+        if !extensions.contains::<DnsAddresssResolverOverwrite>()
+            && extensions
+                .get_ref::<ConnectorTargetStream>()
+                .is_some_and(|candidates| candidates.matches_target(&target))
+        {
             return self.inner.connect(input).await;
         }
 
         // Domain target: stamp a lazy candidate source for the transport to
         // resolve + dial, and forward the (untouched) input.
-        let domain = host.try_into_domain().map_err(|error| {
+        let domain = target.host.clone().try_into_domain().map_err(|error| {
             ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                 .context("dns connector: connector target host is not resolvable as a domain")
         })?;
-        input
-            .extensions()
-            .insert(ConnectorTargetStream::new(DnsAddressCandidates {
-                resolver: self.resolver.clone(),
-                domain,
-            }));
+        input.extensions().insert(ConnectorTargetStream::new(
+            target,
+            DnsAddressSource::new(self.resolver.clone(), domain),
+        ));
 
         self.inner.connect(input).await
-    }
-}
-
-/// [`AddressCandidates`] backed by a [`DnsAddressResolver`].
-///
-/// Resolves a domain target into a happy-eyeballs-ordered stream of
-/// [`IpAddr`]esses.
-struct DnsAddressCandidates<R> {
-    resolver: R,
-    domain: Domain,
-}
-
-impl<R> AddressCandidates for DnsAddressCandidates<R>
-where
-    R: DnsAddressResolver,
-{
-    fn domain(&self) -> &Domain {
-        &self.domain
-    }
-
-    fn stream<'a>(&'a self, extensions: &'a Extensions) -> BoxStream<'a, Result<IpAddr, BoxError>> {
-        self.resolver
-            .happy_eyeballs_resolver(Host::Name(self.domain.clone()))
-            .with_extensions(extensions)
-            .lookup_ip()
-            .map(|result| result.into_box_error())
-            .boxed()
     }
 }
 
@@ -193,11 +168,15 @@ mod tests {
     use crate::client::EmptyDnsResolver;
     use parking_lot::Mutex;
     use rama_core::extensions::{Extensions, ExtensionsRef};
+    use rama_core::futures::{StreamExt as _, stream::BoxStream};
+    use rama_net::client::ConnectorTarget;
     use rama_net::{
         AuthorityInputExt, Protocol, ProtocolInputExt,
         address::{Host, HostWithOptPort, HostWithPort},
         client::{ConnectionErrorDomain, ConnectionErrorKind},
     };
+    use rama_net::{address::Domain, client::AddressCandidates};
+    use std::net::IpAddr;
     use std::sync::Arc;
 
     #[derive(Debug, ExtensionsRef)]
@@ -325,5 +304,67 @@ mod tests {
                 .get_ref::<ConnectorTargetStream>()
                 .is_none()
         );
+    }
+    struct FixedCandidates(Domain);
+
+    impl AddressCandidates for FixedCandidates {
+        fn domain(&self) -> &Domain {
+            &self.0
+        }
+        fn stream<'a>(&'a self, _: &'a Extensions) -> BoxStream<'a, Result<IpAddr, BoxError>> {
+            rama_core::futures::stream::iter([Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))])
+                .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn preserves_matching_source_unless_target_or_caller_resolver_changes() {
+        for override_resolver in [false, true] {
+            for target in [
+                HostWithPort::example_domain_https(),
+                HostWithPort::example_domain_with_port(8443),
+                HostWithPort::new(Host::Name(Domain::from_static("other.example")), 443),
+            ] {
+                let original = HostWithPort::example_domain_https();
+                let input = FakeInput::new(original.clone());
+                let source = Arc::new(ConnectorTargetStream::new(
+                    original.clone(),
+                    FixedCandidates(Domain::example()),
+                ));
+                input.extensions().insert_arc(source.clone());
+                if override_resolver {
+                    input
+                        .extensions()
+                        .insert(DnsAddresssResolverOverwrite::new(EmptyDnsResolver::new()));
+                }
+                input.extensions().insert(ConnectorTarget(target.clone()));
+                let connector =
+                    DnsConnector::with_resolver(RecordingInner::default(), EmptyDnsResolver::new());
+                let result = connector.serve(input).await.unwrap();
+                let installed = result
+                    .input
+                    .extensions()
+                    .get_arc::<ConnectorTargetStream>()
+                    .unwrap();
+                assert_eq!(installed.target(), &target);
+                assert!(installed.matches_target(&target));
+                assert_eq!(
+                    Arc::ptr_eq(&source, &installed),
+                    target == original && !override_resolver
+                );
+                // The empty resolver cannot supply this address: observing it proves
+                // the preinstalled source survived the downstream DNS connector.
+                let addresses: Vec<_> = installed.stream(result.input.extensions()).collect().await;
+                if target == original && !override_resolver {
+                    assert_eq!(addresses.len(), 1);
+                    assert_eq!(
+                        addresses.into_iter().next().unwrap().unwrap(),
+                        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+                    );
+                } else {
+                    assert!(addresses.is_empty());
+                }
+            }
+        }
     }
 }

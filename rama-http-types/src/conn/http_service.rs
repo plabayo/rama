@@ -6,7 +6,7 @@
 
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
-    extensions::Extension,
+    extensions::{Extension, Extensions},
 };
 use rama_net::{
     Protocol,
@@ -85,15 +85,22 @@ pub enum HttpServiceSource {
     /// DNS HTTPS/SVCB records are a separate discovery mechanism,
     /// with different authorization, freshness and selection rules.
     AltSvc,
+    /// A DNS HTTPS service-binding record (RFC 9460).
+    ///
+    /// DNS discovery has its own compatibility and fallback rules. It does not
+    /// authorize emitting `Alt-Used` or updating an Alt-Svc advertisement.
+    Https,
 }
 
 /// A protocol and endpoint offered for a logical HTTP origin.
 ///
-/// The protocol identifies the required negotiated application protocol; it is
-/// not permission to downgrade the request or skip origin authentication.
+/// Configured and Alt-Svc candidates require this negotiated protocol. HTTPS
+/// candidates select its transport; stream ALPN remains open to negotiation
+/// (RFC 9460 §7.1.2). Caller version requirements and origin authentication apply
+/// independently. Established service metadata records the actual protocol.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HttpServiceCandidate {
-    /// Required negotiated application protocol.
+    /// Required protocol, or preferred protocol within an HTTPS-selected transport.
     pub protocol: ApplicationProtocol,
     /// Physical endpoint, independently of the logical origin.
     pub target: HostWithPort,
@@ -102,7 +109,7 @@ pub struct HttpServiceCandidate {
 }
 
 impl HttpServiceCandidate {
-    /// Describe an endpoint and the protocol it must provide.
+    /// Describe an endpoint and its protocol preference or requirement.
     pub fn new(protocol: ApplicationProtocol, target: HostWithPort) -> Self {
         Self {
             protocol,
@@ -130,6 +137,8 @@ impl HttpServiceCandidate {
 pub struct HttpServiceCandidates {
     origin: HttpOrigin,
     candidates: Box<[HttpServiceCandidate]>,
+    extensions: Box<[Option<Extensions>]>,
+    origin_fallback: bool,
 }
 
 impl HttpServiceCandidates {
@@ -138,7 +147,67 @@ impl HttpServiceCandidates {
         Self {
             origin,
             candidates: candidates.into(),
+            extensions: Box::new([]),
+            origin_fallback: true,
         }
+    }
+
+    /// Describe candidates with optional settings for each connection attempt.
+    ///
+    /// Like proxy-route extensions, these settings belong only to the selected
+    /// attempt. They are not part of candidate identity or shared connection
+    /// metadata. As with proxy routes, local entries override request entries
+    /// of the same type for this attempt; parent scopes are not transferred.
+    /// The selector retains ownership of the selected protocol, selection
+    /// metadata and attempt observer. Discovery producers must insert endpoint
+    /// facts, not caller policy such as ECH intent or verification settings.
+    /// Use `rama_net::tls::TargetEchServiceBinding` for conditional ECH reliance;
+    /// the TLS hop evaluates it after per-candidate profile settings are installed.
+    ///
+    /// Values are shared, not copied, across attempts and requests using this
+    /// snapshot. Resources with interior state must support independent
+    /// concurrent use rather than sharing a consumed stream.
+    pub fn new_with_extensions<E>(
+        origin: HttpOrigin,
+        candidates: impl IntoIterator<Item = (HttpServiceCandidate, E)>,
+    ) -> Self
+    where
+        E: Into<Option<Extensions>>,
+    {
+        let (candidates, extensions): (Vec<_>, Vec<_>) = candidates
+            .into_iter()
+            .map(|(candidate, extensions)| (candidate, extensions.into()))
+            .unzip();
+        Self {
+            origin,
+            candidates: candidates.into(),
+            extensions: extensions.into(),
+            origin_fallback: true,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Permit an attempt at the original endpoint after these candidates.
+        ///
+        /// Defaults to true. Set this to false when policy unconditionally
+        /// excludes the original endpoint, including for an empty candidate list.
+        /// HTTPS discovery does this for explicit caller-required ECH. Conditional
+        /// DNS ECH reliance is instead carried by `TargetEchServiceBinding` and
+        /// evaluated at the TLS hop after final intent and profile settings.
+        pub fn origin_fallback(mut self, allowed: bool) -> Self {
+            self.origin_fallback = allowed;
+            self
+        }
+    }
+
+    /// Whether exhausting this snapshot permits an original-endpoint attempt.
+    pub fn allows_origin_fallback(&self) -> bool {
+        self.origin_fallback
+    }
+
+    /// Settings attached to the candidate at `index`, if present.
+    pub fn candidate_extensions(&self, index: usize) -> Option<&Extensions> {
+        self.extensions.get(index).and_then(Option::as_ref)
     }
 
     /// The origin all candidates serve.
@@ -173,7 +242,15 @@ impl HttpServiceCandidates {
 /// Response middleware uses the snapshot to invalidate a rejected advertisement
 /// without deleting a newer one. Consumers must verify that the candidate matches
 /// the request origin and [`EstablishedHttpService`]; selection alone proves no
-/// successful connection or authentication.
+/// successful connection or authentication. For HTTPS candidates, the snapshot
+/// retains the protocol preference; [`EstablishedHttpService`] records the
+/// negotiated protocol.
+///
+/// A discovery composer may also attach this to a candidate's extensions to
+/// retain an original Alt-Svc advertisement after DNS endpoint redirection.
+/// The selector validates origin and candidate identity before using that
+/// snapshot for freshness, backoff and response attribution. The route is
+/// recomputed for the current request.
 #[derive(Clone, Debug, Extension)]
 #[extension(tags(http))]
 pub struct HttpServiceSelection {
@@ -275,5 +352,39 @@ mod tests {
         let replacement = Arc::new(HttpServiceCandidates::new(origin, vec![candidate]));
         assert!(!Arc::ptr_eq(&first, &replacement));
         assert_eq!(first.get(0), replacement.get(0));
+    }
+    #[test]
+    fn optional_candidate_extensions_preserve_identity_and_indices() {
+        #[derive(Debug, Extension)]
+        struct Setting(u8);
+        let origin = HttpOrigin::new(Protocol::HTTPS, "example.com:443".parse().unwrap()).unwrap();
+        let candidate =
+            HttpServiceCandidate::new(ApplicationProtocol::HTTP_2, origin.authority().clone())
+                .with_source(HttpServiceSource::Https);
+        let settings = Extensions::new();
+        settings.insert(Setting(42));
+        let snapshot = HttpServiceCandidates::new_with_extensions(
+            origin.clone(),
+            [
+                (candidate.clone(), None),
+                (candidate.clone(), Some(settings)),
+            ],
+        );
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot.get(0), snapshot.get(1));
+        assert!(snapshot.candidate_extensions(0).is_none());
+        assert_eq!(
+            snapshot
+                .candidate_extensions(1)
+                .unwrap()
+                .get_ref::<Setting>()
+                .unwrap()
+                .0,
+            42
+        );
+        assert!(snapshot.candidate_extensions(2).is_none());
+        let plain = HttpServiceCandidates::new(origin, vec![candidate]);
+        assert!(plain.candidate_extensions(0).is_none());
+        assert_eq!(plain.get(0), snapshot.get(0));
     }
 }

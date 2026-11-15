@@ -1,5 +1,7 @@
 //! Windows-native DNS resolver backed by `DnsQueryEx` from `Dnsapi.dll`.
 
+use crate::client::resolver::ServiceBindingRecord;
+use crate::wire::ServiceBinding;
 use std::{
     collections::VecDeque,
     ffi::c_void,
@@ -15,7 +17,7 @@ use std::{
 };
 
 use rama_core::{
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream},
     telemetry::tracing,
 };
@@ -37,7 +39,7 @@ use super::{
         DnsTxtResolver,
     },
 };
-use crate::wire::{Name, RecordType, ServiceBinding, Txt};
+use crate::wire::{Name, RecordType, Txt};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -433,7 +435,7 @@ impl DnsServiceBindingResolver for WindowsDnsResolver {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         self.coalesced(
             domain,
             RecordType::SVCB.into(),
@@ -452,7 +454,7 @@ impl DnsServiceBindingResolver for WindowsDnsResolver {
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         self.coalesced(
             domain,
             RecordType::HTTPS.into(),
@@ -834,8 +836,9 @@ unsafe fn handle_query_result<T>(
             // SAFETY: the `walk_record_pointers` contract. By this function's
             // contract the list is the unfreed answer of `DnsQueryEx`, which
             // returns `DNS_RECORDW` nodes linked through `pNext` whose `Data`
-            // holds `wDataLength` bytes, with the strings of CNAME and TXT
-            // data allocated with the list (windns.h, `DNS_RECORD` docs). The
+            // holds `wDataLength` bytes, with the NUL-terminated UTF-16
+            // `pName` owner and CNAME/TXT strings allocated with the list
+            // (windns.h, `DNS_RECORD` docs). The
             // list is freed only below, after parsing.
             let parsed = unsafe {
                 parse_complete_record_set(state.parser, result.pQueryRecords.cast_const().cast())
@@ -1128,7 +1131,7 @@ unsafe fn parse_txt_records(
 /// See [`RecordParser`].
 unsafe fn parse_svcb_records(
     records: *const ffi::DnsRecord,
-    emit: &mut dyn FnMut(ServiceBinding),
+    emit: &mut dyn FnMut(ServiceBindingRecord),
 ) -> Result<(), BoxError> {
     // SAFETY: the walk contract is this function's own.
     unsafe { parse_service_binding_records(records, RecordType::SVCB, emit) }
@@ -1141,7 +1144,7 @@ unsafe fn parse_svcb_records(
 /// See [`RecordParser`].
 unsafe fn parse_https_records(
     records: *const ffi::DnsRecord,
-    emit: &mut dyn FnMut(ServiceBinding),
+    emit: &mut dyn FnMut(ServiceBindingRecord),
 ) -> Result<(), BoxError> {
     // SAFETY: the walk contract is this function's own.
     unsafe { parse_service_binding_records(records, RecordType::HTTPS, emit) }
@@ -1155,7 +1158,7 @@ unsafe fn parse_https_records(
 unsafe fn parse_service_binding_records(
     records: *const ffi::DnsRecord,
     expected_type: RecordType,
-    emit: &mut dyn FnMut(ServiceBinding),
+    emit: &mut dyn FnMut(ServiceBindingRecord),
 ) -> Result<(), BoxError> {
     let visit = |record: *const ffi::DnsRecord| {
         // DNS_QUERY_REQUEST_VERSION1 cannot request
@@ -1176,7 +1179,16 @@ unsafe fn parse_service_binding_records(
         // while the walk runs, which outlasts the slice. `rdata_len` is a
         // `u16`, far below `isize::MAX`.
         let rdata = unsafe { std::slice::from_raw_parts(rdata, rdata_len) };
-        emit(ServiceBinding::parse_rdata(rdata)?);
+        // SAFETY: a place read of `pName`: the walk contract makes the node
+        // aligned and its header initialized, readable and unwritten.
+        let owner_name = unsafe { (*record).name };
+        // SAFETY: the walk contract covers the owner string for this call;
+        // `service_binding_owner` rejects a null pointer.
+        let owner = unsafe { service_binding_owner(owner_name) }?;
+        emit(ServiceBindingRecord {
+            owner,
+            binding: ServiceBinding::parse_rdata(rdata)?,
+        });
         Ok(())
     };
     // SAFETY: the walk contract is this function's own.
@@ -1195,6 +1207,9 @@ unsafe fn parse_service_binding_records(
 ///   `offset_of!(DnsRecord, data) + wDataLength` bytes are initialized,
 ///   readable, within one allocation and not written by anything;
 /// - has a `pNext` that is null or the next such node;
+/// - has a `pName` that is null or points to an aligned, NUL-terminated
+///   UTF-16 string that is initialized, readable, within one allocation
+///   and not written by anything;
 /// - if it is a CNAME node, has a `pNameHost`, and if it is a TXT node, has
 ///   `dwStringCount` string pointers, each of which is null or points to an
 ///   aligned, NUL-terminated UTF-16 string that is initialized, readable,
@@ -1254,6 +1269,34 @@ unsafe fn wide_ptr_to_string(ptr: *const u16) -> String {
     // writes them while the slice lives, which ends with this call.
     let units = unsafe { std::slice::from_raw_parts(ptr, len) };
     String::from_utf16_lossy(units)
+}
+
+/// Read an owner without silently replacing malformed UTF-16 or IDN labels.
+///
+/// # Safety
+/// Same pointer contract as `wide_ptr_to_string`.
+unsafe fn service_binding_owner(ptr: *const u16) -> Result<Name, BoxError> {
+    if ptr.is_null() {
+        return Err(BoxError::from_static_str(
+            "service binding record has no owner",
+        ));
+    }
+    let mut len = 0;
+    // SAFETY: the pointer contract supplies readable units through the terminator.
+    while unsafe { ptr.wrapping_add(len).read() } != 0 {
+        len += 1;
+    }
+    // SAFETY: the preceding scan found the terminator within the readable allocation.
+    let units = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let owner = String::from_utf16(units)?;
+    // Until native U-label behavior is verified, fail rather than reinterpret
+    // Unicode as arbitrary DNS wire octets. ASCII A-labels remain supported.
+    if !owner.is_ascii() {
+        return Err(BoxError::from_static_str(
+            "non-ASCII service binding owner is unsupported",
+        ));
+    }
+    Ok(Name::from_presentation(&owner)?)
 }
 
 struct QueryState<T> {
@@ -1977,6 +2020,9 @@ mod local_host {
 }
 
 mod ffi {
+    use windows_sys::Win32::NetworkManagement::Dns::{
+        self as sdk, DNS_RECORDW, DNS_TXT_DATAW as SdkDnsTxtDataW,
+    };
     // Official docs index for DNS structures and functions:
     // <https://learn.microsoft.com/en-us/windows/win32/dns/dns-structures>
     // <https://learn.microsoft.com/en-us/windows/win32/api/windns/>
@@ -2049,8 +2095,6 @@ mod ffi {
     // DNS_RECORDW header. Its Data union is intentionally a smaller subset,
     // so only alignment and every field offset through Data are comparable.
     const _: () = {
-        use windows_sys::Win32::NetworkManagement::Dns::DNS_RECORDW;
-
         assert!(std::mem::align_of::<DnsRecord>() == std::mem::align_of::<DNS_RECORDW>());
         assert!(std::mem::offset_of!(DnsRecord, next) == std::mem::offset_of!(DNS_RECORDW, pNext));
         assert!(std::mem::offset_of!(DnsRecord, name) == std::mem::offset_of!(DNS_RECORDW, pName));
@@ -2138,8 +2182,6 @@ mod ffi {
     // The payload reads copy `size_of` bytes of these out of `Data`, so their
     // sizes and field offsets must be the SDK's. They are read unaligned.
     const _: () = {
-        use windows_sys::Win32::NetworkManagement::Dns as sdk;
-
         assert!(std::mem::size_of::<DNS_A_DATA>() == std::mem::size_of::<sdk::DNS_A_DATA>());
         assert!(std::mem::size_of::<DNS_AAAA_DATA>() == std::mem::size_of::<sdk::DNS_AAAA_DATA>());
         assert!(std::mem::size_of::<DNS_PTR_DATAW>() == std::mem::size_of::<sdk::DNS_PTR_DATAW>());
@@ -2168,8 +2210,6 @@ mod ffi {
     }
 
     const _: () = {
-        use windows_sys::Win32::NetworkManagement::Dns::DNS_TXT_DATAW as SdkDnsTxtDataW;
-
         assert!(std::mem::align_of::<DNS_TXT_DATAW>() == std::mem::align_of::<SdkDnsTxtDataW>());
         assert!(
             std::mem::offset_of!(DNS_TXT_DATAW, string_count)
@@ -2185,10 +2225,7 @@ mod ffi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::{
-        error::BoxErrorExt as _,
-        futures::{StreamExt, future::join_all, stream::BoxStream},
-    };
+    use rama_core::futures::{StreamExt, future::join_all, stream::BoxStream};
     use std::{
         assert_matches,
         collections::BTreeSet,
@@ -2244,7 +2281,7 @@ mod tests {
         };
         ffi::DnsRecord {
             next,
-            name: ptr::null_mut(),
+            name: [b'o' as u16, 0].as_ptr().cast_mut(),
             record_type: rrtype,
             data_length: data_length as u16,
             flags: 0,
@@ -2521,7 +2558,7 @@ mod tests {
         let third: Vec<u16> = "third".encode_utf16().chain([0]).collect();
         let txt = TxtDnsRecord::<3> {
             next: ptr::null_mut(),
-            name: ptr::null_mut(),
+            name: [b'o' as u16, 0].as_ptr().cast_mut(),
             record_type: ffi::DNS_TYPE_TEXT,
             data_length: std::mem::size_of::<TxtData<3>>() as u16,
             flags: 0,
@@ -2600,7 +2637,7 @@ mod tests {
         let first: Vec<u16> = "valid".encode_utf16().chain([0]).collect();
         let txt = TxtDnsRecord::<2> {
             next: ptr::null_mut(),
-            name: ptr::null_mut(),
+            name: [b'o' as u16, 0].as_ptr().cast_mut(),
             record_type: ffi::DNS_TYPE_TEXT,
             data_length: std::mem::size_of::<TxtData<2>>() as u16,
             flags: 0,
@@ -2673,7 +2710,8 @@ mod tests {
         }
         .expect("valid SVCB");
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].port(), Some(8443));
+        assert_eq!(out[0].owner.to_string(), "o.");
+        assert_eq!(out[0].binding.port(), Some(8443));
 
         out.clear();
         // SAFETY: the walk contract: the nodes are live, aligned test locals whose
@@ -2686,7 +2724,19 @@ mod tests {
         }
         .expect("valid HTTPS");
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].port(), Some(443));
+        assert_eq!(out[0].binding.port(), Some(443));
+    }
+
+    #[test]
+    fn service_binding_owners_reject_invalid_utf16_and_unverified_ulabels() {
+        for units in [vec![0xd800, 0], vec![0x00e9, b'.' as u16, 0]] {
+            // SAFETY: units is a live, NUL-terminated allocation for this call.
+            unsafe { service_binding_owner(units.as_ptr()) }.unwrap_err();
+        }
+        let units: Vec<u16> = "other.example.\0".encode_utf16().collect();
+        // SAFETY: units is a live, NUL-terminated allocation for this call.
+        let owner = unsafe { service_binding_owner(units.as_ptr()) }.unwrap();
+        assert_eq!(owner.to_string(), "other.example.");
     }
 
     #[test]
@@ -2714,7 +2764,7 @@ mod tests {
 
         let mut record = FlatDnsRecord::<512> {
             next: ptr::null_mut(),
-            name: ptr::null_mut(),
+            name: [b'o' as u16, 0].as_ptr().cast_mut(),
             record_type: RecordType::HTTPS.into(),
             data_length: rdata.len() as u16,
             flags: 0,
@@ -2743,7 +2793,7 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_matches!(
-            &out[0].params()[0],
+            &out[0].binding.params()[0],
             SvcParam::Unknown { value, .. } if value.as_ref() == opaque,
         );
     }
@@ -2774,7 +2824,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn service_binding_queries_use_the_selected_record_type() {
-        let parsers: [(RecordType, RecordParser<ServiceBinding>); 2] = [
+        let parsers: [(RecordType, RecordParser<ServiceBindingRecord>); 2] = [
             (RecordType::SVCB, parse_svcb_records),
             (RecordType::HTTPS, parse_https_records),
         ];
@@ -2829,7 +2879,7 @@ mod tests {
             );
             Self {
                 next: ptr::null_mut(),
-                name: ptr::null_mut(),
+                name: [b'o' as u16, 0].as_ptr().cast_mut(),
                 record_type,
                 data_length: std::mem::size_of::<D>() as u16,
                 flags: 0,

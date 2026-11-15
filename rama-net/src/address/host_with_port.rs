@@ -26,6 +26,13 @@ pub struct HostWithPort {
 }
 
 impl HostWithPort {
+    /// Whether the host denotes an IP address. See [`Host::is_ip`].
+    #[must_use]
+    #[inline]
+    pub fn is_ip(&self) -> bool {
+        self.host.is_ip()
+    }
+
     /// Creates a new [`HostWithPort`].
     #[must_use]
     #[inline(always)]

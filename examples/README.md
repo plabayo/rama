@@ -94,6 +94,8 @@ side looks like.
 - [`http_blocking_https_client.rs`](./src/http_blocking_https_client.rs) - Blocking HTTPS client with its own runtime thread
 - [`http_high_level_client.rs`](./src/http_high_level_client.rs) - High-level HTTP client implementation
 - [`http_pooled_client.rs`](./src/http_pooled_client.rs) - Connection pooling client
+- [`http_https_discovery_custom_resolver.rs`](./src/http_https_discovery_custom_resolver.rs) - HTTPS service discovery with a custom DNS resolver
+- [`http_ech_preknowledge.rs`](./src/http_ech_preknowledge.rs) - Candidate-local ECH configuration supplied without DNS discovery
 
 ### WebSocket
 - [`ws_blocking_wss_client.rs`](./src/ws_blocking_wss_client.rs) - Blocking secure WebSocket client

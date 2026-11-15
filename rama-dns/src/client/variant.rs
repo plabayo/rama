@@ -1,3 +1,4 @@
+use crate::client::resolver::ServiceBindingRecord;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
@@ -9,7 +10,7 @@ use rama_net::address::Domain;
 use super::resolver::{
     DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
 };
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::wire::{Name, Txt};
 
 macro_rules! impl_dns_resolver_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
@@ -167,7 +168,7 @@ macro_rules! impl_dns_resolver_either {
             fn lookup_svcb(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     match self {
                         $(
@@ -185,7 +186,7 @@ macro_rules! impl_dns_resolver_either {
             fn lookup_https(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     match self {
                         $(
@@ -223,6 +224,7 @@ mod tests {
     use std::convert::Infallible;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    use crate::client::resolver::ServiceBindingRecord;
     use crate::client::resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -292,14 +294,14 @@ mod tests {
                 fn lookup_svcb(
                     &self,
                     _domain: Domain,
-                ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+                ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
                     stream::once(std::future::ready(Ok::<_, Infallible>(binding($svcb_port))))
                 }
 
                 fn lookup_https(
                     &self,
                     _domain: Domain,
-                ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+                ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
                     stream::once(std::future::ready(Ok::<_, Infallible>(binding(
                         $https_port,
                     ))))
@@ -328,10 +330,14 @@ mod tests {
         444
     );
 
-    fn binding(port: u16) -> ServiceBinding {
+    fn binding(port: u16) -> ServiceBindingRecord {
         let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
         rdata.extend_from_slice(&port.to_be_bytes());
-        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+        ServiceBindingRecord {
+            owner: crate::wire::Name::from(&Domain::example()),
+            binding: ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata))
+                .expect("valid service binding"),
+        }
     }
 
     #[tokio::test]
@@ -415,13 +421,13 @@ mod tests {
             .await
             .expect("one record")
             .expect("success");
-        assert_eq!(svcb.port(), Some(8443));
+        assert_eq!(svcb.binding.port(), Some(8443));
 
         let https = std::pin::pin!(resolver2.lookup_https(Domain::example()))
             .next()
             .await
             .expect("one record")
             .expect("success");
-        assert_eq!(https.port(), Some(444));
+        assert_eq!(https.binding.port(), Some(444));
     }
 }

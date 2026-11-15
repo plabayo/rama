@@ -8,7 +8,7 @@ use rama_core::error::extra::OpaqueError;
 use rama_core::futures::{FutureExt as _, Stream, TryStreamExt as _};
 use rama_net::address::Domain;
 
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::wire::{Name, Txt};
 
 pub use self::address::{
     BoxDnsAddressResolver, DnsAddressResolver, DnsAddresssResolverOverwrite,
@@ -25,7 +25,9 @@ mod txt;
 pub use self::txt::{BoxDnsTxtResolver, DnsTxtResolver};
 
 mod service_binding;
-pub use self::service_binding::{BoxDnsServiceBindingResolver, DnsServiceBindingResolver};
+pub use self::service_binding::{
+    BoxDnsServiceBindingResolver, DnsServiceBindingResolver, ServiceBindingRecord,
+};
 
 /// Aggregate resolver supporting address, CNAME, TXT, SVCB, and HTTPS lookups.
 pub trait DnsResolver:
@@ -87,12 +89,12 @@ trait DynDnsResolver {
     fn dyn_lookup_svcb(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBindingRecord, OpaqueError>> + Send + '_>>;
 
     fn dyn_lookup_https(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBindingRecord, OpaqueError>> + Send + '_>>;
 }
 
 impl<T> DynDnsResolver for T
@@ -188,7 +190,7 @@ where
     fn dyn_lookup_svcb(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBindingRecord, OpaqueError>> + Send + '_>> {
         Box::pin(
             self.lookup_svcb(domain)
                 .map_err(ErrorExt::into_opaque_error),
@@ -199,7 +201,7 @@ where
     fn dyn_lookup_https(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBindingRecord, OpaqueError>> + Send + '_>> {
         Box::pin(
             self.lookup_https(domain)
                 .map_err(ErrorExt::into_opaque_error),
@@ -337,7 +339,7 @@ impl DnsServiceBindingResolver for BoxDnsResolver {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         self.inner.dyn_lookup_svcb(domain)
     }
 
@@ -345,7 +347,7 @@ impl DnsServiceBindingResolver for BoxDnsResolver {
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         self.inner.dyn_lookup_https(domain)
     }
 }
@@ -361,6 +363,7 @@ impl DnsResolver for BoxDnsResolver {
 
 #[cfg(test)]
 mod tests {
+    use crate::wire::ServiceBinding;
     use std::convert::Infallible;
 
     use rama_core::{
@@ -421,24 +424,28 @@ mod tests {
         fn lookup_svcb(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(Ok(binding(8443))))
         }
 
         fn lookup_https(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
             stream::once(std::future::ready(Ok(binding(443))))
         }
     }
 
     impl DnsResolver for FullResolver {}
 
-    fn binding(port: u16) -> ServiceBinding {
+    fn binding(port: u16) -> ServiceBindingRecord {
         let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
         rdata.extend_from_slice(&port.to_be_bytes());
-        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+        ServiceBindingRecord {
+            owner: crate::wire::Name::from(&Domain::example()),
+            binding: ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata))
+                .expect("valid service binding"),
+        }
     }
 
     #[tokio::test]
@@ -456,7 +463,7 @@ mod tests {
             .await
             .expect("one record")
             .expect("success");
-        assert_eq!(svcb.port(), Some(8443));
+        assert_eq!(svcb.binding.port(), Some(8443));
 
         let resolver = resolver.into_box_dns_resolver();
         let https = std::pin::pin!(resolver.lookup_https(Domain::example()))
@@ -464,6 +471,6 @@ mod tests {
             .await
             .expect("one record")
             .expect("success");
-        assert_eq!(https.port(), Some(443));
+        assert_eq!(https.binding.port(), Some(443));
     }
 }

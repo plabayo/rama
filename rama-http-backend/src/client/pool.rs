@@ -676,7 +676,7 @@ mod tests {
                 async move {
                     let conn = ServiceInput::new(());
                     TlsConnectionReuse::tunnel(FixedTunnelProvider, input.extensions())
-                        .publish(conn.extensions());
+                        .publish(conn.extensions(), None);
                     Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
                 }
             }

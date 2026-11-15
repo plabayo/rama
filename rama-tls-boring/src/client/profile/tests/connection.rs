@@ -509,3 +509,50 @@ fn http10_targets_fall_back_to_native_tls_and_are_reported() {
         );
     }
 }
+
+#[tokio::test]
+async fn final_profile_ech_intent_enforces_discovery_before_transport() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let inner = service_fn({
+        let calls = calls.clone();
+        move |_: ConnectRequest| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            async {
+                Err::<
+                    EstablishedClientConnection<
+                        ServiceInput<tokio::io::DuplexStream>,
+                        ConnectRequest,
+                    >,
+                    _,
+                >(ConnectionError::local(
+                    "fixture dial",
+                    ConnectionErrorKind::Unavailable,
+                ))
+            }
+        }
+    });
+    let request = input();
+    request
+        .extensions()
+        .insert(rama_net::tls::TargetEchServiceBinding {
+            target: request.authority.clone(),
+            reliant: true,
+            mandatory: false,
+        });
+    assert!(
+        request
+            .extensions()
+            .get_ref::<rama_tls::client::TlsEncryptedClientHello>()
+            .is_none()
+    );
+    let (context, _) = selected("ech-reliant-profile");
+    context.publish(request.extensions());
+    let error = ProfileEmulateHttpConnectModifier::new(TlsConnector::secure(inner))
+        .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()))
+        .serve(request)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    assert!(format!("{error:?}").contains("required ECH"), "{error:?}");
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}

@@ -1,3 +1,4 @@
+use crate::client::resolver::ServiceBindingRecord;
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs as _},
@@ -23,7 +24,7 @@ use super::{
         DnsTxtResolver,
     },
 };
-use crate::wire::{Name, ServiceBinding, Txt};
+use crate::wire::{Name, Txt};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -206,7 +207,7 @@ impl DnsServiceBindingResolver for TokioDnsResolver {
     fn lookup_svcb(
         &self,
         _domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Err(
             TokioDnsServiceBindingUnsupportedError,
         )))
@@ -215,7 +216,7 @@ impl DnsServiceBindingResolver for TokioDnsResolver {
     fn lookup_https(
         &self,
         _domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Err(
             TokioDnsServiceBindingUnsupportedError,
         )))

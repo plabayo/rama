@@ -104,3 +104,33 @@ use the token in the normal startup link. Send `Authorization: Bearer <token>` t
 `GET /api` for operation discovery and `/api/help` for the observe -> select hosts ->
 intercept -> export workflow. No browser session or MCP server is required. A human
 can continue using the GUI while an agent queries traffic or operates the controls.
+
+## ECH on TLS relay egress
+
+The Boring TLS relay can offer real ECH to the upstream server while mirroring
+an ingress ClientHello. Supply an endpoint-bound `TargetEchConfig` on the bridge's
+ingress extensions, or compose `TargetEchConfigLayer` (the `rama-tls/dns` feature)
+after ClientHello peeking and before `TlsMitmRelayService`:
+
+```rust,ignore
+let relay = TargetEchConfigLayer::new()
+    .with_resolver(resolver)
+    .with_capable(true)
+    .layer(relay_service);
+```
+
+Discovery uses the visible SNI for an IP-dialed destination and binds the result
+to the existing `ConnectorTarget`. It does not change that destination or resolve
+its addresses again. Install discovery only where the dialed address serves that
+SNI name; a stale or unrelated address can reject ECH and fail the relay flow.
+Mirroring preserves the source's ECH intent; explicit caller policy overrides it. Without target configuration, an ECH-offering source uses
+GREASE. This does not decrypt or forward an ingress client's real ECH payload:
+when the source used real ECH, the visible SNI is its public name, not the hidden
+origin.
+
+`EchRequirement::Required` requires verified upstream authentication and real ECH
+acceptance. Configure upstream verification explicitly: the relay's usual
+verification-disabled setting does not satisfy that policy. A relay already owns
+one connected egress stream; ECH rejection fails that flow without redial or a
+clear-SNI retry. Ordinary reconnecting TLS connectors retain their authenticated,
+one-retry recovery path.

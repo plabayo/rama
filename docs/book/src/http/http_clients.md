@@ -48,6 +48,84 @@ Alternative services change where and how Rama connects, while preserving the
 request's origin and certificate identity. The easy client selects a service
 before choosing a proxy route and consulting the connection pool.
 
+HTTPS discovery is a reusable layer that supplies `HttpServiceCandidates` to
+the existing selector. Each candidate can carry its own endpoint, ECH configuration
+and address knowledge in optional extensions. Custom preknowledge producers use
+the same contract; easy client is one consumer of these components.
+
+<div class="book-article-image-center">
+
+```dot process
+digraph {
+    pad=0.2;
+    nodesep=0.45;
+    ranksep=0.5;
+    node [shape=box];
+    discovery [label="HTTPS DNS + Alt-Svc"];
+    candidate [label="Select candidate + its extensions"];
+    route [label="Select proxy route"];
+    pool [label="Pool lookup", shape=diamond];
+    connect [label="Resolve selected endpoint + connect + TLS"];
+    use [label="Use connection"];
+    discovery -> candidate;
+    candidate -> route;
+    route -> pool;
+    pool -> use [label="hit"];
+    pool -> connect [label="miss"];
+    connect -> use [label="success"];
+    connect -> candidate [label="failure, if fallback allowed", constraint=false];
+}
+```
+
+</div>
+
+Discovery runs before pool lookup because the selected service determines which
+connection can be reused. A/AAAA resolution is lazy: unused candidates and pool
+hits cause no address lookup. Each candidate retains its own address hints; DNS
+caching and optional answer limits stay in the configured resolver. Address queries
+start after service discovery; cached answers and hints can avoid that extra wait. With the
+`quic` feature, the easy client's default DNS path enables HTTPS discovery;
+`with_dns_resolver` shares a custom resolver with discovery and transport, while
+`with_https_resolver` configures discovery explicitly. Custom stacks compose
+`HttpsServiceLayer` with the existing `HttpServiceConnector`; there is no separate
+HTTPS connector with its own ALPN registry or retry loop. This layer does not
+upgrade `http://` requests to HTTPS.
+
+Named-proxy routes disable local HTTPS discovery by default to preserve remote-DNS
+privacy. Use `with_proxy_discovery(true)` only with an appropriate resolver, or
+provide endpoint-bound preknowledge. Required ECH needs that configuration even
+when the destination is reached through a proxy. Applications that require DNS
+errors to be fatal can set `with_fail_on_discovery_error(true)` on the discovery
+layer; the default permits optional fallback. This setting does not infer DNSSEC
+validation and does not reject successful empty answers.
+
+HTTPS records select transports: a TCP candidate preserves the client's normal
+H2/H1 ALPN offer, including emulated profiles. Alt-Svc advertisements and explicit
+caller version requirements still constrain the exact HTTP protocol.
+
+TLS enables opportunistic ECH by default when a capable backend has matching
+endpoint configuration. Explicitly disabling ECH and emulated profile settings
+override that default; an explicit caller setting takes precedence over a profile.
+Real ECH needs configuration from HTTPS discovery, `TargetEchConfigLayer`, or custom
+preknowledge. Without the `quic` feature, easy-client automatic discovery is absent;
+TLS defaults alone do not perform DNS queries. Discovery facts remain separate from caller policy; final
+TLS/profile settings determine ECH requirements for new handshakes. `EchRequirement::Required`
+also restricts pooled reuse to authenticated connections that accepted real ECH.
+`Optional` adds no caller requirement; DNS-derived rules still govern new handshakes.
+An ECH-capable client discovering only ECH-bearing compatible services therefore
+fails closed instead of falling back without ECH. Real ECH also disables QUIC
+early data for that endpoint; endpoints without ECH configuration keep their
+existing early-data policy.
+See the [custom resolver](https://github.com/plabayo/rama/tree/main/examples/src/http_https_discovery_custom_resolver.rs)
+and [ECH preknowledge](https://github.com/plabayo/rama/tree/main/examples/src/http_ech_preknowledge.rs)
+examples for both integration paths.
+
+ECH protects the inner ClientHello, not DNS queries or traffic patterns; resolver
+privacy remains a separate choice. The current BoringSSL backend keeps real session
+ticket identities out of the outer ClientHello but does not add a GREASE PSK there,
+so observers can distinguish resumed ECH handshakes. Use `ClientHandshake::Full`
+when that distinction is unacceptable.
+
 `HttpServiceConnector` returns the underlying connection unchanged. Compose
 `AltSvcLayer::new(cache)` separately with `MapEstablishedConnection`; the easy
 client does this automatically. The layer resolves each request's origin, learns response
@@ -56,8 +134,9 @@ feeds ALTSVC frames into the same cache. Advertisements are not automatically
 forwarded. To send H2 advertisements, enable `set_alt_svc(true)` before the server
 handshake and use `AltSvcSender`; ordinary connections allocate no sender queue.
 
-Selection tries alternatives sequentially, with a configurable 300 ms
-`attempt_timeout` including DNS and TLS. Increase it for slower networks. There
+Selection tries alternatives sequentially. Pure Alt-Svc attempts have a configurable
+300 ms `attempt_timeout` including DNS and TLS; DNS-selected services use the
+ordinary connection budget. Increase the Alt-Svc timeout for slower networks. There
 is no overall deadline unless `timeout` is set. Failed alternatives back off;
 selection can fall back to the origin with the same TLS policy. Explicit version
 requirements remain binding. A completed response resets backoff; reconnecting
@@ -87,8 +166,10 @@ middleware outside the pool so lookup and establishment see the same input.
 Unclassified policy failures never suppress shared alternatives.
 Connectors report unsupported protocols or routes as local capability failures;
 clients need no separate protocol-support list. These refusals preserve cache health.
-In the CLI, `--alt-svc` enables command-local discovery; `--http3` requires H3
-directly. Disk persistence and DNS HTTPS/SVCB discovery are not implemented yet.
+The CLI enables command-local discovery by default; `--http3` requires H3
+directly. `--no-alt-svc` disables advertisement learning and use, independently
+of HTTPS DNS discovery.
+Disk persistence is not implemented.
 
 ## Server certificate pinning
 

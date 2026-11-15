@@ -3949,6 +3949,9 @@ impl State {
                         metrics.connected(self.inner.side().is_server(), self.inner.version());
                     }
                     self.connected = true;
+                    if let Some(accepted) = self.inner.crypto_session().ech_accepted() {
+                        extensions.insert(rama_tls::client::TlsEchAccepted(accepted));
+                    }
                     // Published like the TLS stacks do for streams, so services read the
                     // negotiated protocol and peer identity from the connection's extensions.
                     if let Some(parameters) = self.inner.crypto_session().handshake_summary() {

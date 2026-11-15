@@ -1,5 +1,6 @@
 //! Client session resumption scoped to server identity and effective TLS policy.
 
+use rama_utils::macros::generate_set_and_with;
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt,
@@ -113,6 +114,7 @@ pub(super) fn context_key(context: &SslContextRef, server: &Host) -> Option<TlsC
     Some(TlsClientSessionKey {
         scope: context_scope(context)?,
         server: server.clone(),
+        ech: false,
     })
 }
 
@@ -120,10 +122,12 @@ pub(super) fn context_key(context: &SslContextRef, server: &Host) -> Option<TlsC
 pub(super) fn bind_session_key(
     ssl: &mut SslRef,
     server: &Host,
+    ech: bool,
 ) -> Result<Option<TlsClientSessionKey>, BoxError> {
-    let Some(key) = context_key(ssl.ssl_context(), server) else {
+    let Some(mut key) = context_key(ssl.ssl_context(), server) else {
         return Ok(None);
     };
+    key.ech = ech;
     ssl.set_ex_data(slot(&SESSION_KEY)?, key.clone());
     Ok(Some(key))
 }
@@ -133,9 +137,21 @@ pub(super) fn bind_session_key(
 pub struct TlsClientSessionKey {
     scope: SessionScope,
     server: Host,
+    ech: bool,
 }
 
 impl TlsClientSessionKey {
+    generate_set_and_with! {
+        /// Partition ticket offers by real ECH use, without retaining config bytes.
+        /// Establishment additionally checks the actual acceptance result.
+        /// The value must describe the actual offer on the session being prepared;
+        /// this method does not authorize relabeling an existing ticket.
+        pub fn ech(mut self, ech: bool) -> Self {
+            self.ech = ech;
+            self
+        }
+    }
+
     /// The server identity the session was established with.
     #[must_use]
     pub fn server(&self) -> &Host {
@@ -154,7 +170,9 @@ impl TlsClientSession {
     /// Tag a session `ssl` established, under the key bound before its handshake.
     pub(super) fn established(ssl: &SslRef, session: SslSession) -> Option<Self> {
         let key = ssl.ex_data(slot(&SESSION_KEY).ok()?)?;
-        (context_scope(ssl.ssl_context()).as_ref() == Some(&key.scope)).then(|| Self {
+        (context_scope(ssl.ssl_context()).as_ref() == Some(&key.scope)
+            && key.ech == ssl.ech_accepted())
+        .then(|| Self {
             key: key.clone(),
             session,
         })

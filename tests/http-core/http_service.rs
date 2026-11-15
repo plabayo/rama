@@ -6,6 +6,9 @@ mod deployment;
 #[cfg(feature = "boring")]
 mod derived_tls;
 mod discovery_outcomes;
+mod dns_alpn;
+#[cfg(all(feature = "boring", feature = "socks5"))]
+mod ech_retry;
 #[cfg(feature = "icap")]
 mod icap_h3;
 mod ip_policy;
@@ -125,6 +128,7 @@ struct Observation {
     version: Version,
     authority: String,
     sni: Option<String>,
+    alpn: Vec<ApplicationProtocol>,
     alt_used: Option<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -163,6 +167,10 @@ struct Server {
 
 impl Server {
     async fn start(auth: ServerAuthData, version: Version) -> Self {
+        Self::start_with_alpn(auth, version, true).await
+    }
+
+    async fn start_with_alpn(auth: ServerAuthData, version: Version, advertise_alpn: bool) -> Self {
         let cancel = CancellationToken::new();
         let shutdown = Scope::new().with_signal(cancel.clone().cancelled_owned());
         let scope = shutdown.clone_weak();
@@ -204,6 +212,13 @@ impl Server {
                                         parameters.server_name.as_ref().map(ToString::to_string)
                                     })
                             }),
+                        alpn: request
+                            .extensions()
+                            .get_ref::<SecureTransport>()
+                            .and_then(|tls| tls.client_hello())
+                            .and_then(|hello| hello.ext_alpn())
+                            .unwrap_or_default()
+                            .to_vec(),
                         alt_used: request
                             .headers()
                             .get(header::ALT_USED)
@@ -272,6 +287,7 @@ impl Server {
             .unwrap();
         let address = listener.local_addr().unwrap();
         let config = match version {
+            Version::HTTP_11 if !advertise_alpn => config,
             Version::HTTP_11 => config.with_alpn_http_1(),
             Version::HTTP_2 => config.with_alpn_http_2(),
             _ => panic!("test server only supports HTTP/1.1 and HTTP/2"),
@@ -383,15 +399,10 @@ fn client_with_transport(
         .with_default_http_connector(WeakScope::detached())
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
-        .map_connector(|mut connector| {
+        .configure_http_service(|selector| {
             if let Some(timeout) = attempt_timeout {
-                connector
-                    .get_mut()
-                    .get_mut()
-                    .get_mut()
-                    .set_attempt_timeout(timeout);
+                selector.set_attempt_timeout(timeout);
             }
-            connector
         })
         .build_client()
 }
@@ -448,15 +459,10 @@ async fn client_with_http3_cache_and_timeout(
         .with_http3_support(h3)
         .with_default_connection_pool()
         .with_alt_svc_cache(cache)
-        .map_connector(|mut connector| {
+        .configure_http_service(|selector| {
             if let Some(timeout) = attempt_timeout {
-                connector
-                    .get_mut()
-                    .get_mut()
-                    .get_mut()
-                    .set_attempt_timeout(timeout);
+                selector.set_attempt_timeout(timeout);
             }
-            connector
         })
         .build_client();
     (client, endpoint)

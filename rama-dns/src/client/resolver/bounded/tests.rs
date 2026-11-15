@@ -1,4 +1,6 @@
 use super::*;
+use crate::client::resolver::ServiceBindingRecord;
+use crate::wire::ServiceBinding;
 use rama_core::futures::{StreamExt as _, TryStreamExt as _, stream};
 use std::{
     convert::Infallible,
@@ -77,15 +79,29 @@ impl DnsServiceBindingResolver for RepeatingResolver {
     fn lookup_svcb(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
-        self.answers(4, domain, ServiceBinding::parse_rdata(&[0, 1, 0]).unwrap())
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
+        self.answers(
+            4,
+            domain.clone(),
+            ServiceBindingRecord {
+                owner: crate::wire::Name::from(&domain),
+                binding: ServiceBinding::parse_rdata(&[0, 1, 0]).unwrap(),
+            },
+        )
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
-        self.answers(5, domain, ServiceBinding::parse_rdata(&[0, 1, 0]).unwrap())
+    ) -> impl Stream<Item = Result<ServiceBindingRecord, Self::Error>> + Send + '_ {
+        self.answers(
+            5,
+            domain.clone(),
+            ServiceBindingRecord {
+                owner: crate::wire::Name::from(&domain),
+                binding: ServiceBinding::parse_rdata(&[0, 1, 0]).unwrap(),
+            },
+        )
     }
 }
 

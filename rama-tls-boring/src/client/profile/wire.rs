@@ -81,7 +81,7 @@ pub fn compile(
     compile_lowered(transport, capture, anchors, Lowered::default(), report)
 }
 
-/// Compile wire settings while retaining explicit caller version and cipher limits.
+/// Compile wire settings while retaining explicit caller version, cipher and ECH policy.
 /// Other caller policy, including verification and credentials, stays in the
 /// connection owner's effective configuration and is not returned as an override.
 pub fn compile_for_policy(
@@ -90,6 +90,12 @@ pub fn compile_for_policy(
     policy: &BoringTlsConnectorConfig<'_>,
     report: &mut ProfilePreservationReport,
 ) -> Result<TlsClientConfig, BoxError> {
+    // Validate caller contradictions before captured wire settings can replace intent.
+    policy
+        .ech_requirement
+        .copied()
+        .unwrap_or_default()
+        .intent(policy.encrypted_client_hello)?;
     let mut lowered = Lowered::default();
     if version_bounds_conflict(
         capture,
@@ -110,13 +116,28 @@ pub fn compile_for_policy(
         lower(report, LoweredProfileItem::CallerTlsCipherSuites);
         lowered.ciphers = true;
     }
-    compile_lowered(
+    let mut config = compile_lowered(
         transport,
         capture,
         policy.requested_trust_anchors,
         lowered,
         report,
-    )
+    )?;
+    if let Some(intent) = policy.encrypted_client_hello {
+        let captured = BoringTlsConnectorConfig::from_extensions(config.as_extensions())
+            .encrypted_client_hello
+            .is_some_and(|intent| intent.0);
+        if intent.0 != captured {
+            lower(
+                report,
+                LoweredProfileItem::TlsExtension {
+                    extension: ExtensionId::ENCRYPTED_CLIENT_HELLO.into(),
+                },
+            );
+        }
+        config.set_encrypted_client_hello(intent.0);
+    }
+    Ok(config)
 }
 
 /// Captured items left to the caller's or native configuration.

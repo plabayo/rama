@@ -1666,3 +1666,68 @@ fn wire_enums_expose_their_mnemonic_without_debug_coupling() {
     assert_eq!(RecordClass::Unknown(2).variant_name(), "2");
     assert_eq!(SvcParamKey::NoDefaultAlpn.variant_name(), "NoDefaultAlpn");
 }
+
+#[test]
+fn decoded_alpn_constructor_accepts_opaque_bytes_and_checks_sizes() {
+    let protocols = AlpnList::from_protocols([b"h2".as_slice(), &[0xff, 0]]).unwrap();
+    assert_eq!(protocols.as_wire(), &[2, b'h', b'2', 2, 0xff, 0]);
+    assert!(AlpnList::from_protocols(core::iter::empty::<&[u8]>()).is_none());
+    assert!(AlpnList::from_protocols([b"".as_slice()]).is_none());
+    assert!(AlpnList::from_protocols([&[0; 256]]).is_none());
+    assert!(AlpnList::from_protocols(core::iter::repeat_n(&[0; 255], 256)).is_none());
+    assert_eq!(
+        AlpnList::from_protocols([&[0; 255]])
+            .unwrap()
+            .as_wire()
+            .len(),
+        256
+    );
+}
+
+#[test]
+fn decoded_service_binding_constructor_matches_wire_validation() {
+    let root = Name::from_wire(&[0]).unwrap();
+    let protocols = AlpnList::from_protocols([b"h2".as_slice(), &[0xff, 0]]).unwrap();
+    let params = vec![
+        SvcParam::Mandatory(vec![SvcParamKey::Alpn, SvcParamKey::Port].into_boxed_slice()),
+        SvcParam::Alpn(protocols.clone()),
+        SvcParam::Port(8443),
+    ];
+    let constructed = ServiceBinding::from_parts(1, root.clone(), params).unwrap();
+    let parsed = ServiceBinding::parse_rdata(&binding(
+        1,
+        &[0],
+        &[
+            (0, &[0, 1, 0, 3]),
+            (1, protocols.as_wire()),
+            (3, &8443_u16.to_be_bytes()),
+        ],
+    ))
+    .unwrap();
+    assert_eq!(constructed, parsed);
+
+    for params in [
+        vec![SvcParam::Port(443), SvcParam::Port(8443)],
+        vec![SvcParam::Port(443), SvcParam::Alpn(protocols)],
+        vec![SvcParam::Mandatory(
+            vec![SvcParamKey::Port].into_boxed_slice(),
+        )],
+        vec![SvcParam::NoDefaultAlpn],
+        vec![SvcParam::Ech(Bytes::from_static(&[0, 0]))],
+        vec![SvcParam::Ipv4Hint(Box::new([]))],
+        vec![SvcParam::Unknown {
+            key: SvcParamKey::Port,
+            value: Bytes::from_static(&[0, 1]),
+        }],
+        vec![SvcParam::Unknown {
+            key: SvcParamKey::Unknown(7),
+            value: vec![0; usize::from(u16::MAX)].into(),
+        }],
+    ] {
+        ServiceBinding::from_parts(1, root.clone(), params).unwrap_err();
+    }
+    // AliasMode ignores cross-parameter semantics, but still validates each value.
+    ServiceBinding::from_parts(0, root.clone(), vec![SvcParam::NoDefaultAlpn]).unwrap();
+    ServiceBinding::from_parts(0, root, vec![SvcParam::Ech(Bytes::from_static(&[0, 0]))])
+        .unwrap_err();
+}

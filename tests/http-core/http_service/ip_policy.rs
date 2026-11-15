@@ -77,12 +77,13 @@ async fn h3_rejects_disallowed_literal_and_custom_candidates_before_sending() {
             input.extensions().insert(mode);
             let target = if domain {
                 let name = Domain::from_static("alt.example");
-                input
-                    .extensions()
-                    .insert(ConnectorTargetStream::new(FixedCandidates {
+                input.extensions().insert(ConnectorTargetStream::new(
+                    HostWithPort::new(name.clone().into(), address.port()),
+                    FixedCandidates {
                         domain: name.clone(),
                         ip: address.ip(),
-                    }));
+                    },
+                ));
                 HostWithPort::new(name.into(), address.port())
             } else {
                 address.into()

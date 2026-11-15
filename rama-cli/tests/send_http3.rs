@@ -54,7 +54,8 @@ use std::{
 };
 use tokio::{
     fs,
-    net::{TcpListener as TokioTcpListener, UdpSocket},
+    io::{AsyncReadExt as _, AsyncWriteExt as _, copy_bidirectional},
+    net::{TcpListener as TokioTcpListener, TcpStream as TokioTcpStream, UdpSocket},
     process::Command,
     sync::oneshot,
     task::JoinHandle,
@@ -491,16 +492,14 @@ async fn redirects_discover_h3_and_reuse_its_connection() -> TestResult {
     let alternative = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
     origin.reply(Reply::redirect(Some(alternative.address)));
     alternative.reply(Reply::redirect(None));
-    let output = fixture
-        .send(origin.url(), &["--location", "--alt-svc"])
-        .await?;
+    let output = fixture.send(origin.url(), &["--location"]).await?;
     succeeded(&output);
     assert_eq!(output.stdout, b"hello from rama");
     assert_eq!(origin.requests.lock().len(), 1);
     assert_eq!(alternative.requests.lock().len(), 2);
     assert_eq!(alternative.accepted.load(Ordering::Relaxed), 1);
 
-    let output = fixture.send(origin.url(), &["--alt-svc"]).await?;
+    let output = fixture.send(origin.url(), &[]).await?;
     succeeded(&output);
     assert_eq!(origin.requests.lock().len(), 2);
     assert_eq!(alternative.requests.lock().len(), 2);
@@ -509,24 +508,20 @@ async fn redirects_discover_h3_and_reuse_its_connection() -> TestResult {
 }
 
 #[tokio::test]
-async fn alternative_services_require_opt_in_and_respect_explicit_versions() -> TestResult {
+async fn alternative_services_respect_explicit_versions() -> TestResult {
     let fixture = Fixture::new().await?;
     let origin = Server::start(fixture.auth.clone(), Version::HTTP_2).await?;
     let alternative = Server::start(fixture.auth.clone(), Version::HTTP_3).await?;
 
-    for args in [
-        vec!["--location"],
-        vec!["--location", "--alt-svc", "--http2"],
-    ] {
-        origin.reply(Reply::redirect(Some(alternative.address)));
-        let before = origin.requests.lock().len();
-        let output = fixture.send(origin.url(), &args).await?;
-        succeeded(&output);
-        assert_eq!(output.stdout, b"hello from rama");
-        assert_eq!(origin.requests.lock().len(), before + 2);
-        assert!(alternative.requests.lock().is_empty());
-        assert_eq!(alternative.accepted.load(Ordering::Relaxed), 0);
-    }
+    origin.reply(Reply::redirect(Some(alternative.address)));
+    let output = fixture
+        .send(origin.url(), &["--location", "--http2"])
+        .await?;
+    succeeded(&output);
+    assert_eq!(output.stdout, b"hello from rama");
+    assert_eq!(origin.requests.lock().len(), 2);
+    assert!(alternative.requests.lock().is_empty());
+    assert_eq!(alternative.accepted.load(Ordering::Relaxed), 0);
 
     origin.close().await?;
     alternative.close().await
@@ -554,14 +549,14 @@ async fn h3_response_trailers_complete_the_streamed_body() -> TestResult {
 }
 
 #[tokio::test]
-async fn h2_alternatives_require_opt_in_independently_of_h3_transport() -> TestResult {
+async fn h2_alternatives_default_on_with_explicit_opt_out() -> TestResult {
     let fixture = Fixture::new().await?;
     let origin = Server::start(fixture.auth.clone(), Version::HTTP_2).await?;
     let alternative = Server::start(fixture.auth.clone(), Version::HTTP_2).await?;
 
     for (args, expected_alternative_requests) in [
-        (vec!["--location"], 0),
-        (vec!["--location", "--alt-svc"], 1),
+        (vec!["--location"], 1),
+        (vec!["--location", "--no-alt-svc"], 1),
     ] {
         let mut redirect = Reply::redirect(None);
         redirect.headers.insert(
@@ -592,9 +587,7 @@ async fn failed_alternative_authentication_falls_back_to_verified_origin() -> Te
     )
     .await?;
     origin.reply(Reply::redirect(Some(untrusted.address)));
-    let output = fixture
-        .send(origin.url(), &["--location", "--alt-svc"])
-        .await?;
+    let output = fixture.send(origin.url(), &["--location"]).await?;
     succeeded(&output);
     assert_eq!(origin.requests.lock().len(), 2);
     assert!(untrusted.requests.lock().is_empty());
@@ -617,14 +610,7 @@ async fn unavailable_h3_obeys_explicit_version_and_connection_deadline() -> Test
     let output = fixture
         .send(
             origin.url(),
-            &[
-                "--location",
-                "--alt-svc",
-                "--connect-timeout",
-                "1",
-                "--max-time",
-                "5",
-            ],
+            &["--location", "--connect-timeout", "1", "--max-time", "5"],
         )
         .await?;
     succeeded(&output);
@@ -776,6 +762,76 @@ async fn explicit_h3_never_bypasses_an_explicit_proxy() -> TestResult {
     assert!(origin.requests.lock().is_empty());
     assert_eq!(origin.accepted.load(Ordering::Relaxed), 0);
     timeout(Duration::from_millis(20), proxy.accept())
+        .await
+        .unwrap_err();
+    origin.close().await
+}
+
+#[tokio::test]
+async fn default_h3_discovery_falls_back_through_the_configured_proxy() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let origin = Server::start(fixture.auth.clone(), Version::HTTP_2).await?;
+    // Observe both transports: even a failed direct dial must be caught.
+    let alternative =
+        TokioTcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).await?;
+    let alternative_udp = UdpSocket::bind(alternative.local_addr()?).await?;
+    origin.reply(Reply::redirect(Some(alternative.local_addr()?)));
+
+    let proxy = TokioTcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0))).await?;
+    let proxy_url = format!("http://{}", proxy.local_addr()?);
+    let origin_address = origin.address;
+    let proxy_task = tokio::spawn(async move {
+        let (mut client, _) = proxy.accept().await?;
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(client.read_u8().await?);
+        }
+        let head = String::from_utf8(head)?;
+        assert!(
+            head.starts_with(&format!(
+                "CONNECT localhost:{} HTTP/1.1\r\n",
+                origin_address.port()
+            )),
+            "{head}"
+        );
+        let mut upstream = TokioTcpStream::connect(origin_address).await?;
+        client
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await?;
+
+        // The CLI exits after reading the response; Windows can abort the tunnel
+        // instead of closing it cleanly. Response and routing checks below still apply.
+        if let Err(error) = copy_bidirectional(&mut client, &mut upstream).await
+            && !matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::ConnectionReset
+            )
+        {
+            return Err(error.into());
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    });
+
+    let output = fixture
+        .send(origin.url(), &["--location", "--proxy", &proxy_url])
+        .await?;
+    succeeded(&output);
+    assert_eq!(output.stdout, b"hello from rama");
+    assert_eq!(origin.requests.lock().len(), 2);
+    assert_eq!(origin.accepted.load(Ordering::Relaxed), 1);
+    assert!(
+        origin
+            .requests
+            .lock()
+            .iter()
+            .all(|request| request.version == Version::HTTP_2)
+    );
+    timeout(DEADLINE, proxy_task).await???;
+    assert_eq!(
+        alternative_udp.try_recv(&mut [0; 2048]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    timeout(Duration::from_millis(20), alternative.accept())
         .await
         .unwrap_err();
     origin.close().await

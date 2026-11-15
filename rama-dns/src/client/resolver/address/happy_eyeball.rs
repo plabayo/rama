@@ -42,6 +42,7 @@ impl<R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressResolver
             host: host.into(),
             resolver: self,
             extensions: None,
+            hints: &[],
         }
     }
 }
@@ -59,9 +60,20 @@ pub struct HappyEyeballAddressResolver<'a, R> {
     host: Host,
     resolver: &'a R,
     extensions: Option<&'a Extensions>,
+    hints: &'a [IpAddr],
 }
 
 impl<'a, R> HappyEyeballAddressResolver<'a, R> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Use hints while the DNS stream has no immediately available address.
+        /// Hints obey request IP-family policy, are deduplicated with DNS results,
+        /// and are ignored for loopback names or an explicit resolver override.
+        pub fn hints(mut self, hints: &'a [IpAddr]) -> Self {
+            self.hints = hints;
+            self
+        }
+    }
+
     rama_utils::macros::generate_set_and_with! {
         pub fn extensions(mut self, extensions: Option<&'a Extensions>) -> Self {
             self.extensions = extensions;
@@ -89,9 +101,45 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
     ///
     /// [RFC 4291, Section 2.5.5.2]: https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.5.2
     /// [RFC 6761, Section 6.3]: https://datatracker.ietf.org/doc/html/rfc6761#section-6.3
-    pub fn lookup_ip(self) -> impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a {
+    pub fn lookup_ip(mut self) -> impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a {
+        let resolve = self
+            .extensions
+            .and_then(|e| e.get_ref::<DnsResolveIpMode>().copied())
+            .unwrap_or_default();
+        let connect = self
+            .extensions
+            .and_then(|e| e.get_ref::<ConnectIpMode>().copied())
+            .unwrap_or_default();
+        let hints_source = if self
+            .extensions
+            .is_some_and(|e| e.contains::<DnsAddresssResolverOverwrite>())
+            || self
+                .host
+                .try_as_domain()
+                .map_or(true, |domain| domain.is_loopback())
+        {
+            &[][..]
+        } else {
+            self.hints
+        };
+        let preferred_v4 = resolve == DnsResolveIpMode::DualPreferIpV4;
+        // Scan the borrowed hints by family instead of sorting a copied vector.
+        let family = move |ipv4| {
+            hints_source.iter().copied().filter_map(move |ip| {
+                let ip = connect.validate_ip(ip).ok()?;
+                (ip.is_ipv4() == ipv4
+                    && if ipv4 {
+                        resolve.ipv4_supported()
+                    } else {
+                        resolve.ipv6_supported()
+                    })
+                .then_some(ip)
+            })
+        };
+        let hints = family(preferred_v4).chain(family(!preferred_v4));
+        self.hints = hints_source;
         let (source, fallback) = self.lookup_ip_source();
-        HappyEyeballIpStream::new(source, fallback)
+        HappyEyeballIpStream::new(source, fallback, hints)
     }
 
     /// The candidate source, and the loopback answer for a loopback name whose overwrite
@@ -231,8 +279,13 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                 let ipv4_stream = make_ipv4_stream();
 
                 HappyEyeballIpSource::Dual {
-                    stream: ipv6_stream
-                        .merge(DelayStream::new(Duration::from_micros(42), ipv4_stream)),
+                    stream: ipv6_stream.merge(if self.hints.is_empty() {
+                        Either::Right(DelayStream::new(Duration::from_micros(42), ipv4_stream))
+                    } else {
+                        // Probe both families before using hints: a cached address
+                        // must not be hidden by the family preference delay.
+                        Either::Left(ipv4_stream)
+                    }),
                 }
             }
             DnsResolveIpMode::DualPreferIpV4 => {
@@ -240,8 +293,11 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                 let ipv6_stream = make_ipv6_stream();
 
                 HappyEyeballIpSource::DualPreferIpV4 {
-                    stream: ipv4_stream
-                        .merge(DelayStream::new(Duration::from_micros(42), ipv6_stream)),
+                    stream: ipv4_stream.merge(if self.hints.is_empty() {
+                        Either::Right(DelayStream::new(Duration::from_micros(42), ipv6_stream))
+                    } else {
+                        Either::Left(ipv6_stream)
+                    }),
                 }
             }
             DnsResolveIpMode::SingleIpV4 => HappyEyeballIpSource::SingleIpV4 {
@@ -259,59 +315,78 @@ type LoopbackCandidates = SmallVec<[Result<IpAddr, OpaqueError>; 2]>;
 
 pin_project! {
     // Overwrites chain ahead of the resolver; never race the same address twice.
-    struct HappyEyeballIpStream<V4, V6> {
+    struct HappyEyeballIpStream<V4, V6, H> {
         #[pin]
         source: HappyEyeballIpSource<V4, V6>,
         seen: SmallVec<[IpAddr; 4]>,
         source_done: bool,
+        hints: H,
+        use_hints: bool,
         // Yielded when the source ends without an address.
         fallback: smallvec::IntoIter<[Result<IpAddr, OpaqueError>; 2]>,
     }
 }
 
-impl<V4, V6> HappyEyeballIpStream<V4, V6> {
-    fn new(source: HappyEyeballIpSource<V4, V6>, fallback: LoopbackCandidates) -> Self {
+impl<V4, V6, H> HappyEyeballIpStream<V4, V6, H> {
+    fn new(source: HappyEyeballIpSource<V4, V6>, fallback: LoopbackCandidates, hints: H) -> Self {
         Self {
             source,
             seen: SmallVec::new(),
             source_done: false,
+            hints,
+            use_hints: true,
             fallback: fallback.into_iter(),
         }
     }
 }
 
-impl<V4: Stream<Item = Result<IpAddr, OpaqueError>>, V6: Stream<Item = Result<IpAddr, OpaqueError>>>
-    Stream for HappyEyeballIpStream<V4, V6>
+impl<
+    V4: Stream<Item = Result<IpAddr, OpaqueError>>,
+    V6: Stream<Item = Result<IpAddr, OpaqueError>>,
+    H: Iterator<Item = IpAddr>,
+> Stream for HappyEyeballIpStream<V4, V6, H>
 {
     type Item = Result<IpAddr, OpaqueError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
-        while !*this.source_done {
-            match std::task::ready!(this.source.as_mut().poll_next(cx)) {
-                Some(Ok(ip)) if this.seen.contains(&ip) => {}
-                Some(Ok(ip)) => {
-                    this.seen.push(ip);
-                    return Poll::Ready(Some(Ok(ip)));
+        loop {
+            if !*this.source_done {
+                match this.source.as_mut().poll_next(cx) {
+                    Poll::Ready(Some(Ok(ip))) => {
+                        // Fresh DNS answers supersede remaining hints, including
+                        // when they arrive after a hint has already been used.
+                        *this.use_hints = false;
+                        if !this.seen.contains(&ip) {
+                            this.seen.push(ip);
+                            return Poll::Ready(Some(Ok(ip)));
+                        }
+                        continue;
+                    }
+                    Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err))),
+                    Poll::Ready(None) => *this.source_done = true,
+                    Poll::Pending => {}
                 }
-                Some(Err(err)) => return Poll::Ready(Some(Err(err))),
-                None => *this.source_done = true,
             }
+            if *this.use_hints {
+                for ip in this.hints.by_ref() {
+                    if !this.seen.contains(&ip) {
+                        this.seen.push(ip);
+                        return Poll::Ready(Some(Ok(ip)));
+                    }
+                }
+                *this.use_hints = false;
+            }
+            if *this.source_done {
+                break;
+            }
+            return Poll::Pending;
         }
         if this.seen.is_empty() {
             Poll::Ready(this.fallback.next())
         } else {
             Poll::Ready(None)
         }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let (lower, upper) = self.source.size_hint();
-        let fallback = self.fallback.len();
-        (
-            lower.min(usize::from(self.seen.is_empty())),
-            upper.and_then(|upper| upper.checked_add(fallback)),
-        )
     }
 }
 
@@ -320,11 +395,11 @@ pin_project! {
     enum HappyEyeballIpSource<V4, V6> {
         Dual {
             #[pin]
-            stream: Merge<V6, DelayStream<V4>>,
+            stream: Merge<V6, Either<V4, DelayStream<V4>>>,
         },
         DualPreferIpV4 {
             #[pin]
-            stream: Merge<V4, DelayStream<V6>>,
+            stream: Merge<V4, Either<V6, DelayStream<V6>>>,
         },
         Once {
             #[pin]
