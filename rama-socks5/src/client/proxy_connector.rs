@@ -1,7 +1,11 @@
 use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
-    Layer, Service, combinators::Either, error::BoxError, extensions::ExtensionsRef, io::Io,
+    Layer, Service,
+    combinators::Either,
+    error::BoxError,
+    extensions::{ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer},
+    io::Io,
     telemetry::tracing,
 };
 #[cfg(feature = "dns")]
@@ -15,31 +19,49 @@ use rama_net::{
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
         ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
-        pool::ConnectionReuse,
     },
-    stream::NestedConnection,
+    stream::{DefaultConnectionTransfer, NestedConnection},
     transport::TransportProtocol,
     user::ProxyCredential,
 };
 #[cfg(feature = "dns")]
 use rama_net::{Protocol, address::Host, mode::DnsResolveIpMode};
 use rama_utils::macros::define_inner_service_accessors;
-#[cfg(feature = "dns")]
 use rama_utils::macros::generate_set_and_with;
 #[cfg(feature = "dns")]
 use std::net::IpAddr;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 /// A [`Layer`] which wraps the given service with a [`Socks5ProxyConnector`].
 ///
 /// See [`Socks5ProxyConnector`] for more information.
 pub struct Socks5ProxyConnectorLayer {
     required: bool,
+    nested_connection_transfer: SharedNestedConnectionTransfer,
     #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 }
 
+impl Default for Socks5ProxyConnectorLayer {
+    fn default() -> Self {
+        Self::optional()
+    }
+}
+
 impl Socks5ProxyConnectorLayer {
+    generate_set_and_with! {
+        /// Set what a SOCKS5 tunnel keeps from the proxy connection it is
+        /// nested on.
+        ///
+        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
+        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// extension types across the tunnel.
+        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
+            self.nested_connection_transfer = transfer.into_shared();
+            self
+        }
+    }
+
     /// Create a new [`Socks5ProxyConnectorLayer`] which creates a [`Socks5ProxyConnector`]
     /// which will only connect via a socks5 proxy when a proxied [`ProxyRoute`] is available
     /// in the input [`Extensions`].
@@ -50,6 +72,7 @@ impl Socks5ProxyConnectorLayer {
     pub fn optional() -> Self {
         Self {
             required: false,
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
@@ -65,6 +88,7 @@ impl Socks5ProxyConnectorLayer {
     pub fn required() -> Self {
         Self {
             required: true,
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
@@ -120,6 +144,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
         Socks5ProxyConnector {
             inner,
             required: self.required,
+            nested_connection_transfer: self.nested_connection_transfer.clone(),
             #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver.clone(),
         }
@@ -129,6 +154,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
         Socks5ProxyConnector {
             inner,
             required: self.required,
+            nested_connection_transfer: self.nested_connection_transfer,
             #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver,
         }
@@ -145,6 +171,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 pub struct Socks5ProxyConnector<S> {
     inner: S,
     required: bool,
+    nested_connection_transfer: SharedNestedConnectionTransfer,
     #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsAddressResolver>,
 }
@@ -155,6 +182,7 @@ impl<S> Socks5ProxyConnector<S> {
         Self {
             inner,
             required,
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
@@ -170,6 +198,19 @@ impl<S> Socks5ProxyConnector<S> {
     #[inline]
     pub fn required(inner: S) -> Self {
         Self::new(inner, true)
+    }
+
+    generate_set_and_with! {
+        /// Set what a SOCKS5 tunnel keeps from the proxy connection it is
+        /// nested on.
+        ///
+        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
+        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// extension types across the tunnel.
+        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
+            self.nested_connection_transfer = transfer.into_shared();
+            self
+        }
     }
 
     define_inner_service_accessors!();
@@ -485,18 +526,8 @@ where
         }
 
         // The established byte stream now addresses the destination rather than
-        // the proxy whose transport supplied the inherited policy. Read the proxy
-        // leg's requirements before nesting: they only reach the new endpoint by
-        // being carried onto it.
-        let proxy_reuse = conn
-            .extensions()
-            .get_ref::<ConnectionReuse>()
-            .map(|policy| policy.clone().into_restriction());
-
-        let conn = NestedConnection::new(conn);
-        if let Some(reuse) = proxy_reuse {
-            conn.extensions().insert(reuse);
-        }
+        // the proxy whose transport supplied the inherited policy.
+        let conn = NestedConnection::new(conn, &self.nested_connection_transfer);
         conn.extensions().insert(selected_route);
         Ok(EstablishedClientConnection {
             input,
@@ -513,7 +544,7 @@ mod tests {
         address::HostWithPort,
         client::{
             ConnectRequest, ProxyRoute,
-            pool::{ConnectionReusePolicy, ReuseKey},
+            pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
         },
     };
     use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -569,6 +600,88 @@ mod tests {
                 route_requested.then_some(&EstablishedProxyRoute::Direct),
             );
         }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, rama_core::extensions::Extension)]
+    #[extension(scope(connection))]
+    struct ProxyLegFact(u8);
+
+    #[tokio::test]
+    async fn a_custom_transfer_carries_a_connection_scoped_type_across_the_tunnel() {
+        let selected: ProxyAddress = "socks5://user:secret@proxy.example:1080".parse().unwrap();
+        let (io, mut peer) = tokio::io::duplex(4096);
+        let peer_task = tokio::spawn(async move {
+            assert_eq!(peer.read_u8().await.unwrap(), 5);
+            let methods_len = peer.read_u8().await.unwrap();
+            let mut methods = vec![0; usize::from(methods_len)];
+            peer.read_exact(&mut methods).await.unwrap();
+            peer.write_all(&[5, 2]).await.unwrap();
+
+            assert_eq!(peer.read_u8().await.unwrap(), 1);
+            let user_len = peer.read_u8().await.unwrap();
+            let mut user = vec![0; usize::from(user_len)];
+            peer.read_exact(&mut user).await.unwrap();
+            let pass_len = peer.read_u8().await.unwrap();
+            let mut pass = vec![0; usize::from(pass_len)];
+            peer.read_exact(&mut pass).await.unwrap();
+            peer.write_all(&[1, 0]).await.unwrap();
+
+            let mut head = [0; 4];
+            peer.read_exact(&mut head).await.unwrap();
+            assert_eq!(head, [5, 1, 0, 3]);
+            let host_len = peer.read_u8().await.unwrap();
+            let mut host = vec![0; usize::from(host_len)];
+            peer.read_exact(&mut host).await.unwrap();
+            assert_eq!(peer.read_u16().await.unwrap(), 80);
+            peer.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80])
+                .await
+                .unwrap();
+        });
+
+        let carry_fact = |outer: &Extensions, nested: &Extensions| {
+            if let Some(fact) = outer.get_ref::<ProxyLegFact>() {
+                nested.insert(*fact);
+            }
+        };
+
+        let io = Arc::new(parking_lot::Mutex::new(Some(io)));
+        let inner = service_fn(move |input: ConnectRequest| {
+            let io = io.lock().take().unwrap();
+            async move {
+                let conn = ServiceInput::new(io);
+                conn.extensions().insert(ProxyLegFact(7));
+                conn.extensions()
+                    .insert(ConnectionReuse::new(FixedProxyPolicy));
+                Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
+            }
+        });
+        let connector = Socks5ProxyConnector::optional(inner)
+            .with_nested_connection_transfer(DefaultConnectionTransfer.and(carry_fact));
+        #[cfg(feature = "dns")]
+        let connector = connector.with_dns_address_resolver(std::net::Ipv4Addr::LOCALHOST);
+        let input = ConnectRequest::new(HostWithPort::example_domain_http())
+            .with_application_protocol(Protocol::HTTP);
+        input.extensions.insert(ProxyRoute::Proxy(selected.clone()));
+        #[cfg(feature = "dns")]
+        input.extensions.insert(DnsResolveIpMode::SingleIpV4);
+
+        let established = tokio::time::timeout(Duration::from_secs(2), connector.connect(input))
+            .await
+            .expect("SOCKS handshake timed out")
+            .unwrap();
+        peer_task.await.unwrap();
+
+        assert_eq!(
+            established.conn.extensions().get_ref::<ProxyLegFact>(),
+            Some(&ProxyLegFact(7)),
+            "the configured transfer carries it onto the tunnel"
+        );
+        let reuse = established
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .expect("the default transfer still runs");
+        assert!(!reuse.is_complete());
     }
 
     #[tokio::test]

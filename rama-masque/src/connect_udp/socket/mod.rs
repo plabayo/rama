@@ -20,7 +20,10 @@ use std::{
 use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{
+        Extensions, ExtensionsRef, NestedConnectionTransfer, NoConnectionTransfer,
+        SharedNestedConnectionTransfer,
+    },
     graceful::Scope,
     telemetry::tracing,
 };
@@ -87,8 +90,10 @@ pub fn session_config() -> SessionConfig {
 }
 
 /// Limits of a [`ConnectUdpSocket`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ConnectUdpSocketConfig {
+    /// What the tunnel keeps from the connection carrying it.
+    nested_connection_transfer: SharedNestedConnectionTransfer,
     /// UDP payloads accepted for sending but not yet handed to the HTTP carrier.
     queue: NonZeroUsize,
     /// How long the tunnel may forward nothing in either direction before it closes.
@@ -107,11 +112,25 @@ impl Default for ConnectUdpSocketConfig {
             idle_timeout: Duration::from_mins(2),
             close_grace: CLOSE_GRACE,
             min_payload: None,
+            nested_connection_transfer: NoConnectionTransfer.into_shared(),
         }
     }
 }
 
 impl ConnectUdpSocketConfig {
+    generate_set_and_with! {
+        /// What the tunnel keeps from the connection carrying it.
+        ///
+        /// Keeps nothing by default: a CONNECT-UDP tunnel is a new endpoint and
+        /// the carrier's connection facts do not describe it. Set a
+        /// [`NestedConnectionTransfer`] to carry your own connection-scoped extension
+        /// types onto the tunnel.
+        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
+            self.nested_connection_transfer = transfer.into_shared();
+            self
+        }
+    }
+
     generate_set_and_with! {
         /// The smallest payload limit the owner can work with, such as QUIC's 1200 bytes: once
         /// the native limit falls below it, sends fail with [`ConnectUdpCapacityError`] and the
@@ -403,7 +422,9 @@ where
         let native = session.native().cloned();
         // The tunnel is a new endpoint over the carrier: flow data keeps resolving
         // through, the carrier's own connection facts do not answer for it.
-        let extensions = session.extensions().fork_nested_connection();
+        let extensions = session
+            .extensions()
+            .fork_nested_connection(&config.nested_connection_transfer);
         let (sender, receiver) = session.split();
         let shared = Arc::new(Shared {
             native,

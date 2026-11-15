@@ -100,7 +100,7 @@ impl<P, R, C, F> Clone for ConnectUdpService<P, R, C, F> {
             scope: self.scope.clone(),
             proxy_name: self.proxy_name.clone(),
             dns_timeout: self.dns_timeout,
-            socket: self.socket,
+            socket: self.socket.clone(),
             translation_prefixes: self.translation_prefixes.clone(),
             limits: self.limits.clone(),
             tunnel_budget: self.tunnel_budget,
@@ -160,7 +160,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             scope: self.scope,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
-            socket: self.socket,
+            socket: self.socket.clone(),
             translation_prefixes: self.translation_prefixes,
             limits: self.limits,
             tunnel_budget: self.tunnel_budget,
@@ -179,7 +179,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             scope: self.scope,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
-            socket: self.socket,
+            socket: self.socket.clone(),
             translation_prefixes: self.translation_prefixes,
             limits: self.limits,
             tunnel_budget: self.tunnel_budget,
@@ -201,7 +201,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             scope: self.scope,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
-            socket: self.socket,
+            socket: self.socket.clone(),
             translation_prefixes: self.translation_prefixes,
             limits: self.limits,
             tunnel_budget: self.tunnel_budget,
@@ -221,7 +221,7 @@ impl<P, R, C, F> ConnectUdpService<P, R, C, F> {
             scope: self.scope,
             proxy_name: self.proxy_name,
             dns_timeout: self.dns_timeout,
-            socket: self.socket,
+            socket: self.socket.clone(),
             translation_prefixes: self.translation_prefixes,
             limits: self.limits,
             tunnel_budget: self.tunnel_budget,
@@ -450,7 +450,7 @@ where
         };
         let upgrade = handle_upgrade(&request);
         let tunnel_scope = scope.clone();
-        let socket_config = self.socket;
+        let socket_config = self.socket.clone();
         let tunnel_local = proxy_address.unwrap_or(SocketAddress::default_ipv4(0));
         let tunnel_peer = client_address.unwrap_or(SocketAddress::default_ipv4(0));
         let relay = self.relay.clone();

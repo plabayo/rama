@@ -471,10 +471,16 @@ impl Extensions {
     /// nested one. Use it where a new endpoint is established over an existing
     /// connection: a `CONNECT` tunnel, a SOCKS5 stream, a CONNECT-UDP flow.
     ///
+    /// `transfer` decides what the nested connection keeps of the facts the
+    /// boundary would otherwise stop, see [`NestedConnectionTransfer`]. Pass
+    /// [`NoConnectionTransfer`] for a plain boundary that keeps none of them.
+    ///
     /// [`Self::iter_ref`] and [`Self::iter_arc`] still walk past the boundary.
     #[must_use]
-    pub fn fork_nested_connection(&self) -> Self {
-        Self::with_parent(Some(self.clone()), true)
+    pub fn fork_nested_connection(&self, transfer: &dyn NestedConnectionTransfer) -> Self {
+        let nested = Self::with_parent(Some(self.clone()), true);
+        transfer.transfer(self, &nested);
+        nested
     }
 
     /// Whether this level was created by [`Self::fork_nested_connection`].
@@ -1413,6 +1419,92 @@ pub trait Extension: Any + Send + Sync + core::fmt::Debug + 'static {
         Self: Sized,
     {
         ExtensionScope::Flow
+    }
+}
+
+/// What a connection nested on another one keeps from it.
+///
+/// A [`Extensions::fork_nested_connection`] boundary stops every
+/// [`ExtensionScope::Connection`] fact of the connection underneath. Some of
+/// those facts still constrain the nested endpoint, and only the site that
+/// establishes the nesting knows which: the extension types cannot say, and
+/// neither can the layers that published them. So every nesting site owns a
+/// transfer and exposes it for configuration.
+pub trait NestedConnectionTransfer: Send + Sync + 'static {
+    /// Put onto `nested` what it keeps from the `outer` chain it forks from.
+    fn transfer(&self, outer: &Extensions, nested: &Extensions);
+
+    /// Run `self`, then `other`.
+    fn and<T: NestedConnectionTransfer>(self, other: T) -> NestedConnectionTransferAnd<Self, T>
+    where
+        Self: Sized,
+    {
+        NestedConnectionTransferAnd {
+            first: self,
+            second: other,
+        }
+    }
+
+    /// Erase and share this transfer, so a connector can hold it.
+    fn into_shared(self) -> SharedNestedConnectionTransfer
+    where
+        Self: Sized,
+    {
+        SharedNestedConnectionTransfer(Arc::new(self))
+    }
+}
+
+/// Keeps nothing: the nested connection starts from the flow data alone.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoConnectionTransfer;
+
+impl NestedConnectionTransfer for NoConnectionTransfer {
+    fn transfer(&self, _outer: &Extensions, _nested: &Extensions) {}
+}
+
+impl<F> NestedConnectionTransfer for F
+where
+    F: Fn(&Extensions, &Extensions) + Send + Sync + 'static,
+{
+    fn transfer(&self, outer: &Extensions, nested: &Extensions) {
+        self(outer, nested);
+    }
+}
+
+/// Two transfers run in order, see [`NestedConnectionTransfer::and`].
+#[derive(Debug, Clone)]
+pub struct NestedConnectionTransferAnd<A, B> {
+    first: A,
+    second: B,
+}
+
+impl<A: NestedConnectionTransfer, B: NestedConnectionTransfer> NestedConnectionTransfer
+    for NestedConnectionTransferAnd<A, B>
+{
+    fn transfer(&self, outer: &Extensions, nested: &Extensions) {
+        self.first.transfer(outer, nested);
+        self.second.transfer(outer, nested);
+    }
+}
+
+/// A shared [`NestedConnectionTransfer`] of any type, see [`NestedConnectionTransfer::into_shared`].
+#[derive(Clone)]
+pub struct SharedNestedConnectionTransfer(Arc<dyn NestedConnectionTransfer>);
+
+impl fmt::Debug for SharedNestedConnectionTransfer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedNestedConnectionTransfer")
+            .finish_non_exhaustive()
+    }
+}
+
+impl NestedConnectionTransfer for SharedNestedConnectionTransfer {
+    fn transfer(&self, outer: &Extensions, nested: &Extensions) {
+        self.0.transfer(outer, nested);
+    }
+
+    fn into_shared(self) -> Self {
+        self
     }
 }
 
@@ -2464,7 +2556,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(RetryBudget(3));
 
-        let origin = proxy.fork_nested_connection();
+        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
         assert_eq!(origin.get_ref::<RetryBudget>(), Some(&RetryBudget(3)));
         assert_eq!(
             origin.fork().get_ref::<RetryBudget>(),
@@ -2478,7 +2570,7 @@ mod tests {
         proxy.insert(NegotiatedAlpn(2));
         assert_eq!(proxy.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(2)));
 
-        let origin = proxy.fork_nested_connection();
+        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(origin.fork().get_ref::<NegotiatedAlpn>(), None);
     }
@@ -2488,7 +2580,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(NegotiatedAlpn(2));
 
-        let origin = proxy.fork_nested_connection();
+        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
         origin.insert(NegotiatedAlpn(1));
 
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(1)));
@@ -2504,10 +2596,10 @@ mod tests {
         tcp.insert(NegotiatedAlpn(2));
         tcp.insert(RetryBudget(3));
 
-        let first_tunnel = tcp.fork_nested_connection();
+        let first_tunnel = tcp.fork_nested_connection(&NoConnectionTransfer);
         first_tunnel.insert(NegotiatedAlpn(1));
 
-        let second_tunnel = first_tunnel.fork_nested_connection();
+        let second_tunnel = first_tunnel.fork_nested_connection(&NoConnectionTransfer);
         assert_eq!(second_tunnel.get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(
             second_tunnel.get_ref::<RetryBudget>(),
@@ -2520,10 +2612,10 @@ mod tests {
         let tcp = Extensions::new();
         tcp.insert(NegotiatedAlpn(3));
 
-        let first_tunnel = tcp.fork_nested_connection();
+        let first_tunnel = tcp.fork_nested_connection(&NoConnectionTransfer);
         first_tunnel.insert(NegotiatedAlpn(2));
 
-        let second_tunnel = first_tunnel.fork_nested_connection();
+        let second_tunnel = first_tunnel.fork_nested_connection(&NoConnectionTransfer);
         let origin = second_tunnel.fork();
         origin.insert(NegotiatedAlpn(1));
 
@@ -2549,7 +2641,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(NegotiatedAlpn(2));
 
-        let origin = proxy.fork_nested_connection();
+        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
         origin.insert(NegotiatedAlpn(1));
 
         assert_eq!(
@@ -2582,7 +2674,7 @@ mod tests {
         proxy.insert(NegotiatedAlpn(2));
         proxy.insert(Reuse(true));
 
-        let origin = proxy.fork_nested_connection();
+        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
 
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), None);
         assert!(origin.get_arc::<NegotiatedAlpn>().is_none());
@@ -2610,7 +2702,7 @@ mod tests {
         assert_eq!(view.reuse.as_deref(), Some(&Reuse(false)));
 
         let target = Extensions::new();
-        let fresh = proxy.fork_nested_connection();
+        let fresh = proxy.fork_nested_connection(&NoConnectionTransfer);
         assert!(fresh.clone_to::<NegotiatedAlpn>(&target).is_none());
         assert!(
             fresh
@@ -2632,7 +2724,7 @@ mod tests {
         below.insert(NegotiatedAlpn(2));
         below.insert(RetryBudget(3));
 
-        let origin = below.fork_nested_connection();
+        let origin = below.fork_nested_connection(&NoConnectionTransfer);
         origin.insert(Egress(peer));
 
         assert_eq!(origin.get_ref::<NegotiatedAlpn>(), Some(&NegotiatedAlpn(7)));
@@ -2646,7 +2738,7 @@ mod tests {
         let tcp = Extensions::new();
         tcp.insert(NegotiatedAlpn(2));
         tcp.insert(RetryBudget(3));
-        let tunnel = tcp.fork_nested_connection();
+        let tunnel = tcp.fork_nested_connection(&NoConnectionTransfer);
 
         let req = Extensions::new();
         req.insert(Egress(tunnel));
@@ -2663,7 +2755,7 @@ mod tests {
         let proxy = Extensions::new();
         proxy.insert(NegotiatedAlpn(2));
 
-        let origin = proxy.fork_nested_connection();
+        let origin = proxy.fork_nested_connection(&NoConnectionTransfer);
         assert_eq!(origin.self_get_ref::<NegotiatedAlpn>(), None);
         assert_eq!(
             origin.self_get_ref_or_insert(|| NegotiatedAlpn(1)),
@@ -2681,7 +2773,7 @@ mod tests {
         base.insert(NegotiatedAlpn(2));
         base.insert(RetryBudget(3));
 
-        let origin = Extensions::new().fork_nested_connection();
+        let origin = Extensions::new().fork_nested_connection(&NoConnectionTransfer);
         let view = origin.with_base(&base);
 
         assert_eq!(view.get_ref::<NegotiatedAlpn>(), None);
@@ -2809,7 +2901,7 @@ mod tests {
                     ext.insert(Ingress(random_chain(rng, depth - 1)));
                 }
                 2 if depth > 0 => ext = ext.fork(),
-                3 if depth > 0 => ext = ext.fork_nested_connection(),
+                3 if depth > 0 => ext = ext.fork_nested_connection(&NoConnectionTransfer),
                 _ => insert_filler(&ext, rng.next(), rng.next() as u32),
             }
         }
@@ -3318,13 +3410,19 @@ mod tests {
                 }
                 9 => {
                     let (ext, model) = &conns[a % conns.len()];
-                    let forked = (ext.fork_nested_connection(), model.fork_nested_connection());
+                    let forked = (
+                        ext.fork_nested_connection(&NoConnectionTransfer),
+                        model.fork_nested_connection(),
+                    );
                     conns.push(forked);
                     conns.last()
                 }
                 10 => {
                     let (ext, model) = &reqs[a % reqs.len()];
-                    let forked = (ext.fork_nested_connection(), model.fork_nested_connection());
+                    let forked = (
+                        ext.fork_nested_connection(&NoConnectionTransfer),
+                        model.fork_nested_connection(),
+                    );
                     reqs.push(forked);
                     reqs.last()
                 }
