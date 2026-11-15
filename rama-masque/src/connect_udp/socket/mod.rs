@@ -93,7 +93,7 @@ pub fn session_config() -> SessionConfig {
 /// The socket's extensions are a nested-connection fork of the carrier's, so
 /// the carrier's flow-scoped extensions keep resolving through; only its
 /// connection-scoped facts stop at the boundary, except what
-/// [`Self::nested_connection_transfer`] carries over,
+/// [`Self::with_nested_connection_transfer`] carries over,
 /// [`DefaultConnectionTransfer`] by default.
 #[derive(Debug, Clone)]
 pub struct ConnectUdpSocketConfig {
