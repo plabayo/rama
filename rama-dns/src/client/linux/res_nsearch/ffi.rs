@@ -218,6 +218,7 @@ pub(super) const RES_NOTLDQUERY: libc::c_ulong = 0x0100_0000;
 
 #[cfg(test)]
 mod tests {
+    use std::mem::{align_of, offset_of, size_of};
     use std::{net::UdpSocket, thread, time::Duration};
 
     use super::*;
@@ -288,7 +289,6 @@ mod tests {
 
     #[test]
     fn every_shared_record_matches_the_target_c_abi() {
-        use std::mem::{align_of, offset_of, size_of};
         let layout = [
             size_of::<Config>(),
             align_of::<Config>(),

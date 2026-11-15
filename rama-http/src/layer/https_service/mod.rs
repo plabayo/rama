@@ -43,7 +43,8 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_dns::client::{
-    GlobalDnsResolver, HttpsServiceBindingLookup, PrefetchedAddressCandidates,
+    DEFAULT_HTTPS_ALIAS_LIMIT, DnsAddressCandidates, GlobalDnsResolver,
+    lookup_https_service_bindings,
     resolver::{DnsAddressResolver, DnsServiceBindingResolver},
 };
 use rama_http_types::conn::{
@@ -52,7 +53,6 @@ use rama_http_types::conn::{
 };
 use rama_net::{
     Protocol,
-    address::Domain,
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorTarget,
         ConnectorTargetStream, ProxyRouteContext,
@@ -332,18 +332,15 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
         }
         let origin = HttpOrigin::new(Protocol::HTTPS, input.authority.clone())
             .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
-        let lookup = HttpsServiceBindingLookup::new().with_resolver(self.resolver.clone());
-        let mut addresses: Vec<(Domain, PrefetchedAddressCandidates<R>)> = Vec::new();
-        if !proxy && let Ok(domain) = input.authority.host.try_as_domain() {
-            let domain = domain.into_owned();
-            addresses.push((
-                domain.clone(),
-                PrefetchedAddressCandidates::new(self.resolver.clone(), domain, input.extensions()),
-            ));
-        }
-
         // Complete primary discovery before selecting any transport endpoint.
-        let primary = lookup.lookup(&input.authority, &protocols, capable).await;
+        let primary = lookup_https_service_bindings(
+            &self.resolver,
+            &input.authority,
+            &protocols,
+            capable,
+            DEFAULT_HTTPS_ALIAS_LIMIT,
+        )
+        .await;
         let fallback = required != EchRequirement::Required;
         *reliant |= primary.ech_reliant();
         if primary.ech_reliant() {
@@ -361,13 +358,12 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
             None,
             &effective,
             &protocols,
-            &mut addresses,
             proxy,
             required,
         )?;
 
         // Publish a safe checkpoint before querying optional advertisements.
-        // A cancelled lookup retains these endpoint-local configs and streams.
+        // A cancelled lookup retains these endpoint-local configs and lazy sources.
         if !primary_candidates.is_empty() {
             input.extensions().insert(
                 HttpServiceCandidates::new_with_extensions(
@@ -394,13 +390,14 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                 if !protocols.contains(&candidate.protocol) {
                     continue;
                 }
-                let result = lookup
-                    .lookup(
-                        &candidate.target,
-                        std::slice::from_ref(&candidate.protocol),
-                        capable,
-                    )
-                    .await;
+                let result = lookup_https_service_bindings(
+                    &self.resolver,
+                    &candidate.target,
+                    std::slice::from_ref(&candidate.protocol),
+                    capable,
+                    DEFAULT_HTTPS_ALIAS_LIMIT,
+                )
+                .await;
                 // A later timeout must suppress cached bare authorities whose
                 // records already established conditional ECH reliance.
                 *reliant |= result.ech_reliant();
@@ -410,7 +407,6 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                     Some((&advertised, index)),
                     &effective,
                     &protocols,
-                    &mut addresses,
                     proxy,
                     required,
                 )?;
@@ -435,10 +431,13 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                 .into_iter()
                 .take(self.max_candidates.saturating_sub(candidates.len())),
         );
-        if fallback && let Some((_, source)) = addresses.first() {
+        if fallback
+            && !proxy
+            && let Ok(domain) = input.authority.host.try_as_domain()
+        {
             input.extensions().insert(ConnectorTargetStream::new(
                 input.authority.clone(),
-                source.clone(),
+                DnsAddressCandidates::new(self.resolver.clone(), domain.into_owned()),
             ));
         }
         if !candidates.is_empty() || !fallback {
@@ -461,7 +460,6 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
         advertised: Option<(&Arc<HttpServiceCandidates>, usize)>,
         request: &Extensions,
         protocols: &[ApplicationProtocol],
-        addresses: &mut Vec<(Domain, PrefetchedAddressCandidates<R>)>,
         proxy: bool,
         required: EchRequirement,
     ) -> Result<(), ConnectionError> {
@@ -513,20 +511,8 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                         .is_some_and(|keys| keys.contains(&rama_dns::wire::SvcParamKey::Ech)),
                 });
                 if !proxy && let Ok(domain) = binding.target.host.try_as_domain() {
-                    let domain = domain.into_owned();
-                    let source = if let Some((_, source)) =
-                        addresses.iter().find(|(name, _)| name == &domain)
-                    {
-                        source.clone()
-                    } else {
-                        let source = PrefetchedAddressCandidates::new(
-                            self.resolver.clone(),
-                            domain.clone(),
-                            request,
-                        );
-                        addresses.push((domain, source.clone()));
-                        source
-                    };
+                    let source =
+                        DnsAddressCandidates::new(self.resolver.clone(), domain.into_owned());
                     let hints = binding
                         .record
                         .binding
@@ -544,7 +530,8 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                                 .iter()
                                 .copied()
                                 .map(std::net::IpAddr::V6),
-                        );
+                        )
+                        .collect::<Arc<[std::net::IpAddr]>>();
                     extensions.insert(ConnectorTargetStream::new(
                         binding.target.clone(),
                         source.with_hints(hints),

@@ -65,7 +65,7 @@ digraph {
     candidate [label="Select candidate + its extensions"];
     route [label="Select proxy route"];
     pool [label="Pool lookup", shape=diamond];
-    connect [label="Connect + TLS"];
+    connect [label="Resolve selected endpoint + connect + TLS"];
     use [label="Use connection"];
     discovery -> candidate;
     candidate -> route;
@@ -80,7 +80,10 @@ digraph {
 </div>
 
 Discovery runs before pool lookup because the selected service determines which
-connection can be reused. DNS caching stays in the configured resolver. With the
+connection can be reused. A/AAAA resolution is lazy: unused candidates and pool
+hits cause no address lookup. Each candidate retains its own address hints; DNS
+caching and optional answer limits stay in the configured resolver. Address queries
+start after service discovery; cached answers and hints can avoid that extra wait. With the
 `quic` feature, the easy client's default DNS path enables HTTPS discovery;
 `with_dns_resolver` shares a custom resolver with discovery and transport, while
 `with_https_resolver` configures discovery explicitly.

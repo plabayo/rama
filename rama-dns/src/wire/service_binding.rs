@@ -73,16 +73,19 @@ impl AlpnList {
         })
     }
 
-    #[cfg(feature = "hickory")]
-    pub(crate) fn from_protocols<'a>(protocols: impl IntoIterator<Item = &'a str>) -> Option<Self> {
+    /// Build a validated ALPN list from protocol identifiers, including opaque bytes.
+    /// Returns `None` for an empty list, empty/oversized identifiers, or an
+    /// encoding that exceeds the DNS parameter size.
+    pub fn from_protocols<B: AsRef<[u8]>>(protocols: impl IntoIterator<Item = B>) -> Option<Self> {
         let mut wire = Vec::new();
         for protocol in protocols {
+            let protocol = protocol.as_ref();
             let length = u8::try_from(protocol.len()).ok()?;
-            if length == 0 {
+            if length == 0 || wire.len() + 1 + protocol.len() > usize::from(u16::MAX) {
                 return None;
             }
             wire.push(length);
-            wire.extend_from_slice(protocol.as_bytes());
+            wire.extend_from_slice(protocol);
         }
         Self::from_wire(wire.into())
     }
@@ -346,9 +349,13 @@ impl ServiceBinding {
         Ok(binding)
     }
 
-    /// Validate already-decoded provider values without serializing whole RDATA.
-    #[cfg(feature = "hickory")]
-    pub(crate) fn from_parts(
+    /// Construct a service binding from already-decoded values.
+    ///
+    /// Parameters must be in strictly increasing numeric key order. Validates
+    /// parameter values, the DNS RDATA size, and ServiceMode self-consistency,
+    /// just like [`Self::parse_rdata`], without serializing the complete record.
+    /// Custom resolvers can use this independently of any DNS backend feature.
+    pub fn from_parts(
         priority: u16,
         target: Name,
         params: Vec<SvcParam>,

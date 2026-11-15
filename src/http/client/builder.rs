@@ -955,7 +955,7 @@ impl<T> EasyHttpConnectorBuilder<DefaultHttpConnector<T>, PoolStage> {
 
     #[cfg(feature = "quic")]
     /// Enable HTTPS discovery with this resolver for HTTPS and A/AAAA records.
-    /// Its prefetched addresses take precedence over the transport resolver for
+    /// Its lazy address source takes precedence over the transport resolver for
     /// matching HTTPS endpoints. Use `with_dns_resolver` to share one DNS policy.
     #[must_use]
     pub fn with_https_resolver<R: rama_dns::client::resolver::DnsResolver>(
@@ -1393,20 +1393,9 @@ mod tests {
     use {
         crate::http::client::Http3Connector,
         crate::quic::Endpoint,
-        rama_core::futures::{Stream, stream},
         rama_http::layer::http_service::HttpServiceAttempt,
-        rama_net::{
-            address::{Domain, SocketAddress},
-            client::ConnectionErrorKind,
-            http::TargetHttpVersion as RequestedVersion,
-        },
-        std::{
-            net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-            sync::{
-                Arc,
-                atomic::{AtomicUsize, Ordering},
-            },
-        },
+        rama_net::{address::SocketAddress, http::TargetHttpVersion as RequestedVersion},
+        std::net::SocketAddr,
     };
     #[cfg(feature = "tls")]
     use {
@@ -1432,6 +1421,22 @@ mod tests {
             client::{NegotiatedTlsParameters, TlsServerAuthentication},
         },
         std::convert::Infallible,
+    };
+    #[cfg(feature = "quic")]
+    use {
+        rama_core::futures::{Stream, stream},
+        rama_dns::{
+            client::resolver::*,
+            wire::{Name, ServiceBinding, Txt},
+        },
+        rama_net::{address::Domain, client::ConnectionErrorKind},
+        std::{
+            net::{Ipv4Addr, Ipv6Addr},
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+        },
     };
 
     fn assert_future_budget(connector: &impl Service<Request>, name: &str) {
@@ -1748,19 +1753,6 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn default_https_discovery_accepts_a_custom_resolver_and_can_be_disabled() {
-        use rama_core::futures::{Stream, stream};
-        use rama_dns::{
-            client::resolver::*,
-            wire::{Name, ServiceBinding, Txt},
-        };
-        use rama_net::{address::Domain, client::ConnectionErrorKind};
-        use std::{
-            net::{Ipv4Addr, Ipv6Addr},
-            sync::{
-                Arc,
-                atomic::{AtomicUsize, Ordering},
-            },
-        };
         #[derive(Clone, Default)]
         struct Resolver(Arc<AtomicUsize>, Arc<AtomicUsize>);
         impl DnsAddressResolver for Resolver {

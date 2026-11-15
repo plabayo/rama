@@ -2020,6 +2020,9 @@ mod local_host {
 }
 
 mod ffi {
+    use windows_sys::Win32::NetworkManagement::Dns::{
+        self as sdk, DNS_RECORDW, DNS_TXT_DATAW as SdkDnsTxtDataW,
+    };
     // Official docs index for DNS structures and functions:
     // <https://learn.microsoft.com/en-us/windows/win32/dns/dns-structures>
     // <https://learn.microsoft.com/en-us/windows/win32/api/windns/>
@@ -2092,8 +2095,6 @@ mod ffi {
     // DNS_RECORDW header. Its Data union is intentionally a smaller subset,
     // so only alignment and every field offset through Data are comparable.
     const _: () = {
-        use windows_sys::Win32::NetworkManagement::Dns::DNS_RECORDW;
-
         assert!(std::mem::align_of::<DnsRecord>() == std::mem::align_of::<DNS_RECORDW>());
         assert!(std::mem::offset_of!(DnsRecord, next) == std::mem::offset_of!(DNS_RECORDW, pNext));
         assert!(std::mem::offset_of!(DnsRecord, name) == std::mem::offset_of!(DNS_RECORDW, pName));
@@ -2181,8 +2182,6 @@ mod ffi {
     // The payload reads copy `size_of` bytes of these out of `Data`, so their
     // sizes and field offsets must be the SDK's. They are read unaligned.
     const _: () = {
-        use windows_sys::Win32::NetworkManagement::Dns as sdk;
-
         assert!(std::mem::size_of::<DNS_A_DATA>() == std::mem::size_of::<sdk::DNS_A_DATA>());
         assert!(std::mem::size_of::<DNS_AAAA_DATA>() == std::mem::size_of::<sdk::DNS_AAAA_DATA>());
         assert!(std::mem::size_of::<DNS_PTR_DATAW>() == std::mem::size_of::<sdk::DNS_PTR_DATAW>());
@@ -2211,8 +2210,6 @@ mod ffi {
     }
 
     const _: () = {
-        use windows_sys::Win32::NetworkManagement::Dns::DNS_TXT_DATAW as SdkDnsTxtDataW;
-
         assert!(std::mem::align_of::<DNS_TXT_DATAW>() == std::mem::align_of::<SdkDnsTxtDataW>());
         assert!(
             std::mem::offset_of!(DNS_TXT_DATAW, string_count)

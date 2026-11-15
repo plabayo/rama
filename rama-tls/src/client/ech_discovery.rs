@@ -13,7 +13,8 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
 };
 use rama_dns::client::{
-    GlobalDnsResolver, HttpsServiceBindingLookup, resolver::DnsServiceBindingResolver,
+    DEFAULT_HTTPS_ALIAS_LIMIT, GlobalDnsResolver, lookup_https_service_bindings,
+    resolver::DnsServiceBindingResolver,
 };
 use rama_net::{
     ConnectorTargetInputExt,
@@ -26,7 +27,7 @@ use std::time::Duration;
 /// Discover ECH for an already selected physical endpoint without adding a cache.
 #[derive(Debug, Clone)]
 pub struct TargetEchConfigLayer<R = GlobalDnsResolver> {
-    lookup: HttpsServiceBindingLookup<R>,
+    resolver: R,
     tls: TlsClientConfig,
     capable: bool,
     proxy_discovery: bool,
@@ -43,7 +44,7 @@ impl TargetEchConfigLayer {
     /// Use the global resolver. Declare backend support with `with_capable`.
     pub fn new() -> Self {
         Self {
-            lookup: HttpsServiceBindingLookup::new(),
+            resolver: GlobalDnsResolver::new(),
             tls: TlsClientConfig::default(),
             capable: false,
             proxy_discovery: false,
@@ -56,7 +57,7 @@ impl<R> TargetEchConfigLayer<R> {
     /// Use a custom HTTPS resolver. Address resolution remains with the transport.
     pub fn with_resolver<T>(self, resolver: T) -> TargetEchConfigLayer<T> {
         TargetEchConfigLayer {
-            lookup: self.lookup.with_resolver(resolver),
+            resolver,
             tls: self.tls,
             capable: self.capable,
             proxy_discovery: self.proxy_discovery,
@@ -157,7 +158,13 @@ impl<R: DnsServiceBindingResolver> TargetEchConfigLayer<R> {
         );
         let result = match tokio::time::timeout(
             self.timeout,
-            self.lookup.lookup(&target, &protocols, self.capable),
+            lookup_https_service_bindings(
+                &self.resolver,
+                &target,
+                &protocols,
+                self.capable,
+                DEFAULT_HTTPS_ALIAS_LIMIT,
+            ),
         )
         .await
         {

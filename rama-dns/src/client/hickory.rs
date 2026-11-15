@@ -33,7 +33,9 @@ use super::resolver::{
     DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
     ServiceBindingRecord,
 };
+use crate::wire::{AlpnList, SvcParam, SvcParamKey};
 use crate::wire::{Name as WireName, ServiceBinding, Txt};
+use hickory_resolver::proto::rr::rdata::svcb::SvcParamValue;
 
 #[derive(Debug, Clone)]
 /// DNS Resolver using the [`hickory_resolver`] crate
@@ -478,8 +480,6 @@ fn decode_hickory_rdata(
 fn decode_hickory_service_binding(
     value: &hickory_resolver::proto::rr::rdata::SVCB,
 ) -> Result<ServiceBinding, BoxError> {
-    use crate::wire::{AlpnList, SvcParam, SvcParamKey};
-    use hickory_resolver::proto::rr::rdata::svcb::SvcParamValue;
     let target = decode_hickory_name(&value.target_name)?;
     let mut params = Vec::with_capacity(value.svc_params.len());
     for (key, value) in &value.svc_params {
@@ -536,12 +536,13 @@ mod tests {
         CNAME, HTTPS, SVCB, TXT,
         svcb::{SvcParamKey, SvcParamValue},
     };
+    use hickory_resolver::proto::rr::{
+        Record,
+        rdata::svcb::{Alpn, EchConfigList, IpHint, Mandatory, Unknown},
+    };
 
     #[test]
     fn typed_service_binding_matches_wire_validation_for_every_parameter() {
-        use hickory_resolver::proto::rr::rdata::svcb::{
-            Alpn, EchConfigList, IpHint, Mandatory, Unknown,
-        };
         let record = SVCB::new(
             1,
             Name::from_ascii("target.example.").unwrap(),
@@ -582,9 +583,6 @@ mod tests {
 
     #[test]
     fn typed_service_binding_rejects_invalid_provider_constructed_values() {
-        use hickory_resolver::proto::rr::rdata::svcb::{
-            Alpn, EchConfigList, IpHint, Mandatory, Unknown,
-        };
         let cases = vec![
             vec![(SvcParamKey::Port, SvcParamValue::NoDefaultAlpn)],
             vec![(
@@ -627,7 +625,6 @@ mod tests {
 
     #[test]
     fn service_binding_uses_returned_owner_after_cname() {
-        use hickory_resolver::proto::rr::Record;
         let records = [
             Record::from_rdata(
                 Name::from_ascii("query.example.").unwrap(),

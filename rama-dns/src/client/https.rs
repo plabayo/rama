@@ -6,20 +6,16 @@
 use std::num::NonZeroUsize;
 
 use rama_core::{
-    error::{BoxError, BoxErrorExt as _},
-    futures::StreamExt as _,
+    error::BoxError,
+    futures::{Stream, StreamExt as _},
 };
 use rama_net::{
     address::{Domain, HostWithPort},
     tls::ApplicationProtocol,
 };
-use rama_utils::macros::generate_set_and_with;
 use rand::seq::SliceRandom as _;
 
-use super::{
-    GlobalDnsResolver,
-    resolver::{DnsServiceBindingResolver, ServiceBindingRecord},
-};
+use super::resolver::{DnsServiceBindingResolver, ServiceBindingRecord};
 use crate::wire::SvcParamKey;
 
 /// One compatible HTTPS record and its effective physical endpoint.
@@ -79,223 +75,216 @@ impl HttpsServiceBindings {
     }
 }
 
-/// Shared HTTPS record interpretation for discovery layers and custom stacks.
-#[derive(Debug, Clone)]
-pub struct HttpsServiceBindingLookup<R = GlobalDnsResolver> {
-    resolver: R,
-    max_aliases: NonZeroUsize,
-    max_records: NonZeroUsize,
+/// Default maximum number of HTTPS AliasMode records to follow.
+/// This traversal limit is independent of per-RRset resolver limits.
+pub const DEFAULT_HTTPS_ALIAS_LIMIT: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+
+/// Collect a complete SVCB or HTTPS RRset, ordered by increasing priority with
+/// random ordering among equal priorities (including AliasMode records).
+///
+/// Any stream error discards the entire RRset. No implicit record limit applies;
+/// use [`super::resolver::BoundedDnsResolver`] to bound resolver output and apply
+/// a caller-owned deadline to pending streams.
+pub async fn order_service_binding_records<S, E>(
+    records: S,
+) -> Result<Vec<ServiceBindingRecord>, BoxError>
+where
+    S: Stream<Item = Result<ServiceBindingRecord, E>>,
+    E: Into<BoxError>,
+{
+    order_records_with_shuffle(records, |records| records.shuffle(&mut rand::rng())).await
 }
 
-impl Default for HttpsServiceBindingLookup {
-    fn default() -> Self {
-        Self::new()
+async fn order_records_with_shuffle<S, E>(
+    records: S,
+    mut shuffle: impl FnMut(&mut [ServiceBindingRecord]),
+) -> Result<Vec<ServiceBindingRecord>, BoxError>
+where
+    S: Stream<Item = Result<ServiceBindingRecord, E>>,
+    E: Into<BoxError>,
+{
+    let mut ordered = Vec::new();
+    let mut records = std::pin::pin!(records);
+    while let Some(record) = records.next().await {
+        ordered.push(record.map_err(Into::into)?);
     }
+    shuffle(&mut ordered);
+    ordered.sort_by_key(|record| record.binding.priority());
+    Ok(ordered)
 }
 
-impl HttpsServiceBindingLookup {
-    /// Use Rama's global resolver without adding another cache.
-    pub fn new() -> Self {
-        Self {
-            resolver: GlobalDnsResolver::new(),
-            max_aliases: NonZeroUsize::MIN.saturating_add(7),
-            max_records: NonZeroUsize::MIN.saturating_add(63),
-        }
-    }
-}
-
-impl<R> HttpsServiceBindingLookup<R> {
-    /// Use the caller's resolver, retaining the lookup limits.
-    pub fn with_resolver<T>(self, resolver: T) -> HttpsServiceBindingLookup<T> {
-        HttpsServiceBindingLookup {
-            resolver,
-            max_aliases: self.max_aliases,
-            max_records: self.max_records,
-        }
-    }
-
-    generate_set_and_with! {
-        /// Bound followed AliasMode records (default eight, never zero).
-        pub fn max_aliases(mut self, limit: NonZeroUsize) -> Self {
-            self.max_aliases = limit;
-            self
-        }
-    }
-
-    generate_set_and_with! {
-        /// Bound each complete RRset after resolver limits (default 64).
-        /// Oversized sets fail atomically.
-        pub fn max_records(mut self, limit: NonZeroUsize) -> Self {
-            self.max_records = limit;
-            self
-        }
-    }
-}
-
-impl<R: DnsServiceBindingResolver> HttpsServiceBindingLookup<R> {
-    /// Discover HTTPS services for an already-secure authority.
-    ///
-    /// IP literals do no DNS work. `ech_capable` means a selected TLS backend
-    /// supports real ECH; decoding the DNS parameter alone is not support.
-    /// The result describes conditional reliance: evaluate it with final TLS
-    /// intent and the selected backend before sending a ClientHello. No ECH
-    /// ClientHello may race this lookup. Bound the overall lookup deadline.
-    pub async fn lookup(
-        &self,
-        authority: &HostWithPort,
-        protocols: &[ApplicationProtocol],
-        ech_capable: bool,
-    ) -> HttpsServiceBindings {
-        self.lookup_with_shuffle(authority, protocols, ech_capable, |records| {
-            records.shuffle(&mut rand::rng());
-        })
-        .await
-    }
-
-    async fn lookup_with_shuffle(
-        &self,
-        authority: &HostWithPort,
-        protocols: &[ApplicationProtocol],
-        ech_capable: bool,
-        mut shuffle: impl FnMut(&mut [ServiceBindingRecord]) + Send,
-    ) -> HttpsServiceBindings {
-        let mut result = HttpsServiceBindings::default();
-        let Ok(domain) = authority.host.try_as_domain() else {
-            return result;
-        };
-        // RFC 6761 names are answered locally, not sent to a DNS server.
-        if domain.is_loopback() {
-            return result;
-        }
-        let mut name = if authority.port == 443 {
-            domain.into_owned()
-        } else {
-            match Domain::try_from(format!("_{}._https.{}", authority.port, domain)) {
-                Ok(name) => name,
-                Err(error) => {
-                    result.failure = Some(error.into());
-                    return result;
-                }
-            }
-        };
-        let mut visited = Vec::new();
-        loop {
-            if name.is_loopback() {
-                return result;
-            }
-            if visited.contains(&name) {
-                result.alias_target = None;
-                // RFC 9460: loops behave as if no HTTPS record existed.
-                return result;
-            }
-            visited.push(name.clone());
-            let mut records = Vec::new();
-            let mut answers = std::pin::pin!(self.resolver.lookup_https(name.clone()));
-            while let Some(answer) = answers.next().await {
-                match answer {
-                    Ok(record) if records.len() < self.max_records.get() => records.push(record),
-                    Ok(_) => {
-                        result.failure = Some(BoxError::from_static_str(
-                            "HTTPS RRset exceeds record limit",
-                        ));
-                        return result;
-                    }
-                    Err(error) => {
-                        result.failure = Some(error.into());
-                        return result;
-                    }
-                }
-            }
-            // Shuffle before stable sorting, including choosing between aliases.
-            shuffle(&mut records);
-            if let Some(alias) = records.iter().find(|record| record.binding.is_alias_mode()) {
-                if visited.len() > self.max_aliases.get() {
-                    // RFC 9460 3.1: chain exhaustion returns to the authority.
-                    result.alias_target = None;
-
-                    return result;
-                }
-                let Some(target) = alias.binding.target().to_domain() else {
-                    // AliasMode root means the service is not available. It is
-                    // not the owner substitution used by ServiceMode.
-                    result.alias_target = None;
-                    return result;
-                };
-                result.alias_followed = true;
-                name = target;
-                result.alias_target = Some(HostWithPort::new(name.clone().into(), authority.port));
-                continue;
-            }
-            records.sort_by_key(|record| record.binding.priority());
-            result.bindings = records
-                .into_iter()
-                .filter_map(|record| compatible(record, authority.port, protocols, ech_capable))
-                .collect();
-            result.ech_reliant = ech_capable
-                && !result.bindings.is_empty()
-                && result
-                    .bindings
-                    .iter()
-                    .all(|binding| binding.record.binding.ech_config_list().is_some());
-            return result;
-        }
-    }
-}
-
-fn compatible(
-    record: ServiceBindingRecord,
-    origin_port: u16,
-    supported: &[ApplicationProtocol],
+/// Discover HTTPS services using a borrowed resolver, following at most
+/// `max_aliases` AliasMode records. Use [`DEFAULT_HTTPS_ALIAS_LIMIT`] for the
+/// standard traversal bound and [`super::resolver::BoundedDnsResolver`] for
+/// independently configured per-RRset limits.
+///
+/// IP literals and loopback names do no DNS work. The caller owns the overall
+/// deadline. Complete this lookup before sending an ECH ClientHello; evaluate
+/// the returned reliance with final TLS intent and backend capability.
+pub async fn lookup_https_service_bindings<R: DnsServiceBindingResolver>(
+    resolver: &R,
+    authority: &HostWithPort,
+    protocols: &[ApplicationProtocol],
     ech_capable: bool,
-) -> Option<HttpsServiceBinding> {
-    let binding = &record.binding;
-    if binding.mandatory_keys().is_some_and(|keys| {
-        keys.iter().any(|key| !match key {
-            SvcParamKey::Mandatory
-            | SvcParamKey::Alpn
-            | SvcParamKey::NoDefaultAlpn
-            | SvcParamKey::Port
-            | SvcParamKey::Ipv4Hint
-            | SvcParamKey::Ipv6Hint => true,
-            SvcParamKey::Ech => ech_capable,
-            _ => false,
-        })
-    }) {
-        return None;
-    }
-    let target = if binding.target().is_root() {
-        &record.owner
-    } else {
-        binding.target()
+    max_aliases: NonZeroUsize,
+) -> HttpsServiceBindings {
+    lookup_with_shuffle(
+        resolver,
+        authority,
+        protocols,
+        ech_capable,
+        max_aliases,
+        |records| records.shuffle(&mut rand::rng()),
+    )
+    .await
+}
+
+async fn lookup_with_shuffle<R: DnsServiceBindingResolver>(
+    resolver: &R,
+    authority: &HostWithPort,
+    protocols: &[ApplicationProtocol],
+    ech_capable: bool,
+    max_aliases: NonZeroUsize,
+    mut shuffle: impl FnMut(&mut [ServiceBindingRecord]) + Send,
+) -> HttpsServiceBindings {
+    let mut result = HttpsServiceBindings::default();
+    let Ok(domain) = authority.host.try_as_domain() else {
+        return result;
     };
-    let target = HostWithPort::new(
-        target.to_domain()?.into(),
-        binding.port().unwrap_or(origin_port),
-    );
-    if target.port == 0 {
-        return None;
+    // RFC 6761 names are answered locally, not sent to a DNS server.
+    if domain.is_loopback() {
+        return result;
     }
-    let mut protocols = Vec::new();
-    for protocol in supported {
-        if protocols.contains(protocol) {
+    let mut name = if authority.port == 443 {
+        domain.into_owned()
+    } else {
+        match Domain::try_from(format!("_{}._https.{}", authority.port, domain)) {
+            Ok(name) => name,
+            Err(error) => {
+                result.failure = Some(error.into());
+                return result;
+            }
+        }
+    };
+    let mut visited = Vec::new();
+    loop {
+        if name.is_loopback() {
+            return result;
+        }
+        if visited.contains(&name) {
+            result.alias_target = None;
+            // RFC 9460: loops behave as if no HTTPS record existed.
+            return result;
+        }
+        visited.push(name.clone());
+        let records =
+            match order_records_with_shuffle(resolver.lookup_https(name.clone()), &mut shuffle)
+                .await
+            {
+                Ok(records) => records,
+                Err(error) => {
+                    result.failure = Some(error);
+                    return result;
+                }
+            };
+        if let Some(alias) = records.iter().find(|record| record.binding.is_alias_mode()) {
+            if visited.len() > max_aliases.get() {
+                // RFC 9460 3.1: chain exhaustion returns to the authority.
+                result.alias_target = None;
+
+                return result;
+            }
+            let Some(target) = alias.binding.target().to_domain() else {
+                // AliasMode root means the service is not available. It is
+                // not the owner substitution used by ServiceMode.
+                result.alias_target = None;
+                return result;
+            };
+            result.alias_followed = true;
+            name = target;
+            result.alias_target = Some(HostWithPort::new(name.clone().into(), authority.port));
             continue;
         }
-        let advertised = binding
-            .alpn_protocols()
-            .is_some_and(|alpn| alpn.application_protocols().any(|p| &p == protocol));
-        let default = !binding.has_no_default_alpn() && protocol == &ApplicationProtocol::HTTP_11;
-        if advertised || default {
-            protocols.push(protocol.clone());
+        result.bindings = records
+            .into_iter()
+            .filter_map(|record| {
+                HttpsServiceBinding::from_record(record, authority.port, protocols, ech_capable)
+            })
+            .collect();
+        result.ech_reliant = ech_capable
+            && !result.bindings.is_empty()
+            && result
+                .bindings
+                .iter()
+                .all(|binding| binding.record.binding.ech_config_list().is_some());
+        return result;
+    }
+}
+
+impl HttpsServiceBinding {
+    /// Interpret one HTTPS ServiceMode record without resolving or selecting it.
+    /// Returns `None` for AliasMode records, unsupported mandatory parameters,
+    /// incompatible protocols or unusable endpoints. The caller retains its
+    /// original authentication name; the returned target is only a physical endpoint.
+    pub fn from_record(
+        record: ServiceBindingRecord,
+        origin_port: u16,
+        supported: &[ApplicationProtocol],
+        ech_capable: bool,
+    ) -> Option<Self> {
+        let binding = &record.binding;
+        if binding.is_alias_mode() {
+            return None;
         }
+        if binding.mandatory_keys().is_some_and(|keys| {
+            keys.iter().any(|key| !match key {
+                SvcParamKey::Mandatory
+                | SvcParamKey::Alpn
+                | SvcParamKey::NoDefaultAlpn
+                | SvcParamKey::Port
+                | SvcParamKey::Ipv4Hint
+                | SvcParamKey::Ipv6Hint => true,
+                SvcParamKey::Ech => ech_capable,
+                _ => false,
+            })
+        }) {
+            return None;
+        }
+        let target = if binding.target().is_root() {
+            &record.owner
+        } else {
+            binding.target()
+        };
+        let target = HostWithPort::new(
+            target.to_domain()?.into(),
+            binding.port().unwrap_or(origin_port),
+        );
+        if target.port == 0 {
+            return None;
+        }
+        let mut protocols = Vec::new();
+        for protocol in supported {
+            if protocols.contains(protocol) {
+                continue;
+            }
+            let advertised = binding
+                .alpn_protocols()
+                .is_some_and(|alpn| alpn.application_protocols().any(|p| &p == protocol));
+            let default =
+                !binding.has_no_default_alpn() && protocol == &ApplicationProtocol::HTTP_11;
+            if advertised || default {
+                protocols.push(protocol.clone());
+            }
+        }
+        if protocols.is_empty() {
+            return None;
+        }
+        Some(Self {
+            record,
+            target,
+            protocols,
+        })
     }
-    if protocols.is_empty() {
-        return None;
-    }
-    Some(HttpsServiceBinding {
-        record,
-        target,
-        protocols,
-    })
 }
 
 #[cfg(test)]

@@ -1,8 +1,13 @@
 use super::*;
+use crate::client::resolver::BoundedDnsResolver;
 use crate::wire::{Name, ServiceBinding};
 use ahash::HashMap;
 use parking_lot::Mutex;
-use rama_core::futures::{Stream, stream};
+use rama_core::{
+    error::BoxErrorExt as _,
+    futures::{Stream, stream},
+};
+use rand::{SeedableRng, rngs::StdRng};
 use std::sync::Arc;
 
 #[derive(Clone, Default)]
@@ -56,9 +61,7 @@ fn record(
     }
 }
 
-fn setup(
-    entries: &[(&str, Vec<ServiceBindingRecord>)],
-) -> (HttpsServiceBindingLookup<Resolver>, Arc<Mutex<Vec<Domain>>>) {
+fn setup(entries: &[(&str, Vec<ServiceBindingRecord>)]) -> (Resolver, Arc<Mutex<Vec<Domain>>>) {
     let resolver = Resolver {
         answers: entries
             .iter()
@@ -72,10 +75,7 @@ fn setup(
         ..Resolver::default()
     };
     let calls = resolver.calls.clone();
-    (
-        HttpsServiceBindingLookup::new().with_resolver(resolver),
-        calls,
-    )
+    (resolver, calls)
 }
 
 fn authority() -> HostWithPort {
@@ -102,19 +102,36 @@ async fn query_names_ip_bypass_and_actual_owner() {
             vec![record("actual.example", 1, ".", &[(3, &[0x24, 0xe3])])],
         ),
     ]);
-    let result = lookup.lookup(&authority(), &protocols(), false).await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert_eq!(result.bindings[0].target.to_string(), "actual.example.:443");
     assert_eq!(result.bindings[0].protocols, [ApplicationProtocol::HTTP_11]);
-    let other = lookup
-        .lookup(&"origin.example:8443".parse().unwrap(), &protocols(), false)
-        .await;
+    let other = lookup_https_service_bindings(
+        &lookup,
+        &"origin.example:8443".parse().unwrap(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert_eq!(other.bindings[0].target.to_string(), "actual.example.:9443");
     assert!(
-        lookup
-            .lookup(&"127.0.0.1:443".parse().unwrap(), &protocols(), true)
-            .await
-            .bindings
-            .is_empty()
+        lookup_https_service_bindings(
+            &lookup,
+            &"127.0.0.1:443".parse().unwrap(),
+            &protocols(),
+            true,
+            DEFAULT_HTTPS_ALIAS_LIMIT
+        )
+        .await
+        .bindings
+        .is_empty()
     );
     assert_eq!(
         calls.lock().iter().map(|d| d.as_str()).collect::<Vec<_>>(),
@@ -137,9 +154,14 @@ async fn aliases_ignore_service_mode_and_keep_bare_endpoint_after_records() {
             vec![record("canonical.example", 1, ".", &[])],
         ),
     ]);
-    let result = lookup
-        .lookup(&"origin.example:8443".parse().unwrap(), &protocols(), false)
-        .await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &"origin.example:8443".parse().unwrap(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert_eq!(result.bindings.len(), 1);
     assert_eq!(
         result.bindings[0].target.to_string(),
@@ -159,17 +181,31 @@ async fn aliases_without_records_and_resolution_failures_preserve_optional_fallb
         "origin.example",
         vec![record("origin.example", 0, "alias.example", &[])],
     )]);
-    let result = lookup.lookup(&authority(), &protocols(), false).await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert!(result.bindings.is_empty());
     assert_eq!(
         result.alias_target.unwrap().to_string(),
         "alias.example.:443"
     );
-    lookup.resolver.answers.insert(
+    lookup.answers.insert(
         Domain::from_static("alias.example"),
         vec![Err("resolver failure")],
     );
-    let result = lookup.lookup(&authority(), &protocols(), false).await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert!(result.failure.is_some());
     assert_eq!(
         result.alias_target.unwrap().to_string(),
@@ -189,14 +225,25 @@ async fn loops_and_depth_exhaustion_return_to_origin_without_alias_fallback() {
             vec![record("alias.example", 0, "origin.example", &[])],
         ),
     ]);
-    let result = lookup.lookup(&authority(), &protocols(), false).await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert!(result.failure.is_none());
     assert!(result.alias_target.is_none());
     assert_eq!(calls.lock().len(), 2);
-    let result = lookup
-        .with_max_aliases(NonZeroUsize::new(1).unwrap())
-        .lookup(&authority(), &protocols(), false)
-        .await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        false,
+        NonZeroUsize::new(1).unwrap(),
+    )
+    .await;
     assert!(result.failure.is_none());
     assert!(result.alias_target.is_none());
 }
@@ -227,7 +274,14 @@ async fn protocol_intersection_priority_mandatory_and_default_alpn() {
             ),
         ],
     )]);
-    let result = lookup.lookup(&authority(), &protocols(), false).await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert_eq!(result.bindings.len(), 2);
     assert_eq!(result.bindings[0].target.to_string(), "first.example.:443");
     assert_eq!(result.bindings[0].protocols, [ApplicationProtocol::HTTP_2]);
@@ -245,45 +299,69 @@ async fn ech_reliance_requires_capability_and_all_compatible_endpoints() {
         vec![record("origin.example", 1, ".", &[(5, &ech)])],
     )]);
     assert!(
-        !lookup
-            .lookup(&authority(), &protocols(), false)
-            .await
-            .ech_reliant
+        !lookup_https_service_bindings(
+            &lookup,
+            &authority(),
+            &protocols(),
+            false,
+            DEFAULT_HTTPS_ALIAS_LIMIT
+        )
+        .await
+        .ech_reliant
     );
     assert!(
-        lookup
-            .lookup(&authority(), &protocols(), true)
-            .await
-            .ech_reliant
+        lookup_https_service_bindings(
+            &lookup,
+            &authority(),
+            &protocols(),
+            true,
+            DEFAULT_HTTPS_ALIAS_LIMIT
+        )
+        .await
+        .ech_reliant
     );
     lookup
-        .resolver
         .answers
         .get_mut(&Domain::from_static("origin.example"))
         .unwrap()
         .push(Ok(record("origin.example", 2, "other.example", &[])));
     assert!(
-        !lookup
-            .lookup(&authority(), &protocols(), true)
-            .await
-            .ech_reliant
+        !lookup_https_service_bindings(
+            &lookup,
+            &authority(),
+            &protocols(),
+            true,
+            DEFAULT_HTTPS_ALIAS_LIMIT
+        )
+        .await
+        .ech_reliant
     );
     let (lookup, _) = setup(&[(
         "origin.example",
         vec![record("origin.example", 1, ".", &[(0, &[0, 5]), (5, &ech)])],
     )]);
     assert!(
-        lookup
-            .lookup(&authority(), &protocols(), false)
-            .await
-            .bindings
-            .is_empty()
+        lookup_https_service_bindings(
+            &lookup,
+            &authority(),
+            &protocols(),
+            false,
+            DEFAULT_HTTPS_ALIAS_LIMIT
+        )
+        .await
+        .bindings
+        .is_empty()
     );
     assert!(
-        lookup
-            .lookup(&authority(), &protocols(), true)
-            .await
-            .ech_reliant
+        lookup_https_service_bindings(
+            &lookup,
+            &authority(),
+            &protocols(),
+            true,
+            DEFAULT_HTTPS_ALIAS_LIMIT
+        )
+        .await
+        .ech_reliant
     );
 }
 
@@ -291,15 +369,29 @@ async fn ech_reliance_requires_capability_and_all_compatible_endpoints() {
 async fn oversized_or_late_malformed_answers_never_expose_partial_records() {
     let binding = record("origin.example", 1, ".", &[]);
     let (mut lookup, _) = setup(&[("origin.example", vec![binding.clone(), binding.clone()])]);
-    lookup.set_max_records(NonZeroUsize::new(1).unwrap());
-    let result = lookup.lookup(&authority(), &protocols(), true).await;
+    let bounded = BoundedDnsResolver::bounded(lookup.clone(), NonZeroUsize::new(1).unwrap());
+    let result = lookup_https_service_bindings(
+        &bounded,
+        &authority(),
+        &protocols(),
+        true,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert!(result.failure.is_some());
     assert!(result.bindings.is_empty());
-    lookup.resolver.answers.insert(
+    lookup.answers.insert(
         Domain::from_static("origin.example"),
         vec![Ok(binding), Err("malformed RR")],
     );
-    let result = lookup.lookup(&authority(), &protocols(), true).await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        true,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert!(result.failure.is_some());
     assert!(result.bindings.is_empty());
     assert!(!result.ech_reliant);
@@ -311,7 +403,14 @@ async fn unavailable_alias_and_unusable_service_targets_are_not_candidates() {
         "origin.example",
         vec![record("origin.example", 0, ".", &[])],
     )]);
-    let result = lookup.lookup(&authority(), &protocols(), true).await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        true,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert!(result.bindings.is_empty());
     assert!(result.alias_target.is_none());
     assert_eq!(calls.lock().len(), 1);
@@ -322,7 +421,14 @@ async fn unavailable_alias_and_unusable_service_targets_are_not_candidates() {
             record("origin.example", 1, "bad\\032name.example", &[]),
         ],
     )]);
-    let result = lookup.lookup(&authority(), &protocols(), true).await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        true,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert!(result.bindings.is_empty());
     assert!(!result.ech_reliant);
 }
@@ -338,17 +444,18 @@ async fn protocol_preferences_are_deduplicated_and_hints_retained() {
             &[(1, b"\x02h3\x02h2"), (4, &[192, 0, 2, 1])],
         )],
     )]);
-    let result = lookup
-        .lookup(
-            &authority(),
-            &[
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_3,
-                ApplicationProtocol::HTTP_2,
-            ],
-            false,
-        )
-        .await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &[
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_3,
+            ApplicationProtocol::HTTP_2,
+        ],
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert_eq!(
         result.bindings[0].protocols,
         [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_3]
@@ -361,7 +468,6 @@ async fn protocol_preferences_are_deduplicated_and_hints_retained() {
 
 #[tokio::test]
 async fn equal_priority_and_alias_selection_use_the_supplied_shuffle() {
-    use rand::{SeedableRng, rngs::StdRng};
     let (lookup, _) = setup(&[(
         "origin.example",
         vec![
@@ -373,11 +479,15 @@ async fn equal_priority_and_alias_selection_use_the_supplied_shuffle() {
     let mut firsts = std::collections::BTreeSet::new();
     for seed in 0..8 {
         let mut rng = StdRng::seed_from_u64(seed);
-        let result = lookup
-            .lookup_with_shuffle(&authority(), &protocols(), false, |records| {
-                records.shuffle(&mut rng)
-            })
-            .await;
+        let result = lookup_with_shuffle(
+            &lookup,
+            &authority(),
+            &protocols(),
+            false,
+            DEFAULT_HTTPS_ALIAS_LIMIT,
+            |records| records.shuffle(&mut rng),
+        )
+        .await;
         firsts.insert(result.bindings[0].target.to_string());
         assert_eq!(result.bindings[2].record.binding.priority(), 2);
     }
@@ -392,11 +502,15 @@ async fn equal_priority_and_alias_selection_use_the_supplied_shuffle() {
     let mut aliases = std::collections::BTreeSet::new();
     for seed in 0..8 {
         let mut rng = StdRng::seed_from_u64(seed);
-        let result = lookup
-            .lookup_with_shuffle(&authority(), &protocols(), false, |records| {
-                records.shuffle(&mut rng)
-            })
-            .await;
+        let result = lookup_with_shuffle(
+            &lookup,
+            &authority(),
+            &protocols(),
+            false,
+            DEFAULT_HTTPS_ALIAS_LIMIT,
+            |records| records.shuffle(&mut rng),
+        )
+        .await;
         aliases.insert(result.alias_target.unwrap().to_string());
     }
     assert_eq!(aliases.len(), 2);
@@ -420,13 +534,25 @@ async fn root_alias_after_a_hop_is_unavailable_and_attrleaf_owner_is_literal() {
             )],
         ),
     ]);
-    let result = lookup.lookup(&authority(), &protocols(), false).await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &authority(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert!(result.bindings().is_empty());
     assert!(result.alias_target().is_none());
     assert!(result.failure().is_none());
-    let result = lookup
-        .lookup(&"simple.example:8443".parse().unwrap(), &protocols(), false)
-        .await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &"simple.example:8443".parse().unwrap(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert_eq!(
         result.bindings()[0].target.to_string(),
         "_8443._https.simple.example.:8443"
@@ -436,14 +562,93 @@ async fn root_alias_after_a_hop_is_unavailable_and_attrleaf_owner_is_literal() {
 #[tokio::test]
 async fn localhost_service_discovery_never_queries_dns() {
     let (lookup, calls) = setup(&[]);
-    let result = lookup
-        .lookup(
-            &"service.localhost:8443".parse().unwrap(),
-            &protocols(),
-            true,
-        )
-        .await;
+    let result = lookup_https_service_bindings(
+        &lookup,
+        &"service.localhost:8443".parse().unwrap(),
+        &protocols(),
+        true,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
     assert!(result.bindings().is_empty());
     assert!(!result.followed_alias());
     assert!(calls.lock().is_empty());
+}
+
+#[tokio::test]
+async fn record_limits_belong_to_the_resolver() {
+    let binding = record("origin.example", 1, ".", &[]);
+    let (resolver, _) = setup(&[("origin.example", vec![binding; 65])]);
+    let result = lookup_https_service_bindings(
+        &resolver,
+        &authority(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
+    assert!(result.failure().is_none());
+    assert_eq!(result.bindings().len(), 65);
+
+    let bounded = BoundedDnsResolver::bounded(resolver, NonZeroUsize::new(64).unwrap());
+    let result = lookup_https_service_bindings(
+        &bounded,
+        &authority(),
+        &protocols(),
+        false,
+        DEFAULT_HTTPS_ALIAS_LIMIT,
+    )
+    .await;
+    assert!(
+        result
+            .failure()
+            .unwrap()
+            .is::<crate::client::resolver::DnsAnswerLimitReached>()
+    );
+    assert!(result.bindings().is_empty());
+}
+
+#[tokio::test]
+async fn public_ordering_is_atomic_and_usable_without_https_lookup() {
+    let records = vec![
+        Ok::<_, BoxError>(record("owner.example", 2, ".", &[])),
+        Ok(record("owner.example", 1, ".", &[])),
+    ];
+    let ordered = order_service_binding_records(stream::iter(records))
+        .await
+        .unwrap();
+    assert_eq!(
+        ordered
+            .iter()
+            .map(|r| r.binding.priority())
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    order_service_binding_records(stream::iter([
+        Ok(record("owner.example", 1, ".", &[])),
+        Err(BoxError::from_static_str("late malformed record")),
+    ]))
+    .await
+    .unwrap_err();
+}
+
+#[test]
+fn pure_conversion_rejects_aliases_and_preserves_record_owner() {
+    assert!(
+        HttpsServiceBinding::from_record(
+            record("owner.example", 0, "alias.example", &[]),
+            443,
+            &protocols(),
+            false,
+        )
+        .is_none()
+    );
+    let binding = HttpsServiceBinding::from_record(
+        record("owner.example", 1, ".", &[]),
+        8443,
+        &protocols(),
+        false,
+    )
+    .unwrap();
+    assert_eq!(binding.target.to_string(), "owner.example.:8443");
 }

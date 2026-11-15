@@ -7,10 +7,13 @@ mod limit;
 pub use self::limit::DnsTimeoutError;
 
 mod https;
-pub use https::{HttpsServiceBinding, HttpsServiceBindingLookup, HttpsServiceBindings};
+pub use https::{
+    DEFAULT_HTTPS_ALIAS_LIMIT, HttpsServiceBinding, HttpsServiceBindings,
+    lookup_https_service_bindings, order_service_binding_records,
+};
 
 mod address_candidates;
-pub use address_candidates::PrefetchedAddressCandidates;
+pub use address_candidates::DnsAddressCandidates;
 
 mod connector;
 #[doc(inline)]

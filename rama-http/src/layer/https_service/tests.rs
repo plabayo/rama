@@ -1,11 +1,14 @@
 use super::*;
 use ahash::HashMap;
 use parking_lot::Mutex;
+use rama_core::futures::StreamExt as _;
 use rama_core::futures::{Stream, stream};
 use rama_dns::{
     client::resolver::ServiceBindingRecord,
     wire::{Name, ServiceBinding},
 };
+use rama_net::address::Domain;
+use rama_net::{ConnectorTargetInputExt as _, client::EstablishedClientConnection};
 use rama_tls::client::{ServerVerifyMode, TlsServerVerify};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -14,8 +17,6 @@ struct Resolver {
     records: HashMap<Domain, Vec<ServiceBindingRecord>>,
     queries: Arc<Mutex<Vec<String>>>,
     pending: Option<Domain>,
-    wait_for_address: bool,
-    address_started: Arc<tokio::sync::Notify>,
 }
 
 impl DnsServiceBindingResolver for Resolver {
@@ -28,12 +29,7 @@ impl DnsServiceBindingResolver for Resolver {
         self.queries.lock().push(format!("HTTPS {domain}"));
         let records = self.records.get(&domain).cloned().unwrap_or_default();
         let pending = self.pending.as_ref() == Some(&domain);
-        let wait_for_address = self.wait_for_address;
-        let started = self.address_started.clone();
         rama_core::futures::StreamExt::flatten(stream::once(async move {
-            if wait_for_address {
-                started.notified().await;
-            }
             if pending {
                 std::future::pending::<()>().await;
             }
@@ -57,7 +53,6 @@ impl DnsAddressResolver for Resolver {
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, BoxError>> + Send + '_ {
         self.queries.lock().push(format!("A {domain}"));
-        self.address_started.notify_one();
         stream::iter([Ok(Ipv4Addr::new(192, 0, 2, 1))])
     }
 
@@ -385,21 +380,32 @@ async fn empty_discovery_leaves_inner_advertisements_available() {
 }
 
 #[tokio::test]
-async fn origin_address_query_is_polled_while_https_is_pending() {
-    let mut layer = setup(false).with_timeout(Duration::from_secs(1));
-    layer.resolver.wait_for_address = true;
+async fn discovery_does_not_resolve_unused_candidates_or_origin() {
+    let layer = setup(false);
     let request = input();
     layer.discover(&request).await.unwrap();
-    assert!(request.extensions().contains::<HttpServiceCandidates>());
+    assert_eq!(*layer.resolver.queries.lock(), ["HTTPS origin.example"]);
+
+    let candidates = request
+        .extensions()
+        .get_ref::<HttpServiceCandidates>()
+        .unwrap();
+    let source = candidates
+        .candidate_extensions(0)
+        .unwrap()
+        .get_ref::<ConnectorTargetStream>()
+        .unwrap();
+    let extensions = Extensions::new();
+    extensions.insert(rama_net::mode::DnsResolveIpMode::SingleIpV4);
+    let mut stream = source.stream(&extensions);
+    assert_eq!(*layer.resolver.queries.lock(), ["HTTPS origin.example"]);
     assert_eq!(
-        layer
-            .resolver
-            .queries
-            .lock()
-            .iter()
-            .filter(|query| query.as_str() == "A origin.example")
-            .count(),
-        1
+        stream.next().await.unwrap().unwrap(),
+        std::net::IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))
+    );
+    assert_eq!(
+        *layer.resolver.queries.lock(),
+        ["HTTPS origin.example", "A physical.example."]
     );
 }
 
@@ -416,7 +422,6 @@ async fn empty_dns_composes_with_a_separately_configured_selector_cache() {
     let inner = rama_core::service::service_fn({
         let targets = targets.clone();
         move |input: ConnectRequest| {
-            use rama_net::ConnectorTargetInputExt as _;
             targets.lock().push(input.connector_target().unwrap());
             async {
                 Err::<
@@ -472,7 +477,6 @@ async fn stream_tls_defaults_do_not_hide_a_separate_h3_transport() {
 
 #[tokio::test]
 async fn final_profile_intent_controls_origin_fallback_without_extra_dials() {
-    use rama_net::{ConnectorTargetInputExt as _, client::EstablishedClientConnection};
     for ech in [false, true] {
         let request = input();
         request.extensions().insert(TlsAlpn::http_2());

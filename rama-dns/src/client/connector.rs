@@ -1,27 +1,20 @@
-use std::net::IpAddr;
-
 use rama_core::{
     Layer, Service,
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
-    extensions::Extensions,
+    error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
-    futures::{StreamExt, stream::BoxStream},
 };
 use rama_net::{
     ConnectorTargetInputExt,
-    address::{Domain, Host},
     client::{
-        AddressCandidates, ConnectionAttempt, ConnectionError, ConnectionErrorKind,
-        ConnectorService, ConnectorTargetStream, EstablishedClientConnection,
+        ConnectionAttempt, ConnectionError, ConnectionErrorKind, ConnectorService,
+        ConnectorTargetStream, EstablishedClientConnection,
     },
     mode::{ConnectIpMode, DnsResolveIpMode},
 };
 use rama_utils::macros::define_inner_service_accessors;
 
-use crate::client::resolver::HappyEyeballAddressResolverExt;
-
 use super::{
-    GlobalDnsResolver,
+    DnsAddressCandidates, GlobalDnsResolver,
     resolver::{DnsAddressResolver, DnsAddresssResolverOverwrite},
 };
 
@@ -139,11 +132,13 @@ where
         })?;
 
         // Already an IP target: nothing to resolve, forward the input untouched.
-        if target.host.try_as_ip().is_ok() {
+        if target.is_ip() {
             return self.inner.connect(input).await;
         }
 
-        // Explicit request resolver policy overrides upstream discovery facts.
+        // Keep an endpoint-matched upstream source. A request resolver overwrite
+        // rebuilds it using the normal overwrite-first resolver path, without
+        // discovery hints; the configured resolver remains its fallback.
         if !extensions.contains::<DnsAddresssResolverOverwrite>()
             && extensions
                 .get_ref::<ConnectorTargetStream>()
@@ -160,40 +155,10 @@ where
         })?;
         input.extensions().insert(ConnectorTargetStream::new(
             target,
-            DnsAddressCandidates {
-                resolver: self.resolver.clone(),
-                domain,
-            },
+            DnsAddressCandidates::new(self.resolver.clone(), domain),
         ));
 
         self.inner.connect(input).await
-    }
-}
-
-/// [`AddressCandidates`] backed by a [`DnsAddressResolver`].
-///
-/// Resolves a domain target into a happy-eyeballs-ordered stream of
-/// [`IpAddr`]esses.
-struct DnsAddressCandidates<R> {
-    resolver: R,
-    domain: Domain,
-}
-
-impl<R> AddressCandidates for DnsAddressCandidates<R>
-where
-    R: DnsAddressResolver,
-{
-    fn domain(&self) -> &Domain {
-        &self.domain
-    }
-
-    fn stream<'a>(&'a self, extensions: &'a Extensions) -> BoxStream<'a, Result<IpAddr, BoxError>> {
-        self.resolver
-            .happy_eyeballs_resolver(Host::Name(self.domain.clone()))
-            .with_extensions(extensions)
-            .lookup_ip()
-            .map(|result| result.into_box_error())
-            .boxed()
     }
 }
 
@@ -203,11 +168,15 @@ mod tests {
     use crate::client::EmptyDnsResolver;
     use parking_lot::Mutex;
     use rama_core::extensions::{Extensions, ExtensionsRef};
+    use rama_core::futures::{StreamExt as _, stream::BoxStream};
+    use rama_net::client::ConnectorTarget;
     use rama_net::{
         AuthorityInputExt, Protocol, ProtocolInputExt,
         address::{Host, HostWithOptPort, HostWithPort},
         client::{ConnectionErrorDomain, ConnectionErrorKind},
     };
+    use rama_net::{address::Domain, client::AddressCandidates};
+    use std::net::IpAddr;
     use std::sync::Arc;
 
     #[derive(Debug, ExtensionsRef)]
@@ -350,7 +319,6 @@ mod tests {
 
     #[tokio::test]
     async fn preserves_matching_source_unless_target_or_caller_resolver_changes() {
-        use rama_net::client::ConnectorTarget;
         for override_resolver in [false, true] {
             for target in [
                 HostWithPort::example_domain_https(),
