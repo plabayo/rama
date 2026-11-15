@@ -17,6 +17,7 @@ struct Resolver {
     records: HashMap<Domain, Vec<ServiceBindingRecord>>,
     queries: Arc<Mutex<Vec<String>>>,
     pending: Option<Domain>,
+    delay_address: bool,
 }
 
 impl DnsServiceBindingResolver for Resolver {
@@ -53,7 +54,13 @@ impl DnsAddressResolver for Resolver {
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, BoxError>> + Send + '_ {
         self.queries.lock().push(format!("A {domain}"));
-        stream::iter([Ok(Ipv4Addr::new(192, 0, 2, 1))])
+        let delayed = self.delay_address;
+        stream::once(async move {
+            if delayed {
+                tokio::task::yield_now().await;
+            }
+            Ok(Ipv4Addr::new(192, 0, 2, 1))
+        })
     }
 
     fn lookup_ipv6(
@@ -219,6 +226,7 @@ async fn named_proxy_discovery_requires_permission_and_never_prefetches_addresse
                 "socks5h://proxy.example:1080".parse().unwrap(),
             ));
         layer.discover(&request).await.unwrap();
+        assert!(!request.extensions().contains::<ConnectorTargetStream>());
         tokio::task::yield_now().await;
         let queries = layer.resolver.queries.lock();
         assert_eq!(queries.len(), usize::from(permitted));
@@ -546,4 +554,136 @@ async fn dns_alpn_selects_one_candidate_per_transport() {
         );
         assert_eq!(candidates.len(), if alpn == b"\x02h3" { 2 } else { 1 });
     }
+}
+
+async fn consume_with_inner_resolver(input: ConnectRequest, resolver: Resolver) {
+    let transport = rama_core::service::service_fn(async |input: ConnectRequest| {
+        let source = input
+            .extensions()
+            .get_ref::<ConnectorTargetStream>()
+            .unwrap();
+        assert!(source.matches_target(&input.connector_target().unwrap()));
+        assert_eq!(
+            source
+                .stream(input.extensions())
+                .next()
+                .await
+                .unwrap()
+                .unwrap(),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+        );
+        Ok::<_, ConnectionError>(EstablishedClientConnection {
+            input,
+            conn: rama_core::ServiceInput::new(()),
+        })
+    });
+    rama_dns::client::DnsConnector::with_resolver(transport, resolver)
+        .serve(input)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn bare_alias_and_advertisement_keep_discovery_resolver_lazy() {
+    let mut alias_wire = vec![0, 0];
+    alias_wire.extend_from_slice(Name::from_presentation("alias.example").unwrap().as_wire());
+    let alias = ServiceBindingRecord {
+        owner: Name::from_presentation("origin.example").unwrap(),
+        binding: ServiceBinding::parse_rdata(&alias_wire).unwrap(),
+    };
+    let resolver = Resolver {
+        records: HashMap::from_iter([
+            (Domain::from_static("origin.example"), vec![alias]),
+            (
+                Domain::from_static("alias.example"),
+                vec![record(
+                    "alias.example",
+                    ".",
+                    &[(1, b"\x02h2"), (4, &[203, 0, 113, 9])],
+                )],
+            ),
+        ]),
+        delay_address: true,
+        ..Default::default()
+    };
+    let cache = AltSvcCache::default();
+    let request = input();
+    request
+        .extensions()
+        .insert(rama_net::mode::DnsResolveIpMode::SingleIpV4);
+    cache.record_frame(
+        &HttpOrigin::new(Protocol::HTTPS, request.authority.clone()).unwrap(),
+        rama_core::bytes::Bytes::from_static(b"h2=\"alt.example:443\""),
+        std::time::Instant::now(),
+    );
+    let layer = HttpsServiceLayer::new()
+        .with_resolver(resolver.clone())
+        .with_cache(cache);
+    layer.discover(&request).await.unwrap();
+    assert!(
+        resolver
+            .queries
+            .lock()
+            .iter()
+            .all(|query| query.starts_with("HTTPS "))
+    );
+    let candidates = request
+        .extensions()
+        .get_ref::<HttpServiceCandidates>()
+        .unwrap();
+    let inner = Resolver::default();
+    for target in ["alias.example.:443", "alt.example:443"] {
+        let (index, candidate) = candidates
+            .iter()
+            .enumerate()
+            .rfind(|(_, c)| c.target.to_string() == target)
+            .unwrap();
+        let attempt = input();
+        attempt
+            .extensions()
+            .insert(rama_net::mode::DnsResolveIpMode::SingleIpV4);
+        attempt
+            .extensions()
+            .insert(ConnectorTarget(candidate.target.clone()));
+        attempt
+            .extensions()
+            .extend(candidates.candidate_extensions(index).unwrap());
+        consume_with_inner_resolver(attempt, inner.clone()).await;
+    }
+    assert!(
+        inner.queries.lock().is_empty(),
+        "fallback endpoints must not switch resolver"
+    );
+    let queries = resolver.queries.lock();
+    assert!(queries.iter().any(|query| query == "A alias.example."));
+    assert!(queries.iter().any(|query| query == "A alt.example"));
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|query| query.starts_with("A "))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn discovery_timeout_retains_lazy_origin_resolver() {
+    let resolver = Resolver {
+        pending: Some(Domain::from_static("origin.example")),
+        ..Default::default()
+    };
+    let layer = HttpsServiceLayer::new().with_resolver(resolver.clone());
+    let request = input();
+    request
+        .extensions()
+        .insert(rama_net::mode::DnsResolveIpMode::SingleIpV4);
+    layer.discover(&request).await.unwrap();
+    assert_eq!(*resolver.queries.lock(), ["HTTPS origin.example"]);
+    let inner = Resolver::default();
+    consume_with_inner_resolver(request, inner.clone()).await;
+    assert!(inner.queries.lock().is_empty());
+    assert_eq!(
+        *resolver.queries.lock(),
+        ["HTTPS origin.example", "A origin.example"]
+    );
 }

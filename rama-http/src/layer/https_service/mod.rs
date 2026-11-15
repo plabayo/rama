@@ -53,6 +53,7 @@ use rama_http_types::conn::{
 };
 use rama_net::{
     Protocol,
+    address::HostWithPort,
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorTarget,
         ConnectorTargetStream, ProxyRouteContext,
@@ -61,7 +62,7 @@ use rama_net::{
 };
 use rama_tls::client::{EchRequirement, TlsClientConfig, TlsEncryptedClientHello};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
-use std::{sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 /// Reusable HTTPS discovery configuration, independent of an easy client.
 #[derive(Debug, Clone)]
@@ -332,6 +333,10 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
         }
         let origin = HttpOrigin::new(Protocol::HTTPS, input.authority.clone())
             .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
+        // Install only a lazy source: timeout fallback keeps the same DNS policy.
+        if required != EchRequirement::Required {
+            self.insert_address_source(input.extensions(), &input.authority, proxy, []);
+        }
         // Complete primary discovery before selecting any transport endpoint.
         let primary = lookup_https_service_bindings(
             &self.resolver,
@@ -412,6 +417,7 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                 )?;
                 if required != EchRequirement::Required && candidates.len() < self.max_candidates {
                     let extensions = Extensions::new();
+                    self.insert_address_source(&extensions, &candidate.target, proxy, []);
                     extensions.insert(TargetEchServiceBinding {
                         target: candidate.target.clone(),
                         reliant: result.ech_reliant(),
@@ -431,15 +437,6 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                 .into_iter()
                 .take(self.max_candidates.saturating_sub(candidates.len())),
         );
-        if fallback
-            && !proxy
-            && let Ok(domain) = input.authority.host.try_as_domain()
-        {
-            input.extensions().insert(ConnectorTargetStream::new(
-                input.authority.clone(),
-                DnsAddressCandidates::new(self.resolver.clone(), domain.into_owned()),
-            ));
-        }
         if !candidates.is_empty() || !fallback {
             input.extensions().insert(
                 HttpServiceCandidates::new_with_extensions(origin, candidates)
@@ -447,6 +444,31 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
             );
         }
         Ok(())
+    }
+
+    /// Keep every discovered endpoint on this resolver without starting A/AAAA work.
+    fn insert_address_source(
+        &self,
+        extensions: &Extensions,
+        target: &HostWithPort,
+        proxy: bool,
+        hints: impl IntoIterator<Item = IpAddr>,
+    ) {
+        if proxy
+            || extensions
+                .get_ref::<ConnectorTargetStream>()
+                .is_some_and(|source| source.matches_target(target))
+        {
+            return;
+        }
+        if let Ok(domain) = target.host.try_as_domain() {
+            let mut source = DnsAddressCandidates::new(self.resolver.clone(), domain.into_owned());
+            let mut hints = hints.into_iter().peekable();
+            if hints.peek().is_some() {
+                source.set_hints(hints.collect::<Arc<[IpAddr]>>());
+            }
+            extensions.insert(ConnectorTargetStream::new(target.clone(), source));
+        }
     }
 
     #[expect(
@@ -510,33 +532,25 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                         .mandatory_keys()
                         .is_some_and(|keys| keys.contains(&rama_dns::wire::SvcParamKey::Ech)),
                 });
-                if !proxy && let Ok(domain) = binding.target.host.try_as_domain() {
-                    let source =
-                        DnsAddressCandidates::new(self.resolver.clone(), domain.into_owned());
-                    let hints = binding
-                        .record
-                        .binding
-                        .ipv4_hints()
-                        .unwrap_or_default()
-                        .iter()
-                        .copied()
-                        .map(std::net::IpAddr::V4)
-                        .chain(
-                            binding
-                                .record
-                                .binding
-                                .ipv6_hints()
-                                .unwrap_or_default()
-                                .iter()
-                                .copied()
-                                .map(std::net::IpAddr::V6),
-                        )
-                        .collect::<Arc<[std::net::IpAddr]>>();
-                    extensions.insert(ConnectorTargetStream::new(
-                        binding.target.clone(),
-                        source.with_hints(hints),
-                    ));
-                }
+                let hints = binding
+                    .record
+                    .binding
+                    .ipv4_hints()
+                    .unwrap_or_default()
+                    .iter()
+                    .copied()
+                    .map(IpAddr::V4)
+                    .chain(
+                        binding
+                            .record
+                            .binding
+                            .ipv6_hints()
+                            .unwrap_or_default()
+                            .iter()
+                            .copied()
+                            .map(IpAddr::V6),
+                    );
+                self.insert_address_source(&extensions, &binding.target, proxy, hints);
                 let candidate = if let Some((snapshot, index)) = advertised {
                     extensions.insert(HttpServiceSelection {
                         candidates: snapshot.clone(),
@@ -576,6 +590,7 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                 }
                 let extensions = Extensions::new();
                 extensions.insert(ConnectorTarget(target.clone()));
+                self.insert_address_source(&extensions, target, proxy, []);
                 extensions.insert(TargetEchServiceBinding {
                     target: target.clone(),
                     reliant: result.ech_reliant(),

@@ -22,7 +22,7 @@ use std::{net::IpAddr, sync::Arc};
 pub struct DnsAddressCandidates<R> {
     resolver: R,
     domain: Domain,
-    hints: Arc<[IpAddr]>,
+    hints: Option<Arc<[IpAddr]>>,
 }
 
 impl<R> DnsAddressCandidates<R> {
@@ -31,7 +31,7 @@ impl<R> DnsAddressCandidates<R> {
         Self {
             resolver,
             domain,
-            hints: Arc::from([]),
+            hints: None,
         }
     }
 
@@ -40,7 +40,7 @@ impl<R> DnsAddressCandidates<R> {
         /// Caller resolver overrides suppress hints. IP-family policy and address
         /// deduplication are applied by the shared happy-eyeballs resolver.
         pub fn hints(mut self, hints: impl Into<Arc<[IpAddr]>>) -> Self {
-            self.hints = hints.into();
+            self.hints = Some(hints.into());
             self
         }
     }
@@ -57,7 +57,7 @@ impl<R: DnsAddressResolver> AddressCandidates for DnsAddressCandidates<R> {
             self.resolver
                 .happy_eyeballs_resolver(Host::Name(self.domain.clone()))
                 .with_extensions(extensions)
-                .with_hints(&self.hints)
+                .with_hints(self.hints.as_deref().unwrap_or_default())
                 .lookup_ip()
                 .map(|result| result.into_box_error())
         })
