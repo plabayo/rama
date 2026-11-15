@@ -286,7 +286,7 @@ where
                 .context("TlsConnector(auto): validate negotiated HTTP version")
         })?;
 
-        reuse.publish(conn.extensions());
+        reuse.publish(conn.extensions(), self.base_config.as_ref());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -364,7 +364,7 @@ where
                 .context("TlsConnector(secure): validate negotiated HTTP version")
         })?;
 
-        reuse.publish(conn.extensions());
+        reuse.publish(conn.extensions(), self.base_config.as_ref());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -395,7 +395,7 @@ where
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
 
-            reuse.publish(conn.extensions());
+            reuse.publish(conn.extensions(), None);
             return Ok(EstablishedClientConnection {
                 input,
                 conn: AutoTlsStream::plain(conn),
@@ -421,7 +421,7 @@ where
             })?;
         let conn = AutoTlsStream::secure(conn);
 
-        reuse.publish(conn.extensions());
+        reuse.publish(conn.extensions(), None);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
             by: "rama-tls-rustls::TlsConnector",

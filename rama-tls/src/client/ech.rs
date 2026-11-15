@@ -186,6 +186,7 @@ impl std::error::Error for EchRetryConfig {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_net::client::pool::ConnectionReuse;
     #[test]
     fn required_intent_and_endpoint_capability_matrix() {
         let target: HostWithPort = "origin.example:443".parse().unwrap();
@@ -234,7 +235,6 @@ mod tests {
 
     #[test]
     fn reuse_requires_acceptance_and_rejects_conflicting_intent() {
-        use rama_net::client::pool::ConnectionReuse;
         let request = Extensions::new();
         for accepted in [false, true] {
             let policy = ConnectionReuse::new(EchConnectionReuse {
@@ -253,7 +253,6 @@ mod tests {
 
     #[test]
     fn required_connector_default_cannot_reuse_for_disabled_intent() {
-        use rama_net::client::pool::ConnectionReuse;
         let policy = ConnectionReuse::new(EchConnectionReuse {
             accepted: true,
             required: true,

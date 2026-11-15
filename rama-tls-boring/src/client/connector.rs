@@ -316,7 +316,7 @@ where
                 .context("TlsConnector(auto): validate negotiated HTTP version")
         })?;
 
-        reuse.publish(conn.extensions());
+        reuse.publish(conn.extensions(), self.base_config.as_ref());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -384,7 +384,7 @@ where
                 .context("TlsConnector(secure): validate negotiated HTTP version")
         })?;
 
-        reuse.publish(conn.extensions());
+        reuse.publish(conn.extensions(), self.base_config.as_ref());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -414,7 +414,7 @@ where
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
-            reuse.publish(conn.extensions());
+            reuse.publish(conn.extensions(), None);
             return Ok(EstablishedClientConnection {
                 input,
                 conn: AutoTlsStream::plain(conn),
@@ -438,7 +438,7 @@ where
             })?;
         let conn = AutoTlsStream::secure(stream);
 
-        reuse.publish(conn.extensions());
+        reuse.publish(conn.extensions(), None);
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
             by: "rama-tls-boring::TlsConnector",
@@ -554,17 +554,7 @@ impl<S, K> TlsConnector<S, K> {
                 data.server_name.as_ref(),
                 &authority.host,
             )?;
-            let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions())
-                .with_default_ech_requirement(
-                    self.base_config
-                        .as_ref()
-                        .and_then(|base| {
-                            base.as_extensions()
-                                .get_ref::<rama_tls::client::EchRequirement>()
-                                .copied()
-                        })
-                        .unwrap_or_default(),
-                );
+            let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
             match handshake(data, conn).await {
                 Ok((stream, negotiated_params)) => {
                     return Ok(OriginHandshake {

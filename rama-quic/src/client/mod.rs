@@ -27,7 +27,7 @@ use std::{
 
 use parking_lot::Mutex;
 use rama_core::{
-    Service,
+    Fork as _, Service,
     error::{ArcError, BoxError, BoxErrorExt as _, CauseExt as _, ErrorList, error_chain},
     extensions::ExtensionsRef,
     futures::{StreamExt as _, stream},
@@ -278,14 +278,7 @@ impl<E> QuicConnector<E> {
             .tls_provider()
             .authenticates_server(tls.as_extensions())
             .then(|| server_identity.clone());
-        let reuse = TlsConnectionReuse::new(self.tls_provider().clone(), input.extensions())
-            .with_default_ech_requirement(
-                self.tls
-                    .as_extensions()
-                    .get_ref::<rama_tls::client::EchRequirement>()
-                    .copied()
-                    .unwrap_or_default(),
-            );
+        let reuse = TlsConnectionReuse::new(self.tls_provider().clone(), input.extensions());
         let policy_scope = reuse.policy_scope();
         let policy_scope = if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>()
         {
@@ -628,7 +621,7 @@ where
         if connection.is_handshake_confirmed() {
             extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         }
-        prepared.reuse.publish(extensions);
+        prepared.reuse.publish(extensions, Some(&self.tls));
         extensions.insert(prepared.policy_scope);
         if let Some(established) = established {
             extensions.insert(established);
@@ -645,7 +638,6 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
-        use rama_core::{Fork as _, error::CauseExt as _};
         match self.establish(&input).await {
             Ok(conn) => Ok(EstablishedClientConnection { input, conn }),
             Err(error) => {

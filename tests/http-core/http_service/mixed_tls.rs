@@ -1,4 +1,10 @@
 //! Native TLS settings belong to their provider; common trust applies to both.
+use rama::{
+    extensions::Extensions,
+    http::conn::{HttpServiceCandidate, HttpServiceCandidates},
+    net::tls::{ApplicationProtocol, TargetEchServiceBinding},
+    tls::client::TlsEncryptedClientHello,
+};
 
 use super::{Server, TEST_TIMEOUT, close_client_endpoint, complete, credentials, seed};
 use rama::{
@@ -209,12 +215,6 @@ async fn rustls_stream_policy_is_independent_of_boring_quic() {
 
 #[tokio::test]
 async fn conditional_ech_reliance_uses_each_selected_backend_capability() {
-    use rama::{
-        extensions::Extensions,
-        http::conn::{HttpServiceCandidate, HttpServiceCandidates},
-        net::tls::{ApplicationProtocol, TargetEchServiceBinding},
-        tls::client::TlsEncryptedClientHello,
-    };
     let (auth, tls) = credentials();
     let origin = Server::start(auth.clone(), Version::HTTP_2).await;
     let alternative = Server::start(auth, Version::HTTP_3).await;

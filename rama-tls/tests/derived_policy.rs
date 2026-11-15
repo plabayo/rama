@@ -174,8 +174,8 @@ fn derived_origin_policy_retains_producer_and_proxy_restrictions() {
     derive(&input, TlsAlpn::http_2()).unwrap();
     let connection = Extensions::new();
     connection.insert(ConnectionReuse::restriction(Producer(3)));
-    TlsConnectionReuse::tunnel(Provider::<1>, &input).publish(&connection);
-    TlsConnectionReuse::new(Provider::<1>, &input).publish(&connection);
+    TlsConnectionReuse::tunnel(Provider::<1>, &input).publish(&connection, None);
+    TlsConnectionReuse::new(Provider::<1>, &input).publish(&connection, None);
     let policy = connection.get_ref::<ConnectionReuse>().unwrap();
     assert!(policy.matches(&input));
 

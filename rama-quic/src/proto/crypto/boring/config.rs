@@ -18,6 +18,7 @@ use rama_crypto::dep::boring::{
 };
 use rama_net::{
     address::Host,
+    client::ConnectorTarget,
     tls::{AlpnPolicy, TargetEchConfig, TlsAlpn},
 };
 use rama_quic_proto::{
@@ -26,7 +27,7 @@ use rama_quic_proto::{
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     alpn::{self, AlpnError},
-    client::{EchRequirement, TlsClientConfig},
+    client::{EchRequirement, TlsClientConfig, TlsEncryptedClientHello, target_ech_config},
     server::TlsServerConfig,
 };
 use rama_tls_boring::{
@@ -222,8 +223,6 @@ impl QuicClientConfig {
         config: &TlsClientConfig,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
-        use rama_net::client::ConnectorTarget;
-        use rama_tls::client::{TlsEncryptedClientHello, target_ech_config};
         let extensions = config.as_extensions();
         let requirement = extensions
             .get_ref::<EchRequirement>()

@@ -1,5 +1,16 @@
 //! Authenticated ECH recovery must redial through the selected proxy.
 use rama::{
+    Layer as _,
+    http::{
+        conn::HttpOrigin,
+        layer::{
+            alt_svc::AltSvcCache, http_service::HttpServiceConnector,
+            https_service::HttpsServiceLayer,
+        },
+    },
+    net::{Protocol, client::ConnectionErrorKind},
+};
+use rama::{
     Service, ServiceInput,
     crypto::{
         cert::{GeneratedServerAuthConfig, generate_server_auth},
@@ -226,11 +237,6 @@ async fn authenticated_retry_preserves_http_connect_and_socks5h_routes() {
 
 #[tokio::test]
 async fn caller_required_ech_failure_does_not_poison_alt_svc() {
-    use rama::http::{
-        conn::HttpOrigin,
-        layer::{alt_svc::AltSvcCache, http_service::HttpServiceConnector},
-    };
-    use rama::net::{Protocol, client::ConnectionErrorKind};
     let cache = AltSvcCache::default();
     let input = ConnectRequest::new("origin.example:443".parse().unwrap())
         .with_application_protocol(Protocol::HTTPS);
@@ -332,14 +338,6 @@ impl rama::dns::client::resolver::DnsServiceBindingResolver for SlowAlternativeD
 
 #[tokio::test]
 async fn slow_alt_dns_retains_primary_real_ech_connection() {
-    use rama::{
-        Layer as _,
-        http::layer::{
-            alt_svc::AltSvcCache, http_service::HttpServiceConnector,
-            https_service::HttpsServiceLayer,
-        },
-        net::Protocol,
-    };
     for required in [false, true] {
         let (server, ca) = retry_test_server(ORIGIN, 1);
         let transport = rama::service::service_fn(move |input: ConnectRequest| {

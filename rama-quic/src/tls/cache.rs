@@ -5,7 +5,9 @@ use std::{collections::VecDeque, fmt, sync::Arc};
 use parking_lot::Mutex;
 use rama_core::{error::BoxError, extensions::Extensions};
 use rama_net::{address::Host, tls::AlpnPolicy};
-use rama_tls::client::{TlsClientConfig, TlsPoolId, TlsServerName};
+use rama_tls::client::{
+    EchRequirement, TlsClientConfig, TlsEncryptedClientHello, TlsPoolId, TlsServerName,
+};
 
 use super::{
     ClientHandshake, ClientSessionPolicy, QuicClientConfigProvider, TlsConfigError, TlsOptions,
@@ -55,7 +57,6 @@ impl fmt::Debug for ClientConfigCache {
 
 impl ClientConfigCache {
     fn needs_endpoint_ech(&self, config: &TlsClientConfig) -> bool {
-        use rama_tls::client::{EchRequirement, TlsEncryptedClientHello};
         let ext = config.as_extensions();
         ext.get_ref::<EchRequirement>() == Some(&EchRequirement::Required)
             || (self.provider.supports_ech()

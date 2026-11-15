@@ -1,8 +1,23 @@
 use super::super::tests::{configs, handshake};
 use super::*;
-use crate::proto::crypto::{ClientConfig as _, HandshakeEvent, ServerConfig as _};
+use crate::{
+    Endpoint, ServerConfig,
+    client::{QuicConnector, SharedQuicEndpoint},
+    proto::crypto::{ClientConfig as _, HandshakeEvent, ServerConfig as _},
+    tls::BoringTlsProvider,
+};
+use rama_core::{
+    Service,
+    error::CauseExt as _,
+    extensions::{Extensions, ExtensionsRef},
+    graceful::WeakScope,
+};
 use rama_crypto::dep::boring::{hpke::HpkeKey, ssl::SslEchKeys};
-use rama_net::{address::HostWithPort, tls::TargetEchConfig};
+use rama_net::{
+    address::{Domain, HostWithPort, SocketAddress},
+    client::{ConnectRequest, ConnectorTarget, pool::ConnectionReuse},
+    tls::{TargetEchConfig, TargetEchServiceBinding},
+};
 use rama_tls::{
     ExtensionId,
     client::{
@@ -132,20 +147,6 @@ fn real_ech_resumes_only_in_the_ech_partition_and_disables_early_data() {
 
 #[tokio::test]
 async fn quic_connector_publishes_acceptance_before_required_reuse() {
-    use crate::{
-        Endpoint, ServerConfig,
-        client::{QuicConnector, SharedQuicEndpoint},
-        tls::BoringTlsProvider,
-    };
-    use rama_core::{
-        Service,
-        extensions::{Extensions, ExtensionsRef},
-        graceful::WeakScope,
-    };
-    use rama_net::{
-        address::SocketAddress,
-        client::{ConnectRequest, ConnectorTarget, pool::ConnectionReuse},
-    };
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let (tls, server_tls) = configs();
         let server = Endpoint::bind_server(
@@ -202,16 +203,6 @@ async fn quic_connector_publishes_acceptance_before_required_reuse() {
 
 #[tokio::test]
 async fn quic_connector_retries_authenticated_ech_rejection_once() {
-    use crate::{
-        Endpoint, ServerConfig,
-        client::{QuicConnector, SharedQuicEndpoint},
-        tls::BoringTlsProvider,
-    };
-    use rama_core::{Service, extensions::ExtensionsRef, graceful::WeakScope};
-    use rama_net::{
-        address::{Domain, SocketAddress},
-        client::{ConnectRequest, ConnectorTarget},
-    };
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let (tls, server_tls) = super::super::tests::configs_for([
             Domain::from_static("localhost"),
@@ -274,7 +265,6 @@ async fn quic_connector_retries_authenticated_ech_rejection_once() {
 
 #[test]
 fn endpoint_ech_requires_independent_physical_target_and_origin_identity() {
-    use rama_net::client::ConnectorTarget;
     let (mut client, _) = configs();
     client.set_encrypted_client_hello(true);
     client
@@ -315,8 +305,6 @@ fn endpoint_ech_requires_independent_physical_target_and_origin_identity() {
 
 #[test]
 fn authenticated_rejection_retains_the_tls_ech_required_alert() {
-    use rama_core::error::CauseExt as _;
-    use rama_net::{address::Domain, client::ConnectorTarget};
     let (client, server) = super::super::tests::configs_for([
         Domain::from_static("localhost"),
         Domain::from_static("ech.com"),
@@ -352,7 +340,6 @@ fn authenticated_rejection_retains_the_tls_ech_required_alert() {
 
 #[test]
 fn service_binding_reliance_uses_final_quic_intent() {
-    use rama_net::{client::ConnectorTarget, tls::TargetEchServiceBinding};
     let (mut client, _) = configs();
     let target: HostWithPort = "localhost:443".parse().unwrap();
     client

@@ -1,5 +1,6 @@
 //! Client session resumption scoped to server identity and effective TLS policy.
 
+use rama_utils::macros::generate_set_and_with;
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt,
@@ -140,14 +141,15 @@ pub struct TlsClientSessionKey {
 }
 
 impl TlsClientSessionKey {
-    /// Partition ticket offers by real ECH use, without retaining config bytes.
-    /// Establishment additionally checks the actual acceptance result.
-    /// The value must describe the actual offer on the session being prepared;
-    /// this method does not authorize relabeling an existing ticket.
-    #[must_use]
-    pub fn with_ech(mut self, ech: bool) -> Self {
-        self.ech = ech;
-        self
+    generate_set_and_with! {
+        /// Partition ticket offers by real ECH use, without retaining config bytes.
+        /// Establishment additionally checks the actual acceptance result.
+        /// The value must describe the actual offer on the session being prepared;
+        /// this method does not authorize relabeling an existing ticket.
+        pub fn ech(mut self, ech: bool) -> Self {
+            self.ech = ech;
+            self
+        }
     }
 
     /// The server identity the session was established with.

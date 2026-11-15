@@ -21,8 +21,9 @@ use rama_net::{
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
 use crate::client::{
-    ClientAuth, ServerVerifyMode, TlsClientAuth, TlsClientConfigProvider, TlsServerCertPins,
-    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain, TlsStoreServerHello,
+    ClientAuth, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider,
+    TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    TlsStoreServerHello,
 };
 use crate::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, KeyLogIntent, ProtocolVersion,
@@ -42,13 +43,11 @@ pub struct TlsConnectionReuse<P> {
     provider: P,
     scope: ReuseScope,
     key: Option<ReuseKey>,
-    ech_request_policy: bool,
-    default_ech_requirement: super::EchRequirement,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum ReuseScope {
-    Origin,
+    Origin(ConnectionPolicyScope),
     Tunnel,
 }
 
@@ -58,34 +57,26 @@ struct NoOverrides;
 impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     /// Capture request overrides relative to this connector's fixed defaults.
     pub fn new(provider: P, request: &Extensions) -> Self {
+        let key = origin_request_key(&provider, request);
+        let scope = if key == Some(ReuseKey::of::<NoOverrides>())
+            && request.get_ref::<super::EchRequirement>() != Some(&super::EchRequirement::Required)
+        {
+            ConnectionPolicyScope::Connector
+        } else {
+            ConnectionPolicyScope::Request
+        };
         Self {
-            key: origin_request_key(&provider, request),
-            default_ech_requirement: super::EchRequirement::Optional,
-            ech_request_policy: request.get_ref::<super::EchRequirement>()
-                == Some(&super::EchRequirement::Required),
+            key,
             provider,
-            scope: ReuseScope::Origin,
+            scope: ReuseScope::Origin(scope),
         }
-    }
-
-    /// Retain the connector's default ECH requirement for future pool requests.
-    /// Pass fixed connector policy here, never the current request's override.
-    #[must_use]
-    pub fn with_default_ech_requirement(mut self, requirement: super::EchRequirement) -> Self {
-        self.default_ech_requirement = requirement;
-        self
     }
 
     /// Classify the original caller policy, including validated derived settings.
     /// Tunnel policies do not describe the origin and remain unclassified here.
     pub fn policy_scope(&self) -> ConnectionPolicyScope {
         match self.scope {
-            ReuseScope::Origin
-                if !self.ech_request_policy && self.key == Some(ReuseKey::of::<NoOverrides>()) =>
-            {
-                ConnectionPolicyScope::Connector
-            }
-            ReuseScope::Origin => ConnectionPolicyScope::Request,
+            ReuseScope::Origin(scope) => scope,
             ReuseScope::Tunnel => ConnectionPolicyScope::Unknown,
         }
     }
@@ -103,7 +94,7 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     /// The deriving layer must also partition its configurations or publish its
     /// own [`ConnectionReusePolicy`], while retaining inner restrictions.
     pub fn for_derived_settings(self, request: &Extensions) -> Option<TlsDerivedPolicy> {
-        if !matches!(self.scope, ReuseScope::Origin) {
+        if !matches!(self.scope, ReuseScope::Origin(_)) {
             return None;
         }
         Some(TlsDerivedPolicy {
@@ -121,17 +112,24 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     pub fn tunnel(provider: P, request: &Extensions) -> Self {
         Self {
             key: Some(tunnel_key(request)),
-            ech_request_policy: false,
-            default_ech_requirement: super::EchRequirement::Optional,
             provider,
             scope: ReuseScope::Tunnel,
         }
     }
 
     /// Publish this handshake's rules while retaining restrictions from inner layers.
-    pub fn publish(self, connection: &Extensions) {
+    /// Supply only the connector's fixed defaults, never merged request settings.
+    /// Defaults are consulted while publishing and are not retained by the policy.
+    pub fn publish(self, connection: &Extensions, defaults: Option<&TlsClientConfig>) {
         let tunnel = matches!(self.scope, ReuseScope::Tunnel);
-        let default_ech_requirement = self.default_ech_requirement;
+        let default_ech_requirement = defaults
+            .and_then(|config| {
+                config
+                    .as_extensions()
+                    .get_ref::<super::EchRequirement>()
+                    .copied()
+            })
+            .unwrap_or_default();
         let policy = ConnectionReuse::new(self);
         let policy = if tunnel {
             policy
@@ -213,7 +211,9 @@ fn tunnel_key(request: &Extensions) -> ReuseKey {
 impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnectionReuse<P> {
     fn classifier(&self) -> ReuseKey {
         match self.scope {
-            ReuseScope::Origin => ReuseKey::of::<TlsPoolId>().and(self.provider.pool_classifier()),
+            ReuseScope::Origin(_) => {
+                ReuseKey::of::<TlsPoolId>().and(self.provider.pool_classifier())
+            }
             // Tunnel keys only depend on the request's tunnel settings.
             ReuseScope::Tunnel => ReuseKey::of::<TlsTunnel>(),
         }
@@ -225,7 +225,7 @@ impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnecti
 
     fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
         match self.scope {
-            ReuseScope::Origin => origin_request_key(&self.provider, input),
+            ReuseScope::Origin(_) => origin_request_key(&self.provider, input),
             ReuseScope::Tunnel => Some(tunnel_key(input)),
         }
     }
@@ -979,7 +979,8 @@ pub(crate) fn policy_digest(domain: &[u8], settings: &impl Hash) -> PolicyDigest
 mod tests {
     use super::*;
     use crate::client::{
-        ClientAuth, ClientAuthData, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
+        ClientAuth, ClientAuthData, EchRequirement, TlsEchAccepted, TlsEncryptedClientHello,
+        TlsServerAuthentication, TlsServerCertPin, TlsServerCertPinSet, TlsServerCertPins,
         TlsServerTrustAnchors,
     };
     use crate::keylog::NoopKeyLogSink;
@@ -1000,7 +1001,7 @@ mod tests {
         connection.insert(super::super::TlsServerAuthentication(Some(
             Host::from_static("example.com"),
         )));
-        TlsConnectionReuse::new(TestProvider, &request).publish(&connection);
+        TlsConnectionReuse::new(TestProvider, &request).publish(&connection, None);
         assert!(!connection.contains::<super::super::EchRequirement>());
         let next = Extensions::new();
         next.insert(super::super::TlsEncryptedClientHello(false));
@@ -1009,7 +1010,7 @@ mod tests {
         connection.insert(super::super::TlsServerAuthentication(None));
         let insecure = Extensions::new();
         insecure.insert(super::super::TlsEchAccepted(true));
-        TlsConnectionReuse::new(TestProvider, &next).publish(&insecure);
+        TlsConnectionReuse::new(TestProvider, &next).publish(&insecure, None);
         next.insert(super::super::EchRequirement::Required);
         next.insert(super::super::TlsEncryptedClientHello(true));
         assert!(
@@ -1030,6 +1031,58 @@ mod tests {
         let required = TlsConnectionReuse::new(TestProvider, &request);
         assert_eq!(required.policy_scope(), ConnectionPolicyScope::Request);
         assert_eq!(required.connection_key(), plain.connection_key());
+    }
+
+    #[test]
+    fn published_policy_uses_connector_defaults_without_partitioning_acceptance() {
+        for default in [EchRequirement::Optional, EchRequirement::Required] {
+            for accepted in [false, true] {
+                let defaults = TlsClientConfig::new().with_ech_requirement(default);
+                let connection = Extensions::new();
+                connection.insert(TlsEchAccepted(accepted));
+                connection.insert(TlsServerAuthentication(Some(Host::from_static(
+                    "example.com",
+                ))));
+                TlsConnectionReuse::new(TestProvider, &Extensions::new())
+                    .publish(&connection, Some(&defaults));
+                let policy = connection.get_ref::<ConnectionReuse>().unwrap();
+                let request = Extensions::new();
+                assert_eq!(
+                    policy.matches(&request),
+                    default == EchRequirement::Optional || accepted
+                );
+
+                // A pool hit must reject a contradiction with fixed defaults,
+                // even when the stored connection accepted ECH.
+                request.insert(TlsEncryptedClientHello(false));
+                assert_eq!(
+                    policy.matches(&request),
+                    default == EchRequirement::Optional
+                );
+                request.insert(EchRequirement::Optional);
+                assert!(policy.matches(&request));
+                request.insert(EchRequirement::Required);
+                assert!(!policy.matches(&request));
+                request.insert(TlsEncryptedClientHello(true));
+                assert_eq!(policy.matches(&request), accepted);
+            }
+        }
+    }
+
+    #[test]
+    fn policy_scope_captures_generic_caller_settings() {
+        let request = Extensions::new();
+        let original = TlsConnectionReuse::new(TestProvider, &request);
+        request.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        assert_eq!(original.policy_scope(), ConnectionPolicyScope::Connector);
+        assert_eq!(
+            TlsConnectionReuse::new(TestProvider, &request).policy_scope(),
+            ConnectionPolicyScope::Request
+        );
+        assert_eq!(
+            TlsConnectionReuse::tunnel(TestProvider, &request).policy_scope(),
+            ConnectionPolicyScope::Unknown
+        );
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -1587,14 +1640,14 @@ mod tests {
         let request = Extensions::new();
         request.insert(TlsServerVerify(ServerVerifyMode::Disable));
         let connection = Extensions::new();
-        TlsConnectionReuse::tunnel(TestProvider, &Extensions::new()).publish(&connection);
+        TlsConnectionReuse::tunnel(TestProvider, &Extensions::new()).publish(&connection, None);
         assert!(
             !connection
                 .get_ref::<ConnectionReuse>()
                 .unwrap()
                 .is_complete()
         );
-        TlsConnectionReuse::new(TestProvider, &request).publish(&connection);
+        TlsConnectionReuse::new(TestProvider, &request).publish(&connection, None);
         let policy = connection.get_ref::<ConnectionReuse>().unwrap();
         assert!(policy.is_complete());
         for proxy_matches in [false, true] {
@@ -1619,8 +1672,8 @@ mod tests {
         }
 
         let connection = Extensions::new();
-        TlsConnectionReuse::tunnel(TestProvider, &Extensions::new()).publish(&connection);
-        TlsConnectionReuse::new(TestProvider, &Extensions::new()).publish(&connection);
+        TlsConnectionReuse::tunnel(TestProvider, &Extensions::new()).publish(&connection, None);
+        TlsConnectionReuse::new(TestProvider, &Extensions::new()).publish(&connection, None);
         assert!(
             connection
                 .get_ref::<ConnectionReuse>()

@@ -10,18 +10,33 @@ use rama_boring::{
     ssl::{SslAcceptor, SslEchKeys, SslMethod},
     x509::X509,
 };
-use rama_core::ServiceInput;
+use rama_core::{
+    Service, ServiceInput, bytes::Bytes, extensions::ExtensionsRef, service::service_fn,
+};
 use rama_crypto::{
     cert::{GeneratedServerAuthConfig, generate_server_auth},
     pki_types::CertificateDer,
 };
-use rama_net::address::{Domain, Host};
+use rama_net::{
+    address::{Domain, Host, HostWithPort},
+    client::{
+        ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorTarget,
+        EstablishedClientConnection, pool::ConnectionReuse,
+    },
+    tls::TargetEchConfig,
+};
 use rama_tls::client::{
-    DistrustedServerKeys, DynTlsServerCertChainPolicy, ServerCertChain, TlsClientConfig,
+    DistrustedServerKeys, DynTlsServerCertChainPolicy, EchRequirement, ServerCertChain,
+    ServerVerifyMode, TlsClientConfig, TlsEchAccepted, TlsEncryptedClientHello,
     TlsServerCertChainPolicy, TlsServerCertPin, TlsServerCertPins, TlsServerTrust,
 };
 
-use crate::client::{TlsConnectorData, tls_connect};
+use crate::client::{BoringClientConfigExt as _, TlsConnector, TlsConnectorData, tls_connect};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use tokio::io::AsyncReadExt;
 
 /// An ECHConfigList with public name `ech.com` (config id 0).
 const ECH_CONFIG_LIST: &[u8] = &[
@@ -247,17 +262,6 @@ async fn inapplicable_pins_preserve_explicitly_disabled_ech_verification() {
 
 #[tokio::test]
 async fn endpoint_ech_is_accepted_and_required_pool_reuse_works() {
-    use crate::client::TlsConnector;
-    use rama_core::{Service, extensions::ExtensionsRef, service::service_fn};
-    use rama_net::{
-        address::HostWithPort,
-        client::{
-            ConnectRequest, ConnectionError, ConnectorTarget, EstablishedClientConnection,
-            pool::ConnectionReuse,
-        },
-        tls::TargetEchConfig,
-    };
-    use rama_tls::client::{EchRequirement, TlsEchAccepted};
     for (required, insecure) in [(false, false), (true, false), (false, true)] {
         for rewrite_transport_target in [false, true] {
             let (chain, key) = generate_server_auth(GeneratedServerAuthConfig::generated_ca_for(
@@ -304,7 +308,6 @@ async fn endpoint_ech_is_accepted_and_required_pool_reuse_works() {
                     })
                 }
             });
-            use crate::client::BoringClientConfigExt as _;
             let base = if required {
                 TlsClientConfig::new()
             } else {
@@ -362,10 +365,6 @@ async fn endpoint_ech_is_accepted_and_required_pool_reuse_works() {
 
 #[tokio::test]
 async fn required_ech_missing_or_disabled_fails_before_transport() {
-    use crate::client::TlsConnector;
-    use rama_core::{Service, extensions::ExtensionsRef, service::service_fn};
-    use rama_net::client::{ConnectRequest, ConnectionError, EstablishedClientConnection};
-    use rama_tls::client::{EchRequirement, TlsEncryptedClientHello};
     for disabled in [false, true] {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let transport = service_fn({
@@ -400,10 +399,6 @@ async fn required_ech_missing_or_disabled_fails_before_transport() {
 
 #[tokio::test]
 async fn required_unsupported_configs_emit_no_clienthello() {
-    use rama_core::bytes::Bytes;
-    use rama_net::tls::TargetEchConfig;
-    use rama_tls::client::EchRequirement;
-    use tokio::io::AsyncReadExt;
     // Well-framed unknown version: the native library accepts the list but
     // must reject it during selection rather than send a cleartext ClientHello.
     for explicit in [false, true] {
@@ -473,17 +468,6 @@ fn retry_test_server(
 
 #[tokio::test]
 async fn connector_retries_authenticated_rejection_once_on_fresh_transport() {
-    use crate::client::TlsConnector;
-    use rama_core::{Service, bytes::Bytes, extensions::ExtensionsRef, service::service_fn};
-    use rama_net::{
-        client::{ConnectRequest, ConnectionError, EstablishedClientConnection},
-        tls::TargetEchConfig,
-    };
-    use rama_tls::client::{EchRequirement, ServerVerifyMode};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
     for (trusted, insecure, reject_twice) in [
         (true, false, false),
         (true, false, true),
@@ -554,15 +538,6 @@ async fn connector_retries_authenticated_rejection_once_on_fresh_transport() {
 
 #[tokio::test]
 async fn mirrored_final_intent_controls_bare_endpoint_reliance_before_dial() {
-    use crate::client::{BoringClientConfigExt as _, TlsConnector};
-    use rama_core::{Service, extensions::ExtensionsRef, service::service_fn};
-    use rama_net::client::{
-        ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
-    };
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
     for ech in [false, true] {
         let calls = Arc::new(AtomicUsize::new(0));
         let transport = service_fn({

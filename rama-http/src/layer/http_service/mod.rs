@@ -371,7 +371,9 @@ fn discard_connection(connection: &impl ExtensionsRef) {
     }
 }
 
-fn dns_stream(candidate: &HttpServiceCandidate) -> bool {
+/// HTTPS records choose TCP versus QUIC, but do not pin TCP ALPN (RFC 9460 §7.1.2).
+/// Alt-Svc and configured candidates retain their exact protocol contract.
+fn negotiates_http_stream(candidate: &HttpServiceCandidate) -> bool {
     candidate.source == HttpServiceSource::Https
         && matches!(
             candidate.protocol,
@@ -398,37 +400,37 @@ fn verify_alternative<C: ExtensionsRef>(
         ));
     }
     #[cfg(feature = "tls")]
-    let actual = connection
-        .extensions()
-        .get_ref::<NegotiatedTlsParameters>()
-        .and_then(|parameters| {
-            parameters.application_layer_protocol.clone().or_else(|| {
-                // HTTPS over TLS without negotiated ALPN uses HTTP/1.1.
-                dns_stream(candidate).then_some(ApplicationProtocol::HTTP_11)
-            })
-        });
-    #[cfg(feature = "tls")]
-    let expected_protocol = if dns_stream(candidate) {
-        actual.as_ref().filter(|protocol| {
-            matches!(
-                protocol,
-                ApplicationProtocol::HTTP_2 | ApplicationProtocol::HTTP_11
-            )
-        })
-    } else {
-        Some(&candidate.protocol)
+    let protocol = {
+        let negotiated = connection
+            .extensions()
+            .get_ref::<NegotiatedTlsParameters>()
+            .and_then(|parameters| {
+                parameters.application_layer_protocol.as_ref().or_else(|| {
+                    // A completed TCP TLS handshake without ALPN means HTTP/1.1.
+                    negotiates_http_stream(candidate).then_some(&ApplicationProtocol::HTTP_11)
+                })
+            });
+        match negotiated {
+            Some(protocol)
+                if protocol == &candidate.protocol
+                    || (negotiates_http_stream(candidate)
+                        && matches!(
+                            protocol,
+                            ApplicationProtocol::HTTP_2 | ApplicationProtocol::HTTP_11
+                        )) =>
+            {
+                protocol
+            }
+            _ => {
+                return Err(ConnectionError::application(
+                    BoxError::from_static_str(
+                        "alternative service did not negotiate its advertised protocol",
+                    ),
+                    ConnectionErrorKind::Protocol,
+                ));
+            }
+        }
     };
-    #[cfg(feature = "tls")]
-    if actual.is_none() || actual.as_ref() != expected_protocol {
-        return Err(ConnectionError::application(
-            BoxError::from_static_str(
-                "alternative service did not negotiate its advertised protocol",
-            ),
-            ConnectionErrorKind::Protocol,
-        ));
-    }
-    #[cfg(feature = "tls")]
-    let protocol = expected_protocol.unwrap_or(&candidate.protocol);
     #[cfg(not(feature = "tls"))]
     let protocol = &candidate.protocol;
     let expected = Version::try_from(protocol).map_err(|error| {
@@ -520,10 +522,12 @@ where
         required: Option<Version>,
     ) -> Option<Version> {
         let version = Version::try_from(&candidate.protocol).ok()?;
+        // H1/H2 HTTPS candidates share TCP: either can satisfy an explicit
+        // H1/H2 requirement. H3 needs QUIC; Alt-Svc requires an exact match.
         required
             .is_none_or(|required| {
                 required == version
-                    || (dns_stream(candidate)
+                    || (negotiates_http_stream(candidate)
                         && matches!(required, Version::HTTP_11 | Version::HTTP_2))
             })
             .then_some(version)
@@ -703,7 +707,7 @@ where
                 // Candidate settings may refine the physical endpoint, but
                 // cannot replace this attempt's observer or transport policy.
                 attempt.extensions().insert_arc(state.clone());
-                if dns_stream(candidate) && required.is_none() {
+                if negotiates_http_stream(candidate) && required.is_none() {
                     // HTTPS records select a transport, not its ALPN offer (RFC 9460 §7.1.2).
                     // Override an H3 connection default without constraining TLS negotiation.
                     attempt
@@ -728,20 +732,17 @@ where
                     .cache
                     .as_ref()
                     .map(|cache| (cache, cache.network_epoch(), StdInstant::now()));
-                match self
-                    .attempt(
-                        attempt,
-                        deadline,
-                        candidate.source != HttpServiceSource::Https
-                            && !snapshot
-                                .candidate_extensions(index)
-                                .is_some_and(|extensions| {
-                                    extensions.contains::<ConnectorTarget>()
-                                        || extensions.contains::<rama_net::tls::TargetEchConfig>()
-                                }),
-                    )
-                    .await
-                {
+                // DNS-selected services (including refined Alt-Svc targets) use
+                // normal connector deadlines. A short speculative timeout could
+                // abandon the endpoint needed to satisfy ECH discovery policy.
+                let speculative = candidate.source != HttpServiceSource::Https
+                    && !snapshot
+                        .candidate_extensions(index)
+                        .is_some_and(|extensions| {
+                            extensions.contains::<ConnectorTarget>()
+                                || extensions.contains::<rama_net::tls::TargetEchConfig>()
+                        });
+                match self.attempt(attempt, deadline, speculative).await {
                     Ok(established) => {
                         // Pool hits carry the original connector's policy scope.
                         // Unknown custom policies never change shared backoff.

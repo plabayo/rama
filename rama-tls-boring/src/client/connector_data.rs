@@ -43,6 +43,7 @@ use rama_net::{address::Host, tls::ApplicationProtocol};
 use rama_tls::client::{
     ClientAuth, ClientHandshake, DynTlsServerCertChainPolicy, ServerTrustSource, ServerVerifyMode,
     TlsClientConfig, TlsPoolId, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
+    target_ech_config, target_ech_required,
 };
 use rama_tls::{ExtensionId, KeyLogIntent, SignatureScheme, SupportedGroup};
 use rama_utils::macros::generate_set_and_with;
@@ -392,7 +393,6 @@ impl TlsConnectorData {
         extensions: &rama_core::extensions::Extensions,
         target: &rama_net::address::HostWithPort,
     ) -> Result<(), BoxError> {
-        use rama_tls::client::{target_ech_config, target_ech_required};
         let config = target_ech_config(extensions, target, true)?;
         self.ech_required = target_ech_required(extensions, target, true)?;
         if let Some(config) = config {
