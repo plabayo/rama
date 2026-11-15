@@ -121,6 +121,14 @@ impl Host {
         }
     }
 
+    /// Whether this host denotes an IP address, including decodable
+    /// [`Self::Uninterpreted`] values. Named hosts and IPvFuture return false.
+    #[must_use]
+    #[inline]
+    pub fn is_ip(&self) -> bool {
+        self.view().is_ip()
+    }
+
     /// View as an [`IpAddr`], bridging the `Uninterpreted` variant.
     /// Returns the address from `Address` directly; `Uninterpreted`
     /// succeeds when its pct-decoded bytes parse as an IPv4 or IPv6
@@ -397,6 +405,17 @@ impl<'a> HostRef<'a> {
                 "HostRef::Address is not a Domain",
             )),
             Self::Uninterpreted(host) => Domain::try_from(host).map_err(Into::into),
+        }
+    }
+
+    /// Whether this host denotes an IP address. See [`Host::is_ip`].
+    #[must_use]
+    #[inline]
+    pub fn is_ip(self) -> bool {
+        match self {
+            Self::Address(_) => true,
+            Self::Name(_) => false,
+            Self::Uninterpreted(host) => IpAddr::try_from(host).is_ok(),
         }
     }
 
@@ -1694,6 +1713,29 @@ mod tests {
         assert!(a < b);
         assert!(b < c);
         assert!(a < c, "Ord must be transitive across the bridge");
+    }
+
+    #[test]
+    fn is_ip_handles_typed_and_uninterpreted_hosts() {
+        for host in [
+            Host::LOCALHOST_IPV4,
+            Host::LOCALHOST_IPV6,
+            Host::Name(Domain::from_static("example.com")),
+            reg_host("127%2E0%2E0%2E1"),
+            reg_host("%3A%3A1"),
+            reg_host("example.com"),
+            reg_host("not%FFanip"),
+            bracketed_host("v1.future"),
+        ] {
+            let expected = host.try_as_ip().is_ok();
+            assert_eq!(host.is_ip(), expected);
+            assert_eq!(host.view().is_ip(), expected);
+            assert_eq!(
+                crate::address::HostWithPort::new(host.clone(), 443).is_ip(),
+                expected
+            );
+            assert_eq!(crate::address::HostWithOptPort::new(host).is_ip(), expected);
+        }
     }
 
     // ---- try_as_domain / try_into_domain / try_as_ip bridges --------------
