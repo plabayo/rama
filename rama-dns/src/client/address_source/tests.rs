@@ -48,7 +48,7 @@ async fn sources_and_streams_are_lazy_and_do_not_truncate_dns() {
         count: 150,
         ..Default::default()
     };
-    let source = DnsAddressCandidates::new(resolver.clone(), domain());
+    let source = DnsAddressSource::new(resolver.clone(), domain());
     let unused = source.clone();
     let extensions = Extensions::new();
     let mut first = source.stream(&extensions);
@@ -74,8 +74,7 @@ async fn hints_are_complete_candidate_specific_and_use_current_policy() {
     let hints: Arc<[IpAddr]> = (1..=150)
         .map(|i| IpAddr::V4(Ipv4Addr::new(192, 0, 2, i)))
         .collect();
-    let source =
-        DnsAddressCandidates::new(EmptyDnsResolver::new(), domain()).with_hints(hints.clone());
+    let source = DnsAddressSource::new(EmptyDnsResolver::new(), domain()).with_hints(hints.clone());
     let other = source.clone().with_hints([IpAddr::V6(Ipv6Addr::LOCALHOST)]);
     let extensions = Extensions::new();
     let values: Vec<_> = source
@@ -107,7 +106,7 @@ async fn explicit_bounds_preserve_per_family_limits_and_errors() {
             },
             NonZeroUsize::new(limit).unwrap(),
         );
-        let source = DnsAddressCandidates::new(resolver, domain());
+        let source = DnsAddressSource::new(resolver, domain());
         let answers: Vec<_> = source.stream(&Extensions::new()).collect().await;
         assert_eq!(
             answers.iter().filter(|answer| answer.is_ok()).count(),
@@ -153,7 +152,7 @@ impl DnsAddressResolver for DelayedResolver {
 #[tokio::test]
 async fn pending_dns_uses_hints_then_continues_without_duplicates() {
     let ready = Arc::new(tokio::sync::Notify::new());
-    let source = DnsAddressCandidates::new(DelayedResolver(ready.clone()), domain()).with_hints([
+    let source = DnsAddressSource::new(DelayedResolver(ready.clone()), domain()).with_hints([
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
     ]);
@@ -170,7 +169,7 @@ async fn pending_dns_uses_hints_then_continues_without_duplicates() {
 
 #[tokio::test]
 async fn ready_dns_and_request_overrides_do_not_use_hints() {
-    let source = DnsAddressCandidates::new(
+    let source = DnsAddressSource::new(
         Resolver {
             count: 1,
             ..Default::default()
@@ -187,7 +186,7 @@ async fn ready_dns_and_request_overrides_do_not_use_hints() {
         .await;
     assert_eq!(values, [IpAddr::V4(Ipv4Addr::new(192, 0, 0, 1))]);
 
-    let empty = DnsAddressCandidates::new(EmptyDnsResolver::new(), domain())
+    let empty = DnsAddressSource::new(EmptyDnsResolver::new(), domain())
         .with_hints([IpAddr::V4(Ipv4Addr::LOCALHOST)]);
     extensions.insert(DnsAddresssResolverOverwrite::new(
         BoundedDnsResolver::bounded(
@@ -213,7 +212,7 @@ async fn cached_other_family_wins_over_hints_before_family_delay() {
     // IPv6 finishes empty while IPv4 is immediately available. The ordinary
     // family delay must not make the hint look fresher than the ready A record.
     let extensions = Extensions::new();
-    let source = DnsAddressCandidates::new(Ipv4Addr::LOCALHOST, domain())
+    let source = DnsAddressSource::new(Ipv4Addr::LOCALHOST, domain())
         .with_hints([IpAddr::V6(Ipv6Addr::LOCALHOST)]);
     let values: Vec<_> = source
         .stream(&extensions)
@@ -226,7 +225,7 @@ async fn cached_other_family_wins_over_hints_before_family_delay() {
 #[tokio::test]
 async fn newly_ready_dns_supersedes_remaining_hints() {
     let ready = Arc::new(tokio::sync::Notify::new());
-    let source = DnsAddressCandidates::new(DelayedResolver(ready.clone()), domain()).with_hints([
+    let source = DnsAddressSource::new(DelayedResolver(ready.clone()), domain()).with_hints([
         IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
         IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
     ]);
@@ -268,7 +267,7 @@ impl DnsAddressResolver for RepeatingResolver {
 
 #[tokio::test]
 async fn explicit_bound_counts_duplicates_before_deduplication() {
-    let source = DnsAddressCandidates::new(
+    let source = DnsAddressSource::new(
         BoundedDnsResolver::bounded(RepeatingResolver, NonZeroUsize::new(3).unwrap()),
         domain(),
     );
@@ -315,7 +314,7 @@ impl DnsAddressResolver for PendingResolver {
 #[tokio::test]
 async fn dropping_stream_cancels_pending_dns_without_dropping_source() {
     let dropped = Arc::new(AtomicUsize::new(0));
-    let source = DnsAddressCandidates::new(PendingResolver(dropped.clone()), domain())
+    let source = DnsAddressSource::new(PendingResolver(dropped.clone()), domain())
         .with_hints([IpAddr::V4(Ipv4Addr::LOCALHOST)]);
     let extensions = Extensions::new();
     let mut addresses = source.stream(&extensions);
@@ -353,7 +352,7 @@ async fn immediate_dns_error_does_not_suppress_hints() {
         IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
         IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
     ];
-    let source = DnsAddressCandidates::new(ErrorThenPendingResolver, domain()).with_hints(hints);
+    let source = DnsAddressSource::new(ErrorThenPendingResolver, domain()).with_hints(hints);
     let extensions = Extensions::new();
     let mut addresses = source.stream(&extensions);
 
@@ -376,7 +375,7 @@ async fn immediate_dns_error_does_not_suppress_hints() {
 async fn mapped_ipv6_hints_follow_ipv4_policy_and_deduplicate_dns() {
     let ip = Ipv4Addr::new(192, 0, 2, 1);
     let hint = IpAddr::V6(ip.to_ipv6_mapped());
-    let source = DnsAddressCandidates::new(EmptyDnsResolver::new(), domain()).with_hints([hint]);
+    let source = DnsAddressSource::new(EmptyDnsResolver::new(), domain()).with_hints([hint]);
     let extensions = Extensions::new();
     let values: Vec<_> = source
         .stream(&extensions)
@@ -391,7 +390,7 @@ async fn mapped_ipv6_hints_follow_ipv4_policy_and_deduplicate_dns() {
     // Let the mapped hint win first, then supply the same address through A.
     // This exercises shared deduplication rather than suppression of all hints.
     let ready = Arc::new(tokio::sync::Notify::new());
-    let source = DnsAddressCandidates::new(DelayedResolver(ready.clone()), domain())
+    let source = DnsAddressSource::new(DelayedResolver(ready.clone()), domain())
         .with_hints([IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped())]);
     extensions.insert(DnsResolveIpMode::SingleIpV4);
     let mut addresses = source.stream(&extensions);
@@ -412,8 +411,8 @@ async fn loopback_names_and_ip_literals_ignore_hints_and_dns() {
     let hints = [IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))];
     let extensions = Extensions::new();
     for name in ["localhost", "service.localhost"] {
-        let source = DnsAddressCandidates::new(resolver.clone(), Domain::from_static(name))
-            .with_hints(hints);
+        let source =
+            DnsAddressSource::new(resolver.clone(), Domain::from_static(name)).with_hints(hints);
         let values: Vec<_> = source
             .stream(&extensions)
             .map(Result::unwrap)

@@ -12,8 +12,8 @@ pub use https::{
     lookup_https_service_bindings, order_service_binding_records,
 };
 
-mod address_candidates;
-pub use address_candidates::DnsAddressCandidates;
+mod address_source;
+pub use address_source::DnsAddressSource;
 
 mod connector;
 #[doc(inline)]

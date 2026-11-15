@@ -3,7 +3,7 @@
 use super::*;
 use rama::http::conn::{HttpServiceCandidate, HttpServiceCandidates, HttpServiceSource};
 use rama::{
-    dns::client::{DnsAddressCandidates, resolver::DnsAddressResolver},
+    dns::client::{DnsAddressSource, resolver::DnsAddressResolver},
     futures::{Stream, stream},
     net::{address::Domain, client::ConnectorTargetStream, mode::DnsResolveIpMode},
 };
@@ -97,7 +97,7 @@ async fn dns_stream_negotiates_and_reuses_either_http_version() {
                 let extensions = Extensions::new();
                 extensions.insert(ConnectorTargetStream::new(
                     target.clone(),
-                    DnsAddressCandidates::new(resolver.clone(), domain),
+                    DnsAddressSource::new(resolver.clone(), domain),
                 ));
                 (
                     HttpServiceCandidate::new(preferred.clone(), target)

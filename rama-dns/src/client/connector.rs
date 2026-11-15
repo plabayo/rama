@@ -14,7 +14,7 @@ use rama_net::{
 use rama_utils::macros::define_inner_service_accessors;
 
 use super::{
-    DnsAddressCandidates, GlobalDnsResolver,
+    DnsAddressSource, GlobalDnsResolver,
     resolver::{DnsAddressResolver, DnsAddresssResolverOverwrite},
 };
 
@@ -155,7 +155,7 @@ where
         })?;
         input.extensions().insert(ConnectorTargetStream::new(
             target,
-            DnsAddressCandidates::new(self.resolver.clone(), domain),
+            DnsAddressSource::new(self.resolver.clone(), domain),
         ));
 
         self.inner.connect(input).await

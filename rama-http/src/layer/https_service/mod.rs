@@ -43,8 +43,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_dns::client::{
-    DEFAULT_HTTPS_ALIAS_LIMIT, DnsAddressCandidates, GlobalDnsResolver,
-    lookup_https_service_bindings,
+    DEFAULT_HTTPS_ALIAS_LIMIT, DnsAddressSource, GlobalDnsResolver, lookup_https_service_bindings,
     resolver::{DnsAddressResolver, DnsServiceBindingResolver},
 };
 use rama_http_types::conn::{
@@ -462,7 +461,7 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
             return;
         }
         if let Ok(domain) = target.host.try_as_domain() {
-            let mut source = DnsAddressCandidates::new(self.resolver.clone(), domain.into_owned());
+            let mut source = DnsAddressSource::new(self.resolver.clone(), domain.into_owned());
             let mut hints = hints.into_iter().peekable();
             if hints.peek().is_some() {
                 source.set_hints(hints.collect::<Arc<[IpAddr]>>());

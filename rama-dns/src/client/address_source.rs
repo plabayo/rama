@@ -12,20 +12,20 @@ use rama_net::{
 use rama_utils::macros::generate_set_and_with;
 use std::{net::IpAddr, sync::Arc};
 
-/// A lazy, happy-eyeballs-ordered DNS address source.
+/// Adapt a DNS resolver to the lazy [`AddressCandidates`] transport contract.
 ///
 /// Construction and cloning perform no DNS work. Each consumed stream resolves
 /// using its current request policy; resolver caching remains the resolver's job.
 /// Bind the source to a physical endpoint using `ConnectorTargetStream`.
 /// No answer or hint limits are imposed; callers may supply a bounded resolver.
 #[derive(Debug, Clone)]
-pub struct DnsAddressCandidates<R> {
+pub struct DnsAddressSource<R> {
     resolver: R,
     domain: Domain,
     hints: Option<Arc<[IpAddr]>>,
 }
 
-impl<R> DnsAddressCandidates<R> {
+impl<R> DnsAddressSource<R> {
     /// Store a resolver and domain without starting a lookup.
     pub fn new(resolver: R, domain: Domain) -> Self {
         Self {
@@ -46,7 +46,7 @@ impl<R> DnsAddressCandidates<R> {
     }
 }
 
-impl<R: DnsAddressResolver> AddressCandidates for DnsAddressCandidates<R> {
+impl<R: DnsAddressResolver> AddressCandidates for DnsAddressSource<R> {
     fn domain(&self) -> &Domain {
         &self.domain
     }
