@@ -111,12 +111,25 @@ def run_device(version, udid, output):
     output.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     receipt = {"version": version, "udid": udid, "status": "failed",
-               "failure_stage": None, "error_type": None, "shutdown_error": None}
+               "failure_stage": None, "error_type": None, "shutdown_error": None,
+               "bootstatus_timed_out": False}
     stage = "boot"
     try:
         transition("boot", udid, "Booted")
         stage = "bootstatus"
-        simctl("bootstatus", udid, "-b", timeout=900)
+        try:
+            simctl("bootstatus", udid, "-b", timeout=900)
+        except subprocess.TimeoutExpired:
+            receipt["bootstatus_timed_out"] = True
+            # The status client can stall without output. Require this device
+            # to report Booted, then let the bounded Safari
+            # probe below establish readiness before any capture journey runs.
+            devices = json.loads(simctl("list", "devices", "--json", capture=True))["devices"]
+            if not any(device["udid"] == udid and device["state"] == "Booted"
+                       for group in devices.values() for device in group):
+                raise
+            print(f"WAIT iOS {version}: bootstatus timed out; checking Safari readiness",
+                  flush=True)
         stage = "safari_ready"
         # Booted does not mean Safari's remote automation is ready. Let the same
         # session owner as the collector prove it can open, script and quit Safari.
