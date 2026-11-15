@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use crate::tls::QuicClientConfigProvider;
 use rama_core::{
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
@@ -51,7 +51,7 @@ use rama_ua::profile::{
 #[cfg(feature = "boring")]
 use {
     crate::tls::BoringTlsProvider,
-    rama_core::{error::BoxErrorExt as _, extensions::Extension, telemetry::tracing},
+    rama_core::{extensions::Extension, telemetry::tracing},
     rama_net::{
         address::Host,
         tls::{ApplicationProtocol, TlsAlpn},
