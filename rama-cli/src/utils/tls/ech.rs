@@ -3,7 +3,6 @@
 use rama::{
     error::{BoxError, ErrorContext as _},
     graceful::WeakScope,
-    telemetry::tracing,
     tls::{
         boring::server::{BoringServerConfigExt as _, EchServerKeys, ReloadableEchServerKeys},
         server::TlsServerConfig,
@@ -29,6 +28,8 @@ pub(crate) fn configure_server_ech_from_env(
     config.set_ech_keys(provider.clone());
     #[cfg(unix)]
     {
+        use rama::telemetry::tracing;
+
         let mut reload = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
             .context("register ECH key reload signal")?;
         scope.try_hold()?.into_spawn_task(async move {
