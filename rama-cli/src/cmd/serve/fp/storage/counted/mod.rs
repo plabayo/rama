@@ -4,7 +4,7 @@ mod legacy;
 pub(super) use legacy::{LegacyRevision, ingest_legacy};
 
 mod export;
-pub(super) use export::{ProfileReadLimit, next_profile};
+pub(super) use export::{ProfileReadLimit, ScopeTruncation, load_profile, profile_ids};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,6 +13,7 @@ use std::{
 
 use rama::{
     error::BoxError,
+    futures::future,
     ua::profile::{
         capture::{
             joint::JointCaptureLimits,
@@ -495,11 +496,22 @@ async fn load_retained_bucket(
     if retained_bytes > limits.ingestion.bucket.retained_bytes || retained_bytes > *remaining {
         return Err(bounded("stored bucket bytes"));
     }
-    let count_rows = transaction.query(
-        "SELECT value_id, count FROM fp_v2.literal_counts WHERE authorized=$1 AND scope=$2 AND day=$3
+    // Both row sets depend only on the bucket: one round trip instead of two.
+    let literal_limit = bounded_rows(limits.ingestion.bucket.literal_values)?;
+    let sample_limit = bounded_rows(limits.ingestion.bucket.samples)?;
+    let (count_rows, sample_rows) = future::try_join(
+        transaction.query(
+            "SELECT value_id, count FROM fp_v2.literal_counts WHERE authorized=$1 AND scope=$2 AND day=$3
          ORDER BY value_id LIMIT $4",
-        &[&authorized, &scope, &day_sql, &bounded_rows(limits.ingestion.bucket.literal_values)?],
-    ).await?;
+            &[&authorized, &scope, &day_sql, &literal_limit],
+        ),
+        transaction.query(
+            "SELECT run, sequence::text, priority, value_id FROM fp_v2.samples
+         WHERE authorized=$1 AND scope=$2 AND day=$3 ORDER BY priority, run, sequence LIMIT $4",
+            &[&authorized, &scope, &day_sql, &sample_limit],
+        ),
+    )
+    .await?;
     if count_rows.len() > limits.ingestion.bucket.literal_values {
         return Err(bounded("stored literal rows"));
     }
@@ -513,18 +525,6 @@ async fn load_retained_bucket(
             count: u64::try_from(row.try_get::<_, i64>(1)?)?,
         });
     }
-    let sample_rows = transaction
-        .query(
-            "SELECT run, sequence::text, priority, value_id FROM fp_v2.samples
-         WHERE authorized=$1 AND scope=$2 AND day=$3 ORDER BY priority, run, sequence LIMIT $4",
-            &[
-                &authorized,
-                &scope,
-                &day_sql,
-                &bounded_rows(limits.ingestion.bucket.samples)?,
-            ],
-        )
-        .await?;
     if sample_rows.len() > limits.ingestion.bucket.samples {
         return Err(bounded("stored sample rows"));
     }
@@ -549,28 +549,26 @@ async fn load_retained_bucket(
         });
     }
     let ids: Vec<Vec<u8>> = references.iter().map(|id| id.0.to_vec()).collect();
-    let bytes: i64 = transaction.query_one(
-        "SELECT COALESCE(sum(octet_length(canonical)), 0)::bigint FROM fp_v2.values WHERE authorized=$1 AND id=ANY($2)",
-        &[&authorized, &ids],
-    ).await?.try_get(0)?;
-    if usize::try_from(bytes)? != retained_bytes {
+    let value_bytes = integer(limits.ingestion.bucket.value_bytes)?;
+    let value_limit = bounded_rows(ids.len())?;
+    let (bytes, rows) = future::try_join(
+        transaction.query_one(
+            "SELECT COALESCE(sum(octet_length(canonical)), 0)::bigint FROM fp_v2.values WHERE authorized=$1 AND id=ANY($2)",
+            &[&authorized, &ids],
+        ),
+        transaction.query(
+            "SELECT id, domain, CASE WHEN octet_length(canonical)::bigint <= $3 THEN canonical END
+         FROM fp_v2.values WHERE authorized=$1 AND id=ANY($2) ORDER BY id LIMIT $4",
+            &[&authorized, &ids, &value_bytes, &value_limit],
+        ),
+    )
+    .await?;
+    if usize::try_from(bytes.try_get::<_, i64>(0)?)? != retained_bytes {
         return Err(invalid("stored retained byte count"));
     }
     *remaining = remaining
         .checked_sub(retained_bytes)
         .ok_or_else(|| bounded("stored batch bytes"))?;
-    let rows = transaction
-        .query(
-            "SELECT id, domain, CASE WHEN octet_length(canonical)::bigint <= $3 THEN canonical END
-         FROM fp_v2.values WHERE authorized=$1 AND id=ANY($2) ORDER BY id LIMIT $4",
-            &[
-                &authorized,
-                &ids,
-                &integer(limits.ingestion.bucket.value_bytes)?,
-                &bounded_rows(ids.len())?,
-            ],
-        )
-        .await?;
     if rows.len() != ids.len() {
         return Err(invalid("stored value coverage"));
     }

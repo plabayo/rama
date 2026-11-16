@@ -2,8 +2,10 @@
 
 use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    futures::stream::{self, BoxStream, StreamExt as _},
     ua::profile::{
         analysis::profile::{ProfileAnalysisLimits, analyze_profile_evidence},
+        evidence::ProfileEvidence,
         format::{
             archive::{ProfileArchiveEntry, ProfileArchiveLimits},
             canonical::{ProfileDataError, ValueId},
@@ -13,13 +15,66 @@ use rama::{
 
 use super::{counted, postgres, startup};
 
-pub(crate) struct CountedProfileSource {
+/// Profiles loaded and analyzed at once, each on its own pool connection.
+const CONCURRENT_PROFILE_LOADS: usize = 8;
+
+/// One profile's evidence and the work its analysis took under the default limits.
+struct LoadedProfile {
+    evidence: ProfileEvidence,
+    sampler_seed: [u8; 32],
+    truncation: counted::ScopeTruncation,
+    work_units: Result<usize, ProfileDataError>,
+}
+
+async fn load_profile(
     pool: postgres::Pool,
     authorized: bool,
+    id: ValueId,
     day: u32,
     horizon: u32,
+) -> Result<Option<LoadedProfile>, BoxError> {
+    let loaded = {
+        let mut client = pool.get().await?;
+        counted::load_profile(
+            &mut client,
+            authorized,
+            id,
+            day,
+            horizon,
+            ProfileAnalysisLimits::default(),
+            startup::store_limits(),
+        )
+        .await?
+    };
+    let Some((evidence, sampler_seed, truncation)) = loaded else {
+        return Ok(None);
+    };
+    // Validate before handing an entry to a consuming archive writer.
+    let (evidence, work_units) = tokio::task::spawn_blocking(move || {
+        let analysis = analyze_profile_evidence(
+            &evidence,
+            authorized,
+            sampler_seed,
+            day,
+            horizon,
+            ProfileAnalysisLimits::default(),
+        );
+        (evidence, analysis.map(|analysis| analysis.work_units))
+    })
+    .await?;
+    Ok(Some(LoadedProfile {
+        evidence,
+        sampler_seed,
+        truncation,
+        work_units,
+    }))
+}
+
+pub(crate) struct CountedProfileSource {
+    /// Loads run ahead of the consumer and arrive in profile id order.
+    profiles: BoxStream<'static, Result<Option<LoadedProfile>, BoxError>>,
+    day: u32,
     remaining: usize,
-    after: Option<ValueId>,
     skipped: usize,
     truncated: usize,
     dropped_stored_scopes: usize,
@@ -47,13 +102,27 @@ impl CountedProfileSource {
             .first_day(day, horizon)?;
         let url =
             std::env::var("RAMA_FP_DATABASE_URL").context("RAMA_FP_DATABASE_URL is required")?;
+        let pool = postgres::try_new_pool(url).await?;
+        let ids = {
+            let client = pool.get().await?;
+            counted::profile_ids(
+                &client,
+                authorized,
+                day,
+                horizon,
+                ProfileAnalysisLimits::default(),
+                maximum_profiles,
+            )
+            .await?
+        };
+        let profiles = stream::iter(ids)
+            .map(move |id| load_profile(pool.clone(), authorized, id, day, horizon))
+            .buffered(CONCURRENT_PROFILE_LOADS)
+            .boxed();
         Ok(Self {
-            pool: postgres::try_new_pool(url).await?,
-            authorized,
+            profiles,
             day,
-            horizon,
             remaining: maximum_profiles,
-            after: None,
             skipped: 0,
             truncated: 0,
             dropped_stored_scopes: 0,
@@ -102,25 +171,15 @@ impl CountedProfileSource {
                 self.limited = true;
                 return Ok(None);
             }
-            let next = {
-                let mut client = self.pool.get().await?;
-                counted::next_profile(
-                    &mut client,
-                    self.authorized,
-                    self.after,
-                    self.day,
-                    self.horizon,
-                    ProfileAnalysisLimits::default(),
-                    startup::store_limits(),
-                )
-                .await
+            let Some(loaded) = self.profiles.next().await else {
+                return Ok(None);
             };
-            let (evidence, sampler_seed, truncation) = match next {
-                Ok(Some(entry)) => entry,
-                Ok(None) => return Ok(None),
+            let loaded = match loaded {
+                Ok(Some(loaded)) => loaded,
+                Ok(None) => continue,
                 Err(error) => {
-                    if let Some(limit) = error.downcast_ref::<counted::ProfileReadLimit>() {
-                        self.after = Some(limit.id);
+                    // Only resource limits are skippable; integrity and access errors remain fatal.
+                    if error.downcast_ref::<counted::ProfileReadLimit>().is_some() {
                         self.remaining -= 1;
                         self.skipped += 1;
                         continue;
@@ -129,33 +188,13 @@ impl CountedProfileSource {
                 }
             };
             self.remaining -= 1;
-            self.after = Some(evidence.profile.id);
-            // Validate before handing an entry to a consuming archive writer.
-            // Only resource limits are skippable; integrity and access errors remain fatal.
-            let authorized = self.authorized;
-            let day = self.day;
-            let horizon = self.horizon;
-            let analysis_limits = ProfileAnalysisLimits {
-                maximum_work: ProfileAnalysisLimits::default()
-                    .maximum_work
-                    .min(self.remaining_work),
-                ..ProfileAnalysisLimits::default()
-            };
-            let (evidence, analysis) = tokio::task::spawn_blocking(move || {
-                let analysis = analyze_profile_evidence(
-                    &evidence,
-                    authorized,
-                    sampler_seed,
-                    day,
-                    horizon,
-                    analysis_limits,
-                );
-                (evidence, analysis)
-            })
-            .await?;
-            match analysis {
-                Ok(analysis) => {
-                    self.remaining_work -= analysis.work_units;
+            let allowance = ProfileAnalysisLimits::default()
+                .maximum_work
+                .min(self.remaining_work);
+            match loaded.work_units {
+                Ok(work_units) if work_units <= allowance => {
+                    self.remaining_work -= work_units;
+                    let truncation = loaded.truncation;
                     self.superseded_scopes += truncation.superseded_scopes;
                     if truncation.is_truncated() {
                         self.truncated += 1;
@@ -163,13 +202,13 @@ impl CountedProfileSource {
                         self.dropped_scopes += truncation.dropped_scopes;
                     }
                     return Ok(Some(ProfileArchiveEntry {
-                        evidence,
-                        sampler_seed,
+                        evidence: loaded.evidence,
+                        sampler_seed: loaded.sampler_seed,
                     }));
                 }
-                Err(ProfileDataError::LimitExceeded(_)) => {
-                    // A rejected analysis has no work report; reserve its full allowance.
-                    self.remaining_work -= analysis_limits.maximum_work;
+                Ok(_) | Err(ProfileDataError::LimitExceeded(_)) => {
+                    // A rejected analysis reserves its full allowance.
+                    self.remaining_work -= allowance;
                     self.skipped += 1;
                 }
                 Err(error) => return Err(error.into()),

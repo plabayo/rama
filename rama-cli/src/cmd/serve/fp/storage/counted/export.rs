@@ -1,7 +1,6 @@
 //! Bounded, read-only profile snapshots for the common Rust analyzer.
 
 use rama::{
-    futures::future,
     telemetry::tracing,
     ua::profile::{
         analysis::profile::{
@@ -20,10 +19,9 @@ use super::*;
 /// Bucket loads in flight on the export transaction at once.
 const PIPELINED_BUCKET_LOADS: usize = 64;
 
-/// A bounded profile can be skipped without losing the cursor or other profiles.
+/// A bounded profile can be skipped without losing other profiles.
 #[derive(Debug)]
 pub(in super::super) struct ProfileReadLimit {
-    pub id: ValueId,
     pub reason: &'static str,
 }
 
@@ -140,10 +138,43 @@ async fn load_budgeted_bucket(
     Ok((stored, budget - left))
 }
 
-pub(in super::super) async fn next_profile(
+/// Ids of at most `maximum` profiles with buckets in the export window, in export order.
+pub(in super::super) async fn profile_ids(
+    client: &Client,
+    authorized: bool,
+    current_day: u32,
+    horizon: u32,
+    analysis_limits: ProfileAnalysisLimits,
+    maximum: usize,
+) -> Result<Vec<ValueId>, BoxError> {
+    let first = analysis_limits
+        .window
+        .retention
+        .first_day(current_day, horizon)?;
+    client
+        .query(
+            "SELECT p.id FROM fp_v2.profiles p WHERE p.authorized=$1
+         AND EXISTS (SELECT 1 FROM fp_v2.buckets b WHERE b.authorized=p.authorized
+          AND b.profile_id=p.id AND b.day BETWEEN $2 AND $3)
+         ORDER BY p.id LIMIT $4",
+            &[
+                &authorized,
+                &i64::from(first),
+                &i64::from(current_day),
+                &integer(maximum)?,
+            ],
+        )
+        .await?
+        .into_iter()
+        .map(|row| identity(row.try_get(0)?))
+        .collect()
+}
+
+/// One profile's evidence; `None` once it has no bucket left in the export window.
+pub(in super::super) async fn load_profile(
     client: &mut Client,
     authorized: bool,
-    after: Option<ValueId>,
+    id: ValueId,
     current_day: u32,
     horizon: u32,
     analysis_limits: ProfileAnalysisLimits,
@@ -159,18 +190,16 @@ pub(in super::super) async fn next_profile(
         .isolation_level(IsolationLevel::RepeatableRead)
         .start()
         .await?;
-    let after = after.map(|id| id.0.to_vec());
     let maximum = integer(analysis_limits.metadata_bytes)?;
     let row = transaction
         .query_opt(
             "SELECT p.id, CASE WHEN octet_length(p.canonical)::bigint <= $5 THEN p.canonical END
-         FROM fp_v2.profiles p WHERE p.authorized=$1 AND ($2::bytea IS NULL OR p.id>$2)
+         FROM fp_v2.profiles p WHERE p.authorized=$1 AND p.id=$2
          AND EXISTS (SELECT 1 FROM fp_v2.buckets b WHERE b.authorized=p.authorized
-          AND b.profile_id=p.id AND b.day BETWEEN $3 AND $4)
-         ORDER BY p.id LIMIT 1",
+          AND b.profile_id=p.id AND b.day BETWEEN $3 AND $4)",
             &[
                 &authorized,
-                &after,
+                &&id.0[..],
                 &i64::from(first),
                 &i64::from(current_day),
                 &maximum,
@@ -181,10 +210,26 @@ pub(in super::super) async fn next_profile(
         transaction.commit().await?;
         return Ok(None);
     };
-    let profile_id = identity(row.try_get(0)?)?;
     let result: Result<_, BoxError> = async {
         let profile = canonical(row.try_get(0)?, row.try_get(1)?)?;
-        let quota=transaction.query_one("SELECT watermark,sampler_seed,buckets,runs,interned_values FROM fp_v2.quotas WHERE authorized=$1",&[&authorized]).await?;
+        // Independent lookups share one round trip.
+        let (first_sql, current_sql) = (i64::from(first), i64::from(current_day));
+        let (quota, newest) = future::try_join(
+            transaction.query_one(
+                "SELECT watermark,sampler_seed,buckets,runs,interned_values FROM fp_v2.quotas WHERE authorized=$1",
+                &[&authorized],
+            ),
+            transaction.query_one(
+                concat!(
+                    "SELECT max(",
+                    scope_revision!(),
+                    ") FROM fp_v2.buckets b
+                     WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4"
+                ),
+                &[&authorized, &&profile.id.0[..], &first_sql, &current_sql],
+            ),
+        )
+        .await?;
         if u32::try_from(quota.try_get::<_, i64>(0)?)? > current_day {
             return Err(invalid("export clock predates store watermark"));
         }
@@ -196,20 +241,11 @@ pub(in super::super) async fn next_profile(
         )?
         .ok_or_else(|| invalid("export sampler seed missing"))?;
         // Rank and limit only the newest revision so superseded captures never replay.
-        let newest: i32 = transaction
-            .query_one(
-                concat!(
-                    "SELECT max(",
-                    scope_revision!(),
-                    ") FROM fp_v2.buckets b
-                     WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4"
-                ),
-                &[&authorized, &&profile.id.0[..], &i64::from(first), &i64::from(current_day)],
-            )
-            .await?
+        let newest: i32 = newest
             .try_get::<_, Option<i32>>(0)?
             .ok_or_else(|| invalid("export profile without buckets"))?;
-        let rows=transaction.query(
+        let stored_limit = bounded_rows(analysis_limits.stored_scopes)?;
+        let (rows, superseded) = future::try_join(transaction.query(
             concat!("SELECT b.scope,
               CASE WHEN octet_length(b.scope_canonical)::bigint <= $5 THEN b.scope_canonical END,
               b.domain,b.structure_id,
@@ -225,20 +261,18 @@ pub(in super::super) async fn next_profile(
              ORDER BY (SELECT count(DISTINCT x.run) FROM fp_v2.samples x WHERE x.authorized=$1
                AND x.scope=b.scope AND x.day BETWEEN $3 AND $4) DESC,
               count(*) DESC, sum(b.total) DESC, b.scope LIMIT $6"),
-            &[&authorized,&&profile.id.0[..],&i64::from(first),&i64::from(current_day),&maximum,&bounded_rows(analysis_limits.stored_scopes)?,&newest],
-        ).await?;
-        let superseded: i64 = transaction
-            .query_one(
+            &[&authorized,&&profile.id.0[..],&first_sql,&current_sql,&maximum,&stored_limit,&newest],
+        ), transaction.query_one(
                 concat!(
                     "SELECT count(DISTINCT b.scope) FROM fp_v2.buckets b
                      WHERE b.authorized=$1 AND b.profile_id=$2 AND b.day BETWEEN $3 AND $4 AND ",
                     scope_revision!(),
                     "<>$5"
                 ),
-                &[&authorized, &&profile.id.0[..], &i64::from(first), &i64::from(current_day), &newest],
-            )
-            .await?
-            .try_get(0)?;
+                &[&authorized, &&profile.id.0[..], &first_sql, &current_sql, &newest],
+        ))
+        .await?;
+        let superseded: i64 = superseded.try_get(0)?;
         let mut truncation = ScopeTruncation {
             stored_scopes: rows.len(),
             superseded_scopes: usize::try_from(superseded)?,
@@ -400,10 +434,7 @@ pub(in super::super) async fn next_profile(
         if let Some(ProfileDataError::LimitExceeded(reason)) =
             error.downcast_ref::<ProfileDataError>()
         {
-            BoxError::from(ProfileReadLimit {
-                id: profile_id,
-                reason,
-            })
+            BoxError::from(ProfileReadLimit { reason })
         } else {
             error
         }
