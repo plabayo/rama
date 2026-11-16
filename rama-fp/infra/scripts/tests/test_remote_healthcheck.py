@@ -55,6 +55,27 @@ class HealthcheckTests(unittest.TestCase):
         ):
             self.assertFalse(health.dns_answer(probe, answer)[0])
 
+    def test_https_answers_include_the_record_owner(self):
+        for site in health.SITES:
+            if not site.alpn:
+                continue
+            probe = health.Probe(site, "dns", "HTTPS")
+            alpn = '\",\"'.join(site.alpn)
+            binding = f'1 . alpn="{alpn}"'
+            if site.exclusive_alpn:
+                binding += " no-default-alpn"
+            with self.subTest(domain=probe.domain):
+                for owner in (probe.domain, probe.domain.upper() + "."):
+                    self.assertTrue(
+                        health.dns_answer(probe, f"* {owner} {binding}")[0]
+                    )
+                self.assertFalse(
+                    health.dns_answer(probe, f"* other.example. {binding}")[0]
+                )
+                self.assertFalse(
+                    health.dns_answer(probe, f'* {probe.domain}. 0 . alpn="{alpn}"')[0]
+                )
+
     def test_http_requires_exact_protocol_success_and_complete_body(self):
         args = health.parse_args(["--rama", "/fake/rama"])
         rama = health.Rama(args.rama, "unused", 60)
