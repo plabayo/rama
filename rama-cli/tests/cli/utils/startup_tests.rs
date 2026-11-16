@@ -298,6 +298,16 @@ fn idle_ech_reload_does_not_hold_graceful_shutdown() {
     service.wait_for_endpoint(TransportProtocol::Tcp);
     assert!(
         Command::new("kill")
+            .args(["-HUP", &service.process.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    // This also proves the cancellable reload task has polled the shutdown
+    // signal, rather than racing SIGTERM against signal-handler registration.
+    service.wait_for_diagnostic("reloaded ECH server keys");
+    assert!(
+        Command::new("kill")
             .args(["-TERM", &service.process.id().to_string()])
             .status()
             .unwrap()
