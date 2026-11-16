@@ -4,26 +4,25 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
-    graceful::scope_context,
     io::{
-        HeapReader, PeekIoProvider, PrefixedIo, ReplayReader,
+        HeapReader, PeekIoProvider, PrefixedIo,
         peek::{
-            PeekMapped, PeekOptions, PeekOutput, PeekPolicy, PeekPolicyProvider, PeekStopReason,
-            PeekVerdict, default_egress_peek_max_size,
-            peek_input_until_verdict_growing_with_output, peek_input_until_verdict_with_options,
+            DEFAULT_EGRESS_PEEK_MAX_SIZE, PeekMapped, PeekOptions, PeekOutput, PeekPolicy,
+            PeekPolicyProvider, PeekStopReason, PeekVerdict, peek_input_until_verdict,
+            peek_input_until_verdict_growing_with_output, replay_peeked,
         },
     },
     service::RejectService,
     telemetry::tracing,
 };
-use rama_utils::octets::kib;
+use rama_utils::{macros::nonzero, octets::kib};
 
 use crate::client::{
     ClientHello, ClientHelloHandshakePrefix, ClientHelloPeekStatus, ClientHelloReassemblyConfig,
     MalformedTlsPolicy, parse_client_hello_handshake_prefix_with_config,
 };
 
-use super::{NoTlsRejectError, TlsEgressPredicate};
+use super::{NoTlsRejectError, TlsEgressPredicate, peek::TLS_HEADER_PEEK_LEN};
 
 /// A peek [`Service`] which returns the [`ClientHello`] to the inner
 /// service for tls-detected traffic, and otherwise make use of the Reject service.
@@ -64,7 +63,7 @@ impl<S> PeekTlsClientHelloService<S> {
             service,
             fallback: RejectService::new(NoTlsRejectError),
             peek_policy: PeekPolicy::FAIL_OPEN,
-            max_egress_peek_size: default_egress_peek_max_size(),
+            max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
             reassembly_config: ClientHelloReassemblyConfig::default(),
             malformed_tls_policy: MalformedTlsPolicy::default(),
         }
@@ -227,25 +226,23 @@ where
     let mut waiter = options.waiter(egress, &TlsEgressPredicate);
 
     // Fail fast on non-TLS prefixes (see `client_hello_header_verdict`) instead of
-    // blocking until the full 5-byte window arrives; no attempt cap so a
-    // fragmented but still-plausible TLS header keeps reading (bounded by the
-    // buffer, EOF, and the waiter).
+    // blocking until the full 5-byte window arrives; a fragmented but
+    // still-plausible TLS header keeps reading (bounded by the buffer, EOF, and
+    // the waiter).
     let PeekOutput {
         data,
         peek_size,
         stop_reason,
-    } = peek_input_until_verdict_with_options(
+    } = peek_input_until_verdict(
         peekable_io,
         &mut peek_buf,
         0,
         &mut waiter,
-        None,
         client_hello_header_verdict,
     )
     .await;
 
-    waiter.check::<std::io::Error>()?;
-
+    // A cutoff the policy fails stops with a cutoff reason and errors in `finish`.
     if stop_reason == PeekStopReason::ReadError {
         return Err(std::io::Error::other("I/O failure reading TLS header"));
     }
@@ -267,18 +264,9 @@ where
     tracing::trace!("tls prefix header read (is tls: {is_tls})");
 
     if !is_tls {
-        if TLS_HEADER_PEEK_LEN.saturating_sub(peek_size) > 0 {
-            tracing::trace!(
-                "move tls peek buffer cursor due to reading not enough (read: {peek_size})"
-            );
-        }
-
-        let egress_prefix = waiter.into_egress_prefix();
+        let egress_prefix = waiter.finish::<std::io::Error>()?;
         let prefix_data = HeapReader::from(&peek_buf[..peek_size.min(TLS_HEADER_PEEK_LEN)]);
-        let peeked_input = input.map_peek_io(
-            |io| PrefixedIo::new(prefix_data, io),
-            |io| PrefixedIo::new(ReplayReader::new(egress_prefix), io),
-        );
+        let peeked_input = replay_peeked(input, prefix_data, egress_prefix);
 
         tracing::trace!("return without a ClientHello after header classification");
         let failure = if stop_reason.is_cutoff() || tls_candidate {
@@ -291,7 +279,7 @@ where
 
     // Grow with actual input, bounded by handshake bytes plus record headers
     // and the final record's tail. Keep the original framing for replay.
-    let read_chunk = NonZeroUsize::new(kib(1)).unwrap_or(NonZeroUsize::MIN);
+    let read_chunk = nonzero!(kib(1));
 
     let mut v = Vec::with_capacity(read_chunk.get() + TLS_HEADER_PEEK_LEN);
     v.extend_from_slice(&peek_buf[..]);
@@ -310,8 +298,6 @@ where
     )
     .await;
 
-    waiter.check::<std::io::Error>()?;
-
     match output.stop_reason {
         reason if reason == PeekStopReason::Match || reason.is_cutoff() => {}
         PeekStopReason::ReadError => {
@@ -325,12 +311,8 @@ where
         }
         _ => {} // Explicit fallback preserves the bounded prefix and unread stream.
     }
-    let egress_prefix = waiter.into_egress_prefix();
-    let prefix_data = HeapReader::from(v);
-    let peeked_input = input.map_peek_io(
-        |io| PrefixedIo::new(prefix_data, io),
-        |io| PrefixedIo::new(ReplayReader::new(egress_prefix), io),
-    );
+    let egress_prefix = waiter.finish::<std::io::Error>()?;
+    let peeked_input = replay_peeked(input, HeapReader::from(v), egress_prefix);
 
     let status = ClientHelloPeekStatus {
         failure: output.data.is_none().then_some(output.stop_reason),
@@ -362,10 +344,7 @@ where
 
     async fn serve(&self, input: PeekableInput) -> Result<Self::Output, Self::Error> {
         let extensions = input.extensions().clone();
-        let options = PeekOptions::new()
-            .with_policy(self.peek_policy.peek_policy(&input))
-            .maybe_with_scope(scope_context(&extensions))
-            .with_max_egress_peek_size(self.max_egress_peek_size);
+        let options = PeekOptions::from_input(&input, &self.peek_policy, self.max_egress_peek_size);
         let (peeked_input, maybe_client_hello, status) =
             peek_client_hello_from_input_with_policies(
                 input,
@@ -405,8 +384,6 @@ fn client_hello_header_verdict(buffer: &[u8]) -> PeekVerdict<()> {
         _ => PeekVerdict::Reject,
     }
 }
-
-const TLS_HEADER_PEEK_LEN: usize = 5;
 
 /// [`PrefixedIo`] alias used by [`PeekTlsClientHelloService`].
 pub type TlsClientHelloPrefixedIo<S> = PrefixedIo<HeapReader, S>;

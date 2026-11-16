@@ -294,7 +294,6 @@ where
                 match outcome.reason {
                     BridgeCloseReason::IdleTimeout
                     | BridgeCloseReason::FirstByteTimeout
-                    | BridgeCloseReason::PeekTimeout
                     | BridgeCloseReason::HandlerDeadline
                     | BridgeCloseReason::PausedTimeout
                     | BridgeCloseReason::MaxLifetime => {

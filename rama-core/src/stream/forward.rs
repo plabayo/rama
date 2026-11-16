@@ -53,9 +53,6 @@ pub enum BridgeCloseReason {
     WriteErrorLeft,
     /// Write to the right half failed.
     WriteErrorRight,
-    /// A protocol-peek read deadline elapsed before the peek completed.
-    /// Used by tproxy bridges that peek the first bytes for protocol detection.
-    PeekTimeout,
     /// The flow handler did not produce a decision within the configured
     /// deadline. The flow was rejected (or passed through, depending on
     /// configuration) without bridging.
@@ -95,7 +92,6 @@ impl core::fmt::Display for BridgeCloseReason {
             Self::ReadErrorRight => "read_error_right",
             Self::WriteErrorLeft => "write_error_left",
             Self::WriteErrorRight => "write_error_right",
-            Self::PeekTimeout => "peek_timeout",
             Self::HandlerDeadline => "handler_deadline",
             Self::PausedTimeout => "paused_timeout",
             Self::FirstByteTimeout => "first_byte_timeout",
@@ -118,7 +114,6 @@ impl BridgeCloseReason {
             Self::ReadErrorRight => 6,
             Self::WriteErrorLeft => 7,
             Self::WriteErrorRight => 8,
-            Self::PeekTimeout => 9,
             Self::HandlerDeadline => 10,
             Self::PausedTimeout => 11,
             Self::FirstByteTimeout => 12,

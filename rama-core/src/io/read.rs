@@ -149,30 +149,52 @@ impl Read for HeapReader {
 pub struct StackReader<const N: usize> {
     data: [u8; N],
     offset: usize,
+    len: usize,
 }
 
 impl<const N: usize> StackReader<N> {
     /// Creates a new `StackReader` with the specified bytes data.
     #[must_use]
     pub const fn new(data: [u8; N]) -> Self {
-        Self { data, offset: 0 }
+        Self {
+            data,
+            offset: 0,
+            len: N,
+        }
+    }
+
+    /// Creates a `StackReader` that reads only the first `len` bytes of `data`,
+    /// e.g. a peek buffer that was only partially filled.
+    ///
+    /// A `len` beyond `N` is clamped to `N`.
+    #[must_use]
+    pub const fn from_prefix(data: [u8; N], len: usize) -> Self {
+        Self {
+            data,
+            offset: 0,
+            len: if len < N { len } else { N },
+        }
     }
 
     /// Skip up to n bytes, less if n < m
     pub fn skip(&mut self, n: usize) {
-        self.offset = (self.offset + n).min(N);
+        self.offset = (self.offset + n).min(self.len);
     }
 
     /// How many bytes are there remaining
     #[must_use]
     pub fn remaining(&self) -> usize {
-        N - self.offset
+        self.len - self.offset
     }
 
     /// Returns true if there are any more bytes to consume
     #[must_use]
     pub fn has_remaining(&self) -> bool {
         self.remaining() > 0
+    }
+
+    fn unread(&self) -> &[u8] {
+        &self.data[self.offset..self.len]
     }
 }
 
@@ -189,14 +211,12 @@ impl<const N: usize> AsyncRead for StackReader<N> {
         _cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        if self.offset < N {
-            let remaining = &self.data[self.offset..];
-            let to_copy = remaining.len().min(buf.remaining());
+        let remaining = self.unread();
+        let to_copy = remaining.len().min(buf.remaining());
 
-            if to_copy > 0 {
-                buf.put_slice(&remaining[..to_copy]);
-                self.offset += to_copy;
-            }
+        if to_copy > 0 {
+            buf.put_slice(&remaining[..to_copy]);
+            self.offset += to_copy;
         }
 
         // done
@@ -206,12 +226,7 @@ impl<const N: usize> AsyncRead for StackReader<N> {
 
 impl<const N: usize> AsyncBufRead for StackReader<N> {
     fn poll_fill_buf(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
-        let me = self.get_mut();
-        Poll::Ready(Ok(if me.offset < N {
-            &me.data[me.offset..]
-        } else {
-            &[]
-        }))
+        Poll::Ready(Ok(self.get_mut().unread()))
     }
 
     fn consume(self: Pin<&mut Self>, amt: usize) {
@@ -221,19 +236,14 @@ impl<const N: usize> AsyncBufRead for StackReader<N> {
 
 impl<const N: usize> Read for StackReader<N> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.offset < N {
-            let remaining = &self.data[self.offset..];
-            let to_copy = remaining.len().min(buf.len());
+        let remaining = self.unread();
+        let to_copy = remaining.len().min(buf.len());
 
-            if to_copy > 0 {
-                buf[..to_copy].copy_from_slice(&remaining[..to_copy]);
-                self.offset += to_copy;
-                return Ok(to_copy);
-            }
+        if to_copy > 0 {
+            buf[..to_copy].copy_from_slice(&remaining[..to_copy]);
+            self.offset += to_copy;
         }
-
-        // done
-        Ok(0)
+        Ok(to_copy)
     }
 }
 
@@ -617,6 +627,37 @@ mod test {
         TestCase::<10, _> {
             reader: StackReader::from(*b"hello world"),
             expected_reads: &["hello worl", "d", ""],
+        }
+        .test_sync_and_async()
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_stack_reader_from_prefix() {
+        TestCase::<5, _> {
+            reader: StackReader::from_prefix(*b"hello", 0),
+            expected_reads: &["", ""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<5, _> {
+            reader: StackReader::from_prefix(*b"hello", 1),
+            expected_reads: &["h", ""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<2, _> {
+            reader: StackReader::from_prefix(*b"hello", 5),
+            expected_reads: &["he", "ll", "o", ""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<8, _> {
+            reader: StackReader::from_prefix(*b"hello", 9),
+            expected_reads: &["hello", ""],
         }
         .test_sync_and_async()
         .await;

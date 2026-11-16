@@ -10,10 +10,9 @@ use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
-    graceful::scope_context,
     io::{
         HeapReader, PrefixedIo,
-        peek::{PeekOptions, PeekPolicy, PeekPolicyProvider},
+        peek::{DEFAULT_EGRESS_PEEK_MAX_SIZE, PeekOptions, PeekPolicy, PeekPolicyProvider},
     },
     service::RejectService,
 };
@@ -133,9 +132,8 @@ where
         // The shared peeker validates and reassembles TLS before SNI routing,
         // while preserving all original wire bytes for the selected service.
         let extensions = stream.extensions().clone();
-        let options = PeekOptions::new()
-            .with_policy(self.peek_policy.peek_policy(&stream))
-            .maybe_with_scope(scope_context(&extensions));
+        let options =
+            PeekOptions::from_input(&stream, &self.peek_policy, DEFAULT_EGRESS_PEEK_MAX_SIZE);
         let (peeked, maybe_client_hello, status) = peek_client_hello_from_input_with_policies(
             stream,
             options,

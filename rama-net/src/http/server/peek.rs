@@ -4,15 +4,15 @@ use std::num::NonZeroUsize;
 
 use rama_core::{
     Service,
-    bytes::BytesMut,
+    bytes::{BufMut as _, BytesMut},
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
-    graceful::{WeakScope, scope_context},
+    graceful::WeakScope,
     io::{
         PeekIoProvider, PrefixedIo, ReplayReader,
         peek::{
-            PeekEgressPredicate, PeekMapped, PeekPolicy, PeekPolicyProvider, PeekRead, PeekVerdict,
-            PeekWaiter, default_egress_peek_max_size, peek_egress,
+            DEFAULT_EGRESS_PEEK_MAX_SIZE, PeekEgressPredicate, PeekMapped, PeekOptions, PeekPolicy,
+            PeekPolicyProvider, PeekRead, PeekVerdict, replay_peeked,
         },
     },
     service::RejectService,
@@ -161,7 +161,7 @@ impl<T> HttpPeekRouter<HttpAutoAcceptor<T>> {
             fallback: RejectService::new(NoHttpRejectError),
             peek_config: HttpPeekConfig::default(),
             peek_policy: PeekPolicy::FAIL_OPEN,
-            max_egress_peek_size: default_egress_peek_max_size(),
+            max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
         }
     }
 }
@@ -175,7 +175,7 @@ impl<T> HttpPeekRouter<Http1Acceptor<T>> {
             fallback: RejectService::new(NoHttpRejectError),
             peek_config: HttpPeekConfig::default(),
             peek_policy: PeekPolicy::FAIL_OPEN,
-            max_egress_peek_size: default_egress_peek_max_size(),
+            max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
         }
     }
 }
@@ -189,7 +189,7 @@ impl<T> HttpPeekRouter<H2Acceptor<T>> {
             fallback: RejectService::new(NoHttpRejectError),
             peek_config: HttpPeekConfig::default(),
             peek_policy: PeekPolicy::FAIL_OPEN,
-            max_egress_peek_size: default_egress_peek_max_size(),
+            max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
         }
     }
 }
@@ -265,10 +265,8 @@ impl<T, F, Pol> HttpPeekRouter<T, F, Pol> {
     {
         HttpPeekOptions {
             config: self.peek_config,
-            policy: self.peek_policy.peek_policy(input),
-            scope: scope_context(input.extensions()),
+            peek: PeekOptions::from_input(input, &self.peek_policy, self.max_egress_peek_size),
             egress,
-            max_egress_peek_size: self.max_egress_peek_size,
         }
     }
 }
@@ -285,7 +283,7 @@ impl<T, U> HttpPeekRouter<HttpDualAcceptor<T, U>> {
             fallback: RejectService::new(NoHttpRejectError),
             peek_config: HttpPeekConfig::default(),
             peek_policy: PeekPolicy::FAIL_OPEN,
-            max_egress_peek_size: default_egress_peek_max_size(),
+            max_egress_peek_size: DEFAULT_EGRESS_PEEK_MAX_SIZE,
         }
     }
 }
@@ -834,20 +832,16 @@ fn is_http_request_target_prefix_byte(byte: u8) -> bool {
 #[derive(Debug, Clone)]
 pub struct HttpPeekOptions {
     config: HttpPeekConfig,
-    policy: PeekPolicy,
-    scope: Option<WeakScope>,
+    peek: PeekOptions,
     egress: HttpEgressPredicate,
-    max_egress_peek_size: NonZeroUsize,
 }
 
 impl Default for HttpPeekOptions {
     fn default() -> Self {
         Self {
             config: HttpPeekConfig::default(),
-            policy: PeekPolicy::FAIL_OPEN,
-            scope: None,
+            peek: PeekOptions::default(),
             egress: HttpEgressPredicate::ANY,
-            max_egress_peek_size: default_egress_peek_max_size(),
         }
     }
 }
@@ -870,7 +864,7 @@ impl HttpPeekOptions {
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`PeekPolicy`] applied to cutoffs.
         pub fn policy(mut self, policy: PeekPolicy) -> Self {
-            self.policy = policy;
+            self.peek.set_policy(policy);
             self
         }
     }
@@ -878,8 +872,10 @@ impl HttpPeekOptions {
     rama_utils::macros::generate_set_and_with! {
         /// Set the scope that can cut the peek short, usually the scope the
         /// input runs in, see [`scope_context`].
+        ///
+        /// [`scope_context`]: rama_core::graceful::scope_context
         pub fn scope(mut self, scope: Option<WeakScope>) -> Self {
-            self.scope = scope;
+            self.peek.maybe_set_scope(scope);
             self
         }
     }
@@ -895,7 +891,7 @@ impl HttpPeekOptions {
     rama_utils::macros::generate_set_and_with! {
         /// Set the byte limit for peeking the egress.
         pub fn max_egress_peek_size(mut self, max_egress_peek_size: NonZeroUsize) -> Self {
-            self.max_egress_peek_size = max_egress_peek_size;
+            self.peek.set_max_egress_peek_size(max_egress_peek_size);
             self
         }
     }
@@ -951,16 +947,11 @@ where
 {
     let HttpPeekOptions {
         config,
-        policy,
-        scope,
+        peek,
         egress,
-        max_egress_peek_size,
     } = options;
     let (ingress, egress_io) = input.peek_ios_mut();
-    let mut waiter = PeekWaiter::new()
-        .with_policy(policy)
-        .maybe_with_scope(scope)
-        .maybe_with_egress(peek_egress(egress_io, &egress, max_egress_peek_size));
+    let mut waiter = peek.waiter(egress_io, &egress);
     let mut state = HttpPeekState::new(
         config.max_http1_request_line_size,
         config.skipped_http1_methods,
@@ -982,9 +973,9 @@ where
 
         let read_capacity = remaining.min(next_read_buffer_size);
         let read_start = buffer.len();
-        buffer.resize(read_start + read_capacity, 0);
+        buffer.reserve(read_capacity);
         let read = waiter
-            .read(ingress, &mut buffer[read_start..], read_start)
+            .read_buf(ingress, &mut (&mut buffer).limit(read_capacity), read_start)
             .await;
         let read_size = match read {
             PeekRead::Read(size) => size,
@@ -994,15 +985,13 @@ where
             }
             PeekRead::Cutoff(cutoff) => {
                 tracing::debug!(?cutoff, "HTTP peek cut off");
-                waiter.check::<BoxError>()?;
                 0
             }
         };
-        buffer.truncate(read_start + read_size);
 
-        let Some(_) = core::num::NonZeroUsize::new(read_size) else {
+        if read_size == 0 {
             break;
-        };
+        }
 
         if read_size == read_capacity {
             next_read_buffer_size = next_read_buffer_size
@@ -1031,12 +1020,8 @@ where
         peek_size = buffer.len(),
         "HTTP peek read loop finished"
     );
-    let egress_prefix = waiter.into_egress_prefix();
-    let peek = ReplayReader::new(buffer.freeze());
-    let peek_input = input.map_peek_io(
-        |io| PrefixedIo::new(peek, io),
-        |io| PrefixedIo::new(ReplayReader::new(egress_prefix), io),
-    );
+    let egress_prefix = waiter.finish::<BoxError>()?;
+    let peek_input = replay_peeked(input, ReplayReader::new(buffer.freeze()), egress_prefix);
 
     Ok((matched_version, peek_input))
 }
