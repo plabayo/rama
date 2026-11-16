@@ -2378,6 +2378,7 @@ mod tests {
             RrParse::Record { ttl, value } => {
                 assert_eq!(ttl, 300);
                 assert_eq!(value.owner.to_string(), "example.com.");
+                assert_eq!(value.owner.as_wire().as_ptr(), raw.as_ptr());
                 match &value.binding.params()[0] {
                     crate::wire::SvcParam::Unknown { value, .. } => {
                         assert_eq!(value.as_ptr(), value_ptr);

@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, num::NonZeroU64};
 
+use rama_http::proto::h3::SettingId;
 use serde::Serialize;
 
 use crate::profile::{
@@ -204,7 +205,7 @@ impl H3SettingsReplayEvidence {
                 let first = draw.index(upper);
                 let mut ordinal = first;
                 loop {
-                    id = 33 + 31 * ordinal;
+                    id = SettingId::FIRST_RESERVED.value() + SettingId::RESERVED_INTERVAL * ordinal;
                     if !capture
                         .fields
                         .iter()

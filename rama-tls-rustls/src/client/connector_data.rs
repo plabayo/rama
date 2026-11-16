@@ -411,7 +411,7 @@ pub(super) fn webpki_root_certs() -> Arc<RootCertStore> {
 #[cfg_attr(docsrs, doc(cfg(not(any(feature = "aws-lc", feature = "ring")))))]
 pub fn self_signed_client_auth()
 -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    Err(BoxError::from(
+    Err(BoxError::from_static_str(
         "enable aws-lc or ring feature to use fn self_signed_client_auth",
     ))
 }

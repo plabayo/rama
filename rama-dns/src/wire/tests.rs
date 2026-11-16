@@ -3,7 +3,7 @@ use std::{
     borrow::Cow,
     error::Error as _,
     hash::{Hash as _, Hasher},
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
 use rama_core::bytes::Bytes;
@@ -722,6 +722,40 @@ fn parses_rfc_9460_mandatory_alpn_and_ipv4_hint_vector() {
         parsed.ipv4_hints(),
         Some(&[Ipv4Addr::new(192, 0, 2, 1)][..])
     );
+}
+
+#[test]
+fn service_binding_reports_mandatory_keys_and_ip_hints() {
+    let mandatory = [0, 4, 0, 5];
+    let ipv4 = [192, 0, 2, 1, 192, 0, 2, 2];
+    let ipv6 = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    let parsed = ServiceBinding::parse_rdata(&binding(
+        1,
+        FOO_EXAMPLE_COM,
+        &[
+            (u16::from(SvcParamKey::Mandatory), &mandatory),
+            (u16::from(SvcParamKey::Ipv4Hint), &ipv4),
+            (u16::from(SvcParamKey::Ech), b"\x00\x04\xfe\x0d\x00\x00"),
+            (u16::from(SvcParamKey::Ipv6Hint), &ipv6),
+        ],
+    ))
+    .unwrap();
+    assert!(parsed.is_mandatory(SvcParamKey::Ipv4Hint));
+    assert!(parsed.is_mandatory(SvcParamKey::Ech));
+    assert!(!parsed.is_mandatory(SvcParamKey::Ipv6Hint));
+    assert!(!parsed.is_mandatory(SvcParamKey::Alpn));
+    assert_eq!(
+        parsed.ip_hints().collect::<Vec<_>>(),
+        [
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            IpAddr::V6("2001:db8::1".parse().unwrap()),
+        ]
+    );
+
+    let bare = ServiceBinding::parse_rdata(&binding(1, FOO_EXAMPLE_COM, &[])).unwrap();
+    assert!(!bare.is_mandatory(SvcParamKey::Ech));
+    assert_eq!(bare.ip_hints().count(), 0);
 }
 
 #[test]

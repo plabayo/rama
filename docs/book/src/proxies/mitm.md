@@ -115,7 +115,7 @@ after ClientHello peeking and before `TlsMitmRelayService`:
 ```rust,ignore
 let relay = TargetEchConfigLayer::new()
     .with_resolver(resolver)
-    .with_capable(true)
+    .with_ech_capable(true)
     .layer(relay_service);
 ```
 

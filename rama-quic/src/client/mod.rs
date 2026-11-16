@@ -51,7 +51,8 @@ use rama_net::{
 };
 use rama_quic_proto::{TransportErrorCode, profile::QuicProfile};
 use rama_tls::client::{
-    TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName,
+    EchRequirement, EchRetryConfig, TlsClientConfig, TlsConnectionReuse, TlsEchAccepted,
+    TlsServerAuthentication, TlsServerName, resolve_target_ech,
 };
 use rama_utils::macros::generate_set_and_with;
 
@@ -238,29 +239,20 @@ impl<E> QuicConnector<E> {
         // Conditional DNS reliance makes this endpoint locally unavailable;
         // another candidate/backend may still be usable. Caller policy errors
         // retain the existing invalid-input classification.
-        let ech_error_kind = if tls
-            .as_extensions()
-            .get_ref::<rama_tls::client::EchRequirement>()
-            == Some(&rama_tls::client::EchRequirement::Required)
-        {
-            InvalidInput
-        } else {
-            rama_net::client::ConnectionErrorKind::Unavailable
-        };
-        rama_tls::client::target_ech_config(
+        let ech_error_kind =
+            if tls.as_extensions().get_ref::<EchRequirement>() == Some(&EchRequirement::Required) {
+                InvalidInput
+            } else {
+                Unavailable
+            };
+        let ech_required = resolve_target_ech(
             tls.as_extensions(),
             &target,
             self.tls_provider().supports_ech(),
         )
-        .map_err(|error| ConnectionError::local(error, ech_error_kind))?;
-        let ech_required = rama_tls::client::target_ech_required(
-            tls.as_extensions(),
-            &target,
-            self.tls_provider().supports_ech(),
-        )
-        .map_err(|error| ConnectionError::local(error, ech_error_kind))?;
-        tls.as_extensions()
-            .insert(rama_net::client::ConnectorTarget(target));
+        .map_err(|error| ConnectionError::local(error, ech_error_kind))?
+        .required;
+        tls.as_extensions().insert(ConnectorTarget(target));
         let alpn_policy = tls
             .as_extensions()
             .get_ref::<AlpnPolicy>()
@@ -385,10 +377,7 @@ impl<E> QuicConnector<E> {
         let connection = connecting.await?;
         connection.handshake_confirmed().await?;
         if prepared.ech_required
-            && connection
-                .extensions()
-                .get_ref::<rama_tls::client::TlsEchAccepted>()
-                != Some(&rama_tls::client::TlsEchAccepted(true))
+            && connection.extensions().get_ref::<TlsEchAccepted>() != Some(&TlsEchAccepted(true))
         {
             connection.close(0u32, b"ECH required");
             return Err(BoxError::from_static_str(
@@ -641,21 +630,13 @@ where
         match self.establish(&input).await {
             Ok(conn) => Ok(EstablishedClientConnection { input, conn }),
             Err(error) => {
-                if let Some(retry) = error.find_cause::<rama_tls::client::EchRetryConfig>()
+                if let Some(retry) = error.find_cause::<EchRetryConfig>()
                     && let Some(target) = input.connector_target()
                 {
                     // Fresh QUIC connection, within this same caller deadline.
                     // ECH preparation disables early data, so nothing is replayed.
                     let retry_input = input.fork();
-                    retry_input
-                        .extensions()
-                        .insert(rama_tls::client::EchRequirement::Required);
-                    retry_input
-                        .extensions()
-                        .insert(rama_net::tls::TargetEchConfig::new(
-                            target,
-                            retry.config_list().clone(),
-                        ));
+                    retry.apply(retry_input.extensions(), target);
                     let conn = self.establish(&retry_input).await?;
                     return Ok(EstablishedClientConnection { input, conn });
                 }

@@ -8,7 +8,7 @@
 //! among HTTPS endpoints should use the shared lookup directly or the HTTP
 //! discovery layer, then supply `TargetEchConfig` to their TLS backend.
 use super::{
-    ClientHello, EchRequirement, TlsClientConfig, TlsEncryptedClientHello, target_ech_config,
+    ClientHello, EchRequirement, TlsClientConfig, TlsEncryptedClientHello, resolve_target_ech,
 };
 use crate::server::InputWithClientHello;
 use rama_core::{
@@ -16,9 +16,12 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
 };
-use rama_dns::client::{
-    DEFAULT_HTTPS_ALIAS_LIMIT, GlobalDnsResolver, lookup_https_service_bindings,
-    resolver::DnsServiceBindingResolver,
+use rama_dns::{
+    client::{
+        DEFAULT_HTTPS_ALIAS_LIMIT, GlobalDnsResolver, lookup_https_service_bindings,
+        resolver::DnsServiceBindingResolver,
+    },
+    wire::SvcParamKey,
 };
 use rama_net::{
     ConnectorTargetInputExt,
@@ -46,7 +49,7 @@ impl Default for TargetEchConfigLayer {
 }
 
 impl TargetEchConfigLayer {
-    /// Use the global resolver. Declare backend support with `with_capable`.
+    /// Use the global resolver. Declare backend support with `with_ech_capable`.
     pub fn new() -> Self {
         Self {
             resolver: GlobalDnsResolver::new(),
@@ -80,7 +83,7 @@ impl<R> TargetEchConfigLayer<R> {
 
     generate_set_and_with! {
         /// Declare real ECH support in the inner TLS backend (default false).
-        pub fn capable(mut self, capable: bool) -> Self {
+        pub fn ech_capable(mut self, capable: bool) -> Self {
             self.capable = capable;
             self
         }
@@ -126,15 +129,8 @@ impl<R: DnsServiceBindingResolver> TargetEchConfigLayer<R> {
     /// Backend capability gates DNS; final intent may be installed later by a profile.
     pub async fn prepare<T: ConnectorTargetInputExt>(&self, input: &T) -> Result<(), BoxError> {
         let Some(target) = input.connector_target() else {
-            let effective = input
-                .extensions()
-                .fork()
-                .with_base(self.tls.as_extensions());
-            let requirement = effective
-                .get_ref::<EchRequirement>()
-                .copied()
-                .unwrap_or_default();
-            requirement.intent(effective.get_ref::<TlsEncryptedClientHello>())?;
+            let (requirement, _) =
+                EchRequirement::effective(&self.tls.overlay(input.extensions()))?;
             return if requirement == EchRequirement::Required {
                 Err(BoxError::from_static_str(
                     "required ECH needs a selected target",
@@ -190,7 +186,7 @@ impl<R: DnsServiceBindingResolver> TargetEchConfigLayer<R> {
         mirrored_hello: Option<&ClientHello>,
     ) -> Result<(), BoxError> {
         let effective_config = || {
-            let effective = extensions.fork().with_base(self.tls.as_extensions());
+            let effective = self.tls.overlay(extensions);
             if let Some(hello) = mirrored_hello
                 && !effective.contains::<TlsEncryptedClientHello>()
             {
@@ -199,19 +195,15 @@ impl<R: DnsServiceBindingResolver> TargetEchConfigLayer<R> {
             effective
         };
         let effective = effective_config();
-        let requirement = effective
-            .get_ref::<EchRequirement>()
-            .copied()
-            .unwrap_or_default();
-        let intent = requirement.intent(effective.get_ref::<TlsEncryptedClientHello>())?;
+        let (requirement, intent) = EchRequirement::effective(&effective)?;
         // A peeked hello supplies final mirror intent; ordinary connectors may
         // still install a profile after this layer has prepared endpoint facts.
         if mirrored_hello.is_some() && !intent {
-            target_ech_config(&effective, target, self.capable)?;
+            resolve_target_ech(&effective, target, self.capable)?;
             return Ok(());
         }
         if !self.capable {
-            target_ech_config(&effective, target, self.capable)?;
+            resolve_target_ech(&effective, target, self.capable)?;
             return Ok(());
         }
         if effective
@@ -221,11 +213,11 @@ impl<R: DnsServiceBindingResolver> TargetEchConfigLayer<R> {
                 .get_ref::<TargetEchServiceBinding>()
                 .is_some_and(|binding| binding.target == *target)
         {
-            target_ech_config(&effective, target, self.capable)?;
+            resolve_target_ech(&effective, target, self.capable)?;
             return Ok(());
         }
         if ProxyRouteContext::for_request(extensions).is_some() && !self.proxy_discovery {
-            target_ech_config(&effective, target, self.capable)?;
+            resolve_target_ech(&effective, target, self.capable)?;
             return Ok(());
         }
         let default_protocols = [ApplicationProtocol::HTTP_11];
@@ -262,16 +254,11 @@ impl<R: DnsServiceBindingResolver> TargetEchConfigLayer<R> {
         extensions.insert(TargetEchServiceBinding {
             target: target.clone(),
             reliant: result.ech_reliant(),
-            mandatory: binding.is_some_and(|binding| {
-                binding
-                    .record
-                    .binding
-                    .mandatory_keys()
-                    .is_some_and(|keys| keys.contains(&rama_dns::wire::SvcParamKey::Ech))
-            }),
+            mandatory: binding
+                .is_some_and(|binding| binding.record.binding.is_mandatory(SvcParamKey::Ech)),
         });
         let effective = effective_config();
-        target_ech_config(&effective, target, self.capable)?;
+        resolve_target_ech(&effective, target, self.capable)?;
         Ok(())
     }
 }

@@ -16,6 +16,7 @@ use rama::{
         cert::{GeneratedServerAuthConfig, generate_server_auth},
         pki_types::CertificateDer,
     },
+    error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
     net::{
         ConnectorTargetInputExt as _,
@@ -47,7 +48,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 #[derive(Clone)]
 struct ForbiddenDns(Arc<AtomicUsize>);
 impl rama::dns::client::resolver::DnsAddressResolver for ForbiddenDns {
-    type Error = rama::error::BoxError;
+    type Error = BoxError;
 
     fn lookup_ipv4(
         &self,
@@ -261,7 +262,7 @@ async fn caller_required_ech_failure_does_not_poison_alt_svc() {
                     >,
                     _,
                 >(ConnectionError::local(
-                    rama::error::BoxError::from("unexpected dial"),
+                    BoxError::from_static_str("unexpected dial"),
                     ConnectionErrorKind::InvalidInput,
                 ))
             }
@@ -280,7 +281,7 @@ async fn caller_required_ech_failure_does_not_poison_alt_svc() {
 #[derive(Clone)]
 struct SlowAlternativeDns;
 impl rama::dns::client::resolver::DnsAddressResolver for SlowAlternativeDns {
-    type Error = rama::error::BoxError;
+    type Error = BoxError;
 
     fn lookup_ipv4(
         &self,
@@ -300,7 +301,7 @@ impl rama::dns::client::resolver::DnsAddressResolver for SlowAlternativeDns {
 }
 
 impl rama::dns::client::resolver::DnsServiceBindingResolver for SlowAlternativeDns {
-    type Error = rama::error::BoxError;
+    type Error = BoxError;
 
     fn lookup_https(
         &self,

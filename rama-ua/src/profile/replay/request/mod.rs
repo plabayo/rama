@@ -7,8 +7,8 @@ use rama_core::{extensions::Extension, telemetry::tracing};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Version,
     header::{
-        ACCEPT, COOKIE, Entry, SEC_FETCH_DEST, SEC_FETCH_MODE, SEC_FETCH_SITE, SEC_FETCH_USER, TE,
-        UPGRADE_INSECURE_REQUESTS,
+        ACCEPT, COOKIE, Entry, PRIORITY, SEC_FETCH_DEST, SEC_FETCH_MODE, SEC_FETCH_SITE,
+        SEC_FETCH_USER, TE, UPGRADE_INSECURE_REQUESTS,
     },
     proto::{
         h2::{PseudoHeader, PseudoHeaderOrder},
@@ -55,7 +55,7 @@ static REQUEST_CONTEXT_FIELDS: [HeaderName; 7] = [
     SEC_FETCH_USER,
     SEC_FETCH_DEST,
     ACCEPT,
-    HeaderName::from_static("priority"),
+    PRIORITY,
     UPGRADE_INSECURE_REQUESTS,
 ];
 const FETCH_METADATA_FIELDS: usize = 4;

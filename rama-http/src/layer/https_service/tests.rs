@@ -9,7 +9,10 @@ use rama_dns::{
 };
 use rama_net::address::Domain;
 use rama_net::{ConnectorTargetInputExt as _, client::EstablishedClientConnection};
-use rama_tls::client::{ServerVerifyMode, TlsServerVerify};
+use rama_tls::client::{
+    ServerVerifyMode, TlsEncryptedClientHello, TlsServerVerify, resolve_target_ech,
+    target_ech_required,
+};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[derive(Clone, Default)]
@@ -172,12 +175,7 @@ async fn intent_and_required_ech_control_reliance() {
         let effective = request.extensions().fork();
         effective.extend(extensions);
         assert_eq!(
-            rama_tls::client::target_ech_required(
-                &effective,
-                &snapshot.get(0).unwrap().target,
-                true
-            )
-            .unwrap(),
+            target_ech_required(&effective, &snapshot.get(0).unwrap().target, true).unwrap(),
             reliant
         );
         assert!(
@@ -398,12 +396,12 @@ async fn later_timeout_does_not_erase_known_origin_reliance() {
     let facts = candidates.candidate_extensions(0).unwrap();
     assert!(facts.contains::<TargetEchConfig>());
     assert!(facts.get_ref::<TargetEchServiceBinding>().unwrap().reliant);
-    rama_tls::client::target_ech_config(request.extensions(), &request.authority, true)
-        .unwrap_err();
+    resolve_target_ech(request.extensions(), &request.authority, true).unwrap_err();
     request.extensions().insert(TlsEncryptedClientHello(false));
     assert!(
-        rama_tls::client::target_ech_config(request.extensions(), &request.authority, true)
+        resolve_target_ech(request.extensions(), &request.authority, true)
             .unwrap()
+            .config
             .is_none()
     );
 }
@@ -530,10 +528,9 @@ async fn final_profile_intent_controls_origin_fallback_without_extra_dials() {
                         request.extensions().insert(TlsEncryptedClientHello(ech));
                     }
                     let target = request.connector_target().unwrap();
-                    rama_tls::client::target_ech_config(request.extensions(), &target, true)
-                        .map_err(|error| {
-                            ConnectionError::local(error, ConnectionErrorKind::Unavailable)
-                        })?;
+                    resolve_target_ech(request.extensions(), &target, true).map_err(|error| {
+                        ConnectionError::local(error, ConnectionErrorKind::Unavailable)
+                    })?;
                     dials.lock().push(target);
                     Err::<EstablishedClientConnection<rama_core::ServiceInput<()>, ConnectRequest>, _>(
                         ConnectionError::transport(

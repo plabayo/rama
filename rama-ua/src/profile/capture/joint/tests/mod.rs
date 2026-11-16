@@ -88,6 +88,85 @@ fn ech_pair_roundtrips_and_rejects_mismatched_companions() {
     invalid(&pair);
 }
 
+#[cfg(feature = "tls")]
+#[test]
+fn map_wire_tls_maps_the_outer_of_a_pair_and_every_unpaired_hello() {
+    use crate::profile::capture::tls::{TlsCapturedExtension, TlsCapturedExtensionValue as Value};
+    let limits = TlsCaptureLimits::default();
+    let tls = |value| {
+        TlsCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            transport: TlsCaptureTransport::Tcp,
+            protocol_version: 771,
+            ciphers: vec![4865].into(),
+            compression: vec![0].into(),
+            extensions: vec![TlsCapturedExtension { id: 65037, value }].into(),
+        }
+        .canonical(limits)
+        .unwrap()
+    };
+    let slot = |kind, value| CapturedSlot {
+        kind,
+        value: tls(value),
+    };
+    let joint = |slots: Vec<CapturedSlot>| JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Connection,
+        slots: slots.into(),
+    };
+    let ciphers = |slot: &CapturedSlot| {
+        TlsCapture::from_canonical(&slot.value, limits)
+            .unwrap()
+            .ciphers
+            .to_vec()
+    };
+
+    let mut paired = joint(vec![
+        slot(CapturedSlotKind::TcpTls, Value::EchInner),
+        slot(
+            CapturedSlotKind::TlsOuter,
+            Value::EchOuter {
+                kdf: 1,
+                aead: 1,
+                enc: 32,
+                payload: 144,
+            },
+        ),
+    ]);
+    let inner = paired.effective_tls_slot().unwrap().value.clone();
+    let mut calls = 0;
+    paired
+        .map_wire_tls(limits, |capture| {
+            calls += 1;
+            capture.ciphers = vec![4866].into();
+        })
+        .unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(ciphers(paired.ech_outer_slot().unwrap()), [4866]);
+    // This inner is not the one its outer derives, so it is kept as captured.
+    assert_eq!(
+        paired.effective_tls_slot().unwrap().value.bytes,
+        inner.bytes
+    );
+
+    let mut unpaired = joint(vec![
+        slot(CapturedSlotKind::TcpTls, Value::EchInner),
+        slot(CapturedSlotKind::QuicTls, Value::EchInner),
+    ]);
+    let mut calls = 0;
+    unpaired
+        .map_wire_tls(limits, |capture| {
+            calls += 1;
+            capture.ciphers = vec![4866].into();
+        })
+        .unwrap();
+    assert_eq!(calls, 2);
+    assert!(unpaired.ech_outer_slot().is_none());
+    for slot in &unpaired.slots {
+        assert_eq!(ciphers(slot), [4866]);
+    }
+}
+
 fn order_slot(kind: CapturedSlotKind, fields: &[(u64, &[u8])]) -> CapturedSlot {
     let limits = OrderCaptureLimits::default();
     CapturedSlot {

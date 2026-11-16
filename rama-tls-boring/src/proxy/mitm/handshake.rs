@@ -225,13 +225,8 @@ where
             if !effective.contains::<EchRequirement>() && data.ech_required {
                 effective.insert(EchRequirement::Required);
             }
-            let requirement = effective
-                .get_ref::<EchRequirement>()
-                .copied()
-                .unwrap_or_default();
-            requirement
-                .intent(effective.get_ref::<TlsEncryptedClientHello>())
-                .map_err(TlsMitmRelayError::config)?;
+            let (requirement, _) =
+                EchRequirement::effective(&effective).map_err(TlsMitmRelayError::config)?;
             if let Some(target) = effective.get_ref::<ConnectorTarget>() {
                 data.configure_target_ech(&effective, &target.0)
                     .map_err(TlsMitmRelayError::config)?;

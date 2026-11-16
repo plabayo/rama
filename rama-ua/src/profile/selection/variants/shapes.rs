@@ -11,7 +11,7 @@ use crate::profile::format::canonical::CanonicalValue;
 use crate::profile::{
     analysis::profile::AnalyzedProfileScope,
     capture::{
-        joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
+        joint::{JointCapture, JointCaptureLimits},
         tls::{TlsCapture, TlsCaptureLimits, TlsCapturedExtensionValue},
     },
     format::canonical::ValueId,
@@ -132,20 +132,9 @@ impl RequestShapeCache {
                                 let value = variant.value.canonical()?;
                                 let limits = JointCaptureLimits::default();
                                 let joint = JointCapture::from_canonical(value.as_ref(), limits)?;
-                                let tls_limits = TlsCaptureLimits {
-                                    elements: limits.value_bytes,
-                                    bytes: limits.value_bytes,
-                                };
-                                let effective = joint.slots.iter().find(|slot| {
-                                    matches!(
-                                        slot.kind,
-                                        CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
-                                    )
-                                });
-                                let outer = joint
-                                    .slots
-                                    .iter()
-                                    .find(|slot| slot.kind == CapturedSlotKind::TlsOuter);
+                                let tls_limits = TlsCaptureLimits::uniform(limits.value_bytes);
+                                let effective = joint.effective_tls_slot();
+                                let outer = joint.ech_outer_slot();
                                 let Some(effective) = effective else {
                                     return Ok(ConnectionShape {
                                         ordinary: true,

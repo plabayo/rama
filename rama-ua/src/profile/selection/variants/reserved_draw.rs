@@ -14,7 +14,7 @@ use crate::profile::{
         quic::{QuicFlightCapture, QuicFlightCaptureLimits},
         reserved::{
             H3_FRAMES, ReservedFamily, ReservedLength, ReservedSlot, TRANSPORT_PARAMETERS,
-            VERSION_SLOT, reserved_version,
+            VERSION_SLOT,
         },
     },
     format::canonical::{CanonicalValue, ProfileDataError},
@@ -74,7 +74,7 @@ impl ReservedDraws {
     }
 
     fn version(self, occurrence: &mut u64) -> Version {
-        let version = reserved_version(self.draw(VERSION, *occurrence).next_u64() as u16);
+        let version = Version::reserved(self.draw(VERSION, *occurrence).next_u64() as u16);
         *occurrence += 1;
         version
     }
@@ -287,7 +287,7 @@ mod tests {
         Generated {
             parameter: TRANSPORT_PARAMETERS.id(mix(connection) >> 7).unwrap(),
             parameter_length: (connection % 16) as usize,
-            version: reserved_version(mix(connection + 2000) as u16),
+            version: Version::reserved(mix(connection + 2000) as u16),
             frame: H3_FRAMES.id(mix(connection + 3000) >> 32).unwrap(),
         }
     }

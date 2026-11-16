@@ -3,7 +3,10 @@
 use std::{collections::VecDeque, fmt, sync::Arc};
 
 use parking_lot::Mutex;
-use rama_core::{error::BoxError, extensions::Extensions};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    extensions::Extensions,
+};
 use rama_net::{address::Host, tls::AlpnPolicy};
 use rama_tls::client::{
     EchRequirement, TlsClientConfig, TlsEncryptedClientHello, TlsPoolId, TlsServerName,
@@ -162,7 +165,7 @@ impl ClientConfigCache {
                 .get_ref::<TlsServerName>()
                 .map(|name| name.0.clone())
                 .ok_or_else(|| {
-                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                    TlsConfigError::InvalidConfiguration(BoxError::from_static_str(
                         "endpoint ECH requires a peer identity",
                     ))
                 })?;
@@ -177,7 +180,7 @@ impl ClientConfigCache {
                 .as_extensions()
                 .get_ref::<TlsServerName>()
                 .ok_or_else(|| {
-                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                    TlsConfigError::InvalidConfiguration(BoxError::from_static_str(
                         "an explicit QUIC handshake policy requires a destination",
                     ))
                 })?;
@@ -208,7 +211,7 @@ impl ClientConfigCache {
                         .unwrap_or_default(),
                 )?
                 .ok_or_else(|| {
-                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                    TlsConfigError::InvalidConfiguration(BoxError::from_static_str(
                         "TLS provider cannot prepare endpoint ECH",
                     ))
                 });
@@ -221,7 +224,7 @@ impl ClientConfigCache {
             return self
                 .prepare_client_config(config, peer.clone(), *handshake)?
                 .ok_or_else(|| {
-                    TlsConfigError::InvalidConfiguration(BoxError::from(
+                    TlsConfigError::InvalidConfiguration(BoxError::from_static_str(
                         "TLS provider does not support the requested QUIC handshake policy",
                     ))
                 });

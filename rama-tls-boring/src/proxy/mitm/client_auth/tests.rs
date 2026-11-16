@@ -359,7 +359,9 @@ fn mapped_policy(calls: Arc<AtomicUsize>, fallback: bool) -> TlsMitmClientAuthPo
                 && (request.signature_algorithms.is_empty()
                     || request.certificate_authorities.is_empty())
             {
-                return Err(BoxError::from("missing CertificateRequest metadata"));
+                return Err(BoxError::from_static_str(
+                    "missing CertificateRequest metadata",
+                ));
             }
             tokio::task::yield_now().await;
             let requested = input.request.is_some();
@@ -372,7 +374,7 @@ fn mapped_policy(calls: Arc<AtomicUsize>, fallback: bool) -> TlsMitmClientAuthPo
                         let matches = identity.leaf().map(|c| c.to_der().unwrap())
                             == Some(material().guest.cert.to_der().unwrap());
                         if !matches && !fallback {
-                            return Err(BoxError::from("unmapped ingress identity"));
+                            return Err(BoxError::from_static_str("unmapped ingress identity"));
                         }
                         Ok(requested.then(|| {
                             if matches {
@@ -834,7 +836,11 @@ async fn stage_one_errors_never_configure_ingress_or_run_the_resolver() {
                     input.server_certificate.to_der().unwrap(),
                     material().server.cert.to_der().unwrap()
                 );
-                async { Err::<TlsMitmClientAuthPlan, _>(BoxError::from("no suitable credential")) }
+                async {
+                    Err::<TlsMitmClientAuthPlan, _>(BoxError::from_static_str(
+                        "no suitable credential",
+                    ))
+                }
             }));
         let result = run(
             &relay().with_client_auth(policy),

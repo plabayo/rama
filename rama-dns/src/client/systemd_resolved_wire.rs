@@ -70,8 +70,8 @@ pub(super) fn parse_service_binding_rr(
     if rr.record_type != u16::from(expected_type) || rr.class != DNS_CLASS_IN {
         return RrParse::Other;
     }
-    let rdata = raw.slice(rr.rdata.clone());
-    let owner = match Name::from_wire(&raw[..rr.rdata.start - 10]) {
+    let rdata = raw.slice(rr.rdata);
+    let owner = match Name::from_wire_bytes(&raw.slice(rr.owner)) {
         Ok(owner) => owner,
         Err(error) => return RrParse::Malformed(error.into()),
     };
@@ -85,6 +85,14 @@ pub(super) fn parse_service_binding_rr(
 }
 
 struct ParsedRr {
+    #[cfg_attr(
+        not(any(target_os = "linux", all(test, target_family = "unix"))),
+        expect(
+            dead_code,
+            reason = "only service-binding parsing reads the owner name"
+        )
+    )]
+    owner: Range<usize>,
     record_type: u16,
     class: u16,
     ttl: u32,
@@ -92,7 +100,8 @@ struct ParsedRr {
 }
 
 fn parse_rr(raw: &[u8]) -> Result<ParsedRr, BoxError> {
-    let mut offset = skip_uncompressed_name(raw)?;
+    let owner_end = skip_uncompressed_name(raw)?;
+    let mut offset = owner_end;
     let header_end = offset
         .checked_add(10)
         .ok_or_else(|| BoxError::from_static_str("DNS resource-record header offset overflow"))?;
@@ -113,6 +122,7 @@ fn parse_rr(raw: &[u8]) -> Result<ParsedRr, BoxError> {
         ));
     }
     Ok(ParsedRr {
+        owner: 0..owner_end,
         record_type,
         class,
         ttl,

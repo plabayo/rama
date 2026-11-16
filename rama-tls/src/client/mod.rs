@@ -49,7 +49,8 @@ pub mod ech_discovery;
 
 mod ech;
 pub use ech::{
-    EchRequirement, EchRetryConfig, TlsEchAccepted, target_ech_config, target_ech_required,
+    EchRequirement, EchRetryConfig, TargetEchResolution, TlsEchAccepted, resolve_target_ech,
+    target_ech_required,
 };
 
 mod config;

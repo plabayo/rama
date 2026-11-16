@@ -5,6 +5,9 @@ use std::fmt;
 use rama_core::bytes::BufMut;
 use rama_quic_proto::{VarInt, coding::Codec};
 
+/// Distance between consecutive frame types reserved for greasing (RFC 9114 §7.2.8).
+const RESERVED_INTERVAL: u64 = 0x1f;
+
 /// The type of an HTTP/3 frame, sent as a variable-length integer (RFC 9114 §7.2).
 ///
 /// Unknown frame types are preserved: a recipient of an unknown frame type on a stream that allows
@@ -53,7 +56,30 @@ impl FrameType {
     /// greasing.
     #[must_use]
     pub const fn is_reserved(self) -> bool {
-        self.0 >= Self::FIRST_RESERVED.0 && (self.0 - Self::FIRST_RESERVED.0).is_multiple_of(0x1f)
+        self.0 >= Self::FIRST_RESERVED.0
+            && (self.0 - Self::FIRST_RESERVED.0).is_multiple_of(RESERVED_INTERVAL)
+    }
+
+    /// The reserved type `0x1f * ordinal + 0x21`, when it fits the QUIC integer range.
+    #[must_use]
+    pub const fn reserved(ordinal: u64) -> Option<Self> {
+        let Some(offset) = ordinal.checked_mul(RESERVED_INTERVAL) else {
+            return None;
+        };
+        match Self::FIRST_RESERVED.0.checked_add(offset) {
+            Some(value) if value <= VarInt::MAX.into_inner() => Some(Self(value)),
+            _ => None,
+        }
+    }
+
+    /// The `N` of a reserved type `0x1f * N + 0x21` within the QUIC integer range.
+    #[must_use]
+    pub const fn reserved_ordinal(self) -> Option<u64> {
+        if self.is_reserved() && self.0 <= VarInt::MAX.into_inner() {
+            Some((self.0 - Self::FIRST_RESERVED.0) / RESERVED_INTERVAL)
+        } else {
+            None
+        }
     }
 
     /// Whether this is either PRIORITY_UPDATE frame type from RFC 9218.
@@ -179,6 +205,23 @@ mod tests {
         assert_eq!(FrameType::SETTINGS.value(), 0x04);
         assert_eq!(FrameType::MAX_PUSH_ID.name(), Some("MAX_PUSH_ID"));
         assert_eq!(FrameType::new(0x1234).name(), None);
+    }
+
+    #[test]
+    fn reserved_frame_types_round_trip_their_ordinal() {
+        let max_ordinal = (VarInt::MAX.into_inner() - 0x21) / 0x1f;
+        for ordinal in [0, 1, 2, 1 << 40, max_ordinal] {
+            let frame_type = FrameType::reserved(ordinal).unwrap();
+            assert!(frame_type.is_reserved());
+            assert_eq!(frame_type.reserved_ordinal(), Some(ordinal));
+        }
+        assert!(FrameType::reserved(max_ordinal + 1).is_none());
+        assert!(FrameType::reserved(u64::MAX).is_none());
+        assert_eq!(FrameType::SETTINGS.reserved_ordinal(), None);
+        assert_eq!(
+            FrameType::new(VarInt::MAX.into_inner() + 0x1f).reserved_ordinal(),
+            None
+        );
     }
 
     #[test]

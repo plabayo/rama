@@ -248,13 +248,7 @@ impl CanonicalValue {
 
             #[cfg(feature = "tls")]
             CanonicalDomain::Tls => {
-                TlsCapture::from_canonical(
-                    self,
-                    TlsCaptureLimits {
-                        elements: maximum_bytes,
-                        bytes: maximum_bytes,
-                    },
-                )?;
+                TlsCapture::from_canonical(self, TlsCaptureLimits::uniform(maximum_bytes))?;
             }
             CanonicalDomain::H3Bootstrap | CanonicalDomain::H3BootstrapStructure => {
                 H3BootstrapCapture::decode(

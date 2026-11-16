@@ -234,10 +234,7 @@ impl ConnectionSelection {
                     {
                         let capture = Some(TlsCapture::from_canonical(
                             &slot.value,
-                            TlsCaptureLimits {
-                                elements: limits.value_bytes,
-                                bytes: limits.value_bytes,
-                            },
+                            TlsCaptureLimits::uniform(limits.value_bytes),
                         )?);
                         if slot.kind == CapturedSlotKind::TlsOuter {
                             prepared.tls_outer = capture;

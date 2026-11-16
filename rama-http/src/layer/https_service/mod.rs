@@ -42,10 +42,13 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
 };
-use rama_dns::client::{
-    DEFAULT_HTTPS_ALIAS_LIMIT, DnsAddressSource, GlobalDnsResolver, HttpsServiceBindings,
-    lookup_https_service_bindings,
-    resolver::{DnsAddressResolver, DnsServiceBindingResolver},
+use rama_dns::{
+    client::{
+        DEFAULT_HTTPS_ALIAS_LIMIT, DnsAddressSource, GlobalDnsResolver, HttpsServiceBindings,
+        lookup_https_service_bindings,
+        resolver::{DnsAddressResolver, DnsServiceBindingResolver},
+    },
+    wire::SvcParamKey,
 };
 use rama_http_types::conn::{
     HttpOrigin, HttpServiceCandidate, HttpServiceCandidates, HttpServiceSelection,
@@ -60,7 +63,7 @@ use rama_net::{
     },
     tls::{ApplicationProtocol, TargetEchConfig, TargetEchServiceBinding, TlsAlpn},
 };
-use rama_tls::client::{EchRequirement, TlsClientConfig, TlsEncryptedClientHello};
+use rama_tls::client::{EchRequirement, TlsClientConfig};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{net::IpAddr, sync::Arc, time::Duration};
 
@@ -262,10 +265,7 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
     }
 
     async fn discover(&self, input: &ConnectRequest) -> Result<(), ConnectionError> {
-        let effective = input
-            .extensions()
-            .fork()
-            .with_base(self.tls.as_extensions());
+        let effective = self.tls.overlay(input.extensions());
         let required =
             effective.get_ref::<EchRequirement>().copied() == Some(EchRequirement::Required);
         let mut reliant = required;
@@ -317,16 +317,8 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
             return Ok(());
         }
 
-        let effective = input
-            .extensions()
-            .fork()
-            .with_base(self.tls.as_extensions());
-        let required = effective
-            .get_ref::<EchRequirement>()
-            .copied()
-            .unwrap_or_default();
-        required
-            .intent(effective.get_ref::<TlsEncryptedClientHello>())
+        let effective = self.tls.overlay(input.extensions());
+        let (required, _) = EchRequirement::effective(&effective)
             .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         if required == EchRequirement::Required && !self.ech_capable {
             return Err(invalid("required ECH needs a capable TLS backend"));
@@ -511,7 +503,7 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
     fn append(
         &self,
         output: &mut Vec<(HttpServiceCandidate, Extensions)>,
-        result: &rama_dns::client::HttpsServiceBindings,
+        result: &HttpsServiceBindings,
         advertised: Option<(&Arc<HttpServiceCandidates>, usize)>,
         request: &Extensions,
         protocols: &[ApplicationProtocol],
@@ -559,31 +551,14 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                 extensions.insert(TargetEchServiceBinding {
                     target: binding.target.clone(),
                     reliant: result.ech_reliant(),
-                    mandatory: binding
-                        .record
-                        .binding
-                        .mandatory_keys()
-                        .is_some_and(|keys| keys.contains(&rama_dns::wire::SvcParamKey::Ech)),
+                    mandatory: binding.record.binding.is_mandatory(SvcParamKey::Ech),
                 });
-                let hints = binding
-                    .record
-                    .binding
-                    .ipv4_hints()
-                    .unwrap_or_default()
-                    .iter()
-                    .copied()
-                    .map(IpAddr::V4)
-                    .chain(
-                        binding
-                            .record
-                            .binding
-                            .ipv6_hints()
-                            .unwrap_or_default()
-                            .iter()
-                            .copied()
-                            .map(IpAddr::V6),
-                    );
-                self.insert_address_source(&extensions, &binding.target, proxy, hints);
+                self.insert_address_source(
+                    &extensions,
+                    &binding.target,
+                    proxy,
+                    binding.record.binding.ip_hints(),
+                );
                 let candidate = if let Some((snapshot, index)) = advertised {
                     extensions.insert(HttpServiceSelection {
                         candidates: snapshot.clone(),

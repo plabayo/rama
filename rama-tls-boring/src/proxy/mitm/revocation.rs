@@ -26,7 +26,7 @@ use rama_boring::{
 };
 use rama_core::{
     bytes::Bytes,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
 };
 use rama_crypto::{
     crl::{RevokedEntry, crl_distribution_point_der},
@@ -315,7 +315,7 @@ impl ProxyHostedRevocation {
         let this_update = now.checked_sub(CLOCK_SKEW_BACKDATE).unwrap_or(now);
         let next_update = now
             .checked_add(self.validity)
-            .ok_or_else(|| BoxError::from("crl: nextUpdate overflow"))?;
+            .ok_or_else(|| BoxError::from_static_str("crl: nextUpdate overflow"))?;
         let crl_number = self.crl_seq.fetch_add(1, Ordering::Relaxed);
         let revoked = self.revoked();
         let entries: Vec<RevokedEntry<'_>> = revoked

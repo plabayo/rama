@@ -11,8 +11,8 @@ use crate::profile::{
         profile::AnalyzedProfileScope,
     },
     capture::{
-        joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
-        tls::{TlsCapture, TlsCaptureLimits, TlsCapturedExtension},
+        joint::{JointCapture, JointCaptureLimits},
+        tls::{TlsCaptureLimits, TlsCapturedExtension},
     },
     format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError},
     selection::ProfileDraw,
@@ -80,26 +80,9 @@ pub(super) fn draw_extension_order(
     let limits = JointCaptureLimits::default();
     let tls_limits = TlsCaptureLimits::default();
     let mut joint = JointCapture::from_canonical(&capture, limits)?;
-    if joint
-        .slots
-        .iter()
-        .any(|slot| slot.kind == CapturedSlotKind::TlsOuter)
-    {
-        joint.map_ech_pair(tls_limits, |outer| {
-            outer.extensions = shuffle(&outer.extensions, pinned, draw);
-        })?;
-        return joint.canonical(limits);
-    }
-    for slot in &mut joint.slots {
-        if matches!(
-            slot.kind,
-            CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
-        ) {
-            let mut tls = TlsCapture::from_canonical(&slot.value, tls_limits)?;
-            tls.extensions = shuffle(&tls.extensions, pinned, draw);
-            slot.value = tls.canonical(tls_limits)?;
-        }
-    }
+    joint.map_wire_tls(tls_limits, |tls| {
+        tls.extensions = shuffle(&tls.extensions, pinned, draw);
+    })?;
     joint.canonical(limits)
 }
 
@@ -123,9 +106,9 @@ mod tests {
         capture::{
             CAPTURE_REVISION,
             completeness::ProfileCaptureCompleteness,
-            joint::{CaptureLevel, CapturedSlot},
+            joint::{CaptureLevel, CapturedSlot, CapturedSlotKind},
             observation::ProfileCapture,
-            tls::{TlsCaptureTransport, TlsCapturedExtensionValue},
+            tls::{TlsCapture, TlsCaptureTransport, TlsCapturedExtensionValue},
         },
         evidence::{
             ProfileEvidence, ProfileScopeEvidence,

@@ -6,7 +6,7 @@ use std::{
 
 use parking_lot::Mutex;
 use rama_core::{
-    error::{ArcError, BoxError},
+    error::{ArcError, BoxError, BoxErrorExt as _},
     extensions::{Extension, Extensions},
 };
 use rama_crypto::dep::boring::{
@@ -27,7 +27,10 @@ use rama_quic_proto::{
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     alpn::{self, AlpnError},
-    client::{EchRequirement, TlsClientConfig, TlsEncryptedClientHello, target_ech_config},
+    client::{
+        EchRequirement, TlsClientConfig, TlsEncryptedClientHello, resolve_target_ech,
+        target_ech_required,
+    },
     server::TlsServerConfig,
 };
 use rama_tls_boring::{
@@ -188,7 +191,7 @@ impl ClientSessions {
             return Ok(Some(ticket.params));
         }
         if required {
-            return Err(BoxError::from(
+            return Err(BoxError::from_static_str(
                 "resumed TLS requires a current peer-issued ticket",
             ));
         }
@@ -224,36 +227,38 @@ impl QuicClientConfig {
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
         let extensions = config.as_extensions();
-        let requirement = extensions
-            .get_ref::<EchRequirement>()
-            .copied()
-            .unwrap_or_default();
-        let intent = requirement.intent(extensions.get_ref::<TlsEncryptedClientHello>())?;
-        let requirement = if let Some(target) = extensions.get_ref::<ConnectorTarget>()
-            && rama_tls::client::target_ech_required(extensions, &target.0, true)?
-        {
-            EchRequirement::Required
-        } else {
-            requirement
-        };
+        let (requirement, intent) = EchRequirement::effective(extensions)?;
+        let target = extensions.get_ref::<ConnectorTarget>();
         let ech = if let Some(config) = extensions.get_ref::<TargetEchConfig>() {
-            if let Some(target) = extensions.get_ref::<ConnectorTarget>() {
-                target_ech_config(extensions, &target.0, true)?.map(|_| ClientEchConfig {
+            if let Some(target) = target {
+                let resolution = resolve_target_ech(extensions, &target.0, true)?;
+                let requirement = if resolution.required {
+                    EchRequirement::Required
+                } else {
+                    requirement
+                };
+                resolution.config.map(|_| ClientEchConfig {
                     config: config.clone(),
                     requirement,
                 })
             } else if requirement == EchRequirement::Required {
-                return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
-                    "required QUIC ECH needs an explicit physical endpoint",
-                )));
+                return Err(TlsConfigError::InvalidConfiguration(
+                    BoxError::from_static_str(
+                        "required QUIC ECH needs an explicit physical endpoint",
+                    ),
+                ));
             } else {
                 None
             }
         } else {
-            if requirement == EchRequirement::Required {
-                return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
-                    "required QUIC ECH has no endpoint configuration",
-                )));
+            let required = match target {
+                Some(target) => target_ech_required(extensions, &target.0, true)?,
+                None => requirement == EchRequirement::Required,
+            };
+            if required {
+                return Err(TlsConfigError::InvalidConfiguration(
+                    BoxError::from_static_str("required QUIC ECH has no endpoint configuration"),
+                ));
             }
             None
         };
@@ -265,9 +270,9 @@ impl QuicClientConfig {
         if handshake == ClientHandshake::Resumed
             && options.client_sessions == ClientSessionPolicy::Fresh
         {
-            return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
-                "resumed TLS conflicts with the fresh client policy",
-            )));
+            return Err(TlsConfigError::InvalidConfiguration(
+                BoxError::from_static_str("resumed TLS conflicts with the fresh client policy"),
+            ));
         }
         let mut builder = TlsConnectorContextBuilder::try_from(pieces)?;
         if builder
@@ -342,9 +347,9 @@ impl QuicClientConfig {
             (Some(sessions), offer) => sessions.offer = offer,
             (None, ClientHandshake::Auto | ClientHandshake::Full) => {}
             (None, ClientHandshake::Resumed) => {
-                return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
-                    "resumed TLS conflicts with the fresh client policy",
-                )));
+                return Err(TlsConfigError::InvalidConfiguration(
+                    BoxError::from_static_str("resumed TLS conflicts with the fresh client policy"),
+                ));
             }
         }
         config.prepare_ssl(peer)
@@ -368,7 +373,7 @@ impl QuicClientConfig {
             let extensions = Extensions::new();
             extensions.insert(ech.config.clone());
             extensions.insert(ech.requirement);
-            extensions.insert(rama_tls::client::TlsEncryptedClientHello(true));
+            extensions.insert(TlsEncryptedClientHello(true));
             data.configure_target_ech(&extensions, ech.config.target())?;
         }
         let host = data.server_name.get_or_insert(peer).clone();

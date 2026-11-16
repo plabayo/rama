@@ -56,7 +56,7 @@ async fn fixed_endpoint_discovers_real_configuration_and_reliance() {
     let resolver = Resolver::default();
     let layer = TargetEchConfigLayer::new()
         .with_resolver(resolver.clone())
-        .with_capable(true);
+        .with_ech_capable(true);
     let input = ConnectRequest::new("origin.example:443".parse().unwrap());
     input.extensions().insert(TlsEncryptedClientHello(true));
     layer.prepare(&input).await.unwrap();
@@ -84,7 +84,7 @@ async fn no_capability_or_proxy_permission_means_no_dns() {
         let resolver = Resolver::default();
         let layer = TargetEchConfigLayer::new()
             .with_resolver(resolver.clone())
-            .with_capable(proxy);
+            .with_ech_capable(proxy);
         let input = ConnectRequest::new("origin.example:443".parse().unwrap());
         if proxy {
             input.extensions().insert(TlsEncryptedClientHello(true));
@@ -104,7 +104,7 @@ async fn explicit_required_preknowledge_works_without_proxy_discovery() {
     let resolver = Resolver::default();
     let layer = TargetEchConfigLayer::new()
         .with_resolver(resolver.clone())
-        .with_capable(true);
+        .with_ech_capable(true);
     let input = ConnectRequest::new("origin.example:443".parse().unwrap());
     input.extensions().insert(EchRequirement::Required);
     input.extensions().insert(ProxyRoute::Proxy(
@@ -122,7 +122,7 @@ async fn cname_owner_root_target_uses_the_original_address_resolution() {
     let resolver = Resolver(Arc::default(), true, Arc::default());
     let layer = TargetEchConfigLayer::new()
         .with_resolver(resolver)
-        .with_capable(true);
+        .with_ech_capable(true);
     let input = ConnectRequest::new("origin.example:443".parse().unwrap());
     input.extensions().insert(TlsEncryptedClientHello(true));
     layer.prepare(&input).await.unwrap();
@@ -173,7 +173,7 @@ async fn mirrored_discovery_binds_sni_knowledge_to_the_dialed_ip() {
         let resolver = Resolver::default();
         let layer = TargetEchConfigLayer::new()
             .with_resolver(resolver.clone())
-            .with_capable(true);
+            .with_ech_capable(true);
         let input = peeked(true, true);
         let target: HostWithPort = format!("192.0.2.1:{port}").parse().unwrap();
         input
@@ -213,7 +213,7 @@ async fn mirrored_discovery_preserves_intent_and_proxy_privacy() {
         let resolver = Resolver::default();
         let layer = TargetEchConfigLayer::new()
             .with_resolver(resolver.clone())
-            .with_capable(true);
+            .with_ech_capable(true);
         let input = peeked(ech, sni);
         if disabled {
             input
@@ -237,7 +237,7 @@ async fn mirrored_required_conflict_fails_without_discovery() {
     let resolver = Resolver::default();
     let layer = TargetEchConfigLayer::new()
         .with_resolver(resolver.clone())
-        .with_capable(true);
+        .with_ech_capable(true);
     let input = peeked(true, true);
     input
         .input
@@ -253,7 +253,7 @@ async fn peeked_service_respects_mirrored_alpn_and_explicit_override() {
     let resolver = Resolver::default();
     let layer = TargetEchConfigLayer::new()
         .with_resolver(resolver.clone())
-        .with_capable(true);
+        .with_ech_capable(true);
     let service = layer.layer(service_fn(
         |input: InputWithClientHello<ServiceInput<()>>| async move {
             Ok::<_, BoxError>(input.input.extensions().contains::<TargetEchConfig>())
@@ -284,7 +284,7 @@ async fn selected_binding_without_ech_does_not_repeat_discovery() {
     let resolver = Resolver::default();
     let layer = TargetEchConfigLayer::new()
         .with_resolver(resolver.clone())
-        .with_capable(true);
+        .with_ech_capable(true);
     let input = ConnectRequest::new("origin.example:443".parse().unwrap());
     input.extensions().insert(TargetEchServiceBinding {
         target: input.authority.clone(),
@@ -304,7 +304,7 @@ async fn unbound_relay_and_insecure_connector_do_not_query() {
     let resolver = Resolver::default();
     let layer = TargetEchConfigLayer::new()
         .with_resolver(resolver.clone())
-        .with_capable(true);
+        .with_ech_capable(true);
     let mut input = peeked(true, true);
     input.input = ServiceInput::new(());
     layer.prepare_client_hello(&input).await.unwrap();

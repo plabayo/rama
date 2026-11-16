@@ -2,6 +2,7 @@
 
 use std::{
     future::{Future, pending, poll_fn},
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -10,6 +11,7 @@ use std::{
     time::Duration,
 };
 
+use pin_project_lite::pin_project;
 use rama_core::{
     bytes::BytesMut,
     error::BoxError,
@@ -34,7 +36,7 @@ use rama_quic_proto::{Side, VarInt, coding::Codec as _};
 use rama_utils::guard::DropGuard;
 use tokio::{
     sync::{Notify, Semaphore},
-    time::{Instant, timeout},
+    time::{Instant, Sleep, sleep, timeout},
 };
 
 use super::{
@@ -229,6 +231,83 @@ pub fn handshake<C: transport::Connection>(
         },
         driver,
     ))
+}
+
+pin_project! {
+    /// Two-phase shutdown of a serving [`Connection`]: [`Self::announce`] tells the peer
+    /// to stop, requests keep being admitted until [`Self::elapsed`] completes, and
+    /// [`Self::shutdown`] then stops admission.
+    #[derive(Debug)]
+    pub struct ShutdownNotice {
+        announced: bool,
+        draining: bool,
+        #[pin]
+        notice: Sleep,
+    }
+}
+
+impl ShutdownNotice {
+    /// A notice that is not announced yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            announced: false,
+            draining: false,
+            notice: sleep(Duration::ZERO),
+        }
+    }
+
+    /// Whether the peer was told to stop.
+    #[must_use]
+    pub fn is_announced(&self) -> bool {
+        self.announced
+    }
+
+    /// Whether new request streams are still admitted.
+    #[must_use]
+    pub fn admits(&self) -> bool {
+        !self.draining
+    }
+
+    /// Tell the peer to stop and start the notice period; later calls do nothing.
+    pub fn announce<C: transport::Connection>(
+        self: Pin<&mut Self>,
+        connection: &mut Connection<C>,
+    ) -> Result<(), Error> {
+        let this = self.project();
+        if *this.announced {
+            return Ok(());
+        }
+        let period = connection.announce_shutdown()?;
+        this.notice.reset(Instant::now() + period);
+        *this.announced = true;
+        Ok(())
+    }
+
+    /// Complete once an announced notice period ended; pending before the
+    /// announcement and after [`Self::shutdown`].
+    pub async fn elapsed(self: Pin<&mut Self>) {
+        if !self.announced || self.draining {
+            return pending().await;
+        }
+        self.project().notice.await;
+    }
+
+    /// Stop admitting requests; see [`Connection::shutdown`].
+    pub fn shutdown<C: transport::Connection>(
+        self: Pin<&mut Self>,
+        connection: &mut Connection<C>,
+    ) -> Result<(), Error> {
+        connection.shutdown()?;
+        *self.project().draining = true;
+        Ok(())
+    }
+}
+
+impl Default for ShutdownNotice {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<C: transport::Connection> Connection<C> {

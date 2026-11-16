@@ -3,12 +3,19 @@
 //! Shapes contain algorithms and lengths. BoringSSL generates new cryptographic
 //! material for each connection; no captured keys or ciphertext are configured.
 
-use rama_boring::ssl::EchGreaseShape;
+use std::sync::LazyLock;
+
+use rama_boring::{
+    error::ErrorStack,
+    ex_data::Index,
+    ssl::{EchGreaseShape, Ssl, SslRef, is_ech_rejected},
+};
 use rama_core::{
+    bytes::Bytes,
     error::{BoxError, ErrorContext as _},
     extensions::Extension,
 };
-use rama_tls::client::TlsPoolComponent;
+use rama_tls::client::{EchRetryConfig, TlsPoolComponent};
 
 /// Shape of an ECH GREASE extension, applied independently of its enable switch.
 ///
@@ -59,21 +66,14 @@ impl TlsPoolComponent for EchGrease {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Copy)]
 struct RetryAuthentication(bool);
 
-static RETRY_AUTHENTICATION: std::sync::LazyLock<
-    Result<
-        rama_boring::ex_data::Index<rama_boring::ssl::Ssl, RetryAuthentication>,
-        rama_boring::error::ErrorStack,
-    >,
-> = std::sync::LazyLock::new(rama_boring::ssl::Ssl::new_ex_index);
+static RETRY_AUTHENTICATION: LazyLock<Result<Index<Ssl, RetryAuthentication>, ErrorStack>> =
+    LazyLock::new(Ssl::new_ex_index);
 
 pub(super) fn bind_retry_authentication(
-    ssl: &mut rama_boring::ssl::SslRef,
+    ssl: &mut SslRef,
     authenticates: bool,
 ) -> Result<(), BoxError> {
     let index = RETRY_AUTHENTICATION.as_ref().map_err(Clone::clone)?;
@@ -85,19 +85,20 @@ pub(super) fn bind_retry_authentication(
 /// Other TLS failures, disabled verification, and rollback-to-cleartext lists
 /// cannot authorize a reconnect. The connection must come from Rama's TLS setup.
 pub fn authenticated_retry_config(
-    ssl: &rama_boring::ssl::SslRef,
+    ssl: &SslRef,
     errors: impl IntoIterator<Item = (i32, i32)>,
-) -> Option<rama_tls::client::EchRetryConfig> {
+) -> Option<EchRetryConfig> {
     if !ssl
         .ex_data(*RETRY_AUTHENTICATION.as_ref().ok()?)
         .is_some_and(|policy| policy.0)
         || !errors
             .into_iter()
-            .any(|(library, reason)| rama_boring::ssl::is_ech_rejected(library, reason))
+            .any(|(library, reason)| is_ech_rejected(library, reason))
     {
         return None;
     }
-    rama_tls::client::EchRetryConfig::new(rama_core::bytes::Bytes::copy_from_slice(
-        ssl.get_ech_retry_configs()?,
-    ))
+    EchRetryConfig::new(Bytes::copy_from_slice(ssl.get_ech_retry_configs()?))
 }
+
+#[cfg(test)]
+mod tests;

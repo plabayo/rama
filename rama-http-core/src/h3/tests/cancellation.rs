@@ -561,3 +561,77 @@ async fn a_request_that_crossed_the_shutdown_notice_is_served() {
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_notice_admits_requests_until_it_elapses() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let faults = pair.datagram_faults.clone().unwrap();
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let get = || {
+            Request::builder()
+                .uri("https://localhost/")
+                .body(Body::empty())
+                .unwrap()
+        };
+        // Complete one exchange first, so both sides hold each other's SETTINGS.
+        let sent = spawn(async move {
+            let response = client.send_request(get()).await.unwrap();
+            (client, response)
+        });
+        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        drop(request);
+        response
+            .send_response(Response::new(Body::empty()))
+            .await
+            .unwrap();
+        let (mut client, _) = sent.await.unwrap();
+
+        let mut notice = std::pin::pin!(server::ShutdownNotice::new());
+        assert!(notice.as_mut().elapsed().now_or_never().is_none());
+        // Hold the notice back so the client still sends a request while it runs.
+        faults[1].drop_next(usize::MAX);
+        notice.as_mut().announce(&mut server).unwrap();
+        assert!(notice.is_announced());
+        assert!(notice.admits());
+        assert!(notice.as_mut().elapsed().now_or_never().is_none());
+        let sent = spawn(async move {
+            let response = client.send_request(get()).await.unwrap();
+            (client, response)
+        });
+        let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+        drop(request);
+        faults[1].drop_next(0);
+        response
+            .send_response(Response::new(Body::empty()))
+            .await
+            .unwrap();
+        let (returned, response) = sent.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        client = returned;
+
+        notice.as_mut().elapsed().await;
+        notice.as_mut().shutdown(&mut server).unwrap();
+        assert!(!notice.admits());
+        assert!(notice.as_mut().elapsed().now_or_never().is_none());
+        client.closed_or_draining().await;
+        let error = client.send_request(get()).await.unwrap_err();
+        assert_eq!(error.code(), Code::H3_REQUEST_REJECTED);
+        server.drained().await.unwrap();
+        pair.client.close(Code::H3_NO_ERROR.value() as u32, b"done");
+        _ = client_driver.await;
+        _ = server_driver.await;
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}

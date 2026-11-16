@@ -171,10 +171,7 @@ pub(in crate::profile) fn decode_tls_structure(
         bytes: Bytes::copy_from_slice(bytes),
     };
     reader.finish()?;
-    let limits = TlsCaptureLimits {
-        elements: maximum_bytes,
-        bytes: maximum_bytes,
-    };
+    let limits = TlsCaptureLimits::uniform(maximum_bytes);
     let capture = TlsCapture::from_canonical(&inner, limits)?;
     // Structures stored before trust anchor lists were sorted stay readable;
     // stored-structure normalization merges them.

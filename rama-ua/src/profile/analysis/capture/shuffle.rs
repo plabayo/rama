@@ -8,7 +8,7 @@ use super::{CaptureOrderPath, CountedCaptureAnalysis, merge::merge_rewritten};
 use crate::profile::{
     analysis::order::{DerivedOrderRule, OrderAnalysisConfig},
     capture::{
-        joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
+        joint::{JointCapture, JointCaptureLimits},
         tls::{TlsCapture, TlsCaptureLimits},
     },
     format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
@@ -29,10 +29,6 @@ fn joint_limits(config: OrderAnalysisConfig) -> JointCaptureLimits {
     }
 }
 
-fn is_tls_slot(kind: CapturedSlotKind) -> bool {
-    matches!(kind, CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls)
-}
-
 /// The TLS ClientHello retained in a joint tuple, if any.
 pub(super) fn joint_tls(
     value: &CanonicalValue,
@@ -40,10 +36,8 @@ pub(super) fn joint_tls(
 ) -> Result<Option<TlsCapture>, ProfileDataError> {
     let joint = JointCapture::from_canonical(value, joint_limits(config))?;
     joint
-        .slots
-        .iter()
-        .find(|slot| slot.kind == CapturedSlotKind::TlsOuter)
-        .or_else(|| joint.slots.iter().find(|slot| is_tls_slot(slot.kind)))
+        .ech_outer_slot()
+        .or_else(|| joint.effective_tls_slot())
         .map(|slot| TlsCapture::from_canonical(&slot.value, tls_limits(config)))
         .transpose()
 }
@@ -70,21 +64,7 @@ fn without_extension_order(
         }
         CanonicalDomain::Joint => {
             let mut joint = JointCapture::from_canonical(value, joint_limits(config))?;
-            if joint
-                .slots
-                .iter()
-                .any(|slot| slot.kind == CapturedSlotKind::TlsOuter)
-            {
-                joint.map_ech_pair(tls_limits(config), sort_extensions)?;
-                return joint.canonical(joint_limits(config));
-            }
-            for slot in &mut joint.slots {
-                if is_tls_slot(slot.kind) {
-                    let mut capture = TlsCapture::from_canonical(&slot.value, tls_limits(config))?;
-                    sort_extensions(&mut capture);
-                    slot.value = capture.canonical(tls_limits(config))?;
-                }
-            }
+            joint.map_wire_tls(tls_limits(config), sort_extensions)?;
             joint.canonical(joint_limits(config))
         }
         _ => Ok(value.clone()),

@@ -33,6 +33,18 @@ pub struct TlsCaptureLimits {
     pub elements: usize,
     pub bytes: usize,
 }
+
+impl TlsCaptureLimits {
+    /// Limits allowing at most `maximum` elements and `maximum` bytes.
+    #[must_use]
+    pub const fn uniform(maximum: usize) -> Self {
+        Self {
+            elements: maximum,
+            bytes: maximum,
+        }
+    }
+}
+
 impl Default for TlsCaptureLimits {
     fn default() -> Self {
         Self {

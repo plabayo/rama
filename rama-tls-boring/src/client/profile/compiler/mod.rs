@@ -16,12 +16,13 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
-    AuthorityInputExt, Protocol, ProtocolInputExt,
+    AuthorityInputExt, ConnectorTargetInputExt, Protocol, ProtocolInputExt,
     address::{Host, HostWithOptPort},
     tls::TlsAlpn,
 };
 use rama_tls::client::{
     ClientHandshake, TlsClientConfig, TlsConnectionReuse, TlsDerivedPolicy, TlsPoolId,
+    resolve_target_ech,
 };
 use rama_ua::profile::{
     capture::{
@@ -208,12 +209,12 @@ where
         {
             return false;
         }
-        let Some(target) = rama_net::ConnectorTargetInputExt::connector_target(input) else {
+        let Some(target) = input.connector_target() else {
             return false;
         };
         let effective = input.extensions().with_base(self.policy.as_extensions());
-        rama_tls::client::target_ech_config(&effective, &target, true)
-            .is_ok_and(|config| config.is_some())
+        resolve_target_ech(&effective, &target, true)
+            .is_ok_and(|resolution| resolution.config.is_some())
     }
 
     fn compile(

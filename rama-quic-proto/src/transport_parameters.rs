@@ -752,10 +752,31 @@ rama_utils::macros::enums::enum_builder! {
 }
 
 impl TransportParameterId {
+    const FIRST_RESERVED: u64 = 27;
+    const RESERVED_INTERVAL: u64 = 31;
+
     /// Whether this identifier is one reserved for greasing (RFC 9000 §18.1): `31 * N + 27`.
     #[must_use]
     pub fn is_reserved(self) -> bool {
-        u64::from(self) % 31 == 27
+        u64::from(self) % Self::RESERVED_INTERVAL == Self::FIRST_RESERVED
+    }
+
+    /// The reserved identifier `31 * ordinal + 27`, when it fits the QUIC integer range.
+    #[must_use]
+    pub fn reserved(ordinal: u64) -> Option<Self> {
+        ordinal
+            .checked_mul(Self::RESERVED_INTERVAL)?
+            .checked_add(Self::FIRST_RESERVED)
+            .filter(|id| *id <= VarInt::MAX.into_inner())
+            .map(Self::from)
+    }
+
+    /// The `N` of a reserved identifier `31 * N + 27` within the QUIC integer range.
+    #[must_use]
+    pub fn reserved_ordinal(self) -> Option<u64> {
+        let id = u64::from(self);
+        (id <= VarInt::MAX.into_inner() && self.is_reserved())
+            .then(|| (id - Self::FIRST_RESERVED) / Self::RESERVED_INTERVAL)
     }
 
     /// Whether the value identifies this connection or contains connection-specific material.
@@ -870,6 +891,24 @@ mod test {
 
     use super::*;
     use crate::profile::TransportParameterProfile;
+
+    #[test]
+    fn reserved_identifiers_round_trip_their_ordinal() {
+        let max_ordinal = (VarInt::MAX.into_inner() - 27) / 31;
+        for ordinal in [0, 1, 2, 1 << 40, max_ordinal] {
+            let id = TransportParameterId::reserved(ordinal).unwrap();
+            assert!(id.is_reserved());
+            assert_eq!(id.reserved_ordinal(), Some(ordinal));
+        }
+        assert!(TransportParameterId::reserved(max_ordinal + 1).is_none());
+        assert!(TransportParameterId::reserved(u64::MAX).is_none());
+        assert_eq!(TransportParameterId::MaxAckDelay.reserved_ordinal(), None);
+        assert_eq!(TransportParameterId::from(26).reserved_ordinal(), None);
+        assert_eq!(
+            TransportParameterId::from(VarInt::MAX.into_inner() + 27).reserved_ordinal(),
+            None
+        );
+    }
 
     #[test]
     fn registry_recognition_preserves_opaque_values_and_native_wire_order() {
