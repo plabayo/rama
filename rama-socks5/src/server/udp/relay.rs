@@ -5,7 +5,7 @@ use rama_core::error::{BoxError, ErrorExt};
 use rama_core::telemetry::tracing;
 use rama_net::address::{HostWithPort, SocketAddress};
 
-use rama_udp::UdpSocket;
+use rama_udp::{UdpSocket, is_datagram_too_large};
 
 #[cfg(feature = "dns")]
 use super::MaybeDnsResolver;
@@ -249,6 +249,14 @@ impl UdpSocketRelay {
                         Ok(Some(UdpRelayState::ReadNorth(server_address)))
                     }
 
+                    Err(err) if is_datagram_too_large(&err) => {
+                        tracing::debug!(
+                            "north socket: drop packet larger than the read buffer (> {})",
+                            self.north_read_size,
+                        );
+                        Ok(None)
+                    }
+
                     Err(err) if is_transient_udp_io_error(&err) => {
                         tracing::debug!("north socket: non-fatal error: retry again: {err:?}");
                         Ok(None)
@@ -275,6 +283,14 @@ impl UdpSocketRelay {
                         }
                         self.south_read_buf.truncate(len);
                         Ok(Some(UdpRelayState::ReadSouth(src.into())))
+                    }
+
+                    Err(err) if is_datagram_too_large(&err) => {
+                        tracing::debug!(
+                            "south socket: drop packet larger than the read buffer (> {})",
+                            self.south_read_size,
+                        );
+                        Ok(None)
                     }
 
                     Err(err) if is_transient_udp_io_error(&err) => {

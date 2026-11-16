@@ -525,7 +525,7 @@ impl DatagramError {
 }
 
 fn classify_send_io_error(error: &io::Error) -> SendFailure {
-    if is_message_too_large(error) {
+    if is_datagram_too_large(error) {
         return SendFailure::TooLarge;
     }
     if is_socket_unusable(error) {
@@ -538,8 +538,12 @@ fn classify_send_io_error(error: &io::Error) -> SendFailure {
     }
 }
 
-// Raw codes stay in the socket layer: the standard error kinds do not model them.
-fn is_message_too_large(error: &io::Error) -> bool {
+/// Whether `error` reports a datagram too large for the call: on send, for the path or
+/// socket; on a Windows receive, for the buffer, where Unix truncates instead.
+///
+/// The standard error kinds do not model this, so it matches the raw OS code.
+#[must_use]
+pub fn is_datagram_too_large(error: &io::Error) -> bool {
     #[cfg(unix)]
     {
         error.raw_os_error() == Some(libc::EMSGSIZE)
