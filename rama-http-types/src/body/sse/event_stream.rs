@@ -1,3 +1,4 @@
+use super::decoder::RETAINED_BUFFER_LEN;
 use super::{Event, EventDataRead, EventDecoder, OnIncompleteLine};
 
 use pin_project_lite::pin_project;
@@ -23,8 +24,8 @@ pin_project! {
     ///
     /// Wraps [`EventDecoder`], which can also inspect borrowed chunks directly.
     ///
-    /// Input is unlimited by default. Set [`max_line_len`](Self::with_max_line_len)
-    /// and [`max_event_len`](Self::with_max_event_len) for limits per line and event.
+    /// Lines and events are capped by the [`EventDecoder`] defaults; adjust them with
+    /// [`max_line_len`](Self::with_max_line_len) and [`max_event_len`](Self::with_max_event_len).
     /// [`BodyLimit`] or [`Body::limited`] instead caps the entire body, terminating
     /// even a long-lived stream once that budget is exhausted.
     ///
@@ -192,6 +193,9 @@ where
                 pushed_bytes += end - start;
                 *this.overflow_offset = end;
                 if end >= this.overflow.len() {
+                    if this.overflow.capacity() > RETAINED_BUFFER_LEN {
+                        *this.overflow = Vec::new();
+                    }
                     this.overflow.clear();
                     *this.overflow_offset = 0;
                 }
@@ -300,6 +304,16 @@ mod tests {
         assert!(stream.overflow.is_empty());
 
         assert_matches!(stream.as_mut().poll_next(&mut cx), Poll::Ready(None));
+    }
+
+    #[test]
+    fn a_large_chunk_does_not_stay_allocated() {
+        let upstream = stream::iter([Ok::<_, Infallible>(vec![b'x'; POLL_BYTES_SOFT_CAP * 4])]);
+        let mut stream = std::pin::pin!(EventStream::<_, String>::new(upstream));
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let mut cx = Context::from_waker(&waker);
+        while stream.as_mut().poll_next(&mut cx).is_pending() {}
+        assert!(stream.overflow.capacity() <= rama_utils::octets::kib(256));
     }
 
     #[test]

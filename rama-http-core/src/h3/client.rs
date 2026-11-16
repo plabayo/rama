@@ -51,7 +51,10 @@ use super::{
         self, BiReservation as _, BoxedBiReservation, EarlyData, RecvStream as _, SendStream as _,
     },
 };
-use crate::headers::{content_length_parse_all, drop_undeliverable_content_length};
+use crate::headers::{
+    content_length_parse_all, drop_undeliverable_content_length,
+    method_has_defined_payload_semantics, set_content_length_if_missing,
+};
 
 /// Cloneable sender for a multiplexed HTTP/3 connection.
 pub struct SendRequest<B, C: transport::Connection> {
@@ -692,6 +695,11 @@ where
         }
         if method == Method::CONNECT || request.body().is_end_stream() {
             drop_undeliverable_content_length(request.headers_mut());
+        }
+        if let Some(len) = request.body().size_hint().exact()
+            && (len != 0 || method_has_defined_payload_semantics(&method))
+        {
+            set_content_length_if_missing(request.headers_mut(), len);
         }
         let (encoded, sent) = headers::encode_request_fields(&self.shared, id, &request)?;
         writer.queue(FrameType::HEADERS, encoded)?;

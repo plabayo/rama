@@ -11,8 +11,12 @@ use serde::de::Error as _;
 use serde_json::error::Result as JsonResult;
 
 use super::config::{EmptyLineHandling, ParseConfig};
+use crate::std::vec::Vec;
 
 const NEW_LINE: u8 = b'\n';
+
+/// A line buffer that grew past this for one large line is released once empty.
+const RETAINED_BUFFER_LEN: usize = rama_utils::octets::kib(256);
 
 /// The low-level engine parsing NDJSON-data given as byte slices into objects of the type parameter
 /// `T`. Data is supplied in chunks and parsed objects can subsequently be read from a queue.
@@ -106,7 +110,7 @@ where
             if let Some(max) = max_line_bytes
                 && self.in_queue.len().saturating_add(data_until_split.len()) > max
             {
-                self.in_queue.clear();
+                self.release_in_queue();
                 self.out_queue.push_back(Err(oversized_line_error(max)));
                 data = &data[(newline_idx + 1)..];
                 continue;
@@ -123,7 +127,7 @@ where
                 self.out_queue.push_back(item);
             }
 
-            self.in_queue.clear();
+            self.release_in_queue();
             data = &data[(newline_idx + 1)..];
         }
 
@@ -135,7 +139,7 @@ where
         if let Some(max) = max_line_bytes
             && self.in_queue.len().saturating_add(data.len()) > max
         {
-            self.in_queue.clear();
+            self.release_in_queue();
             self.out_queue.push_back(Err(oversized_line_error(max)));
             self.skipping_oversized_line = true;
             return;
@@ -164,7 +168,7 @@ where
         if self.skipping_oversized_line {
             // The oversized-line error has already been emitted; discard any tail bytes
             // and reset so the engine is reusable.
-            self.in_queue.clear();
+            self.release_in_queue();
             self.skipping_oversized_line = false;
             return;
         }
@@ -180,7 +184,18 @@ where
             }
         }
 
-        self.in_queue.clear();
+        self.release_in_queue();
+    }
+}
+
+impl<T> NdjsonEngine<T> {
+    /// Empty the line buffer, releasing an allocation that one large line grew.
+    fn release_in_queue(&mut self) {
+        if self.in_queue.capacity() > RETAINED_BUFFER_LEN {
+            self.in_queue = Vec::new();
+        } else {
+            self.in_queue.clear();
+        }
     }
 }
 
@@ -192,6 +207,7 @@ impl<T> Default for NdjsonEngine<T> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::DEFAULT_MAX_LINE_BYTES;
     use super::*;
 
     use core::iter;
@@ -568,6 +584,51 @@ mod tests {
         engine.finalize();
 
         assert!(collect_output(engine).is_empty());
+    }
+
+    #[test]
+    fn a_line_past_the_default_limit_errors() {
+        let mib = crate::std::vec![b' '; rama_utils::octets::mib(1)];
+        let mut engine: NdjsonEngine<TestStruct> = NdjsonEngine::new();
+        for _ in 0..DEFAULT_MAX_LINE_BYTES.get() / mib.len() {
+            engine.input(&mib);
+            assert!(engine.pop().is_none());
+        }
+        engine.input(&mib);
+        engine.pop().unwrap().unwrap_err();
+        engine.input("\n{\"key\":1,\"value\":2}\n");
+        assert_eq!(
+            engine.pop().unwrap().unwrap(),
+            TestStruct { key: 1, value: 2 }
+        );
+
+        let mut engine = configured_engine(|config| config.without_max_line_bytes());
+        for _ in 0..=DEFAULT_MAX_LINE_BYTES.get() / mib.len() {
+            engine.input(&mib);
+        }
+        assert!(engine.pop().is_none());
+    }
+
+    #[test]
+    fn a_large_line_does_not_stay_allocated() {
+        let mut engine: NdjsonEngine<TestStruct> = NdjsonEngine::new();
+        let mut large = crate::std::vec![b' '; rama_utils::octets::mib(2)];
+        large.extend_from_slice(b"{\"key\":1,\"value\":2}\n");
+        let mut input = large;
+        for _ in 0..100 {
+            input.extend_from_slice(b"{\"key\":3,\"value\":4}\n");
+        }
+        for chunk in input.chunks(64 * 1024 + 3) {
+            engine.input(chunk);
+        }
+        let output = collect_output_ref(&mut engine);
+        assert_eq!(output.len(), 101);
+        assert!(output.iter().all(Result::is_ok));
+        assert!(engine.in_queue.capacity() <= RETAINED_BUFFER_LEN);
+    }
+
+    fn collect_output_ref(engine: &mut NdjsonEngine<TestStruct>) -> Vec<JsonResult<TestStruct>> {
+        iter::from_fn(|| engine.pop()).collect::<Vec<_>>()
     }
 
     #[test]

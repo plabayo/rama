@@ -51,6 +51,13 @@ where
             }
         }
 
+        Ok(OpenFileOutput::NotAcceptable) => {
+            let mut res = response_with_status(StatusCode::NOT_ACCEPTABLE);
+            res.headers_mut()
+                .insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+            Ok(res)
+        }
+
         Ok(OpenFileOutput::PreconditionFailed) => {
             Ok(response_with_status(StatusCode::PRECONDITION_FAILED))
         }

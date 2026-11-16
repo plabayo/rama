@@ -7,7 +7,10 @@ use rama_http_types::proto::h2::alt_svc::{AltSvcObserverExtension, AltSvcReceive
 use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
 };
-use rama_http_types::{HeaderMap, Request, Response, header};
+use rama_http_types::{
+    HeaderMap, Request, Response,
+    header::{self, trailer::drop_never_trailers},
+};
 use rama_net::conn::ConnectionHealthWatcher;
 
 use std::cmp::Ordering;
@@ -553,7 +556,8 @@ impl Recv {
             return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
         }
 
-        let trailers = frame.into_fields();
+        let mut trailers = frame.into_fields();
+        drop_never_trailers(&mut trailers);
 
         // Push the frame onto the stream's recv buffer
         stream

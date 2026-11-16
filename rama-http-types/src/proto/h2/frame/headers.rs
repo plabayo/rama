@@ -1128,7 +1128,11 @@ impl HeaderBlock {
                 self.pseudo.sensitivity.set_sensitive(value.name(), true);
             }
             match header {
-                hpack::Header::Field { name, value } => {
+                hpack::Header::Field { name, mut value } => {
+                    // Trimmed here, not in HPACK, whose table holds the value as sent.
+                    if value.has_outer_whitespace() {
+                        value.trim_outer_whitespace();
+                    }
                     // Connection level header fields are not supported and must
                     // result in a protocol error.
 
@@ -1700,6 +1704,25 @@ mod test {
             headers.is_over_size(),
             "is_over_size should be true when HeaderMap capacity is exceeded"
         );
+    }
+
+    #[test]
+    fn outer_whitespace_of_field_values_is_trimmed_after_hpack_indexing() {
+        let mut hpack = vec![0x82u8, 0x86, 0x84];
+        // literal with incremental indexing, new name `x-a`, value ` \t v w \t` (8 bytes)
+        hpack.extend_from_slice(b"\x40\x03x-a\x08 \t v w \t");
+        // the same field again, from the dynamic table as the peer indexed it
+        hpack.push(0xBE);
+        let head = Head::new(Kind::Headers, 0x04, StreamId::from(1));
+        let (mut headers, mut hpack_data) =
+            Headers::load(head, BytesMut::from(&hpack[..])).unwrap();
+        let mut decoder = hpack::Decoder::new(4096);
+        headers
+            .load_hpack(&mut hpack_data, 16 << 20, &mut decoder)
+            .unwrap();
+        assert!(!headers.is_over_size());
+        let values: Vec<_> = headers.fields().get_all("x-a").iter().collect();
+        assert_eq!(values, ["v w", "v w"]);
     }
 
     #[test]

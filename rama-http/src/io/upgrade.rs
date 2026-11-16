@@ -87,9 +87,10 @@ impl fmt::Debug for OpaqueGuard {
 ///
 /// Custom carriers publish it on their I/O's extensions. The callback must abort at once,
 /// without waiting for a later write or drop, and both directions must fail afterwards.
-/// Share it through [`Extensions::get_arc`].
+/// Share it through [`Extensions::get_arc`]. It is connection scoped, so a connection
+/// nested inside the tunnel never aborts the tunnel's own stream through it.
 #[derive(Extension)]
-#[extension(tags(http))]
+#[extension(tags(http), scope(connection))]
 pub struct OnMalformedMessage(Box<dyn Fn() + Send + Sync>);
 
 impl OnMalformedMessage {

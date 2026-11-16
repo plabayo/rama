@@ -266,3 +266,52 @@ async fn send_trailers_rejects_connection_specific_headers() {
 
     join(srv, client).await;
 }
+
+#[tokio::test]
+async fn recv_trailers_drop_fields_that_never_belong_in_trailers() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+        srv.send_frame(frames::data(1, "hello")).await;
+        srv.send_frame(
+            frames::headers(1)
+                .field("content-length", "0")
+                .field("host", "other.example")
+                .field("te", "trailers")
+                .field("x-checksum", "ok")
+                .eos(),
+        )
+        .await;
+    };
+
+    let client = async move {
+        let (mut client, conn) = client::handshake(io).await.expect("handshake");
+        let conn = tokio::spawn(async move {
+            conn.await.expect("client");
+        });
+        let resp = client.get("https://example.com/").await.expect("response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let mut body = resp.into_body();
+        let data = poll_fn(|cx| body.poll_data(cx)).await.unwrap().unwrap();
+        assert_eq!(data, "hello");
+        let trailers = poll_fn(|cx| body.poll_trailers(cx))
+            .await
+            .expect("trailers result")
+            .expect("should have trailers");
+        assert_eq!(trailers.len(), 1, "{trailers:?}");
+        assert_eq!(trailers["x-checksum"], "ok");
+        conn.await.unwrap();
+    };
+
+    join(srv, client).await;
+}

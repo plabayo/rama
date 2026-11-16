@@ -266,6 +266,53 @@ async fn a_plain_fork_still_reaches_the_streams_native_carrier() {
     );
 }
 
+/// A truncated capsule received by a session over `extensions`; returns the outer hook count.
+async fn malformed_capsule_over(stream: &Extensions, extensions: Extensions) -> usize {
+    let aborted = Arc::new(AtomicUsize::new(0));
+    stream.insert(OnMalformedMessage::new({
+        let aborted = aborted.clone();
+        move || {
+            aborted.fetch_add(1, Ordering::Relaxed);
+        }
+    }));
+    let (a, mut raw) = tokio::io::duplex(256);
+    let mut io = ServiceInput::new(a);
+    io.extensions = extensions;
+    let mut session = HttpDatagramSession::with_config(io, config());
+    raw.write_all(b"\x00\x05ab").await.unwrap();
+    raw.shutdown().await.unwrap();
+    let error = session.recv().await.unwrap_err();
+    assert_matches!(error, SessionError::Malformed(_), "{error:?}");
+    aborted.load(Ordering::Relaxed)
+}
+
+#[tokio::test]
+async fn a_nested_session_does_not_reach_the_outer_streams_malformed_hook() {
+    let stream = Extensions::new();
+    let nested = stream.fork_nested_connection(&NoConnectionTransfer);
+    assert_eq!(malformed_capsule_over(&stream, nested).await, 0);
+}
+
+#[tokio::test]
+async fn a_plain_fork_still_reaches_the_streams_malformed_hook() {
+    let stream = Extensions::new();
+    let fork = stream.fork();
+    assert_eq!(malformed_capsule_over(&stream, fork).await, 1);
+}
+
+#[tokio::test]
+async fn an_upgraded_stream_reaches_the_malformed_hook_of_its_io() {
+    let (a, mut raw) = tokio::io::duplex(256);
+    let (io, aborted) = hooked(a);
+    let upgraded = Upgraded::new(io, Bytes::new());
+    let mut session = HttpDatagramSession::with_config(upgraded, config());
+    raw.write_all(b"\x00\x05ab").await.unwrap();
+    raw.shutdown().await.unwrap();
+    let error = session.recv().await.unwrap_err();
+    assert_matches!(error, SessionError::Malformed(_), "{error:?}");
+    assert_eq!(aborted.load(Ordering::Relaxed), 1);
+}
+
 #[tokio::test]
 async fn native_carrier_is_preferred_without_oversize_fallback() {
     let native = FakeNative::default();

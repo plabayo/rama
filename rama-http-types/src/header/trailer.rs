@@ -8,9 +8,12 @@
 //! recipient that merges trailers into headers. HTTP/1.1, HTTP/2 and HTTP/3 share these
 //! rules: their RFCs give no reason to differ.
 
-use rama_core::extensions::Extension;
+use rama_core::{extensions::Extension, telemetry::tracing};
 
-use crate::header::{self, HeaderName, hop_by_hop::CONNECTION_SPECIFIC_HEADERS};
+use crate::{
+    HeaderMap,
+    header::{self, HeaderName, hop_by_hop::CONNECTION_SPECIFIC_HEADERS},
+};
 
 /// Which fields a message's trailer section sends although their definitions do not allow
 /// them in trailers.
@@ -61,6 +64,22 @@ pub fn is_sent_in_trailers(name: &HeaderName, allowed: Option<&ForbiddenTrailers
 pub fn is_never_a_trailer(name: &HeaderName) -> bool {
     CONNECTION_SPECIFIC_HEADERS.contains(&name)
         || [header::TE, header::CONTENT_LENGTH, header::HOST].contains(name)
+}
+
+/// Remove the received fields that [`is_never_a_trailer`] names, keeping the rest of the section.
+pub fn drop_never_trailers(trailers: &mut HeaderMap) {
+    if !trailers.keys().any(is_never_a_trailer) {
+        return;
+    }
+    let names: Vec<HeaderName> = trailers
+        .keys()
+        .filter(|name| is_never_a_trailer(name))
+        .cloned()
+        .collect();
+    for name in names {
+        tracing::debug!("dropping trailer field that frames or routes the message: {name:?}");
+        trailers.remove(&name);
+    }
 }
 
 #[cfg(test)]

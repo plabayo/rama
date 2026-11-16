@@ -5,7 +5,7 @@
 //! Use SSE If you can, ndjson if you must.
 
 mod config;
-pub use config::{EmptyLineHandling, ParseConfig};
+pub use config::{DEFAULT_MAX_LINE_BYTES, EmptyLineHandling, ParseConfig};
 
 mod engine;
 

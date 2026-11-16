@@ -86,10 +86,16 @@ fn parse(fields: Vec<FieldPair>, trailers: bool) -> Result<Fields, Error> {
         regular = true;
         let name = HeaderName::from_lowercase_bytes(field.name)
             .map_err(|_error| malformed("invalid field name"))?;
-        validate_name(&name, &field.value, trailers)?;
+        if !validate_name(&name, &field.value, trailers)? {
+            debug!("dropping trailer field that frames or routes the message: {name:?}");
+            continue;
+        }
         let mut value = HeaderValue::from_maybe_shared(field.value)
             .map_err(|_error| malformed("invalid field value"))?;
-        validate_value(&value)?;
+        // RFC 9110 §5.5: outer whitespace is not part of the value, as HTTP/1 parsers drop it.
+        if value.has_outer_whitespace() {
+            value.trim_outer_whitespace();
+        }
         value.set_sensitive(field.never_index);
         result
             .headers
@@ -99,23 +105,15 @@ fn parse(fields: Vec<FieldPair>, trailers: bool) -> Result<Fields, Error> {
     Ok(result)
 }
 
-fn validate_value(value: &HeaderValue) -> Result<(), Error> {
-    if value.has_outer_whitespace() {
-        return Err(malformed("invalid field value"));
-    }
-    Ok(())
-}
-
-fn validate_name(name: &HeaderName, value: &[u8], trailers: bool) -> Result<(), Error> {
-    if header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name)
-        || (*name == header::TE && (trailers || !header::hop_by_hop::is_te_trailers(value)))
-    {
+/// Whether a received field is kept: trailers drop fields that frame or route a message.
+fn validate_name(name: &HeaderName, value: &[u8], trailers: bool) -> Result<bool, Error> {
+    if header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name) {
         return Err(malformed("connection-specific field"));
     }
-    if trailers && is_never_a_trailer(name) {
-        return Err(malformed("message framing field in trailers"));
+    if *name == header::TE && !header::hop_by_hop::is_te_trailers(value) {
+        return Err(malformed("connection-specific field"));
     }
-    Ok(())
+    Ok(!(trailers && is_never_a_trailer(name)))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -322,7 +320,6 @@ pub(crate) fn request_head(
         if !(path.starts_with('/')
             || (method == Method::OPTIONS && path == "*")
             || (!http_scheme && path.is_empty()))
-            || path.contains('#')
         {
             return Err(malformed("invalid request path"));
         }
@@ -340,8 +337,13 @@ pub(crate) fn request_head(
         } else if path.is_empty() {
             Uri::default().without_path()
         } else {
-            Uri::parse_http_request_target(path, false)
-                .map_err(|_error| malformed("invalid request path"))?
+            // The graceful parser, as on HTTP/1 and HTTP/2: peers send unescaped targets.
+            let uri = Uri::parse(path).map_err(|_error| malformed("invalid request path"))?;
+            // :path carries only the path and query (RFC 9114 §4.3.1).
+            if uri.scheme().is_some() || uri.authority().is_some() {
+                return Err(malformed("invalid request path"));
+            }
+            uri
         };
         if path != "*" {
             if let Some(authority) = authority {
@@ -843,9 +845,10 @@ mod tests {
     }
 
     #[test]
-    fn incoming_and_outgoing_field_boundaries_are_rejected() {
+    fn incoming_field_boundaries_are_trimmed_and_outgoing_ones_rejected() {
         for value in [" leading", "trailing ", "\tleading", "trailing\t"] {
-            assert!(parse(fields(&[("x-test", value)]), false).is_err());
+            let parsed = parse(fields(&[("x-test", value)]), false).unwrap();
+            assert_eq!(parsed.headers["x-test"], value.trim(), "{value:?}");
             let mut headers = HeaderMap::new();
             headers.insert("x-test", HeaderValue::from_static(value));
             assert!(validate_outgoing(&headers, Outgoing::Response).is_err());
@@ -865,11 +868,11 @@ mod tests {
     #[test]
     fn connection_fields_are_rejected_but_trailer_declarations_are_allowed() {
         for name in header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS {
-            assert!(validate_name(name, b"value", false).is_err());
-            assert!(validate_name(name, b"value", true).is_err());
+            validate_name(name, b"value", false).unwrap_err();
+            validate_name(name, b"value", true).unwrap_err();
         }
-        validate_name(&header::TRAILER, b"x-checksum", false).unwrap();
-        validate_name(&header::TE, b"trailers", false).unwrap();
+        assert!(validate_name(&header::TRAILER, b"x-checksum", false).unwrap());
+        assert!(validate_name(&header::TE, b"trailers", false).unwrap());
     }
 
     #[test]
@@ -885,8 +888,9 @@ mod tests {
             ]))
             .unwrap();
             let te = request.headers().get(header::TE).unwrap().as_bytes();
-            validate_name(&header::TE, te, false).unwrap();
-            validate_name(&header::TE, te, true).unwrap_err();
+            assert!(validate_name(&header::TE, te, false).unwrap());
+            // kept out of trailers, as every version does
+            assert!(!validate_name(&header::TE, te, true).unwrap());
             request
                 .headers_mut()
                 .insert(header::TE, HeaderValue::from_static("gzip"));
@@ -1393,8 +1397,12 @@ mod tests {
         for name in ["", "Upper", "bad name", ":Status", ":status ", ":protocol"] {
             response(fields(&[(":status", "200"), (name, "x")])).unwrap_err();
         }
-        for value in [" leading", "trailing\t", "a\0b", "a\rb", "a\nb"] {
+        for value in ["a\0b", "a\rb", "a\nb"] {
             response(fields(&[(":status", "200"), ("x", value)])).unwrap_err();
+        }
+        for value in [" leading", "trailing\t"] {
+            let response = response(fields(&[(":status", "200"), ("x", value)])).unwrap();
+            assert_eq!(response.headers()["x"], value.trim());
         }
     }
 
@@ -1410,9 +1418,16 @@ mod tests {
             response(fields(&[(":status", "200"), (name, "x")])).unwrap_err();
             trailers(fields(&[(name, "x")])).unwrap_err();
         }
-        for name in ["content-length", "host", "te"] {
-            trailers(fields(&[(name, "0")])).unwrap_err();
-        }
+        // Fields that frame or route a message are dropped from trailers, as on HTTP/1.1.
+        let kept = trailers(fields(&[
+            ("content-length", "0"),
+            ("host", "other.example"),
+            ("te", "trailers"),
+            ("x-checksum", "abc"),
+        ]))
+        .unwrap();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept["x-checksum"], "abc");
         response(fields(&[(":status", "200"), ("te", "trailers")])).unwrap_err();
         response(fields(&[(":status", "103"), ("content-length", "0")])).unwrap_err();
         let response = response_for_method(
@@ -3450,7 +3465,6 @@ mod tests {
             vec![(":status", "101")],
             vec![(":status", "204"), ("content-length", "0")],
             vec![(":status", "200"), ("connection", "close")],
-            vec![(":status", "200"), ("x", " value")],
             vec![
                 (":status", "200"),
                 ("content-length", "1"),
@@ -3617,5 +3631,95 @@ mod tests {
                 [b"a".as_slice(), b"b"]
             );
         }
+    }
+
+    /// Request targets that browsers and CDNs send unescaped.
+    const LENIENT_TARGETS: [&str; 6] = [
+        "/s?filter[a]=1",
+        "/s?q={x}",
+        "/a|b",
+        "/caf\u{e9}",
+        "/%zz",
+        "/a#f",
+    ];
+
+    /// The path and query each version receives for `path`, or `None` when it refuses it.
+    fn received_path_on_every_version(path: &'static str) -> [(&'static str, Option<String>); 3] {
+        let h1_raw = format!("GET {path} HTTP/1.1\r\nHost: example.com\r\n\r\n");
+        let target = |uri: &Uri| format!("{}?{}", uri.path_or_root(), uri.query_or_empty());
+        let h1 = (!h1::refuses(&h1_raw)).then(|| target(&h1::receive(&h1_raw).0));
+        let pseudo = frame::Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(hpack::BytesStr::try_from(Bytes::from_static(b"https")).unwrap()),
+            authority: Some(hpack::BytesStr::try_from(Bytes::from_static(b"example.com")).unwrap()),
+            path: Some(hpack::BytesStr::try_from(Bytes::from_static(path.as_bytes())).unwrap()),
+            ..Default::default()
+        };
+        let h2 = crate::h2::server::test_util::receive(pseudo, HeaderMap::new())
+            .ok()
+            .map(|request| target(request.uri()));
+        let h3 = request(fields(&[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":authority", "example.com"),
+            (":path", path),
+        ]))
+        .ok()
+        .map(|request| target(request.uri()));
+        [("h1", h1), ("h2", h2), ("h3", h3)]
+    }
+
+    #[test]
+    fn unescaped_request_targets_are_received_alike_on_every_version() {
+        for path in LENIENT_TARGETS {
+            let [(_, h1), (_, h2), (_, h3)] = received_path_on_every_version(path);
+            assert!(h1.is_some(), "{path}: h1");
+            assert_eq!(h2, h1, "{path}: h2 vs h1");
+            assert_eq!(h3, h1, "{path}: h3 vs h1");
+        }
+    }
+
+    #[test]
+    fn a_host_only_request_has_the_same_uri_on_h2_and_h3() {
+        let h3 = request(fields(&[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":path", "/p"),
+            ("host", "example.com"),
+        ]))
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        let pseudo = frame::Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(hpack::BytesStr::try_from(Bytes::from_static(b"https")).unwrap()),
+            path: Some(hpack::BytesStr::try_from(Bytes::from_static(b"/p")).unwrap()),
+            ..Default::default()
+        };
+        let h2 = crate::h2::server::test_util::receive(pseudo, headers).unwrap();
+        assert_eq!(h3.uri().to_string(), "https://example.com/p");
+        assert_eq!(h2.uri().to_string(), h3.uri().to_string());
+        assert_eq!(h2.headers()[header::HOST], "example.com");
+        // HTTP/1 origin-form carries neither scheme nor authority in its target.
+        let (uri, headers) = h1::receive("GET /p HTTP/1.1\r\nHost: example.com\r\n\r\n");
+        assert_eq!(uri.to_string(), "/p");
+        assert_eq!(headers[header::HOST], "example.com");
+    }
+
+    #[test]
+    fn outer_whitespace_of_field_values_is_trimmed_on_h1_and_h3() {
+        let (_, h1) = h1::receive("GET / HTTP/1.1\r\nHost: example.com\r\nx-a: \t v w \t\r\n\r\n");
+        let h3 = request(fields(&[
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":authority", "example.com"),
+            (":path", "/"),
+            ("x-a", " \t v w \t"),
+        ]))
+        .unwrap();
+        let h3_trailers = trailers(fields(&[("x-a", " v w ")])).unwrap();
+        assert_eq!(h1["x-a"], "v w");
+        assert_eq!(h3.headers()["x-a"], "v w");
+        assert_eq!(h3_trailers["x-a"], "v w");
     }
 }

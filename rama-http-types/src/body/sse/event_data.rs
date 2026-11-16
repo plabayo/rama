@@ -136,6 +136,9 @@ impl EventDataWrite for String {
 /// not make every following (possibly tiny) payload pre-reserve that much.
 const PAYLOAD_SIZE_HINT_CAP: usize = rama_utils::octets::mib(1);
 
+/// A reader buffer that grew past this for one large event is released once empty.
+const RETAINED_BUFFER_LEN: usize = rama_utils::octets::kib(256);
+
 #[derive(Debug)]
 /// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`String`].
 pub struct EventDataStringReader {
@@ -332,9 +335,13 @@ impl<T: serde::de::DeserializeOwned> EventDataLineReader for EventDataJsonReader
         if self.buf.is_empty() {
             return Ok(None);
         }
-        let data: T = serde_json::from_str(&self.buf).context("read json event data")?;
-        self.buf.clear();
-        Ok(Some(JsonEventData(data)))
+        let data = serde_json::from_str::<T>(&self.buf);
+        if self.buf.capacity() > RETAINED_BUFFER_LEN {
+            self.buf = String::new();
+        } else {
+            self.buf.clear();
+        }
+        Ok(Some(JsonEventData(data.context("read json event data")?)))
     }
 }
 
@@ -382,6 +389,28 @@ rama_core::combinators::impl_either!(impl_either_event_data_write);
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    #[test]
+    fn json_reader_does_not_keep_a_large_event_allocated() {
+        let mut reader = JsonEventData::<serde_json::Value>::line_reader();
+        let large = format!("\"{}\"", "x".repeat(rama_utils::octets::mib(2)));
+        reader.read_line(&large).unwrap();
+        assert!(reader.data(None).unwrap().is_some());
+        for _ in 0..100 {
+            reader.read_line("{\"small\":true}").unwrap();
+            assert!(reader.data(None).unwrap().is_some());
+        }
+        assert!(reader.buf.capacity() <= rama_utils::octets::kib(256));
+    }
+
+    #[test]
+    fn json_reader_starts_clean_after_invalid_data() {
+        let mut reader = JsonEventData::<serde_json::Value>::line_reader();
+        reader.read_line("{not json").unwrap();
+        reader.data(None).unwrap_err();
+        reader.read_line("{\"ok\":1}").unwrap();
+        assert!(reader.data(None).unwrap().is_some());
+    }
 
     fn run(segments: &[&[u8]]) -> String {
         let mut out = Vec::new();

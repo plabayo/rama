@@ -1,4 +1,7 @@
-use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
+use crate::headers::encoding::{
+    SupportedEncodings, accept_encoding_qualities, parse_accept_encoding_headers,
+    parse_accept_encoding_wildcard_quality,
+};
 use crate::layer::set_status::SetStatus;
 use crate::mime::Mime;
 use crate::service::web::response::IntoResponse;
@@ -61,6 +64,7 @@ pub struct ServeDir<F = DefaultServeDirFallback> {
     hidden: HiddenPathFilter,
     ignore_multi_range_requests: bool,
     precompressed_variants: Option<PrecompressedVariants>,
+    enforce_not_acceptable: bool,
     // This is used to specialise implementation for
     // single files
     variant: ServeVariant,
@@ -95,6 +99,7 @@ impl ServeDir<DefaultServeDirFallback> {
             hidden: HiddenPathFilter::default(),
             ignore_multi_range_requests: false,
             precompressed_variants: None,
+            enforce_not_acceptable: false,
             variant: ServeVariant::Directory {
                 serve_mode: Default::default(),
                 redirect_to_trailing_slash: true,
@@ -118,6 +123,7 @@ impl ServeDir<DefaultServeDirFallback> {
             hidden: HiddenPathFilter::allow_all(),
             ignore_multi_range_requests: false,
             precompressed_variants: None,
+            enforce_not_acceptable: false,
             variant: ServeVariant::SingleFile { mime },
             fallback: None,
             call_fallback_on_method_not_allowed: false,
@@ -354,6 +360,18 @@ impl<F> ServeDir<F> {
         }
     }
 
+    rama_utils::macros::generate_set_and_with! {
+        /// Respond `406 Not Acceptable` when the client's `Accept-Encoding` rejects every
+        /// variant of the file, including the uncompressed one (e.g. `*;q=0`).
+        ///
+        /// Disabled by default, in which case the uncompressed file is served, as
+        /// RFC 9110 §12.5.3 allows. The compression layers enable this by default.
+        pub fn enforce_not_acceptable(mut self, enable: bool) -> Self {
+            self.enforce_not_acceptable = enable;
+            self
+        }
+    }
+
     /// Set the fallback service.
     ///
     /// This service will be called if there is no file at the path of the request.
@@ -368,6 +386,7 @@ impl<F> ServeDir<F> {
             hidden: self.hidden,
             ignore_multi_range_requests: self.ignore_multi_range_requests,
             precompressed_variants: self.precompressed_variants,
+            enforce_not_acceptable: self.enforce_not_acceptable,
             variant: self.variant,
             fallback: Some(new_fallback),
             call_fallback_on_method_not_allowed: self.call_fallback_on_method_not_allowed,
@@ -446,9 +465,12 @@ impl<F> ServeDir<F> {
 
         // The request stays whole, body and extensions included, for the fallback.
         let (parts, body) = req.into_parts();
-        let negotiated_encodings: Vec<_> = parse_accept_encoding_headers(
-            &parts.headers,
-            self.precompressed_variants.unwrap_or_default(),
+        let supported = self.precompressed_variants.unwrap_or_default();
+        let accepted: Vec<_> = parse_accept_encoding_headers(&parts.headers, supported).collect();
+        let negotiated_encodings: Vec<_> = accept_encoding_qualities(
+            &accepted,
+            parse_accept_encoding_wildcard_quality(&parts.headers),
+            supported,
         )
         .collect();
         let file_request = open_file::FileRequest::new(
@@ -457,6 +479,7 @@ impl<F> ServeDir<F> {
             self.ignore_multi_range_requests,
             self.buf_chunk_size,
             self.precompressed_variants.is_some(),
+            self.enforce_not_acceptable,
         );
 
         let open_file_result = open_file::open_file(

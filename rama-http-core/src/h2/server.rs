@@ -146,7 +146,10 @@ use rama_http_types::proto::{
     ext,
     h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
 };
-use rama_http_types::{HeaderMap, Method, Request, Response, StatusCode, Version};
+use rama_http_types::{
+    HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Version, header::HOST,
+};
+use rama_net::address::AuthorityRef;
 use rama_net::extensions::StreamTransformed;
 use rama_net::uri;
 use std::pin::Pin;
@@ -2042,7 +2045,7 @@ impl proto::Peer for Peer {
     }
 
     fn convert_poll_message(
-        pseudo: Pseudo,
+        mut pseudo: Pseudo,
         fields: HeaderMap,
         header_size: usize,
         stream_id: StreamId,
@@ -2069,7 +2072,6 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: missing method");
         }
 
-        let authority_sensitive = pseudo.sensitivity.is_sensitive(PseudoHeader::Authority);
         let has_protocol = if let Some(protocol) = pseudo.protocol {
             if is_connect {
                 // Assert that we have the right type.
@@ -2091,10 +2093,31 @@ impl proto::Peer for Peer {
 
         // A request translated from HTTP/1 must not include the :authority
         // header.
-        let raw_authority = pseudo.authority;
+        let raw_authority = pseudo.authority.take();
+        // A parseable Host stands in for a missing :authority, as on HTTP/3; a plain CONNECT
+        // names its target in :authority only.
+        let host = fields.get(HOST).filter(|host| {
+            raw_authority.is_none()
+                && (!is_connect || has_protocol)
+                && AuthorityRef::parse(host.as_bytes()).is_ok()
+        });
+        if host.is_some_and(HeaderValue::is_sensitive) {
+            pseudo
+                .sensitivity
+                .set_sensitive(PseudoHeader::Authority, true);
+        }
+        let authority_sensitive = pseudo.sensitivity.is_sensitive(PseudoHeader::Authority);
         let authority = if let Some(authority) = raw_authority.as_ref() {
             let Some(received) = received_authority(authority) else {
                 malformed!("malformed headers: malformed authority ({:?})", authority);
+            };
+            Some(received)
+        } else if let Some(host) = host {
+            let Some(received) = std::str::from_utf8(host.as_bytes())
+                .ok()
+                .and_then(received_authority)
+            else {
+                malformed!("malformed headers: malformed host ({:?})", host);
             };
             Some(received)
         } else {

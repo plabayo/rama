@@ -62,6 +62,7 @@ pub(super) enum OpenFileOutput {
         last_modified: Option<LastModified>,
     },
     InvalidFilename,
+    NotAcceptable,
 }
 
 pub(super) enum RangeError {
@@ -173,6 +174,7 @@ pub(super) struct FileRequest {
     buf_chunk_size: usize,
     precompression_configured: bool,
     negotiated_encodings: Vec<QualityValue<Encoding>>,
+    enforce_not_acceptable: bool,
 }
 
 impl FileRequest {
@@ -182,6 +184,7 @@ impl FileRequest {
         ignore_multi_range_requests: bool,
         buf_chunk_size: usize,
         precompression_configured: bool,
+        enforce_not_acceptable: bool,
     ) -> Self {
         Self {
             preconditions: Preconditions::from_headers(&parts.headers),
@@ -191,7 +194,13 @@ impl FileRequest {
             buf_chunk_size,
             precompression_configured,
             negotiated_encodings,
+            enforce_not_acceptable,
         }
+    }
+
+    /// Whether the client rejected every variant, given the negotiated encoding of the file found.
+    fn not_acceptable(&self, encoding: Option<Encoding>) -> bool {
+        self.enforce_not_acceptable && encoding.is_none()
     }
 
     /// Evaluates preconditions and the range of a file with the given validators and size.
@@ -423,6 +432,9 @@ fn open_embedded(
         Ok(decided) => decided,
         Err(output) => return Ok(output),
     };
+    if request.not_acceptable(maybe_encoding) {
+        return Ok(OpenFileOutput::NotAcceptable);
+    }
     let extent = if request.is_head {
         FileRequestExtent::Head(content_length)
     } else {
@@ -520,23 +532,7 @@ impl FilesystemLookup {
             ServeVariant::SingleFile { mime } => mime,
         };
 
-        if request.is_head {
-            let (meta, maybe_encoding) =
-                match Self::with_fallback(path_to_file, request, |path| self.metadata(path)) {
-                    Ok(result) => result,
-                    Err(err) if is_invalid_filename_error(&err) => {
-                        return Ok(OpenFileOutput::InvalidFilename);
-                    }
-                    Err(err) => return Err(err),
-                };
-            let decided = match request.decide(meta.len(), meta.modified().ok()) {
-                Ok(decided) => decided,
-                Err(output) => return Ok(output),
-            };
-            let extent = FileRequestExtent::Head(meta.len());
-            return Ok(request.opened(extent, mime, maybe_encoding, decided));
-        }
-
+        // HEAD opens the file like GET so both resolve to the same outcome.
         let (mut file, maybe_encoding) =
             match Self::with_fallback(path_to_file, request, |path| self.open_file(path)) {
                 Ok(result) => result,
@@ -546,11 +542,25 @@ impl FilesystemLookup {
                 Err(err) => return Err(err),
             };
         let meta = file.metadata()?;
+        if request.is_head {
+            let decided = match request.decide(meta.len(), meta.modified().ok()) {
+                Ok(decided) => decided,
+                Err(output) => return Ok(output),
+            };
+            if request.not_acceptable(maybe_encoding) {
+                return Ok(OpenFileOutput::NotAcceptable);
+            }
+            let extent = FileRequestExtent::Head(meta.len());
+            return Ok(request.opened(extent, mime, maybe_encoding, decided));
+        }
         if meta.len() > READ_WHOLE_MAX_LEN {
             let decided = match request.decide(meta.len(), meta.modified().ok()) {
                 Ok(decided) => decided,
                 Err(output) => return Ok(output),
             };
+            if request.not_acceptable(maybe_encoding) {
+                return Ok(OpenFileOutput::NotAcceptable);
+            }
             if let Some(Ok(range)) = decided.range.as_ref() {
                 file.seek(SeekFrom::Start(*range.start()))?;
             }
@@ -563,6 +573,9 @@ impl FilesystemLookup {
             Ok(decided) => decided,
             Err(output) => return Ok(output),
         };
+        if request.not_acceptable(maybe_encoding) {
+            return Ok(OpenFileOutput::NotAcceptable);
+        }
         let range = decided.range.as_ref().and_then(|range| range.as_ref().ok());
         let extent = read_small_file(&mut file, meta.len(), range)?;
         if let FileRequestExtent::Loaded(contents) = &extent
@@ -615,9 +628,18 @@ impl FilesystemLookup {
         std::fs::metadata(path)
     }
 
+    /// Opens `path` when it is a regular file; anything else is reported as missing.
     fn open_file(&self, path: &Path) -> io::Result<File> {
         self.check_access(path)?;
-        File::open(path)
+        // checked before opening, as opening a fifo or device can block or have side effects
+        if !std::fs::metadata(path)?.is_file() {
+            return Err(not_a_file_error());
+        }
+        let file = File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(not_a_file_error());
+        }
+        Ok(file)
     }
 
     /// Enforces the symlink and hidden-entry policies on a request-supplied path.
@@ -736,6 +758,11 @@ fn reject_symlink(path: &Path) -> io::Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Reported as missing so a directory or special file falls back like an absent variant.
+fn not_a_file_error() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, "not a regular file")
 }
 
 /// Check if an IO error indicates an invalid filename.

@@ -175,6 +175,15 @@ pub(super) const SCAN_BYTES_SOFT_CAP: usize = rama_utils::octets::mib(1);
 /// sparse input reaches large SIMD-friendly blocks after only a few steps.
 const SCAN_INITIAL_BLOCK_SIZE: usize = 1024;
 
+/// Default for [`EventDecoder::with_max_line_len`]: far above any line a real server sends.
+pub const DEFAULT_MAX_LINE_LEN: usize = rama_utils::octets::mib(64);
+
+/// Default for [`EventDecoder::with_max_event_len`]: one event may use the whole line budget.
+pub const DEFAULT_MAX_EVENT_LEN: usize = rama_utils::octets::mib(64);
+
+/// Buffers that grew past this for one unusually large line are released once empty.
+pub(super) const RETAINED_BUFFER_LEN: usize = rama_utils::octets::kib(256);
+
 /// Incremental SSE decoder state.
 ///
 /// Consumes raw body chunks as bytes: complete lines are parsed directly out
@@ -265,9 +274,9 @@ impl<T: EventDataRead> Default for DecodeState<T> {
             ready: VecDeque::new(),
             last_event_id: None,
             event_len: 0,
-            max_line_len: None,
-            max_event_len: None,
-            limited: false,
+            max_line_len: Some(DEFAULT_MAX_LINE_LEN),
+            max_event_len: Some(DEFAULT_MAX_EVENT_LEN),
+            limited: true,
             lenient: false,
             mode: ScanMode::Normal,
             resync_count: 0,
@@ -342,6 +351,15 @@ impl<T: EventDataRead> DecodeState<T> {
         let line = std::mem::take(&mut self.carry);
         self.carry_valid_up_to = 0;
         (line, result)
+    }
+
+    /// Reuse the handed-off line's allocation as `carry`, unless one large line grew it.
+    fn restore_carry(&mut self, mut line: Vec<u8>) {
+        if line.capacity() > RETAINED_BUFFER_LEN {
+            line = Vec::new();
+        }
+        line.clear();
+        self.carry = line;
     }
 
     /// Extend `carry` while validating only bytes not already known valid.
@@ -484,8 +502,7 @@ impl<T: EventDataRead> DecodeState<T> {
                     if let Err(err) = std::str::from_utf8(&line[valid_up_to..])
                         .map_err(|err| err.context("utf8 error: invalid sse line"))
                     {
-                        self.carry = line;
-                        self.carry.clear();
+                        self.restore_carry(line);
                         // the line's terminator was already consumed above
                         self.absorb(err, false)?;
                         return Ok(offset);
@@ -498,8 +515,7 @@ impl<T: EventDataRead> DecodeState<T> {
                     // valid UTF-8 strings concatenate to valid UTF-8.
                     let s = unsafe { std::str::from_utf8_unchecked(&line) };
                     let result = self.handle_line(s);
-                    self.carry = line;
-                    self.carry.clear();
+                    self.restore_carry(line);
                     result?;
                     if self.recovering() {
                         return Ok(offset);
@@ -637,7 +653,8 @@ impl<T: EventDataRead> DecodeState<T> {
         };
         self.builder = EventBuilder::default();
         self.event_len = 0;
-        self.carry.clear();
+        let carry = std::mem::take(&mut self.carry);
+        self.restore_carry(carry);
         self.carry_valid_up_to = 0;
         self.resync_count = self.resync_count.saturating_add(1);
         if let Some(sink) = self.on_resync.as_ref() {
@@ -774,10 +791,12 @@ enum Status {
 /// [`on_incomplete`](Self::with_on_incomplete) receives the buffered partial
 /// line on finish or drop.
 ///
-/// Input is unlimited by default. For untrusted input, set
-/// [`max_line_len`](Self::with_max_line_len) and
-/// [`max_event_len`](Self::with_max_event_len). These limits do not cap the
-/// undecoded backlog; drain events between pushes.
+/// Lines and events are capped by [`DEFAULT_MAX_LINE_LEN`] and
+/// [`DEFAULT_MAX_EVENT_LEN`], far above what real servers send; tighten them
+/// with [`max_line_len`](Self::with_max_line_len) and
+/// [`max_event_len`](Self::with_max_event_len) for untrusted input, or lift them
+/// with the `without_` setters. These limits do not cap the undecoded backlog;
+/// drain events between pushes.
 ///
 /// A decode error is fatal by default. [`lenient`](Self::with_lenient) mode
 /// instead recovers to the next event boundary, losing only the events around
@@ -838,7 +857,9 @@ impl<T: EventDataRead> EventDecoder<T> {
 
     generate_set_and_with! {
         /// Fail decoding once a single line grows past `max` bytes,
-        /// terminator excluded.
+        /// terminator excluded. `None` is unbounded.
+        ///
+        /// Defaults to [`DEFAULT_MAX_LINE_LEN`].
         pub fn max_line_len(mut self, max: Option<usize>) -> Self {
             self.state.max_line_len = max;
             self.state.limited = self.state.max_line_len.is_some() || self.state.max_event_len.is_some();
@@ -850,6 +871,9 @@ impl<T: EventDataRead> EventDecoder<T> {
         /// Fail decoding once an event exceeds `max` raw line bytes.
         /// Includes field names, separators, comments, unknown fields and
         /// partial lines; excludes line terminators. Resets per event.
+        /// `None` is unbounded.
+        ///
+        /// Defaults to [`DEFAULT_MAX_EVENT_LEN`].
         pub fn max_event_len(mut self, max: Option<usize>) -> Self {
             self.state.max_event_len = max;
             self.state.limited = self.state.max_line_len.is_some() || self.state.max_event_len.is_some();
@@ -1075,6 +1099,9 @@ impl<T: EventDataRead> EventDecoder<T> {
     }
 
     fn reset_backlog(&mut self) {
+        if self.backlog.capacity() > RETAINED_BUFFER_LEN {
+            self.backlog = Vec::new();
+        }
         self.backlog.clear();
         self.backlog_offset = 0;
     }
@@ -1617,6 +1644,68 @@ mod tests {
             decoder.try_set_last_event_id(invalid).unwrap_err();
         }
         assert_eq!(decoder.last_event_id(), Some("42"));
+    }
+
+    /// Pushes `chunk` `times` times, draining events after each push; true on a decode error.
+    fn push_repeated(decoder: &mut EventDecoder<String>, chunk: &[u8], times: usize) -> bool {
+        for _ in 0..times {
+            decoder.push(chunk).unwrap();
+            loop {
+                match decoder.next_event() {
+                    Ok(Some(_)) => (),
+                    Ok(None) => break,
+                    Err(_) => return true,
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn a_line_past_the_default_limit_fails() {
+        let mib = vec![b'x'; rama_utils::octets::mib(1)];
+        let mut decoder = EventDecoder::<String>::new();
+        decoder.push(b"data: ").unwrap();
+        let mibs = DEFAULT_MAX_LINE_LEN / mib.len();
+        assert!(!push_repeated(&mut decoder, &mib, mibs - 1));
+        assert!(push_repeated(&mut decoder, &mib, 2));
+
+        // unbounded stays available
+        let mut decoder = EventDecoder::<String>::new()
+            .without_max_line_len()
+            .without_max_event_len();
+        decoder.push(b"data: ").unwrap();
+        assert!(!push_repeated(&mut decoder, &mib, mibs + 1));
+    }
+
+    #[test]
+    fn an_event_past_the_default_limit_fails() {
+        let mut line = vec![b'x'; rama_utils::octets::mib(1)];
+        line[..6].copy_from_slice(b"data: ");
+        line.push(b'\n');
+        let lines = DEFAULT_MAX_EVENT_LEN / (line.len() - 1);
+        let mut decoder = EventDecoder::<String>::new();
+        assert!(!push_repeated(&mut decoder, &line, lines));
+        assert!(push_repeated(&mut decoder, &line, 1));
+
+        let mut decoder = EventDecoder::<String>::new().without_max_event_len();
+        assert!(!push_repeated(&mut decoder, &line, lines + 1));
+    }
+
+    #[test]
+    fn a_large_line_does_not_stay_allocated() {
+        let mut decoder = EventDecoder::<String>::new();
+        let mut input = format!("data: {}\n\n", "x".repeat(rama_utils::octets::mib(2)));
+        input.push_str(&"data: small\n\n".repeat(100));
+        let events = decode_in_chunks(&mut decoder, input.as_bytes(), 64 * 1024 + 3).unwrap();
+        assert_eq!(events.len(), 101);
+        assert!(
+            events[1..]
+                .iter()
+                .all(|event| event.data().unwrap() == "small")
+        );
+        assert!(decoder.state.carry.capacity() <= RETAINED_BUFFER_LEN);
+        assert!(decoder.backlog.capacity() <= RETAINED_BUFFER_LEN);
     }
 
     #[test]

@@ -1668,6 +1668,37 @@ async fn all_network_version_pairs_preserve_http_semantics() {
 /// A peer that accepts TCP but never finishes TLS exercises the connection-only
 /// deadline, both before CONNECT and after an unlabelled tunnel is accepted.
 #[tokio::test]
+async fn every_version_dates_responses_and_sizes_known_request_bodies() {
+    timeout(Duration::from_secs(30), async {
+        let origin = endpoint(
+            None,
+            &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+        )
+        .await;
+        let (web, _) = client(
+            WeakScope::detached(),
+            TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+        )
+        .unwrap();
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let req = Request::builder()
+                .version(version)
+                .method(Method::POST)
+                .uri(format!("https://{}/echo?test=1", origin.address))
+                .body(Body::from("known"))
+                .unwrap();
+            req.extensions().insert(TargetHttpVersion(version));
+            let response = web.serve(req).await.unwrap();
+            assert_eq!(response.version(), version);
+            assert_eq!(response.headers()["x-request-length"], "5", "{version:?}");
+            assert!(response.headers().contains_key("date"), "{version:?}");
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn connection_timeout_returns_gateway_timeout() {
     timeout(Duration::from_secs(25), async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

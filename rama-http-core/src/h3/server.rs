@@ -820,6 +820,12 @@ impl<C: transport::Connection> SendResponse<C> {
                 "final response cannot be informational",
             ));
         }
+        if self.shared.config.auto_date_header {
+            response
+                .headers_mut()
+                .entry(header::DATE)
+                .or_insert_with(crate::common::date::update_and_header_value);
+        }
         if is_tunnel_response(Some(&self.method), response.status())
             && self.shared.config.strict_connect_framing
             && (response.headers().contains_key(header::CONTENT_LENGTH)
