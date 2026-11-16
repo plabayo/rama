@@ -6,6 +6,8 @@
 //! decoded value. Parsing takes linear time and constant auxiliary space; inner lists
 //! cannot nest. This is not a general structured-field serializer or object model.
 
+use rama_utils::byte_set::{HTTP_TCHAR, set_each};
+
 /// A validated bare item. Textual values borrow their wire representation, without delimiters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BareItem<'a> {
@@ -288,31 +290,7 @@ impl<'a> Parser<'a> {
             b':' => self.byte_sequence().map(BareItem::ByteSequence),
             b'a'..=b'z' | b'A'..=b'Z' | b'*' => {
                 let start = self.pos;
-                while matches!(
-                    self.peek(),
-                    Some(
-                        b'a'..=b'z'
-                        | b'A'..=b'Z'
-                        | b'0'..=b'9'
-                        | b'!'
-                        | b'#'
-                        | b'$'
-                        | b'%'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                        | b':'
-                        | b'/',
-                    )
-                ) {
+                while self.peek().is_some_and(is_token_char) {
                     self.pos += 1;
                 }
                 Ok(BareItem::Token(&self.input[start..self.pos]))
@@ -426,6 +404,23 @@ impl<'a> Parser<'a> {
             }
         }
     }
+}
+
+/// RFC 9651 §3.3.4 token characters after the first: `tchar`, `:` and `/`.
+const TOKEN_CHAR: [bool; 256] = set_each(HTTP_TCHAR, b":/");
+
+const fn is_token_char(byte: u8) -> bool {
+    TOKEN_CHAR[byte as usize]
+}
+
+/// Whether `value` serializes as an RFC 9651 §3.3.4 Token, i.e. may go unquoted.
+#[must_use]
+pub fn is_token(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes
+        .first()
+        .is_some_and(|&first| first.is_ascii_alphabetic() || first == b'*')
+        && bytes.iter().copied().all(is_token_char)
 }
 
 fn hex(byte: u8) -> Result<u8, ParseError> {

@@ -1,10 +1,10 @@
 use core::fmt;
 
+use rama_utils::byte_set::{is_http_tchar, is_http_token};
+
 use crate::{
-    byte_sets::{
-        is_field_value_byte, is_horizontal_whitespace_byte, is_quoted_text_byte, is_token_byte,
-    },
-    proto::{chunk_extension, is_token},
+    byte_sets::{is_field_value_byte, is_horizontal_whitespace_byte, is_quoted_text_byte},
+    proto::chunk_extension,
 };
 
 use super::head::Output;
@@ -25,7 +25,9 @@ impl<'a> ChunkExtension<'a> {
     ///
     /// A quoted value includes its surrounding double quotes.
     pub fn new(name: &'a str, value: Option<&'a [u8]>) -> Result<Self, InvalidChunkLine> {
-        if !is_token(name.as_bytes()) || value.is_some_and(|value| !valid_extension_value(value)) {
+        if !is_http_token(name.as_bytes())
+            || value.is_some_and(|value| !valid_extension_value(value))
+        {
             return Err(InvalidChunkLine);
         }
         let extension = Self { name, value };
@@ -525,7 +527,7 @@ fn parse_extension(value: &[u8]) -> Result<(ChunkExtension<'_>, usize), InvalidC
     let name_start = offset;
     offset += value[offset..]
         .iter()
-        .take_while(|byte| is_token_byte(**byte))
+        .take_while(|byte| is_http_tchar(**byte))
         .count();
     if offset == name_start {
         return Err(InvalidChunkLine);
@@ -579,7 +581,7 @@ fn parse_extension_value(value: &[u8], offset: usize) -> Result<usize, InvalidCh
         let index = offset
             + value[offset..]
                 .iter()
-                .take_while(|byte| is_token_byte(**byte))
+                .take_while(|byte| is_http_tchar(**byte))
                 .count();
         if index == offset {
             Err(InvalidChunkLine)

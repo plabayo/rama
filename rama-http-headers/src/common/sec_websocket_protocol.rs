@@ -1,7 +1,6 @@
 use rama_core::extensions::Extension;
 use rama_http_types::{HeaderName, HeaderValue};
-use rama_utils::collections::NonEmptySmallVec;
-use rama_utils::str::NonEmptyStr;
+use rama_utils::{byte_set::is_http_token, collections::NonEmptySmallVec, str::NonEmptyStr};
 use std::fmt;
 
 /// The `Sec-WebSocket-Protocol` header, containing one or multiple protocols.
@@ -48,7 +47,10 @@ impl crate::HeaderDecode for SecWebSocketProtocol {
                 crate::Error::invalid()
             })?;
 
-        if protocols.iter().all(|protocol| is_http_token(protocol)) {
+        if protocols
+            .iter()
+            .all(|protocol| is_http_token(protocol.as_bytes()))
+        {
             Ok(Self(protocols))
         } else {
             rama_core::telemetry::tracing::debug!(
@@ -61,7 +63,11 @@ impl crate::HeaderDecode for SecWebSocketProtocol {
 
 impl crate::HeaderEncode for SecWebSocketProtocol {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        if !self.0.iter().all(|protocol| is_http_token(protocol)) {
+        if !self
+            .0
+            .iter()
+            .all(|protocol| is_http_token(protocol.as_bytes()))
+        {
             rama_core::telemetry::tracing::debug!(
                 "failed to encode Sec-WebSocket-Protocol: invalid protocol token"
             );
@@ -113,7 +119,7 @@ impl SecWebSocketProtocol {
 
     /// Construct a protocol header after validating RFC 6455 token syntax.
     pub fn try_new(value: NonEmptyStr) -> Result<Self, InvalidWebSocketProtocol> {
-        if is_http_token(&value) {
+        if is_http_token(value.as_bytes()) {
             Ok(Self::new(value))
         } else {
             Err(InvalidWebSocketProtocol { _private: () })
@@ -149,10 +155,6 @@ impl SecWebSocketProtocol {
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|it| it.as_ref())
     }
-}
-
-fn is_http_token(value: &str) -> bool {
-    !value.is_empty() && value.bytes().all(crate::util::is_http_token_byte)
 }
 
 #[cfg(test)]

@@ -17,7 +17,9 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::{Stream, StreamExt as _, stream, task::AtomicWaker},
 };
-use rama_utils::{collections::smallvec::SmallVec, str::cmp_ignore_ascii_case};
+use rama_utils::{
+    byte_set::is_http_token, collections::smallvec::SmallVec, str::cmp_ignore_ascii_case,
+};
 use tokio::sync::mpsc;
 #[cfg(feature = "http")]
 use tokio_util::sync::PollSender;
@@ -27,7 +29,7 @@ use crate::{
     codec::{EncodeError, Header, ResponseLine},
     io::{BodyEnd, Error},
     message::{BuildError, EncapsulatedParts, Request, Response, TrailerBlock},
-    proto::{Method, MethodKind, Preview, ServiceTag, StatusCode, header, is_token},
+    proto::{Method, MethodKind, Preview, ServiceTag, StatusCode, header},
 };
 
 type BodyResult<T> = Result<T, BodyError>;
@@ -964,7 +966,10 @@ impl<'a> OptionsResponse<'a> {
             .flatten()
             .filter(|token| **token == b"*")
             .count();
-        if self.opt_body_type.is_some_and(|value| !is_token(value)) {
+        if self
+            .opt_body_type
+            .is_some_and(|value| !is_http_token(value))
+        {
             return Err(BuildError::from(EncodeError::InvalidInput));
         }
         if allow_extensions.iter().any(|token| {
@@ -1088,7 +1093,7 @@ fn sorted_token_list(value: Option<&[u8]>) -> Result<SmallVec<[&[u8]; 8]>, Build
     let mut tokens = SmallVec::<[&[u8]; 8]>::new();
     if let Some(value) = value {
         for token in comma_separated_items(value) {
-            if token.is_empty() || !is_token(token) {
+            if token.is_empty() || !is_http_token(token) {
                 return Err(BuildError::from(EncodeError::InvalidInput));
             }
             tokens.push(token);

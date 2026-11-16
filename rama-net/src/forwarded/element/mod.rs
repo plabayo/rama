@@ -7,10 +7,10 @@ use crate::std::string::String;
 use crate::std::vec::Vec;
 
 use super::{ForwardedProtocol, ForwardedVersion, NodeId};
-use crate::address::{Domain, HostWithOptPort};
-use crate::address::{Host, HostWithPort, SocketAddress};
+use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
 
 use rama_core::error::BoxError;
+use rama_utils::byte_set::is_http_token;
 
 mod parser;
 #[doc(inline)]
@@ -380,7 +380,7 @@ impl fmt::Display for ForwardedElement {
 
         for (key, ext) in self.extensions.iter().flatten() {
             write!(f, "{separator}{key}=")?;
-            if ext.quoted || !is_token(&ext.value) {
+            if ext.quoted || !is_http_token(ext.value.as_bytes()) {
                 f.write_str("\"")?;
                 for c in ext.value.chars() {
                     if c == '"' || c == '\\' {
@@ -397,31 +397,6 @@ impl fmt::Display for ForwardedElement {
 
         Ok(())
     }
-}
-
-/// Whether `value` is an RFC 7230 §3.2.6 `token`, which may go unquoted.
-fn is_token(value: &str) -> bool {
-    !value.is_empty()
-        && value.bytes().all(|b| {
-            b.is_ascii_alphanumeric()
-                || matches!(
-                    b,
-                    b'!' | b'#'
-                        | b'$'
-                        | b'%'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                )
-        })
 }
 
 impl core::str::FromStr for ForwardedElement {

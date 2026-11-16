@@ -4,14 +4,15 @@ use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::Extension,
 };
-use rama_utils::collections::smallvec::SmallVec;
-use rama_utils::str::cmp_ignore_ascii_case;
+use rama_utils::{
+    byte_set::is_http_token, collections::smallvec::SmallVec, str::cmp_ignore_ascii_case,
+};
 
 use crate::{
     byte_sets::comma_separated_items,
     codec::{DEFAULT_MAX_HEADERS, Header, HeaderSlot, HeaderValue},
     message::Response,
-    proto::{MethodKind, Preview, header, is_token},
+    proto::{MethodKind, Preview, header},
 };
 
 use super::OptionsValidation;
@@ -506,11 +507,11 @@ impl ParsedCapabilities {
         let opt_body_type = self
             .opt_body_type
             .valid_value()
-            .filter(|value| is_token(value));
+            .filter(|value| is_http_token(value));
         let opt_body_type_valid = self
             .opt_body_type
             .valid_value()
-            .is_none_or(|value| is_token(value));
+            .is_none_or(|value| is_http_token(value));
         let opt_body_pair_valid =
             opt_body.is_some() == opt_body_type.is_some() && opt_body_type_valid;
         let singleton_cardinality_valid = [
@@ -635,7 +636,7 @@ fn parse_methods(values: &[Bytes]) -> (SupportedMethods, bool) {
                 // parsing retains other usable methods; strict validation
                 // still rejects the illegal member.
                 valid = false;
-            } else if is_token(token) {
+            } else if is_http_token(token) {
                 methods.available = true;
                 methods.extensions.push(shared_slice(value, token));
             } else {
@@ -663,7 +664,7 @@ fn parse_allow(values: &[Bytes]) -> AllowedFeatures {
                 features.valid = false;
                 continue;
             }
-            if !is_token(token) {
+            if !is_http_token(token) {
                 features.valid = false;
             } else {
                 features.tokens.push(shared_slice(value, token));
@@ -717,7 +718,7 @@ fn parse_transfer(
                     if wildcard.replace(disposition).is_some() {
                         rules.valid = false;
                     }
-                } else if is_token(token) {
+                } else if is_http_token(token) {
                     if disposition == TransferDisposition::Preview && !has_preview {
                         rules.valid = false;
                     }
@@ -809,7 +810,7 @@ fn valid_service_tag(value: &Bytes, validation: OptionsValidation) -> bool {
         || (validation == OptionsValidation::Compatible
             && !value.is_empty()
             && value.len() <= 32
-            && is_token(value))
+            && is_http_token(value))
 }
 
 #[cfg(test)]

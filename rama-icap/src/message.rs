@@ -3,10 +3,10 @@
 use core::fmt;
 
 use rama_core::bytes::{Bytes, BytesMut};
-use rama_utils::bytes::trim_ows;
+use rama_utils::{byte_set::is_http_tchar, bytes::trim_ows};
 
 use crate::{
-    byte_sets::{comma_separated_items, is_token_byte},
+    byte_sets::comma_separated_items,
     codec::{
         self, DEFAULT_MAX_HEAD_BYTES, DEFAULT_MAX_HEADERS, EncodeError, HeadParserConfig, Header,
         HeaderSlot, HeaderValue, ParseError, ParseStatus, RequestHead, RequestLine,
@@ -55,7 +55,7 @@ impl IcapTrailerNames {
             let separator_len = usize::from(count != 0).saturating_mul(2);
             if count == DEFAULT_MAX_HEADERS
                 || bytes.is_empty()
-                || !bytes.iter().copied().all(is_token_byte)
+                || !bytes.iter().copied().all(is_http_tchar)
                 || length
                     .checked_add(separator_len)
                     .and_then(|len| len.checked_add(bytes.len()))
@@ -187,7 +187,7 @@ fn canonicalize_icap_trailer_names(mut value: BytesMut) -> Result<Bytes, ()> {
         while end > start && matches!(value[end - 1], b' ' | b'\t') {
             end -= 1;
         }
-        if start == end || !value[start..end].iter().copied().all(is_token_byte) {
+        if start == end || !value[start..end].iter().copied().all(is_http_tchar) {
             return Err(());
         }
         if count == DEFAULT_MAX_HEADERS {

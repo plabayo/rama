@@ -9,9 +9,9 @@
 
 use std::borrow::Cow;
 
-use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::{byte_set::is_http_token, collections::smallvec::SmallVec};
 
-use crate::{HeaderValue, header::is_token, mime::Mime};
+use crate::{HeaderValue, mime::Mime};
 
 /// The extracted type with its parameters, `None` when no line holds a valid one.
 ///
@@ -177,7 +177,7 @@ impl<'a> Candidate<'a> {
             .unwrap_or(rest.len());
         let (subtype, parameters) = rest.split_at(semicolon);
         let subtype = trim_end_http_whitespace(subtype);
-        if !is_token(kind) || !is_token(subtype) {
+        if !is_http_token(kind) || !is_http_token(subtype) {
             return None;
         }
         // Tokens are ASCII.
@@ -243,7 +243,7 @@ impl<'a> Candidate<'a> {
                 }
                 Cow::Borrowed(value)
             };
-            if is_token(name)
+            if is_http_token(name)
                 && value.iter().copied().all(is_quoted_string_token_code_point)
                 && let Ok(name) = std::str::from_utf8(name)
                 && !parameters
@@ -338,7 +338,7 @@ fn to_mime(essence: &str, parameters: &[(&str, Cow<'_, [u8]>)]) -> Option<Mime> 
     );
     serialized.push_str(essence);
     for (name, value) in parameters {
-        let quoted = !is_token(value);
+        let quoted = !is_http_token(value);
         // `mime` holds a quoted value raw: UTF-8 or a backslash would not re-encode as sent.
         if quoted
             && (value.is_empty()

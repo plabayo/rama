@@ -8,11 +8,13 @@ use rama_net::{
     address::{AuthorityRef, Host, HostRef, HostWithPort, OptPort},
     tls::ApplicationProtocol,
 };
-use rama_utils::{bytes::trim_ows, collections::NonEmptyVec, macros::generate_set_and_with};
+use rama_utils::{
+    byte_set::is_http_tchar, bytes::trim_ows, collections::NonEmptyVec,
+    macros::generate_set_and_with,
+};
 
 use crate::util::{
-    ListMembers, QuotedString, Seconds, is_http_token_byte, parse_delta_seconds,
-    scan_quoted_string, skip_ows,
+    ListMembers, QuotedString, Seconds, parse_delta_seconds, scan_quoted_string, skip_ows,
 };
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
@@ -380,7 +382,7 @@ fn parse_protocol_id(input: &[u8]) -> Result<ApplicationProtocol, BoxError> {
     let mut rest = input;
     while let Some((&byte, tail)) = rest.split_first() {
         if byte != b'%' {
-            if !is_http_token_byte(byte) {
+            if !is_http_tchar(byte) {
                 return Err(BoxError::from_static_str(
                     "Alt-Svc protocol identifier contains a non-token octet",
                 ));
@@ -405,7 +407,7 @@ fn parse_protocol_id(input: &[u8]) -> Result<ApplicationProtocol, BoxError> {
                 "Alt-Svc protocol identifier escape is not uppercase hexadecimal",
             )
         })?;
-        if byte != b'%' && is_http_token_byte(byte) {
+        if byte != b'%' && is_http_tchar(byte) {
             return Err(BoxError::from_static_str(
                 "Alt-Svc protocol identifier unnecessarily escapes a token octet",
             ));
@@ -536,10 +538,7 @@ fn parse_parameter_value<'a>(
 /// Advance `cursor` past a run of token octets and return them.
 fn scan_token<'a>(input: &'a [u8], cursor: &mut usize) -> &'a [u8] {
     let rest = input.get(*cursor..).unwrap_or_default();
-    let len = rest
-        .iter()
-        .take_while(|byte| is_http_token_byte(**byte))
-        .count();
+    let len = rest.iter().take_while(|byte| is_http_tchar(**byte)).count();
     *cursor = cursor.saturating_add(len);
     rest.get(..len).unwrap_or_default()
 }
@@ -564,7 +563,7 @@ fn encode_service(output: &mut Vec<u8>, service: &AlternativeService) {
             .saturating_add(32),
     );
     for &byte in service.protocol.as_bytes() {
-        if byte != b'%' && is_http_token_byte(byte) {
+        if byte != b'%' && is_http_tchar(byte) {
             output.push(byte);
         } else {
             output.push(b'%');

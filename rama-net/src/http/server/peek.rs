@@ -18,10 +18,10 @@ use rama_core::{
     service::RejectService,
     telemetry::tracing,
 };
-use rama_utils::octets::kib;
+use rama_utils::{byte_set::is_http_tchar, octets::kib};
 
 use crate::{
-    byte_sets::{is_control_byte, is_http_token_byte, is_scheme_first_byte, is_scheme_rest_byte},
+    byte_sets::{is_control_byte, is_scheme_first_byte, is_scheme_rest_byte},
     uri::parser::validate_http_request_target_for_peek,
 };
 
@@ -606,7 +606,7 @@ impl HttpPeekState {
         let state = core::mem::replace(&mut self.http1, Http1PeekState::Invalid);
         self.http1 = match state {
             Http1PeekState::Method { start, len } => {
-                if is_http_token_byte(byte) {
+                if is_http_tchar(byte) {
                     let len = len + 1;
                     let method = &buffer[start..start + len];
                     if self
