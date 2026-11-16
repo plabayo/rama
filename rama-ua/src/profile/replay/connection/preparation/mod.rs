@@ -65,6 +65,19 @@ impl ConnectionPreparation {
             &mut PreparedConnectionComponents,
         ) -> Result<C, BoxError>,
     ) -> Result<Option<(Self, C)>, BoxError> {
+        Self::prepare_with_ech(input, false, compile)
+    }
+
+    /// Prepare a matched ECH connection when the backend has already resolved
+    /// endpoint configuration and caller intent. The same draw survives retries.
+    pub fn prepare_with_ech<C: CompiledConnectionProfile>(
+        input: &impl ExtensionsRef,
+        ech: bool,
+        compile: impl FnOnce(
+            &ConnectionSelection,
+            &mut PreparedConnectionComponents,
+        ) -> Result<C, BoxError>,
+    ) -> Result<Option<(Self, C)>, BoxError> {
         let Some(context) = EmulationContext::of(input.extensions()) else {
             return Ok(None);
         };
@@ -73,10 +86,12 @@ impl ConnectionPreparation {
             .get_ref::<ConnectionContext>()
             .cloned()
             .unwrap_or_default();
-        let selection =
-            context
-                .selected
-                .connection(&connection, context.seed, context.connection_key)?;
+        let selection = context.selected.connection_with_ech(
+            &connection,
+            context.seed,
+            context.connection_key,
+            ech,
+        )?;
         if context
             .pins
             .connection

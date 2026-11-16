@@ -738,11 +738,12 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
         if value.grease_signature_schemes.is_some_and(|p| p.0) {
             grease |= GreaseLists::SIGNATURE_ALGORITHMS;
         }
-        // A permuted layout keeps the GREASE extensions the (unused) order names.
-        if permute_extensions
-            && value
-                .extension_order
-                .is_some_and(|order| order.0.iter().any(ExtensionId::is_grease))
+        // Native ECH builds the inner and outer together, using native GREASE
+        // extensions even with an explicit order. Without real ECH the exact
+        // order still owns its GREASE slots and ignores this native mask.
+        if value
+            .extension_order
+            .is_some_and(|order| order.0.iter().any(ExtensionId::is_grease))
         {
             grease |= GreaseLists::EXTENSIONS;
         }

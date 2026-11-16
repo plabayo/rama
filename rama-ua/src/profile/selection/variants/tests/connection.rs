@@ -1,5 +1,146 @@
 use super::*;
 
+#[cfg(feature = "tls")]
+#[test]
+fn ech_pairs_are_selected_only_for_ready_endpoints_and_pins_still_win() {
+    use crate::profile::capture::tls::{
+        TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtension,
+        TlsCapturedExtensionValue as Value,
+    };
+    let tls = |value| {
+        TlsCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            transport: TlsCaptureTransport::Tcp,
+            protocol_version: 771,
+            ciphers: vec![4865].into(),
+            compression: vec![0].into(),
+            extensions: vec![TlsCapturedExtension { id: 65037, value }].into(),
+        }
+        .canonical(TlsCaptureLimits::default())
+        .unwrap()
+    };
+    let outer = tls(Value::EchOuter {
+        kdf: 1,
+        aead: 1,
+        enc: 32,
+        payload: 144,
+    });
+    let inner = tls(Value::EchInner);
+    let joint = |slots: Vec<CapturedSlot>| {
+        JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Connection,
+            slots: slots.into(),
+        }
+        .canonical(JointCaptureLimits::default())
+        .unwrap()
+    };
+    let baseline = joint(vec![CapturedSlot {
+        kind: CapturedSlotKind::TcpTls,
+        value: outer.clone(),
+    }]);
+    let pair = joint(vec![
+        CapturedSlot {
+            kind: CapturedSlotKind::TcpTls,
+            value: inner.clone(),
+        },
+        CapturedSlot {
+            kind: CapturedSlotKind::TlsOuter,
+            value: outer,
+        },
+    ]);
+    let unpaired = joint(vec![CapturedSlot {
+        kind: CapturedSlotKind::TcpTls,
+        value: inner,
+    }]);
+    let required = CapabilitySet {
+        h1: true,
+        tls_tcp: true,
+        ..Default::default()
+    };
+    let context = ConnectionContext::default();
+    let mut profile = profile("ech", required, context.clone());
+    let analysis = Arc::make_mut(profile.captured.as_mut().unwrap());
+    let request = analysis.scopes[1].clone();
+    analysis.scopes = vec![
+        scope(
+            1,
+            analysis.id,
+            None,
+            context.clone(),
+            vec![(baseline.clone(), 1)],
+        ),
+        scope(
+            2,
+            analysis.id,
+            None,
+            context.clone(),
+            vec![(pair.clone(), 1)],
+        ),
+        scope(
+            3,
+            analysis.id,
+            None,
+            context.clone(),
+            vec![(unpaired.clone(), 1)],
+        ),
+        request,
+    ]
+    .into();
+    analysis.components.tls_tcp = Some(vec![0, 1, 2].into());
+    analysis.components.h1 = Some(vec![0, 1, 2, 3].into());
+    let database: UserAgentDatabase = [profile].into_iter().collect();
+    let seed = ProfileSeed([9; 32]);
+    let key = DrawKey([10; 32]);
+    let select = |pin| {
+        database
+            .select(
+                &SelectionRequest {
+                    client: ProfileSelector::default(),
+                    required,
+                    flow: flow(context.clone(), Version::HTTP_11),
+                    pins: VariantPins {
+                        connection: pin,
+                        request: None,
+                    },
+                },
+                seed,
+                key,
+            )
+            .unwrap()
+    };
+    let selected = select(None);
+    for byte in 0..32 {
+        let key = DrawKey([byte; 32]);
+        assert_eq!(
+            selected.connection(&context, seed, key).unwrap().variant,
+            baseline.id
+        );
+        assert_eq!(
+            selected
+                .connection_with_ech(&context, seed, key, true)
+                .unwrap()
+                .variant,
+            pair.id
+        );
+    }
+    assert_eq!(
+        select(Some(baseline.id))
+            .connection_with_ech(&context, seed, key, true)
+            .unwrap()
+            .variant,
+        baseline.id
+    );
+    assert!(matches!(
+        select(Some(pair.id)).connection(&context, seed, key),
+        Err(SelectionError::IncompatiblePin(_))
+    ));
+    assert!(matches!(
+        select(Some(unpaired.id)).connection_with_ech(&context, seed, key, true),
+        Err(SelectionError::IncompatiblePin(_))
+    ));
+}
+
 #[test]
 fn h1_h2_offer_does_not_admit_an_h2_only_profile() {
     let context = ConnectionContext::default();

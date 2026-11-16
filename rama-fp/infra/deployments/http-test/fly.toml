@@ -7,7 +7,7 @@ app = 'rama-http-test'
 primary_region = 'fra'
 
 [build]
-  dockerfile = '../Dockerfile.h3'
+  dockerfile = '../Dockerfile.fly'
 
 [env]
 # Recording remains opt-in through the DIAL9_ENABLED Fly secret.
@@ -48,7 +48,7 @@ DIAL9_SERVICE_NAME = 'rama-http-test'
     port = 443
 
 # HTTP/3. UDP needs the app's dedicated IPv4 and keeps its port: the app binds 443 itself.
-# UDP binds `fly-global-services` (resolved by Dockerfile.h3) so Fly routes the replies.
+# UDP binds `fly-global-services` (resolved by Dockerfile.fly) so Fly routes the replies.
 [[services]]
   protocol = 'udp'
   internal_port = 443

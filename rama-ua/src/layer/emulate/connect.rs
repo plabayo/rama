@@ -23,7 +23,7 @@ use crate::profile::{
         },
         request::{LoweredProfileItem, ProfilePreservationDifference, ProfilePreservationReport},
     },
-    selection::variants::ProfileConnectionReuse,
+    selection::variants::{EmulationContext, ProfileConnectionReuse},
 };
 
 use super::{preserve, profile::OptionalEmulation};
@@ -84,33 +84,36 @@ where
 
     async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
         let mut skipped = false;
-        let prepared = match ConnectionPreparation::prepare(&req, |selection, components| {
-            // Without the captured offer the compiler leaves the caller's TLS configuration as is.
-            #[cfg(feature = "tls")]
-            if preserve::keeps_tls(req.extensions()) && components.tls.take().is_some() {
-                tracing::trace!("captured TLS replay skipped: the caller keeps its own TLS");
-                preserve::report_kept(
-                    &mut components.preservation_report,
-                    LoweredProfileItem::CallerTls,
-                );
-            }
-            self.compiler.compile(&req, selection, components)
-        }) {
-            Ok(prepared) => prepared,
-            Err(error) if req.extensions().contains::<OptionalEmulation>() => {
-                tracing::debug!(
-                    "profile connection emulation skipped, connecting natively: {error}"
-                );
-                skipped = true;
-                None
-            }
-            Err(error) => {
-                return Err(ConnectionError::local(
-                    error,
-                    ConnectionErrorKind::InvalidInput,
-                ));
-            }
-        };
+        let ech = EmulationContext::of(req.extensions()).is_some() && self.compiler.ech_ready(&req);
+        let prepared =
+            match ConnectionPreparation::prepare_with_ech(&req, ech, |selection, components| {
+                // Without the captured offer the compiler leaves the caller's TLS configuration as is.
+                #[cfg(feature = "tls")]
+                if preserve::keeps_tls(req.extensions()) && components.tls.take().is_some() {
+                    components.tls_outer.take();
+                    tracing::trace!("captured TLS replay skipped: the caller keeps its own TLS");
+                    preserve::report_kept(
+                        &mut components.preservation_report,
+                        LoweredProfileItem::CallerTls,
+                    );
+                }
+                self.compiler.compile(&req, selection, components)
+            }) {
+                Ok(prepared) => prepared,
+                Err(error) if req.extensions().contains::<OptionalEmulation>() => {
+                    tracing::debug!(
+                        "profile connection emulation skipped, connecting natively: {error}"
+                    );
+                    skipped = true;
+                    None
+                }
+                Err(error) => {
+                    return Err(ConnectionError::local(
+                        error,
+                        ConnectionErrorKind::InvalidInput,
+                    ));
+                }
+            };
         let connection_admission = if let Some((mut prepared, compiled)) = prepared {
             let (admission, components) = if preserve::keeps_http(req.extensions()) {
                 tracing::trace!("captured HTTP settings skipped: the caller keeps its own HTTP");

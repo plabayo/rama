@@ -11,6 +11,83 @@ use crate::profile::{
 };
 use rama_http::{HeaderMap, HeaderValue, Version};
 
+#[cfg(feature = "tls")]
+#[test]
+fn ech_pair_roundtrips_and_rejects_mismatched_companions() {
+    use crate::profile::capture::tls::{TlsCapturedExtension, TlsCapturedExtensionValue as Value};
+    let tls = |transport, value| {
+        TlsCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            transport,
+            protocol_version: 771,
+            ciphers: vec![4865].into(),
+            compression: vec![0].into(),
+            extensions: vec![TlsCapturedExtension { id: 65037, value }].into(),
+        }
+        .canonical(TlsCaptureLimits::default())
+        .unwrap()
+    };
+    let outer = || {
+        tls(
+            TlsCaptureTransport::Tcp,
+            Value::EchOuter {
+                kdf: 1,
+                aead: 1,
+                enc: 32,
+                payload: 144,
+            },
+        )
+    };
+    let mut pair = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Connection,
+        slots: vec![
+            CapturedSlot {
+                kind: CapturedSlotKind::TcpTls,
+                value: tls(TlsCaptureTransport::Tcp, Value::EchInner),
+            },
+            CapturedSlot {
+                kind: CapturedSlotKind::TlsOuter,
+                value: outer(),
+            },
+        ]
+        .into(),
+    };
+    let limits = JointCaptureLimits::default();
+    let canonical = pair.canonical(limits).unwrap();
+    let decoded = JointCapture::from_canonical(&canonical, limits).unwrap();
+    assert_eq!(decoded.canonical(limits).unwrap().bytes, canonical.bytes);
+    let structure = pair.structural(limits).unwrap();
+    validate_joint_structure(&structure, limits.bytes).unwrap();
+    assert_eq!(decoded.slots.len(), 2);
+
+    // A standalone outer, a non-inner companion and cross-transport pairing
+    // must all fail through both the canonical and structural entrypoints.
+    let invalid = |pair: &JointCapture| {
+        pair.canonical(limits).unwrap_err();
+        pair.structural(limits).unwrap_err();
+    };
+    pair.slots[0].value = outer();
+    invalid(&pair);
+    pair.slots[0].value = tls(TlsCaptureTransport::Tcp, Value::EchInner);
+    pair.slots[1].value = tls(
+        TlsCaptureTransport::Quic,
+        Value::EchOuter {
+            kdf: 1,
+            aead: 1,
+            enc: 32,
+            payload: 144,
+        },
+    );
+    invalid(&pair);
+    pair.slots = vec![CapturedSlot {
+        kind: CapturedSlotKind::TlsOuter,
+        value: outer(),
+    }]
+    .into();
+    invalid(&pair);
+}
+
 fn order_slot(kind: CapturedSlotKind, fields: &[(u64, &[u8])]) -> CapturedSlot {
     let limits = OrderCaptureLimits::default();
     CapturedSlot {

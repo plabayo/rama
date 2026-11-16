@@ -26,6 +26,19 @@ remain separate coverage.
 
 ## Responsibilities
 
+The nightly collector adds one `run_ech_capture` observation on each ECH origin
+after its baseline journey. `/report?connection_only=1` omits the page's HTTP and
+site probes: the profile retains those from the baseline captures. The server's
+handshake result records `accepted` or `not_observed`; non-acceptance does not
+mean the browser lacks ECH support. Missing server evidence fails collection.
+The collector leaves browser ECH policy and DNS settings unchanged.
+
+`ech_services.py` exercises the local echo and fp binaries using fresh Chrome
+profiles, an isolated HTTPS DNS resolver and generated ECH keys. It checks both
+accepted and baseline connections over H1, H2 and H3, including the separate
+inner ClientHello display. Its forced H3 case checks protocol support; the
+`auto` case separately observes the browser's own first-visit protocol choice.
+
 - `workflow.py`: the shared browser journey and per-flow protocol assertions.
 - `drivers.py`: local/remote session ownership and guaranteed `quit()` after a
   workflow failure. Selenium Manager discovers executables; pinned installations

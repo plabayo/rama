@@ -108,6 +108,8 @@ pub struct EchoServiceBuilder<H> {
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_server_config: Option<TlsServerConfig>,
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    store_outer_client_hello: bool,
 
     http_version: Option<Version>,
     http2_observation: bool,
@@ -138,6 +140,8 @@ impl Default for EchoServiceBuilder<()> {
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_server_config: None,
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            store_outer_client_hello: false,
 
             http_version: None,
             http2_observation: false,
@@ -253,6 +257,16 @@ impl<H> EchoServiceBuilder<H> {
     }
 
     crate::utils::macros::generate_set_and_with! {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        /// Retain the wire ClientHello alongside the effective hello from the TLS backend.
+        /// Enable when configuring ECH to display both the encrypted outer and accepted inner.
+        pub fn store_outer_client_hello(mut self, enabled: bool) -> Self {
+            self.store_outer_client_hello = enabled;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
         /// set the http version to use for the http server over TCP (auto by default)
         pub fn http_version(mut self, version: Option<Version>) -> Self {
             self.http_version = version;
@@ -298,6 +312,8 @@ impl<H> EchoServiceBuilder<H> {
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_server_config: self.tls_server_config,
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            store_outer_client_hello: self.store_outer_client_hello,
 
             http_version: self.http_version,
             http2_observation: self.http2_observation,
@@ -419,6 +435,9 @@ where
             throttle.clone(),
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            (self.store_outer_client_hello && self.tls_server_config.is_some())
+                .then_some(crate::tls::server::StoreOuterClientHelloLayer::new()),
             #[cfg(any(feature = "rustls", feature = "boring"))]
             self.tls_server_config
                 .map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
@@ -719,168 +738,193 @@ impl Service<Request> for EchoService {
         let quic_completeness = serde_json::Value::Null;
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_info = parts
-            .extensions
-            .get_ref::<SecureTransport>()
-            .and_then(|st| st.client_hello())
-            .map(|hello| {
-                let recorded_tls = recorded.map_or(&[][..], |recorded| match parts.version {
-                    Version::HTTP_3 => &recorded.tls_quic[..],
-                    _ => &recorded.tls[..],
-                });
-                let ja4 = Ja4::compute(parts.extensions.extensions())
-                    .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
-                    .ok();
+        let tls_view = |hello: &crate::tls::client::ClientHello, compare_profiles: bool| {
+            let recorded = if compare_profiles { recorded } else { None };
 
-                let profile_ja4 = ja4.as_ref().and_then(|src| {
-                    profile_fingerprint(
-                        recorded_tls.iter().filter_map(|tgt| tgt.ja4.as_ref()),
-                        |tgt| tgt == src,
-                        |tgt| format!("{tgt}"),
-                        |tgt| format!("{tgt:?}"),
-                    )
-                });
+            let recorded_tls = recorded.map_or(&[][..], |recorded| match parts.version {
+                Version::HTTP_3 => &recorded.tls_quic[..],
+                _ => &recorded.tls[..],
+            });
+            let ja4 = Ja4::compute_from_client_hello(hello)
+                .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
+                .ok();
 
-                let ja4 = ja4.map(|ja4| {
-                    json!({
-                        "hash": format!("{ja4}"),
-                        "verbose": format!("{ja4:?}"),
-                        "profile": profile_ja4,
-                    })
-                });
+            let profile_ja4 = ja4.as_ref().and_then(|src| {
+                profile_fingerprint(
+                    recorded_tls.iter().filter_map(|tgt| tgt.ja4.as_ref()),
+                    |tgt| tgt == src,
+                    |tgt| format!("{tgt}"),
+                    |tgt| format!("{tgt:?}"),
+                )
+            });
 
-                let ja3 = Ja3::compute(parts.extensions.extensions())
-                    .inspect_err(|err| tracing::trace!("ja3 computation: {err:?}"))
-                    .ok();
-
-                let profile_ja3 = ja3.as_ref().and_then(|src| {
-                    profile_fingerprint(
-                        recorded_tls.iter().filter_map(|tgt| tgt.ja3.as_ref()),
-                        |tgt| tgt == src,
-                        |tgt| format!("{tgt:x}"),
-                        |tgt| format!("{tgt}"),
-                    )
-                });
-
-                let ja3 = ja3.map(|ja3| {
-                    json!({
-                        "hash": format!("{ja3:x}"),
-                        "verbose": format!("{ja3}"),
-                        "profile": profile_ja3,
-                    })
-                });
-
-                let peet = PeetPrint::compute(parts.extensions.extensions())
-                    .inspect_err(|err| tracing::trace!("peet computation: {err:?}"))
-                    .ok();
-
-                let profile_peet = peet.as_ref().and_then(|src| {
-                    profile_fingerprint(
-                        recorded_tls.iter().filter_map(|tgt| tgt.peetprint.as_ref()),
-                        |tgt| tgt == src,
-                        |tgt| format!("{tgt}"),
-                        |tgt| format!("{tgt:?}"),
-                    )
-                });
-
-                let peet = peet.map(|peet| {
-                    json!({
-                        "hash": format!("{peet}"),
-                        "verbose": format!("{peet:?}"),
-                        "profile": profile_peet,
-                    })
-                });
-
+            let ja4 = ja4.map(|ja4| {
                 json!({
-                    "transport": if parts.version == Version::HTTP_3 { "quic" } else { "tcp" },
-                    "completeness": quic_completeness,
-                    "header": {
-                        "version": hello.protocol_version().to_string(),
-                        "cipher_suites": hello
-                        .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                        "compression_algorithms": hello
-                        .compression_algorithms().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                    },
-                    "extensions": hello.extensions().iter().map(|extension| match extension {
-                        ClientHelloExtension::ServerName(domain) => json!({
-                            "id": extension.id().to_string(),
-                            "data": domain,
-                        }),
-                        ClientHelloExtension::SignatureAlgorithms(v) => json!({
-                            "id": extension.id().to_string(),
-                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                        }),
-                        ClientHelloExtension::SupportedVersions(v) => json!({
-                            "id": extension.id().to_string(),
-                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                        }),
-                        ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => json!({
-                            "id": extension.id().to_string(),
-                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                        }),
-                        ClientHelloExtension::ApplicationSettings{ protocols, .. } => json!({
-                            "id": extension.id().to_string(),
-                            "data": protocols.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                        }),
-                        ClientHelloExtension::SupportedGroups(v) => json!({
-                            "id": extension.id().to_string(),
-                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                        }),
-                        ClientHelloExtension::ECPointFormats(v) => json!({
-                            "id": extension.id().to_string(),
-                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                        }),
-                        ClientHelloExtension::CertificateCompression(v) => json!({
-                            "id": extension.id().to_string(),
-                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                        }),
-                        ClientHelloExtension::DelegatedCredentials(v) => json!({
-                            "id": extension.id().to_string(),
-                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                        }),
-                        ClientHelloExtension::RecordSizeLimit(v)
-                | ClientHelloExtension::ServerPaddingRequest(v) => json!({
-                            "id": extension.id().to_string(),
-                            "data": v.to_string(),
-                        }),
-                        ClientHelloExtension::EncryptedClientHello(ech) => match ech {
-                            ECHClientHello::Outer(ech) => json!({
-                                "id": extension.id().to_string(),
-                                "data": {
-                                    "type": "outer",
-                                    "cipher_suite": {
-                                        "aead_id": ech.cipher_suite.aead_id.to_string(),
-                                        "kdf_id": ech.cipher_suite.kdf_id.to_string(),
-                                    },
-                                    "config_id": ech.config_id,
-                                    "enc":  crate::utils::fmt::hex(&ech.enc).with_prefix(true).to_string(),
-                                    "payload": crate::utils::fmt::hex(&ech.payload).with_prefix(true).to_string(),
-                                },
-                            }),
-                            ECHClientHello::Inner => json!({
-                                "id": extension.id().to_string(),
-                                "data": {
-                                    "type": "inner",
-                                },
-                            })
-
-                        }
-                        ClientHelloExtension::Opaque { id, data } => if data.is_empty() {
-                            json!({
-                                "id": id.to_string()
-                            })
-                        } else {
-                            json!({
-                                "id": id.to_string(),
-                                "data": crate::utils::fmt::hex(data).with_prefix(true).to_string()
-                            })
-                        },
-                    }).collect::<Vec<_>>(),
-                    "ja3": ja3,
-                    "ja4": ja4,
-                    "peet": peet
+                    "hash": format!("{ja4}"),
+                    "verbose": format!("{ja4:?}"),
+                    "profile": profile_ja4,
                 })
             });
+
+            let ja3 = Ja3::compute_from_client_hello(hello)
+                .inspect_err(|err| tracing::trace!("ja3 computation: {err:?}"))
+                .ok();
+
+            let profile_ja3 = ja3.as_ref().and_then(|src| {
+                profile_fingerprint(
+                    recorded_tls.iter().filter_map(|tgt| tgt.ja3.as_ref()),
+                    |tgt| tgt == src,
+                    |tgt| format!("{tgt:x}"),
+                    |tgt| format!("{tgt}"),
+                )
+            });
+
+            let ja3 = ja3.map(|ja3| {
+                json!({
+                    "hash": format!("{ja3:x}"),
+                    "verbose": format!("{ja3}"),
+                    "profile": profile_ja3,
+                })
+            });
+
+            let peet = PeetPrint::compute_from_client_hello(hello)
+                .inspect_err(|err| tracing::trace!("peet computation: {err:?}"))
+                .ok();
+
+            let profile_peet = peet.as_ref().and_then(|src| {
+                profile_fingerprint(
+                    recorded_tls.iter().filter_map(|tgt| tgt.peetprint.as_ref()),
+                    |tgt| tgt == src,
+                    |tgt| format!("{tgt}"),
+                    |tgt| format!("{tgt:?}"),
+                )
+            });
+
+            let peet = peet.map(|peet| {
+                json!({
+                    "hash": format!("{peet}"),
+                    "verbose": format!("{peet:?}"),
+                    "profile": profile_peet,
+                })
+            });
+
+            json!({
+                "transport": if parts.version == Version::HTTP_3 { "quic" } else { "tcp" },
+                "completeness": quic_completeness,
+                "header": {
+                    "version": hello.protocol_version().to_string(),
+                    "cipher_suites": hello
+                    .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    "compression_algorithms": hello
+                    .compression_algorithms().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                },
+                "extensions": hello.extensions().iter().map(|extension| match extension {
+                    ClientHelloExtension::ServerName(domain) => json!({
+                        "id": extension.id().to_string(),
+                        "data": domain,
+                    }),
+                    ClientHelloExtension::SignatureAlgorithms(v) => json!({
+                        "id": extension.id().to_string(),
+                        "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    }),
+                    ClientHelloExtension::SupportedVersions(v) => json!({
+                        "id": extension.id().to_string(),
+                        "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    }),
+                    ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => json!({
+                        "id": extension.id().to_string(),
+                        "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    }),
+                    ClientHelloExtension::ApplicationSettings{ protocols, .. } => json!({
+                        "id": extension.id().to_string(),
+                        "data": protocols.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    }),
+                    ClientHelloExtension::SupportedGroups(v) => json!({
+                        "id": extension.id().to_string(),
+                        "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    }),
+                    ClientHelloExtension::ECPointFormats(v) => json!({
+                        "id": extension.id().to_string(),
+                        "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    }),
+                    ClientHelloExtension::CertificateCompression(v) => json!({
+                        "id": extension.id().to_string(),
+                        "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    }),
+                    ClientHelloExtension::DelegatedCredentials(v) => json!({
+                        "id": extension.id().to_string(),
+                        "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    }),
+                    ClientHelloExtension::RecordSizeLimit(v)
+            | ClientHelloExtension::ServerPaddingRequest(v) => json!({
+                        "id": extension.id().to_string(),
+                        "data": v.to_string(),
+                    }),
+                    ClientHelloExtension::EncryptedClientHello(ech) => match ech {
+                        ECHClientHello::Outer(ech) => json!({
+                            "id": extension.id().to_string(),
+                            "data": {
+                                "type": "outer",
+                                "cipher_suite": {
+                                    "aead_id": ech.cipher_suite.aead_id.to_string(),
+                                    "kdf_id": ech.cipher_suite.kdf_id.to_string(),
+                                },
+                                "config_id": ech.config_id,
+                                "enc":  crate::utils::fmt::hex(&ech.enc).with_prefix(true).to_string(),
+                                "payload": crate::utils::fmt::hex(&ech.payload).with_prefix(true).to_string(),
+                            },
+                        }),
+                        ECHClientHello::Inner => json!({
+                            "id": extension.id().to_string(),
+                            "data": {
+                                "type": "inner",
+                            },
+                        })
+
+                    }
+                    ClientHelloExtension::Opaque { id, data } => if data.is_empty() {
+                        json!({
+                            "id": id.to_string()
+                        })
+                    } else {
+                        json!({
+                            "id": id.to_string(),
+                            "data": crate::utils::fmt::hex(data).with_prefix(true).to_string()
+                        })
+                    },
+                }).collect::<Vec<_>>(),
+                "ja3": ja3,
+                "ja4": ja4,
+                "peet": peet
+            })
+        };
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let ech_accepted = parts
+            .extensions
+            .get_ref::<crate::tls::server::ServerEchAccepted>()
+            .map(|value| value.0);
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let effective = parts
+            .extensions
+            .get_ref::<SecureTransport>()
+            .and_then(SecureTransport::client_hello);
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let outer = if ech_accepted == Some(true) {
+            parts
+                .extensions
+                .get_ref::<crate::tls::server::EchServerObservation>()
+                .map(|value| &value.outer)
+        } else {
+            effective
+        };
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let tls_info = outer.map(|hello| tls_view(hello, true));
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let tls_inner = effective
+            .filter(|_| ech_accepted == Some(true))
+            .map(|hello| tls_view(hello, false));
+        #[cfg(not(any(feature = "rustls", feature = "boring")))]
+        let (ech_accepted, tls_inner): (Option<bool>, Option<()>) = (None, None);
 
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
         let tls_info: Option<()> = None;
@@ -962,6 +1006,8 @@ impl Service<Request> for EchoService {
                 "curl": curl_request,
             },
             "tls": tls_info,
+            "tls_inner": tls_inner,
+            "ech_accepted": ech_accepted,
             "quic": quic,
             "quic_connection": quic_connection,
             "socket_addr": parts.extensions.forwarded_client_socket_addr()

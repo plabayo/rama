@@ -3950,7 +3950,22 @@ impl State {
                     }
                     self.connected = true;
                     if let Some(accepted) = self.inner.crypto_session().ech_accepted() {
-                        extensions.insert(rama_tls::client::TlsEchAccepted(accepted));
+                        if self.inner.side().is_client() {
+                            extensions.insert(rama_tls::client::TlsEchAccepted(accepted));
+                        }
+                        if let Some(inner) = self.inner.crypto_session().effective_client_hello() {
+                            extensions.insert(rama_tls::server::ServerEchAccepted::new(accepted));
+                            if accepted
+                                && let Some(outer) = extensions
+                                    .get_ref::<rama_tls::SecureTransport>()
+                                    .and_then(rama_tls::SecureTransport::client_hello)
+                                    .cloned()
+                            {
+                                extensions
+                                    .insert(rama_tls::server::EchServerObservation::new(outer));
+                            }
+                            extensions.insert(rama_tls::SecureTransport::with_client_hello(inner));
+                        }
                     }
                     // Published like the TLS stacks do for streams, so services read the
                     // negotiated protocol and peer identity from the connection's extensions.

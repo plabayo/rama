@@ -42,7 +42,8 @@ pub(super) fn joint_tls(
     joint
         .slots
         .iter()
-        .find(|slot| is_tls_slot(slot.kind))
+        .find(|slot| slot.kind == CapturedSlotKind::TlsOuter)
+        .or_else(|| joint.slots.iter().find(|slot| is_tls_slot(slot.kind)))
         .map(|slot| TlsCapture::from_canonical(&slot.value, tls_limits(config)))
         .transpose()
 }
@@ -69,6 +70,14 @@ fn without_extension_order(
         }
         CanonicalDomain::Joint => {
             let mut joint = JointCapture::from_canonical(value, joint_limits(config))?;
+            if joint
+                .slots
+                .iter()
+                .any(|slot| slot.kind == CapturedSlotKind::TlsOuter)
+            {
+                joint.map_ech_pair(tls_limits(config), sort_extensions)?;
+                return joint.canonical(joint_limits(config));
+            }
             for slot in &mut joint.slots {
                 if is_tls_slot(slot.kind) {
                     let mut capture = TlsCapture::from_canonical(&slot.value, tls_limits(config))?;

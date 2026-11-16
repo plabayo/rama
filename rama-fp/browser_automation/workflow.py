@@ -711,6 +711,7 @@ def run_capture_flow(
     ``new_connections_after`` ends a completed journey by having every host it
     reached drain its connection, so a later journey in the session opens new ones.
     """
+    report_path = "/report" if all_flows else "/report?connection_only=1"
     parsed = urlsplit(origin)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError("fp origin must be an HTTP(S) URL")
@@ -732,7 +733,7 @@ def run_capture_flow(
                 driver.add_cookie({"name": name, "value": value, "path": "/"})
 
         try:
-            driver.get(urljoin(origin, "/report"))
+            driver.get(urljoin(origin, report_path))
         except TimeoutException:
             # A browser that stalled before starting the load is still on its previous page.
             if urlsplit(driver.current_url).path == "/report":
@@ -740,7 +741,7 @@ def run_capture_flow(
         # A load that failed leaves the browser on the page it came from.
         if urlsplit(driver.current_url).path != "/report":
             print("RETRY report: the browser did not leave its previous page", flush=True)
-            driver.get(urljoin(origin, "/report"))
+            driver.get(urljoin(origin, report_path))
         user_agent = driver.execute_script("return navigator.userAgent")
         if not all_flows:
             protocol = driver.execute_script(
@@ -890,3 +891,22 @@ def run_capture_flow(
         report_url,
         site_protocols,
     )
+
+
+def run_ech_capture(driver, origin, *, cookies=None, expected_protocol=None, timeout=30):
+    """One connection observation; reuse baseline HTTP flows and site captures.
+
+    Non-acceptance is an observation, not proof the browser lacks ECH support.
+    This does not change the browser's ECH policy or its DNS settings.
+    """
+    result = run_capture_flow(driver, origin, cookies=cookies,
+                              expected_protocol=expected_protocol, all_flows=False,
+                              timeout=timeout)
+    accepted = driver.execute_script(
+        """return document.querySelector('meta[name="rama-ech-accepted"]')?.content"""
+    )
+    if accepted not in ("true", "false"):
+        raise ValueError("ECH collection endpoint did not report handshake acceptance")
+    return {"origin": origin, "protocol": result.protocols["navigate"],
+            "accepted": accepted == "true",
+            "status": "accepted" if accepted == "true" else "not_observed"}

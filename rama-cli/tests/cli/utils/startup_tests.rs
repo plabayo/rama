@@ -263,3 +263,73 @@ fn child() {
 
     let _eof = io::stdin().read(&mut [0]).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+#[ignore = "spawns rama processes"]
+fn idle_ech_reload_does_not_hold_graceful_shutdown() {
+    let directory = rama::utils::fs::TempDir::new().unwrap();
+    let keys = directory.path().join("ech-keys.json");
+    // Fixed test keys, shared with the TLS backend fixtures; never production keys.
+    std::fs::write(&keys, include_bytes!("../../fixtures/ech-keys.json")).unwrap();
+    let mut command = rama_command();
+    command
+        .args([
+            "serve",
+            "--graceful",
+            "30",
+            "echo",
+            "--mode",
+            "tls",
+            "--bind",
+            "127.0.0.1:0",
+        ])
+        .env("RAMA_TLS_ECH_KEYS_FILE", keys)
+        .env(
+            "RAMA_TLS_CRT",
+            base64::engine::general_purpose::STANDARD.encode(include_bytes!("example_tls.crt")),
+        )
+        .env(
+            "RAMA_TLS_KEY",
+            base64::engine::general_purpose::STANDARD.encode(include_bytes!("example_tls.key")),
+        )
+        .env("RUST_LOG", "info");
+    let mut service = RamaService::spawn(&mut command, "127.0.0.1:0".parse().unwrap());
+    service.wait_for_endpoint(TransportProtocol::Tcp);
+    assert!(
+        Command::new("kill")
+            .args(["-HUP", &service.process.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    // This also proves the cancellable reload task has polled the shutdown
+    // signal, rather than racing SIGTERM against signal-handler registration.
+    service.wait_for_diagnostic("reloaded ECH server keys");
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &service.process.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = service.process.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "idle ECH reload held shutdown open: {}",
+            service.diagnostics()
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    let _drained = service.stderr_drained.recv_timeout(Duration::from_secs(1));
+    assert!(status.success(), "{status}: {}", service.diagnostics());
+    assert!(
+        service.diagnostics().contains("gracefully shutdown"),
+        "{}",
+        service.diagnostics()
+    );
+}

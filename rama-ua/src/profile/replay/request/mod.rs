@@ -210,6 +210,8 @@ pub enum LoweredProfileItem {
     /// No capture covers the request's flow; the closest captured flow replays with
     /// the caller's own request context fields, see [`FlowMatch::Nearest`].
     NearestFlow,
+    /// The captured ECH inner cannot be reproduced from its matched outer by this backend.
+    TlsEchInner,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Extension)]

@@ -65,6 +65,11 @@ pub trait Session: Send + Sync + 'static {
         None
     }
 
+    /// Effective server ClientHello after successful handshake completion.
+    /// With accepted ECH this is the decrypted inner, not the wire observation.
+    /// `None` for clients and for backends that do not expose it.
+    fn effective_client_hello(&self) -> Option<rama_tls::client::ClientHello>;
+
     /// Borrow negotiated ALPN bytes for diagnostics without allocating a handshake summary.
     fn negotiated_alpn(&self) -> Option<&[u8]>;
 

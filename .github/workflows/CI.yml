@@ -1799,9 +1799,10 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/fp-h1
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
 
   deploy-rama-fp-h2-fly:
     permissions:
@@ -1818,9 +1819,10 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/fp-h2
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false
+          ../../scripts/fly-deploy.sh --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
 
   deploy-rama-fp-h3-fly:
     permissions:

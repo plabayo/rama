@@ -156,7 +156,7 @@ pub async fn run(
     http3_endpoints: Http3Endpoints,
     cfg: CliCommandEcho,
 ) -> Result<(), BoxError> {
-    let maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https)
+    let mut maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https)
         .then(|| {
             tracing::info!("create tls server config...");
             try_new_server_config(
@@ -174,6 +174,11 @@ pub async fn run(
         })
         .transpose()?;
 
+    let store_outer_client_hello = match maybe_tls_server_config.as_mut() {
+        Some(config) => crate::utils::tls::configure_server_ech_from_env(config, &scope)?,
+        None => false,
+    };
+
     match cfg.mode {
         Mode::Tcp | Mode::Tls => {
             bind_echo_tcp_service(scope, cfg.clone(), maybe_tls_server_config).await?
@@ -187,6 +192,7 @@ pub async fn run(
                 &http3_endpoints,
                 cfg.clone(),
                 maybe_tls_server_config,
+                store_outer_client_hello,
             )
             .await?
         }
@@ -200,6 +206,7 @@ async fn bind_echo_http_service(
     http3_endpoints: &Http3Endpoints,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
+    store_outer_client_hello: bool,
 ) -> Result<(), BoxError> {
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
     let geo_db = crate::utils::geo::load_geo_db_from_env();
@@ -221,6 +228,7 @@ async fn bind_echo_http_service(
     .context("bind http(s) echo service")?;
 
     let (tcp_service, http3_service) = EchoServiceBuilder::new()
+        .with_store_outer_client_hello(store_outer_client_hello)
         .with_http2_observation(true)
         .with_http3_observation(OBSERVATION_LIMITS)
         .with_concurrent(cfg.concurrent.unwrap_or_default())

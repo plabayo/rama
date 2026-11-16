@@ -44,6 +44,9 @@ use rama_core::telemetry::tracing;
 pub struct PreparedConnectionComponents {
     #[cfg(feature = "tls")]
     pub tls: Option<TlsCapture>,
+    /// Matched wire outer when `tls` is an accepted-ECH inner.
+    #[cfg(feature = "tls")]
+    pub tls_outer: Option<TlsCapture>,
     pub quic_parameters: Option<OrderedProtocolCapture>,
     pub h3_peer_settings: Option<OrderedProtocolCapture>,
     pub h3_settings_evidence: Option<H3SettingsReplayEvidence>,
@@ -57,6 +60,32 @@ pub struct PreparedConnectionComponents {
 }
 
 impl PreparedConnectionComponents {
+    /// Use the matched outer as the native offer, checking that native ECH
+    /// construction preserves the stored inner, including ordered GREASE slots.
+    /// Call only after selecting an ECH-capable connection and validating its policy.
+    #[cfg(feature = "tls")]
+    pub fn use_ech_outer_for_replay(&mut self) -> Result<(), ProfileDataError> {
+        let Some(outer) = self.tls_outer.take() else {
+            return Ok(());
+        };
+        let inner = self
+            .tls
+            .take()
+            .ok_or(ProfileDataError::Invalid("ECH replay without inner"))?;
+        let expected = outer
+            .ech_inner_from_outer()
+            .map(TlsCapture::with_grease_placeholders)
+            .transpose()?;
+        if expected.as_ref() != Some(&inner.with_grease_placeholders()?) {
+            self.preservation_report
+                .push(ProfilePreservationDifference::LoweredProfileItem {
+                    item: crate::profile::replay::request::LoweredProfileItem::TlsEchInner,
+                });
+        }
+        self.tls = Some(outer);
+        Ok(())
+    }
+
     /// Compile literal or variance-derived SETTINGS using a connection-scoped draw.
     /// Unanalyzed reserved fields are replayed literally and reported at preparation.
     pub fn h3_client_settings(
@@ -172,6 +201,8 @@ impl ConnectionSelection {
         let mut prepared = PreparedConnectionComponents {
             #[cfg(feature = "tls")]
             tls: None,
+            #[cfg(feature = "tls")]
+            tls_outer: None,
             quic_parameters: None,
             h3_peer_settings: None,
             h3_settings_evidence: None,
@@ -196,16 +227,23 @@ impl ConnectionSelection {
                     prepared.quic_versions =
                         Some(order(&slot.value, orders, OrderNamespace::QuicVersion)?);
                 }
-                CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls => {
+                CapturedSlotKind::TcpTls
+                | CapturedSlotKind::QuicTls
+                | CapturedSlotKind::TlsOuter => {
                     #[cfg(feature = "tls")]
                     {
-                        prepared.tls = Some(TlsCapture::from_canonical(
+                        let capture = Some(TlsCapture::from_canonical(
                             &slot.value,
                             TlsCaptureLimits {
                                 elements: limits.value_bytes,
                                 bytes: limits.value_bytes,
                             },
                         )?);
+                        if slot.kind == CapturedSlotKind::TlsOuter {
+                            prepared.tls_outer = capture;
+                        } else {
+                            prepared.tls = capture;
+                        }
                     }
 
                     // Without TLS support the slot is skipped and admission reports it.
@@ -284,6 +322,7 @@ fn check_connection_component(
     let supported = match component {
         CapturedSlotKind::Http2EarlyFrames | CapturedSlotKind::Http3Settings => true,
         CapturedSlotKind::TcpTls
+        | CapturedSlotKind::TlsOuter
         | CapturedSlotKind::QuicTls
         | CapturedSlotKind::QuicParameters
         | CapturedSlotKind::QuicVersions

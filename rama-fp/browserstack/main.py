@@ -46,6 +46,7 @@ from browser_automation.workflow import (
     JourneyTimeout,
     UnsupportedFlow,
     run_capture_flow,
+    run_ech_capture,
 )
 from matrix import desktop_permutations, mobile_configs
 from receipts import (
@@ -78,6 +79,14 @@ ENTRYPOINTS = (
     ("http://fp.ramaproxy.org/", None),
     ("https://fp.ramaproxy.org/", None),
 )
+
+# Only the TLS connection needs another observation; retain the baseline's full journey.
+ECH_ENTRYPOINTS = {
+    "https://fp.ramaproxy.org/": "https://ech.fp.ramaproxy.org/",
+    "https://h1.fp.ramaproxy.org/": "https://h1.ech.fp.ramaproxy.org/",
+    "https://h2.fp.ramaproxy.org/": "https://h2.ech.fp.ramaproxy.org/",
+    "https://h3.fp.ramaproxy.org/": "https://h3.ech.fp.ramaproxy.org/",
+}
 
 # A second visit opens later connections (resumed handshakes) and gives browsers that
 # learn HTTP/3 slowly another chance to switch.
@@ -359,6 +368,15 @@ def run_session(
                         if str(unsupported).startswith("h3:"):
                             stage = "h3_control"
                             receipt["h3_control"] = h3_control_protocol(driver)
+                    # A baseline H3 bootstrap failure cannot produce an H3 ECH sample.
+                    # A missing WebSocket implementation still permits the TLS capture.
+                    ech_origin = ECH_ENTRYPOINTS.get(origin)
+                    if ech_origin and (receipt["journey_completed"] or
+                                       (unsupported and unsupported.protocols)):
+                        stage = "ech_connection"
+                        receipt["ech"] = run_ech_capture(
+                            driver, ech_origin, cookies=cookies, expected_protocol=protocol
+                        )
                     stage = "provider_status"
                     report(
                         driver,

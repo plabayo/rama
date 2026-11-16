@@ -128,6 +128,11 @@ impl ProfileCapture {
             buckets.push(bucket(value, structure)?);
         }
         for slot in &self.joint.slots {
+            // The ECH outer belongs to its paired connection, not the ordinary
+            // TLS population. Its standalone structure can equal a GREASE hello.
+            if slot.kind == CapturedSlotKind::TlsOuter {
+                continue;
+            }
             buckets.push(bucket(
                 slot.value.clone(),
                 slot.structural(limits.value_bytes)?,

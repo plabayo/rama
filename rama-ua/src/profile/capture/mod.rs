@@ -34,4 +34,9 @@ pub mod observation;
 /// Revision of what captures retain. Bump it when a capture keeps data that
 /// earlier captures dropped, so exports never mix the two within a profile.
 /// Revision 1 keeps TLS trust anchor identifiers.
+/// Matched ECH pairs also use revision 1: they add a distinct joint slot without
+/// changing baseline fields, so exports retain existing request-flow evidence.
+/// Absence of a matched pair means real ECH was not observed, not that the
+/// client lacks ECH support. Neither the revision nor a GREASE ECH extension
+/// establishes acceptance or supplies a denominator for ECH success rates.
 pub const CAPTURE_REVISION: u16 = 1;

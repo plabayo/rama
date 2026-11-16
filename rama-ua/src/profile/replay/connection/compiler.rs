@@ -19,6 +19,12 @@ use super::PreparedConnectionComponents;
 pub trait ConnectionProfileCompiler<Input>: Send + Sync + 'static {
     type Compiled: CompiledConnectionProfile;
 
+    /// Whether endpoint discovery and caller policy permit a matched ECH pair.
+    /// This performs no I/O; late discovery still uses the ordinary captured offer.
+    /// Missing or invalid endpoint policy returns false. The native connector
+    /// remains responsible for reporting policy errors with its usual error kind.
+    fn ech_ready(&self, input: &Input) -> bool;
+
     /// Prepare `selection` from its decoded `components`. Current connection
     /// bindings come from `input`; record lowered items in the components' report.
     /// Move consumed components into the compiled output instead of cloning them.
@@ -72,6 +78,10 @@ impl<Input> ConnectionProfileBindings<Input> for () {
 
 impl<Input> ConnectionProfileCompiler<Input> for () {
     type Compiled = ();
+
+    fn ech_ready(&self, _input: &Input) -> bool {
+        false
+    }
 
     fn compile(
         &self,

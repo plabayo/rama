@@ -690,7 +690,7 @@ impl<S, K> TlsConnector<S, K> {
         let merged;
         let extensions = match (&self.base_config, !request.is_empty()) {
             (Some(base), true) => {
-                merged = input.extensions().fork().with_base(base.as_extensions());
+                merged = input.extensions().with_base(base.as_extensions());
                 &merged
             }
             (Some(base), false) => base.as_extensions(),

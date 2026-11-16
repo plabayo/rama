@@ -190,10 +190,21 @@ fn joint_tls(
     value: &CanonicalValue,
     transport: CapturedSlotKind,
 ) -> Result<Vec<TlsCapture>, ProfileDataError> {
-    JointCapture::from_canonical(value, JointCaptureLimits::default())?
+    let joint = JointCapture::from_canonical(value, JointCaptureLimits::default())?;
+    let kind = if joint.slots.iter().any(|slot| slot.kind == transport)
+        && joint
+            .slots
+            .iter()
+            .any(|slot| slot.kind == CapturedSlotKind::TlsOuter)
+    {
+        CapturedSlotKind::TlsOuter
+    } else {
+        transport
+    };
+    joint
         .slots
         .iter()
-        .filter(|slot| slot.kind == transport)
+        .filter(|slot| slot.kind == kind)
         .map(|slot| TlsCapture::from_canonical(&slot.value, TlsCaptureLimits::default()))
         .collect()
 }

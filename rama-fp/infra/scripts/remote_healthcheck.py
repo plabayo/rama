@@ -157,6 +157,10 @@ def dns_answer(probe, stdout):
     for record in records:
         try:
             parts = shlex.split(record)
+            # Current Rama prints the record owner before the binding. Older
+            # images print only the binding; accept both during rollouts.
+            if parts and parts[0].rstrip(".").lower() == probe.domain.lower():
+                parts = parts[1:]
             if len(parts) < 2 or not 0 < int(parts[0]) <= 65535:
                 continue
         except ValueError:

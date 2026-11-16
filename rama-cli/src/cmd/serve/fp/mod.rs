@@ -53,7 +53,7 @@ use rama::{
     telemetry::tracing,
     tls::{
         boring::{core::memcmp, server::TlsAcceptorLayer},
-        server::TlsServerConfig,
+        server::{StoreOuterClientHelloLayer, TlsServerConfig},
     },
     ua::layer::classifier::UserAgentClassifierLayer,
     utils::{
@@ -224,7 +224,7 @@ pub async fn run(
         Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
     };
 
-    let maybe_tls_server_config = cfg
+    let mut maybe_tls_server_config = cfg
         .secure
         .then(|| {
             try_new_server_config(
@@ -239,6 +239,10 @@ pub async fn run(
             )
         })
         .transpose()?;
+    let store_outer_client_hello = match maybe_tls_server_config.as_mut() {
+        Some(config) => crate::utils::tls::configure_server_ech_from_env(config, &scope)?,
+        None => false,
+    };
     let listeners = HttpListeners::bind_observed(
         scope.clone(),
         cfg.bind,
@@ -430,7 +434,11 @@ pub async fn run(
         listeners,
         maybe_tls_server_config,
         http_service,
-        (tcp_forwarded_layer, collection_layer),
+        (
+            tcp_forwarded_layer,
+            collection_layer,
+            store_outer_client_hello.then_some(StoreOuterClientHelloLayer::new()),
+        ),
     )
 }
 
@@ -441,12 +449,16 @@ fn serve_http<Response>(
     listeners: HttpListeners,
     maybe_tls_server_config: Option<TlsServerConfig>,
     http_service: impl Service<Request, Output = Response, Error = Infallible> + Clone,
-    connection_layers: (Option<HaProxyLayer>, Option<collection::CollectionLayer>),
+    connection_layers: (
+        Option<HaProxyLayer>,
+        Option<collection::CollectionLayer>,
+        Option<StoreOuterClientHelloLayer>,
+    ),
 ) -> Result<(), BoxError>
 where
     Response: IntoResponse + Send + 'static,
 {
-    let (maybe_ha_proxy_layer, collection_layer) = connection_layers;
+    let (maybe_ha_proxy_layer, collection_layer, outer_hello_layer) = connection_layers;
     let connection_timeout = connection_scope(
         scope,
         Duration::try_from_secs_f64(cfg.timeout).unwrap_or_default(),
@@ -507,6 +519,7 @@ where
         body_limit,
         collection_layer,
         cleartext,
+        outer_hello_layer,
         maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
     );
 
@@ -757,7 +770,7 @@ mod tests {
                             .with_get("/kept", "kept"),
                     ),
                 ),
-                (None, None),
+                (None, None, None),
             )
             .unwrap();
             let mut asked = TcpStream::connect(address).await.unwrap();
@@ -809,7 +822,7 @@ mod tests {
                         "missing"
                     })
                 }),
-                (None, None),
+                (None, None, None),
             )
             .unwrap();
             let mut stream = TcpStream::connect(address).await.unwrap();

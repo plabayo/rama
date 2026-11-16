@@ -10,6 +10,7 @@ use super::*;
 
 const SECRET: &str = "storage-secret";
 const PAGE: &str = "https://h2.fp.example.org";
+const SITE_TOKEN_PARAM: &str = "rama-fp-site";
 
 fn grant(authorized: bool) -> SiteGrant {
     SiteGrant {
@@ -129,6 +130,27 @@ fn the_token_is_read_from_its_query_parameter() {
     );
     assert_eq!(
         tokens.grant(&request(format!("other={token}")), now()),
+        None
+    );
+    assert_eq!(
+        tokens.grant(&request(format!("rama%2Dfp%2Dsite={token}")), now()),
+        Some(grant(true))
+    );
+    let encoded_token = format!("%{:02X}{}", token.as_bytes()[0], &token[1..]);
+    assert_eq!(
+        tokens.grant(
+            &request(format!("{SITE_TOKEN_PARAM}={encoded_token}")),
+            now()
+        ),
+        Some(grant(true))
+    );
+    assert_eq!(
+        tokens.grant(
+            &request(format!(
+                "{SITE_TOKEN_PARAM}={token}&{SITE_TOKEN_PARAM}=forged"
+            )),
+            now()
+        ),
         None
     );
 }

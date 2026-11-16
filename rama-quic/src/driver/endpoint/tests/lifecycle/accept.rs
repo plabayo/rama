@@ -246,6 +246,10 @@ impl Session for ObservedSession {
         self.inner.handshake_summary()
     }
 
+    fn effective_client_hello(&self) -> Option<rama_tls::client::ClientHello> {
+        self.inner.effective_client_hello()
+    }
+
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         self.inner.negotiated_alpn()
     }

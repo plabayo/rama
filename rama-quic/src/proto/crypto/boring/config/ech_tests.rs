@@ -57,7 +57,8 @@ fn ech_server(config: &TlsServerConfig) -> QuicServerConfig {
         },
         options,
     )
-    .unwrap();
+    .unwrap()
+    .map(Arc::new);
     server
 }
 
@@ -362,4 +363,189 @@ fn service_binding_reliance_uses_final_quic_intent() {
     let native = QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap();
     assert_eq!(native.ech.unwrap().requirement, EchRequirement::Required);
     assert!(!client.as_extensions().contains::<EchRequirement>());
+}
+
+#[test]
+fn prepared_server_keys_rotate_without_replacing_quic_contexts() {
+    use rama_tls_boring::server::{
+        BoringServerConfigExt as _, EchServerKey, EchServerKeys, ReloadableEchServerKeys,
+    };
+    let keys = |config: &[u8]| {
+        EchServerKeys::new([EchServerKey::new(config, SERVER_ECH_KEY, true)]).unwrap()
+    };
+    let a = keys(SERVER_ECH_CONFIG);
+    let mut b_config = SERVER_ECH_CONFIG.to_vec();
+    b_config[4] = 2;
+    let b = keys(&b_config);
+    let both = EchServerKeys::new([
+        EchServerKey::new(SERVER_ECH_CONFIG, SERVER_ECH_KEY, false),
+        EchServerKey::new(&b_config, SERVER_ECH_KEY, true),
+    ])
+    .unwrap();
+    let provider = ReloadableEchServerKeys::new(a.clone());
+    let (client, server) = configs();
+    let server = server.with_ech_keys(provider.clone());
+    let server = Arc::new(QuicServerConfig::from_rama(&server, TlsOptions::default()).unwrap());
+    let original = server.contexts.clone();
+    for (generation, offered) in [
+        (a.clone(), a.clone()),
+        (both.clone(), a),
+        (both, b.clone()),
+        (b.clone(), b),
+    ] {
+        provider.replace(generation).unwrap();
+        for version in [Version::V1, Version::V2] {
+            let client = client.clone();
+            client
+                .as_extensions()
+                .insert(ConnectorTarget("localhost:443".parse().unwrap()));
+            client.as_extensions().insert(TargetEchConfig::new(
+                "localhost:443".parse().unwrap(),
+                offered.retry_configs().to_vec(),
+            ));
+            let client =
+                Arc::new(QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap());
+            let params = |id| TransportParameters {
+                initial_src_cid: Some(ConnectionId::new(&[id])),
+                ..TransportParameters::default()
+            };
+            let mut c = client
+                .start_session(version, "localhost", &params(1))
+                .unwrap();
+            let mut s = server.clone().start_session(version, &params(2)).unwrap();
+            handshake(&mut *c, &mut *s).unwrap();
+            assert_eq!(s.ech_accepted(), Some(true));
+            let inner = s.effective_client_hello().unwrap();
+            assert_eq!(inner.ext_server_name().unwrap().as_str(), "localhost");
+            assert!(inner.extensions().iter().any(|extension| matches!(
+                extension,
+                rama_tls::client::ClientHelloExtension::EncryptedClientHello(
+                    rama_tls::client::ECHClientHello::Inner
+                )
+            )));
+        }
+        for (before, after) in original.iter().zip(&server.contexts) {
+            assert!(Arc::ptr_eq(before, after));
+        }
+    }
+}
+
+#[tokio::test]
+async fn ech_pending_issuer_receives_inner_and_rejection_public_names() {
+    use rama_tls::server::{
+        CertificateIssuanceContext, DynamicCertIssuer, ServerAuthData, TlsServerAuth,
+    };
+    use rama_tls_boring::server::{
+        BoringServerConfigExt as _, CacheKind, EchServerKey, EchServerKeys, ServerCertIssuerData,
+    };
+
+    struct Issuer {
+        auth: ServerAuthData,
+        names: Arc<parking_lot::Mutex<Vec<String>>>,
+    }
+
+    impl DynamicCertIssuer for Issuer {
+        async fn issue_cert(
+            &self,
+            context: CertificateIssuanceContext,
+        ) -> Result<ServerAuthData, BoxError> {
+            self.names.lock().push(
+                context
+                    .client_hello
+                    .ext_server_name()
+                    .unwrap()
+                    .as_str()
+                    .to_owned(),
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            Ok(self.auth.clone())
+        }
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let (tls, fixed) = super::super::tests::configs_for([
+            Domain::from_static("localhost"),
+            Domain::from_static("ech.com"),
+        ]);
+        let names = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let auth = fixed
+            .as_extensions()
+            .get_ref::<TlsServerAuth>()
+            .unwrap()
+            .0
+            .clone();
+        let keys = EchServerKeys::new([EchServerKey::new(SERVER_ECH_CONFIG, SERVER_ECH_KEY, true)])
+            .unwrap();
+        let dynamic = TlsServerConfig::new()
+            .with_alpn(
+                [rama_net::tls::ApplicationProtocol::from(
+                    b"rama-boring-test".as_slice(),
+                )]
+                .into_iter()
+                .collect(),
+            )
+            .with_cert_issuer(
+                ServerCertIssuerData::new(Issuer {
+                    auth,
+                    names: names.clone(),
+                })
+                .with_cache_kind(CacheKind::Disabled),
+            )
+            .with_ech_keys(keys);
+        let crypto = QuicServerConfig::from_rama(&dynamic, TlsOptions::default()).unwrap();
+        let server = Endpoint::bind_server(
+            WeakScope::detached(),
+            ServerConfig::with_crypto(Arc::new(crypto)),
+            SocketAddress::local_ipv4(0),
+        )
+        .await
+        .unwrap();
+        let address = server.local_addr().unwrap();
+        let incoming = server.clone();
+        let task = tokio::spawn(async move {
+            let mut peers = Vec::new();
+            for _ in 0..3 {
+                let attempt = incoming.accept().await.unwrap().accept().unwrap();
+                if let Ok(peer) = attempt.await {
+                    peers.push(peer);
+                }
+            }
+            peers
+        });
+        let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let connector = QuicConnector::new(
+            SharedQuicEndpoint::supplied(endpoint.clone(), WeakScope::detached()),
+            tls,
+            Arc::new(BoringTlsProvider),
+        );
+        for stale in [false, true] {
+            let request =
+                ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()));
+            request.extensions().insert(ConnectorTarget(address.into()));
+            let mut config = ech_config(address.into()).config_list().to_vec();
+            if stale {
+                config[6] = 0;
+            }
+            request
+                .extensions()
+                .insert(TargetEchConfig::new(address.into(), config));
+            request.extensions().insert(EchRequirement::Required);
+            let connection = connector.serve(request).await.unwrap().conn;
+            assert_eq!(
+                connection.extensions().get_ref::<TlsEchAccepted>(),
+                Some(&TlsEchAccepted(true))
+            );
+            connection.close(0u32, b"done");
+        }
+        for peer in task.await.unwrap() {
+            peer.close(0u32, b"done");
+        }
+        assert_eq!(*names.lock(), ["localhost", "ech.com", "localhost"]);
+        endpoint.shutdown().await;
+        server.shutdown().await;
+    })
+    .await
+    .unwrap();
 }

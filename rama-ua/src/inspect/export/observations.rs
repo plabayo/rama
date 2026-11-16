@@ -221,6 +221,40 @@ impl ProfileExport {
                         bytes: policy.bytes,
                         ..TlsCaptureLimits::default()
                     };
+                    if metadata
+                        .connection
+                        .get_ref::<rama_tls::server::ServerEchAccepted>()
+                        .is_some_and(|accepted| accepted.0)
+                    {
+                        let Some(observation) = metadata
+                            .connection
+                            .get_ref::<rama_tls::server::EchServerObservation>(
+                        ) else {
+                            // The outer capture layer is optional. Keep request
+                            // evidence already collected above, but do not export
+                            // an unmatched inner as a replayable connection.
+                            continue;
+                        };
+                        if h3.is_some_and(|facts| !facts.client_hello_complete) {
+                            continue;
+                        }
+                        let outer = TlsCapture::capture(
+                            ProfileCaptureCompleteness::from_complete(
+                                h3.is_none_or(|facts| facts.client_hello_complete),
+                            ),
+                            if quic {
+                                TlsCaptureTransport::Quic
+                            } else {
+                                TlsCaptureTransport::Tcp
+                            },
+                            &observation.outer,
+                            bounds,
+                        )?;
+                        slots.push(CapturedSlot {
+                            kind: CapturedSlotKind::TlsOuter,
+                            value: outer.canonical(bounds)?,
+                        });
+                    }
                     let tls = TlsCapture::capture(
                         ProfileCaptureCompleteness::from_complete(
                             h3.is_none_or(|facts| facts.client_hello_complete),

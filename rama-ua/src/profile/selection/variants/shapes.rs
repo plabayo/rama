@@ -7,6 +7,15 @@
 use super::{CookieLayoutEvidence, SelectionError};
 #[cfg(test)]
 use crate::profile::format::canonical::CanonicalValue;
+#[cfg(feature = "tls")]
+use crate::profile::{
+    analysis::profile::AnalyzedProfileScope,
+    capture::{
+        joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
+        tls::{TlsCapture, TlsCaptureLimits, TlsCapturedExtensionValue},
+    },
+    format::canonical::ValueId,
+};
 use crate::profile::{
     analysis::{
         capture::{AnalyzedCaptureVariant, VariantValue},
@@ -35,6 +44,16 @@ pub(super) struct RequestHeaderShape {
 pub(crate) struct RequestShapeCache {
     decoded: OnceLock<DecodedRequests>,
     cookie_layouts: OnceLock<[CookieLayoutEvidence; 2]>,
+    #[cfg(feature = "tls")]
+    connection_modes: OnceLock<Box<[ConnectionShape]>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ConnectionShape {
+    ordinary: bool,
+    paired: bool,
+    #[cfg(feature = "tls")]
+    wire_tls: Option<ValueId>,
 }
 
 /// Every request variant of a profile by scope and variant, and the fields their plans share.
@@ -89,6 +108,128 @@ pub(super) struct DecodedRequestShape {
 }
 
 impl RequestShapeCache {
+    /// Decode each connection scope once. An effective ECH inner is never a
+    /// standalone wire offer, whether historical or stored with its outer.
+    fn connection_mode(&self, analysis: &AnalyzedProfile, index: usize) -> ConnectionShape {
+        #[cfg(feature = "tls")]
+        {
+            self.connection_modes
+                .get_or_init(|| {
+                    analysis
+                        .scopes
+                        .iter()
+                        .map(|scope| {
+                            if scope.context.flow.is_some()
+                                || scope.observations.domain != CanonicalDomain::Joint
+                            {
+                                return ConnectionShape::default();
+                            }
+                            let classify = || -> Result<ConnectionShape, ProfileDataError> {
+                                let variant =
+                                    scope.observations.variants.first().ok_or(
+                                        ProfileDataError::Invalid("empty connection scope"),
+                                    )?;
+                                let value = variant.value.canonical()?;
+                                let limits = JointCaptureLimits::default();
+                                let joint = JointCapture::from_canonical(value.as_ref(), limits)?;
+                                let tls_limits = TlsCaptureLimits {
+                                    elements: limits.value_bytes,
+                                    bytes: limits.value_bytes,
+                                };
+                                let effective = joint.slots.iter().find(|slot| {
+                                    matches!(
+                                        slot.kind,
+                                        CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
+                                    )
+                                });
+                                let outer = joint
+                                    .slots
+                                    .iter()
+                                    .find(|slot| slot.kind == CapturedSlotKind::TlsOuter);
+                                let Some(effective) = effective else {
+                                    return Ok(ConnectionShape {
+                                        ordinary: true,
+                                        ..Default::default()
+                                    });
+                                };
+                                let tls = TlsCapture::from_canonical(&effective.value, tls_limits)?;
+                                let inner = tls.extensions.iter().any(|extension| {
+                                    matches!(extension.value, TlsCapturedExtensionValue::EchInner)
+                                });
+                                let wire = match outer {
+                                    Some(slot) => {
+                                        TlsCapture::from_canonical(&slot.value, tls_limits)?
+                                    }
+                                    None => tls,
+                                };
+                                Ok(ConnectionShape {
+                                    ordinary: !inner,
+                                    paired: inner && outer.is_some(),
+                                    wire_tls: wire
+                                        .structural(tls_limits)
+                                        .ok()
+                                        .map(|value| value.id),
+                                })
+                            };
+                            // Malformed evidence remains eligible so the draw surfaces its error.
+                            classify().unwrap_or(ConnectionShape {
+                                ordinary: true,
+                                ..Default::default()
+                            })
+                        })
+                        .collect()
+                })
+                .get(index)
+                .copied()
+                .unwrap_or_default()
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            let _ = (analysis, index);
+            ConnectionShape {
+                ordinary: true,
+                paired: false,
+            }
+        }
+    }
+
+    pub(super) fn ordinary_connection(&self, analysis: &AnalyzedProfile, index: usize) -> bool {
+        self.connection_mode(analysis, index).ordinary
+    }
+
+    pub(super) fn ech_connection(&self, analysis: &AnalyzedProfile, index: usize) -> bool {
+        self.connection_mode(analysis, index).paired
+    }
+
+    /// A thin pair sample can reuse proven shuffle evidence for the same wire
+    /// TLS structure. Other protocol fields still come from the paired tuple.
+    #[cfg(feature = "tls")]
+    pub(super) fn tls_order_scope<'a>(
+        &self,
+        analysis: &'a AnalyzedProfile,
+        index: usize,
+    ) -> &'a AnalyzedProfileScope {
+        let scope = &analysis.scopes[index];
+        let shape = self.connection_mode(analysis, index);
+        if !shape.paired || shape.wire_tls.is_none() || scope.observations.shuffles_tls_extensions()
+        {
+            return scope;
+        }
+        analysis
+            .scopes
+            .iter()
+            .enumerate()
+            .filter(|(index, candidate)| {
+                let candidate_shape = self.connection_mode(analysis, *index);
+                candidate_shape.ordinary
+                    && candidate_shape.wire_tls == shape.wire_tls
+                    && candidate.context.connection == scope.context.connection
+                    && candidate.observations.shuffles_tls_extensions()
+            })
+            .min_by_key(|(_, candidate)| candidate.id)
+            .map_or(scope, |(_, candidate)| candidate)
+    }
+
     #[cfg(test)]
     pub(super) fn is_initialized(&self) -> bool {
         self.decoded.get().is_some()

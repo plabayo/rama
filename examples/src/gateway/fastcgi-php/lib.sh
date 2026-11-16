@@ -99,7 +99,7 @@ wait_for_signal() {
 #      common reason "brew install php" appears to "not include php-fpm".
 #   4. Common Linux package layouts (`/usr/sbin`).
 find_php_fpm() {
-    local versioned=(php-fpm8.4 php-fpm8.3 php-fpm8.2 php-fpm8.1 php-fpm8.0 php-fpm7.4)
+    local versioned=(php-fpm8.5 php-fpm8.4 php-fpm8.3 php-fpm8.2 php-fpm8.1 php-fpm8.0 php-fpm7.4)
 
     if [[ -n "${PHP_FPM_BIN:-}" && -x "${PHP_FPM_BIN}" ]]; then
         printf '%s\n' "$PHP_FPM_BIN"
