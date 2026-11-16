@@ -9,7 +9,7 @@ use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::telemetry::tracing::{debug, trace};
-use rama_utils::octets::kib;
+use rama_utils::octets::{kib, mib};
 use std::{
     fmt,
     io::{self, Read, Write},
@@ -34,7 +34,7 @@ mod tests;
 
 use crate::protocol::{
     frame::{
-        Frame, FrameCodec, Utf8Bytes,
+        Frame, FrameCodec, FrameMasking, Utf8Bytes,
         coding::{CloseCode, OpCode, OpCodeControl, OpCodeData},
     },
     message::{IncompleteMessage, IncompleteMessageType},
@@ -275,8 +275,8 @@ impl Default for WebSocketConfig {
             read_buffer_size: kib(4),
             write_buffer_size: kib(128),
             max_write_buffer_size: usize::MAX,
-            max_message_size: Some(64 << 20),
-            max_frame_size: Some(16 << 20),
+            max_message_size: Some(mib(64)),
+            max_frame_size: Some(mib(16)),
             accept_unmasked_frames: false,
             close_drain_timeout: Some(Duration::from_secs(2)),
             #[cfg(feature = "compression")]
@@ -952,12 +952,14 @@ impl WebSocketContext {
         &mut self,
         stream: &mut impl Read,
     ) -> Result<Option<Message>, ProtocolError> {
-        let Some(frame) = self.frame.read_frame(
-            stream,
-            self.config.max_frame_size,
-            matches!(self.role, Role::Server),
-            self.config.accept_unmasked_frames,
-        )?
+        let masking = match self.role {
+            Role::Server if self.config.accept_unmasked_frames => FrameMasking::UnmaskIfMasked,
+            Role::Server => FrameMasking::RequireMask,
+            Role::Client => FrameMasking::AsIs,
+        };
+        let Some(frame) = self
+            .frame
+            .read_frame(stream, self.config.max_frame_size, masking)?
         else {
             // Connection closed by peer
             return match std::mem::replace(&mut self.state, WebSocketState::Terminated) {

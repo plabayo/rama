@@ -1,11 +1,10 @@
 use crate::HeaderMap;
 use crate::layer::compression::pin_project_cfg::pin_project_cfg;
-use crate::layer::util::compression::{CompressionLevel, brotli_window_bits};
-
-use compression_codecs::{
-    BrotliEncoder, EncodeV2, GzipEncoder, ZlibEncoder, ZstdEncoder,
-    brotli::params::EncoderParams as BrotliEncoderParams,
+use crate::layer::util::compression::{
+    CompressionLevel, brotli_encoder_params, zstd_encoder_params,
 };
+
+use compression_codecs::{BrotliEncoder, EncodeV2, GzipEncoder, ZlibEncoder, ZstdEncoder};
 use compression_core::util;
 use rama_core::bytes::BytesMut;
 use rama_core::{
@@ -438,16 +437,7 @@ where
 
     #[inline(always)]
     pub(super) fn brotli(inner: B, level: CompressionLevel, always_flush: bool) -> Self {
-        // Match the buffered layer's on-the-fly compression quality and window.
-        let level = match level {
-            CompressionLevel::Default => CompressionLevel::Precise(4),
-            other => other,
-        };
-        let params = BrotliEncoderParams::default().quality(level.into_compression_core());
-        let params = match inner.size_hint().exact().and_then(brotli_window_bits) {
-            Some(bits) => params.window_size(bits),
-            None => params,
-        };
+        let params = brotli_encoder_params(level, inner.size_hint().exact());
         Self::compressed(
             inner,
             Encoder::Brotli(Box::new(BrotliEncoder::new(params))),
@@ -457,38 +447,8 @@ where
 
     #[inline(always)]
     pub(super) fn zstd(inner: B, level: CompressionLevel, always_flush: bool) -> Self {
-        // See https://issues.chromium.org/issues/41493659:
-        //  "For memory usage reasons, Chromium limits the window size to 8MB"
-        // See https://datatracker.ietf.org/doc/html/rfc8878#name-window-descriptor
-        //  "For improved interoperability, it's recommended for decoders to support values
-        //  of Window_Size up to 8 MB and for encoders not to generate frames requiring a
-        //  Window_Size larger than 8 MB."
-        // Level 17 in zstd (as of v1.5.6) is the first level with a window size of 8 MB (2^23):
-        // https://github.com/facebook/zstd/blob/v1.5.6/lib/compress/clevels.h#L25-L51
-        // Set the parameter for all levels >= 17. This will either have no effect (but reduce
-        // the risk of future changes in zstd) or limit the window log to 8MB.
-        let needs_window_limit = match level {
-            CompressionLevel::Best => true, // level 20
-            CompressionLevel::Precise(level) => level >= 17,
-            CompressionLevel::Default | CompressionLevel::Fastest => false,
-        };
-
-        let level = match level {
-            CompressionLevel::Fastest => 1,
-            CompressionLevel::Best => 21,
-            CompressionLevel::Default => 0,
-            CompressionLevel::Precise(level) => level as i32,
-        };
-
-        // The parameter is not set for levels below 17 as it will increase the window size
-        // for those levels.
-        let encoder = if needs_window_limit {
-            let params = [compression_codecs::zstd::params::CParameter::window_log(23)];
-            ZstdEncoder::new_with_params(level, &params)
-        } else {
-            ZstdEncoder::new(level)
-        };
-
+        let (level, window) = zstd_encoder_params(level);
+        let encoder = ZstdEncoder::new_with_params(level, window.as_slice());
         Self::compressed(inner, Encoder::Zstd(encoder), always_flush)
     }
 

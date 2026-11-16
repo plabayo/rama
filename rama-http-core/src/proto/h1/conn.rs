@@ -465,7 +465,12 @@ where
                 if matches!(self.state.writing, Writing::Init) {
                     trace!("automatically sending 100 Continue");
                     let cont = b"HTTP/1.1 100 Continue\r\n\r\n";
-                    self.io.headers_buf().extend_from_slice(cont);
+                    if self.io.can_headers_buf() {
+                        self.io.headers_buf().extend_from_slice(cont);
+                    } else {
+                        // A previous body is still queued and must leave first.
+                        self.io.buffer(EncodedBuf::from_static(cont));
+                    }
                 }
 
                 // And now recurse once in the Reading::Body state...
@@ -1289,6 +1294,7 @@ mod tests {
     use super::*;
     use crate::proto::RequestLine;
     use rama_core::extensions::Extensions;
+    use rama_utils::octets::kib;
     use std::assert_matches;
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -1714,6 +1720,33 @@ mod tests {
         assert!(conn.is_write_closed());
         assert!(!conn.can_read_head());
         assert!(!conn.can_write_head());
+    }
+
+    #[test]
+    fn continue_is_written_after_a_queued_body() {
+        let body = vec![b'r'; kib(64)];
+        let io = tokio_test::io::Builder::new()
+            .read(b"POST / HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\nabc")
+            .write(&body)
+            .write(b"HTTP/1.1 100 Continue\r\n\r\n")
+            .build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+        conn.set_write_strategy_flatten();
+        _ = ready(poll_head(&mut conn))
+            .expect("request")
+            .expect("valid request");
+        // The body of the previous response is still queued when the handler reads.
+        conn.io.buffer(Bytes::from(body));
+
+        tokio_test::task::spawn(()).enter(|cx, _| {
+            let data = ready(conn.poll_read_body(cx))
+                .expect("body frame")
+                .expect("valid body")
+                .into_data()
+                .expect("data frame");
+            assert_eq!(data, "abc");
+            assert!(conn.poll_flush(cx).is_ready());
+        });
     }
 
     #[test]

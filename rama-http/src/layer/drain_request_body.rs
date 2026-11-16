@@ -20,11 +20,13 @@
 //! the upload. Apply it only to ordinary HTTP routes, never CONNECT/tunnels.
 
 use crate::{
-    Body, Request, Response, StatusCode, StreamingBody,
-    body::util::{BodyExt, CollectOptions, LengthLimitError},
+    Body, HeaderValue, Request, Response, StatusCode, StreamingBody, Version,
+    body::util::{BodyExt, CollectOptions},
+    header,
+    utils::body_error_status,
 };
 use rama_core::{Layer, Service, error::BoxError, extensions::ExtensionsRef};
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 /// Discard the complete request body before invoking the inner service.
 #[derive(Debug, Clone, Default)]
@@ -42,7 +44,7 @@ impl DrainRequestBodyLayer {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Configure additional byte and total-time limits for the drain.
         pub fn options(mut self, options: CollectOptions) -> Self {
             self.options = options;
@@ -78,7 +80,7 @@ impl<S> DrainRequestBody<S> {
         }
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Configure additional byte and total-time limits for the drain.
         pub fn options(mut self, options: CollectOptions) -> Self {
             self.options = options;
@@ -100,24 +102,13 @@ where
     async fn serve(&self, request: Request<B>) -> Result<Self::Output, Self::Error> {
         let (parts, body) = request.into_parts();
         if let Err(error) = body.drain_with(self.options.clone()).await {
-            let mut status = if rama_core::error::is_timeout_error(error.as_ref()) {
-                StatusCode::REQUEST_TIMEOUT
-            } else {
-                StatusCode::BAD_REQUEST
-            };
-            for cause in rama_core::error::error_chain(error.as_ref()) {
-                if cause.is::<LengthLimitError>() {
-                    status = StatusCode::PAYLOAD_TOO_LARGE;
-                    break;
-                }
-            }
+            let status = body_error_status(error.as_ref());
             let mut response = Response::new(Body::empty());
             *response.status_mut() = status;
-            if status == StatusCode::REQUEST_TIMEOUT && parts.version < crate::Version::HTTP_2 {
-                response.headers_mut().insert(
-                    crate::header::CONNECTION,
-                    crate::HeaderValue::from_static("close"),
-                );
+            if status == StatusCode::REQUEST_TIMEOUT && parts.version < Version::HTTP_2 {
+                response
+                    .headers_mut()
+                    .insert(header::CONNECTION, HeaderValue::from_static("close"));
             }
             return Ok(response);
         }

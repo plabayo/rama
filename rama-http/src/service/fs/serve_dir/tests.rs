@@ -10,6 +10,7 @@ use brotli::BrotliDecompress;
 use flate2::bufread::{DeflateDecoder, GzDecoder};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::{Extension, ExtensionsRef as _};
 use rama_core::service::service_fn;
 use rama_utils::fs::TempDir;
 use rama_utils::include_dir::{Dir, DirEntry, File as EmbeddedFile, include_dir};
@@ -2916,5 +2917,53 @@ async fn small_and_large_files_serve_whole_and_ranged() {
             let body = res.into_body().collect().await.unwrap().to_bytes();
             assert_eq!(body, contents[start..=end], "{name}: {range}");
         }
+    }
+}
+
+#[cfg(feature = "html")]
+#[tokio::test]
+async fn html_listing_of_double_slash_target_links_stay_paths() {
+    use rama_http_types::BodyExtractExt as _;
+
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    for svc in [
+        ServeDir::new("../test-files"),
+        ServeDir::new_embedded(EMBEDDED_FILES),
+    ] {
+        let svc = svc.with_directory_serve_mode(DirectoryServeMode::HtmlFileList);
+        for target in ["//a:b/..", "//foo"] {
+            let req = Request::builder().uri(target).body(Body::empty()).unwrap();
+            let res = svc.serve(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{target}");
+            let payload = res.into_body().try_into_string().await.unwrap();
+            assert!(payload.contains("Directory listing for"), "{target}");
+            assert!(!payload.contains(r#"href="//"#), "{target}: {payload}");
+        }
+    }
+}
+
+#[derive(Debug, Extension)]
+struct FallbackMarker;
+
+#[tokio::test]
+async fn fallback_sees_the_original_request() {
+    async fn fallback(req: Request) -> Result<Response, Infallible> {
+        assert!(req.extensions().get_ref::<FallbackMarker>().is_some());
+        assert_eq!(req.headers()["x-original"], "kept");
+        assert_eq!(req.headers()[header::RANGE], "bytes=0-1");
+        Ok(Response::new(Body::from("fallback")))
+    }
+
+    let svc = ServeDir::new("../test-files").fallback(service_fn(fallback));
+    for uri in ["/not-found", "/does/../not-exist.txt"] {
+        let req = Request::builder()
+            .uri(uri)
+            .header("x-original", "kept")
+            .header(header::RANGE, "bytes=0-1")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions().insert(FallbackMarker);
+        let res = svc.try_call(req).await.unwrap();
+        assert_eq!(body_into_text(res.into_body()).await, "fallback", "{uri}");
     }
 }

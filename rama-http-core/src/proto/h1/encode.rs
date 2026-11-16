@@ -76,7 +76,7 @@ enum BufKind<B> {
     Exact(B),
     Limited(Take<B>),
     Chunked(Chain<Chain<ChunkSize, B>, StaticBuf>),
-    ChunkedEnd(StaticBuf),
+    Static(StaticBuf),
     Trailers(Chain<Chain<StaticBuf, Bytes>, StaticBuf>),
 }
 
@@ -145,7 +145,7 @@ impl Encoder {
         match self.kind {
             Kind::CloseDelimited | Kind::Length(0) => Ok(None),
             Kind::Chunked(_) => Ok(Some(EncodedBuf {
-                kind: BufKind::ChunkedEnd(b"0\r\n\r\n"),
+                kind: BufKind::Static(b"0\r\n\r\n"),
             })),
             Kind::Length(n) => Err(NotEof(n)),
         }
@@ -279,7 +279,7 @@ where
             BufKind::Exact(b) => b.remaining(),
             BufKind::Limited(b) => b.remaining(),
             BufKind::Chunked(b) => b.remaining(),
-            BufKind::ChunkedEnd(b) => b.remaining(),
+            BufKind::Static(b) => b.remaining(),
             BufKind::Trailers(b) => b.remaining(),
         }
     }
@@ -290,7 +290,7 @@ where
             BufKind::Exact(b) => b.chunk(),
             BufKind::Limited(b) => b.chunk(),
             BufKind::Chunked(b) => b.chunk(),
-            BufKind::ChunkedEnd(b) => b.chunk(),
+            BufKind::Static(b) => b.chunk(),
             BufKind::Trailers(b) => b.chunk(),
         }
     }
@@ -301,7 +301,7 @@ where
             BufKind::Exact(b) => b.advance(cnt),
             BufKind::Limited(b) => b.advance(cnt),
             BufKind::Chunked(b) => b.advance(cnt),
-            BufKind::ChunkedEnd(b) => b.advance(cnt),
+            BufKind::Static(b) => b.advance(cnt),
             BufKind::Trailers(b) => b.advance(cnt),
         }
     }
@@ -312,7 +312,7 @@ where
             BufKind::Exact(b) => b.chunks_vectored(dst),
             BufKind::Limited(b) => b.chunks_vectored(dst),
             BufKind::Chunked(b) => b.chunks_vectored(dst),
-            BufKind::ChunkedEnd(b) => b.chunks_vectored(dst),
+            BufKind::Static(b) => b.chunks_vectored(dst),
             BufKind::Trailers(b) => b.chunks_vectored(dst),
         }
     }
@@ -381,6 +381,15 @@ impl fmt::Debug for ChunkSize {
             .field("bytes", &&self.bytes[..self.len.into()])
             .field("pos", &self.pos)
             .finish()
+    }
+}
+
+impl<B> EncodedBuf<B> {
+    /// Fixed bytes written as they are, such as an interim response.
+    pub(crate) const fn from_static(bytes: &'static [u8]) -> Self {
+        Self {
+            kind: BufKind::Static(bytes),
+        }
     }
 }
 

@@ -69,9 +69,10 @@ pub use self::empty::Empty;
 pub use self::error::ErrorBody;
 pub use self::full::Full;
 pub use self::future::TryFutureBody;
-pub use self::limited::{LengthLimitError, Limited};
+pub use self::limited::{LengthLimitError, Limited, is_length_limit_error};
 pub use self::pending::Pending;
 pub use self::stream::{BodyDataStream, BodyStream, StreamBody};
+pub use self::util::BufList;
 
 /// An extension trait for [`crate::body::http_body::Body`] adding various combinators and adapters
 pub trait BodyExt: crate::body::http_body::Body {

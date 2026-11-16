@@ -17,22 +17,22 @@ use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 
 use super::{Http1Transaction, ParseContext, ParsedMessage};
-use crate::common::buf::BufList;
+use rama_http_types::body::util::BufList;
 
 /// The initial buffer size allocated before trying to read from IO.
-pub(crate) const INIT_BUFFER_SIZE: usize = 8192;
+pub(crate) const INIT_BUFFER_SIZE: usize = kib(8);
 
 /// The minimum value that can be set to max buffer size.
 pub(crate) const MINIMUM_MAX_BUFFER_SIZE: usize = INIT_BUFFER_SIZE;
 
 /// The buffer size for input that is only dropped, as nginx uses while
 /// lingering.
-const DISCARD_BUF_SIZE: usize = 4096;
+const DISCARD_BUF_SIZE: usize = kib(4);
 
 /// The default maximum read buffer size. If the buffer gets this big and
 /// a message is still not complete, a `TooLarge` error is triggered.
 // Note: if this changes, update server::conn::Http::max_buf_size docs.
-pub(crate) const DEFAULT_MAX_BUFFER_SIZE: usize = 8192 + 4096 * 100;
+pub(crate) const DEFAULT_MAX_BUFFER_SIZE: usize = kib(8) + kib(4) * 100;
 
 /// Flatten-mode chunks at least this large are written from their own buffer
 /// after a prefix copy; one TLS record of plaintext, so the first write stays a single record.
@@ -379,7 +379,8 @@ where
     }
 
     pub(crate) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.flush_pipeline && !self.read_buf.is_empty() {
+        // A queued body blocks the next head, so holding it for a batch would stall the pipeline.
+        if self.flush_pipeline && !self.read_buf.is_empty() && self.can_headers_buf() {
             Poll::Ready(Ok(()))
         } else if self.write_buf.remaining() == 0 {
             Pin::new(&mut self.io).poll_flush(cx)

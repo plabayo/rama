@@ -2,7 +2,7 @@
 
 use super::Boundary;
 use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
-use rama_http_types::HeaderMap;
+use rama_http_types::{HeaderMap, proto::h1::head::encode_header_fields};
 
 /// Sans-IO writer of the framing of a `multipart/form-data` body.
 ///
@@ -42,12 +42,7 @@ impl Encoder {
         let mut out = BytesMut::with_capacity(self.boundary.delimiter.len() + headers_len + 4);
         self.put_delimiter(&mut out);
         out.put_slice(b"\r\n");
-        for (name, value) in headers {
-            out.put_slice(name.as_str().as_bytes());
-            out.put_slice(b": ");
-            out.put_slice(value.as_bytes());
-            out.put_slice(b"\r\n");
-        }
+        encode_header_fields(headers, &mut out);
         out.put_slice(b"\r\n");
         out.freeze()
     }
@@ -296,5 +291,23 @@ mod tests {
             rewrite([&smuggled], decide).unwrap_err(),
             ParseError::InvalidDelimiter
         );
+    }
+
+    #[test]
+    fn forwarded_part_headers_keep_their_bytes() {
+        let head: &[u8] = b"Content-Disposition: form-data; name=\"a\"\r\n\
+            X-Trace: 1\r\n\
+            content-TYPE: text/plain\r\n\
+            x-trace: 2\r\n\r\n";
+        let mut input = b"--b\r\n".to_vec();
+        input.extend_from_slice(head);
+        input.extend_from_slice(b"data\r\n--b--\r\n");
+        let out = rewrite([&Bytes::from(input)], |_| Action::Forward)
+            .unwrap()
+            .concat();
+        let mut expected = b"--b\r\n".to_vec();
+        expected.extend_from_slice(head);
+        expected.extend_from_slice(b"data");
+        assert!(out.starts_with(&expected), "{}", out.escape_ascii());
     }
 }

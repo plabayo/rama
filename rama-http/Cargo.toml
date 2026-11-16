@@ -56,7 +56,6 @@ csv = { workspace = true }
 dial9-trace-format = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http-range-header = { workspace = true }
-httpdate = { workspace = true }
 iri-string = { workspace = true }
 jiff = { workspace = true }
 memchr = { workspace = true, optional = true, default-features = true }

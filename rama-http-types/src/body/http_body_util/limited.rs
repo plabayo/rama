@@ -1,6 +1,7 @@
 use crate::body::http_body::{Body, Frame, SizeHint};
 use bytes::Buf;
 use pin_project_lite::pin_project;
+use rama_core::error::error_chain;
 use std::error::Error;
 use std::fmt;
 use std::pin::Pin;
@@ -78,7 +79,6 @@ where
     }
 
     fn size_hint(&self) -> SizeHint {
-        use std::convert::TryFrom;
         match u64::try_from(self.remaining) {
             Ok(n) => {
                 let mut hint = self.inner.size_hint();
@@ -122,6 +122,12 @@ impl fmt::Display for LengthLimitError {
 }
 
 impl Error for LengthLimitError {}
+
+/// Whether `error`, or any error in its source chain, is a [`LengthLimitError`].
+#[must_use]
+pub fn is_length_limit_error(error: &(dyn Error + 'static)) -> bool {
+    error_chain(error).any(|cause| cause.is::<LengthLimitError>())
+}
 
 #[cfg(test)]
 mod tests {

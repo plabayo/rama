@@ -1,7 +1,7 @@
-use super::is_length_limit_error;
 use crate::body::util::BodyExt;
 use crate::service::web::endpoint::IntoResponse;
 use crate::service::web::extract::{FromRequest, FromRequestBody};
+use crate::utils::body_error_status;
 use crate::{Request, Response, StatusCode};
 use rama_core::error::BoxError;
 use rama_utils::macros::impl_deref;
@@ -27,21 +27,17 @@ impl BytesRejection {
     /// Get the response body text used for this rejection.
     #[must_use]
     pub fn body_text(&self) -> String {
-        if is_length_limit_error(self.0.as_ref()) {
-            "Request payload is too large".to_owned()
-        } else {
-            format!("Request Body failed to be collected as Bytes: {}", self.0)
+        match self.status() {
+            StatusCode::PAYLOAD_TOO_LARGE => "Request payload is too large".to_owned(),
+            StatusCode::REQUEST_TIMEOUT => "Request body was not received in time".to_owned(),
+            _ => format!("Request Body failed to be collected as Bytes: {}", self.0),
         }
     }
 
     /// Get the status code used for this rejection.
     #[must_use]
     pub fn status(&self) -> StatusCode {
-        if is_length_limit_error(self.0.as_ref()) {
-            StatusCode::PAYLOAD_TOO_LARGE
-        } else {
-            StatusCode::BAD_REQUEST
-        }
+        body_error_status(self.0.as_ref())
     }
 }
 

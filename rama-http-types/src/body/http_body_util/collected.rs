@@ -55,11 +55,7 @@ impl<B: Buf> Collected<B> {
     pub(crate) fn push_frame(&mut self, frame: Frame<B>) {
         let frame = match frame.into_data() {
             Ok(data) => {
-                // Only push this frame if it has some data in it, to avoid crashing on
-                // `BufList::push`.
-                if data.has_remaining() {
-                    self.bufs.push(data);
-                }
+                self.bufs.push(data);
                 return;
             }
             Err(frame) => frame,

@@ -1,6 +1,4 @@
-use crate::header::HeaderValue;
-use crate::headers::{self, ETag};
-use httpdate::HttpDate;
+use crate::headers::ETag;
 use std::time::SystemTime;
 
 /// Generate a strong [`ETag`] from file metadata (size + mtime with nanosecond precision).
@@ -19,67 +17,4 @@ pub(super) fn etag_from_metadata(size: u64, modified: SystemTime) -> Option<ETag
         size
     );
     value.parse().ok()
-}
-
-#[derive(Clone)]
-pub(super) struct LastModified(pub(super) HttpDate);
-
-impl LastModified {
-    /// `None` for modification times an HTTP-date cannot represent (pre-epoch or past year 9999).
-    pub(super) fn try_from_system_time(time: SystemTime) -> Option<Self> {
-        headers::util::HttpDate::try_from_system_time(time).map(|_| Self(time.into()))
-    }
-}
-
-pub(super) struct IfModifiedSince(HttpDate);
-
-impl IfModifiedSince {
-    /// Check if the supplied time means the resource has been modified.
-    pub(super) fn is_modified(&self, last_modified: &LastModified) -> bool {
-        self.0 < last_modified.0
-    }
-
-    /// convert a header value into a IfModifiedSince, invalid values are silently ignored
-    pub(super) fn from_header_value(value: &HeaderValue) -> Option<Self> {
-        let value = value.to_str().ok()?;
-        let date = value.parse().ok()?;
-        Some(Self(date))
-    }
-}
-
-pub(super) struct IfUnmodifiedSince(HttpDate);
-
-impl IfUnmodifiedSince {
-    /// Check if the supplied time passes the precondition.
-    pub(super) fn precondition_passes(&self, last_modified: &LastModified) -> bool {
-        self.0 >= last_modified.0
-    }
-
-    /// Convert a header value into an IfUnmodifiedSince, invalid values are silently ignored
-    pub(super) fn from_header_value(value: &HeaderValue) -> Option<Self> {
-        let value = value.to_str().ok()?;
-        let date = value.parse().ok()?;
-        Some(Self(date))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[test]
-    fn last_modified_rejects_unrepresentable_times() {
-        let epoch = SystemTime::UNIX_EPOCH;
-        assert!(LastModified::try_from_system_time(epoch).is_some());
-        let last = epoch
-            .checked_add(Duration::from_secs(253_402_300_799))
-            .unwrap();
-        assert!(LastModified::try_from_system_time(last).is_some());
-
-        let before_epoch = epoch.checked_sub(Duration::from_secs(1)).unwrap();
-        let past_9999 = last.checked_add(Duration::from_secs(1)).unwrap();
-        assert!(LastModified::try_from_system_time(before_epoch).is_none());
-        assert!(LastModified::try_from_system_time(past_9999).is_none());
-    }
 }

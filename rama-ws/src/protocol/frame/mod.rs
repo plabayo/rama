@@ -31,11 +31,23 @@ const COPIED_PAYLOAD_MAX_LEN: usize = kib(4);
 /// Payloads from this size on are written from their own storage instead of through `out_buffer`.
 const DIRECT_PAYLOAD_MIN_LEN: usize = kib(64);
 
-/// Capacity a drained `out_buffer` keeps at least; twice the write length when that is larger.
-const RETAINED_OUT_BUFFER_LEN: usize = kib(256);
+/// Capacity a drained `in_buffer` or `out_buffer` keeps at most; for `out_buffer` twice the
+/// write length when that is larger.
+const RETAINED_BUFFER_LEN: usize = kib(256);
 
 /// Step in which a shared payload is masked into `out_buffer`; a multiple of the mask length.
 const MASKED_CHUNK_LEN: usize = kib(64);
+
+/// How a read frame's masking is handled.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum FrameMasking {
+    /// Payloads are returned as received.
+    AsIs,
+    /// Every frame must be masked and is unmasked (RFC 6455 §5.1, frames sent by a client).
+    RequireMask,
+    /// Masked frames are unmasked and unmasked frames accepted, against RFC 6455.
+    UnmaskIfMasked,
+}
 
 /// A reader and writer for WebSocket frames.
 #[derive(Debug)]
@@ -87,7 +99,7 @@ where
     /// Read a frame from stream.
     pub fn read(&mut self, max_size: Option<usize>) -> Result<Option<Frame>, ProtocolError> {
         self.codec
-            .read_frame(&mut self.stream, max_size, false, true)
+            .read_frame(&mut self.stream, max_size, FrameMasking::AsIs)
     }
 }
 
@@ -198,8 +210,7 @@ impl FrameCodec {
         &mut self,
         stream: &mut impl Read,
         max_size: Option<usize>,
-        unmask: bool,
-        accept_unmasked: bool,
+        masking: FrameMasking,
     ) -> Result<Option<Frame>, ProtocolError> {
         let max_size = max_size.unwrap_or(usize::MAX);
 
@@ -245,18 +256,18 @@ impl FrameCodec {
         let (mut header, length) = self.header.take().expect("Bug: no frame header");
         debug_assert_eq!(len as u64, length);
 
-        let mask = if unmask {
-            let mask = header.mask.take();
-            // The server MUST close the connection upon receiving a
-            // frame that is not masked. (RFC 6455)
-            // The only exception here is if the user explicitly accepts given
-            // stream by setting WebSocketConfig.accept_unmasked_frames to true
-            if mask.is_none() && !accept_unmasked {
-                return Err(ProtocolError::UnmaskedFrameFromClient);
+        let mask = match masking {
+            FrameMasking::AsIs => None,
+            FrameMasking::UnmaskIfMasked => header.mask.take(),
+            FrameMasking::RequireMask => {
+                // The server MUST close the connection upon receiving a
+                // frame that is not masked. (RFC 6455)
+                let mask = header.mask.take();
+                if mask.is_none() {
+                    return Err(ProtocolError::UnmaskedFrameFromClient);
+                }
+                mask
             }
-            mask
-        } else {
-            None
         };
 
         let payload = if len <= COPIED_PAYLOAD_MAX_LEN {
@@ -276,6 +287,10 @@ impl FrameCodec {
             payload.freeze()
         };
         self.filled -= len;
+        // A drained buffer one large frame grew is released instead of held while idle.
+        if self.filled == 0 && self.in_buffer.capacity() > RETAINED_BUFFER_LEN {
+            self.in_buffer = BytesMut::new();
+        }
 
         let frame = Frame::from_payload(header, payload);
         trace!("received frame {frame}");
@@ -312,7 +327,7 @@ impl FrameCodec {
     /// Empties the drained `out_buffer`, giving back storage that one outsized frame grew.
     #[inline]
     fn reset_out_buffer(&mut self) {
-        let retained = RETAINED_OUT_BUFFER_LEN.max(self.out_buffer_write_len.saturating_mul(2));
+        let retained = RETAINED_BUFFER_LEN.max(self.out_buffer_write_len.saturating_mul(2));
         if self.out_buffer.capacity() > retained {
             self.out_buffer = BytesMut::new();
         } else {
@@ -509,10 +524,11 @@ mod tests {
     use std::assert_matches;
 
     use super::{
-        Bytes, Frame, FrameCodec, FrameSocket, RETAINED_OUT_BUFFER_LEN,
+        Bytes, Frame, FrameCodec, FrameMasking, FrameSocket, RETAINED_BUFFER_LEN,
         coding::{OpCode, OpCodeData},
     };
 
+    use rama_utils::octets::mib;
     use std::io::{self, Cursor};
 
     #[test]
@@ -626,7 +642,10 @@ mod tests {
             let mut codec = FrameCodec::new(super::READ_BUF_LEN);
             for payload in &payloads {
                 let frame = loop {
-                    if let Some(frame) = codec.read_frame(&mut stream, None, true, false).unwrap() {
+                    if let Some(frame) = codec
+                        .read_frame(&mut stream, None, FrameMasking::RequireMask)
+                        .unwrap()
+                    {
                         break frame;
                     }
                 };
@@ -634,7 +653,7 @@ mod tests {
             }
             assert!(
                 codec
-                    .read_frame(&mut stream, None, true, false)
+                    .read_frame(&mut stream, None, FrameMasking::RequireMask)
                     .unwrap()
                     .is_none()
             );
@@ -651,7 +670,7 @@ mod tests {
         let mut stream = Cursor::new(wire);
         let mut codec = FrameCodec::new(super::READ_BUF_LEN);
         let small = codec
-            .read_frame(&mut stream, None, true, false)
+            .read_frame(&mut stream, None, FrameMasking::RequireMask)
             .unwrap()
             .unwrap();
         let buffer = codec.in_buffer.as_ptr_range();
@@ -659,7 +678,10 @@ mod tests {
         assert_eq!(small.payload(), b"small");
 
         let large = loop {
-            if let Some(frame) = codec.read_frame(&mut stream, None, true, false).unwrap() {
+            if let Some(frame) = codec
+                .read_frame(&mut stream, None, FrameMasking::RequireMask)
+                .unwrap()
+            {
                 break frame;
             }
         };
@@ -686,7 +708,7 @@ mod tests {
             let mut held = Vec::new();
             for expected in &payloads {
                 let frame = codec
-                    .read_frame(&mut stream, None, true, false)
+                    .read_frame(&mut stream, None, FrameMasking::RequireMask)
                     .unwrap()
                     .unwrap();
                 assert_eq!(frame.payload(), expected.as_slice());
@@ -714,11 +736,28 @@ mod tests {
         let mut stream = Cursor::new(masked_frame(b"hi", [1, 2, 3, 4]));
         assert!(
             codec
-                .read_frame(&mut stream, None, true, false)
+                .read_frame(&mut stream, None, FrameMasking::RequireMask)
                 .unwrap()
                 .is_some()
         );
         assert!(codec.in_buffer.capacity() <= super::READ_BUF_LEN);
+    }
+
+    #[test]
+    fn large_frame_storage_is_not_retained_once_read() {
+        let mut codec = FrameCodec::new(super::READ_BUF_LEN);
+        let payload = vec![0x5a; mib(1)];
+        let mut stream = Cursor::new(masked_frame(&payload, [1, 2, 3, 4]));
+        let frame = codec
+            .read_frame(&mut stream, None, FrameMasking::RequireMask)
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.into_payload().len(), payload.len());
+        assert!(
+            codec.in_buffer.capacity() <= super::RETAINED_BUFFER_LEN,
+            "{}",
+            codec.in_buffer.capacity()
+        );
     }
 
     #[test]
@@ -924,7 +963,7 @@ mod tests {
         let mut wire = Vec::new();
         codec.buffer_frame(&mut wire, frame).unwrap();
         assert!(wire == expected);
-        assert!(codec.out_buffer.capacity() < RETAINED_OUT_BUFFER_LEN);
+        assert!(codec.out_buffer.capacity() < RETAINED_BUFFER_LEN);
         // the caller's copy is left as it was
         assert!(payload.iter().all(|byte| *byte == 7));
     }

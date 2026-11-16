@@ -670,11 +670,10 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
         ),
         Ok(httparse::Status::Complete((_, headers))) => {
             for header in headers {
-                use std::convert::TryFrom;
                 let Ok(name) = HeaderName::try_from(header.name) else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("Invalid header name: {header:?}"),
+                        "invalid trailer field name",
                     ));
                 };
 
@@ -687,7 +686,7 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                 let Ok(mut value) = HeaderValue::from_bytes(header.value) else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("Invalid header value: {header:?}"),
+                        "invalid trailer field value",
                     ));
                 };
                 if name.is_sensitive() {

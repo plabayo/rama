@@ -695,6 +695,10 @@ where
 #[cfg(test)]
 mod tests {
     use crate::service::VoidHttpService;
+    use rama_core::{ServiceInput, service::service_fn};
+    use rama_http_types::body::util::BodyExt as _;
+    use rama_utils::octets::kib;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpStream;
 
     use super::*;
@@ -708,10 +712,6 @@ mod tests {
 
     #[test]
     fn large_keep_alive_uploads_work_without_a_time_driver() {
-        use rama_core::{ServiceInput, service::service_fn};
-        use rama_http_types::body::util::BodyExt as _;
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -758,6 +758,79 @@ mod tests {
                 drop(client);
                 server.await.unwrap();
             });
+    }
+
+    #[test]
+    fn continue_after_a_queued_pipelined_response_body_keeps_it_intact() {
+        const BIG: usize = kib(64);
+
+        for pipeline_flush in [false, true] {
+            for expect in [false, true] {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let (mut client, server_io) = tokio::io::duplex(4096);
+                        let server = tokio::spawn(async move {
+                            Builder::new()
+                                .with_pipeline_flush(pipeline_flush)
+                                .serve_connection(
+                                    ServiceInput::new(server_io),
+                                    service_fn(|request: Request<IncomingBody>| async move {
+                                        if request.method() == rama_http::Method::GET {
+                                            return Ok::<_, Infallible>(Response::new(Body::from(
+                                                vec![b'r'; BIG],
+                                            )));
+                                        }
+                                        let body = request.into_body().collect().await.unwrap();
+                                        assert_eq!(body.to_bytes(), "abc");
+                                        Ok(Response::new(Body::from("ok")))
+                                    }),
+                                )
+                                .await
+                                .unwrap();
+                        });
+                        let extra = if expect {
+                            "expect: 100-continue\r\n"
+                        } else {
+                            ""
+                        };
+                        client
+                            .write_all(
+                                format!(
+                                    "GET /big HTTP/1.1\r\nhost: test\r\n\r\n\
+                                     POST /up HTTP/1.1\r\nhost: test\r\ncontent-length: 3\r\n\
+                                     {extra}connection: close\r\n\r\nabc"
+                                )
+                                .as_bytes(),
+                            )
+                            .await
+                            .unwrap();
+                        let mut wire = Vec::new();
+                        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut wire))
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        server.await.unwrap();
+
+                        let head_end = wire.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+                        assert!(wire.starts_with(b"HTTP/1.1 200 OK\r\n"));
+                        let (body, mut rest) = wire[head_end..].split_at(BIG);
+                        assert!(body.iter().all(|b| *b == b'r'), "first body was corrupted");
+                        if expect {
+                            rest = rest
+                                .strip_prefix(b"HTTP/1.1 100 Continue\r\n\r\n".as_slice())
+                                .unwrap();
+                        }
+                        assert!(
+                            rest.starts_with(b"HTTP/1.1 200 OK\r\n") && rest.ends_with(b"ok"),
+                            "{}",
+                            String::from_utf8_lossy(rest)
+                        );
+                    });
+            }
+        }
     }
 }
 

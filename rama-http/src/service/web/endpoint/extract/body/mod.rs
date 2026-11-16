@@ -1,14 +1,9 @@
 //! module in function of extractors for `Request` bodies
 
 use super::{FromRequest, FromRequestBody};
-use rama_core::error::error_chain;
-use rama_http_types::{self as http, body::util::LengthLimitError};
+use rama_http_types as http;
 use rama_utils::macros::impl_deref;
 use std::convert::Infallible;
-
-fn is_length_limit_error(error: &(dyn std::error::Error + 'static)) -> bool {
-    error_chain(error).any(|cause| cause.is::<LengthLimitError>())
-}
 
 mod bytes;
 #[doc(inline)]
@@ -69,9 +64,16 @@ impl FromRequestBody for Body {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::body::util::is_length_limit_error;
+    use crate::layer::timeout::TimeoutBody;
     use crate::service::web::{WebService, extract::datastar::ReadSignals};
-    use crate::{Method, Request, StatusCode, body::util::BodyExt, header};
+    use crate::{
+        Method, Request, StatusCode,
+        body::util::{BodyExt, Pending},
+        header,
+    };
     use rama_core::Service;
+    use std::time::Duration;
 
     #[derive(Debug)]
     struct WrappedLimitError(rama_core::error::BoxError);
@@ -168,6 +170,21 @@ mod test {
             .unwrap_err()
             .status(),
             StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[tokio::test]
+    async fn bytes_extractor_reports_a_body_timeout_as_request_timeout() {
+        let request = Request::builder()
+            .method(Method::POST)
+            .body(crate::Body::new(TimeoutBody::new(
+                Duration::from_millis(10),
+                Pending::<rama_core::bytes::Bytes, std::convert::Infallible>::new(),
+            )))
+            .unwrap();
+        assert_eq!(
+            Bytes::from_request(request).await.unwrap_err().status(),
+            StatusCode::REQUEST_TIMEOUT
         );
     }
 

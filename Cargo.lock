@@ -5050,7 +5050,6 @@ dependencies = [
  "divan",
  "flate2",
  "http-range-header",
- "httpdate",
  "iri-string",
  "itertools 0.15.0",
  "jiff",

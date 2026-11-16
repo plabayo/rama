@@ -29,6 +29,7 @@ use crate::Request;
 use crate::mime::{self, Mime};
 use crate::protocols::multipart::{Boundary, Event, FormData, InvalidBoundary, ParseError, Parser};
 use crate::service::web::extract::{FromRequest, FromRequestBody};
+use crate::utils::body_error_status;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use ahash::HashMap;
 use rama_core::bytes::{Bytes, BytesMut};
@@ -37,7 +38,7 @@ use rama_core::extensions::Extension;
 use rama_core::futures::Stream;
 use rama_http_types::{
     HeaderMap, StatusCode,
-    body::{BodyDataStream, util::LengthLimitError},
+    body::BodyDataStream,
     header::{CONTENT_TYPE, content_type::parse_mime_type},
 };
 use rama_utils::macros::generate_set_and_with;
@@ -315,11 +316,7 @@ impl Multipart {
                 Ok(Event::NeedInput) => match ready!(Pin::new(&mut self.body).poll_next(cx)) {
                     Some(Ok(chunk)) => parser.feed(chunk),
                     Some(Err(err)) => {
-                        let kind = if is_size_limit_error(&err) {
-                            MultipartErrorKind::BodyTooLarge
-                        } else {
-                            MultipartErrorKind::Stream
-                        };
+                        let kind = body_error_kind(&err);
                         return Poll::Ready(Err(self.fail(kind, Some(err))));
                     }
                     None => parser.set_eof(),
@@ -507,6 +504,8 @@ enum MultipartErrorKind {
     TooManyParts,
     /// The body stream failed on a size limit of its own.
     BodyTooLarge,
+    /// The body stream failed on a timeout of its own.
+    BodyTimeout,
     Stream,
 }
 
@@ -524,6 +523,7 @@ impl MultipartErrorKind {
             Self::FieldTooLarge => "field exceeds its size limit",
             Self::TooManyParts => "too many parts",
             Self::BodyTooLarge => "body exceeds its size limit",
+            Self::BodyTimeout => "body was not received in time",
             Self::Stream => "failed to read the body",
         }
     }
@@ -543,6 +543,7 @@ impl MultipartError {
             MultipartErrorKind::FieldTooLarge
             | MultipartErrorKind::TooManyParts
             | MultipartErrorKind::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            MultipartErrorKind::BodyTimeout => StatusCode::REQUEST_TIMEOUT,
             MultipartErrorKind::Stream => StatusCode::INTERNAL_SERVER_ERROR,
             MultipartErrorKind::Parse(_)
             | MultipartErrorKind::InvalidBoundary
@@ -572,13 +573,20 @@ impl MultipartError {
 }
 
 // Size errors can arrive wrapped, e.g. from a nested multipart stream or a limited body.
-fn is_size_limit_error(error: &BoxError) -> bool {
-    error_chain(error.as_ref()).any(|cause| {
-        cause.is::<LengthLimitError>()
-            || cause
-                .downcast_ref::<MultipartError>()
-                .is_some_and(|nested| nested.status() == StatusCode::PAYLOAD_TOO_LARGE)
-    })
+fn body_error_kind(error: &BoxError) -> MultipartErrorKind {
+    let nested_too_large = error_chain(error.as_ref()).any(|cause| {
+        cause
+            .downcast_ref::<MultipartError>()
+            .is_some_and(|nested| nested.status() == StatusCode::PAYLOAD_TOO_LARGE)
+    });
+    if nested_too_large {
+        return MultipartErrorKind::BodyTooLarge;
+    }
+    match body_error_status(error.as_ref()) {
+        StatusCode::PAYLOAD_TOO_LARGE => MultipartErrorKind::BodyTooLarge,
+        StatusCode::REQUEST_TIMEOUT => MultipartErrorKind::BodyTimeout,
+        _ => MultipartErrorKind::Stream,
+    }
 }
 
 impl std::fmt::Display for MultipartError {
@@ -695,7 +703,7 @@ impl FromRequestBody for Multipart {
 mod test {
     use super::*;
     use crate::StatusCode;
-    use crate::body::util::BodyExt;
+    use crate::body::util::{BodyExt, LengthLimitError};
     use crate::service::web::WebService;
     use rama_core::Service;
     use rama_core::extensions::ExtensionsRef;
@@ -1183,6 +1191,9 @@ mod test {
             assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
             assert_eq!(text, "Request payload is too large");
         }
+
+        let (status, _) = stream_error_status(nested(rama_core::error::TimeoutError)).await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
 
         for error in [
             BoxError::from(std::io::Error::other("read failed")),

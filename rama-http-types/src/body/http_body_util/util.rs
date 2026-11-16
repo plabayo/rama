@@ -3,28 +3,55 @@ use std::io::IoSlice;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+/// A queue of buffers read as one [`Buf`].
+///
+/// Buffers are read front to back without being copied together, and
+/// [`Buf::chunks_vectored`] hands out one slice per queued buffer, so a
+/// list can be written with a single vectored write.
 #[derive(Debug)]
-pub(crate) struct BufList<T> {
+pub struct BufList<T> {
     bufs: VecDeque<T>,
 }
 
 impl<T: Buf> BufList<T> {
-    #[inline]
-    pub(crate) fn push(&mut self, buf: T) {
-        debug_assert!(buf.has_remaining());
-        self.bufs.push_back(buf);
+    /// Create an empty list.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            bufs: VecDeque::new(),
+        }
     }
 
+    /// Append `buf` to the back of the list.
+    ///
+    /// A buffer without remaining bytes is dropped: the list never holds an
+    /// empty buffer, so it has bytes remaining exactly when it holds a buffer,
+    /// and every vectored slice it hands out is non-empty.
     #[inline]
-    pub(crate) fn pop(&mut self) -> Option<T> {
+    pub fn push(&mut self, buf: T) {
+        if buf.has_remaining() {
+            self.bufs.push_back(buf);
+        }
+    }
+
+    /// Remove and return the buffer at the front of the list.
+    #[inline]
+    pub fn pop(&mut self) -> Option<T> {
         self.bufs.pop_front()
+    }
+
+    /// The number of buffers in the list.
+    #[inline]
+    #[must_use]
+    pub fn bufs_cnt(&self) -> usize {
+        self.bufs.len()
     }
 }
 
 impl<T: Buf> Buf for BufList<T> {
     #[inline]
     fn remaining(&self) -> usize {
-        self.bufs.iter().map(|buf| buf.remaining()).sum()
+        self.bufs.iter().map(Buf::remaining).sum()
     }
 
     #[inline]
@@ -87,7 +114,7 @@ impl<T: Buf> Buf for BufList<T> {
                 assert!(len <= rem, "`len` greater than remaining");
                 let mut bm = BytesMut::with_capacity(len);
                 if rem == len {
-                    // .take() costs a lot more, so skip it if we don't need it
+                    // `take` adds a limit check to every copied chunk.
                     bm.put(self);
                 } else {
                     bm.put(self.take(len));
@@ -100,7 +127,7 @@ impl<T: Buf> Buf for BufList<T> {
 
 impl<T> Default for BufList<T> {
     fn default() -> Self {
-        BufList {
+        Self {
             bufs: VecDeque::new(),
         }
     }
@@ -128,8 +155,18 @@ mod tests {
                     bufs.advance(step);
                     assert_eq!(bufs.has_remaining(), bufs.remaining() > 0);
                 }
+                let rest = bufs.remaining();
+                assert_eq!(bufs.copy_to_bytes(rest).len(), rest);
+                assert!(!bufs.has_remaining());
             }
         }
+    }
+
+    #[test]
+    fn to_bytes_of_everything_joins_all_buffers() {
+        let mut bufs = hello_world_buf();
+        assert_eq!(bufs.copy_to_bytes(11), "Hello World");
+        assert!(!bufs.has_remaining());
     }
 
     #[test]
@@ -165,7 +202,7 @@ mod tests {
 
     #[test]
     fn one_long_buf_to_bytes() {
-        let mut buf = BufList::default();
+        let mut buf = BufList::new();
         buf.push(b"Hello World" as &[_]);
         assert_eq!(buf.copy_to_bytes(5), "Hello");
         assert_eq!(buf.chunk(), b" World");

@@ -4,7 +4,7 @@ use crate::HeaderMap;
 use crate::body::{Body, Frame, SizeHint, StreamingBody, util::LengthLimitError};
 use crate::layer::util::compression::{
     AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
-    impl_decorate_async_read,
+    ZSTD_MAX_WINDOW_LOG, impl_decorate_async_read,
 };
 use compression_codecs::zstd::params::DParameter;
 use rama_core::error::BoxError;
@@ -194,9 +194,6 @@ impl_decorate_async_read!(GzipDecoder: |input, _quality| {
 impl_decorate_async_read!(ZlibDecoder: |input, _quality| {
     ZlibDecoder::new(input)
 });
-
-/// RFC 9659 §3: a "zstd" content coding never needs a window above 8 MiB.
-const ZSTD_MAX_WINDOW_LOG: u32 = 23;
 
 impl_decorate_async_read!(ZstdDecoder: |input, _quality| {
     let mut decoder =
