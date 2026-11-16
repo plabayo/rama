@@ -93,6 +93,26 @@ class ReplayTests(unittest.TestCase):
                     self.assertNotIn("private-main", " ".join(args))
                     self.assertNotIn("stale-route", " ".join(args))
 
+    def test_every_segment_keeps_the_planned_route_without_learned_alt_svc(self):
+        request = Request("GET", "/report", (("alt-used", "old.invalid:443"),), b"", {})
+        target = ReplayTarget("h3", "https://current.example:8443")
+        for protocol in ("h1", "h2", "h3"):
+            with self.subTest(protocol=protocol):
+                args = replay_args(
+                    Path("rama"),
+                    Path("profile"),
+                    Path("output"),
+                    replace(target, protocol=protocol),
+                    "navigate",
+                    request,
+                    warmup_variants=("first", "second"),
+                )
+                first = args.index("--next")
+                # Client options live in the first segment and cover every --next request.
+                self.assertIn("--no-alt-svc", args[:first])
+                self.assertEqual(args.count("--no-alt-svc"), 1)
+                self.assertIn("--header=alt-used: current.example:8443", args)
+
     def test_ambiguous_alt_used_observations_are_rejected(self):
         for raw in (False, True):
             observed = (

@@ -172,6 +172,8 @@ def replay_args(
         "--emulate-request-key",
         "03" * 32,
         flags[target.protocol],
+        # The plan owns the route: learned Alt-Svc would add, replace or drop Alt-Used.
+        "--no-alt-svc",
     ]
     if target.certificate is not None:
         args += ["--cacert", str(target.certificate)]
