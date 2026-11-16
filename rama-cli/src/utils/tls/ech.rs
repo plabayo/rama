@@ -32,7 +32,7 @@ pub(crate) fn configure_server_ech_from_env(
         let mut reload = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
             .context("register ECH key reload signal")?;
         let provider = provider.clone();
-        scope.try_hold()?.into_spawn_task(async move {
+        scope.try_hold()?.into_spawn_cancellable_task(async move {
             while reload.recv().await.is_some() {
                 let path = path.clone();
                 let keys = tokio::task::spawn_blocking(move || load(&path))
