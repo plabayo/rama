@@ -35,7 +35,7 @@ pub mod response;
 mod convert;
 pub mod method;
 pub mod status;
-pub mod structured_fields;
+pub mod utils;
 
 mod error;
 #[doc(inline)]

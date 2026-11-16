@@ -33,7 +33,6 @@ fuzz-utils = []
 ahash = { workspace = true }
 base64 = { workspace = true, default-features = true }
 const_format = { workspace = true }
-httpdate = { workspace = true }
 jiff = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-http-types = { workspace = true }

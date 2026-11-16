@@ -2,9 +2,11 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rama_core::bytes::Bytes;
-use rama_core::error::{BoxError, ErrorContext as _};
-use rama_http_types::header::HeaderValue;
+use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_http_types::{
+    header::HeaderValue,
+    utils::http_date::{MAX_HTTP_DATE_UNIX_SECS, format_http_date, parse_http_date},
+};
 
 use super::IterExt;
 
@@ -32,11 +34,11 @@ use super::IterExt;
 //   HTTP-date, the sender MUST generate those timestamps in the
 //   IMF-fixdate format.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct HttpDate(httpdate::HttpDate);
+pub struct HttpDate(u64);
 
 impl HttpDate {
     pub(crate) fn from_val(val: &HeaderValue) -> Option<Self> {
-        val.to_str().ok()?.parse().ok()
+        parse_http_date(val.as_bytes()).map(Self)
     }
 }
 
@@ -52,21 +54,15 @@ impl super::TryFromValues for HttpDate {
     }
 }
 
-impl TryFrom<HttpDate> for HeaderValue {
-    type Error = BoxError;
-
-    fn try_from(date: HttpDate) -> Result<Self, Self::Error> {
-        (&date).try_into()
+impl From<HttpDate> for HeaderValue {
+    fn from(date: HttpDate) -> Self {
+        Self::from_http_date(date.0)
     }
 }
 
-impl TryFrom<&HttpDate> for HeaderValue {
-    type Error = BoxError;
-
-    fn try_from(date: &HttpDate) -> Result<Self, Self::Error> {
-        let s = date.to_string();
-        let bytes = Bytes::from(s);
-        Self::from_maybe_shared(bytes).context("parse HttpDate as header value")
+impl From<&HttpDate> for HeaderValue {
+    fn from(date: &HttpDate) -> Self {
+        Self::from_http_date(date.0)
     }
 }
 
@@ -74,24 +70,24 @@ impl FromStr for HttpDate {
     type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, BoxError> {
-        Ok(Self(s.parse().context("invalid http date")?))
+        parse_http_date(s.as_bytes())
+            .map(Self)
+            .ok_or_else(|| BoxError::from_static_str("invalid http date"))
     }
 }
 
 impl fmt::Debug for HttpDate {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
+        fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for HttpDate {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
+        let formatted = format_http_date(self.0);
+        f.write_str(std::str::from_utf8(&formatted).map_err(|_not_utf8| fmt::Error)?)
     }
 }
-
-/// `9999-12-31T23:59:59Z`, the last instant an HTTP-date can represent.
-const MAX_HTTP_DATE_SECS: u64 = 253_402_300_799;
 
 impl HttpDate {
     /// `None` for times an HTTP-date cannot represent (before 1970 or after 9999).
@@ -99,28 +95,26 @@ impl HttpDate {
     /// Prefer this over the clamping [`From`] impl for validators such as `Last-Modified`.
     #[must_use]
     pub fn try_from_system_time(sys: SystemTime) -> Option<Self> {
-        let since_epoch = sys.duration_since(UNIX_EPOCH).ok()?;
-        (since_epoch.as_secs() <= MAX_HTTP_DATE_SECS).then(|| Self(sys.into()))
+        let secs = sys.duration_since(UNIX_EPOCH).ok()?.as_secs();
+        (secs <= MAX_HTTP_DATE_UNIX_SECS).then_some(Self(secs))
     }
 }
 
 impl From<SystemTime> for HttpDate {
     /// Times outside `1970..=9999` are clamped to the nearest representable date.
     fn from(sys: SystemTime) -> Self {
-        let clamped = match sys.duration_since(UNIX_EPOCH) {
-            Err(_) => UNIX_EPOCH,
-            Ok(since_epoch) if since_epoch.as_secs() > MAX_HTTP_DATE_SECS => UNIX_EPOCH
-                .checked_add(Duration::from_secs(MAX_HTTP_DATE_SECS))
-                .unwrap_or(UNIX_EPOCH),
-            Ok(_) => sys,
-        };
-        Self(clamped.into())
+        let secs = sys
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        Self(secs.min(MAX_HTTP_DATE_UNIX_SECS))
     }
 }
 
 impl From<HttpDate> for SystemTime {
     fn from(date: HttpDate) -> Self {
-        Self::from(date.0)
+        UNIX_EPOCH
+            .checked_add(Duration::from_secs(date.0))
+            .unwrap_or(UNIX_EPOCH)
     }
 }
 
@@ -133,7 +127,7 @@ mod tests {
     // The old tests had Sunday, but 1994-11-07 is a Monday.
     // See https://github.com/pyfisch/httpdate/pull/6#issuecomment-846881001
     fn nov_07() -> HttpDate {
-        HttpDate((UNIX_EPOCH + Duration::new(784198117, 0)).into())
+        HttpDate(784_198_117)
     }
 
     #[test]
@@ -197,7 +191,7 @@ mod tests {
             let far_future = UNIX_EPOCH.checked_add(Duration::from_secs(secs)).unwrap();
             let date = HttpDate::from(far_future);
             assert_eq!(date.to_string(), "Fri, 31 Dec 9999 23:59:59 GMT");
-            _ = HeaderValue::try_from(date).unwrap();
+            _ = HeaderValue::from(date);
             _ = SystemTime::from(date);
         }
 

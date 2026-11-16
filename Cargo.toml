@@ -144,7 +144,6 @@ http = "1" # interop-only (rama-http-hyperium / rama-tower); native rama Uri han
 http-body = "1" # interop-only (rama-http-hyperium body bridge)
 http-range-header = "1.0.0"
 httparse = "1.10"
-httpdate = "1.0"
 idna = "1"
 indexmap = "2"
 ipnet = { version = "2.12", default-features = false }
@@ -754,6 +753,11 @@ required-features = ["http", "net"]
 
 [[bench]]
 name = "alt_svc"
+harness = false
+required-features = ["http-full"]
+
+[[bench]]
+name = "http_date"
 harness = false
 required-features = ["http-full"]
 

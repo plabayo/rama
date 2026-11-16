@@ -31,6 +31,8 @@ http-typed-headers SECONDS="0": (_run "http_typed_headers" SECONDS "-dict=fuzz/d
 
 http-structured-fields SECONDS="0": (_run "http_structured_fields" SECONDS "-max_len=65536 -timeout=10")
 
+http-date SECONDS="0": (_run "http_date" SECONDS "-max_len=64")
+
 dns-txt-rr SECONDS="0": (_run "dns_txt_rr" SECONDS "-max_len=4096")
 
 uri-parse SECONDS="0": (_run "uri_parse" SECONDS "-max_len=65534")

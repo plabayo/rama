@@ -2,7 +2,7 @@ use std::{fmt, str::FromStr};
 
 use rama_http_types::{
     HeaderName, HeaderValue,
-    structured_fields::{BareItem, ListEvent, ListMember, parse_list},
+    utils::structured_fields::{BareItem, ListEvent, ListMember, parse_list},
 };
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};

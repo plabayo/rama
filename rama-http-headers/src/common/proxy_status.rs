@@ -11,7 +11,9 @@ use base64::{
 };
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
-use rama_http_types::structured_fields::{BareItem, ListEvent, ListMember, is_token, parse_list};
+use rama_http_types::utils::structured_fields::{
+    BareItem, ListEvent, ListMember, is_token, parse_list,
+};
 use rama_http_types::{HeaderName, HeaderValue, StatusCode};
 use rama_utils::collections::smallvec::{SmallVec, smallvec};
 

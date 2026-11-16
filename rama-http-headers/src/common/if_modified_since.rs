@@ -1,4 +1,3 @@
-use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
 
 use crate::util::HttpDate;
@@ -52,12 +51,7 @@ impl crate::HeaderDecode for IfModifiedSince {
 
 impl crate::HeaderEncode for IfModifiedSince {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        match HeaderValue::try_from(&self.0) {
-            Ok(value) => values.extend(::std::iter::once(value)),
-            Err(err) => {
-                tracing::debug!("failed to encode if-modified-since value as header: {err}");
-            }
-        }
+        values.extend(::std::iter::once(HeaderValue::from(&self.0)));
     }
 }
 

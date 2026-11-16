@@ -7,7 +7,7 @@ use core::{
 use std::{
     io,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use parking_lot::Mutex;
@@ -17,6 +17,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::{Stream, StreamExt as _, stream, task::AtomicWaker},
 };
+use rama_http_types::utils::http_date::{MAX_HTTP_DATE_UNIX_SECS, format_http_date};
 use rama_utils::{
     byte_set::is_http_token, collections::smallvec::SmallVec, str::cmp_ignore_ascii_case,
 };
@@ -1014,13 +1015,13 @@ impl<'a> OptionsResponse<'a> {
         let mut max_connections_buffer = itoa::Buffer::new();
         let date = match self.date {
             Some(date) => {
-                let valid = date
+                let secs = date
                     .duration_since(UNIX_EPOCH)
-                    .is_ok_and(|duration| duration < Duration::from_secs(253_402_300_800));
-                if !valid {
-                    return Err(BuildError::from(EncodeError::InvalidInput));
-                }
-                Some(httpdate::fmt_http_date(date))
+                    .ok()
+                    .map(|since| since.as_secs())
+                    .filter(|&secs| secs <= MAX_HTTP_DATE_UNIX_SECS)
+                    .ok_or(BuildError::from(EncodeError::InvalidInput))?;
+                Some(format_http_date(secs))
             }
             None => None,
         };
@@ -1065,7 +1066,7 @@ impl<'a> OptionsResponse<'a> {
             )?);
         }
         if let Some(date) = date.as_ref() {
-            fields.push(Header::new(header::DATE, date.as_bytes())?);
+            fields.push(Header::new(header::DATE, date.as_slice())?);
         }
         if let Some(body_type) = self.opt_body_type {
             fields.push(Header::new(header::OPT_BODY_TYPE, body_type)?);
@@ -1228,6 +1229,8 @@ impl From<Response> for OutgoingResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::{
         codec::{HeaderSlot, RequestLine},
         proto::Method,
@@ -1251,7 +1254,8 @@ mod tests {
             .with_transfer_preview_all(true)
             .with_options_ttl(3600)
             .with_max_connections(64)
-            .with_date(httpdate::parse_http_date("Thu, 20 Aug 2026 12:00:00 GMT").unwrap())
+            // Thu, 20 Aug 2026 12:00:00 GMT
+            .with_date(UNIX_EPOCH + Duration::from_secs(1_787_227_200))
             .build()
             .unwrap();
         let mut slots = [HeaderSlot::EMPTY; 16];

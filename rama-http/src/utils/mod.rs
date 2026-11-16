@@ -1,5 +1,8 @@
 //! Utilities for HTTP.
 
+#[doc(inline)]
+pub use ::rama_http_types::utils::{http_date, structured_fields};
+
 mod upgrade;
 pub(crate) use upgrade::is_plain_connect;
 #[doc(inline)]
