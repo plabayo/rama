@@ -9,13 +9,12 @@
 #[non_exhaustive]
 pub struct EchServerObservation {
     pub outer: crate::client::ClientHello,
-    pub accepted: bool,
 }
 
 impl EchServerObservation {
     #[must_use]
-    pub fn new(outer: crate::client::ClientHello, accepted: bool) -> Self {
-        Self { outer, accepted }
+    pub fn new(outer: crate::client::ClientHello) -> Self {
+        Self { outer }
     }
 }
 

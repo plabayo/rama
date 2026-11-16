@@ -25,6 +25,10 @@ struct Applied(Option<OrderedProtocolCapture>);
 impl ConnectionProfileCompiler<ConnectRequest> for TestCompiler {
     type Compiled = Compiled;
 
+    fn ech_ready(&self, _input: &ConnectRequest) -> bool {
+        false
+    }
+
     fn compile(
         &self,
         _input: &ConnectRequest,
@@ -375,6 +379,10 @@ struct BindingCompiled {
 
 impl ConnectionProfileCompiler<ConnectRequest> for BindingCompiler {
     type Compiled = BindingCompiled;
+
+    fn ech_ready(&self, _input: &ConnectRequest) -> bool {
+        false
+    }
 
     fn compile(
         &self,

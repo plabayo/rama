@@ -19,7 +19,10 @@ use rama::{
         },
         tls::provider::{self, *},
     },
-    tls::{ProtocolVersion, client::NegotiatedTlsParameters},
+    tls::{
+        ProtocolVersion,
+        client::{ClientHello, NegotiatedTlsParameters},
+    },
 };
 
 pub struct Client {
@@ -301,6 +304,10 @@ impl provider::Session for Session {
             resumed: self.complete.then_some(false),
             algorithms: Default::default(),
         })
+    }
+
+    fn effective_client_hello(&self) -> Option<ClientHello> {
+        None
     }
 
     fn negotiated_alpn(&self) -> Option<&[u8]> {

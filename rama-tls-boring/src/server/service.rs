@@ -1,6 +1,6 @@
 use super::TlsAcceptorData;
 use super::acceptor_data::{ConnectionState, bind_connection, prepare_server_cert_issuer};
-use super::config::{BoringTlsAcceptorConfig, BoringTlsAuth};
+use super::config::{BoringServerEchKeys, BoringTlsAcceptorConfig, BoringTlsAuth};
 use crate::{TlsStream, type_conversion::peer_certificate_chain, types::SecureTransport};
 use parking_lot::Mutex;
 use rama_boring::ssl::{Ssl, SslContext, SslOptions, SslSessionCacheMode};
@@ -15,7 +15,7 @@ use rama_core::{
 use rama_net::{client::ConnectorTarget, extensions::StreamTransformed, tls::ApplicationProtocol};
 use rama_tls::{
     client::NegotiatedTlsParameters,
-    server::{CertificateIdentity, TlsServerConfig},
+    server::{CertificateIdentity, EchServerObservation, ServerEchAccepted, TlsServerConfig},
 };
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::sync::{Arc, OnceLock};
@@ -89,7 +89,7 @@ impl<S> TlsAcceptorService<S> {
             tls_config.require_alpn,
         )?;
         let context = builder.build().into_context();
-        let context = match extensions.get_ref::<super::BoringServerEchKeys>() {
+        let context = match extensions.get_ref::<BoringServerEchKeys>() {
             Some(provider) if shared => provider.0.bind_context(context)?,
             Some(provider) => {
                 // A connection override has only one handshake. Install its
@@ -148,12 +148,19 @@ where
             }
 
             let acceptor = self.connection_acceptor(stream.extensions(), &merged)?;
-            let target_identity = stream
-                .extensions()
-                .get_ref::<SecureTransport>()
-                .and_then(|t| t.client_hello())
-                .and_then(|c| c.ext_server_name().cloned())
-                .map(CertificateIdentity::from)
+            let ech = merged.contains::<BoringServerEchKeys>();
+            // With ECH a hello seen before the handshake is the wire outer: its
+            // SNI is the public name, never the identity the inner asks for.
+            let target_identity = (!ech)
+                .then(|| {
+                    stream
+                        .extensions()
+                        .get_ref::<SecureTransport>()
+                        .and_then(|t| t.client_hello())
+                        .and_then(|c| c.ext_server_name().cloned())
+                        .map(CertificateIdentity::from)
+                })
+                .flatten()
                 .or_else(|| {
                     stream
                         .extensions()
@@ -248,25 +255,21 @@ where
                 .map(SecureTransport::with_client_hello)
                 .unwrap_or_default();
 
-            let ech_accepted =
-                rama_tls::server::ServerEchAccepted::new(stream.ssl().ech_accepted());
+            let ech_accepted = stream.ssl().ech_accepted();
             let stream = TlsStream::new(stream);
-            if merged.contains::<super::BoringServerEchKeys>() {
-                stream.extensions().insert(ech_accepted);
+            if ech {
+                stream
+                    .extensions()
+                    .insert(ServerEchAccepted::new(ech_accepted));
             }
-            if ech_accepted.0
+            if ech_accepted
                 && let Some(outer) = stream
                     .extensions()
                     .get_ref::<SecureTransport>()
                     .and_then(SecureTransport::client_hello)
                     .cloned()
             {
-                stream
-                    .extensions()
-                    .insert(rama_tls::server::EchServerObservation::new(
-                        outer,
-                        ech_accepted.0,
-                    ));
+                stream.extensions().insert(EchServerObservation::new(outer));
             }
             stream.extensions().insert(secure_transport);
             stream.extensions().insert(negotiated_tls_params);

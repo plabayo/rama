@@ -8,7 +8,14 @@ use super::{CookieLayoutEvidence, SelectionError};
 #[cfg(test)]
 use crate::profile::format::canonical::CanonicalValue;
 #[cfg(feature = "tls")]
-use crate::profile::{analysis::profile::AnalyzedProfileScope, format::canonical::ValueId};
+use crate::profile::{
+    analysis::profile::AnalyzedProfileScope,
+    capture::{
+        joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
+        tls::{TlsCapture, TlsCaptureLimits, TlsCapturedExtensionValue},
+    },
+    format::canonical::ValueId,
+};
 use crate::profile::{
     analysis::{
         capture::{AnalyzedCaptureVariant, VariantValue},
@@ -106,10 +113,6 @@ impl RequestShapeCache {
     fn connection_mode(&self, analysis: &AnalyzedProfile, index: usize) -> ConnectionShape {
         #[cfg(feature = "tls")]
         {
-            use crate::profile::capture::{
-                joint::{CapturedSlotKind, JointCapture, JointCaptureLimits},
-                tls::{TlsCapture, TlsCaptureLimits, TlsCapturedExtensionValue},
-            };
             self.connection_modes
                 .get_or_init(|| {
                     analysis

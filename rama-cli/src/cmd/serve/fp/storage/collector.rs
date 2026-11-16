@@ -12,7 +12,10 @@ use rama::{
     },
     net::stream::SocketInfo,
     quic::proto::capture::QuicObservation,
-    tls::SecureTransport,
+    tls::{
+        SecureTransport,
+        server::{EchServerObservation, ServerEchAccepted},
+    },
     ua::{
         UserAgent,
         profile::{
@@ -307,11 +310,11 @@ pub(super) fn connection_capture(
         };
         let is_quic = version == Version::HTTP_3;
         if ext
-            .get_ref::<rama::tls::server::ServerEchAccepted>()
+            .get_ref::<ServerEchAccepted>()
             .is_some_and(|accepted| accepted.0)
         {
             let observation = ext
-                .get_ref::<rama::tls::server::EchServerObservation>()
+                .get_ref::<EchServerObservation>()
                 .ok_or(ProfileDataError::Incomplete("ECH outer ClientHello"))?;
             let outer = TlsCapture::capture(
                 ProfileCaptureCompleteness::from_complete(
@@ -337,7 +340,7 @@ pub(super) fn connection_capture(
                 // handshake completion. QUIC's reassembly flag describes only
                 // the wire outer, which can exceed its independent capture budget.
                 !is_quic
-                    || ext.contains::<rama::tls::server::ServerEchAccepted>()
+                    || ext.contains::<ServerEchAccepted>()
                     || quic.is_some_and(|observation| observation.completeness.client_hello),
             ),
             if is_quic {

@@ -41,6 +41,7 @@ use rama::{
         ExtensionId, SecureTransport,
         client::{ClientHello, ClientHelloExtension, ECHClientHello},
         fingerprint::{Ja3, Ja4, PeetPrint},
+        server::{EchServerObservation, ServerEchAccepted},
     },
     ua::{UserAgent, profile::model::http::Http2Settings},
 };
@@ -398,11 +399,11 @@ pub(super) async fn get_tls_display_info(
     extensions: &Extensions,
 ) -> Result<Option<TlsDisplayInfo>, BoxError> {
     let accepted = extensions
-        .get_ref::<rama::tls::server::ServerEchAccepted>()
+        .get_ref::<ServerEchAccepted>()
         .is_some_and(|value| value.0);
     let hello = if accepted {
         extensions
-            .get_ref::<rama::tls::server::EchServerObservation>()
+            .get_ref::<EchServerObservation>()
             .map(|value| &value.outer)
     } else {
         extensions
@@ -418,7 +419,7 @@ pub(super) async fn get_tls_inner_display_info(
     extensions: &Extensions,
 ) -> Result<Option<TlsDisplayInfo>, BoxError> {
     if !extensions
-        .get_ref::<rama::tls::server::ServerEchAccepted>()
+        .get_ref::<ServerEchAccepted>()
         .is_some_and(|value| value.0)
     {
         return Ok(None);

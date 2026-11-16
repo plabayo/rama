@@ -27,6 +27,9 @@ impl Session for FailedKeyUpdate {
     fn handshake_summary(&self) -> Option<crypto::NegotiatedTlsParameters> {
         None
     }
+    fn effective_client_hello(&self) -> Option<rama_tls::client::ClientHello> {
+        None
+    }
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         None
     }

@@ -11,6 +11,9 @@ use rama::{
 };
 use std::{path::Path, sync::Arc};
 
+#[cfg(unix)]
+use rama::telemetry::tracing;
+
 fn load(path: &Path) -> Result<Arc<EchServerKeys>, BoxError> {
     let file = std::fs::File::open(path).context("open ECH key file")?;
     EchServerKeys::from_json_reader(file, mib(1))
@@ -27,8 +30,6 @@ pub(crate) fn configure_server_ech_from_env(
     let provider = ReloadableEchServerKeys::new(load(&path)?);
     #[cfg(unix)]
     {
-        use rama::telemetry::tracing;
-
         let mut reload = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
             .context("register ECH key reload signal")?;
         let provider = provider.clone();

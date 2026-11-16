@@ -6,7 +6,8 @@ use sha2::{Digest as _, Sha256};
 
 #[cfg(feature = "tls")]
 use crate::profile::capture::tls::{
-    TlsCapture, TlsCaptureLimits, TlsCaptureTransport, structure::decode_tls_structure,
+    TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtensionValue,
+    structure::decode_tls_structure,
 };
 
 use crate::profile::{
@@ -486,7 +487,6 @@ fn validate_ech_pair(
     structural: bool,
     maximum: usize,
 ) -> Result<(), ProfileDataError> {
-    use crate::profile::capture::tls::TlsCapturedExtensionValue;
     let Some(outer) = joint
         .slots
         .iter()

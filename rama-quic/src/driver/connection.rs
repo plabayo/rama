@@ -3961,9 +3961,8 @@ impl State {
                                     .and_then(rama_tls::SecureTransport::client_hello)
                                     .cloned()
                             {
-                                extensions.insert(rama_tls::server::EchServerObservation::new(
-                                    outer, accepted,
-                                ));
+                                extensions
+                                    .insert(rama_tls::server::EchServerObservation::new(outer));
                             }
                             extensions.insert(rama_tls::SecureTransport::with_client_hello(inner));
                         }

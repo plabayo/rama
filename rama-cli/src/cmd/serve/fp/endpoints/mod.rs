@@ -8,7 +8,7 @@ use itertools::Itertools as _;
 use rama::{
     crypto::digest::sha256_slices,
     error::BoxError,
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     graceful::{Cause, scope_context},
     http::{
         BodyExtractExt, Response, StatusCode, Version,
@@ -30,6 +30,7 @@ use rama::{
         address::{Host, ip::geo::IpGeoInfo},
     },
     telemetry::tracing,
+    tls::server::ServerEchAccepted,
     ua::profile::model::{http::Http2Settings, js::JsProfileWebApis, ua::UserAgentSourceInfo},
 };
 use serde::{Deserialize, Serialize};
@@ -222,6 +223,28 @@ pub(super) struct ReportQuery {
     h3_probe: Option<serde::de::IgnoredAny>,
 }
 
+/// The ECH acceptance table, followed by the inner ClientHello's when ECH was accepted.
+async fn ech_tables(extensions: &Extensions) -> Result<Vec<Table>, ErrorResponse> {
+    let mut tables = Vec::new();
+    if let Some(accepted) = extensions.get_ref::<ServerEchAccepted>() {
+        tables.push(Table {
+            title: "Encrypted ClientHello".to_owned(),
+            rows: vec![("Accepted".to_owned(), accepted.0.to_string())],
+        });
+    }
+    if let Some(inner) = super::data::get_tls_inner_display_info(extensions)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?
+    {
+        let inner_tables: Vec<Table> = inner.into();
+        tables.extend(inner_tables.into_iter().map(|mut table| {
+            table.title = format!("ECH Inner — {}", table.title);
+            table
+        }));
+    }
+    Ok(tables)
+}
+
 pub(super) async fn get_report(
     StateParam(mut state): StateParam<State>,
     Query(query): Query<ReportQuery>,
@@ -233,13 +256,14 @@ pub(super) async fn get_report(
         state.storage = None;
     }
     let connection_only = query.connection_only == Some(1);
-    let ech_accepted = parts
-        .extensions
-        .get_ref::<rama::tls::server::ServerEchAccepted>()
-        .map_or(
-            "unknown",
-            |accepted| if accepted.0 { "true" } else { "false" },
-        );
+    let ech_accepted =
+        parts
+            .extensions
+            .get_ref::<ServerEchAccepted>()
+            .map_or(
+                "unknown",
+                |accepted| if accepted.0 { "true" } else { "false" },
+            );
     let ja4h = get_ja4h_info(&parts);
     let site_probes = (!connection_only)
         .then(|| site_probes(&state, &parts))
@@ -322,25 +346,7 @@ pub(super) async fn get_report(
         let mut tls_tables = tls_info.into();
         tables.append(&mut tls_tables);
     }
-    if let Some(accepted) = parts
-        .extensions
-        .get_ref::<rama::tls::server::ServerEchAccepted>()
-    {
-        tables.push(Table {
-            title: "Encrypted ClientHello".to_owned(),
-            rows: vec![("Accepted".to_owned(), accepted.0.to_string())],
-        });
-    }
-    if let Some(inner) = super::data::get_tls_inner_display_info(&parts.extensions)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?
-    {
-        let mut inner_tables: Vec<Table> = inner.into();
-        for table in &mut inner_tables {
-            table.title = format!("ECH Inner — {}", table.title);
-        }
-        tables.append(&mut inner_tables);
-    }
+    tables.extend(ech_tables(&parts.extensions).await?);
 
     if let Some(geo) = &geo {
         tables.extend(geo_tables(geo));
@@ -686,7 +692,7 @@ pub(super) async fn post_api_fetch_number(
             "tls_info": tls_info,
             "tls_inner_info": super::data::get_tls_inner_display_info(&parts.extensions).await
                 .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?,
-            "ech_accepted": parts.extensions.get_ref::<rama::tls::server::ServerEchAccepted>().map(|value| value.0),
+            "ech_accepted": parts.extensions.get_ref::<ServerEchAccepted>().map(|value| value.0),
             "quic": http_info.quic,
             "quic_connection": http_info.quic_connection,
             "http_info": json!({
@@ -744,7 +750,7 @@ pub(super) async fn post_api_xml_http_request_number(
             "tls_info": tls_info,
             "tls_inner_info": super::data::get_tls_inner_display_info(&parts.extensions).await
                 .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?,
-            "ech_accepted": parts.extensions.get_ref::<rama::tls::server::ServerEchAccepted>().map(|value| value.0),
+            "ech_accepted": parts.extensions.get_ref::<ServerEchAccepted>().map(|value| value.0),
             "quic": http_info.quic,
             "quic_connection": http_info.quic_connection,
             "http_info": json!({
@@ -846,25 +852,7 @@ pub(super) async fn form(
         let mut tls_tables = tls_info.into();
         tables.append(&mut tls_tables);
     }
-    if let Some(accepted) = parts
-        .extensions
-        .get_ref::<rama::tls::server::ServerEchAccepted>()
-    {
-        tables.push(Table {
-            title: "Encrypted ClientHello".to_owned(),
-            rows: vec![("Accepted".to_owned(), accepted.0.to_string())],
-        });
-    }
-    if let Some(inner) = super::data::get_tls_inner_display_info(&parts.extensions)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?
-    {
-        let mut inner_tables: Vec<Table> = inner.into();
-        for table in &mut inner_tables {
-            table.title = format!("ECH Inner — {}", table.title);
-        }
-        tables.append(&mut inner_tables);
-    }
+    tables.extend(ech_tables(&parts.extensions).await?);
 
     if let Some(geo) = &geo {
         tables.extend(geo_tables(geo));

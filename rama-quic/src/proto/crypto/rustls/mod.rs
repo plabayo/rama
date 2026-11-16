@@ -166,6 +166,10 @@ impl crypto::Session for TlsSession {
             .map(|group| u16::from(group.name()))
     }
 
+    fn effective_client_hello(&self) -> Option<rama_tls::client::ClientHello> {
+        None
+    }
+
     fn negotiated_alpn(&self) -> Option<&[u8]> {
         if self.got_handshake_data {
             self.inner.alpn_protocol()
