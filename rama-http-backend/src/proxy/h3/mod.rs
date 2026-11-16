@@ -44,7 +44,7 @@ use tokio::time::Instant;
 
 use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
 use crate::{
-    client::{MaxInformationalResponses, RefusedStreamBudget, SendAttempts},
+    client::{ResponseLimits, SendAttempts},
     h3::{clean_close, completed, drain, drained_within},
 };
 
@@ -314,12 +314,9 @@ where
             egress_config.early_requests = false;
         }
         // As for a byte-stream egress: a limit stamped on the transport wins over the config.
-        if let Some(max) = egress.extensions().get_ref::<MaxInformationalResponses>() {
-            egress_config.max_informational_responses = max.0;
-        }
-        if let Some(budget) = egress.extensions().get_ref::<RefusedStreamBudget>() {
-            egress_config.refused_stream_budget = budget.0;
-        }
+        ResponseLimits::UNSET
+            .resolve(None, egress.extensions())
+            .apply_h3(&mut egress_config);
         // QPACK state stays independent per hop; push is not relayed.
         if ingress_config.max_pushes != 0 || egress_config.max_pushes != 0 {
             tracing::debug!("HTTP/3 relay disables server push on both hops");

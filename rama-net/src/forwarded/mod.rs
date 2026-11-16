@@ -153,6 +153,15 @@ impl ForwardedSelectionPolicy {
         }
     }
 
+    /// Whether forwarding information received over the (ingress) connection of `extensions`
+    /// can be relied on under the policy installed in them, as it always can without one.
+    #[must_use]
+    pub fn installed_trusts_peer(extensions: &Extensions) -> bool {
+        extensions
+            .get_ref::<Self>()
+            .is_none_or(|policy| policy.trusts_peer(extensions))
+    }
+
     /// The element of `forwarded` describing the client, if any remains.
     ///
     /// The peer the chain was received from is not considered here, see
@@ -187,10 +196,7 @@ pub trait ForwardedClientExt: ExtensionsRef + private::Sealed {
     fn trusted_forwarded(&self) -> Option<&Forwarded> {
         let extensions = self.extensions();
         let forwarded = extensions.get_ref::<Forwarded>()?;
-        match extensions.get_ref::<ForwardedSelectionPolicy>() {
-            Some(policy) if !policy.trusts_peer(extensions) => None,
-            _ => Some(forwarded),
-        }
+        ForwardedSelectionPolicy::installed_trusts_peer(extensions).then_some(forwarded)
     }
 
     /// The element describing the client.
@@ -509,7 +515,11 @@ mod tests {
                     SocketAddress::new(peer.parse().unwrap(), 0),
                 ));
             }
-            assert_eq!(policy.trusts_peer(&extensions), trusted, "{peer:?}");
+            assert_eq!(
+                ForwardedSelectionPolicy::installed_trusts_peer(&extensions),
+                trusted,
+                "{peer:?}"
+            );
             assert_eq!(
                 extensions.trusted_forwarded().is_some(),
                 trusted,
@@ -522,9 +532,11 @@ mod tests {
             );
         }
 
-        // Without trusted proxies any peer is relied on, a missing one included.
+        // Without trusted proxies or any policy, every peer is relied on, a missing one included.
         let extensions = Extensions::new();
+        assert!(ForwardedSelectionPolicy::installed_trusts_peer(&extensions));
         extensions.insert(ForwardedSelectionPolicy::new());
+        assert!(ForwardedSelectionPolicy::installed_trusts_peer(&extensions));
         extensions.insert(chain(&["198.51.100.7"]));
         assert_eq!(
             extensions.forwarded_client_ip(),

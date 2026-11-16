@@ -23,6 +23,7 @@ use rama_http_types::{
 use rama_net::uri::Uri;
 use rama_quic::{Connection as QuicConnection, ConnectionError, RecvStream};
 use rama_quic_proto::{VarInt, coding::Codec as _};
+use rama_utils::rate::Rate;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::Notify,
@@ -220,7 +221,11 @@ async fn a_stream_refused_for_a_local_limit_is_charged_once() {
 #[tokio::test(start_paused = true)]
 async fn a_spent_refused_stream_budget_is_regained_over_time() {
     timeout(LIMIT, async {
-        let (pair, mut server) = raw_peer(Some(RateBudget::new(2, 1)), Config::default()).await;
+        let (pair, mut server) = raw_peer(
+            Some(RateBudget::rated(Rate::per_sec(1), 2)),
+            Config::default(),
+        )
+        .await;
         let start = Instant::now();
         for _ in 0..2 {
             let error = malformed_request(&pair, &mut server).await;
@@ -270,7 +275,7 @@ async fn drip_survived(budget: RateBudget, sent: u64) -> u64 {
 #[tokio::test(start_paused = true)]
 async fn only_a_ceiling_ends_a_steady_drip_below_the_rate() {
     timeout(Duration::from_mins(5), async {
-        let budget = RateBudget::new(2, 1);
+        let budget = RateBudget::rated(Rate::per_sec(1), 2);
         assert_eq!(drip_survived(budget, 12).await, 12);
         assert_eq!(drip_survived(budget.with_ceiling(5), 12).await, 5);
     })

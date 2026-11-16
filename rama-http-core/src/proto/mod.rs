@@ -5,6 +5,8 @@ use rama_http::io::upgrade;
 use rama_http_types::{HeaderMap, Method, Response, StatusCode, Version};
 use rama_net::uri::Uri;
 
+use rama_utils::rate::Rate;
+
 use self::rate_budget::RateBudget;
 
 pub(crate) mod h1;
@@ -26,7 +28,8 @@ pub(crate) const DEFAULT_MAX_INFORMATIONAL_RESPONSES: usize = 1024;
 /// Streams a connection refuses or resets for what its peer sent before it is closed, on
 /// HTTP/2 and HTTP/3: the numbers established stacks use to rate limit stream resets. A
 /// peer has to cause more than 33 a second, sustained after a burst of 1000.
-pub(crate) const DEFAULT_REFUSED_STREAM_BUDGET: RateBudget = RateBudget::new(1000, 33);
+pub(crate) const DEFAULT_REFUSED_STREAM_BUDGET: RateBudget =
+    RateBudget::rated(Rate::per_sec(33), 1000);
 
 /// What a connection closed for an exhausted refused stream budget tells its peer.
 pub(crate) const TOO_MANY_REFUSED_STREAMS: &str = "too_many_refused_streams";

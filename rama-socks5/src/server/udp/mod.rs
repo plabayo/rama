@@ -239,6 +239,8 @@ impl<B, I> UdpRelay<B, I> {
 
     generate_set_and_with! {
         /// Set the size of the buffer used to read south traffic.
+        ///
+        /// Datagrams larger than this buffer are dropped, never forwarded truncated.
         pub fn buffer_size_south(mut self, n: usize) -> Self {
             self.south_buffer_size = n;
             self
@@ -247,6 +249,8 @@ impl<B, I> UdpRelay<B, I> {
 
     generate_set_and_with! {
         /// Set the size of the buffer used to read north traffic.
+        ///
+        /// Datagrams larger than this buffer are dropped, never forwarded truncated.
         pub fn buffer_size_north(mut self, n: usize) -> Self {
             self.north_buffer_size = n;
             self
@@ -255,6 +259,8 @@ impl<B, I> UdpRelay<B, I> {
 
     generate_set_and_with! {
         /// Set the size of the buffer used to read both north and south traffic.
+        ///
+        /// Datagrams larger than this buffer are dropped, never forwarded truncated.
         pub fn buffer_size(mut self, n: usize) -> Self {
             self.north_buffer_size = n;
             self.south_buffer_size = n;

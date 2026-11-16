@@ -1,5 +1,6 @@
 mod spin;
 
+use crate::client::{MaxInformationalResponses, RefusedStreamBudget};
 use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,

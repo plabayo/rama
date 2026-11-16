@@ -23,11 +23,15 @@ use rama_udp::{
 };
 use std::{
     collections::VecDeque,
+    future::Future,
+    hash::Hash,
+    io,
     num::NonZeroUsize,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 use tokio::sync::Notify;
 
@@ -45,7 +49,7 @@ pub struct QuicMitmIngressConfig {
     pub max_paths_per_connection: NonZeroUsize,
     /// Release a newly attached path unless it is the validated current peer by this deadline.
     /// Probing an alternate path without selecting it beyond this deadline loses that path.
-    pub path_validation_timeout: std::time::Duration,
+    pub path_validation_timeout: Duration,
     /// `None` preserves each connection's first path's native capabilities. Supply a conservative profile
     /// explicitly when paths may use different transport providers. Weaker paths are refused.
     pub capabilities: Option<DatagramCapabilities>,
@@ -93,7 +97,7 @@ struct IdentityState<K> {
     stats: IdentityStats,
 }
 
-impl<K: Eq + std::hash::Hash> QuicMitmIngressByIdentity<K> {
+impl<K: Eq + Hash> QuicMitmIngressByIdentity<K> {
     pub fn new(scope: impl Into<WeakScope>, config: QuicMitmIngressByIdentityConfig) -> Self {
         Self {
             identities: Arc::new(Mutex::new(IdentityState {
@@ -132,6 +136,11 @@ impl<K: Eq + std::hash::Hash> QuicMitmIngressByIdentity<K> {
             let stats = state.stats;
             drop(state);
             self.observe("full", stats);
+            if stats.rejected.is_power_of_two() {
+                tracing::debug!(target: "rama_quic::migration",
+                    used = stats.identities, limit = stats.identity_limit,
+                    rejected = stats.rejected, "QUIC migration identity capacity exhausted");
+            }
             return None;
         }
 
@@ -158,11 +167,6 @@ impl<K: Eq + std::hash::Hash> QuicMitmIngressByIdentity<K> {
             used = stats.identities, limit = stats.identity_limit,
             high_water = stats.high_water, rejected = stats.rejected,
             reaped = stats.reaped, "QUIC migration identity cache");
-        if reason == "full" && stats.rejected.is_power_of_two() {
-            tracing::debug!(target: "rama_quic::migration",
-                used = stats.identities, limit = stats.identity_limit,
-                rejected = stats.rejected, "QUIC migration identity capacity exhausted");
-        }
         #[cfg(feature = "dial9")]
         self.telemetry.capacity(crate::dial9::CapacitySnapshot {
             resource: "policy_identities",
@@ -194,7 +198,7 @@ struct Shared {
     directory: EndpointRouteDirectory,
     unregistered: AtomicU64,
     paths: NonZeroUsize,
-    path_validation_timeout: std::time::Duration,
+    path_validation_timeout: Duration,
     capabilities: Option<DatagramCapabilities>,
 }
 
@@ -209,7 +213,7 @@ struct Group {
     paths: Mutex<VecDeque<SocketAddress>>,
     connection: Mutex<Option<crate::driver::WeakConnection>>,
     max_paths: usize,
-    path_validation_timeout: std::time::Duration,
+    path_validation_timeout: Duration,
     path_high_water: AtomicUsize,
     path_evictions: AtomicU64,
     #[cfg(feature = "dial9")]
@@ -249,7 +253,7 @@ impl QuicMitmIngress {
     /// into `connection`, so cancelling the caller cannot release them prematurely.
     pub async fn run_connection<O: Send + 'static>(
         &self,
-        connection: impl std::future::Future<Output = Result<O, BoxError>> + Send + 'static,
+        connection: impl Future<Output = Result<O, BoxError>> + Send + 'static,
     ) -> Result<O, BoxError> {
         let scope = self
             .shared
@@ -280,7 +284,7 @@ impl QuicMitmIngress {
         local: SocketAddress,
         capabilities: DatagramCapabilities,
         server: ServerConfig,
-    ) -> std::io::Result<Arc<Group>> {
+    ) -> io::Result<Arc<Group>> {
         // Each admitted connection owns its endpoint; only route registration is shared.
         let group = self.create_group(
             local,
@@ -297,7 +301,7 @@ impl QuicMitmIngress {
         local: SocketAddress,
         capabilities: DatagramCapabilities,
         server: ServerConfig,
-    ) -> std::io::Result<Arc<Group>> {
+    ) -> io::Result<Arc<Group>> {
         let (socket, sockets) = DatagramSocketGroup::new(
             local,
             DatagramSocketGroupConfig {
@@ -308,7 +312,7 @@ impl QuicMitmIngress {
         let endpoint = Endpoint::build(self.shared.scope.clone())
             .with_server_config(server)
             .with_datagram_socket(socket)
-            .map_err(std::io::Error::other)?;
+            .map_err(io::Error::other)?;
 
         endpoint.preserve_ingress_transport();
         let registration = self.shared.directory.register(&endpoint, local)?;
@@ -373,7 +377,7 @@ impl QuicMitmIngress {
             server.clone(),
         ) {
             Ok(group) => group,
-            Err(error) if error.kind() == std::io::ErrorKind::StorageFull => {
+            Err(error) if error.kind() == io::ErrorKind::StorageFull => {
                 // Another attempt claimed the final registration after the capacity snapshot.
                 return self.accept_unregistered(socket, server);
             }
@@ -429,23 +433,28 @@ impl Drop for Attempt {
 }
 
 impl Group {
+    /// The validated peer of this group's connection, once it is established and while it lives.
+    fn active_peer(&self) -> Option<SocketAddress> {
+        self.connection
+            .lock()
+            .as_ref()
+            .and_then(|connection| connection.remote_address())
+            .map(SocketAddress::from)
+    }
+
     fn attach<S: DatagramSocket>(&self, socket: S) -> Result<DatagramGroupAttachment<S>, BoxError> {
         let peer = socket.peer_addr()?.into_canonical_ip_addr();
         let mut paths = self.paths.lock();
         paths.retain(|peer| self.sockets.contains_path(*peer));
         if self.sockets.contains_path(peer) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
                 "QUIC path already registered",
             )
             .into());
         }
         let active = self
-            .connection
-            .lock()
-            .as_ref()
-            .and_then(|connection| connection.remote_address())
-            .map(SocketAddress::from)
+            .active_peer()
             // Until the handshake establishes a connection, protect its original path.
             .or_else(|| paths.front().copied());
         if self.sockets.path_count() >= self.max_paths {
@@ -510,13 +519,7 @@ impl Group {
             () = &mut stopped => return Ok(()),
             () = tokio::time::sleep(self.path_validation_timeout) => {},
         }
-        let active = self
-            .connection
-            .lock()
-            .as_ref()
-            .and_then(|connection| connection.remote_address())
-            .map(SocketAddress::from);
-        if active != Some(peer) {
+        if self.active_peer() != Some(peer) {
             self.observe_paths("validation_timeout");
             return Ok(());
         }
@@ -598,7 +601,7 @@ mod tests {
             QuicMitmIngressConfig {
                 max_registered_connections: n(1),
                 max_paths_per_connection: n(2),
-                path_validation_timeout: std::time::Duration::from_secs(5),
+                path_validation_timeout: Duration::from_secs(5),
                 capabilities: None,
             },
         );
@@ -643,7 +646,7 @@ mod tests {
             QuicMitmIngressConfig {
                 max_registered_connections: n(1),
                 max_paths_per_connection: n(2),
-                path_validation_timeout: std::time::Duration::from_secs(5),
+                path_validation_timeout: Duration::from_secs(5),
                 capabilities: None,
             },
         );
@@ -686,7 +689,7 @@ mod tests {
             QuicMitmIngressConfig {
                 max_registered_connections: n(1),
                 max_paths_per_connection: n(1),
-                path_validation_timeout: std::time::Duration::from_secs(5),
+                path_validation_timeout: Duration::from_secs(5),
                 capabilities: None,
             },
         );
@@ -697,13 +700,13 @@ mod tests {
             RejectService::<(), _>::new(NoQuicRejectError),
         )
         .with_router(ingress)
-        .with_peek_timeout(std::time::Duration::from_millis(50))
+        .with_peek_timeout(Duration::from_millis(50))
         .with_fallback(service_fn(
             |_: PrefixedDatagramSocket<MemoryDatagramSocket>| async { Ok::<_, BoxError>(()) },
         ));
         let started = tokio::time::Instant::now();
         policy.serve(socket).await.unwrap();
-        assert_eq!(started.elapsed(), std::time::Duration::from_millis(50));
+        assert_eq!(started.elapsed(), Duration::from_millis(50));
     }
 
     #[tokio::test]
@@ -713,7 +716,7 @@ mod tests {
             QuicMitmIngressConfig {
                 max_registered_connections: n(1),
                 max_paths_per_connection: n(2),
-                path_validation_timeout: std::time::Duration::from_secs(5),
+                path_validation_timeout: Duration::from_secs(5),
                 capabilities: None,
             },
         );
@@ -763,7 +766,7 @@ mod tests {
             QuicMitmIngressConfig {
                 max_registered_connections: n(1),
                 max_paths_per_connection: n(2),
-                path_validation_timeout: std::time::Duration::from_secs(5),
+                path_validation_timeout: Duration::from_secs(5),
                 capabilities: None,
             },
         );
@@ -799,7 +802,7 @@ mod tests {
             send.finish().unwrap();
             let (_send, mut recv) = server.accept_bi().await.unwrap();
             assert_eq!(recv.read_to_end(32).await.unwrap(), b"move");
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::time::timeout(Duration::from_secs(2), async {
                 while server.downgrade().remote_address().unwrap().port() != 1001 {
                     tokio::task::yield_now().await;
                 }
@@ -814,7 +817,7 @@ mod tests {
             .await
             .unwrap();
         if retire {
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::time::timeout(Duration::from_secs(2), async {
                 while attempt
                     .group
                     .as_ref()
@@ -831,15 +834,14 @@ mod tests {
         let (mut send, _receive) = client.open_bi().await.unwrap();
         send.write_all(b"still here").await.unwrap();
         send.finish().unwrap();
-        let (_send, mut receive) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), server.accept_bi())
-                .await
-                .unwrap()
-                .unwrap();
+        let (_send, mut receive) = tokio::time::timeout(Duration::from_secs(2), server.accept_bi())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(receive.read_to_end(32).await.unwrap(), b"still here");
         assert_eq!(attempt.group.as_ref().unwrap().sockets.path_count(), 1);
         client.close(VarInt::from_u32(0), b"done");
-        tokio::time::timeout(std::time::Duration::from_secs(2), server.closed())
+        tokio::time::timeout(Duration::from_secs(2), server.closed())
             .await
             .unwrap();
         drop(replacement);
@@ -852,7 +854,7 @@ mod tests {
             QuicMitmIngressConfig {
                 max_registered_connections: n(1),
                 max_paths_per_connection: n(2),
-                path_validation_timeout: std::time::Duration::from_secs(5),
+                path_validation_timeout: Duration::from_secs(5),
                 capabilities: None,
             },
         );
@@ -880,7 +882,7 @@ mod tests {
                 .rebind_datagram_socket(replacement)
                 .unwrap_err()
                 .kind(),
-            std::io::ErrorKind::Unsupported
+            io::ErrorKind::Unsupported
         );
         assert_eq!(group.sockets.path_count(), 2);
     }
@@ -892,7 +894,7 @@ mod tests {
             QuicMitmIngressConfig {
                 max_registered_connections: n(1),
                 max_paths_per_connection: n(2),
-                path_validation_timeout: std::time::Duration::from_millis(50),
+                path_validation_timeout: Duration::from_millis(50),
                 capabilities: None,
             },
         );
@@ -920,7 +922,7 @@ mod tests {
                 ingress: QuicMitmIngressConfig {
                     max_registered_connections: n(1),
                     max_paths_per_connection: n(2),
-                    path_validation_timeout: std::time::Duration::from_secs(5),
+                    path_validation_timeout: Duration::from_secs(5),
                     capabilities: None,
                 },
             },

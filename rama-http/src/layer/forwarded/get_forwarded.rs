@@ -332,10 +332,9 @@ where
             policy.install(req.extensions(), self.keep_existing_selection_policy);
         }
         let extensions = req.extensions();
-        let trusted = extensions
-            .get_ref::<ForwardedSelectionPolicy>()
-            .is_none_or(|policy| policy.trusts_peer(extensions));
-        if trusted && let Some(header) = req.headers().typed_get::<H>() {
+        if ForwardedSelectionPolicy::installed_trusts_peer(extensions)
+            && let Some(header) = req.headers().typed_get::<H>()
+        {
             rama_net::forwarded::Forwarded::record(extensions, header);
         }
 

@@ -10,6 +10,7 @@ use rama::{
         core::{server::conn::http2, service::RamaHttpService},
     },
     service::service_fn,
+    utils::rate::Rate,
 };
 use rama_core::futures::StreamExt;
 use std::{convert::Infallible, future::pending};
@@ -384,11 +385,11 @@ async fn server_drip_survived(budget: Option<RateBudget>, sent: u32) -> u32 {
 }
 
 /// A server's budget regains its tokens with time, so a peer erring below the rate is only
-/// ended by a ceiling on the lifetime total, a zero rate, or nothing at all.
+/// ended by a ceiling on the lifetime total, a lifetime budget, or nothing at all.
 #[tokio::test(start_paused = true)]
 async fn server_budget_rate_ceiling_and_absence_decide_the_fate_of_a_steady_drip() {
     timeout(Duration::from_mins(5), async {
-        let budget = RateBudget::new(2, 1);
+        let budget = RateBudget::rated(Rate::per_sec(1), 2);
         assert_eq!(server_drip_survived(Some(budget), 20).await, 20);
         assert_eq!(
             server_drip_survived(Some(budget.with_ceiling(6)), 20).await,

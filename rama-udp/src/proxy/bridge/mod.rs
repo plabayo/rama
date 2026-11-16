@@ -209,18 +209,29 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let request = self.connect_request(input.ingress())?;
-        let target = request.authority.clone();
-        let EstablishedClientConnection { conn: egress, .. } = self
-            .connector
-            .connect(request)
-            .await
-            .context("connect datagram egress")
-            .context_field("target", target)?;
+        let egress = connect_egress(&self.connector, request).await?;
         self.inner
             .serve(input.bridge(egress))
             .await
             .into_box_error()
     }
+}
+
+/// Connect the egress of an association, naming its target on failure.
+async fn connect_egress<C>(
+    connector: &C,
+    request: ConnectRequest,
+) -> Result<C::Connection, BoxError>
+where
+    C: ConnectorService<ConnectRequest>,
+{
+    let target = request.authority.clone();
+    let EstablishedClientConnection { conn, .. } = connector
+        .connect(request)
+        .await
+        .context("connect datagram egress")
+        .context_field("target", target)?;
+    Ok(conn)
 }
 
 impl<S, C> DatagramToProxyBridge<S, C> {
