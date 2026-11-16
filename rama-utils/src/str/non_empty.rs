@@ -31,6 +31,14 @@ impl AsRef<str> for NonEmptyStr {
     }
 }
 
+// Hash, Eq and Ord of the inner `ArcStr` are those of its `str`, as `Borrow` requires.
+impl core::borrow::Borrow<str> for NonEmptyStr {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 impl Deref for NonEmptyStr {
     type Target = str;
 
@@ -207,6 +215,7 @@ impl<'de> serde::Deserialize<'de> for NonEmptyStr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ahash::HashSet;
 
     fn assert_try_into_err(src: impl TryInto<NonEmptyStr>) {
         _ = src.try_into().unwrap_err();
@@ -246,6 +255,19 @@ mod tests {
             reason = "exercise &String→TryInto path"
         )]
         assert_try_into_ok(&String::from("c"));
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn hash_set_finds_entry_by_str() {
+        let set: HashSet<NonEmptyStr> = ["a", "bc"]
+            .into_iter()
+            .map(|s| s.try_into().unwrap())
+            .collect();
+        assert!(set.contains("a"));
+        assert!(set.contains("bc"));
+        assert!(!set.contains("b"));
+        assert!(!set.contains(""));
     }
 
     #[test]

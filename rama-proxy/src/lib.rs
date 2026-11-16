@@ -303,7 +303,7 @@ pub use proxydb::{LiveUpdateProxyDB, LiveUpdateProxyDBSetter, proxy_db_updater};
 #[doc(inline)]
 pub use proxydb::{
     MemoryProxyDB, MemoryProxyDBInsertError, MemoryProxyDBInsertErrorKind, MemoryProxyDBQueryError,
-    MemoryProxyDBQueryErrorKind,
+    MemoryProxyDBQueryErrorKind, ProxyRuntimeColumn,
 };
 
 #[cfg(feature = "csv")]

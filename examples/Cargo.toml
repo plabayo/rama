@@ -194,6 +194,11 @@ path = "src/http_pooled_client.rs"
 required-features = ["http-full"]
 
 [[bin]]
+name = "http_proxy_db_exclude_broken"
+path = "src/http_proxy_db_exclude_broken.rs"
+required-features = ["http-full", "proxy-full"]
+
+[[bin]]
 name = "http_rate_limit"
 path = "src/http_rate_limit.rs"
 required-features = ["http-full"]
