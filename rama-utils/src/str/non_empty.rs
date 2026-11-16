@@ -215,6 +215,7 @@ impl<'de> serde::Deserialize<'de> for NonEmptyStr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(loom))]
     use ahash::HashSet;
 
     fn assert_try_into_err(src: impl TryInto<NonEmptyStr>) {
