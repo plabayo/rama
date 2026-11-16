@@ -20,7 +20,7 @@ pub use context::ProxyContext;
 
 mod internal;
 #[doc(inline)]
-pub use internal::Proxy;
+pub use internal::{Proxy, ProxyProtocols};
 
 #[cfg(feature = "csv")]
 mod csv;
@@ -35,6 +35,10 @@ pub(super) mod layer;
 mod str;
 #[doc(inline)]
 pub use str::StringFilter;
+
+mod proxy_type;
+#[doc(inline)]
+pub use proxy_type::ProxyType;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 #[extension(tags(proxy))]
@@ -82,9 +86,6 @@ impl From<NonEmptyStr> for ProxyID {
 /// candidates. The database defines their preference order; [`MemoryProxyDB`]
 /// randomizes its complete matching set.
 ///
-/// Filters can be combined to make combinations with special meaning.
-/// E.g. `datacenter:true, residential:true` is essentially an ISP proxy.
-///
 /// ## Usage
 ///
 /// - Use `HeaderConfigLayer` (`rama-http`) to have this proxy filter be given by the http request headers,
@@ -113,14 +114,9 @@ pub struct ProxyFilter {
     /// The city of the proxy.
     pub city: Option<Vec<StringFilter>>,
 
-    /// Set explicitly to `true` to select a datacenter proxy.
-    pub datacenter: Option<bool>,
-
-    /// Set explicitly to `true` to select a residential proxy.
-    pub residential: Option<bool>,
-
-    /// Set explicitly to `true` to select a mobile proxy.
-    pub mobile: Option<bool>,
+    /// The types of proxy to select from.
+    #[serde(rename = "type")]
+    pub kind: Option<Vec<ProxyType>>,
 
     /// The mobile carrier desired.
     pub carrier: Option<Vec<StringFilter>>,
@@ -475,24 +471,20 @@ impl ProxyDB for Proxy {
 #[cfg(test)]
 mod trait_tests {
     use super::*;
+    use crate::ProxyProtocols;
     use rama_core::combinators::Either;
-    use rama_net::{address::ProxyAddress, transport::TransportProtocol};
+    use rama_net::address::ProxyProtocol;
+    use rama_net::transport::TransportProtocol;
     use rama_utils::str::non_empty_str;
-    use std::{str::FromStr, sync::Arc};
+    use std::sync::Arc;
 
     fn proxy() -> Proxy {
         Proxy {
             id: non_empty_str!("proxy"),
-            address: ProxyAddress::from_str("proxy.example:8080").unwrap(),
-            tcp: true,
-            udp: false,
-            http: true,
-            https: false,
-            socks5: false,
-            socks5h: false,
-            datacenter: true,
-            residential: false,
-            mobile: false,
+            address: "proxy.example:8080".parse().unwrap(),
+            credential: None,
+            protocols: ProxyProtocols::from([ProxyProtocol::HTTP]),
+            kind: ProxyType::Datacenter,
             pool_id: None,
             continent: None,
             country: None,
@@ -713,14 +705,8 @@ mod memdb {
                 query.asn(asn);
             }
 
-            if let Some(value) = filter.datacenter {
-                query.datacenter(value);
-            }
-            if let Some(value) = filter.residential {
-                query.residential(value);
-            }
-            if let Some(value) = filter.mobile {
-                query.mobile(value);
+            for kind in filter.kind.into_iter().flatten() {
+                query.kind(kind);
             }
 
             // Which proxy kinds carry the transport is known per proxy: see `supports_transport`.
@@ -1025,10 +1011,10 @@ mod memdb {
     #[cfg(feature = "csv")]
     mod tests {
         use super::*;
+        use crate::ProxyProtocols;
         use itertools::Itertools;
-        use rama_net::address::ProxyAddress;
+        use rama_net::address::ProxyProtocol;
         use rama_utils::str::non_empty_str;
-        use std::str::FromStr;
 
         const RAW_CSV_DATA: &str = include_str!("./test_proxydb_rows.csv");
 
@@ -1081,9 +1067,7 @@ mod memdb {
                 pool_id: Some(vec![StringFilter::new("poolF")]),
                 country: Some(vec![StringFilter::new("JP")]),
                 city: Some(vec![StringFilter::new("Yokohama")]),
-                datacenter: Some(true),
-                residential: Some(false),
-                mobile: Some(true),
+                kind: Some(vec![ProxyType::Mobile]),
                 carrier: Some(vec![StringFilter::new("Verizon")]),
                 ..Default::default()
             };
@@ -1141,17 +1125,17 @@ mod memdb {
                 },
                 ProxyFilter {
                     id: Some(non_empty_str!("3031533634")),
-                    datacenter: Some(false),
+                    kind: Some(vec![ProxyType::Datacenter]),
                     ..Default::default()
                 },
                 ProxyFilter {
                     id: Some(non_empty_str!("3031533634")),
-                    residential: Some(true),
+                    kind: Some(vec![ProxyType::Residential]),
                     ..Default::default()
                 },
                 ProxyFilter {
                     id: Some(non_empty_str!("3031533634")),
-                    mobile: Some(false),
+                    kind: Some(vec![ProxyType::Isp]),
                     ..Default::default()
                 },
                 ProxyFilter {
@@ -1213,8 +1197,12 @@ mod memdb {
                 if found_ids.contains(&proxy.id) {
                     continue;
                 }
-                assert!(proxy.udp);
-                assert!(proxy.socks5);
+                assert!(
+                    proxy.protocols.iter().any(|protocol| matches!(
+                        protocol,
+                        ProxyProtocol::Socks5 { udp: true, .. }
+                    ))
+                );
                 found_ids.push(proxy.id);
             }
             assert_eq!(found_ids.len(), 40);
@@ -1235,13 +1223,13 @@ mod memdb {
                 if found_ids.contains(&proxy.id) {
                     continue;
                 }
-                assert!(proxy.tcp);
+                assert!(proxy.supports_transport(TransportProtocol::Tcp));
                 found_ids.push(proxy.id);
             }
-            assert_eq!(found_ids.len(), 50);
+            assert_eq!(found_ids.len(), 64);
             assert_eq!(
                 found_ids.iter().sorted().join(","),
-                r#"1125300915,1259341971,1264821985,129108927,1316455915,1425588737,1571861931,1810781137,1836040682,1844412609,1885107293,2021561518,2079461709,2107229589,2141152822,2438596154,2497865606,2521901221,2551759475,2560727338,2593294918,2798907087,2854473221,2880295577,2909724448,2912880381,292096733,2951529660,3031533634,3187902553,3269411602,3269465574,339020035,3481200027,3498810974,3503691556,362091157,3679054656,371209663,3861736957,39048766,3976711563,4062553709,49590203,56402588,724884866,738626121,767809962,846528631,906390012"#,
+                r#"1125300915,1259341971,1264821985,129108927,1316455915,1425588737,153202126,1571861931,1684342915,1742367441,1810781137,1836040682,1844412609,1885107293,1916851007,2021561518,20647117,2079461709,2107229589,2141152822,2261612122,2438596154,2497865606,2521901221,2551759475,2560727338,2593294918,2596743625,2745456299,2798907087,2854473221,2880295577,2909724448,2912880381,292096733,2950022859,2951529660,3031533634,3187902553,3269411602,3269465574,3269921904,339020035,3481200027,3498810974,3503691556,362091157,3679054656,371209663,3732488183,3836943127,3861736957,39048766,3951672504,3976711563,4062553709,4187178960,49590203,56402588,724884866,738626121,767809962,846528631,906390012"#,
             );
         }
 
@@ -1259,11 +1247,11 @@ mod memdb {
                 .sorted()
                 .collect::<Vec<_>>();
 
-            assert_eq!(ids.len(), 50);
+            assert_eq!(ids.len(), 64);
             assert_eq!(ids.iter().unique().count(), ids.len());
             assert_eq!(
                 ids.join(","),
-                r#"1125300915,1259341971,1264821985,129108927,1316455915,1425588737,1571861931,1810781137,1836040682,1844412609,1885107293,2021561518,2079461709,2107229589,2141152822,2438596154,2497865606,2521901221,2551759475,2560727338,2593294918,2798907087,2854473221,2880295577,2909724448,2912880381,292096733,2951529660,3031533634,3187902553,3269411602,3269465574,339020035,3481200027,3498810974,3503691556,362091157,3679054656,371209663,3861736957,39048766,3976711563,4062553709,49590203,56402588,724884866,738626121,767809962,846528631,906390012"#,
+                r#"1125300915,1259341971,1264821985,129108927,1316455915,1425588737,153202126,1571861931,1684342915,1742367441,1810781137,1836040682,1844412609,1885107293,1916851007,2021561518,20647117,2079461709,2107229589,2141152822,2261612122,2438596154,2497865606,2521901221,2551759475,2560727338,2593294918,2596743625,2745456299,2798907087,2854473221,2880295577,2909724448,2912880381,292096733,2950022859,2951529660,3031533634,3187902553,3269411602,3269465574,3269921904,339020035,3481200027,3498810974,3503691556,362091157,3679054656,371209663,3732488183,3836943127,3861736957,39048766,3951672504,3976711563,4062553709,4187178960,49590203,56402588,724884866,738626121,767809962,846528631,906390012"#,
             );
         }
 
@@ -1282,7 +1270,11 @@ mod memdb {
 
             assert_eq!(proxies.len(), 5);
             assert_eq!(proxies.iter().map(|proxy| &proxy.id).unique().count(), 5);
-            assert!(proxies.iter().all(|proxy| proxy.tcp));
+            assert!(
+                proxies
+                    .iter()
+                    .all(|proxy| proxy.supports_transport(TransportProtocol::Tcp))
+            );
         }
 
         #[tokio::test]
@@ -1293,13 +1285,13 @@ mod memdb {
                 .get_proxies_if(
                     h2_proxy_context(),
                     ProxyFilter::default(),
-                    |proxy: &Proxy| proxy.mobile,
+                    |proxy: &Proxy| proxy.kind == ProxyType::Mobile,
                     None,
                 )
                 .await
                 .unwrap();
 
-            assert!(proxies.iter().all(|proxy| proxy.mobile));
+            assert!(proxies.iter().all(|proxy| proxy.kind == ProxyType::Mobile));
             assert!(proxies.len() < 50);
         }
 
@@ -1321,10 +1313,10 @@ mod memdb {
                 }
                 found_ids.push(proxy.id);
             }
-            assert_eq!(found_ids.len(), 5);
+            assert_eq!(found_ids.len(), 7);
             assert_eq!(
                 found_ids.iter().sorted().join(","),
-                r#"2141152822,2593294918,2912880381,371209663,767809962"#,
+                r#"1742367441,2141152822,2593294918,2596743625,2912880381,371209663,767809962"#,
             );
         }
 
@@ -1345,10 +1337,10 @@ mod memdb {
                 }
                 found_ids.push(proxy.id);
             }
-            assert_eq!(found_ids.len(), 9);
+            assert_eq!(found_ids.len(), 12);
             assert_eq!(
                 found_ids.iter().sorted().join(","),
-                r#"2141152822,2521901221,2560727338,2593294918,2912880381,292096733,371209663,39048766,767809962"#,
+                r#"1742367441,2141152822,2521901221,2560727338,2593294918,2596743625,2912880381,292096733,371209663,39048766,3951672504,767809962"#,
             );
         }
 
@@ -1369,10 +1361,10 @@ mod memdb {
                 }
                 found_ids.push(proxy.id);
             }
-            assert_eq!(found_ids.len(), 4);
+            assert_eq!(found_ids.len(), 6);
             assert_eq!(
                 found_ids.iter().sorted().join(","),
-                r#"2141152822,2912880381,292096733,3481200027"#,
+                r#"2141152822,2596743625,2912880381,292096733,3481200027,3951672504"#,
             );
         }
 
@@ -1382,8 +1374,7 @@ mod memdb {
             let ctx = h3_proxy_context();
             let filter = ProxyFilter {
                 country: Some(vec!["BE".into()]),
-                mobile: Some(true),
-                residential: Some(true),
+                kind: Some(vec![ProxyType::Mobile]),
                 ..Default::default()
             };
             for _ in 0..50 {
@@ -1405,32 +1396,42 @@ mod memdb {
                 "129108927",
                 "1316455915",
                 "1425588737",
+                "153202126",
                 "1571861931",
+                "1684342915",
+                "1742367441",
                 "1810781137",
                 "1836040682",
                 "1844412609",
                 "1885107293",
+                "1916851007",
                 "2021561518",
+                "20647117",
                 "2079461709",
                 "2107229589",
                 "2141152822",
+                "2261612122",
                 "2438596154",
                 "2497865606",
                 "2521901221",
                 "2551759475",
                 "2560727338",
                 "2593294918",
+                "2596743625",
+                "2745456299",
                 "2798907087",
                 "2854473221",
                 "2880295577",
                 "2909724448",
                 "2912880381",
                 "292096733",
+                "2950022859",
                 "2951529660",
                 "3031533634",
                 "3187902553",
                 "3269411602",
                 "3269465574",
+                "3269921904",
                 "339020035",
                 "3481200027",
                 "3498810974",
@@ -1438,10 +1439,14 @@ mod memdb {
                 "362091157",
                 "3679054656",
                 "371209663",
+                "3732488183",
+                "3836943127",
                 "3861736957",
                 "39048766",
+                "3951672504",
                 "3976711563",
                 "4062553709",
+                "4187178960",
                 "49590203",
                 "56402588",
                 "724884866",
@@ -1480,16 +1485,21 @@ mod memdb {
         async fn test_db_proxy_filter_any_use_filter_property() {
             let db = MemoryProxyDB::try_from_iter([Proxy {
                 id: non_empty_str!("1"),
-                address: ProxyAddress::from_str("example.com:80").unwrap(),
-                tcp: true,
-                udp: true,
-                http: true,
-                https: true,
-                socks5: true,
-                socks5h: true,
-                datacenter: true,
-                residential: true,
-                mobile: true,
+                address: "example.com:80".parse().unwrap(),
+                credential: None,
+                protocols: ProxyProtocols::from([
+                    ProxyProtocol::Socks5 {
+                        remote_dns: false,
+                        udp: true,
+                    },
+                    ProxyProtocol::Socks5 {
+                        remote_dns: true,
+                        udp: true,
+                    },
+                    ProxyProtocol::HTTP,
+                    ProxyProtocol::HTTPS,
+                ]),
+                kind: ProxyType::Mobile,
                 pool_id: Some("*".into()),
                 continent: Some("*".into()),
                 country: Some("*".into()),
@@ -1556,16 +1566,21 @@ mod memdb {
         async fn test_db_proxy_filter_any_only_matches_any_value() {
             let db = MemoryProxyDB::try_from_iter([Proxy {
                 id: non_empty_str!("1"),
-                address: ProxyAddress::from_str("example.com:80").unwrap(),
-                tcp: true,
-                udp: true,
-                http: true,
-                https: true,
-                socks5: true,
-                socks5h: true,
-                datacenter: true,
-                residential: true,
-                mobile: true,
+                address: "example.com:80".parse().unwrap(),
+                credential: None,
+                protocols: ProxyProtocols::from([
+                    ProxyProtocol::Socks5 {
+                        remote_dns: false,
+                        udp: true,
+                    },
+                    ProxyProtocol::Socks5 {
+                        remote_dns: true,
+                        udp: true,
+                    },
+                    ProxyProtocol::HTTP,
+                    ProxyProtocol::HTTPS,
+                ]),
+                kind: ProxyType::Mobile,
                 pool_id: Some("hq".into()),
                 continent: Some("americas".into()),
                 country: Some("US".into()),
@@ -1637,16 +1652,21 @@ mod memdb {
             let db = MemoryProxyDB::try_from_iter([
                 Proxy {
                     id: non_empty_str!("1"),
-                    address: ProxyAddress::from_str("example.com:80").unwrap(),
-                    tcp: true,
-                    udp: true,
-                    http: true,
-                    https: true,
-                    socks5: true,
-                    socks5h: true,
-                    datacenter: true,
-                    residential: true,
-                    mobile: true,
+                    address: "example.com:80".parse().unwrap(),
+                    credential: None,
+                    protocols: ProxyProtocols::from([
+                        ProxyProtocol::Socks5 {
+                            remote_dns: false,
+                            udp: true,
+                        },
+                        ProxyProtocol::Socks5 {
+                            remote_dns: true,
+                            udp: true,
+                        },
+                        ProxyProtocol::HTTP,
+                        ProxyProtocol::HTTPS,
+                    ]),
+                    kind: ProxyType::Mobile,
                     pool_id: Some("a".into()),
                     continent: Some("americas".into()),
                     country: Some("US".into()),
@@ -1657,16 +1677,21 @@ mod memdb {
                 },
                 Proxy {
                     id: non_empty_str!("2"),
-                    address: ProxyAddress::from_str("example.com:80").unwrap(),
-                    tcp: true,
-                    udp: true,
-                    http: true,
-                    https: true,
-                    socks5: true,
-                    socks5h: true,
-                    datacenter: true,
-                    residential: true,
-                    mobile: true,
+                    address: "example.com:80".parse().unwrap(),
+                    credential: None,
+                    protocols: ProxyProtocols::from([
+                        ProxyProtocol::Socks5 {
+                            remote_dns: false,
+                            udp: true,
+                        },
+                        ProxyProtocol::Socks5 {
+                            remote_dns: true,
+                            udp: true,
+                        },
+                        ProxyProtocol::HTTP,
+                        ProxyProtocol::HTTPS,
+                    ]),
+                    kind: ProxyType::Mobile,
                     pool_id: Some("b".into()),
                     continent: Some("americas".into()),
                     country: Some("US".into()),
@@ -1677,16 +1702,21 @@ mod memdb {
                 },
                 Proxy {
                     id: non_empty_str!("3"),
-                    address: ProxyAddress::from_str("example.com:80").unwrap(),
-                    tcp: true,
-                    udp: true,
-                    http: true,
-                    https: true,
-                    socks5: true,
-                    socks5h: true,
-                    datacenter: true,
-                    residential: true,
-                    mobile: true,
+                    address: "example.com:80".parse().unwrap(),
+                    credential: None,
+                    protocols: ProxyProtocols::from([
+                        ProxyProtocol::Socks5 {
+                            remote_dns: false,
+                            udp: true,
+                        },
+                        ProxyProtocol::Socks5 {
+                            remote_dns: true,
+                            udp: true,
+                        },
+                        ProxyProtocol::HTTP,
+                        ProxyProtocol::HTTPS,
+                    ]),
+                    kind: ProxyType::Mobile,
                     pool_id: Some("b".into()),
                     continent: Some("americas".into()),
                     country: Some("US".into()),
@@ -1697,16 +1727,21 @@ mod memdb {
                 },
                 Proxy {
                     id: non_empty_str!("4"),
-                    address: ProxyAddress::from_str("example.com:80").unwrap(),
-                    tcp: true,
-                    udp: true,
-                    http: true,
-                    https: true,
-                    socks5: true,
-                    socks5h: true,
-                    datacenter: true,
-                    residential: true,
-                    mobile: true,
+                    address: "example.com:80".parse().unwrap(),
+                    credential: None,
+                    protocols: ProxyProtocols::from([
+                        ProxyProtocol::Socks5 {
+                            remote_dns: false,
+                            udp: true,
+                        },
+                        ProxyProtocol::Socks5 {
+                            remote_dns: true,
+                            udp: true,
+                        },
+                        ProxyProtocol::HTTP,
+                        ProxyProtocol::HTTPS,
+                    ]),
+                    kind: ProxyType::Mobile,
                     pool_id: Some("c".into()),
                     continent: Some("americas".into()),
                     country: Some("US".into()),

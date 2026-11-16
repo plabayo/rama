@@ -316,7 +316,10 @@ pub(super) async fn read(
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
-fn parse_proxy_endpoint(value: &str, default_protocol: Protocol) -> Result<ProxyAddress, BoxError> {
+fn parse_proxy_endpoint(
+    value: &str,
+    default_protocol: &Protocol,
+) -> Result<ProxyAddress, BoxError> {
     let mut value = trim_ascii_quotes_non_empty(value)
         .ok_or_else(|| BoxError::from_static_str("system proxy endpoint is empty"))?
         .to_owned();
@@ -330,12 +333,7 @@ fn parse_proxy_endpoint(value: &str, default_protocol: Protocol) -> Result<Proxy
     if !value.contains("://") {
         value = format!("{}://{value}", default_protocol.as_str());
     }
-    let mut proxy =
-        ProxyAddress::try_from(value.as_str()).context("parse system proxy endpoint")?;
-    if proxy.protocol.is_none() {
-        proxy.protocol = Some(default_protocol);
-    }
-    Ok(proxy)
+    ProxyAddress::try_from(value.as_str()).context("parse system proxy endpoint")
 }
 
 #[cfg(any(

@@ -1,4 +1,4 @@
-use super::ProxyFilter;
+use super::{ProxyFilter, ProxyType};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     error::{BoxError, ErrorExt},
@@ -130,34 +130,26 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
                 }
             }
         } else {
-            // allow bool-keys to be negated
-            let (key, bval) = if let Some(key) = label.strip_prefix('!') {
-                (key, false)
-            } else {
-                (label, true)
-            };
-
-            match_ignore_ascii_case_str! {
-                match(key) {
-                    "datacenter" => self.proxy_filter.datacenter = Some(bval),
-                    "residential" => self.proxy_filter.residential = Some(bval),
-                    "mobile" => self.proxy_filter.mobile = Some(bval),
-                    "id" => self.key = Some(ProxyFilterKey::Id),
-                    "pool" => self.key = Some(ProxyFilterKey::Pool),
-                    "continent" => self.key = Some(ProxyFilterKey::Continent),
-                    "country" => self.key = Some(ProxyFilterKey::Country),
-                    "state" => self.key = Some(ProxyFilterKey::State),
-                    "city" => self.key = Some(ProxyFilterKey::City),
-                    "carrier" => self.key = Some(ProxyFilterKey::Carrier),
-                    "asn" => self.key = Some(ProxyFilterKey::Asn),
-                    _ => return UsernameLabelState::Ignored,
+            let key = match_ignore_ascii_case_str! {
+                match(label) {
+                    "id" => ProxyFilterKey::Id,
+                    "pool" => ProxyFilterKey::Pool,
+                    "continent" => ProxyFilterKey::Continent,
+                    "country" => ProxyFilterKey::Country,
+                    "state" => ProxyFilterKey::State,
+                    "city" => ProxyFilterKey::City,
+                    "carrier" => ProxyFilterKey::Carrier,
+                    "asn" => ProxyFilterKey::Asn,
+                    _ => {
+                        let Ok(kind) = label.parse::<ProxyType>() else {
+                            return UsernameLabelState::Ignored;
+                        };
+                        self.proxy_filter.kind.get_or_insert_default().push(kind);
+                        return UsernameLabelState::Used;
+                    }
                 }
-            }
-
-            if !bval && self.key.take().is_some() {
-                // negation only possible for standalone labels
-                return UsernameLabelState::Ignored;
-            }
+            };
+            self.key = Some(key);
         }
 
         UsernameLabelState::Used
@@ -222,27 +214,9 @@ impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for ProxyFilter {
             }
         }
 
-        if let Some(datacenter) = &self.datacenter {
-            if *datacenter {
-                composer.write_label("datacenter")?;
-            } else {
-                composer.write_label("!datacenter")?;
-            }
-        }
-
-        if let Some(residential) = &self.residential {
-            if *residential {
-                composer.write_label("residential")?;
-            } else {
-                composer.write_label("!residential")?;
-            }
-        }
-
-        if let Some(mobile) = &self.mobile {
-            if *mobile {
-                composer.write_label("mobile")?;
-            } else {
-                composer.write_label("!mobile")?;
+        if let Some(kinds) = &self.kind {
+            for kind in kinds {
+                composer.write_label(kind.as_str())?;
             }
         }
 
@@ -280,15 +254,7 @@ mod tests {
                 "john-datacenter",
                 String::from("john"),
                 Some(ProxyFilter {
-                    datacenter: Some(true),
-                    ..Default::default()
-                }),
-            ),
-            (
-                "john-!datacenter",
-                String::from("john"),
-                Some(ProxyFilter {
-                    datacenter: Some(false),
+                    kind: Some(vec![ProxyType::Datacenter]),
                     ..Default::default()
                 }),
             ),
@@ -297,7 +263,7 @@ mod tests {
                 String::from("john"),
                 Some(ProxyFilter {
                     country: Some(vec!["us".into()]),
-                    datacenter: Some(true),
+                    kind: Some(vec![ProxyType::Datacenter]),
                     ..Default::default()
                 }),
             ),
@@ -306,7 +272,7 @@ mod tests {
                 String::from("john"),
                 Some(ProxyFilter {
                     city: Some(vec!["tokyo".into()]),
-                    residential: Some(true),
+                    kind: Some(vec![ProxyType::Residential]),
                     ..Default::default()
                 }),
             ),
@@ -316,7 +282,7 @@ mod tests {
                 Some(ProxyFilter {
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    datacenter: Some(true),
+                    kind: Some(vec![ProxyType::Datacenter]),
                     ..Default::default()
                 }),
             ),
@@ -326,8 +292,7 @@ mod tests {
                 Some(ProxyFilter {
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
+                    kind: Some(vec![ProxyType::Datacenter, ProxyType::Residential]),
                     ..Default::default()
                 }),
             ),
@@ -337,34 +302,11 @@ mod tests {
                 Some(ProxyFilter {
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
-                    mobile: Some(true),
-                    ..Default::default()
-                }),
-            ),
-            (
-                "john-country-us-datacenter-pool-1-residential-!mobile",
-                String::from("john"),
-                Some(ProxyFilter {
-                    pool_id: Some(vec![StringFilter::from("1")]),
-                    country: Some(vec![StringFilter::from("us")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
-                    mobile: Some(false),
-                    ..Default::default()
-                }),
-            ),
-            (
-                "john-country-us-city-california-datacenter-pool-1-!residential-mobile",
-                String::from("john"),
-                Some(ProxyFilter {
-                    pool_id: Some(vec![StringFilter::from("1")]),
-                    country: Some(vec![StringFilter::from("us")]),
-                    city: Some(vec![StringFilter::from("california")]),
-                    datacenter: Some(true),
-                    residential: Some(false),
-                    mobile: Some(true),
+                    kind: Some(vec![
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                        ProxyType::Mobile,
+                    ]),
                     ..Default::default()
                 }),
             ),
@@ -375,9 +317,11 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
-                    mobile: Some(true),
+                    kind: Some(vec![
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                        ProxyType::Mobile,
+                    ]),
                     ..Default::default()
                 }),
             ),
@@ -388,9 +332,11 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
-                    mobile: Some(true),
+                    kind: Some(vec![
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                        ProxyType::Mobile,
+                    ]),
                     carrier: Some(vec![StringFilter::from("bar")]),
                     ..Default::default()
                 }),
@@ -402,22 +348,11 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
-                    mobile: Some(true),
-                    ..Default::default()
-                }),
-            ),
-            (
-                "john-country-us-!datacenter-pool-1-residential-mobile-id-1-country-uk",
-                String::from("john"),
-                Some(ProxyFilter {
-                    id: Some(non_empty_str!("1")),
-                    pool_id: Some(vec![StringFilter::from("1")]),
-                    country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    datacenter: Some(false),
-                    residential: Some(true),
-                    mobile: Some(true),
+                    kind: Some(vec![
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                        ProxyType::Mobile,
+                    ]),
                     ..Default::default()
                 }),
             ),
@@ -428,22 +363,11 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
-                    mobile: Some(true),
-                    ..Default::default()
-                }),
-            ),
-            (
-                "john-country-us-datacenter-pool-1-!residential-mobile-id-1-country-uk-pool-2",
-                String::from("john"),
-                Some(ProxyFilter {
-                    id: Some(non_empty_str!("1")),
-                    pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
-                    country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    datacenter: Some(true),
-                    residential: Some(false),
-                    mobile: Some(true),
+                    kind: Some(vec![
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                        ProxyType::Mobile,
+                    ]),
                     ..Default::default()
                 }),
             ),
@@ -454,9 +378,12 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
-                    mobile: Some(true),
+                    kind: Some(vec![
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                        ProxyType::Mobile,
+                        ProxyType::Datacenter,
+                    ]),
                     ..Default::default()
                 }),
             ),
@@ -467,9 +394,13 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
-                    mobile: Some(true),
+                    kind: Some(vec![
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                        ProxyType::Mobile,
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                    ]),
                     ..Default::default()
                 }),
             ),
@@ -480,9 +411,14 @@ mod tests {
                     id: Some(non_empty_str!("1")),
                     pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                     country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    datacenter: Some(true),
-                    residential: Some(true),
-                    mobile: Some(true),
+                    kind: Some(vec![
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                        ProxyType::Mobile,
+                        ProxyType::Datacenter,
+                        ProxyType::Residential,
+                        ProxyType::Mobile,
+                    ]),
                     ..Default::default()
                 }),
             ),
@@ -506,19 +442,6 @@ mod tests {
                         StringFilter::from("europe"),
                         StringFilter::from("asia"),
                     ]),
-                    ..Default::default()
-                }),
-            ),
-            (
-                "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2-!datacenter-!residential-!mobile",
-                String::from("john"),
-                Some(ProxyFilter {
-                    id: Some(non_empty_str!("1")),
-                    pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
-                    country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                    datacenter: Some(false),
-                    residential: Some(false),
-                    mobile: Some(false),
                     ..Default::default()
                 }),
             ),
@@ -549,6 +472,7 @@ mod tests {
             "",
             "-",
             "john-country-us-datacenter-pool",
+            "john-!datacenter",
             "john-foo",
             "john-foo-country",
             "john-country",
@@ -597,18 +521,14 @@ mod tests {
                 id: Some(non_empty_str!("1")),
                 pool_id: Some(vec![StringFilter::from("1")]),
                 country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                datacenter: Some(false),
-                residential: Some(true),
-                mobile: Some(true),
+                kind: Some(vec![ProxyType::Residential, ProxyType::Mobile]),
                 ..Default::default()
             },
             ProxyFilter {
                 id: Some(non_empty_str!("1")),
                 pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
                 country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
-                datacenter: Some(false),
-                residential: Some(false),
-                mobile: Some(false),
+                kind: Some(vec![ProxyType::Isp]),
                 ..Default::default()
             },
             ProxyFilter {
@@ -626,9 +546,7 @@ mod tests {
                     StringFilter::from("bruxelles"),
                     StringFilter::from("gent"),
                 ]),
-                datacenter: Some(false),
-                residential: Some(true),
-                mobile: Some(true),
+                kind: Some(vec![ProxyType::Residential, ProxyType::Mobile]),
                 carrier: Some(vec![
                     StringFilter::from("at&t"),
                     StringFilter::from("orange"),

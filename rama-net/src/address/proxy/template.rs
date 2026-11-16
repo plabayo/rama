@@ -123,6 +123,33 @@ impl ProxyPathTemplate {
         })
     }
 
+    /// The RFC 9298 default CONNECT-UDP template, parsed once.
+    #[must_use]
+    pub fn connect_udp_default() -> Self {
+        #[cfg(feature = "std")]
+        {
+            static DEFAULT: std::sync::LazyLock<ProxyPathTemplate> =
+                std::sync::LazyLock::new(|| {
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "a constant of this crate, covered by its own test"
+                    )]
+                    ProxyPathTemplate::try_new(ProxyPathTemplate::CONNECT_UDP_DEFAULT)
+                        .expect("the RFC 9298 default template is a valid template")
+                });
+            DEFAULT.clone()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            #[expect(
+                clippy::expect_used,
+                reason = "a constant of this crate, covered by its own test"
+            )]
+            Self::try_new(Self::CONNECT_UDP_DEFAULT)
+                .expect("the RFC 9298 default template is a valid template")
+        }
+    }
+
     /// Whether this is the RFC 9298 default CONNECT-UDP template.
     #[must_use]
     pub fn is_connect_udp_default(&self) -> bool {
@@ -205,3 +232,13 @@ impl fmt::Display for ProxyPathTemplate {
         f.write_str(self.as_str())
     }
 }
+
+impl core::str::FromStr for ProxyPathTemplate {
+    type Err = ProxyPathTemplateError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_new(s)
+    }
+}
+
+rama_utils::macros::serde_str::impl_serde_str!(as_str ProxyPathTemplate);

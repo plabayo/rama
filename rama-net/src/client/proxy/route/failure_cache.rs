@@ -21,7 +21,7 @@ use crate::client::{
 use crate::{
     AuthorityInputExt, ConnectorTargetInputExt, ConnectorTransportProtocolInputExt, Protocol,
     ProtocolInputExt,
-    address::HostWithPort,
+    address::{HostWithPort, ProxyProtocol},
     http::{TargetHttpVersion, Version},
     transport::TransportProtocol,
     user::ProxyCredential,
@@ -107,7 +107,7 @@ impl ProxyRouteFailureCacheConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FailureCacheKey {
-    protocol: Option<Protocol>,
+    protocol: ProxyProtocol,
     proxy: HostWithPort,
     basic_username: Option<String>,
     bearer_credential: bool,

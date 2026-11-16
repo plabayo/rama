@@ -19,7 +19,6 @@ pub use routes::{
 use rama_core::extensions::{Extension, Extensions};
 
 use crate::{
-    Protocol,
     address::{Host, HostWithPort, ProxyAddress},
     std::vec::Vec,
 };
@@ -80,7 +79,7 @@ impl ProxyRoute {
     #[must_use]
     pub fn addresses_proxy(&self, target: &HostWithPort) -> bool {
         self.proxy_address().is_some_and(|proxy| {
-            proxy.protocol.as_ref().is_some_and(Protocol::is_masque)
+            proxy.protocol.supports_connect_udp()
                 && proxy.address.port == target.port
                 && same_host(&proxy.address.host, &target.host)
         })
@@ -156,7 +155,7 @@ impl EstablishedProxyRoute {
     /// proxy, or a MASQUE proxy receiving its own requests ([`ProxyRoute::addresses_proxy`]).
     #[must_use]
     pub fn is_http_forward(&self) -> bool {
-        matches!(self, Self::Forward(proxy) if proxy.protocol.as_ref().is_none_or(|protocol| protocol.is_http() || protocol.is_masque()))
+        matches!(self, Self::Forward(proxy) if proxy.protocol.is_http())
     }
 }
 
@@ -301,6 +300,7 @@ impl<'a> IntoIterator for &'a ProxyRoutes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address::ProxyProtocol;
     use rama_core::extensions::NoConnectionTransfer;
 
     #[derive(Debug)]
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn only_a_masque_proxy_is_addressed_by_requests_for_its_own_authority() {
-        let masque = ProxyRoute::Proxy("masque://proxy.example:443".parse().unwrap());
+        let masque = ProxyRoute::Proxy("h3+udp://proxy.example:443".parse().unwrap());
         for (target, addressed) in [
             ("proxy.example:443", true),
             ("PROXY.example:443", true),
@@ -331,10 +331,10 @@ mod tests {
             let target = HostWithPort::try_from(target).unwrap();
             assert_eq!(masque.addresses_proxy(&target), addressed, "{target}");
         }
-        let mapped = ProxyRoute::Proxy("masque://127.0.0.1:443".parse().unwrap());
+        let mapped = ProxyRoute::Proxy("h3+udp://127.0.0.1:443".parse().unwrap());
         let target = HostWithPort::try_from("[::ffff:127.0.0.1]:443").unwrap();
         assert!(mapped.addresses_proxy(&target));
-        let mapped_proxy = ProxyRoute::Proxy("masque://[::ffff:127.0.0.1]:443".parse().unwrap());
+        let mapped_proxy = ProxyRoute::Proxy("h3+udp://[::ffff:127.0.0.1]:443".parse().unwrap());
         assert!(mapped_proxy.addresses_proxy(&HostWithPort::try_from("127.0.0.1:443").unwrap()));
         // A name is never its address: resolving is the connector's.
         assert!(!mapped.addresses_proxy(&HostWithPort::try_from("localhost:443").unwrap()));
@@ -354,14 +354,22 @@ mod tests {
     fn established_forward_route_requires_an_http_proxy_protocol() {
         assert!(!EstablishedProxyRoute::Direct.is_http_forward());
         for (protocol, forwards) in [
-            (None, true),
-            (Some(crate::Protocol::HTTP), true),
-            (Some(crate::Protocol::HTTPS), true),
-            (Some(crate::Protocol::MASQUE), true),
-            (Some(crate::Protocol::SOCKS5), false),
-            (Some(crate::Protocol::SOCKS5H), false),
-            (Some(crate::Protocol::WS), false),
-            (Some(crate::Protocol::from_static("custom")), false),
+            (ProxyProtocol::HTTP, true),
+            (ProxyProtocol::HTTPS, true),
+            (
+                "h3+udp://p.example"
+                    .parse::<ProxyAddress>()
+                    .unwrap()
+                    .protocol,
+                true,
+            ),
+            (ProxyProtocol::SOCKS5, false),
+            (ProxyProtocol::SOCKS5H, false),
+            (ProxyProtocol::Other(crate::Protocol::WS), false),
+            (
+                ProxyProtocol::Other(crate::Protocol::from_static("custom")),
+                false,
+            ),
         ] {
             let proxy = ProxyAddress {
                 protocol,
