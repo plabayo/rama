@@ -96,6 +96,8 @@ fn only_explicit_report_and_api_flows_prepare_observations() {
         (Method::GET, "/landing?rama-fp-site=token", true),
         (Method::GET, "/report?h3_probe=1", false),
         (Method::GET, "/report?other=1&h3_probe", false),
+        (Method::GET, "/report?h3%5Fprobe=1", false),
+        (Method::GET, "/report?h3_probe=&h3_probe=1", false),
         (Method::GET, "/report?other=h3_probe", true),
         (Method::GET, "/consent", false),
         (Method::GET, "/assets/script.js", false),

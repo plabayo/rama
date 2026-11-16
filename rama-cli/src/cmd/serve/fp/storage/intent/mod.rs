@@ -96,13 +96,14 @@ impl Drop for PreparationTimer {
     }
 }
 
-pub(in super::super) fn is_protocol_probe(uri: &Uri) -> bool {
-    uri.query().is_some_and(|query| {
-        query
-            .as_encoded_str()
-            .split('&')
-            .any(|pair| pair.split('=').next() == Some("h3_probe"))
-    })
+fn is_protocol_probe(uri: &Uri) -> bool {
+    #[derive(serde::Deserialize)]
+    struct ProbeQuery {
+        h3_probe: Option<serde::de::IgnoredAny>,
+    }
+
+    uri.query_params::<ProbeQuery>()
+        .is_ok_and(|query| query.h3_probe.is_some())
 }
 
 /// Whether the request is a prefetch or prerender: not the navigator's own navigation.

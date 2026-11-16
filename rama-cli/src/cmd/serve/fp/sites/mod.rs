@@ -29,10 +29,7 @@ use rama::{
     },
     net::{Protocol, address::Domain},
 };
-use serde::Serialize;
-
-/// Query parameter holding a site token.
-pub(super) const SITE_TOKEN_PARAM: &str = "rama-fp-site";
+use serde::{Deserialize, Serialize};
 
 /// Long enough for a slow device journey, short enough to be useless when leaked.
 const TOKEN_LIFETIME: Duration = Duration::from_mins(15);
@@ -238,13 +235,14 @@ impl SiteTokens {
 
     /// The grant of the request's site token, if it has a valid one.
     pub(super) fn grant<B>(&self, req: &Request<B>, now: SystemTime) -> Option<SiteGrant> {
-        let query = req.uri().query()?;
-        query
-            .as_encoded_str()
-            .split('&')
-            .filter_map(|pair| pair.split_once('='))
-            .find(|(name, _)| *name == SITE_TOKEN_PARAM)
-            .and_then(|(_, token)| self.verify(token, now))
+        #[derive(Deserialize)]
+        struct SiteQuery<'a> {
+            #[serde(rename = "rama-fp-site", default, borrow)]
+            token: std::borrow::Cow<'a, str>,
+        }
+
+        let query = req.uri().query_params::<SiteQuery<'_>>().ok()?;
+        self.verify(&query.token, now)
     }
 }
 

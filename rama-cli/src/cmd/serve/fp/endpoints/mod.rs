@@ -20,7 +20,7 @@ use rama::{
         protocols::html::*,
         request::Parts,
         service::web::{
-            extract::{Body, Path, State as StateParam},
+            extract::{Body, Path, Query, State as StateParam},
             response::{self, AppendHeaders, ErrorResponse, IntoResponse, Json},
         },
         ws::handshake::server::ServerWebSocket,
@@ -215,23 +215,24 @@ fn consent_body() -> impl IntoHtml {
     )
 }
 
+#[derive(Debug, Deserialize)]
+#[non_exhaustive]
+pub(super) struct ReportQuery {
+    connection_only: Option<u8>,
+    h3_probe: Option<serde::de::IgnoredAny>,
+}
+
 pub(super) async fn get_report(
     StateParam(mut state): StateParam<State>,
+    Query(query): Query<ReportQuery>,
     parts: Parts,
 ) -> Result<Response, ErrorResponse> {
     // Script navigation is a protocol probe and a prefetch or prerender is
     // speculative: neither is the user-activated navigation sample.
-    if super::storage::is_protocol_probe(&parts.uri)
-        || super::storage::is_speculative(&parts.headers)
-    {
+    if query.h3_probe.is_some() || super::storage::is_speculative(&parts.headers) {
         state.storage = None;
     }
-    let connection_only = parts.uri.query().is_some_and(|query| {
-        query
-            .as_encoded_str()
-            .split('&')
-            .any(|pair| pair == "connection_only=1")
-    });
+    let connection_only = query.connection_only == Some(1);
     let ech_accepted = parts
         .extensions
         .get_ref::<rama::tls::server::ServerEchAccepted>()
@@ -1415,6 +1416,12 @@ mod tests {
             ("/report", StatusCode::OK),
             ("/report?h3_probe=1", StatusCode::OK),
             ("/report?other=1&h3_probe=1", StatusCode::OK),
+            ("/report?h3%5Fprobe", StatusCode::OK),
+            ("/report?connection_only=invalid", StatusCode::BAD_REQUEST),
+            (
+                "/report?connection_only=1&connection_only=0",
+                StatusCode::BAD_REQUEST,
+            ),
         ] {
             let response = service
                 .serve(
@@ -1446,11 +1453,19 @@ mod tests {
             .unwrap(),
         })
         .with_get("/report", get_report);
-        for (host, path, advertised) in [
-            ("fp.example.org", "/report", true),
-            ("fp.ss.example.org", "/report", false),
-            ("fp.xss.example.com", "/report", false),
-            ("fp.example.org", "/report?connection_only=1", false),
+        for (host, path, advertised, scripts) in [
+            ("fp.example.org", "/report", true, true),
+            ("fp.ss.example.org", "/report", false, true),
+            ("fp.xss.example.com", "/report", false, true),
+            ("fp.example.org", "/report?connection_only=1", false, false),
+            (
+                "fp.example.org",
+                "/report?connection%5Fonly=%31",
+                false,
+                false,
+            ),
+            ("fp.example.org", "/report?connection_only=0", true, true),
+            ("fp.example.org", "/report?h3_probe", true, true),
         ] {
             let response = service
                 .serve(
@@ -1464,7 +1479,7 @@ mod tests {
                 .unwrap();
             let html = response.into_body().collect().await.unwrap().to_bytes();
             let html = std::str::from_utf8(&html).unwrap();
-            assert_eq!(html.contains("/assets/script.js"), path == "/report");
+            assert_eq!(html.contains("/assets/script.js"), scripts, "{path}");
             assert!(html.contains(r#"name="rama-ech-accepted""#));
             assert_eq!(
                 html.contains(r#"name="rama-fp-sites""#),
