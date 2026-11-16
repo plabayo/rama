@@ -11,7 +11,11 @@ use crate::client::{
 
 use rama_core::error::BoxErrorExt as _;
 
-use rama_core::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
+use rama_core::{
+    ServiceInput,
+    extensions::{ExtensionsRef, NoConnectionTransfer},
+    service::service_fn,
+};
 
 use rama_utils::reactive::ChangeSignal;
 

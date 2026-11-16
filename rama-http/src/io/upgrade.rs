@@ -228,10 +228,7 @@ impl Upgraded {
         extensions.insert(StreamTransformed {
             by: "rama-http::Upgraded",
         });
-        // The upgraded stream aborts as the io it wraps; a fork hides the io's own store.
-        if let Some(abort) = io.extensions().self_get_arc::<AbortIo>() {
-            extensions.insert_arc(abort);
-        }
+        AbortIo::front_same_io(io.extensions(), &extensions);
         Self {
             extensions,
             io: Rewind::new_buffered(Box::new(io), read_buf),

@@ -15,6 +15,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::address::ip::IntoCanonicalIpAddr as _;
+use rama_utils::time::deadline_after;
 use std::{
     future::Future,
     pin::Pin,
@@ -272,7 +273,7 @@ impl DatagramForwardService {
                         result = &mut failure, if !failure_observed => {
                             failure_observed = true;
                             if result.is_ok() {
-                                outage = Some(Instant::now() + recovery.config.unavailable_timeout);
+                                outage = Some(deadline_after(Instant::now(), recovery.config.unavailable_timeout));
                             }
                         }
                         result = &mut forwarding => return result,

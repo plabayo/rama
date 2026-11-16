@@ -54,7 +54,7 @@ impl EchRequirement {
 ///
 /// Acceptance does not replace server authentication, which is reported separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
-#[extension(tags(tls))]
+#[extension(tags(tls), scope(connection))]
 pub struct TlsEchAccepted(pub bool);
 
 /// Resolve caller policy and endpoint discovery facts after final TLS/profile

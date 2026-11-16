@@ -2124,7 +2124,7 @@ where
         let connect = slot.connect.take();
         // The establishing request owns the first reservation before concurrent
         // checkouts can see this connection in storage.
-        let admission = match conn.extensions().self_get_ref::<ConnectionAdmission>() {
+        let admission = match conn.extensions().get_ref::<ConnectionAdmission>() {
             Some(provider) => match provider.acquire(input).await {
                 Ok(admission) => Some(admission),
                 Err(error) => {
@@ -2157,10 +2157,7 @@ where
                 .extensions()
                 .get_arc_or_insert(|| Arc::new(ConnectionHealthWatcher::default())),
             unusable_told: AtomicBool::new(false),
-            admission: conn
-                .extensions()
-                .self_get_ref::<ConnectionAdmission>()
-                .cloned(),
+            admission: conn.extensions().get_ref::<ConnectionAdmission>().cloned(),
             conn,
             id,
             lane: Mutex::new(None),

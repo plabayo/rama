@@ -1239,7 +1239,8 @@ mod tests {
 
     use super::*;
 
-    use rama_core::{ServiceInput, graceful::attach_scope};
+    use crate::stream::NestedConnection;
+    use rama_core::{ServiceInput, extensions::NoConnectionTransfer, graceful::attach_scope};
 
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex},
@@ -2219,6 +2220,19 @@ mod tests {
         .await
         .expect("the relayed data was never flushed");
         bridge.abort();
+    }
+
+    /// A connection nested on a stream is reset through that stream.
+    #[tokio::test]
+    async fn a_failure_resets_a_nested_connection_on_the_other_side() {
+        let (left, left_counts) = side(ReadEnd::Fail(std::io::ErrorKind::ConnectionReset), true);
+        let (right, right_counts) = side(ReadEnd::Pend, true);
+        let right = NestedConnection::new(right, &NoConnectionTransfer);
+        _ = IoForwardService::default()
+            .serve(BridgeIo(left, right))
+            .await;
+        assert_eq!(left_counts.get(), (0, 1));
+        assert_eq!(right_counts.get(), (0, 1));
     }
 
     /// RFC 9113 §8.5, RFC 9114 §4.4: a failed side is reflected as a reset of both sides,

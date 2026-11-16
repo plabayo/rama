@@ -416,6 +416,18 @@ async fn ingress_close_ends_recovery_during_an_egress_outage() {
 }
 
 #[tokio::test]
+async fn an_unbounded_outage_timeout_still_recovers() {
+    let mut recovery = settings(DatagramRecoverySignal::new());
+    recovery.config.unavailable_timeout = Duration::MAX;
+    let mut h = Harness::new(recovery).await;
+    let (_, dummy) = pair(8999);
+    drop(std::mem::replace(&mut h.origin, dummy));
+    h.replace(8100).await;
+    h.exchange(b"recovered").await;
+    assert!(!h.task.is_finished());
+}
+
+#[tokio::test]
 async fn egress_failure_during_preparation_uses_that_preparation() {
     let mut h = Harness::new(settings(DatagramRecoverySignal::new())).await;
     h.request().await;

@@ -7,7 +7,7 @@ use rama_core::{
     Service,
     error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef},
-    io::Io,
+    io::{AbortIo, Io},
     telemetry::tracing,
 };
 use rama_http::{
@@ -448,6 +448,7 @@ where
         let tunnel_extensions = conn
             .extensions()
             .fork_nested_connection(&self.nested_connection_transfer);
+        AbortIo::front_same_io(conn.extensions(), &tunnel_extensions);
         conn.set_extensions(tunnel_extensions);
 
         let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn, proxy_info);
@@ -821,7 +822,7 @@ mod tests {
     use std::{
         convert::Infallible,
         net::{IpAddr, SocketAddr},
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
         time::Duration,
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -2242,6 +2243,52 @@ mod tests {
             .expect("proxy CONNECT handshake succeeds");
 
         assert_eq!(conn.extensions().get_ref::<ProxyLegFact>(), None);
+    }
+
+    #[tokio::test]
+    async fn the_connect_tunnel_aborts_the_upgraded_transport() {
+        let http_server =
+            HttpServer::auto(WeakScope::detached()).service(service_fn(async |_req: Request| {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+
+        let aborted = Arc::new(AtomicBool::new(false));
+        let proxy_connector = (
+            HttpProxyConnectorLayer::required(),
+            MapOutputLayer::new({
+                let aborted = aborted.clone();
+                move |out: EstablishedClientConnection<MockSocket, Request>| {
+                    let aborted = aborted.clone();
+                    out.conn.extensions().insert(AbortIo::new(move || {
+                        aborted.store(true, Ordering::Release);
+                    }));
+                    out
+                }
+            }),
+        )
+            .into_layer(MockConnectorService::new(move || http_server.clone()));
+
+        let req = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+            template: None,
+        }));
+
+        let EstablishedClientConnection { conn, .. } = proxy_connector
+            .serve(req)
+            .await
+            .expect("proxy CONNECT handshake succeeds");
+
+        conn.extensions()
+            .self_get_arc::<AbortIo>()
+            .expect("the tunnel fronts the upgraded transport")
+            .abort();
+        assert!(aborted.load(Ordering::Acquire));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::extensions::Extension;
+use crate::extensions::{Extension, Extensions};
 
 /// Ends an I/O abortively: its peer sees a reset (a TCP RST, an HTTP/2 `RST_STREAM`,
 /// an HTTP/3 `RESET_STREAM`) instead of an orderly end of stream, and data not yet
@@ -31,6 +31,23 @@ impl AbortIo {
     /// Abort the I/O.
     pub fn abort(&self) {
         (self.0)();
+    }
+
+    /// Make `front`, a new extensions level in front of the same I/O as `inner`,
+    /// answer with that I/O's abort.
+    ///
+    /// The new level hides `inner`'s own store from [`Extensions::self_get_arc`],
+    /// yet aborting through it still ends the same I/O. Call it wherever such a
+    /// level is created over an I/O without a transport of its own in between,
+    /// such as an upgraded stream or a connection nested on it. It is independent
+    /// of any [`NestedConnectionTransfer`]: the handle belongs to the I/O, not to
+    /// the connection it carries.
+    ///
+    /// [`NestedConnectionTransfer`]: crate::extensions::NestedConnectionTransfer
+    pub fn front_same_io(inner: &Extensions, front: &Extensions) {
+        if let Some(abort) = inner.self_get_arc::<Self>() {
+            front.insert_arc(abort);
+        }
     }
 
     /// Whether a relay reflects `err` of one side as a reset of both. A peer that

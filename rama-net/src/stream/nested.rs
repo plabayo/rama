@@ -5,7 +5,10 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::extensions::{Extensions, ExtensionsRef, NestedConnectionTransfer};
+use rama_core::{
+    extensions::{Extensions, ExtensionsRef, NestedConnectionTransfer},
+    io::AbortIo,
+};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::client::pool::ConnectionReuse;
@@ -70,6 +73,7 @@ impl<S: ExtensionsRef> NestedConnection<S> {
     /// on it.
     pub fn new(stream: S, transfer: &dyn NestedConnectionTransfer) -> Self {
         let extensions = stream.extensions().fork_nested_connection(transfer);
+        AbortIo::front_same_io(stream.extensions(), &extensions);
         Self { stream, extensions }
     }
 }
@@ -128,6 +132,10 @@ mod tests {
     use super::*;
     use crate::client::pool::{ConnectionReusePolicy, ReuseKey};
     use rama_core::extensions::{Extension, NoConnectionTransfer};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     #[derive(Debug)]
     struct AlwaysReusable;
@@ -235,5 +243,26 @@ mod tests {
             inner.extensions().get_ref::<NegotiatedAlpn>(),
             Some(&NegotiatedAlpn(2))
         );
+    }
+
+    #[test]
+    fn nested_connection_answers_with_the_wrapped_stream_abort() {
+        let proxy = FakeStream {
+            extensions: Extensions::new(),
+        };
+        let aborted = Arc::new(AtomicBool::new(false));
+        proxy.extensions.insert(AbortIo::new({
+            let aborted = aborted.clone();
+            move || aborted.store(true, Ordering::Release)
+        }));
+
+        let nested = NestedConnection::new(proxy, &NoConnectionTransfer);
+
+        let abort = nested
+            .extensions()
+            .self_get_arc::<AbortIo>()
+            .expect("the nested connection fronts the same stream");
+        abort.abort();
+        assert!(aborted.load(Ordering::Acquire));
     }
 }
