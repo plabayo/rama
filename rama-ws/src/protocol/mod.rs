@@ -1080,10 +1080,11 @@ impl WebSocketContext {
                                         frame.into_payload(),
                                         self.config.max_message_size,
                                     )?;
-                                return match deflate_state
+                                let decoded = deflate_state
                                     .decoder
-                                    .decode(compressed_data.as_ref(), self.config.max_message_size)
-                                {
+                                    .decode(compressed_data.as_ref(), self.config.max_message_size);
+                                deflate_state.decompress_incomplete_msg.release();
+                                return match decoded {
                                     Ok(raw_data) => match msg_type {
                                         IncompleteMessageType::Text => {
                                             Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))

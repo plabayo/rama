@@ -526,17 +526,26 @@ where
             .await
             .map_err(Error::io)?;
 
-        let mut pairs: Vec<NvPairRef<'static>> = Vec::new();
+        // Each known variable is answered once, so repeated queries cannot outgrow one record.
+        let known: [NvPairRef<'static>; 3] = [
+            NvPairRef::new(b"FCGI_MAX_CONNS", b"1"),
+            NvPairRef::new(b"FCGI_MAX_REQS", b"1"),
+            NvPairRef::new(b"FCGI_MPXS_CONNS", b"0"),
+        ];
+        let mut asked = [false; 3];
         for (name, _) in decode_params(&query_buf) {
-            match name {
-                b"FCGI_MAX_CONNS" => pairs.push(NvPairRef::new(b"FCGI_MAX_CONNS", b"1")),
-                b"FCGI_MAX_REQS" => pairs.push(NvPairRef::new(b"FCGI_MAX_REQS", b"1")),
-                b"FCGI_MPXS_CONNS" => pairs.push(NvPairRef::new(b"FCGI_MPXS_CONNS", b"0")),
-                _ => {}
+            if let Some(i) = known.iter().position(|pair| pair.name == name) {
+                asked[i] = true;
             }
         }
+        let pairs: Vec<NvPairRef<'static>> = known
+            .into_iter()
+            .zip(asked)
+            .filter_map(|(pair, asked)| asked.then_some(pair))
+            .collect();
 
         let body = encode_params(pairs).map_err(Error::protocol)?;
+        // At most the three known pairs, far below FCGI_MAX_CONTENT_LEN.
         let hdr = RecordHeader::management(RecordType::GetValuesResult, body.len() as u16);
         hdr.write_to(writer).await.map_err(Error::io)?;
         if !body.is_empty() {
@@ -621,17 +630,21 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let hdr = RecordHeader::new(RecordType::Params, 1, pbuf.len() as u16);
-        hdr.write_to(&mut out).await.unwrap();
-        out.extend_from_slice(&pbuf);
+        for chunk in pbuf.chunks(FCGI_MAX_CONTENT_LEN) {
+            let len = u16::try_from(chunk.len()).unwrap();
+            let hdr = RecordHeader::new(RecordType::Params, 1, len);
+            hdr.write_to(&mut out).await.unwrap();
+            out.extend_from_slice(chunk);
+        }
         // PARAMS terminator
         let hdr = RecordHeader::new(RecordType::Params, 1, 0);
         hdr.write_to(&mut out).await.unwrap();
         // STDIN
-        if !stdin.is_empty() {
-            let hdr = RecordHeader::new(RecordType::Stdin, 1, stdin.len() as u16);
+        for chunk in stdin.chunks(FCGI_MAX_CONTENT_LEN) {
+            let len = u16::try_from(chunk.len()).unwrap();
+            let hdr = RecordHeader::new(RecordType::Stdin, 1, len);
             hdr.write_to(&mut out).await.unwrap();
-            out.extend_from_slice(stdin);
+            out.extend_from_slice(chunk);
         }
         let hdr = RecordHeader::new(RecordType::Stdin, 1, 0);
         hdr.write_to(&mut out).await.unwrap();
@@ -679,6 +692,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_params_of_any_size_reach_the_server_intact() {
+        let mut params: Vec<(Bytes, Bytes)> =
+            [0, 127, 128, 65_526, 65_527, 65_535, 70_000, 200_000]
+                .into_iter()
+                .enumerate()
+                .map(|(i, len)| {
+                    (
+                        Bytes::from(format!("LARGE_{i}")),
+                        Bytes::from(vec![b'a' + i as u8; len]),
+                    )
+                })
+                .collect();
+        for i in 0..kib(200) / 32 {
+            params.push((
+                Bytes::from(format!("SMALL_{i}")),
+                Bytes::from(vec![b'z'; 20]),
+            ));
+        }
+
+        let (mut client_io, server_io) = tokio::io::duplex(rama_utils::octets::mib(4));
+        let (mut server_read, mut server_write) = tokio::io::split(server_io);
+        let request = crate::client::FastCgiClientRequest::new(params.clone());
+        let client = crate::client::send_on(&mut client_io, 1, request, false);
+        let opts = ServerOptions::default();
+        let server = async {
+            let begin = read_begin_and_params(&mut server_read, &mut server_write, &opts).await;
+            drop(server_write);
+            drop(server_read);
+            begin
+        };
+        let (_, begin) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Box::pin(async { tokio::join!(client, server) }),
+        )
+        .await
+        .expect("no desync stall");
+        let begin = begin.unwrap().expect("got begin");
+        assert_eq!(begin.params, params);
+    }
+
+    #[tokio::test]
     async fn test_management_get_values_response() {
         // Construct a GET_VALUES record asking for FCGI_MPXS_CONNS, then a BEGIN.
         let mut out = Vec::new();
@@ -709,6 +763,41 @@ mod tests {
         );
         // First 8 bytes are the response header; ensure record type is correct.
         assert_eq!(writer[1], u8::from(RecordType::GetValuesResult));
+    }
+
+    #[tokio::test]
+    async fn get_values_result_length_matches_its_body() {
+        let mut qbuf = Vec::new();
+        while qbuf.len() + 16 <= FCGI_MAX_CONTENT_LEN {
+            NvPair::new(b"FCGI_MAX_CONNS".as_slice(), b"".as_slice())
+                .write_to(&mut qbuf)
+                .await
+                .unwrap();
+        }
+        let mut out = Vec::new();
+        let hdr = RecordHeader::management(RecordType::GetValues, qbuf.len() as u16);
+        hdr.write_to(&mut out).await.unwrap();
+        out.extend_from_slice(&qbuf);
+
+        let mut reader = std::io::Cursor::new(out);
+        let mut writer: Vec<u8> = Vec::new();
+        let opts = ServerOptions::default();
+        assert!(
+            read_begin_and_params(&mut reader, &mut writer, &opts)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let mut written = std::io::Cursor::new(writer);
+        let mut seen = 0;
+        while (written.position() as usize) < written.get_ref().len() {
+            let hdr = RecordHeader::read_from(&mut written).await.unwrap();
+            assert_eq!(hdr.record_type, RecordType::GetValuesResult);
+            let mut body = vec![0; hdr.content_length as usize + hdr.padding_length as usize];
+            written.read_exact(&mut body).await.unwrap();
+            seen += 1;
+        }
+        assert_eq!(seen, 1);
     }
 
     #[tokio::test]

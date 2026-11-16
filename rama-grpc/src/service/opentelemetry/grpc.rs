@@ -5,7 +5,9 @@ use super::{
 use crate::{
     Request,
     client::{Grpc, GrpcService},
-    metadata::{AsciiMetadataKey, BinaryMetadataKey, BinaryMetadataValue, MetadataMap},
+    metadata::{
+        AsciiMetadataKey, AsciiMetadataValue, BinaryMetadataKey, BinaryMetadataValue, MetadataMap,
+    },
     protobuf::ProstCodec,
 };
 use prost::Message;
@@ -20,8 +22,10 @@ const METRICS_EXPORT_PATH: &str = "/opentelemetry.proto.collector.metrics.v1.Met
 const LOGS_EXPORT_PATH: &str = "/opentelemetry.proto.collector.logs.v1.LogsService/Export";
 
 impl HeaderBag for MetadataMap {
-    fn merge(&mut self, other: Self) {
-        Self::merge(self, other);
+    fn merge(&mut self, other: Self) -> Result<(), OtelExporterConfigError> {
+        self.try_merge(other).map_err(|_size_limit| {
+            OtelExporterConfigError::new("merged metadata exceeds header limit")
+        })
     }
 
     fn from_env(raw: &str, var: &'static str) -> Result<Self, OtelExporterConfigError> {
@@ -38,19 +42,29 @@ impl HeaderBag for MetadataMap {
                         "{var} contains invalid metadata value for {key}: {err}"
                     ))
                 })?;
-                metadata.insert_bin(key, parsed);
+                metadata
+                    .as_mut()
+                    .try_insert(key.inner, parsed.inner)
+                    .map_err(|_size_limit| {
+                        OtelExporterConfigError::new("too many headers in env var")
+                    })?;
             } else {
                 let key = AsciiMetadataKey::from_str(&key).map_err(|err| {
                     OtelExporterConfigError::new(format!(
                         "{var} contains invalid metadata key {key:?}: {err}"
                     ))
                 })?;
-                let parsed = value.parse().map_err(|err| {
+                let parsed: AsciiMetadataValue = value.parse().map_err(|err| {
                     OtelExporterConfigError::new(format!(
                         "{var} contains invalid metadata value for {key}: {err}"
                     ))
                 })?;
-                metadata.insert(key, parsed);
+                metadata
+                    .as_mut()
+                    .try_insert(key.inner, parsed.inner)
+                    .map_err(|_size_limit| {
+                        OtelExporterConfigError::new("too many headers in env var")
+                    })?;
             }
         }
         Ok(metadata)

@@ -591,45 +591,15 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     let host;
     let mut port = OptPort::Unset;
 
-    // Standalone bracketed IP-literal (no trailing port): `[::1]` or
-    // `[v1.fe80::a]`. Without this fast-path the colon-split below
-    // treats the final `:` inside the address as a port separator.
-    if s.starts_with('[') && s.ends_with(']') {
-        let inside = &s[1..s.len() - 1];
-        if inside.is_empty() {
-            return Err(BoxError::from_static_str("empty bracketed IP-literal"));
-        }
-        // IPvFuture: `[v1.xxx]` — stored as `Uninterpreted(bracketed=true)`
-        // verbatim, matching the URI authority parser's shape.
-        if matches!(inside.as_bytes().first(), Some(b'v' | b'V')) {
-            crate::uri::parser::authority::validate_ipvfuture(inside.as_bytes())
-                .map_err(BoxError::from)
-                .context("parse bracketed IPvFuture")?;
-            return Ok(Authority {
-                user_info,
-                address: HostWithOptPort {
-                    host: Host::Uninterpreted(super::UninterpretedHost::from_validated(
-                        inside.into(),
-                        true,
-                    )),
-                    port: OptPort::Unset,
-                },
-            });
-        }
-        if crate::address::parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
-            return Err(BoxError::from_static_str(
-                "ipv6 zone identifiers (RFC 6874) are not supported",
-            ));
-        }
-        let addr = inside
-            .parse::<Ipv6Addr>()
-            .context("parse bracketed ipv6 authority host without port")?;
+    if s.is_empty() {
+        return Err(BoxError::from_static_str("empty host after userinfo"));
+    }
+
+    // Bracketed IP-literal, with or without a port: the URI authority scanner decides.
+    if s.starts_with('[') {
         return Ok(Authority {
             user_info,
-            address: HostWithOptPort {
-                host: Host::Address(IpAddr::V6(addr)),
-                port: OptPort::Unset,
-            },
+            address: super::host_with_opt_port::parse_bracketed_host_with_opt_port(s)?,
         });
     }
 
@@ -902,6 +872,54 @@ impl_serde_str!(display Authority);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eager_and_borrowed_authority_parsers_agree() {
+        for input in [
+            "[v1.a]:80",
+            "[v1.fe80::a]:443",
+            "[v1.a]:",
+            "[v1.a]",
+            "[::1]:080",
+            "[::1]",
+            "[fe80::1%25eth0]:80",
+            "[::1]x",
+            "host:",
+            "host:80",
+            "user@",
+            "@",
+            "a:b@",
+            "a@b:1",
+            "a@[v1.a]:1",
+        ] {
+            let eager = Authority::try_from(input).ok();
+            let borrowed = AuthorityRef::parse(input.as_bytes())
+                .ok()
+                .map(AuthorityRef::into_owned);
+            assert_eq!(eager, borrowed, "{input}");
+
+            if !input.contains('@') {
+                let host = HostWithOptPort::try_from(input).ok();
+                assert_eq!(
+                    host,
+                    borrowed.as_ref().map(|a| a.address.clone()),
+                    "{input}"
+                );
+            }
+
+            if let Some(eager) = eager {
+                let reparsed: Authority = eager.to_string().parse().unwrap();
+                assert_eq!(reparsed, eager, "{input}");
+                let reparsed: HostWithOptPort = eager.address.to_string().parse().unwrap();
+                assert_eq!(reparsed, eager.address, "{input}");
+            }
+        }
+
+        // bare IPv6 stays an eager-only convenience, displayed bracketed
+        let bare = Authority::try_from("::1").unwrap();
+        AuthorityRef::parse(b"::1").unwrap_err();
+        assert_eq!(bare.to_string().parse::<Authority>().unwrap(), bare);
+    }
     use std::assert_matches;
 
     #[expect(clippy::needless_pass_by_value)]

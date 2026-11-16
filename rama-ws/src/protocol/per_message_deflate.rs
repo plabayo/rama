@@ -4,7 +4,7 @@
 
 use crate::{
     ProtocolError,
-    protocol::{IncompleteMessageType, PerMessageDeflateConfig, Role},
+    protocol::{IncompleteMessageType, PerMessageDeflateConfig, Role, frame::RETAINED_BUFFER_LEN},
 };
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 use rama_core::error::{BoxError, ErrorContext};
@@ -72,6 +72,15 @@ impl IncompleteCompressedMessage {
     pub(super) fn reset(&mut self, r#type: IncompleteMessageType) {
         self.buffer.clear();
         self.msg_type = Some(r#type);
+    }
+
+    /// Empty the buffer once its message is decoded, dropping an oversized allocation.
+    pub(super) fn release(&mut self) {
+        if self.buffer.capacity() > RETAINED_BUFFER_LEN {
+            self.buffer = Vec::new();
+        } else {
+            self.buffer.clear();
+        }
     }
 
     pub(super) fn fin_buffer(

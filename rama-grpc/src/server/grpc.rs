@@ -17,6 +17,7 @@ use crate::{
     Request, Status,
     codec::{Codec, Streaming},
     server::{ClientStreamingService, ServerStreamingService, StreamingService, UnaryService},
+    status::metadata_limit_exceeded,
 };
 
 /// A gRPC Server handler.
@@ -302,7 +303,9 @@ where
         let mut req = Request::from_http_parts(parts, message);
 
         if let Some(trailers) = stream.trailers().await? {
-            req.metadata_mut().merge(trailers);
+            req.metadata_mut().try_merge(trailers).map_err(|err| {
+                metadata_limit_exceeded("request trailers exceed header limit", err)
+            })?;
         }
 
         Ok(req)

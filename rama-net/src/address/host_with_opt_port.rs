@@ -539,6 +539,23 @@ fn try_as_uninterpreted_host(host_str: &str) -> Result<Host, BoxError> {
     Ok(Host::Uninterpreted(host))
 }
 
+/// Parse a `[IP-literal]` host with an optional `:port` using the URI authority scanner,
+/// so eager and borrowed parsers accept the same bracketed forms.
+pub(super) fn parse_bracketed_host_with_opt_port(s: &str) -> Result<HostWithOptPort, BoxError> {
+    let authority = crate::uri::parser::authority::parse_authority_ref_graceful(s.as_bytes())
+        .map_err(BoxError::from)
+        .context("parse bracketed IP-literal host")?;
+    if authority.userinfo().is_some() {
+        return Err(BoxError::from_static_str(
+            "bracketed IP-literal host cannot contain userinfo",
+        ));
+    }
+    Ok(HostWithOptPort {
+        host: authority.host().into_owned(),
+        port: authority.port(),
+    })
+}
+
 fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithOptPort, BoxError> {
     let s = maybe_borrowed.as_ref();
 
@@ -551,40 +568,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
     let host;
     let mut port = OptPort::Unset;
 
-    // Standalone bracketed IP-literal (no trailing port): `[::1]` or
-    // `[v1.fe80::a]`. Without this fast-path the colon-split below
-    // treats the final `:` inside the address as a port separator.
-    if s.starts_with('[') && s.ends_with(']') {
-        let inside = &s[1..s.len() - 1];
-        if inside.is_empty() {
-            return Err(BoxError::from_static_str("empty bracketed IP-literal"));
-        }
-        // IPvFuture: `[v1.xxx]` — stored as `Uninterpreted(bracketed=true)`
-        // verbatim, matching the URI authority parser's shape.
-        if matches!(inside.as_bytes().first(), Some(b'v' | b'V')) {
-            crate::uri::parser::authority::validate_ipvfuture(inside.as_bytes())
-                .map_err(BoxError::from)
-                .context("parse bracketed IPvFuture")?;
-            return Ok(HostWithOptPort {
-                host: Host::Uninterpreted(super::UninterpretedHost::from_validated(
-                    inside.into(),
-                    true,
-                )),
-                port: OptPort::Unset,
-            });
-        }
-        if parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
-            return Err(BoxError::from_static_str(
-                "ipv6 zone identifiers (RFC 6874) are not supported",
-            ));
-        }
-        let addr = inside
-            .parse::<Ipv6Addr>()
-            .context("parse bracketed ipv6 host without port")?;
-        return Ok(HostWithOptPort {
-            host: Host::Address(IpAddr::V6(addr)),
-            port: OptPort::Unset,
-        });
+    // Bracketed IP-literal, with or without a port: the URI authority scanner decides.
+    if s.starts_with('[') {
+        return parse_bracketed_host_with_opt_port(s);
     }
 
     if let Some(last_colon) = s.as_bytes().iter().rposition(|c| *c == b':') {

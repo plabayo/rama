@@ -113,32 +113,37 @@ where
         return hdr.write_to(w).await.map_err(ClientError::io);
     }
 
+    // PARAMS is one byte stream, so a pair may span records.
     let mut buf = BytesMut::new();
     for (name, value) in params {
-        let pair_ref = NvPairRef::new(name.as_ref(), value.as_ref());
-        let needed = pair_ref.encoded_len();
-        if !buf.is_empty() && buf.len() + needed > FCGI_MAX_CONTENT_LEN {
-            flush_params_chunk(w, request_id, &buf.split().freeze()).await?;
-        }
-        pair_ref
+        NvPairRef::new(name.as_ref(), value.as_ref())
             .write_to_buf(&mut buf)
             .map_err(ClientError::protocol)?;
+        while buf.len() >= FCGI_MAX_CONTENT_LEN {
+            let chunk = buf.split_to(FCGI_MAX_CONTENT_LEN);
+            write_params_record(w, request_id, &chunk).await?;
+        }
     }
     if !buf.is_empty() {
-        flush_params_chunk(w, request_id, &buf.freeze()).await?;
+        write_params_record(w, request_id, &buf).await?;
     }
 
     let hdr = RecordHeader::new(RecordType::Params, request_id, 0);
     hdr.write_to(w).await.map_err(ClientError::io)
 }
 
-async fn flush_params_chunk<W>(w: &mut W, request_id: u16, data: &[u8]) -> Result<(), ClientError>
+/// Write `data` as one or more `FCGI_PARAMS` records of at most [`FCGI_MAX_CONTENT_LEN`] bytes.
+async fn write_params_record<W>(w: &mut W, request_id: u16, data: &[u8]) -> Result<(), ClientError>
 where
     W: AsyncWrite + Unpin,
 {
-    let hdr = RecordHeader::new(RecordType::Params, request_id, data.len() as u16);
-    hdr.write_to(w).await.map_err(ClientError::io)?;
-    w.write_all(data).await.map_err(ClientError::io)
+    for chunk in data.chunks(FCGI_MAX_CONTENT_LEN) {
+        // `chunks` bounds each length by FCGI_MAX_CONTENT_LEN (u16::MAX).
+        let hdr = RecordHeader::new(RecordType::Params, request_id, chunk.len() as u16);
+        hdr.write_to(w).await.map_err(ClientError::io)?;
+        w.write_all(chunk).await.map_err(ClientError::io)?;
+    }
+    Ok(())
 }
 
 /// Stream the request body as a series of `FCGI_STDIN` records, followed by

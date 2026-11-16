@@ -87,7 +87,9 @@ impl std::error::Error for OtelExporterConfigError {}
 /// and [`crate::metadata::MetadataMap`] (gRPC exporter).
 pub trait HeaderBag: Clone + Default + fmt::Debug + Send + Sync + 'static {
     /// Merge `other` into `self`, with `other` entries winning on conflict.
-    fn merge(&mut self, other: Self);
+    ///
+    /// Fails when the merged bag would exceed the header map size limit.
+    fn merge(&mut self, other: Self) -> Result<(), OtelExporterConfigError>;
 
     /// Parse an OTEL_EXPORTER_OTLP_*_HEADERS env var value into a header bag.
     /// `var` is the env var name.
@@ -419,9 +421,9 @@ impl<S, H: HeaderBag> OtelExporter<S, H> {
             .or(self.env.base.compression);
 
         let mut metadata = self.env.base.metadata.clone();
-        metadata.merge(env_signal.metadata.clone());
-        metadata.merge(self.metadata.clone());
-        metadata.merge(signal_settings.metadata.clone());
+        metadata.merge(env_signal.metadata.clone())?;
+        metadata.merge(self.metadata.clone())?;
+        metadata.merge(signal_settings.metadata.clone())?;
 
         Ok(ResolvedConfig {
             endpoint,
@@ -681,5 +683,45 @@ mod tests {
             headers,
             vec![("authorization".to_owned(), "Bearer abc/123".to_owned())]
         );
+    }
+
+    fn many_distinct_pairs(count: usize) -> String {
+        (0..count)
+            .map(|i| format!("x-h-{i}=v"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    #[test]
+    fn env_headers_past_header_map_limit_are_an_error() {
+        let raw = many_distinct_pairs(24_577);
+        <rama_http::HeaderMap as HeaderBag>::from_env(&raw, "VAR").unwrap_err();
+        <crate::metadata::MetadataMap as HeaderBag>::from_env(&raw, "VAR").unwrap_err();
+    }
+
+    #[test]
+    fn header_bag_merge_past_header_map_limit_is_an_error() {
+        let full = many_distinct_pairs(24_576);
+        let one = "x-other=v";
+
+        let mut http = <rama_http::HeaderMap as HeaderBag>::from_env(one, "VAR").unwrap();
+        let other = <rama_http::HeaderMap as HeaderBag>::from_env(&full, "VAR").unwrap();
+        HeaderBag::merge(&mut http, other).unwrap_err();
+
+        let mut grpc = <crate::metadata::MetadataMap as HeaderBag>::from_env(one, "VAR").unwrap();
+        let other = <crate::metadata::MetadataMap as HeaderBag>::from_env(&full, "VAR").unwrap();
+        HeaderBag::merge(&mut grpc, other).unwrap_err();
+    }
+
+    #[test]
+    fn header_bag_merge_keeps_every_value_of_a_replaced_name() {
+        let mut http = rama_http::HeaderMap::new();
+        http.insert("x-a", rama_http::HeaderValue::from_static("old"));
+        let mut other = rama_http::HeaderMap::new();
+        other.append("x-a", rama_http::HeaderValue::from_static("1"));
+        other.append("x-a", rama_http::HeaderValue::from_static("2"));
+        HeaderBag::merge(&mut http, other).unwrap();
+        let values: Vec<_> = http.get_all("x-a").iter().collect();
+        assert_eq!(values, ["1", "2"]);
     }
 }

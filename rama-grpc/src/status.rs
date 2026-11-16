@@ -8,7 +8,7 @@ use ::{
     },
     rama_http_types::{
         HeaderName,
-        header::{HeaderMap, HeaderValue},
+        header::{HeaderMap, HeaderValue, MaxSizeReached},
     },
     rama_net::uri::util::percent_encoding::{AsciiSet, CONTROLS, percent_decode, percent_encode},
 };
@@ -21,7 +21,7 @@ use rama_core::{
 use rama_http::headers::{ContentType, HeaderMapExt as _};
 use rama_utils::str::arcstr::ArcStr;
 
-use crate::metadata::MetadataMap;
+use crate::metadata::{MetadataMap, try_extend_replacing};
 
 const ENCODING_SET: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -558,35 +558,43 @@ impl Status {
     }
 
     pub(crate) fn to_header_map(&self) -> Result<HeaderMap, Self> {
-        let mut header_map = HeaderMap::with_capacity(3 + self.0.metadata.len());
+        let mut header_map = HeaderMap::try_with_capacity(3 + self.0.metadata.as_ref().keys_len())
+            .map_err(header_limit_reached)?;
         self.add_header(&mut header_map)?;
         Ok(header_map)
     }
 
     /// Add headers from this `Status` into `header_map`.
     pub fn add_header(&self, header_map: &mut HeaderMap) -> Result<(), Self> {
-        header_map.extend(self.0.metadata.clone().into_sanitized_headers());
+        try_extend_replacing(header_map, self.0.metadata.clone().into_sanitized_headers())
+            .map_err(header_limit_reached)?;
 
-        header_map.insert(Self::GRPC_STATUS, self.0.code.to_header_value());
+        header_map
+            .try_insert(Self::GRPC_STATUS, self.0.code.to_header_value())
+            .map_err(header_limit_reached)?;
 
         if !self.0.message.is_empty() {
             let to_write = Bytes::copy_from_slice(
                 Cow::from(percent_encode(self.message().as_bytes(), ENCODING_SET)).as_bytes(),
             );
 
-            header_map.insert(
-                Self::GRPC_MESSAGE,
-                HeaderValue::from_maybe_shared(to_write).map_err(invalid_header_value_byte)?,
-            );
+            header_map
+                .try_insert(
+                    Self::GRPC_MESSAGE,
+                    HeaderValue::from_maybe_shared(to_write).map_err(invalid_header_value_byte)?,
+                )
+                .map_err(header_limit_reached)?;
         }
 
         if !self.0.details.is_empty() {
             let details = crate::util::base64::STANDARD_NO_PAD.encode(&self.0.details[..]);
 
-            header_map.insert(
-                Self::GRPC_STATUS_DETAILS,
-                HeaderValue::try_from(details).map_err(invalid_header_value_byte)?,
-            );
+            header_map
+                .try_insert(
+                    Self::GRPC_STATUS_DETAILS,
+                    HeaderValue::try_from(details).map_err(invalid_header_value_byte)?,
+                )
+                .map_err(header_limit_reached)?;
         }
 
         Ok(())
@@ -713,6 +721,19 @@ impl fmt::Debug for StatusInner {
 
         builder.finish()
     }
+}
+
+fn header_limit_reached(err: MaxSizeReached) -> Status {
+    let mut status = Status::internal("grpc status headers exceed the header map size limit");
+    status.set_source(Arc::new(err));
+    status
+}
+
+/// A [`Status`] for received metadata that outgrew the header map size limit.
+pub(crate) fn metadata_limit_exceeded(message: &'static str, err: MaxSizeReached) -> Status {
+    let mut status = Status::resource_exhausted(message);
+    status.set_source(Arc::new(err));
+    status
 }
 
 fn invalid_header_value_byte<Error: fmt::Display>(err: Error) -> Status {
@@ -1006,6 +1027,31 @@ mod tests {
     use rama_core::error::BoxError;
 
     use super::*;
+
+    #[test]
+    fn to_header_map_with_many_values_of_one_name_does_not_panic() {
+        let mut peer = HeaderMap::new();
+        peer.insert(Status::GRPC_STATUS, HeaderValue::from_static("13"));
+        for _ in 0..24_574 {
+            peer.append("x-a", HeaderValue::from_static("v"));
+        }
+        let status = Status::from_header_map(&peer).unwrap();
+        let headers = status.to_header_map().unwrap();
+        assert_eq!(headers.get_all("x-a").iter().count(), 24_574);
+        assert_eq!(headers.get(Status::GRPC_STATUS).unwrap(), "13");
+    }
+
+    #[test]
+    fn try_into_http_past_header_map_limit_is_an_error() {
+        let mut peer = HeaderMap::new();
+        peer.insert(Status::GRPC_STATUS, HeaderValue::from_static("13"));
+        for i in 0..24_575 {
+            let name = HeaderName::try_from(format!("x-{i}")).unwrap();
+            peer.insert(name, HeaderValue::from_static("v"));
+        }
+        let status = Status::from_header_map(&peer).unwrap();
+        status.try_into_http::<()>().unwrap_err();
+    }
 
     #[test]
     fn timeout_marker_preserves_grpc_status_mapping() {

@@ -94,38 +94,39 @@ impl Header {
         if n == 3 {
             tracing::trace!("write socks5 client header w/ 1 method: on stack (w={n})");
             let mut buf = [0u8; 3];
-            self.write_to_buf(&mut buf.as_mut_slice());
+            self.write_to_buf(&mut buf.as_mut_slice())?;
             w.write_all(&buf[..]).await
         } else if n == 4 {
             tracing::trace!("write socks5 client header w/ 2 methods: on stack (w={n})");
             let mut buf = [0u8; 4];
-            self.write_to_buf(&mut buf.as_mut_slice());
+            self.write_to_buf(&mut buf.as_mut_slice())?;
             w.write_all(&buf[..]).await
         } else if n == 5 {
             tracing::trace!("write socks5 client header w/ 3 methods: on stack (w={n})");
             let mut buf = [0u8; 5];
-            self.write_to_buf(&mut buf.as_mut_slice());
+            self.write_to_buf(&mut buf.as_mut_slice())?;
             w.write_all(&buf[..]).await
         } else {
             tracing::trace!("write socks5 client header w/ > 3 methods: on heap (w={n})",);
             let mut buf = BytesMut::with_capacity(n);
-            self.write_to_buf(&mut buf);
+            self.write_to_buf(&mut buf)?;
             w.write_all(&buf).await
         }
     }
 
     /// Write the client [`Header`] in binary format as specified by [RFC 1928] into the buffer.
     ///
+    /// Fails without writing when there are no methods or more than 255 of them.
+    ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
-    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
+    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) -> Result<(), std::io::Error> {
+        let count = u8_length(self.methods.len(), "SOCKS5 header needs 1 to 255 methods")?;
         buf.put_u8(self.version.into());
-
-        debug_assert!(self.methods.len() <= 255);
-        buf.put_u8(self.methods.len() as u8);
-
+        buf.put_u8(count);
         for method in self.methods.iter().copied() {
             buf.put_u8(method.into());
         }
+        Ok(())
     }
 
     fn serialized_len(&self) -> usize {
@@ -480,55 +481,66 @@ impl<'a> UsernamePasswordRequestRef<'a> {
                 "write socks5 Username/Password request w/ (small) credentials: on stack (w={n})"
             );
             let mut buf = [0u8; SMALL_LEN];
-            self.write_to_buf(&mut buf.as_mut_slice());
+            self.write_to_buf(&mut buf.as_mut_slice())?;
             w.write_all(&buf[..n]).await
         } else if n <= MED_LEN {
             tracing::trace!(
                 "write socks5 Username/Password request w/ (medium) credentials: on stack (w={n})"
             );
             let mut buf = [0u8; MED_LEN];
-            self.write_to_buf(&mut buf.as_mut_slice());
+            self.write_to_buf(&mut buf.as_mut_slice())?;
             w.write_all(&buf[..n]).await
         } else if n <= LARGE_LEN {
             tracing::trace!(
                 "write socks5 Username/Password request w/ (large) credentials: on stack (w={n})"
             );
             let mut buf = [0u8; LARGE_LEN];
-            self.write_to_buf(&mut buf.as_mut_slice());
+            self.write_to_buf(&mut buf.as_mut_slice())?;
             w.write_all(&buf[..n]).await
         } else {
             tracing::trace!(
                 "write socks5 Username/Password request w/ (jumbo) credentials: on heap (w={n})"
             );
             let mut buf = BytesMut::with_capacity(n);
-            self.write_to_buf(&mut buf);
+            self.write_to_buf(&mut buf)?;
             w.write_all(&buf).await
         }
     }
 
     /// Write the client [`UsernamePasswordRequest`] in binary format as specified by [RFC 1929] into the buffer.
     ///
+    /// Fails without writing when the username or password is longer than 255 bytes.
+    ///
     /// [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929
-    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        buf.put_u8(self.version.into());
-
+    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) -> Result<(), std::io::Error> {
         let username = self.basic.username();
-
-        debug_assert!((1..=255).contains(&username.len()));
-        buf.put_u8(username.len() as u8);
-        buf.put_slice(username.as_bytes());
-
-        if let Some(password) = self.basic.password() {
-            debug_assert!((1..=255).contains(&password.len()));
-            buf.put_u8(password.len() as u8);
-            buf.put_slice(password.as_bytes());
+        let username_len = u8_length(username.len(), "SOCKS5 username must be 1 to 255 bytes")?;
+        let password = self.basic.password().unwrap_or_default();
+        // an absent password is written as length 0
+        let password_len = if password.is_empty() {
+            0
         } else {
-            buf.put_u8(0);
-        }
+            u8_length(password.len(), "SOCKS5 password must be 1 to 255 bytes")?
+        };
+
+        buf.put_u8(self.version.into());
+        buf.put_u8(username_len);
+        buf.put_slice(username.as_bytes());
+        buf.put_u8(password_len);
+        buf.put_slice(password.as_bytes());
+        Ok(())
     }
 
     fn serialized_len(&self) -> usize {
         3 + self.basic.username().len() + self.basic.password().map(|p| p.len()).unwrap_or_default()
+    }
+}
+
+/// A `1..=255` length as its one-byte wire prefix, or `InvalidInput` with `msg`.
+fn u8_length(len: usize, msg: &'static str) -> Result<u8, std::io::Error> {
+    match u8::try_from(len) {
+        Ok(len) if len > 0 => Ok(len),
+        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)),
     }
 }
 
@@ -540,6 +552,40 @@ mod tests {
     use crate::proto::test_write_read_eq;
 
     use super::*;
+
+    fn text_of_len(len: usize) -> NonEmptyStr {
+        NonEmptyStr::try_from("u".repeat(len)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn username_password_lengths_past_255_are_refused() {
+        for (len, fits) in [(1, true), (255, true), (256, false), (300, false)] {
+            for basic in [
+                user::Basic::new_insecure(text_of_len(len)),
+                user::Basic::new(non_empty_str!("user"), text_of_len(len)),
+            ] {
+                let request = UsernamePasswordRequest::new(basic);
+                let mut wire = Vec::new();
+                let written = request.write_to(&mut wire).await;
+                assert_eq!(written.is_ok(), fits, "len {len}");
+                if fits {
+                    let read = UsernamePasswordRequest::read_from(&mut wire.as_slice())
+                        .await
+                        .unwrap();
+                    assert_eq!(read, request, "len {len}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn header_with_more_than_255_methods_is_refused() {
+        for (count, fits) in [(255, true), (256, false)] {
+            let header = Header::new(vec![SocksMethod::NoAuthenticationRequired; count]);
+            let mut wire = Vec::new();
+            assert_eq!(header.write_to(&mut wire).await.is_ok(), fits, "{count}");
+        }
+    }
 
     #[tokio::test]
     async fn test_header_write_read_eq() {

@@ -33,7 +33,7 @@ const DIRECT_PAYLOAD_MIN_LEN: usize = kib(64);
 
 /// Capacity a drained `in_buffer` or `out_buffer` keeps at most; for `out_buffer` twice the
 /// write length when that is larger.
-const RETAINED_BUFFER_LEN: usize = kib(256);
+pub(super) const RETAINED_BUFFER_LEN: usize = kib(256);
 
 /// Step in which a shared payload is masked into `out_buffer`; a multiple of the mask length.
 const MASKED_CHUNK_LEN: usize = kib(64);
@@ -755,6 +755,50 @@ mod tests {
         assert_eq!(frame.into_payload().len(), payload.len());
         assert!(
             codec.in_buffer.capacity() <= super::RETAINED_BUFFER_LEN,
+            "{}",
+            codec.in_buffer.capacity()
+        );
+    }
+
+    /// Returns at most `max` bytes per read.
+    struct Trickle {
+        inner: Cursor<Vec<u8>>,
+        max: usize,
+    }
+
+    impl io::Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let len = buf.len().min(self.max);
+            io::Read::read(&mut self.inner, &mut buf[..len])
+        }
+    }
+
+    #[test]
+    fn large_frame_storage_is_not_reclaimed_by_later_small_frames() {
+        let mut codec = FrameCodec::new(super::READ_BUF_LEN);
+        let payload = vec![0x5a; mib(1)];
+        let mut stream = Cursor::new(masked_frame(&payload, [1, 2, 3, 4]));
+        let frame = codec
+            .read_frame(&mut stream, None, FrameMasking::RequireMask)
+            .unwrap()
+            .unwrap();
+        drop(frame);
+
+        let small = masked_frame(&[0x11; 100], [5, 6, 7, 8]);
+        let count = mib(2) / 100;
+        let mut stream = Trickle {
+            inner: Cursor::new(small.repeat(count)),
+            max: 7,
+        };
+        for _ in 0..count {
+            let frame = codec
+                .read_frame(&mut stream, None, FrameMasking::RequireMask)
+                .unwrap()
+                .unwrap();
+            drop(frame);
+        }
+        assert!(
+            codec.in_buffer.capacity() <= RETAINED_BUFFER_LEN,
             "{}",
             codec.in_buffer.capacity()
         );
