@@ -31,6 +31,7 @@ after its baseline journey. `/report?connection_only=1` omits the page's HTTP an
 site probes: the profile retains those from the baseline captures. The server's
 handshake result records `accepted` or `not_observed`; non-acceptance does not
 mean the browser lacks ECH support. Missing server evidence fails collection.
+A browser that stays on TCP at an HTTP/3 ECH origin is recorded as `unsupported`.
 The collector leaves browser ECH policy and DNS settings unchanged.
 
 `ech_services.py` exercises the local echo and fp binaries using fresh Chrome

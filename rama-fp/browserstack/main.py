@@ -374,9 +374,14 @@ def run_session(
                     if ech_origin and (receipt["journey_completed"] or
                                        (unsupported and unsupported.protocols)):
                         stage = "ech_connection"
-                        receipt["ech"] = run_ech_capture(
-                            driver, ech_origin, cookies=cookies, expected_protocol=protocol
-                        )
+                        try:
+                            receipt["ech"] = run_ech_capture(
+                                driver, ech_origin, cookies=cookies, expected_protocol=protocol
+                            )
+                        except UnsupportedFlow as error:
+                            # One visit to a new origin: a browser may stay on TCP there.
+                            receipt["ech"] = {"origin": ech_origin, "status": "unsupported",
+                                              "unsupported_reason": str(error)}
                     stage = "provider_status"
                     report(
                         driver,
