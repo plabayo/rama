@@ -242,7 +242,7 @@ rama_image_digest() {
 }
 
 # deploy app $1 using its checked-in fly.toml (rama-ipv4 -> deployments/ipv4); its
-# directory is the build context of the apps that build `Dockerfile.h3`
+# directory is the build context of the apps that build `Dockerfile.fly`
 deploy_app() {
   local app="$1" dir="$DEPLOY_DIR/${1#rama-}"
   [ -f "$dir/fly.toml" ] || { warn "[$app] no fly.toml in $dir"; return 1; }

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
-# The published rama image, plus what HTTP/3 on Fly needs: the capability to bind UDP 443 as
-# uid 1000, socket buffers rama's QUIC endpoint asks for, and the `fly-global-services` bind
-# Fly routes UDP replies through. Fly builds this at deploy time; it is never published.
+# Fly startup for the published rama image: private ECH key ownership and HTTP/3's
+# UDP bind capability, socket buffers, and `fly-global-services` address resolution.
+# Enabled protocols remain controlled by each app's command. Fly builds this at deploy time.
 ARG RAMA_IMAGE=glendc/rama:edge
 FROM ${RAMA_IMAGE}
 
@@ -13,7 +13,7 @@ RUN apt-get update && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
-# Runs as root only to raise the VM's socket buffer caps, then drops to uid 1000.
+# Prepares socket buffers and mounted key permissions, then drops to uid 1000.
 COPY --chmod=0755 <<'EOF' /app/fly-entrypoint
 #!/bin/sh
 set -eu

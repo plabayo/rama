@@ -12,7 +12,7 @@ app_secure = "serve echo --bind 0.0.0.0:8443 -c 2048 -t 300 --rate 100 --throttl
 app_insecure = "serve echo --bind 0.0.0.0:8080 -c 2048 -t 300 --rate 100 --throttle 1048576 -f haproxy --ws --mode http"
 
 [build]
-dockerfile = '../Dockerfile.h3'
+dockerfile = '../Dockerfile.fly'
 
 [env]
 RAMA_TLS_ECH_KEYS_FILE = '/app/ech-keys.json'
@@ -64,7 +64,7 @@ handlers = ["proxy_proto"]
 port = 443
 
 # HTTP/3. UDP needs the app's dedicated IPv4 and keeps its port: the app binds 443 itself.
-# UDP binds `fly-global-services` (resolved by Dockerfile.h3) so Fly routes the replies.
+# UDP binds `fly-global-services` (resolved by Dockerfile.fly) so Fly routes the replies.
 [[services]]
 protocol = 'udp'
 internal_port = 443
