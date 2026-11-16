@@ -3,7 +3,7 @@ use rama_utils::macros::generate_set_and_with;
 
 /// Default for [`ParseConfig::with_max_line_bytes`]: far above any line a real peer sends.
 pub const DEFAULT_MAX_LINE_BYTES: NonZeroUsize =
-    NonZeroUsize::new(rama_utils::octets::mib(64)).expect("64 MiB is not zero");
+    NonZeroUsize::new(rama_utils::octets::mib(16)).expect("16 MiB is not zero");
 
 /// Controls how the parser deals with lines that contain no JSON values.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

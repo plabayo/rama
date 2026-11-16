@@ -176,10 +176,10 @@ pub(super) const SCAN_BYTES_SOFT_CAP: usize = rama_utils::octets::mib(1);
 const SCAN_INITIAL_BLOCK_SIZE: usize = 1024;
 
 /// Default for [`EventDecoder::with_max_line_len`]: far above any line a real server sends.
-pub const DEFAULT_MAX_LINE_LEN: usize = rama_utils::octets::mib(64);
+pub const DEFAULT_MAX_LINE_LEN: usize = rama_utils::octets::mib(16);
 
 /// Default for [`EventDecoder::with_max_event_len`]: one event may use the whole line budget.
-pub const DEFAULT_MAX_EVENT_LEN: usize = rama_utils::octets::mib(64);
+pub const DEFAULT_MAX_EVENT_LEN: usize = rama_utils::octets::mib(16);
 
 /// Buffers that grew past this for one unusually large line are released once empty.
 pub(super) const RETAINED_BUFFER_LEN: usize = rama_utils::octets::kib(256);

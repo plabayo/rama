@@ -2103,7 +2103,6 @@ dependencies = [
  "csv",
  "flate2",
  "http-range-header",
- "httpdate",
  "iri-string",
  "jiff",
  "memchr",

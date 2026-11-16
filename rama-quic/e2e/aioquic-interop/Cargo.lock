@@ -1564,7 +1564,6 @@ dependencies = [
  "const_format",
  "csv",
  "http-range-header",
- "httpdate",
  "iri-string",
  "jiff",
  "moka",

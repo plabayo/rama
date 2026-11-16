@@ -2581,7 +2581,6 @@ dependencies = [
  "dial9-trace-format",
  "flate2",
  "http-range-header",
- "httpdate",
  "iri-string",
  "jiff",
  "memchr",

@@ -10,7 +10,7 @@ use rama_ua::profile::{
 #[tokio::test]
 async fn negotiated_profile_reuse_matches_the_caller_before_compilation() {
     let (context, selection) = selected("prepared-profile");
-    let connection = super::connection::established(Some((&context, &selection))).await;
+    let connection = Box::pin(super::connection::established(Some((&context, &selection)))).await;
     let reuse = connection.get_ref::<ConnectionReuse>().unwrap();
     let next = Extensions::new();
     context.clone().publish(&next);
