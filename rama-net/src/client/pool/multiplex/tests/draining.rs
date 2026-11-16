@@ -434,6 +434,9 @@ async fn concurrent_checkouts_never_reuse_a_connection_after_its_cancel() {
         .await
         .expect("every connection closes")
         .unwrap();
+    // The connection drops before its enclosing pool slot. Wait for the
+    // watchers to finish releasing both before checking the final capacity.
+    watchers_end().await;
     assert_eq!(stored(&pool), 0);
     assert_eq!(pool.free_slots(), TASKS / 2);
     assert_open_matches_capacity(&pool);
