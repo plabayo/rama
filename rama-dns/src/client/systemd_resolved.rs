@@ -2093,6 +2093,8 @@ mod tests {
         let path = test_socket_path();
         let mut config = test_config(path.clone());
         config.max_concurrency = 1;
+        // The queued lookup waits out a delayed reply: keep the slot wait well above it.
+        config.connect_timeout = Duration::from_secs(1);
         let resolved = Arc::new(SystemdResolved::new(config));
 
         let good = hostname_reply(&json!([{ "family": 2, "address": [1, 2, 3, 4] }]));
