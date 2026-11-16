@@ -46,6 +46,10 @@ pin_project_lite::pin_project! {
 
 /// A configuration builder for HTTP/1 server connections.
 ///
+/// Adds no `Server` or `Date` response fields: use
+/// `rama_http::layer::required_header::AddRequiredResponseHeadersLayer` or your own layer.
+/// Core relays responses as-is; header policy lives in layers.
+///
 /// **Note**: The default values of options are *not considered stable*. They
 /// are subject to change at any time.
 ///
@@ -81,7 +85,6 @@ pub struct Builder {
     h1_writev: Option<bool>,
     max_buf_size: Option<usize>,
     pipeline_flush: bool,
-    date_header: bool,
     strict_connect_framing: bool,
 }
 
@@ -288,7 +291,6 @@ impl Builder {
             h1_writev: None,
             max_buf_size: None,
             pipeline_flush: false,
-            date_header: true,
             strict_connect_framing: false,
         }
     }
@@ -496,18 +498,6 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set whether the `date` header should be included in HTTP responses.
-        ///
-        /// Note that including the `date` header is recommended by RFC 7231.
-        ///
-        /// Default is `true`.
-        pub fn auto_date_header(mut self, enabled: bool) -> Self {
-            self.date_header = enabled;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
         /// Set whether a successful response to CONNECT that carries `Content-Length` or
         /// `Transfer-Encoding` fails, rather than having those fields dropped.
         ///
@@ -590,9 +580,6 @@ impl Builder {
         conn.set_flush_pipeline(self.pipeline_flush);
         if let Some(max) = self.max_buf_size {
             conn.set_max_buf_size(max);
-        }
-        if !self.date_header {
-            conn.disable_date_header();
         }
         if self.strict_connect_framing {
             conn.set_strict_connect_framing();

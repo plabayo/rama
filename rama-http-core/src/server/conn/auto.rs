@@ -32,6 +32,10 @@ use super::{
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// Http1 or Http2 connection builder.
+///
+/// Adds no `Server` or `Date` response fields: use
+/// `rama_http::layer::required_header::AddRequiredResponseHeadersLayer` or your own layer.
+/// Core relays responses as-is; header policy lives in layers.
 #[derive(Clone, Debug)]
 pub struct Builder {
     http1: http1::Builder,

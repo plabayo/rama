@@ -64,7 +64,6 @@ where
                 h1_max_headers: None,
                 h1_max_header_size: None,
                 timer: ConnTimer::new(None, None),
-                date_header: true,
                 strict_connect_framing: false,
                 title_case_headers: false,
                 h09_responses: false,
@@ -180,10 +179,6 @@ where
         }
         let read = ready!(self.io.poll_read_from_io_limited(cx, max))?;
         Poll::Ready(Ok(self.io.discard_read_buf(max).max(read)))
-    }
-
-    pub(crate) fn disable_date_header(&mut self) {
-        self.state.date_header = false;
     }
 
     pub(crate) fn set_strict_connect_framing(&mut self) {
@@ -722,7 +717,6 @@ where
                 keep_alive: self.state.wants_keep_alive(),
                 req_method: &mut self.state.method,
                 title_case_headers: self.state.title_case_headers,
-                date_header: self.state.date_header,
                 strict_connect_framing: self.state.strict_connect_framing,
             },
             buf,
@@ -1057,7 +1051,6 @@ struct State {
     h1_max_headers: Option<usize>,
     h1_max_header_size: Option<usize>,
     timer: ConnTimer,
-    date_header: bool,
     strict_connect_framing: bool,
     title_case_headers: bool,
     h09_responses: bool,

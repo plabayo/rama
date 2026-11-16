@@ -343,8 +343,6 @@ where
         cx: &mut Context<'_>,
         should_shutdown: bool,
     ) -> Poll<crate::Result<Dispatched>> {
-        T::update_date();
-
         // Once shut down, only lingering is left to do.
         if !self.shut_down {
             let dispatched = self.poll_loop(cx)?;

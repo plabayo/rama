@@ -1,4 +1,8 @@
 //! HTTP/3 server stream admission and response sending.
+//!
+//! Adds no `Server` or `Date` response fields: use
+//! `rama_http::layer::required_header::AddRequiredResponseHeadersLayer` or your own layer.
+//! Core relays responses as-is; header policy lives in layers.
 
 use std::{
     future::{Future, pending, poll_fn},
@@ -819,12 +823,6 @@ impl<C: transport::Connection> SendResponse<C> {
                 Code::H3_INTERNAL_ERROR,
                 "final response cannot be informational",
             ));
-        }
-        if self.shared.config.auto_date_header {
-            response
-                .headers_mut()
-                .entry(header::DATE)
-                .or_insert_with(crate::common::date::update_and_header_value);
         }
         if is_tunnel_response(Some(&self.method), response.status())
             && self.shared.config.strict_connect_framing

@@ -183,9 +183,6 @@ pub struct Config {
     /// Reject, rather than drop, `Content-Length` or `Transfer-Encoding` on a successful response to CONNECT,
     /// which RFC 9110 §9.3.6 forbids as a tunnel follows the response.
     pub strict_connect_framing: bool,
-    /// Add a `Date` field to server responses that have none, as HTTP/1 and HTTP/2 servers
-    /// do. Enabled by default.
-    pub auto_date_header: bool,
     /// Where each connection records the datagrams it dropped; `None`, the default, records
     /// nothing.
     #[cfg(feature = "opentelemetry")]
@@ -219,7 +216,6 @@ impl Default for Config {
             extended_connect: false,
             datagrams: Some(DatagramConfig::default()),
             strict_connect_framing: false,
-            auto_date_header: true,
             #[cfg(feature = "opentelemetry")]
             metrics: None,
         }
@@ -238,16 +234,6 @@ pub struct QpackDecoderCeiling {
 }
 
 impl Config {
-    rama_utils::macros::generate_set_and_with! {
-        /// Set whether server responses without a `Date` field get one.
-        ///
-        /// Enabled by default.
-        pub fn auto_date_header(mut self, enabled: bool) -> Self {
-            self.auto_date_header = enabled;
-            self
-        }
-    }
-
     /// The highest QPACK decoder limits captured SETTINGS may raise a connection to,
     /// about four times what browsers advertise.
     pub const CAPTURED_QPACK_CEILING: QpackDecoderCeiling = QpackDecoderCeiling {

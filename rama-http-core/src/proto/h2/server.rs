@@ -31,7 +31,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use super::{PipeToSendStream, SendBuf, ping};
 use crate::{
     body::Incoming as IncomingBody,
-    common::date,
     h2::{
         RateBudget, Reason, RecvStream,
         server::{Connection, Handshake, SendResponse},
@@ -72,7 +71,6 @@ pub(crate) struct Config {
     pub(crate) max_send_buffer_size: u32,
     pub(crate) header_table_size: Option<u32>,
     pub(crate) max_header_list_size: u32,
-    pub(crate) date_header: bool,
     pub(crate) strict_connect_framing: bool,
     pub(crate) header_read_timeout: Option<HeaderReadTimeout>,
     pub(crate) idle_timeout: Option<IdleTimeout>,
@@ -98,7 +96,6 @@ impl Default for Config {
             keep_alive_timeout: Duration::from_secs(20),
             max_send_buffer_size: DEFAULT_MAX_SEND_BUF_SIZE,
             max_header_list_size: DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE,
-            date_header: true,
             strict_connect_framing: false,
             header_read_timeout: Some(HeaderReadTimeout::default()),
             idle_timeout: Some(IdleTimeout::default()),
@@ -109,7 +106,6 @@ impl Default for Config {
 /// Per-response options, copied to every stream of a connection.
 #[derive(Debug, Clone, Copy)]
 struct ResponseOptions {
-    date_header: bool,
     /// Refuse, rather than drop, framing fields on a 2xx to CONNECT.
     strict_connect_framing: bool,
 }
@@ -225,7 +221,6 @@ where
             },
             service,
             options: ResponseOptions {
-                date_header: config.date_header,
                 strict_connect_framing: config.strict_connect_framing,
             },
             close_pending: false,
@@ -676,13 +671,6 @@ where
                         res.headers_mut(),
                         super::MessageKind::Response,
                     );
-
-                    // set Date header if it isn't already set if instructed
-                    if me.options.date_header {
-                        res.headers_mut()
-                            .entry(header::DATE)
-                            .or_insert_with(date::update_and_header_value);
-                    }
 
                     let method = if *me.is_head {
                         Some(&Method::HEAD)

@@ -23,7 +23,6 @@ use rama_utils::collections::smallvec::{SmallVec, smallvec, smallvec_inline};
 use super::EncodeHead;
 use crate::{
     body::DecodedLength,
-    common::date,
     error::{Header as HeaderError, Parse},
     headers,
     proto::{
@@ -512,10 +511,6 @@ impl Http1Transaction for Server {
         *status == StatusCode::SWITCHING_PROTOCOLS
             || (method == Some(&Method::CONNECT) && status.is_success())
     }
-
-    fn update_date() {
-        date::update();
-    }
 }
 
 impl Server {
@@ -682,7 +677,6 @@ impl Server {
         }
         let mut wrote_len = false;
         let mut encoder = Encoder::length(0);
-        let mut wrote_date = false;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
         let connection_header_names = headers::connection_header_names(&msg.head.headers);
@@ -863,9 +857,6 @@ impl Server {
                     }
                     continue 'headers;
                 }
-                Some(header::StandardHeader::Date) => {
-                    wrote_date = true;
-                }
                 Some(header::StandardHeader::Trailer) => {
                     // check that we actually can send a chunked body...
                     if msg.head.version == Version::HTTP_10
@@ -947,16 +938,7 @@ impl Server {
             encoder = Encoder::length(0);
         }
 
-        // cached date is much faster than formatting every request
-        // don't force the write if disabled
-        if !wrote_date && msg.date_header {
-            dst.reserve(date::DATE_VALUE_LENGTH + 8);
-            header_name_writer.write_header_name_with_colon(dst, &header::DATE);
-            date::extend(dst);
-            extend(dst, b"\r\n\r\n");
-        } else {
-            extend(dst, b"\r\n");
-        }
+        extend(dst, b"\r\n");
 
         Ok(encoder
             .with_nominated_fields(connection_header_names)
@@ -3075,7 +3057,6 @@ mod tests {
                     keep_alive: true,
                     req_method: &mut None,
                     title_case_headers: false,
-                    date_header: true,
                     strict_connect_framing: false,
                 },
                 &mut vec,
@@ -3100,7 +3081,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -3385,7 +3365,6 @@ mod tests {
                     keep_alive: true,
                     req_method: &mut None,
                     title_case_headers: false,
-                    date_header: true,
                     strict_connect_framing: false,
                 },
                 &mut vec,
@@ -3420,7 +3399,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -3454,7 +3432,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut wire,
@@ -3500,7 +3477,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -3537,7 +3513,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -3588,7 +3563,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut encoded,
@@ -3617,7 +3591,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut encoded,
@@ -3664,7 +3637,6 @@ mod tests {
                             keep_alive: !close,
                             req_method: &mut Some(Method::POST),
                             title_case_headers: false,
-                            date_header: false,
                             strict_connect_framing: false,
                         },
                         &mut bytes,
@@ -3720,7 +3692,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut Some(method),
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut wire,
@@ -3845,7 +3816,6 @@ mod tests {
                                 keep_alive: true,
                                 req_method: &mut Some(Method::GET),
                                 title_case_headers: false,
-                                date_header: false,
                                 strict_connect_framing: false,
                             },
                             &mut wire,
@@ -4216,7 +4186,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut Some(method),
                 title_case_headers: false,
-                date_header: false,
                 strict_connect_framing,
             },
             &mut bytes,
@@ -4551,7 +4520,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut Some(Method::CONNECT),
                 title_case_headers: false,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -4588,7 +4556,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -4625,7 +4592,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: false,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
@@ -4633,9 +4599,9 @@ mod tests {
         .unwrap();
 
         let expected_response =
-            b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 10\r\ncontent-type: application/json\r\ndate: ";
+            b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 10\r\ncontent-type: application/json\r\n\r\n";
 
-        assert_eq!(&vec[..expected_response.len()], &expected_response[..]);
+        assert_eq!(&vec, &expected_response);
     }
 
     #[test]
@@ -4662,22 +4628,20 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: true,
                 strict_connect_framing: false,
             },
             &mut vec,
         )
         .unwrap();
 
-        // this will also test that the date does exist
         let expected_response =
-            b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 10\r\nContent-Type: application/json\r\nDate: ";
+            b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 10\r\nContent-Type: application/json\r\n\r\n";
 
-        assert_eq!(&vec[..expected_response.len()], &expected_response[..]);
+        assert_eq!(&vec, &expected_response);
     }
 
     #[test]
-    fn test_disabled_date_header() {
+    fn server_encode_adds_no_date_header() {
         use rama_http_types::header::HeaderValue;
 
         use crate::proto::BodyLength;
@@ -4700,7 +4664,6 @@ mod tests {
                 keep_alive: true,
                 req_method: &mut None,
                 title_case_headers: true,
-                date_header: false,
                 strict_connect_framing: false,
             },
             &mut vec,

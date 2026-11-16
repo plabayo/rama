@@ -5121,7 +5121,6 @@ dependencies = [
  "atomic-waker",
  "futures-channel",
  "httparse",
- "httpdate",
  "indexmap",
  "itoa",
  "parking_lot 0.13.0",

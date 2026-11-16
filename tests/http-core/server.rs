@@ -1122,7 +1122,6 @@ fn pipeline_enabled() {
         let mut lines = buf.split(|&b| b == b'\n');
         assert_eq!(s(lines.next().unwrap()), "HTTP/1.1 200 OK\r");
         assert_eq!(s(lines.next().unwrap()), "content-length: 12\r");
-        lines.next().unwrap(); // Date
         assert_eq!(s(lines.next().unwrap()), "\r");
         assert_eq!(s(lines.next().unwrap()), "Hello World");
 
@@ -1130,7 +1129,6 @@ fn pipeline_enabled() {
         assert_eq!(s(lines.next().unwrap()), "content-length: 12\r");
         // close because the last request said to close
         assert_eq!(s(lines.next().unwrap()), "connection: close\r");
-        lines.next().unwrap(); // Date
         assert_eq!(s(lines.next().unwrap()), "\r");
         assert_eq!(s(lines.next().unwrap()), "Hello World");
     }
@@ -3000,7 +2998,7 @@ fn streaming_body() {
         buf.starts_with(b"HTTP/1.1 200 OK\r\n"),
         "response is 200 OK"
     );
-    assert_eq!(buf.len(), 100_808, "full streamed body read");
+    assert_eq!(buf.len(), 100_771, "full streamed body read");
 }
 
 #[test]
@@ -3220,7 +3218,6 @@ async fn http2_keep_alive_detects_unresponsive_client() {
     let err = http2::Builder::new(WeakScope::detached())
         .with_keep_alive_interval(Duration::from_secs(1))
         .with_keep_alive_timeout(Duration::from_secs(1))
-        .with_auto_date_header(true)
         .serve_connection(socket, RamaHttpService::new(unreachable_service()))
         .await
         .expect_err("serve_connection should error");
@@ -3424,7 +3421,7 @@ async fn http2_peer_settings_handle_does_not_extend_conn_lifetime() {
 }
 
 #[tokio::test]
-async fn http2_check_date_header_disabled() {
+async fn http2_adds_no_date_header() {
     let (listener, addr) = setup_tcp_listener();
 
     tokio::spawn(async move {
@@ -3433,7 +3430,6 @@ async fn http2_check_date_header_disabled() {
 
         http2::Builder::new(WeakScope::detached())
             .with_keep_alive_interval(Duration::from_secs(1))
-            .with_auto_date_header(false)
             .with_keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, RamaHttpService::new(HelloWorld))
             .await
@@ -3581,10 +3577,9 @@ fn http1_trailer_send_fields() {
         "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ntrailer: chunky-trailer\r\n";
     assert_eq!(&sres[..expected_head.len()], expected_head);
 
-    // skip the date header
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
     assert_eq!(body, expected_body);
@@ -3626,10 +3621,9 @@ fn http1_trailer_send_fields_titlecase() {
         "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ntrailer: Chunky-Trailer\r\n";
     assert_eq!(&sres[..expected_head.len()], expected_head);
 
-    // skip the date header
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
     assert_eq!(body, expected_body);
@@ -3668,10 +3662,9 @@ fn http1_trailer_fields_not_allowed() {
         "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\ntrailer: chunky-trailer\r\n";
     assert_eq!(&sres[..expected_head.len()], expected_head);
 
-    // skip the date header
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     // no trailer fields should be sent because TE: trailers was not in request headers
     let expected_body = "5\r\nhello\r\n0\r\n\r\n";
@@ -3706,9 +3699,9 @@ fn http1_trailer_fields_allowed_with_comma_separated_te() {
     let res = read_until(&mut req, |buf| buf.ends_with(chunky_trailer_chunk)).expect("reading");
     let sres = s(&res);
 
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\n\r\n";
     assert_eq!(body, expected_body);
@@ -3743,9 +3736,9 @@ fn http1_trailer_fields_allowed_with_multiple_te_headers() {
     let res = read_until(&mut req, |buf| buf.ends_with(chunky_trailer_chunk)).expect("reading");
     let sres = s(&res);
 
-    let date_fragment = "GMT\r\n\r\n";
-    let pos = sres.find(date_fragment).expect("find GMT");
-    let body = &sres[pos + date_fragment.len()..];
+    let head_end = "\r\n\r\n";
+    let pos = sres.find(head_end).expect("find end of head");
+    let body = &sres[pos + head_end.len()..];
 
     let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\n\r\n";
     assert_eq!(body, expected_body);
@@ -4210,7 +4203,8 @@ fn s(buf: &[u8]) -> &str {
 }
 
 fn has_header(msg: &str, name: &str) -> bool {
-    let n = msg.find("\r\n\r\n").unwrap_or(msg.len());
+    // Keep the last field's CRLF so a `value\r\n` needle can match it.
+    let n = msg.find("\r\n\r\n").map_or(msg.len(), |n| n + 2);
 
     msg[..n].contains(name)
 }

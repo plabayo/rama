@@ -1668,7 +1668,7 @@ async fn all_network_version_pairs_preserve_http_semantics() {
 /// A peer that accepts TCP but never finishes TLS exercises the connection-only
 /// deadline, both before CONNECT and after an unlabelled tunnel is accepted.
 #[tokio::test]
-async fn every_version_dates_responses_and_sizes_known_request_bodies() {
+async fn every_version_sizes_known_request_bodies_and_adds_no_date() {
     timeout(Duration::from_secs(30), async {
         let origin = endpoint(
             None,
@@ -1691,7 +1691,7 @@ async fn every_version_dates_responses_and_sizes_known_request_bodies() {
             let response = web.serve(req).await.unwrap();
             assert_eq!(response.version(), version);
             assert_eq!(response.headers()["x-request-length"], "5", "{version:?}");
-            assert!(response.headers().contains_key("date"), "{version:?}");
+            assert!(!response.headers().contains_key("date"), "{version:?}");
         }
     })
     .await

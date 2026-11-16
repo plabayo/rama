@@ -469,11 +469,8 @@ async fn header_order_survives_transport_and_message_forwarding() {
         )
         .unwrap();
         // The response must carry exactly the forwarded fields, so no `Date` is added.
-        let (mut server, server_driver) = server::handshake(
-            pair.server.clone(),
-            Config::default().with_auto_date_header(false),
-        )
-        .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
         let client_driver = spawn(client_driver.run());
         let server_driver = spawn(server_driver.run());
         let order: PseudoHeaderOrder = [
