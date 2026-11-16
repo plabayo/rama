@@ -814,7 +814,7 @@ async fn pump<T: AsyncWrite + Send>(
     let closed = scope
         .run_until_aborted_within(config.close_grace, sender.close())
         .await;
-    if !matches!(closed, Some(Ok(()))) {
+    if !matches!(closed, Ok(Ok(()))) {
         sender.abort();
     }
 }

@@ -14,6 +14,7 @@ use parking_lot::Mutex;
 use rama_core::{
     error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef, Ingress},
+    futures::maybe,
     graceful::WeakScope,
 };
 use rama_http::io::upgrade as http_upgrade;
@@ -822,12 +823,7 @@ where
                             Ok(fields) => fields,
                             Err(error) => return Err(self.response_error(id, error).await),
                         },
-                        result = async {
-                            match upload.0.as_mut() {
-                                Some(task) => task.await,
-                                None => std::future::pending().await,
-                            }
-                        } => {
+                        result = maybe(upload.0.as_mut()) => {
                             upload.0 = None;
                             if let Err(error) = result.map_err(|_error| Error::stream(Code::H3_INTERNAL_ERROR, "upload task failed"))?
                                 && !error.is_peer_stop() && !error.is_clean_close() { return Err(self.early_rejection().unwrap_or(error)); }

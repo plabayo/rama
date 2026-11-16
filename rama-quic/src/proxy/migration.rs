@@ -9,6 +9,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
     extensions::Extensions,
+    futures::maybe,
     graceful::WeakScope,
     io::BridgeIo,
     service::BoxService,
@@ -343,10 +344,7 @@ async fn next_trigger(
     tokio::select! {
         change = ingress_changes.changed() => change.map(|_| QuicMigrationTrigger::ValidatedPath(QuicMigrationSide::Ingress)),
         change = egress_changes.changed() => change.map(|_| QuicMigrationTrigger::ValidatedPath(QuicMigrationSide::Egress)),
-        () = async {
-            if let Some(network) = network { let _closed = network.changed().await; }
-            else { std::future::pending::<()>().await; }
-        } => Some(QuicMigrationTrigger::NetworkChanged),
+        _closed = maybe(network.as_mut().map(watch::Receiver::changed)) => Some(QuicMigrationTrigger::NetworkChanged),
         _closed = ingress.closed() => None,
         _closed = egress.closed() => None,
     }

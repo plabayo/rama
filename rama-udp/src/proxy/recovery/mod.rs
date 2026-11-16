@@ -10,7 +10,7 @@ use crate::{DatagramError, DatagramSender as _, DatagramSocket, DatagramSocketEx
 use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _},
-    futures::task::AtomicWaker,
+    futures::{maybe, task::AtomicWaker},
     io::BridgeIo,
     telemetry::tracing,
 };
@@ -266,7 +266,7 @@ impl DatagramForwardService {
                     tokio::select! {
                         biased;
                         // Expiry wins even under an unending stream of network observations.
-                        () = wait_optional(outage.map(tokio::time::sleep_until)), if outage.is_some() => {
+                        () = maybe(outage.map(tokio::time::sleep_until)), if outage.is_some() => {
                             return Err(BoxError::from_static_str("UDP egress recovery deadline expired"));
                         }
                         result = &mut failure, if !failure_observed => {
@@ -292,7 +292,7 @@ impl DatagramForwardService {
                                 tracing::trace!(target: "rama_udp::recovery", "cancelled preparation while network unavailable");
                             }
                         }
-                        result = wait_optional(preparation.as_mut()), if preparation.is_some() => {
+                        result = maybe(preparation.as_mut()), if preparation.is_some() => {
                             preparation = None;
                             let result = result.and_then(|socket| {
                                 if socket.peer_addr()?.into_canonical_ip_addr() != egress.address {
@@ -327,13 +327,6 @@ impl DatagramForwardService {
 }
 
 type Preparation<'a, S> = Pin<Box<dyn Future<Output = Result<S, BoxError>> + Send + 'a>>;
-
-async fn wait_optional<F: Future>(future: Option<F>) -> F::Output {
-    match future {
-        Some(future) => future.await,
-        None => std::future::pending().await,
-    }
-}
 
 // Only the signal's own wake polls its shared watch registration again. Packet wakes touch
 // this per-association atomic, never the shared notification waiters lock.

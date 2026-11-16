@@ -18,7 +18,7 @@ use rama_net::ip::{
     IpPacket, IpProtocol,
     icmp::{Icmpv6Echo, Icmpv6EchoKind},
 };
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, time::deadline_after};
 use std::{
     fmt,
     sync::{
@@ -360,7 +360,7 @@ impl Shared {
     }
 
     fn idle_deadline(&self) -> Instant {
-        crate::time::expiration_at(
+        deadline_after(
             self.epoch + Duration::from_nanos(self.last_activity.load(Ordering::Relaxed)),
             self.config.idle_timeout,
         )
@@ -532,8 +532,7 @@ impl<T: AsyncRead + AsyncWrite + ExtensionsRef> ConnectIpSession<T> {
         }
         .encode(source, peer, &mut packet)
         .map_err(|_error| ConnectIpError::Config)?;
-        let deadline =
-            crate::time::expiration_at(Instant::now(), self.sender.shared.config.write_timeout);
+        let deadline = deadline_after(Instant::now(), self.sender.shared.config.write_timeout);
         let result = timeout_at(deadline, async {
             if !matches!(
                 self.send_packet(Bytes::copy_from_slice(&packet), IpPacketOrigin::Local)
@@ -751,7 +750,7 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
             complete: false,
         };
         let result = timeout_at(
-            crate::time::expiration_at(Instant::now(), self.shared.config.write_timeout),
+            deadline_after(Instant::now(), self.shared.config.write_timeout),
             self.http.send_capsule(capsule.capsule_type(), value),
         )
         .await;
@@ -820,7 +819,7 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
             complete: false,
         };
         let result = timeout_at(
-            crate::time::expiration_at(Instant::now(), self.shared.config.write_timeout),
+            deadline_after(Instant::now(), self.shared.config.write_timeout),
             self.http.send_datagram(datagram.freeze()),
         )
         .await;
@@ -862,7 +861,7 @@ impl<T: AsyncWrite> ConnectIpSender<T> {
             complete: false,
         };
         let result = timeout_at(
-            crate::time::expiration_at(Instant::now(), self.shared.config.write_timeout),
+            deadline_after(Instant::now(), self.shared.config.write_timeout),
             self.http.close(),
         )
         .await;

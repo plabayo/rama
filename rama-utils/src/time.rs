@@ -178,6 +178,20 @@ pub fn time_modulo_index(len: usize) -> usize {
     (now_unix_ms() as u64 % len as u64) as usize
 }
 
+/// `start + timeout`, shortened only when the platform cannot represent it.
+///
+/// An unrepresentable deadline saturates to a far future instant, never to
+/// `start`, and this function never panics.
+#[must_use]
+pub fn deadline_after(start: Instant, mut timeout: Duration) -> Instant {
+    loop {
+        if let Some(deadline) = start.checked_add(timeout) {
+            return deadline;
+        }
+        timeout /= 2;
+    }
+}
+
 /// A monotonic instant stored in a single [`AtomicU64`] as nanoseconds since a
 /// shared process epoch (see [`now_monotonic_nanos`]).
 ///
@@ -248,6 +262,13 @@ mod tests {
             (unix - unix_timestamp_millis_slow()).abs() < 1000,
             "the wall clock is unchanged: {unix}"
         );
+    }
+
+    #[test]
+    fn unrepresentable_deadlines_saturate_to_the_future() {
+        let now = Instant::now();
+        assert!(deadline_after(now, Duration::MAX) > now);
+        assert_eq!(deadline_after(now, Duration::ZERO), now);
     }
 
     #[test]

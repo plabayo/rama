@@ -14,6 +14,7 @@ use rama_core::{
 use rama_http::StreamingBody;
 use rama_http_types::{Request, Response, StatusCode};
 use rama_net::conn::LingeringClose;
+use rama_utils::time::deadline_after;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -74,16 +75,10 @@ enum Linger {
     Exhausted,
 }
 
-/// How many reads a lingering connection does per poll before it yields, so
-/// that a client that always has data ready does not starve other tasks.
-const LINGER_READS_PER_POLL: usize = 16;
-
-/// `instant + duration`, or a far-off instant if that does not fit.
-fn after(instant: tokio::time::Instant, duration: std::time::Duration) -> tokio::time::Instant {
-    instant
-        .checked_add(duration)
-        .unwrap_or_else(|| instant + std::time::Duration::from_secs(86_400 * 365 * 30))
-}
+/// How many reads draining or lingering on discarded input does per poll
+/// before it yields, so that a client that always has data ready does not
+/// starve other tasks.
+const DISCARD_READS_PER_POLL: usize = 16;
 
 pub(crate) trait Dispatch {
     type PollItem;
@@ -166,7 +161,7 @@ where
             {
                 self.draining_request = Some(RequestDrain {
                     remaining: config.max_bytes,
-                    deadline: after(tokio::time::Instant::now(), config.timeout),
+                    deadline: deadline_after(tokio::time::Instant::now(), config.timeout),
                     timer: None,
                 });
             } else if quick_drain && self.conn.request_body_fits_budget(config.max_bytes) {
@@ -182,7 +177,7 @@ where
     }
 
     fn poll_request_drain(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        for _ in 0..16 {
+        for _ in 0..DISCARD_READS_PER_POLL {
             let Some(drain) = self.draining_request.as_mut() else {
                 return Poll::Ready(());
             };
@@ -429,8 +424,8 @@ where
                     self.linger = match bounds {
                         Some(bounds) => {
                             let started = Instant::now();
-                            let give_up = after(started, bounds.timeout());
-                            let due = after(started, bounds.idle_timeout()).min(give_up);
+                            let give_up = deadline_after(started, bounds.timeout());
+                            let due = deadline_after(started, bounds.idle_timeout()).min(give_up);
                             Linger::Draining {
                                 bounds,
                                 timer: Box::pin(tokio::time::sleep_until(due)),
@@ -452,7 +447,7 @@ where
                     discarded,
                 } => {
                     let end = 'drain: {
-                        for _ in 0..LINGER_READS_PER_POLL {
+                        for _ in 0..DISCARD_READS_PER_POLL {
                             let room = bounds.max_bytes().map_or(usize::MAX, |max| {
                                 usize::try_from(max.saturating_sub(*discarded))
                                     .unwrap_or(usize::MAX)
@@ -474,8 +469,8 @@ where
                                     if timer.as_mut().poll(cx).is_pending() {
                                         return Poll::Pending;
                                     }
-                                    let due =
-                                        after(*last_data, bounds.idle_timeout()).min(*give_up);
+                                    let due = deadline_after(*last_data, bounds.idle_timeout())
+                                        .min(*give_up);
                                     if due <= Instant::now() {
                                         break 'drain if due == *give_up {
                                             "timeout"

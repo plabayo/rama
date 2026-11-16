@@ -17,8 +17,10 @@ use tokio::{
     time::{Instant, advance},
 };
 
-use super::{Cause, Scope, WeakScope, attach_scope, enter_scope, enter_scope_with, scope_context};
-use crate::extensions::Extensions;
+use super::{
+    Cause, RunCutoff, Scope, WeakScope, attach_scope, enter_scope, enter_scope_with, scope_context,
+};
+use crate::{extensions::Extensions, futures::FutureExt as _};
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -1154,7 +1156,11 @@ fn bound<F: Future + 'static>(
     future: F,
 ) -> Bound<F::Output> {
     if within {
-        return Box::pin(scope.run_until_aborted_within(timeout, future));
+        return Box::pin(
+            scope
+                .run_until_aborted_within(timeout, future)
+                .map(Result::ok),
+        );
     }
     let child = scope.child().with_hard_timeout(timeout);
     Box::pin(async move { child.run_until_aborted(future).await })
@@ -3472,7 +3478,7 @@ async fn a_bounded_run_out_of_budget_still_wakes_at_its_deadline() {
         .await
         .expect("the bounded run wakes at its own deadline")
         .unwrap();
-    assert_eq!(result, None);
+    assert_eq!(result, Err(RunCutoff::TimedOut));
     assert_eq!(start.elapsed(), 10 * SEC);
 }
 
@@ -3573,7 +3579,7 @@ async fn a_bound_past_the_clock_leaves_only_the_scope_to_end_the_run() {
         .await
         .unwrap_err();
     scope.abort(Cause::Reason("test"));
-    assert_eq!(run.await, None);
+    assert_eq!(run.await, Err(RunCutoff::Aborted));
 }
 
 /// What a bounded run owns is gone before its hold on the scope is, at its end as on a drop:
@@ -3599,7 +3605,7 @@ async fn a_bounded_run_releases_its_future_before_its_hold() {
         drop(scope);
         if timed_out {
             tokio::pin!(run);
-            assert_eq!(run.as_mut().await, None);
+            assert_eq!(run.as_mut().await, Err(RunCutoff::TimedOut));
         } else {
             drop(run);
         }
@@ -3624,4 +3630,58 @@ fn iteratively_dropped_ancestors_leave_no_relay_on_the_root() {
     assert_eq!(waiter_count(&root), 0);
     root.cancel(Cause::Owner);
     assert_eq!(waiter_count(&root), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_weak_bounded_run_reports_which_bound_ended_it() {
+    let scope = Scope::new();
+    let weak = scope.clone_weak();
+    assert_eq!(weak.run_until_aborted_within(SEC, async { 1 }).await, Ok(1));
+
+    let start = Instant::now();
+    let timed_out = weak.run_until_aborted_within(SEC, std::future::pending::<()>());
+    assert_eq!(timed_out.await, Err(RunCutoff::TimedOut));
+    assert_eq!(start.elapsed(), SEC);
+
+    let (polls, work) = counted_pending();
+    let run = weak.run_until_aborted_within(10 * SEC, work);
+    let abort = async {
+        advance(SEC).await;
+        scope.abort(Cause::Owner);
+    };
+    let (ended, ()) = tokio::join!(run, abort);
+    assert_eq!(ended, Err(RunCutoff::Aborted));
+    assert!(polls.load(Ordering::SeqCst) >= 1);
+
+    let (polls, work) = counted_pending();
+    let run = weak.run_until_aborted_within(10 * SEC, work);
+    assert_eq!(run.await, Err(RunCutoff::Aborted));
+    assert_eq!(
+        polls.load(Ordering::SeqCst),
+        0,
+        "an aborted scope never polls it"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_weak_bounded_run_in_a_closed_scope_runs_unheld_and_still_ends_at_its_bounds() {
+    let scope = Scope::new();
+    let weak = scope.clone_weak();
+    scope.cancel(Cause::Owner);
+    drop(scope);
+    assert!(weak.try_hold().is_err(), "closed");
+
+    assert_eq!(weak.run_until_aborted_within(SEC, async { 2 }).await, Ok(2));
+    let start = Instant::now();
+    let timed_out = weak.run_until_aborted_within(SEC, std::future::pending::<()>());
+    assert_eq!(timed_out.await, Err(RunCutoff::TimedOut));
+    assert_eq!(start.elapsed(), SEC);
+
+    let run = weak.run_until_aborted_within(10 * SEC, std::future::pending::<()>());
+    let abort = async {
+        advance(SEC).await;
+        weak.abort(Cause::Owner);
+    };
+    let (ended, ()) = tokio::join!(run, abort);
+    assert_eq!(ended, Err(RunCutoff::Aborted));
 }

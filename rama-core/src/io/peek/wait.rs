@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, future::pending, io, num::NonZeroUsize, pin::pin};
+use std::{error::Error, fmt, future::ready, io, num::NonZeroUsize, pin::pin};
 
 use rama_utils::macros::nonzero;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
@@ -6,6 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt as _};
 use super::{PeekEgressPredicate, PeekStopReason, PeekVerdict};
 use crate::{
     bytes::{BufMut, Bytes},
+    futures::maybe,
     graceful::{Cause, WeakScope},
 };
 
@@ -500,10 +501,10 @@ impl<'a> PeekWaiter<'a> {
             let cutoff = tokio::select! {
                 biased;
                 output = &mut input => return Ok(output),
-                () = aborted(scope) => PeekCutoff::Aborted,
-                cutoff = ready_cutoff(egress_cutoff) => cutoff,
-                () = cancelled(cancel_scope) => PeekCutoff::Cancelled,
-                cutoff = egress_step(egress_reading) => match cutoff {
+                () = maybe(scope.map(WeakScope::aborted)) => PeekCutoff::Aborted,
+                cutoff = maybe(egress_cutoff.map(ready)) => cutoff,
+                () = maybe(cancel_scope.map(WeakScope::cancelled)) => PeekCutoff::Cancelled,
+                cutoff = maybe(egress_reading.map(PeekEgress::step)) => match cutoff {
                     Some(cutoff) => cutoff,
                     None => continue,
                 },
@@ -543,33 +544,5 @@ impl<'a> PeekWaiter<'a> {
             PeekCutoff::EgressMismatch | PeekCutoff::EgressClosed => None,
         });
         Err(PeekCutoffError { cutoff, cause }.into())
-    }
-}
-
-async fn ready_cutoff(cutoff: Option<PeekCutoff>) -> PeekCutoff {
-    match cutoff {
-        Some(cutoff) => cutoff,
-        None => pending().await,
-    }
-}
-
-async fn aborted(scope: Option<&WeakScope>) {
-    match scope {
-        Some(scope) => scope.aborted().await,
-        None => pending().await,
-    }
-}
-
-async fn cancelled(scope: Option<&WeakScope>) {
-    match scope {
-        Some(scope) => scope.cancelled().await,
-        None => pending().await,
-    }
-}
-
-async fn egress_step(egress: Option<&mut PeekEgress<'_>>) -> Option<PeekCutoff> {
-    match egress {
-        Some(egress) => egress.step().await,
-        None => pending().await,
     }
 }

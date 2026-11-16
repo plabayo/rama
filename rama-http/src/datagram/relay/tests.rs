@@ -1,5 +1,10 @@
 use parking_lot::Mutex;
-use rama_core::{ServiceInput, bytes::Bytes, graceful::Cause, rt::spawn};
+use rama_core::{
+    ServiceInput,
+    bytes::Bytes,
+    graceful::{Cause, Scope},
+    rt::spawn,
+};
 use std::{
     collections::VecDeque,
     future::Future as _,

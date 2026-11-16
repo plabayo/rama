@@ -47,22 +47,6 @@ pub(super) enum Blocked {
 pub(super) type SlotWait =
     Pin<Box<dyn Future<Output = Result<OwnedSemaphorePermit, AcquireError>> + Send>>;
 
-/// The output of `future` if there is one, else never.
-pub(super) async fn maybe<F: Future + Unpin>(future: &mut Option<F>) -> F::Output {
-    match future {
-        Some(future) => future.await,
-        None => std::future::pending().await,
-    }
-}
-
-/// As [`maybe`], for a future pinned in place.
-pub(super) async fn maybe_pinned<F: Future>(future: Pin<&mut Option<F>>) -> F::Output {
-    match future.as_pin_mut() {
-        Some(future) => future.await,
-        None => std::future::pending().await,
-    }
-}
-
 /// An acquisition of an id's slot, kept across wakes like [`SlotWait`].
 pub(super) type IdSlotWait = Pin<Box<dyn Future<Output = Result<IdPermit, AcquireError>> + Send>>;
 

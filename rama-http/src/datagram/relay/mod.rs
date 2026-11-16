@@ -3,7 +3,7 @@
 use rama_core::{
     Service,
     extensions::ExtensionsRef,
-    graceful::{Scope, WeakScope},
+    graceful::{RunCutoff, WeakScope},
     io::{AbortIo, BridgeIo, Io},
 };
 use rama_http_types::proto::capsule::CapsuleType;
@@ -233,9 +233,8 @@ async fn exchange<L: AsyncWrite, R: AsyncWrite>(
     }
 }
 
-/// Close the direction that `ended` and run the `other` one to its own close, in a scope
-/// below `scope` that is aborted once `timeout` passed: whichever hard phase comes first
-/// ends what a peer still holds.
+/// Close the direction that `ended` and run the `other` one to its own close, held in
+/// `scope`: its hard phase or `timeout`, whichever comes first, ends what a peer still holds.
 async fn close<L, R, OL, OR>(
     scope: &WeakScope,
     timeout: Option<Duration>,
@@ -246,28 +245,26 @@ where
     R: AsyncWrite,
     OR: AsyncWrite,
 {
-    // A closed scope takes no holder: the close then runs below no parent.
-    let closing = scope
-        .try_hold()
-        .unwrap_or_else(|_closed| Scope::detached())
-        .child()
-        .maybe_with_hard_timeout(timeout);
-    let closed = closing
-        .run_until_aborted(async {
-            tokio::try_join!(finish(ended), async {
-                let (direction, ended) = other.await?;
-                finish(ended).await?;
-                Ok(direction)
-            })
-        })
+    let closed = scope
+        .run_until_aborted_within(
+            // No timeout leaves only the scope to end the close.
+            timeout.unwrap_or(Duration::MAX),
+            async {
+                tokio::try_join!(finish(ended), async {
+                    let (direction, ended) = other.await?;
+                    finish(ended).await?;
+                    Ok(direction)
+                })
+            },
+        )
         .await;
     match closed {
-        Some(closed) => closed.map(|((), direction)| direction),
-        None if scope.is_aborted() => Err(SessionError::Io(io::Error::new(
+        Ok(closed) => closed.map(|((), direction)| direction),
+        Err(RunCutoff::Aborted) => Err(SessionError::Io(io::Error::new(
             io::ErrorKind::Interrupted,
             "datagram relay shutdown",
         ))),
-        None => Err(SessionError::Io(io::Error::new(
+        Err(RunCutoff::TimedOut) => Err(SessionError::Io(io::Error::new(
             io::ErrorKind::TimedOut,
             "datagram relay close timeout",
         ))),

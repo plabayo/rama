@@ -66,6 +66,16 @@ pub struct Scope {
     nodes: Nodes,
 }
 
+/// Which bound ended a future run by [`Scope::run_until_aborted_within`] before it
+/// completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunCutoff {
+    /// The scope reached its hard phase.
+    Aborted,
+    /// The timeout passed.
+    TimedOut,
+}
+
 /// A [`Scope`] handle that observes without holding the drain open.
 #[derive(Clone)]
 pub struct WeakScope {
@@ -332,27 +342,21 @@ impl Scope {
         }
     }
 
-    /// Run `future` until this scope is aborted or `timeout` passed, counted from now: `None`
-    /// once either is, the output otherwise.
+    /// Run `future` until this scope is aborted or `timeout` passed, counted from now: the
+    /// [`RunCutoff`] that came first, the output otherwise.
     ///
     /// The same as [`Scope::run_until_aborted`] on a [`Scope::child`] made with
     /// [`Scope::with_hard_timeout`] and held while `future` runs, without making that child:
-    /// both ends are checked first on every poll, this scope is held until the returned
-    /// future ends or is dropped, so its [`Scope::join`] waits, and the timeout never ends it.
+    /// both ends are checked first on every poll, the hard phase before the timeout, this
+    /// scope is held until the returned future ends or is dropped, so its [`Scope::join`]
+    /// waits, and the timeout never ends it. A timeout past what the clock can tell is no
+    /// bound.
     pub fn run_until_aborted_within<F: Future>(
         &self,
         timeout: Duration,
         future: F,
-    ) -> impl Future<Output = Option<F::Output>> + use<F> {
-        RunWithin {
-            future: Some(future),
-            stop: self.aborted(),
-            // A timeout past what the clock can tell is no bound: only the scope ends it.
-            deadline: Instant::now().checked_add(timeout),
-            timer: None,
-            armed: None,
-            held: Some(self.clone()),
-        }
+    ) -> impl Future<Output = Result<F::Output, RunCutoff>> + use<F> {
+        RunWithin::new(self.aborted(), Some(self.clone()), timeout, future)
     }
 
     /// Give up this hold and wait until no holder of this scope or its subtree is left.
@@ -508,6 +512,19 @@ impl WeakScope {
         Self {
             nodes: Nodes::from_nodes(nodes, composites),
         }
+    }
+
+    /// Run `future` as [`Scope::run_until_aborted_within`] does, held in this scope when it
+    /// still takes a holder.
+    ///
+    /// A closed scope takes no holder: `future` then runs held by nothing, and still ends at
+    /// the hard phase of this scope.
+    pub fn run_until_aborted_within<F: Future>(
+        &self,
+        timeout: Duration,
+        future: F,
+    ) -> impl Future<Output = Result<F::Output, RunCutoff>> + use<F> {
+        RunWithin::new(self.aborted(), self.try_hold().ok(), timeout, future)
     }
 
     /// See [`Scope::cancel`].
@@ -1301,8 +1318,22 @@ pin_project_lite::pin_project! {
     }
 }
 
+impl<F> RunWithin<F> {
+    fn new(stop: Aborted, held: Option<Scope>, timeout: Duration, future: F) -> Self {
+        Self {
+            future: Some(future),
+            stop,
+            // A timeout past what the clock can tell is no bound: only the scope ends it.
+            deadline: Instant::now().checked_add(timeout),
+            timer: None,
+            armed: None,
+            held,
+        }
+    }
+}
+
 impl<F: Future> Future for RunWithin<F> {
-    type Output = Option<F::Output>;
+    type Output = Result<F::Output, RunCutoff>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
@@ -1312,18 +1343,28 @@ impl<F: Future> Future for RunWithin<F> {
                 // only wakes, and that some time after the deadline.
                 Some(deadline) => {
                     let now = Instant::now();
-                    this.stop.0.poll_at(cx, now).is_ready() || now >= deadline
+                    if this.stop.0.poll_at(cx, now).is_ready() {
+                        Some(RunCutoff::Aborted)
+                    } else if now >= deadline {
+                        Some(RunCutoff::TimedOut)
+                    } else {
+                        None
+                    }
                 }
-                None => Pin::new(this.stop).poll(cx).is_ready(),
+                None => Pin::new(this.stop)
+                    .poll(cx)
+                    .is_ready()
+                    .then_some(RunCutoff::Aborted),
             };
-            if stopped {
-                break 'run None;
+            if let Some(cutoff) = stopped {
+                break 'run Err(cutoff);
             }
+            // Polled again after it ended: a future may then stay pending.
             let Some(future) = this.future.as_mut().as_pin_mut() else {
-                break 'run None;
+                return Poll::Pending;
             };
             if let Poll::Ready(output) = future.poll(cx) {
-                break 'run Some(output);
+                break 'run Ok(output);
             }
             if this
                 .armed
@@ -1349,7 +1390,7 @@ impl<F: Future> Future for RunWithin<F> {
                 }
                 return Poll::Pending;
             }
-            None
+            Err(RunCutoff::TimedOut)
         };
         this.future.set(None);
         drop(this.held.take());

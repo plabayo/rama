@@ -34,6 +34,9 @@ mod test_util;
 mod bridge;
 pub use bridge::BridgeIo;
 
+mod shutdown;
+pub use shutdown::shutdown_within;
+
 mod read_at;
 #[doc(inline)]
 pub use read_at::{BlockCache, BlockCacheConfig, FileIdentity, ReadAt, ReadAtFiles};

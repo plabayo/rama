@@ -1,7 +1,5 @@
 //! Shared admission accounting for MASQUE tunnels.
 
-use crate::time::expiration_at;
-
 use std::{
     any::Any,
     cmp::Ordering as CmpOrdering,
@@ -24,7 +22,7 @@ use rama_net::{
     rate::{ClientIpRateKey, InputToRateKey, RateKey},
     user::UserId,
 };
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, time::deadline_after};
 use tokio::time::Instant;
 
 use crate::budget::{PrincipalBudget, PrincipalSpend, QuotaWindowState};
@@ -407,7 +405,7 @@ impl<X, K> TunnelLimits<X, K> {
         });
         principals.entries.insert(key.clone(), entry.clone());
         principals.expirations.push(Expiration {
-            at: expiration_at(now, retention),
+            at: deadline_after(now, retention),
             key,
         });
         Ok(entry)
@@ -519,12 +517,12 @@ impl<K: RateKey> PrincipalMap<K> {
             // looked at again strictly later, so this sweep ends whatever the idle timeout.
             if Arc::strong_count(entry) > 1 {
                 self.expirations.push(Expiration {
-                    at: expiration_at(now, idle_timeout.max(Duration::from_nanos(1))),
+                    at: deadline_after(now, idle_timeout.max(Duration::from_nanos(1))),
                     key: expiry.key,
                 });
                 continue;
             }
-            let idle_until = expiration_at(*entry.last_used.lock(), idle_timeout);
+            let idle_until = deadline_after(*entry.last_used.lock(), idle_timeout);
             let window = entry
                 .spend
                 .as_ref()
@@ -534,7 +532,7 @@ impl<K: RateKey> PrincipalMap<K> {
                 QuotaWindowState::OpenUntil(end) => end.max(idle_until),
                 // An end no instant can hold: look again later, never drop it early.
                 QuotaWindowState::OpenBeyond => {
-                    expiration_at(now, idle_timeout.max(Duration::from_nanos(1))).max(idle_until)
+                    deadline_after(now, idle_timeout.max(Duration::from_nanos(1))).max(idle_until)
                 }
             };
             if at > now {
