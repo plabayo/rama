@@ -1378,7 +1378,9 @@ mod tests {
     use crate::http::Body;
     use rama_utils::octets::kib;
 
-    use rama_core::{error::BoxErrorExt as _, layer::layer_fn};
+    #[cfg(feature = "quic")]
+    use rama_core::error::BoxErrorExt as _;
+    use rama_core::layer::layer_fn;
     #[cfg(all(
         feature = "quic",
         any(
