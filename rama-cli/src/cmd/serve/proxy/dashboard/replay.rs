@@ -4,8 +4,8 @@ use rama::{
     extensions::Extension,
     http::{
         client::{
-            BindBodyToConnLayer, EasyHttpWebClient, HttpConnId, HttpConnIdentifier,
-            HttpConnectRequestAdapter, HttpPooledConnectorConfig,
+            BindBodyToConnLayer, DefaultHttpWebClient, EasyHttpWebClient, Http3Connector,
+            HttpConnId, HttpConnIdentifier, HttpConnectRequestAdapter, HttpPooledConnectorConfig,
         },
         layer::version_adapter::RequestVersionAdapter,
     },
@@ -16,8 +16,12 @@ use rama::{
             pool::{ConnID, ReqToConnID},
         },
     },
+    quic::tls::BoringTlsProvider,
     tcp::client::service::TcpConnector,
-    tls::client::{ClientHello, TlsClientConfig},
+    tls::{
+        boring::client::BoringClientConfigExt as _,
+        client::{ClientHello, TlsClientConfig},
+    },
 };
 use tokio::io::AsyncReadExt as _;
 
@@ -50,36 +54,55 @@ fn replay_pool_id(input: &ConnectRequest) -> Result<ReplayPoolId, BoxError> {
     })
 }
 
+/// The client replaying captured requests, verifying origins with `tls_config`.
+///
+/// HTTP/3 captures replay over QUIC: directly, or in a CONNECT-UDP tunnel through a MASQUE
+/// upstream proxy. Any other upstream proxy refuses them, so it is never bypassed.
 pub(super) fn replay_client(
     capture: CaptureStore,
     tcp_options: Arc<SocketOptions>,
     upstream: &UpstreamProxyConfig,
+    tls_config: TlsClientConfig,
 ) -> Result<BoxService<Request, Response, BoxError>, BoxError> {
-    let tls_config = TlsClientConfig::default_http();
     let transport = TcpConnector::new().with_connector(tcp_options);
     let config = HttpPooledConnectorConfig::default();
     let pool = config.build_pool();
+    let proxy_tls = upstream.proxy_tls_config();
+    let masque_client = DefaultHttpWebClient::try_default_masque_proxy_client_using_boringssl(
+        WeakScope::detached(),
+        proxy_tls
+            .clone()
+            .map_or_else(TlsClientConfig::default_http, |tls| {
+                tls.with_alpn_http_auto()
+            }),
+    )?;
+    let http3 = Http3Connector::builder(WeakScope::detached())
+        .with_tls_provider(Arc::new(BoringTlsProvider))
+        .with_tls_config(tls_config.clone());
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(transport)
-        .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
-        .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(WeakScope::detached())
-        .with_custom_connection_pool(pool, replay_pool_id, config.wait_for_pool_timeout)
-        .map_connector(|connector| {
-            let connector = BindBodyToConnLayer::new().into_layer(connector);
-            let connector = ProxyRoutesConnector::new(connector);
-            let connector = HttpConnectRequestAdapter::new(connector);
-            RequestVersionAdapter::new(connector)
-        })
-        .build_client()
-        .with_forward_proxy_auth(upstream.forward_proxy_auth())
-        .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http())
-        .with_isolate_forward_proxy_auth_error(true);
+        .with_default_dns_connector();
+    let client = match proxy_tls {
+        Some(config) => client.with_tls_proxy_support_using_boringssl_config(config),
+        None => client.with_tls_proxy_support_using_boringssl(),
+    }
+    .with_proxy_support()
+    .with_tls_support_using_boringssl(tls_config)
+    .with_default_http_connector(WeakScope::detached())
+    .with_http3_masque_support(http3, masque_client)?
+    .with_custom_connection_pool(pool, replay_pool_id, config.wait_for_pool_timeout)
+    .map_connector(|connector| {
+        let connector = BindBodyToConnLayer::new().into_layer(connector);
+        let connector = ProxyRoutesConnector::new(connector);
+        let connector = HttpConnectRequestAdapter::new(connector);
+        RequestVersionAdapter::new(connector)
+    })
+    .build_client()
+    .with_forward_proxy_auth(upstream.forward_proxy_auth())
+    .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http())
+    .with_isolate_forward_proxy_auth_error(true);
     let client = upstream.http_service(client);
     let client = RemoveRequestHeaderLayer::hop_by_hop().into_layer(client);
-    let client = EmulateTlsProfileLayer::new().into_layer(client);
     let client = CaptureHttpLayer::new(Some(capture)).into_layer(client);
     Ok(client.boxed())
 }
@@ -189,12 +212,8 @@ pub(super) async fn replay_captured(
     let mut request = Request::from_parts(parts, Body::from_stream(body.stream(None)));
     request.extensions().insert(source);
     if let Some(client_hello) = tls_client_hello {
-        request.extensions().insert_arc(Arc::new(TlsProfile {
-            client_hello,
-            // Replay the captured connection, including its extension order.
-            permute_extensions: false,
-            ws_client_config_overwrites: None,
-        }));
+        // Replay the captured connection's offer, including its extension order.
+        TlsClientConfig::new_from_client_hello(&client_hello).write_to(request.extensions());
     }
     let replay_connection = state.capture.begin_connection_if_enabled(
         None,
@@ -209,8 +228,7 @@ pub(super) async fn replay_captured(
     }
     let _connection_guard = replay_connection
         .map(|replay_connection| state.capture.connection_guard(replay_connection));
-    // Scrub the original hop metadata before emulation can normalize the
-    // `Connection` field while retaining a header it named.
+    // Scrub the original hop metadata, including the headers its `Connection` field names.
     remove_hop_by_hop_request_headers(request.headers_mut());
     let response = state
         .replay_client

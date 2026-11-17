@@ -7,6 +7,7 @@ use rama::{
         ws::inspect::CapturedWebSocketMessage,
     },
     net::{Protocol, address::ProxyAddress},
+    tls::client::ServerVerifyMode,
     ua::profile::selection::database::UserAgentDatabase,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -44,7 +45,30 @@ pub(super) fn test_state() -> DashboardState {
     test_state_with_limits(8, 8)
 }
 
+/// Replays of `state` accept any origin certificate, so they reach self-signed test origins.
+fn trust_any_replay_origin(state: &mut DashboardState, upstream: &UpstreamProxyConfig) {
+    state.replay_client = replay_client(
+        state.capture.clone(),
+        Arc::new(SocketOptions::default_tcp()),
+        upstream,
+        TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+    )
+    .unwrap();
+}
+
 pub(super) async fn capture_request_for_replay(state: &DashboardState, uri: &str) {
+    capture_for_replay(
+        state,
+        Request::builder()
+            .uri(uri)
+            .header("proxy-authorization", "Basic captured-secret")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+}
+
+async fn capture_for_replay(state: &DashboardState, request: Request) {
     let capture = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
         rama::service::service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
@@ -52,13 +76,7 @@ pub(super) async fn capture_request_for_replay(state: &DashboardState, uri: &str
         }),
     );
     capture
-        .serve(
-            Request::builder()
-                .uri(uri)
-                .header("proxy-authorization", "Basic captured-secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .serve(request)
         .await
         .unwrap()
         .into_body()

@@ -81,10 +81,10 @@ use rama::{
     service::BoxService,
     stream::io::ReaderStream,
     tls::{
-        boring::client::EmulateTlsProfileLayer,
+        client::TlsClientConfig,
         inspect::{CapturedTlsParameters, TlsObservation},
     },
-    ua::{inspect::UserAgentObservation, profile::model::tls::TlsProfile},
+    ua::inspect::UserAgentObservation,
     utils::{
         octets::{kib, kib_u64, mib},
         str::{NonEmptyStr, arcstr::ArcStr},
@@ -198,7 +198,12 @@ impl DashboardState {
     ) -> Result<Self, BoxError> {
         let (ui_changes, _) = watch::channel(0);
         let inspection = capture.inspection_state();
-        let replay_client = replay_client(capture.clone(), tcp_options, upstream)?;
+        let replay_client = replay_client(
+            capture.clone(),
+            tcp_options,
+            upstream,
+            TlsClientConfig::default_http(),
+        )?;
         Ok(Self {
             #[cfg(test)]
             render_delay: Duration::ZERO,

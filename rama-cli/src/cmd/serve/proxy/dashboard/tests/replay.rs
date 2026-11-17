@@ -1,17 +1,37 @@
+use clap::Parser as _;
 use rama::{
-    http::{Version, header, layer::har::spec::LogFile, server::HttpServer},
+    graceful::Scope,
+    http::{
+        Version, core::h3::connection::Config as H3Config, header, layer::har::spec::LogFile,
+        server::HttpServer,
+    },
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
         stream::SocketInfo,
+        tls::ApplicationProtocol,
+    },
+    quic::{
+        Connection, Endpoint, ServerConfig, TransportConfig,
+        tls::{BoringTlsProvider, TlsOptions},
     },
     service::service_fn,
     tcp::server::TcpListener,
+    tls::{
+        CipherSuite, SecureTransport,
+        boring::server::TlsAcceptorLayer,
+        client::ClientHello,
+        server::{GeneratedServerAuthConfig, TlsServerConfig},
+    },
 };
-use std::assert_matches;
+use std::{assert_matches, net::SocketAddr};
+use tokio::sync::mpsc;
 
 use super::*;
-use crate::cmd::serve::proxy::capture::{CaptureHttpLayer, ConnectionId};
+use crate::cmd::serve::proxy::{
+    capture::{CaptureHttpLayer, ConnectionId},
+    tests::{TestCli, loopback_bind_address, shutdown_proxy, start_proxy},
+};
 
 #[test]
 fn captured_request_transport_header_policy_is_explicit() {
@@ -743,4 +763,229 @@ async fn websocket_send_requires_direction_and_kind() {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
+}
+
+/// An HTTP/3 origin on loopback reporting the version of every request it answers.
+async fn h3_origin() -> (SocketAddr, Endpoint, mpsc::UnboundedReceiver<Version>) {
+    let tls = TlsServerConfig::new()
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
+        .unwrap()
+        .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+    let mut transport = TransportConfig::default();
+    H3Config::default()
+        .configure_transport(&mut transport)
+        .unwrap();
+    let mut config = ServerConfig::try_from_rama_tls_with_provider(
+        &tls,
+        TlsOptions::default(),
+        &BoringTlsProvider,
+    )
+    .unwrap();
+    config.set_transport_config(Arc::new(transport));
+    let endpoint = Endpoint::build(WeakScope::detached())
+        .with_server_config(config)
+        .bind_address(SocketAddress::local_ipv4(0))
+        .await
+        .unwrap();
+    let address = endpoint.local_addr().unwrap();
+    let (versions_tx, versions) = mpsc::unbounded_channel();
+    let h3 = HttpServer::new_http3(WeakScope::detached()).service(service_fn(
+        move |request: Request| {
+            _ = versions_tx.send(request.version());
+            async move { Ok::<_, Infallible>(Response::new(Body::from("h3 origin"))) }
+        },
+    ));
+    tokio::spawn(endpoint.clone().serve(
+        WeakScope::detached(),
+        service_fn(move |connection: Connection| {
+            let h3 = h3.clone();
+            async move { h3.serve(connection).await }
+        }),
+    ));
+    (address, endpoint, versions)
+}
+
+async fn capture_h3_request_for_replay(state: &DashboardState, origin: SocketAddr) {
+    capture_for_replay(
+        state,
+        Request::builder()
+            .version(Version::HTTP_3)
+            .uri(format!("https://{origin}/replay"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+}
+
+async fn replay_within_deadline(state: &DashboardState, id: u64) -> Result<StatusCode, BoxError> {
+    tokio::time::timeout(Duration::from_secs(10), replay_captured(state, id))
+        .await
+        .expect("replay timed out")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_sends_a_captured_http3_request_over_http3() {
+    let (origin, endpoint, mut versions) = h3_origin().await;
+    let upstream = UpstreamProxyConfig::new(None, false, &[]).unwrap();
+    let mut state = test_state_with_upstream(8, 8, &upstream);
+    trust_any_replay_origin(&mut state, &upstream);
+    capture_h3_request_for_replay(&state, origin).await;
+
+    assert_eq!(
+        replay_within_deadline(&state, 1).await.unwrap(),
+        StatusCode::OK
+    );
+    assert_eq!(versions.recv().await, Some(Version::HTTP_3));
+    endpoint.close(0u32, b"done");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_sends_http3_through_a_masque_upstream_and_never_around_it() {
+    let (origin, endpoint, mut versions) = h3_origin().await;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = Scope::new().with_signal(async move {
+        _ = shutdown_rx.await;
+    });
+    let bind = loopback_bind_address().to_string();
+    // A proxy refusing private targets proves the replay takes the tunnel, not a direct path.
+    for (allow_private, replayed) in [(false, false), (true, true)] {
+        let mut argv = vec!["test", "--bind", bind.as_str(), "--protocol", "masque"];
+        if allow_private {
+            argv.push("--masque-allow-private");
+        }
+        let (proxy, _) = start_proxy(&shutdown, TestCli::parse_from(argv).proxy).await;
+        let upstream = UpstreamProxyConfig::new(
+            Some(format!("masque://{proxy}").parse().unwrap()),
+            false,
+            &[],
+        )
+        .unwrap()
+        .with_insecure_tls(true);
+        let mut state = test_state_with_upstream(8, 8, &upstream);
+        trust_any_replay_origin(&mut state, &upstream);
+        capture_h3_request_for_replay(&state, origin).await;
+
+        let result = replay_within_deadline(&state, 1).await;
+        if replayed {
+            assert_eq!(result.unwrap(), StatusCode::OK);
+            assert_eq!(versions.recv().await, Some(Version::HTTP_3));
+        } else {
+            result.unwrap_err();
+            versions.try_recv().unwrap_err();
+        }
+    }
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    endpoint.close(0u32, b"done");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_of_http3_fails_through_an_upstream_that_cannot_carry_udp() {
+    let (origin, endpoint, mut versions) = h3_origin().await;
+    for proxy in ["http://127.0.0.1:9", "socks5://127.0.0.1:9"] {
+        let upstream = UpstreamProxyConfig::new(Some(proxy.parse().unwrap()), false, &[]).unwrap();
+        let mut state = test_state_with_upstream(8, 8, &upstream);
+        trust_any_replay_origin(&mut state, &upstream);
+        capture_h3_request_for_replay(&state, origin).await;
+
+        let error = replay_within_deadline(&state, 1).await.unwrap_err();
+        assert!(
+            format!("{error:?}").contains("masque"),
+            "{proxy}: {error:?}"
+        );
+    }
+    versions.try_recv().unwrap_err();
+    endpoint.close(0u32, b"done");
+}
+
+/// A TLS origin on loopback reporting the ClientHello of every request it answers.
+async fn tls_origin() -> (
+    SocketAddr,
+    tokio::task::JoinHandle<()>,
+    mpsc::UnboundedReceiver<ClientHello>,
+) {
+    let tls = TlsServerConfig::new()
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
+        .unwrap();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), WeakScope::detached())
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let (hellos_tx, hellos) = mpsc::unbounded_channel();
+    let http =
+        HttpServer::auto(WeakScope::detached()).service(service_fn(move |request: Request| {
+            let hello = request
+                .extensions()
+                .get_ref::<SecureTransport>()
+                .and_then(SecureTransport::client_hello)
+                .cloned()
+                .unwrap();
+            _ = hellos_tx.send(hello);
+            async move { Ok::<_, Infallible>(Response::new(Body::from("tls origin"))) }
+        }));
+    let task = tokio::spawn(
+        listener.serve(
+            TlsAcceptorLayer::new(tls)
+                .with_store_client_hello(true)
+                .into_layer(http),
+        ),
+    );
+    (address, task, hellos)
+}
+
+fn offered_cipher_suites(hello: &ClientHello) -> Vec<CipherSuite> {
+    hello
+        .cipher_suites()
+        .iter()
+        .copied()
+        .filter(|suite| !suite.is_grease())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_over_tcp_offers_the_captured_client_hello() {
+    let (origin, origin_task, mut hellos) = tls_origin().await;
+    let upstream = UpstreamProxyConfig::new(None, false, &[]).unwrap();
+    let mut state = test_state_with_upstream(8, 8, &upstream);
+    trust_any_replay_origin(&mut state, &upstream);
+
+    // A capture without a ClientHello replays with the default offer.
+    capture_request_for_replay(&state, &format!("https://{origin}/default")).await;
+    assert_eq!(
+        replay_within_deadline(&state, 1).await.unwrap(),
+        StatusCode::OK
+    );
+    let default = hellos.recv().await.unwrap();
+
+    let mut reordered = offered_cipher_suites(&default);
+    reordered.reverse();
+    let captured = ClientHello::new(
+        default.protocol_version(),
+        reordered,
+        default.compression_algorithms().to_vec(),
+        default.extensions().to_vec(),
+    );
+    let request = Request::builder()
+        .uri(format!("https://{origin}/captured"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions()
+        .insert(SecureTransport::with_client_hello(captured.clone()));
+    capture_for_replay(&state, request).await;
+
+    // The first replay is captured as exchange #2.
+    assert_eq!(
+        replay_within_deadline(&state, 3).await.unwrap(),
+        StatusCode::OK
+    );
+    let replayed = hellos.recv().await.unwrap();
+    assert_ne!(
+        offered_cipher_suites(&default),
+        offered_cipher_suites(&captured)
+    );
+    assert_eq!(
+        offered_cipher_suites(&replayed),
+        offered_cipher_suites(&captured)
+    );
+    origin_task.abort();
 }
