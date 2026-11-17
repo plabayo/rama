@@ -11,22 +11,16 @@ use rama_core::{
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, body::Frame, header::trailer::is_never_a_trailer,
 };
-use rama_utils::octets::{kib, kib_u64};
+use rama_utils::octets::kib_u64;
 
 use self::Kind::{Chunked, Eof, Length};
 use super::{DecodedLength, io::MemRead};
+use crate::proto::{DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_HEADERS};
 
 /// Maximum amount of bytes allowed in chunked extensions.
 ///
 /// This limit is currentlty applied for the entire body, not per chunk.
 const CHUNKED_EXTENSIONS_LIMIT: u64 = kib_u64(16);
-
-/// Maximum number of bytes allowed for all trailer fields, unless a maximum
-/// header size is configured.
-const TRAILER_LIMIT: usize = kib(16);
-
-/// Fields in chunked trailers, unless the header count is configured.
-const DEFAULT_MAX_TRAILERS: usize = 100;
 
 /// Decoders to handle different Transfer-Encodings.
 ///
@@ -188,8 +182,8 @@ impl Decoder {
                 h1_max_headers,
                 h1_max_header_size,
             } => {
-                let h1_max_headers = h1_max_headers.unwrap_or(DEFAULT_MAX_TRAILERS);
-                let h1_max_header_size = h1_max_header_size.unwrap_or(TRAILER_LIMIT);
+                let h1_max_headers = h1_max_headers.unwrap_or(DEFAULT_MAX_HEADERS);
+                let h1_max_header_size = h1_max_header_size.unwrap_or(DEFAULT_MAX_HEADER_LIST_SIZE);
                 loop {
                     let mut buf = None;
                     // advances the chunked state
@@ -811,8 +805,8 @@ mod tests {
                             chunk_buf: &mut None,
                             trailers_buf: &mut None,
                             trailers_cnt: &mut trailers_cnt,
-                            max_headers_cnt: DEFAULT_MAX_TRAILERS,
-                            max_headers_bytes: TRAILER_LIMIT,
+                            max_headers_cnt: DEFAULT_MAX_HEADERS,
+                            max_headers_bytes: DEFAULT_MAX_HEADER_LIST_SIZE,
                         },
                     )
                 })
@@ -843,8 +837,8 @@ mod tests {
                             chunk_buf: &mut None,
                             trailers_buf: &mut None,
                             trailers_cnt: &mut trailers_cnt,
-                            max_headers_cnt: DEFAULT_MAX_TRAILERS,
-                            max_headers_bytes: TRAILER_LIMIT,
+                            max_headers_cnt: DEFAULT_MAX_HEADERS,
+                            max_headers_bytes: DEFAULT_MAX_HEADER_LIST_SIZE,
                         },
                     )
                 })
@@ -1245,6 +1239,27 @@ mod tests {
             .await
             .expect_err("trailer fields over limit");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn test_trailer_defaults_follow_the_header_limits() {
+        for (count, accepted) in [
+            (DEFAULT_MAX_HEADERS, true),
+            (DEFAULT_MAX_HEADERS + 1, false),
+        ] {
+            let mut scratch = vec![];
+            scratch.extend(b"10\r\n1234567890abcdef\r\n0\r\n");
+            for i in 0..count {
+                scratch.extend(format!("trailer{i}: {i}\r\n").as_bytes());
+            }
+            scratch.extend(b"\r\n");
+            let mut mock_buf = Bytes::from(scratch);
+
+            let mut decoder = Decoder::chunked(None, None);
+            decoder.decode_fut(&mut mock_buf).await.unwrap();
+            let trailers = decoder.decode_fut(&mut mock_buf).await;
+            assert_eq!(trailers.is_ok(), accepted, "{count} trailer fields");
+        }
     }
 
     #[tokio::test]
