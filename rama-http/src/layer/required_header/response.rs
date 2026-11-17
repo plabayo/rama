@@ -1,6 +1,6 @@
-//! Set required headers on the response, if they are missing.
+//! Add the `Server` and `Date` headers to a response, if they are missing.
 //!
-//! For now this only sets `Server` and `Date` heades.
+//! See [`AddRequiredResponseHeaders`] for the exact behaviour.
 
 use crate::{
     HeaderValue, Request, Response,
@@ -10,9 +10,9 @@ use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
-/// Layer that applies [`AddRequiredResponseHeaders`] which adds a request header.
+/// [`Layer`] that wraps a service in [`AddRequiredResponseHeaders`].
 ///
-/// See [`AddRequiredResponseHeaders`] for more details.
+/// See [`AddRequiredResponseHeaders`] for the headers it adds.
 #[derive(Debug, Clone, Default)]
 pub struct AddRequiredResponseHeadersLayer {
     overwrite: bool,
@@ -20,7 +20,8 @@ pub struct AddRequiredResponseHeadersLayer {
 }
 
 impl AddRequiredResponseHeadersLayer {
-    /// Create a new [`AddRequiredResponseHeadersLayer`].
+    /// Create a new [`AddRequiredResponseHeadersLayer`]
+    /// which only adds missing headers and uses the default `Server`.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -30,10 +31,10 @@ impl AddRequiredResponseHeadersLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set whether to overwrite the existing headers.
-        /// If set to `true`, the headers will be overwritten.
+        /// Set whether the `Server` and `Date` headers
+        /// replace values already present on the response.
         ///
-        /// Default is `false`.
+        /// When `false` (the default) only missing headers are added.
         pub fn overwrite(mut self, overwrite: bool) -> Self {
             self.overwrite = overwrite;
             self
@@ -41,9 +42,9 @@ impl AddRequiredResponseHeadersLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define the custom [`SERVER`] header value.
+        /// Set the [`SERVER`] header value to add.
         ///
-        /// By default a versioned `rama` value is used.
+        /// `None` (the default) uses [`RAMA_ID_HEADER_VALUE`] (`rama/<version>`).
         pub fn server_header_value(mut self, value: Option<HeaderValue>) -> Self {
             self.server_header_value = value;
             self
@@ -71,7 +72,16 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
     }
 }
 
-/// Middleware that sets a header on the request.
+/// Middleware that adds the `Server` and `Date` headers to the response
+/// returned by the inner service.
+///
+/// - `Server`: the configured value, or [`RAMA_ID_HEADER_VALUE`] by default.
+/// - `Date`: the current time, formatted as an HTTP-date.
+///
+/// Existing headers are kept unless overwriting is enabled,
+/// see [`AddRequiredResponseHeaders::set_overwrite`].
+/// The request is passed through unchanged and errors
+/// of the inner service are returned as-is.
 #[derive(Clone, ExtensionsRef)]
 pub struct AddRequiredResponseHeaders<S> {
     inner: S,
@@ -80,7 +90,8 @@ pub struct AddRequiredResponseHeaders<S> {
 }
 
 impl<S> AddRequiredResponseHeaders<S> {
-    /// Create a new [`AddRequiredResponseHeaders`].
+    /// Wrap `inner` in a new [`AddRequiredResponseHeaders`]
+    /// which only adds missing headers and uses the default `Server`.
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
@@ -90,10 +101,10 @@ impl<S> AddRequiredResponseHeaders<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set whether to overwrite the existing headers.
-        /// If set to `true`, the headers will be overwritten.
+        /// Set whether the `Server` and `Date` headers
+        /// replace values already present on the response.
         ///
-        /// Default is `false`.
+        /// When `false` (the default) only missing headers are added.
         pub fn overwrite(mut self, overwrite: bool) -> Self {
             self.overwrite = overwrite;
             self
@@ -101,9 +112,9 @@ impl<S> AddRequiredResponseHeaders<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define the custom [`SERVER`] header value.
+        /// Set the [`SERVER`] header value to add.
         ///
-        /// By default a versioned `rama` value is used.
+        /// `None` (the default) uses [`RAMA_ID_HEADER_VALUE`] (`rama/<version>`).
         pub fn server_header_value(mut self, value: Option<HeaderValue>) -> Self {
             self.server_header_value = value;
             self
@@ -120,6 +131,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AddRequiredResponseHeaders")
             .field("inner", &self.inner)
+            .field("overwrite", &self.overwrite)
             .field("server_header_value", &self.server_header_value)
             .finish()
     }

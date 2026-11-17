@@ -1,7 +1,6 @@
-//! Set required headers on the request, if they are missing.
+//! Add the `Host` and `User-Agent` headers to a request, if they are missing.
 //!
-//! For now this only sets `Host` header on http/1.1,
-//! as well as always a User-Agent for all versions.
+//! See [`AddRequiredRequestHeaders`] for the exact behaviour.
 
 use crate::{
     HeaderValue, Request, Response,
@@ -20,9 +19,9 @@ use rama_net::{AuthorityInputExt, ProtocolInputExt};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
-/// Layer that applies [`AddRequiredRequestHeaders`] which adds a request header.
+/// [`Layer`] that wraps a service in [`AddRequiredRequestHeaders`].
 ///
-/// See [`AddRequiredRequestHeaders`] for more details.
+/// See [`AddRequiredRequestHeaders`] for the headers it adds.
 #[derive(Debug, Clone, Default)]
 pub struct AddRequiredRequestHeadersLayer {
     overwrite: bool,
@@ -30,7 +29,8 @@ pub struct AddRequiredRequestHeadersLayer {
 }
 
 impl AddRequiredRequestHeadersLayer {
-    /// Create a new [`AddRequiredRequestHeadersLayer`].
+    /// Create a new [`AddRequiredRequestHeadersLayer`]
+    /// which only adds missing headers and uses the default `User-Agent`.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -40,10 +40,10 @@ impl AddRequiredRequestHeadersLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set whether to overwrite the existing headers.
-        /// If set to `true`, the headers will be overwritten.
+        /// Set whether the `Host` and `User-Agent` headers
+        /// replace values already present on the request.
         ///
-        /// Default is `false`.
+        /// When `false` (the default) only missing headers are added.
         pub fn overwrite(mut self, overwrite: bool) -> Self {
             self.overwrite = overwrite;
             self
@@ -51,9 +51,9 @@ impl AddRequiredRequestHeadersLayer {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define the custom [`USER_AGENT`] header value to be used.
+        /// Set the [`USER_AGENT`] header value to add.
         ///
-        /// By default a versioned `rama` value is used.
+        /// `None` (the default) uses [`RAMA_ID_HEADER_VALUE`] (`rama/<version>`).
         pub fn user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
             self.user_agent_header_value = value;
             self
@@ -81,7 +81,22 @@ impl<S> Layer<S> for AddRequiredRequestHeadersLayer {
     }
 }
 
-/// Middleware that sets a header on the request.
+/// Middleware that adds the `Host` and `User-Agent` headers to a request
+/// before passing it to the inner service.
+///
+/// - `Host`: derived from the request's target authority. A plain `CONNECT`
+///   keeps its port; any other request drops the port when it is the default
+///   one for the target protocol. This is done for all http versions.
+/// - `User-Agent`: the configured value, or [`RAMA_ID_HEADER_VALUE`] by default.
+///
+/// Existing headers are kept unless overwriting is enabled,
+/// see [`AddRequiredRequestHeaders::set_overwrite`].
+///
+/// # Errors
+///
+/// Fails without calling the inner service if a `Host` header has to be added
+/// but no target authority can be resolved for the request.
+/// Errors of the inner service are boxed.
 #[derive(Clone, ExtensionsRef)]
 pub struct AddRequiredRequestHeaders<S> {
     inner: S,
@@ -90,7 +105,8 @@ pub struct AddRequiredRequestHeaders<S> {
 }
 
 impl<S> AddRequiredRequestHeaders<S> {
-    /// Create a new [`AddRequiredRequestHeaders`].
+    /// Wrap `inner` in a new [`AddRequiredRequestHeaders`]
+    /// which only adds missing headers and uses the default `User-Agent`.
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
@@ -100,10 +116,10 @@ impl<S> AddRequiredRequestHeaders<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set whether to overwrite the existing headers.
-        /// If set to `true`, the headers will be overwritten.
+        /// Set whether the `Host` and `User-Agent` headers
+        /// replace values already present on the request.
         ///
-        /// Default is `false`.
+        /// When `false` (the default) only missing headers are added.
         pub fn overwrite(mut self, overwrite: bool) -> Self {
             self.overwrite = overwrite;
             self
@@ -111,9 +127,9 @@ impl<S> AddRequiredRequestHeaders<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define the custom [`USER_AGENT`] header value.
+        /// Set the [`USER_AGENT`] header value to add.
         ///
-        /// By default a versioned `rama` value is used.
+        /// `None` (the default) uses [`RAMA_ID_HEADER_VALUE`] (`rama/<version>`).
         pub fn user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
             self.user_agent_header_value = value;
             self
@@ -130,6 +146,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AddRequiredRequestHeaders")
             .field("inner", &self.inner)
+            .field("overwrite", &self.overwrite)
             .field("user_agent_header_value", &self.user_agent_header_value)
             .finish()
     }
