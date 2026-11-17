@@ -1,9 +1,18 @@
-use rama_core::ServiceInput;
-use rama_net::address::HostWithPort;
+use std::{io, sync::Arc};
+
+use rama_core::{
+    ServiceInput,
+    error::BoxError,
+    extensions::{Extension, Extensions, ExtensionsRef, NestedConnectionTransfer},
+    io::BridgeIo,
+    service::service_fn,
+};
+use rama_net::address::{HostWithPort, SocketAddress};
+use rama_net::stream::{DefaultConnectionTransfer, NestedConnection};
 use rama_net::user::credentials::basic;
 use rama_utils::str::non_empty_str;
 
-use crate::server::bind::MockBinder;
+use crate::server::bind::{Acceptor, MockBinder};
 use crate::server::*;
 
 #[tokio::test]
@@ -284,4 +293,86 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_bind_mock_succ
         );
     let result = server.accept(stream).await;
     result.unwrap();
+}
+
+#[derive(Debug, Clone, Copy, Extension)]
+#[extension(scope(connection))]
+struct Socks5ConnFact;
+
+#[derive(Debug, Clone, Copy, Extension)]
+struct Socks5FlowFact;
+
+/// Accepts one in-memory connection from 127.0.0.1:43 on 127.0.0.1:42.
+struct OneShotAcceptor;
+
+impl Acceptor for OneShotAcceptor {
+    type Stream = tokio::io::DuplexStream;
+
+    fn local_addr(&self) -> io::Result<SocketAddress> {
+        Ok(SocketAddress::local_ipv4(42))
+    }
+
+    async fn accept(self) -> Result<(Self::Stream, SocketAddress), Error> {
+        let (stream, _) = tokio::io::duplex(64);
+        Ok((stream, SocketAddress::local_ipv4(43)))
+    }
+}
+
+async fn bind_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, bool) {
+    let stream = ServiceInput::new(
+        tokio_test::io::Builder::new()
+            .read(b"\x05\x01\x00")
+            .write(b"\x05\x00")
+            .read(b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00")
+            .write(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 42])
+            .write(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 43])
+            .build(),
+    );
+    stream.extensions.insert(Socks5ConnFact);
+    stream.extensions.insert(Socks5FlowFact);
+
+    let seen = Arc::new(parking_lot::Mutex::new(None));
+    let service = service_fn({
+        let seen = seen.clone();
+        move |BridgeIo(ingress, _incoming): BridgeIo<
+            NestedConnection<ServiceInput<tokio_test::io::Mock>>,
+            tokio::io::DuplexStream,
+        >| {
+            let ext: &Extensions = ingress.extensions();
+            *seen.lock() = Some((
+                ext.contains::<Socks5ConnFact>(),
+                ext.contains::<Socks5FlowFact>(),
+            ));
+            std::future::ready(Ok::<_, BoxError>(()))
+        }
+    });
+    let factory = service_fn(async |_addr: SocketAddress| Ok::<_, BoxError>(OneShotAcceptor));
+    let binder = Binder::new(factory, service).with_nested_connection_transfer(transfer);
+    Socks5Acceptor::new(WeakScope::detached())
+        .with_binder(binder)
+        .accept(stream)
+        .await
+        .unwrap();
+    seen.lock().take().expect("tunnel served")
+}
+
+#[tokio::test]
+async fn bind_tunnel_keeps_flow_facts_and_drops_connection_facts() {
+    assert_eq!(
+        bind_tunnel_facts(DefaultConnectionTransfer).await,
+        (false, true)
+    );
+}
+
+#[tokio::test]
+async fn bind_tunnel_custom_transfer_carries_a_chosen_fact() {
+    let carry = |outer: &Extensions, nested: &Extensions| {
+        if let Some(fact) = outer.get_ref::<Socks5ConnFact>() {
+            nested.insert(*fact);
+        }
+    };
+    assert_eq!(
+        bind_tunnel_facts(DefaultConnectionTransfer.and(carry)).await,
+        (true, true)
+    );
 }

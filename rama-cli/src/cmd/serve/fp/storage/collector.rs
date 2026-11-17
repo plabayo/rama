@@ -12,12 +12,10 @@ use rama::{
     },
     net::stream::SocketInfo,
     quic::proto::capture::QuicObservation,
-    tls::{
-        SecureTransport,
-        server::{EchServerObservation, ServerEchAccepted},
-    },
+    tls::{SecureTransport, server::ServerClientHellos},
     ua::{
         UserAgent,
+        inspect::tls_connection_slots,
         profile::{
             capture::{
                 CAPTURE_REVISION,
@@ -35,7 +33,7 @@ use rama::{
                 order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
                 pseudo_headers::PseudoHeaderCapture,
                 quic::{QuicFlightCapture, QuicFlightCaptureLimits},
-                tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
+                tls::{TlsCaptureLimits, TlsCaptureTransport},
             },
             format::canonical::ProfileDataError,
             model::{
@@ -300,66 +298,20 @@ pub(super) fn connection_capture(
             value: capture.canonical(limits)?,
         });
     }
-    if let Some(hello) = ext
-        .get_ref::<SecureTransport>()
-        .and_then(SecureTransport::client_hello)
-    {
-        let limits = TlsCaptureLimits {
+    let is_quic = version == Version::HTTP_3;
+    slots.extend(tls_connection_slots(
+        &ServerClientHellos::from_extensions(ext),
+        if is_quic {
+            TlsCaptureTransport::Quic
+        } else {
+            TlsCaptureTransport::Tcp
+        },
+        !is_quic || quic.is_some_and(|observation| observation.completeness.client_hello),
+        TlsCaptureLimits {
             bytes: JointCaptureLimits::default().value_bytes,
             ..TlsCaptureLimits::default()
-        };
-        let is_quic = version == Version::HTTP_3;
-        if ext
-            .get_ref::<ServerEchAccepted>()
-            .is_some_and(|accepted| accepted.0)
-        {
-            let observation = ext
-                .get_ref::<EchServerObservation>()
-                .ok_or(ProfileDataError::Incomplete("ECH outer ClientHello"))?;
-            let outer = TlsCapture::capture(
-                ProfileCaptureCompleteness::from_complete(
-                    !is_quic
-                        || quic.is_some_and(|observation| observation.completeness.client_hello),
-                ),
-                if is_quic {
-                    TlsCaptureTransport::Quic
-                } else {
-                    TlsCaptureTransport::Tcp
-                },
-                &observation.outer,
-                limits,
-            )?;
-            slots.push(CapturedSlot {
-                kind: CapturedSlotKind::TlsOuter,
-                value: outer.canonical(limits)?,
-            });
-        }
-        let captured = TlsCapture::capture(
-            ProfileCaptureCompleteness::from_complete(
-                // The backend callback supplies a complete effective hello at
-                // handshake completion. QUIC's reassembly flag describes only
-                // the wire outer, which can exceed its independent capture budget.
-                !is_quic
-                    || ext.contains::<ServerEchAccepted>()
-                    || quic.is_some_and(|observation| observation.completeness.client_hello),
-            ),
-            if is_quic {
-                TlsCaptureTransport::Quic
-            } else {
-                TlsCaptureTransport::Tcp
-            },
-            hello,
-            limits,
-        )?;
-        slots.push(CapturedSlot {
-            kind: if is_quic {
-                CapturedSlotKind::QuicTls
-            } else {
-                CapturedSlotKind::TcpTls
-            },
-            value: captured.canonical(limits)?,
-        });
-    }
+        },
+    )?);
     // A complete empty tuple records the cleartext HTTP/1 connection.
     // Dropping it would make an exported header-only profile unselectable.
     if slots.is_empty() && !ext.contains::<super::super::CleartextConnection>() {
@@ -395,6 +347,11 @@ pub(super) mod tests {
             capture::{CaptureCompleteness, FirstFlight, ObservedFrame, RawParameter},
             profile::PaddingPlacement,
             transport_parameters::TransportParameterId,
+        },
+        tls::{
+            CipherSuite, CompressionAlgorithm, ProtocolVersion,
+            client::ClientHello,
+            server::{EchServerObservation, ServerEchAccepted},
         },
     };
     use std::sync::{Arc, OnceLock};
@@ -688,6 +645,51 @@ pub(super) mod tests {
                 .buckets
                 .len(),
             1
+        );
+    }
+
+    fn tls_hello(suite: u16) -> ClientHello {
+        ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            vec![CipherSuite::from(suite)],
+            vec![CompressionAlgorithm::from(0)],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn accepted_ech_requires_the_outer_hello_and_keeps_both_slots() {
+        let ext = Extensions::new();
+        ext.insert(SecureTransport::with_client_hello(tls_hello(1)));
+        ext.insert(ServerEchAccepted::new(true));
+        let error = connection_capture(
+            profile_key("synthetic/1").unwrap(),
+            connection_context(&ext),
+            Version::HTTP_11,
+            &ext,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProfileDataError>(),
+            Some(ProfileDataError::Incomplete("ECH outer ClientHello"))
+        ));
+        ext.insert(EchServerObservation::new(tls_hello(2)));
+        let capture = connection_capture(
+            profile_key("synthetic/1").unwrap(),
+            connection_context(&ext),
+            Version::HTTP_11,
+            &ext,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let kinds: Vec<_> = capture.joint.slots.iter().map(|slot| slot.kind).collect();
+        assert_eq!(
+            kinds,
+            [CapturedSlotKind::TcpTls, CapturedSlotKind::TlsOuter]
         );
     }
 

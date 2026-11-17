@@ -89,6 +89,10 @@ impl ProfileInspector {
 mod export;
 mod protocol;
 pub use export::{ProfileExport, export_profiles};
+#[cfg(feature = "tls")]
+mod tls;
+#[cfg(feature = "tls")]
+pub use tls::tls_connection_slots;
 
 fn fill_profile(
     profile: &mut UserAgentProfileInput,

@@ -1,7 +1,7 @@
 use rama_core::{
-    Layer, ServiceInput,
+    Layer, Service, ServiceInput,
     error::BoxError,
-    extensions::ExtensionsRef,
+    extensions::{Extension, Extensions, ExtensionsRef, NestedConnectionTransfer},
     io::{BridgeIo, rewind::Rewind},
     layer::TimeoutLayer,
     service::service_fn,
@@ -14,7 +14,7 @@ use rama_net::{
         EstablishedClientConnection,
     },
     proxy::IoForwardService,
-    stream::{SocketAddresses, SocketInfo},
+    stream::{DefaultConnectionTransfer, NestedConnection, SocketAddresses, SocketInfo},
     test_utils::client::MockSocket,
 };
 use rama_utils::str::non_empty_str;
@@ -77,7 +77,10 @@ async fn assert_eager_connector_metadata(
     let service = service_fn({
         let destination = destination.clone();
         let bridge_target_seen = bridge_target_seen.clone();
-        move |bridge: BridgeIo<ServiceInput<tokio_test::io::Mock>, Rewind<MockSocket>>| {
+        move |bridge: BridgeIo<
+            NestedConnection<ServiceInput<tokio_test::io::Mock>>,
+            Rewind<MockSocket>,
+        >| {
             assert_eq!(
                 bridge.extensions().get_ref::<ConnectorTarget>(),
                 Some(&ConnectorTarget(destination.clone()))
@@ -233,7 +236,7 @@ async fn lazy_connector_remains_an_explicit_opt_in() {
     let delegated = Arc::new(AtomicBool::new(false));
     let lazy = LazyConnector::new(service_fn({
         let delegated = delegated.clone();
-        move |stream: ServiceInput<tokio_test::io::Mock>| {
+        move |stream: NestedConnection<ServiceInput<tokio_test::io::Mock>>| {
             assert_eq!(
                 stream.extensions().get_ref::<ConnectorTarget>(),
                 Some(&ConnectorTarget(HostWithPort::local_ipv4(8080)))
@@ -489,4 +492,124 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_connect_mock_s
         );
     let result = server.accept(stream).await;
     result.unwrap();
+}
+
+#[derive(Debug, Clone, Copy, Extension)]
+#[extension(scope(connection))]
+struct Socks5ConnFact;
+
+#[derive(Debug, Clone, Copy, Extension)]
+struct Socks5FlowFact;
+
+/// A SOCKS5 connection carrying a connection and a flow fact, with a script for a
+/// no-auth CONNECT to 127.0.0.1:8080 answered by `reply`.
+fn socks5_connection(reply: &[u8]) -> ServiceInput<tokio_test::io::Mock> {
+    let stream = ServiceInput::new(
+        tokio_test::io::Builder::new()
+            .read(b"\x05\x01\x00")
+            .write(b"\x05\x00")
+            .read(b"\x05\x01\x00\x01\x7f\x00\x00\x01\x1f\x90")
+            .write(reply)
+            .build(),
+    );
+    stream.extensions.insert(Socks5ConnFact);
+    stream.extensions.insert(Socks5FlowFact);
+    stream
+}
+
+/// Which of (connection fact, flow fact) the tunnel sees.
+fn seen_facts(ext: &Extensions) -> (bool, bool) {
+    (
+        ext.contains::<Socks5ConnFact>(),
+        ext.contains::<Socks5FlowFact>(),
+    )
+}
+
+fn established_egress() -> impl Service<
+    ConnectRequest,
+    Output = EstablishedClientConnection<MockSocket, ConnectRequest>,
+    Error = ConnectionError,
+> + Clone {
+    service_fn(|request: ConnectRequest| {
+        let (stream, _) = tokio::io::duplex(64);
+        let stream = MockSocket::new(stream);
+        stream.extensions().insert(SocketInfo::new(
+            Some(SocketAddress::local_ipv4(42)),
+            SocketAddress::local_ipv4(8080),
+        ));
+        std::future::ready(Ok::<_, ConnectionError>(EstablishedClientConnection {
+            input: request,
+            conn: stream,
+        }))
+    })
+}
+
+async fn eager_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, bool) {
+    let seen = Arc::new(parking_lot::Mutex::new(None));
+    let service = service_fn({
+        let seen = seen.clone();
+        move |BridgeIo(ingress, _egress): BridgeIo<
+            NestedConnection<ServiceInput<tokio_test::io::Mock>>,
+            MockSocket,
+        >| {
+            *seen.lock() = Some(seen_facts(ingress.extensions()));
+            std::future::ready(Ok::<_, BoxError>(()))
+        }
+    });
+    let connector =
+        Connector::new(established_egress(), service).with_nested_connection_transfer(transfer);
+    Socks5Acceptor::new(WeakScope::detached())
+        .with_connector(connector)
+        .accept(socks5_connection(
+            b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x2a",
+        ))
+        .await
+        .unwrap();
+    seen.lock().take().expect("tunnel served")
+}
+
+async fn lazy_tunnel_facts(transfer: impl NestedConnectionTransfer) -> (bool, bool) {
+    let seen = Arc::new(parking_lot::Mutex::new(None));
+    let lazy = LazyConnector::new(service_fn({
+        let seen = seen.clone();
+        move |stream: NestedConnection<ServiceInput<tokio_test::io::Mock>>| {
+            *seen.lock() = Some(seen_facts(stream.extensions()));
+            std::future::ready(Ok::<_, BoxError>(()))
+        }
+    }))
+    .with_nested_connection_transfer(transfer);
+    Socks5Acceptor::new(WeakScope::detached())
+        .with_connector(lazy)
+        .accept(socks5_connection(
+            b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00",
+        ))
+        .await
+        .unwrap();
+    seen.lock().take().expect("tunnel served")
+}
+
+fn carry_conn_fact(outer: &Extensions, nested: &Extensions) {
+    if let Some(fact) = outer.get_ref::<Socks5ConnFact>() {
+        nested.insert(*fact);
+    }
+}
+
+#[tokio::test]
+async fn connect_tunnel_keeps_flow_facts_and_drops_connection_facts() {
+    assert_eq!(
+        eager_tunnel_facts(DefaultConnectionTransfer).await,
+        (false, true)
+    );
+    assert_eq!(
+        lazy_tunnel_facts(DefaultConnectionTransfer).await,
+        (false, true)
+    );
+}
+
+#[tokio::test]
+async fn connect_tunnel_custom_transfer_carries_a_chosen_fact() {
+    let transfer = DefaultConnectionTransfer.and(carry_conn_fact);
+    assert_eq!(eager_tunnel_facts(transfer).await, (true, true));
+    let transfer = DefaultConnectionTransfer.and(carry_conn_fact);
+    assert_eq!(lazy_tunnel_facts(transfer).await, (true, true));
 }

@@ -13,6 +13,10 @@ pub use config::{
     TlsClientVerify, TlsServerAuth, TlsServerConfig, TlsStoreClientCertChain,
 };
 
+mod client_hellos;
+#[doc(inline)]
+pub use client_hellos::ServerClientHellos;
+
 mod hello;
 #[doc(inline)]
 pub use hello::{ServerHello, parse_encrypted_extensions};

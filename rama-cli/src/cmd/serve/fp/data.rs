@@ -38,10 +38,10 @@ use rama::{
     },
     telemetry::tracing,
     tls::{
-        ExtensionId, SecureTransport,
+        ExtensionId,
         client::{ClientHello, ClientHelloExtension, ECHClientHello},
         fingerprint::{Ja3, Ja4, PeetPrint},
-        server::{EchServerObservation, ServerEchAccepted},
+        server::ServerClientHellos,
     },
     ua::{UserAgent, profile::model::http::Http2Settings},
 };
@@ -398,19 +398,8 @@ fn multi<T: ToString>(v: &[T]) -> Option<TlsDisplayInfoExtensionData> {
 pub(super) async fn get_tls_display_info(
     extensions: &Extensions,
 ) -> Result<Option<TlsDisplayInfo>, BoxError> {
-    let accepted = extensions
-        .get_ref::<ServerEchAccepted>()
-        .is_some_and(|value| value.0);
-    let hello = if accepted {
-        extensions
-            .get_ref::<EchServerObservation>()
-            .map(|value| &value.outer)
-    } else {
-        extensions
-            .get_ref::<SecureTransport>()
-            .and_then(SecureTransport::client_hello)
-    };
-    hello
+    ServerClientHellos::from_extensions(extensions)
+        .wire()
         .map(|hello| tls_display_info(extensions, hello))
         .transpose()
 }
@@ -418,15 +407,8 @@ pub(super) async fn get_tls_display_info(
 pub(super) async fn get_tls_inner_display_info(
     extensions: &Extensions,
 ) -> Result<Option<TlsDisplayInfo>, BoxError> {
-    if !extensions
-        .get_ref::<ServerEchAccepted>()
-        .is_some_and(|value| value.0)
-    {
-        return Ok(None);
-    }
-    extensions
-        .get_ref::<SecureTransport>()
-        .and_then(SecureTransport::client_hello)
+    ServerClientHellos::from_extensions(extensions)
+        .ech_inner()
         .map(|hello| tls_display_info(extensions, hello))
         .transpose()
 }

@@ -88,10 +88,9 @@ core::cfg_select! {
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::tls::{
-    SecureTransport,
     client::{ClientHelloExtension, ECHClientHello},
     fingerprint::{Ja3, Ja4, PeetPrint},
-    server::TlsServerConfig,
+    server::{ServerClientHellos, TlsServerConfig},
 };
 
 #[derive(Debug, Clone)]
@@ -899,30 +898,13 @@ impl Service<Request> for EchoService {
             })
         };
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let ech_accepted = parts
-            .extensions
-            .get_ref::<crate::tls::server::ServerEchAccepted>()
-            .map(|value| value.0);
+        let hellos = ServerClientHellos::from_extensions(&parts.extensions);
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let effective = parts
-            .extensions
-            .get_ref::<SecureTransport>()
-            .and_then(SecureTransport::client_hello);
+        let ech_accepted = hellos.ech_accepted();
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let outer = if ech_accepted == Some(true) {
-            parts
-                .extensions
-                .get_ref::<crate::tls::server::EchServerObservation>()
-                .map(|value| &value.outer)
-        } else {
-            effective
-        };
+        let tls_info = hellos.wire().map(|hello| tls_view(hello, true));
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_info = outer.map(|hello| tls_view(hello, true));
-        #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_inner = effective
-            .filter(|_| ech_accepted == Some(true))
-            .map(|hello| tls_view(hello, false));
+        let tls_inner = hellos.ech_inner().map(|hello| tls_view(hello, false));
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
         let (ech_accepted, tls_inner): (Option<bool>, Option<()>) = (None, None);
 

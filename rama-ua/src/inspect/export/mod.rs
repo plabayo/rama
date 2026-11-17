@@ -13,6 +13,8 @@ use super::*;
 pub struct ProfileExport {
     captures: VecDeque<ExchangeCapture>,
     connection_owners: HashMap<u64, u64>,
+    #[cfg(feature = "tls")]
+    skipped_tls_connections: u64,
 }
 
 fn user_agent(capture: &ExchangeCapture) -> Option<&str> {
@@ -57,11 +59,20 @@ impl ProfileExport {
         Self {
             captures: captures.into(),
             connection_owners,
+            #[cfg(feature = "tls")]
+            skipped_tls_connections: 0,
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.captures.is_empty()
+    }
+
+    /// Connections whose TLS evidence was incomplete, such as accepted ECH
+    /// without its outer hello, and so exported only their request evidence.
+    #[cfg(feature = "tls")]
+    pub fn skipped_tls_connections(&self) -> u64 {
+        self.skipped_tls_connections
     }
 
     /// Consume one group without retaining headers from other user agents.

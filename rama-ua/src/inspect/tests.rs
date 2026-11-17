@@ -603,6 +603,7 @@ async fn accepted_ech_without_outer_keeps_requests_and_skips_only_that_connectio
             .sum();
         assert_eq!(total, expected);
     }
+    assert_eq!(export.skipped_tls_connections(), 1);
     assert!(
         export
             .next_evidence(day, 14, [3; 32], ProfileAnalysisLimits::default())
