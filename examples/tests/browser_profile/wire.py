@@ -35,7 +35,16 @@ from quic_stream_wire import retransmitted_streams
 
 
 # TCP accounting reads relative sequence numbers; never inherit a user preference.
-PDML_OUTPUT = ("-o", "tcp.relative_sequence_numbers:TRUE", "-T", "pdml")
+# Segments captured out of order are put back in order before TLS reads them: a
+# record decrypted ahead of its turn leaves the rest of that direction undecoded.
+PDML_OUTPUT = (
+    "-o",
+    "tcp.relative_sequence_numbers:TRUE",
+    "-o",
+    "tcp.reassemble_out_of_order:TRUE",
+    "-T",
+    "pdml",
+)
 
 
 # H2/H3 decoding preserves connection and stream identity.
