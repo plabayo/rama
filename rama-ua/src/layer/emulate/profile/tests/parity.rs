@@ -344,15 +344,15 @@ async fn tls_requests_never_draw_a_plaintext_request_shape() {
 }
 
 #[tokio::test]
-async fn caller_request_fields_select_the_shape_that_carries_them() {
-    // Firefox navigations over HTTP/3 were captured with and without `alt-used`.
+async fn alt_used_is_requested_as_often_as_captured_without_a_caller_value() {
+    // These navigations over HTTP/3 were captured both with and without `alt-used`.
     let header = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0";
-    for draw in 0..32u8 {
+    let (mut with, mut without) = (0, 0);
+    for draw in 0..64u8 {
         let mut request = navigate(Version::HTTP_3);
         let headers = request.headers_mut();
         headers.insert("user-agent", header.parse().unwrap());
         headers.insert("cookie", "c0=1; c1=1".parse().unwrap());
-        headers.insert("alt-used", "example.com".parse().unwrap());
         let emitted = emulate_drawn(
             embedded().with_try_auto_detect_user_agent(true),
             request,
@@ -360,15 +360,31 @@ async fn caller_request_fields_select_the_shape_that_carries_them() {
         )
         .await
         .unwrap();
-        let names: Vec<_> = emitted
-            .headers()
-            .ordered_iter()
-            .map(|(name, _value)| name.as_str().to_owned())
-            .collect();
-        let position = |name| names.iter().position(|field| field == name);
+        // The alt-svc layer writes the value; emulation only reserves its position.
+        assert!(!emitted.headers().contains_key("alt-used"), "draw {draw}");
+        if emitted.extensions().contains::<SendAltUsed>() {
+            with += 1;
+        } else {
+            without += 1;
+        }
+    }
+    assert!(with > 0 && without > 0, "with {with}, without {without}");
+}
+
+#[tokio::test]
+async fn draws_without_captured_alt_used_neither_send_nor_request_it() {
+    for draw in 0..32u8 {
+        let emitted = emulate_drawn(
+            embedded().with_selector(client(UserAgentKind::Chromium)),
+            navigate(Version::HTTP_2),
+            [draw; 32],
+        )
+        .await
+        .unwrap();
+        assert!(!emitted.headers().contains_key("alt-used"), "draw {draw}");
         assert!(
-            position("alt-used") < position("cookie"),
-            "draw {draw} appended alt-used outside its captured position: {names:?}"
+            !emitted.extensions().contains::<SendAltUsed>(),
+            "draw {draw}"
         );
     }
 }

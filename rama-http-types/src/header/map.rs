@@ -102,6 +102,8 @@ pub struct HeaderMap<T = HeaderValue> {
     // An element has one `order` field, so no two slots name the same element.
     order: Vec<Option<Link>>,
     danger: Danger,
+    // Rarely used state behind one pointer, so a typical map stays compact.
+    cold: Option<Box<ColdState>>,
 }
 
 // # Implementation notes
@@ -415,6 +417,24 @@ struct ExtraValue<T> {
     order: usize,
 }
 
+/// State a typical map never uses; dropped once nothing in it is in use.
+#[derive(Clone, Default)]
+struct ColdState {
+    // Present exactly while `danger` is red.
+    flood_hasher: Option<RandomState>,
+    // Safety invariant: every reserved `order` index is in bounds, its slot is
+    // `None`, no element's `order` field names it and no two reservations share
+    // it.
+    reserved: Vec<ReservedPosition>,
+}
+
+/// An `order` slot held for the first entry of `key`.
+#[derive(Clone)]
+struct ReservedPosition {
+    key: HeaderName,
+    order: usize,
+}
+
 /// A header value node is either linked to another node in the `extra_values`
 /// list or it points to an entry in `entries`. The entry in `entries` is the
 /// start of the list and holds the associated header name.
@@ -432,11 +452,12 @@ enum Link {
 ///
 /// When in the red state, a safe hashing algorithm is used and all values in
 /// the header map have to be rehashed.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum Danger {
     Green,
     Yellow,
-    Red(Box<RandomState>),
+    // The randomized hasher lives in `ColdState::flood_hasher`.
+    Red,
 }
 
 // Constants related to detecting DOS attacks.
@@ -505,7 +526,7 @@ macro_rules! insert_phase_one {
      $occupied:expr,
      $robinhood:expr) =>
     {{
-        let $hash = hash_elem_using(&$map.danger, &$key);
+        let $hash = hash_elem_using(flood_hasher($map.danger, &$map.cold), &$key);
         let mut $probe = desired_pos($map.mask(), $hash);
         let mut dist = 0;
         let ret;
@@ -579,6 +600,7 @@ impl<T> Default for HeaderMap<T> {
             extra_values: Vec::new(),
             order: Vec::new(),
             danger: Danger::Green,
+            cold: None,
         }
     }
 }
@@ -652,6 +674,7 @@ impl<T> HeaderMap<T> {
                 extra_values: Vec::new(),
                 order: Vec::with_capacity(capacity),
                 danger: Danger::Green,
+                cold: None,
             })
         }
     }
@@ -751,6 +774,7 @@ impl<T> HeaderMap<T> {
         // cleared before extra values so no entry links to a missing extra.
         self.order.clear();
         self.danger = Danger::Green;
+        self.cold = None;
         for e in self.indices.iter_mut() {
             *e = Pos::none();
         }
@@ -1195,6 +1219,7 @@ impl<T> HeaderMap<T> {
             self.entries.set_len(0);
         }
         self.order.clear();
+        self.drop_reserved_positions();
 
         Drain {
             idx: 0,
@@ -1637,6 +1662,49 @@ impl<T> HeaderMap<T> {
         ))
     }
 
+    /// Reserves the next position in insertion order for the first entry of
+    /// `key` that is created later.
+    ///
+    /// Ordered iteration ([`ordered_iter`](Self::ordered_iter),
+    /// [`into_ordered_iter`](Self::into_ordered_iter)) yields that entry at the
+    /// reserved position instead of after the headers inserted in between. Every
+    /// path that creates a new entry claims the reservation: `insert`, `append`,
+    /// `entry`, their `try_` forms and `extend`. A reservation that is never
+    /// claimed yields nothing.
+    ///
+    /// This is a no-op when `key` is already present or already reserved.
+    /// Reservations survive growth, removal of other headers and `clone`;
+    /// `clear` and `drain` drop them. Unordered iteration, including
+    /// `into_iter`, is not affected.
+    ///
+    /// # Panics
+    ///
+    /// This method panics if the map could not hold one more entry next to
+    /// its pending reservations, see [`try_reserve_position`](Self::try_reserve_position).
+    pub fn reserve_position<K>(&mut self, key: K)
+    where
+        K: IntoHeaderName,
+    {
+        self.try_reserve_position(key)
+            .expect("size overflows MAX_SIZE")
+    }
+
+    /// Reserves the next position in insertion order for the first entry of
+    /// `key` that is created later.
+    ///
+    /// See [`reserve_position`](Self::reserve_position) for the semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the map could not hold one more entry next to its
+    /// existing entries and pending reservations.
+    pub fn try_reserve_position<K>(&mut self, key: K) -> Result<(), MaxSizeReached>
+    where
+        K: IntoHeaderName,
+    {
+        key.try_reserve_position(self)
+    }
+
     #[inline]
     fn find<K>(&self, key: &K) -> Option<(usize, usize)>
     where
@@ -1647,7 +1715,7 @@ impl<T> HeaderMap<T> {
             return None;
         }
 
-        let hash = hash_elem_using(&self.danger, key);
+        let hash = hash_elem_using(flood_hasher(self.danger, &self.cold), key);
         let mask = self.mask();
         let mut probe = desired_pos(mask, hash);
         let mut dist = 0;
@@ -1864,15 +1932,95 @@ impl<T> HeaderMap<T> {
         // Pushed after the element, so a panicking push leaves no slot naming
         // a missing element (order invariant).
         self.push_order(Link::Entry(index));
+        if self.cold.is_some() {
+            self.claim_reserved_position(index);
+        }
 
+        Ok(())
+    }
+
+    /// Move the just-inserted entry `index` into the slot reserved for its name.
+    #[cold]
+    #[inline(never)]
+    fn claim_reserved_position(&mut self, index: usize) {
+        let Some(cold) = self.cold.as_mut() else {
+            return;
+        };
+        let key = &self.entries[index].key;
+        let Some(idx) = cold.reserved.iter().position(|p| p.key == *key) else {
+            return;
+        };
+        let reserved = cold.reserved.swap_remove(idx).order;
+        self.release_unused_cold_state();
+        // The entry was pushed last and only its own slot is at the end; the
+        // reserved slot is in bounds, `None` and named by no other element
+        // (reserved invariant), so moving the entry there keeps the order invariant.
+        debug_assert_eq!(self.order.last(), Some(&Some(Link::Entry(index))));
+        self.order.pop();
+        self.entries[index].order = reserved;
+        self.order[reserved] = Some(Link::Entry(index));
+    }
+
+    fn drop_reserved_positions(&mut self) {
+        if let Some(cold) = &mut self.cold {
+            cold.reserved = Vec::new();
+            self.release_unused_cold_state();
+        }
+    }
+
+    fn release_unused_cold_state(&mut self) {
+        if self
+            .cold
+            .as_ref()
+            .is_some_and(|cold| cold.flood_hasher.is_none() && cold.reserved.is_empty())
+        {
+            self.cold = None;
+        }
+    }
+
+    fn set_danger_red(&mut self) {
+        debug_assert!(self.danger.is_yellow());
+        self.danger = Danger::Red;
+        self.cold.get_or_insert_with(Box::default).flood_hasher = Some(RandomState::new());
+    }
+
+    fn try_reserve_position2<K>(&mut self, key: K) -> Result<(), MaxSizeReached>
+    where
+        K: Into<HeaderName>,
+    {
+        let key = key.into();
+        if self.find(&key).is_some() {
+            return Ok(());
+        }
+        let pending = match &self.cold {
+            None => 0,
+            Some(cold) => {
+                if cold.reserved.iter().any(|p| p.key == key) {
+                    return Ok(());
+                }
+                cold.reserved.len()
+            }
+        };
+        // A reservation is only useful while an entry could still claim it.
+        if self.entries.len() + pending >= usable_capacity(MAX_SIZE) {
+            return Err(MaxSizeReached::new());
+        }
+
+        let order = self.order.len();
+        self.order.push(None);
+        self.cold
+            .get_or_insert_with(Box::default)
+            .reserved
+            .push(ReservedPosition { key, order });
         Ok(())
     }
 
     fn rebuild(&mut self) {
         let mask = self.mask();
+        let hasher = flood_hasher(self.danger, &self.cold);
         // Loop over all entries and re-insert them into the map
         'outer: for (index, entry) in self.entries.iter_mut().enumerate() {
-            let hash = hash_elem_using(&self.danger, &entry.key);
+            let hash = hash_elem_using(hasher, &entry.key);
             let mut probe = desired_pos(mask, hash);
             let mut dist = 0;
 
@@ -1934,7 +2082,7 @@ impl<T> HeaderMap<T> {
                 // Grow the capacity
                 self.try_grow(new_cap)?;
             } else {
-                self.danger.set_red();
+                self.set_danger_red();
 
                 // Rebuild hash table
                 for index in self.indices.iter_mut() {
@@ -4157,12 +4305,7 @@ impl Pos {
 
 impl Danger {
     fn is_red(&self) -> bool {
-        matches!(*self, Danger::Red(_))
-    }
-
-    fn set_red(&mut self) {
-        debug_assert!(self.is_yellow());
-        *self = Danger::Red(Box::new(RandomState::new()));
+        matches!(*self, Danger::Red)
     }
 
     fn is_yellow(&self) -> bool {
@@ -4229,21 +4372,29 @@ fn probe_distance(mask: Size, hash: HashValue, current: usize) -> usize {
 }
 
 #[inline]
-fn hash_elem_using<K>(danger: &Danger, k: &K) -> HashValue
+fn flood_hasher(danger: Danger, cold: &Option<Box<ColdState>>) -> Option<&RandomState> {
+    match danger {
+        Danger::Red => cold.as_ref().and_then(|cold| cold.flood_hasher.as_ref()),
+        Danger::Green | Danger::Yellow => None,
+    }
+}
+
+#[inline]
+fn hash_elem_using<K>(hasher: Option<&RandomState>, k: &K) -> HashValue
 where
     K: Hash + ?Sized,
 {
     const MASK: u64 = (MAX_SIZE as u64) - 1;
 
-    let hash = match *danger {
+    let hash = match hasher {
         // Safe hash
-        Danger::Red(ref hasher) => {
+        Some(hasher) => {
             let mut h = hasher.build_hasher();
             k.hash(&mut h);
             h.finish()
         }
         // Fast hash
-        _ => {
+        None => {
             let mut h = FnvHasher::new();
             k.hash(&mut h);
             h.finish()
@@ -4310,6 +4461,9 @@ mod into_header_name {
 
         #[doc(hidden)]
         fn try_entry<T>(self, map: &mut HeaderMap<T>) -> Result<Entry<'_, T>, MaxSizeReached>;
+
+        #[doc(hidden)]
+        fn try_reserve_position<T>(self, map: &mut HeaderMap<T>) -> Result<(), MaxSizeReached>;
     }
 
     // ==== impls ====
@@ -4332,6 +4486,11 @@ mod into_header_name {
         #[inline]
         fn try_entry<T>(self, map: &mut HeaderMap<T>) -> Result<Entry<'_, T>, MaxSizeReached> {
             map.try_entry2(self)
+        }
+
+        #[inline]
+        fn try_reserve_position<T>(self, map: &mut HeaderMap<T>) -> Result<(), MaxSizeReached> {
+            map.try_reserve_position2(self)
         }
     }
 
@@ -4356,6 +4515,11 @@ mod into_header_name {
         fn try_entry<T>(self, map: &mut HeaderMap<T>) -> Result<Entry<'_, T>, MaxSizeReached> {
             map.try_entry2(self)
         }
+
+        #[inline]
+        fn try_reserve_position<T>(self, map: &mut HeaderMap<T>) -> Result<(), MaxSizeReached> {
+            map.try_reserve_position2(self)
+        }
     }
 
     impl IntoHeaderName for &HeaderName {}
@@ -4378,6 +4542,11 @@ mod into_header_name {
         #[inline]
         fn try_entry<T>(self, map: &mut HeaderMap<T>) -> Result<Entry<'_, T>, MaxSizeReached> {
             HdrName::from_static(self, move |hdr| map.try_entry2(hdr))
+        }
+
+        #[inline]
+        fn try_reserve_position<T>(self, map: &mut HeaderMap<T>) -> Result<(), MaxSizeReached> {
+            HdrName::from_static(self, move |hdr| map.try_reserve_position2(hdr))
         }
     }
 
@@ -4729,6 +4898,7 @@ enum HeaderMapOp {
     RemoveEntryMult { name: u8 },
     EntryAppend { name: u8, value: u8 },
     EntryInsertMult { name: u8, value: u8 },
+    ReservePosition { name: u8 },
 }
 
 #[cfg(test)]
@@ -4744,6 +4914,7 @@ struct ModelHeader {
 #[derive(Default)]
 struct HeaderMapModel {
     fields: Vec<Option<ModelHeader>>,
+    reserved: Vec<(usize, usize)>,
 }
 
 #[cfg(test)]
@@ -4794,12 +4965,31 @@ impl HeaderMapModel {
 
     fn append(&mut self, semantic_id: usize, name: String, value: String) {
         let head = self.head_index(semantic_id).is_none();
-        self.fields.push(Some(ModelHeader {
+        let field = Some(ModelHeader {
             semantic_id,
             name,
             value,
             head,
-        }));
+        });
+        let reserved = self
+            .reserved
+            .iter()
+            .position(|(id, _)| head && *id == semantic_id);
+        if let Some(pos) = reserved {
+            let (_, idx) = self.reserved.remove(pos);
+            self.fields[idx] = field;
+        } else {
+            self.fields.push(field);
+        }
+    }
+
+    fn reserve_position(&mut self, semantic_id: usize) {
+        if self.head_index(semantic_id).is_none()
+            && !self.reserved.iter().any(|(id, _)| *id == semantic_id)
+        {
+            self.reserved.push((semantic_id, self.fields.len()));
+            self.fields.push(None);
+        }
     }
 
     fn insert(&mut self, semantic_id: usize, name: String, value: String) {
@@ -4861,13 +5051,14 @@ impl quickcheck::Arbitrary for HeaderMapOp {
     fn arbitrary(g: &mut quickcheck::Gen) -> Self {
         let name = u8::arbitrary(g);
         let value = u8::arbitrary(g);
-        match u8::arbitrary(g) % 6 {
+        match u8::arbitrary(g) % 7 {
             0 => Self::Append { name, value },
             1 => Self::Insert { name, value },
             2 => Self::Remove { name },
             3 => Self::RemoveEntryMult { name },
             4 => Self::EntryAppend { name, value },
-            _ => Self::EntryInsertMult { name, value },
+            5 => Self::EntryInsertMult { name, value },
+            _ => Self::ReservePosition { name },
         }
     }
 }
@@ -4949,7 +5140,7 @@ impl HeaderMapOps {
         let mut map = HeaderMap::new();
         if randomized {
             map.danger.set_yellow();
-            map.danger.set_red();
+            map.set_danger_red();
         }
         let mut model = HeaderMapModel::default();
 
@@ -5006,6 +5197,11 @@ impl HeaderMapOps {
                         }
                     }
                     model.entry_insert_mult(semantic_id, model_original_name(name), value);
+                }
+                HeaderMapOp::ReservePosition { name } => {
+                    let (name, semantic_id) = model_header_name(name);
+                    map.reserve_position(make_header_name(name));
+                    model.reserve_position(semantic_id);
                 }
             }
 
@@ -5950,7 +6146,7 @@ fn boxed_flood_hasher_survives_clone_growth_and_clear() {
         map.append("set-cookie", HeaderValue::from_static("a=b"));
     }
     map.danger.set_yellow();
-    map.danger.set_red();
+    map.set_danger_red();
     for index in &mut *map.indices {
         *index = Pos::none();
     }
@@ -5977,7 +6173,7 @@ fn boxed_flood_hasher_survives_clone_growth_and_clear() {
 fn collision_flood_switches_to_boxed_randomized_hasher() {
     let names: Vec<_> = (0..)
         .map(|i| HeaderName::from_bytes(format!("x-collision-{i}").as_bytes()).unwrap())
-        .filter(|name| hash_elem_using(&Danger::Green, name).0 & 32767 == 0)
+        .filter(|name| hash_elem_using(None, name).0 & 32767 == 0)
         .take(600)
         .collect();
     for operation in 0..3 {
@@ -6041,5 +6237,231 @@ fn collision_mitigation_at_max_size_still_refuses_beyond_capacity() {
         map.try_append("x-full-0", HeaderValue::from_static("no"))
             .is_err()
     );
+    assert_header_map_invariants(&map);
+}
+
+#[cfg(test)]
+fn ordered_names<T>(map: &HeaderMap<T>) -> Vec<String> {
+    map.ordered_iter()
+        .map(|(name, _)| name.as_str().to_owned())
+        .collect()
+}
+
+#[test]
+fn reserved_position_holds_header_inserted_after_later_headers() {
+    let mut map = HeaderMap::new();
+    map.insert("x-first", HeaderValue::from_static("1"));
+    map.reserve_position("x-reserved");
+    map.insert("x-last", HeaderValue::from_static("3"));
+    map.insert("x-reserved", HeaderValue::from_static("2"));
+
+    assert_eq!(ordered_names(&map), ["x-first", "x-reserved", "x-last"]);
+    let consumed = map
+        .clone()
+        .into_ordered_iter()
+        .map(|(name, value)| (name.as_str().to_owned(), value))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        consumed,
+        [
+            ("x-first".to_owned(), HeaderValue::from_static("1")),
+            ("x-reserved".to_owned(), HeaderValue::from_static("2")),
+            ("x-last".to_owned(), HeaderValue::from_static("3")),
+        ]
+    );
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn reserved_position_is_taken_by_every_new_entry_path() {
+    type Insert = fn(&mut HeaderMap, HeaderName);
+    let paths: [Insert; 6] = [
+        |map, name| {
+            map.insert(name, HeaderValue::from_static("v"));
+        },
+        |map, name| {
+            map.append(name, HeaderValue::from_static("v"));
+        },
+        |map, name| {
+            map.try_insert(name, HeaderValue::from_static("v")).unwrap();
+        },
+        |map, name| {
+            map.try_append(name, HeaderValue::from_static("v")).unwrap();
+        },
+        |map, name| {
+            map.entry(name).or_insert(HeaderValue::from_static("v"));
+        },
+        |map, name| {
+            map.extend([(name, HeaderValue::from_static("v"))]);
+        },
+    ];
+    for insert in paths {
+        let mut map = HeaderMap::new();
+        map.reserve_position(HeaderName::from_static("x-reserved"));
+        map.insert("x-other", HeaderValue::from_static("o"));
+        insert(&mut map, HeaderName::from_static("x-reserved"));
+        assert_eq!(ordered_names(&map), ["x-reserved", "x-other"]);
+        assert_header_map_invariants(&map);
+    }
+}
+
+#[test]
+fn unused_reserved_position_is_invisible() {
+    let mut map = HeaderMap::new();
+    map.insert("x-a", HeaderValue::from_static("a"));
+    map.reserve_position("x-never");
+    map.insert("x-b", HeaderValue::from_static("b"));
+
+    assert_eq!(ordered_names(&map), ["x-a", "x-b"]);
+    assert_eq!(map.ordered_iter().size_hint(), (2, Some(2)));
+    assert_eq!(map.len(), 2);
+    assert!(!map.contains_key("x-never"));
+    assert_eq!(map.clone().into_ordered_iter().count(), 2);
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn reserved_position_survives_growth_and_neighbour_removal() {
+    let mut map = HeaderMap::new();
+    map.insert("x-before", HeaderValue::from_static("b"));
+    map.reserve_position("x-reserved");
+    for i in 0..200 {
+        map.insert(
+            HeaderName::from_bytes(format!("x-fill-{i}").as_bytes()).unwrap(),
+            HeaderValue::from_static("f"),
+        );
+    }
+    map.reserve(500);
+    map.remove("x-before");
+    for i in (0..200).step_by(2) {
+        map.remove(format!("x-fill-{i}").as_str());
+    }
+    map.insert("x-reserved", HeaderValue::from_static("r"));
+
+    let names = ordered_names(&map);
+    assert_eq!(names.len(), 101);
+    assert_eq!(names[0], "x-reserved");
+    assert_eq!(names[1], "x-fill-1");
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn reserved_position_survives_collision_rebuild() {
+    let mut map = HeaderMap::new();
+    map.reserve_position("x-reserved");
+    map.insert("x-a", HeaderValue::from_static("a"));
+    map.danger.set_yellow();
+    map.set_danger_red();
+    map.insert("x-b", HeaderValue::from_static("b"));
+    map.insert("x-reserved", HeaderValue::from_static("r"));
+
+    assert_eq!(ordered_names(&map), ["x-reserved", "x-a", "x-b"]);
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn append_after_reserved_insert_keeps_multi_value_semantics() {
+    let mut map = HeaderMap::new();
+    map.reserve_position("x-multi");
+    map.insert("x-other", HeaderValue::from_static("o"));
+    map.insert("x-multi", HeaderValue::from_static("1"));
+    map.append("x-multi", HeaderValue::from_static("2"));
+
+    assert_eq!(ordered_names(&map), ["x-multi", "x-other", "x-multi"]);
+    let values = map
+        .get_all("x-multi")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(values, ["1", "2"]);
+
+    // The reservation is consumed: removing and re-inserting goes to the end.
+    map.remove("x-multi");
+    map.insert("x-multi", HeaderValue::from_static("3"));
+    assert_eq!(ordered_names(&map), ["x-other", "x-multi"]);
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn reserve_position_for_present_name_is_noop() {
+    let mut map = HeaderMap::new();
+    map.insert("x-present", HeaderValue::from_static("p"));
+    map.reserve_position("X-Present");
+    map.insert("x-other", HeaderValue::from_static("o"));
+    map.remove("x-present");
+    map.insert("x-present", HeaderValue::from_static("p"));
+
+    assert_eq!(ordered_names(&map), ["x-other", "x-present"]);
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn reserving_same_name_twice_keeps_first_reservation() {
+    let mut map = HeaderMap::new();
+    map.reserve_position("x-reserved");
+    map.insert("x-a", HeaderValue::from_static("a"));
+    map.reserve_position("X-Reserved");
+    map.insert("x-b", HeaderValue::from_static("b"));
+    map.insert("X-Reserved", HeaderValue::from_static("r"));
+
+    assert_eq!(ordered_names(&map), ["X-Reserved", "x-a", "x-b"]);
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn reserved_position_survives_clone() {
+    let mut map = HeaderMap::new();
+    map.reserve_position("x-reserved");
+    map.insert("x-a", HeaderValue::from_static("a"));
+
+    let mut cloned = map.clone();
+    cloned.insert("x-reserved", HeaderValue::from_static("r"));
+    assert_eq!(ordered_names(&cloned), ["x-reserved", "x-a"]);
+
+    map.insert("x-reserved", HeaderValue::from_static("r"));
+    assert_eq!(ordered_names(&map), ["x-reserved", "x-a"]);
+    assert_header_map_invariants(&map);
+    assert_header_map_invariants(&cloned);
+}
+
+#[test]
+fn clear_and_drain_drop_reserved_positions() {
+    let mut map = HeaderMap::new();
+    map.reserve_position("x-reserved");
+    map.clear();
+    map.insert("x-a", HeaderValue::from_static("a"));
+    map.insert("x-reserved", HeaderValue::from_static("r"));
+    assert_eq!(ordered_names(&map), ["x-a", "x-reserved"]);
+    assert_header_map_invariants(&map);
+
+    let mut map = HeaderMap::new();
+    map.insert("x-a", HeaderValue::from_static("a"));
+    map.reserve_position("x-reserved");
+    drop(map.drain());
+    map.insert("x-b", HeaderValue::from_static("b"));
+    map.insert("x-reserved", HeaderValue::from_static("r"));
+    assert_eq!(ordered_names(&map), ["x-b", "x-reserved"]);
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn try_reserve_position_refuses_beyond_max_capacity() {
+    let capacity = usable_capacity(MAX_SIZE);
+    let mut map = HeaderMap::with_capacity(capacity);
+    for i in 0..capacity - 1 {
+        map.insert(
+            HeaderName::from_bytes(format!("x-full-{i}").as_bytes()).unwrap(),
+            HeaderValue::from_static("value"),
+        );
+    }
+    assert!(map.try_reserve_position("x-last-slot").is_ok());
+    assert!(map.try_reserve_position("x-no-slot").is_err());
+    // Present and already reserved names stay a no-op, also when full.
+    assert!(map.try_reserve_position("x-full-0").is_ok());
+    assert!(map.try_reserve_position("x-last-slot").is_ok());
+
+    map.insert("x-last-slot", HeaderValue::from_static("value"));
+    assert_eq!(map.keys_len(), capacity);
+    assert_eq!(ordered_names(&map).last().unwrap(), "x-last-slot");
     assert_header_map_invariants(&map);
 }

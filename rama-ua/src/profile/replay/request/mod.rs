@@ -7,7 +7,7 @@ use rama_core::{extensions::Extension, telemetry::tracing};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Version,
     header::{
-        ACCEPT, COOKIE, Entry, PRIORITY, SEC_FETCH_DEST, SEC_FETCH_MODE, SEC_FETCH_SITE,
+        ACCEPT, ALT_USED, COOKIE, Entry, PRIORITY, SEC_FETCH_DEST, SEC_FETCH_MODE, SEC_FETCH_SITE,
         SEC_FETCH_USER, TE, UPGRADE_INSECURE_REQUESTS,
     },
     proto::{
@@ -264,6 +264,9 @@ pub struct ReplayedRequestProfile {
     pub qpack_base: Option<FieldSectionBase>,
     /// Native field choices matched to the final emitted occurrences.
     pub qpack_headers: Option<HeaderPreferences>,
+    /// The capture sends `Alt-Used`: `headers` holds its position, and the
+    /// alternative-service layer writes the value for the endpoint in use.
+    pub send_alt_used: bool,
     pub report: ProfilePreservationReport,
 }
 
@@ -437,6 +440,7 @@ impl RequestSelection {
         let mut qpack_headers = None;
         let mut initial_regular_fields = None;
         let mut initial_pseudo_fields = None;
+        let mut send_alt_used = false;
         for slot in plan.slots.iter() {
             match slot {
                 PlannedSlot::Headers(captured) => {
@@ -463,6 +467,10 @@ impl RequestSelection {
                     {
                         qpack_headers.get_or_insert_with(HeaderPreferences::default);
                     }
+                    send_alt_used = captured
+                        .fields
+                        .iter()
+                        .any(|field| is_alt_used_binding(table.get(*field)));
                     headers = Some(replay_headers(
                         captured,
                         table,
@@ -579,9 +587,19 @@ impl RequestSelection {
             pseudo_headers,
             qpack_base,
             qpack_headers,
+            send_alt_used,
             report,
         })
     }
+}
+
+/// `Alt-Used` names the endpoint actually in use, known only below emulation.
+fn is_alt_used_binding(entry: &FieldEntry) -> bool {
+    entry.name == ALT_USED
+        && matches!(
+            entry.value,
+            PlannedValue::Request(RequestBinding::Authority)
+        )
 }
 
 /// A `:method` captured for another method is encoded natively.
@@ -717,6 +735,24 @@ fn replay_headers(
                     });
                 }
                 profile
+            }
+            PlannedValue::Request(_)
+                if original_value.is_none() && is_alt_used_binding(table.get(*field)) =>
+            {
+                output
+                    .try_reserve_position(ALT_USED)
+                    .map_err(|_error| ProfileDataError::LimitExceeded("replayed header fields"))?;
+                if let Some(encoding) = &mut encoding {
+                    encoding
+                        .try_append(
+                            ALT_USED,
+                            qpack::optional_preferences(table.get(*field).representation.as_ref())?,
+                        )
+                        .map_err(|_error| {
+                            ProfileDataError::LimitExceeded("replayed header fields")
+                        })?;
+                }
+                continue;
             }
             PlannedValue::Request(binding) => {
                 let Some(value) = original_value else {

@@ -570,3 +570,76 @@ fn network_hint_placeholders_replay_the_values_drawn_for_the_request() {
     // Only placeholders take drawn values; a captured value stays as captured.
     assert_eq!(headers["ect"], "4g");
 }
+
+fn ordered_names(headers: &HeaderMap) -> Vec<&str> {
+    headers
+        .ordered_iter()
+        .map(|(name, _)| name.as_str())
+        .collect()
+}
+
+fn alt_used_capture() -> RequestSelection {
+    selection(vec![
+        field("user-agent", 0, profile(b"captured-browser")),
+        field(
+            "alt-used",
+            0,
+            HeaderValueSource::Request(RequestBinding::Authority),
+        ),
+        field(
+            "cookie",
+            0,
+            HeaderValueSource::Request(RequestBinding::Cookie),
+        ),
+    ])
+}
+
+#[test]
+fn captured_alt_used_reserves_its_position_without_writing_a_value() {
+    let mut original = HeaderMap::new();
+    original.insert("cookie", HeaderValue::from_static("session=1"));
+
+    let replayed = alt_used_capture().replay_request(&original).unwrap();
+    assert!(replayed.send_alt_used);
+    assert!(replayed.report.is_exact());
+    let mut headers = replayed.headers.unwrap();
+    assert!(!headers.contains_key("alt-used"));
+    assert_eq!(ordered_names(&headers), ["user-agent", "cookie"]);
+
+    headers.insert("alt-used", HeaderValue::from_static("alt.example:443"));
+    assert_eq!(
+        ordered_names(&headers),
+        ["user-agent", "alt-used", "cookie"]
+    );
+}
+
+#[test]
+fn caller_alt_used_keeps_its_captured_position() {
+    let mut original = HeaderMap::new();
+    original.insert("cookie", HeaderValue::from_static("session=1"));
+    original.insert("alt-used", HeaderValue::from_static("caller.example:443"));
+
+    let replayed = alt_used_capture().replay_request(&original).unwrap();
+    assert!(replayed.send_alt_used);
+    let headers = replayed.headers.unwrap();
+    assert_eq!(
+        ordered_names(&headers),
+        ["user-agent", "alt-used", "cookie"]
+    );
+    assert_eq!(headers["alt-used"], "caller.example:443");
+}
+
+#[test]
+fn capture_without_alt_used_neither_reserves_nor_requests_it() {
+    let replayed = selection(vec![field("user-agent", 0, profile(b"captured-browser"))])
+        .replay_request(&HeaderMap::new())
+        .unwrap();
+    assert!(!replayed.send_alt_used);
+    let mut headers = replayed.headers.unwrap();
+    headers.insert("accept", HeaderValue::from_static("*/*"));
+    headers.insert("alt-used", HeaderValue::from_static("alt.example:443"));
+    assert_eq!(
+        ordered_names(&headers),
+        ["user-agent", "accept", "alt-used"]
+    );
+}

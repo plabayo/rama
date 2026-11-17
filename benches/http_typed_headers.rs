@@ -6,6 +6,7 @@
 
 use rama::http::{
     HeaderMap, HeaderValue,
+    header::HeaderName,
     headers::{
         Accept, Authorization, CacheControl, Connection, ContentLength, ContentRange, ContentType,
         Cookie, CrossOriginOpenerPolicy, ETag, HeaderDecode, HeaderEncode, HeaderMapExt, Host,
@@ -225,5 +226,87 @@ mod encode {
         let mut map = HeaderMap::new();
         map.typed_insert(ContentLength(1));
         b.bench_local(|| map.typed_insert(black_box(ContentLength(3495))));
+    }
+}
+
+mod header_map {
+    use super::*;
+
+    const REQUEST_HEADERS: &[(&str, &str)] = &[
+        ("host", "example.com"),
+        (
+            "user-agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        ),
+        (
+            "accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        ),
+        ("accept-language", "en-US,en;q=0.9"),
+        ("accept-encoding", "gzip, deflate, br, zstd"),
+        (
+            "sec-ch-ua",
+            "\"Chromium\";v=\"130\", \"Not?A_Brand\";v=\"99\"",
+        ),
+        ("sec-ch-ua-mobile", "?0"),
+        ("sec-ch-ua-platform", "\"Linux\""),
+        ("upgrade-insecure-requests", "1"),
+        ("sec-fetch-site", "none"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-user", "?1"),
+        ("sec-fetch-dest", "document"),
+        ("cookie", "a=1"),
+        ("cookie", "b=2"),
+        ("priority", "u=0, i"),
+        ("x-custom-header", "value"),
+        ("cache-control", "max-age=0"),
+    ];
+
+    fn fixture() -> Vec<(HeaderName, HeaderValue)> {
+        REQUEST_HEADERS
+            .iter()
+            .map(|(name, value)| {
+                (
+                    HeaderName::from_static(name),
+                    HeaderValue::from_static(value),
+                )
+            })
+            .collect()
+    }
+
+    #[divan::bench]
+    fn append_request_headers(b: divan::Bencher) {
+        let headers = fixture();
+        b.bench_local(|| {
+            let mut map = HeaderMap::new();
+            for (name, value) in black_box(&headers) {
+                map.append(name, value.clone());
+            }
+            black_box(map)
+        });
+    }
+
+    #[divan::bench]
+    fn insert_request_headers_with_capacity(b: divan::Bencher) {
+        let headers = fixture();
+        b.bench_local(|| {
+            let mut map = HeaderMap::with_capacity(headers.len());
+            for (name, value) in black_box(&headers) {
+                map.insert(name, value.clone());
+            }
+            black_box(map)
+        });
+    }
+
+    #[divan::bench]
+    fn entry_or_insert_request_headers(b: divan::Bencher) {
+        let headers = fixture();
+        b.bench_local(|| {
+            let mut map = HeaderMap::new();
+            for (name, value) in black_box(&headers) {
+                map.entry(name).or_insert_with(|| value.clone());
+            }
+            black_box(map)
+        });
     }
 }

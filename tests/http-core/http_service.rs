@@ -61,7 +61,7 @@ use rama::{
         },
         header,
         layer::{
-            alt_svc::AltSvcCache,
+            alt_svc::{AltSvcCache, SendAltUsed},
             upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         },
         matcher::MethodMatcher,
@@ -328,6 +328,13 @@ impl Server {
     }
 
     fn request(&self) -> Request {
+        // Alt-Used is opt-in; these tests observe the alternative in use through it.
+        let request = self.request_without_alt_used();
+        request.extensions().insert(SendAltUsed);
+        request
+    }
+
+    fn request_without_alt_used(&self) -> Request {
         Request::builder()
             .version(if self.version == Version::HTTP_3 {
                 Version::HTTP_3
@@ -712,6 +719,12 @@ async fn h2_altsvc_frame_discovers_h3_without_a_response_header() {
         );
         assert_eq!(observed.body, "dispatched once");
     }
+    // Without opting in, the same alternative is used but no Alt-Used is sent.
+    assert_eq!(
+        complete(&client, origin.request_without_alt_used()).await.1,
+        Version::HTTP_3
+    );
+    assert_eq!(alternative.observations.lock()[1].alt_used, None);
     drop(client);
     close_client_endpoint(endpoint).await;
     origin.close().await;

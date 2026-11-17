@@ -66,7 +66,9 @@ async fn request_discovery_source_can_change_on_one_established_connection() {
             origin(),
             candidate(initial_source),
         )));
-        let service = AltSvcLayer::new(AltSvcCache::default()).layer(Connection { extensions });
+        let service = AltSvcLayer::new(AltSvcCache::default())
+            .with_send_alt_used(true)
+            .layer(Connection { extensions });
 
         for source in [
             HttpServiceSource::Configured,
@@ -112,7 +114,9 @@ async fn unrelated_selection_cannot_change_established_discovery_source() {
             origin(),
             candidate(initial_source),
         ));
-        let service = AltSvcLayer::new(AltSvcCache::default()).layer(Connection { extensions });
+        let service = AltSvcLayer::new(AltSvcCache::default())
+            .with_send_alt_used(true)
+            .layer(Connection { extensions });
         let mut unrelated = candidate(match initial_source {
             HttpServiceSource::Configured => HttpServiceSource::AltSvc,
             _ => HttpServiceSource::Configured,

@@ -28,7 +28,10 @@ use crate::profile::{
         RequestReplayPlan,
     },
 };
-use rama_http::{HeaderName, Version, header::COOKIE};
+use rama_http::{
+    HeaderName, Version,
+    header::{ALT_USED, COOKIE},
+};
 use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -377,6 +380,9 @@ pub(super) fn request_variants_for_headers<'a>(
             let HeaderValueSource::Request(binding) = &field.value else {
                 return None;
             };
+            if is_stack_owned(&field.name, *binding) {
+                return None;
+            }
             let shape = RequestHeaderShape {
                 name: field.name.clone(),
                 occurrence: field.occurrence,
@@ -432,6 +438,9 @@ fn request_shape<'a>(
             let PlannedValue::Request(binding) = &entry.value else {
                 return None;
             };
+            if is_stack_owned(&entry.name, *binding) {
+                return None;
+            }
             Some(RequestHeaderShape {
                 name: entry.name.clone(),
                 occurrence: field.occurrence,
@@ -445,6 +454,12 @@ fn request_shape<'a>(
         fields: shape,
         cookie_layout,
     }
+}
+
+/// The alternative-service layer writes `Alt-Used` for the endpoint in use, so the
+/// caller never supplies it and it must not steer which captured variant is drawn.
+fn is_stack_owned(name: &HeaderName, binding: RequestBinding) -> bool {
+    binding == RequestBinding::Authority && *name == ALT_USED
 }
 
 fn sort_request_shape(shape: &mut Vec<RequestHeaderShape>, version: Version) {

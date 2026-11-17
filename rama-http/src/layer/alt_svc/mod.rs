@@ -9,8 +9,10 @@
 //! separate mechanism and must not be recorded as an Alt-Svc advertisement.
 //!
 //! Each request supplies its logical origin; connection metadata supplies the
-//! actual endpoint, authenticated identity and policy scope. The middleware records response hints and sets the typed `Alt-Used`
-//! request header. Connection selection, authentication and retry policy remain
+//! actual endpoint, authenticated identity and policy scope. The middleware records
+//! response hints. It sets the typed `Alt-Used` request header only when configured
+//! with `send_alt_used` or asked by a request's [`SendAltUsed`] extension, since
+//! RFC 7838 §5 makes it a SHOULD that some clients never send. Connection selection, authentication and retry policy remain
 //! the transport's responsibility; a request is dispatched exactly once.
 //!
 //! [RFC 7838]: https://www.rfc-editor.org/rfc/rfc7838
@@ -32,7 +34,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Layer, Service,
     error::{BoxError, error_chain},
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
 };
 use rama_http_headers::{AltUsed, HeaderMapExt as _, TypedHeader as _};
 use rama_http_types::{
@@ -46,7 +48,7 @@ use rama_net::{
         ConnectionPolicyScope, ProxyRouteContext,
     },
 };
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{
     any::Any,
     error::Error as StdError,
@@ -74,14 +76,37 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct AltSvcLayer {
     cache: AltSvcCache,
+    send_alt_used: bool,
 }
 
 impl AltSvcLayer {
     /// Share discovery state with a selector or another HTTP client.
     pub fn new(cache: AltSvcCache) -> Self {
-        Self { cache }
+        Self {
+            cache,
+            send_alt_used: false,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Send `Alt-Used` on every request served by an alternative service.
+        ///
+        /// Off by default; a request can also opt in with [`SendAltUsed`].
+        pub fn send_alt_used(mut self, enabled: bool) -> Self {
+            self.send_alt_used = enabled;
+            self
+        }
     }
 }
+
+/// Request extension asking the [`AltSvc`] service to send `Alt-Used` when the
+/// request is served by an alternative service.
+///
+/// Inserted by clients that emulate a peer which sends the header; an `Alt-Used`
+/// position reserved in the request headers keeps its place in field order.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
+pub struct SendAltUsed;
 
 /// Outcome context for one dispatch, never stored on a shared service.
 struct Observation {
@@ -249,6 +274,7 @@ impl<S> Layer<S> for AltSvcLayer {
         AltSvc {
             inner,
             cache: Some(self.cache.clone()),
+            send_alt_used: self.send_alt_used,
         }
     }
 }
@@ -258,6 +284,7 @@ impl<S> Layer<S> for AltSvcLayer {
 pub struct AltSvc<S> {
     inner: S,
     cache: Option<AltSvcCache>,
+    send_alt_used: bool,
 }
 
 impl<S> AltSvc<S> {
@@ -265,7 +292,21 @@ impl<S> AltSvc<S> {
 
     /// Disable advertisement learning while preserving actual Alt-Used bookkeeping.
     pub fn passthrough(inner: S) -> Self {
-        Self { inner, cache: None }
+        Self {
+            inner,
+            cache: None,
+            send_alt_used: false,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Send `Alt-Used` on every request served by an alternative service.
+        ///
+        /// Off by default; a request can also opt in with [`SendAltUsed`].
+        pub fn send_alt_used(mut self, enabled: bool) -> Self {
+            self.send_alt_used = enabled;
+            self
+        }
     }
 }
 
@@ -426,9 +467,14 @@ where
             .as_ref()
             .and_then(|origin| alternative_for_request(&self.inner, &request, origin));
         if let Some((service, _)) = &alternative {
-            request
-                .headers_mut()
-                .typed_insert(AltUsed::from(service.candidate.target.clone()));
+            let alt_used = AltUsed::from(service.candidate.target.clone());
+            if self.send_alt_used || request.extensions().contains::<SendAltUsed>() {
+                request.headers_mut().typed_insert(alt_used);
+            } else if request.headers().contains_key(AltUsed::name())
+                && request.headers().typed_get::<AltUsed>() != Some(alt_used)
+            {
+                request.headers_mut().remove(AltUsed::name());
+            }
         } else if origin.is_some() {
             request.headers_mut().remove(AltUsed::name());
         }
@@ -476,6 +522,7 @@ where
 mod tests {
     use super::*;
     use crate::Body;
+    use parking_lot::Mutex;
     use rama_core::{error::BoxErrorExt as _, extensions::Extensions, service::service_fn};
     use rama_http_types::conn::{
         HttpServiceCandidate, HttpServiceCandidates, HttpServiceSelection,
@@ -752,30 +799,32 @@ mod tests {
         let target = snapshot.get(0).unwrap().target.clone();
         let dispatched = Arc::new(AtomicUsize::new(0));
         let extensions = selected_connection(&snapshot);
-        let service = AltSvcLayer::new(cache.clone()).layer(connection(
-            service_fn({
-                let dispatched = dispatched.clone();
-                move |request: Request| {
+        let service = AltSvcLayer::new(cache.clone())
+            .with_send_alt_used(true)
+            .layer(connection(
+                service_fn({
                     let dispatched = dispatched.clone();
-                    let target = target.clone();
-                    async move {
-                        dispatched.fetch_add(1, Ordering::SeqCst);
-                        assert_eq!(
-                            request.headers().typed_get::<AltUsed>(),
-                            Some(AltUsed::from(target))
-                        );
-                        Ok::<_, Infallible>(
-                            Response::builder()
-                                .status(StatusCode::MISDIRECTED_REQUEST)
-                                .header("alt-svc", "h3=\":9443\"")
-                                .body(Body::empty())
-                                .unwrap(),
-                        )
+                    move |request: Request| {
+                        let dispatched = dispatched.clone();
+                        let target = target.clone();
+                        async move {
+                            dispatched.fetch_add(1, Ordering::SeqCst);
+                            assert_eq!(
+                                request.headers().typed_get::<AltUsed>(),
+                                Some(AltUsed::from(target))
+                            );
+                            Ok::<_, Infallible>(
+                                Response::builder()
+                                    .status(StatusCode::MISDIRECTED_REQUEST)
+                                    .header("alt-svc", "h3=\":9443\"")
+                                    .body(Body::empty())
+                                    .unwrap(),
+                            )
+                        }
                     }
-                }
-            }),
-            extensions,
-        ));
+                }),
+                extensions,
+            ));
         assert_eq!(
             service
                 .serve(selected_request(snapshot.clone()))
@@ -858,23 +907,25 @@ mod tests {
         cache.record(&other, &headers, Duration::ZERO);
         let snapshot = cache.lookup(&origin).unwrap();
         let other_snapshot = cache.lookup(&other).unwrap();
-        let service = AltSvcLayer::new(cache.clone()).layer(connection(
-            service_fn(async |request: Request| {
-                assert_eq!(
-                    request.headers().typed_get::<AltUsed>(),
-                    Some(AltUsed::from(
-                        "actual.example:8443".parse::<HostWithPort>().unwrap()
-                    ))
-                );
-                Ok::<_, Infallible>(
-                    Response::builder()
-                        .status(StatusCode::MISDIRECTED_REQUEST)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-            }),
-            selected_connection(&snapshot),
-        ));
+        let service = AltSvcLayer::new(cache.clone())
+            .with_send_alt_used(true)
+            .layer(connection(
+                service_fn(async |request: Request| {
+                    assert_eq!(
+                        request.headers().typed_get::<AltUsed>(),
+                        Some(AltUsed::from(
+                            "actual.example:8443".parse::<HostWithPort>().unwrap()
+                        ))
+                    );
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(StatusCode::MISDIRECTED_REQUEST)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                }),
+                selected_connection(&snapshot),
+            ));
         // A replacement selector may publish these extensions, but mismatched
         // origins, endpoints and indexes must not invalidate unrelated hints.
         for (candidates, index) in [
@@ -932,11 +983,133 @@ mod tests {
         ));
         for origin in [&established_origin, &other_origin, &established_origin] {
             let mut request = request(origin);
+            request.extensions().insert(SendAltUsed);
             request
                 .headers_mut()
                 .insert(AltUsed::name(), "stale.example:443".parse().unwrap());
             service.serve(request).await.unwrap();
         }
+    }
+
+    fn alternative_connection(origin: &HttpOrigin) -> Extensions {
+        let extensions = Extensions::new();
+        extensions.insert(EstablishedHttpService {
+            origin: origin.clone(),
+            candidate: HttpServiceCandidate {
+                protocol: ApplicationProtocol::HTTP_3,
+                target: "alternative.example:8443".parse().unwrap(),
+                source: HttpServiceSource::AltSvc,
+            },
+        });
+        extensions
+    }
+
+    fn header_capture() -> (
+        Arc<Mutex<Vec<(String, String)>>>,
+        impl Service<Request, Output = Response, Error = Infallible> + Clone,
+    ) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let service = service_fn({
+            let seen = seen.clone();
+            move |request: Request| {
+                let seen = seen.clone();
+                async move {
+                    *seen.lock() = request
+                        .headers()
+                        .ordered_iter()
+                        .map(|(name, value)| {
+                            (name.as_str().to_owned(), value.to_str().unwrap().to_owned())
+                        })
+                        .collect();
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }
+            }
+        });
+        (seen, service)
+    }
+
+    #[tokio::test]
+    async fn alt_used_is_sent_only_when_configured_or_requested() {
+        let origin = origin(Protocol::HTTPS);
+        for (configured, requested, expected) in [
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            let (seen, inner) = header_capture();
+            let service = AltSvcLayer::new(AltSvcCache::default())
+                .with_send_alt_used(configured)
+                .layer(connection(inner.clone(), alternative_connection(&origin)));
+            let req = request(&origin);
+            if requested {
+                req.extensions().insert(SendAltUsed);
+            }
+            service.serve(req).await.unwrap();
+            let alt_used = seen
+                .lock()
+                .iter()
+                .find(|(name, _)| name == "alt-used")
+                .map(|(_, value)| value.clone());
+            assert_eq!(
+                alt_used.as_deref(),
+                expected.then_some("alternative.example:8443"),
+                "configured {configured}, requested {requested}"
+            );
+
+            let (seen, inner) = header_capture();
+            let mut service =
+                AltSvc::passthrough(connection(inner, alternative_connection(&origin)));
+            service.set_send_alt_used(configured);
+            let req = request(&origin);
+            if requested {
+                req.extensions().insert(SendAltUsed);
+            }
+            service.serve(req).await.unwrap();
+            assert_eq!(
+                seen.lock().iter().any(|(name, _)| name == "alt-used"),
+                expected,
+                "passthrough configured {configured}, requested {requested}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unsent_alt_used_still_drops_a_stale_value_but_keeps_a_matching_one() {
+        let origin = origin(Protocol::HTTPS);
+        for (existing, kept) in [
+            ("stale.example:443", false),
+            ("alternative.example:8443", true),
+        ] {
+            let (seen, inner) = header_capture();
+            let service = AltSvc::passthrough(connection(inner, alternative_connection(&origin)));
+            let mut request = request(&origin);
+            request
+                .headers_mut()
+                .insert(AltUsed::name(), existing.parse().unwrap());
+            service.serve(request).await.unwrap();
+            assert_eq!(
+                seen.lock().iter().any(|(name, _)| name == "alt-used"),
+                kept,
+                "existing {existing}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn alt_used_fills_a_reserved_position() {
+        let origin = origin(Protocol::HTTPS);
+        let (seen, inner) = header_capture();
+        let service = AltSvc::passthrough(connection(inner, alternative_connection(&origin)));
+        let mut request = request(&origin);
+        let headers = request.headers_mut();
+        headers.insert("user-agent", "agent".parse().unwrap());
+        headers.reserve_position(AltUsed::name());
+        headers.insert("cookie", "a=1".parse().unwrap());
+        request.extensions().insert(SendAltUsed);
+        service.serve(request).await.unwrap();
+        let names: Vec<_> = seen.lock().iter().map(|(name, _)| name.clone()).collect();
+        assert_eq!(names, ["user-agent", "alt-used", "cookie"]);
     }
 
     #[tokio::test]
