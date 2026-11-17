@@ -10,7 +10,10 @@ use rama_net::client::pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey};
 use rama_udp::{DatagramSenderExt as _, DatagramSocketExt as _};
 use rama_utils::rate::Rate;
 use std::sync::atomic::AtomicUsize;
-use tokio::io::{DuplexStream, ReadBuf};
+use tokio::{
+    io::{DuplexStream, ReadBuf},
+    time::Instant,
+};
 
 type Io = ServiceInput<DuplexStream>;
 
@@ -603,7 +606,7 @@ async fn the_hard_phase_releases_a_stalled_close_before_its_grace() {
     let (_socket, dropped) = stalled_close(&scope, Duration::from_hours(1)).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(!dropped.load(Ordering::Acquire));
-    let start = tokio::time::Instant::now();
+    let start = Instant::now();
     scope.abort(Cause::Owner);
     released(&dropped).await;
     assert_eq!(start.elapsed(), Duration::ZERO);
@@ -1617,4 +1620,62 @@ async fn input_after_the_hard_phase_is_not_delivered_from_the_drain() {
         matches!(result, Err(DatagramError::Closed)),
         "input after the hard phase: {result:?}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn forwarding_just_before_the_idle_deadline_postpones_it() {
+    let timeout = Duration::from_secs(120);
+    let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default().with_idle_timeout(timeout));
+    tokio::time::sleep(Duration::from_millis(119_999)).await;
+    let forwarded = Instant::now();
+    peer.send_datagram(context0(b"tick")).await.unwrap();
+    let (tick, _) = recv(&mut socket).await.unwrap();
+    assert_eq!(tick, b"tick");
+    assert!(matches!(
+        recv(&mut socket).await,
+        Err(DatagramError::Closed)
+    ));
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Idle));
+    assert_eq!(forwarded.elapsed(), timeout);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_idle_deadline_follows_the_last_sent_payload_closely() {
+    let timeout = Duration::from_millis(50);
+    let (mut socket, mut peer) = pair(ConnectUdpSocketConfig::default().with_idle_timeout(timeout));
+    let mut sender = socket.create_sender();
+    let mut forwarded = Instant::now();
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        forwarded = Instant::now();
+        sender.send(SendDatagram::new(PEER, b"tick")).await.unwrap();
+        assert!(peer.recv().await.unwrap().is_some());
+    }
+    assert!(matches!(
+        recv(&mut socket).await,
+        Err(DatagramError::Closed)
+    ));
+    let idle = forwarded.elapsed();
+    assert_eq!(socket.close_reason(), Some(ConnectUdpClose::Idle));
+    assert!(idle >= timeout, "expired early: {idle:?}");
+    assert!(
+        idle < timeout + Duration::from_millis(100),
+        "expired late: {idle:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_huge_idle_timeout_neither_panics_nor_expires() {
+    let (mut socket, mut peer) =
+        pair(ConnectUdpSocketConfig::default().with_idle_timeout(Duration::MAX));
+    peer.send_datagram(context0(b"tick")).await.unwrap();
+    recv(&mut socket).await.unwrap();
+    socket
+        .create_sender()
+        .send(SendDatagram::new(PEER, b"tock"))
+        .await
+        .unwrap();
+    assert!(peer.recv().await.unwrap().is_some());
+    tokio::time::sleep(Duration::from_hours(24 * 365)).await;
+    assert_eq!(socket.close_reason(), None);
 }

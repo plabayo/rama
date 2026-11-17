@@ -824,6 +824,11 @@ required-features = ["udp"]
 harness = false
 
 [[bench]]
+name = "idle_timeout"
+required-features = ["masque"]
+harness = false
+
+[[bench]]
 name = "quic_layers"
 required-features = ["quic", "test-utils"]
 harness = false

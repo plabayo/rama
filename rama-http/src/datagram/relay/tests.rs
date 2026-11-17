@@ -587,3 +587,79 @@ async fn a_closed_native_destination_does_not_cancel_received_payloads() {
         );
     }
 }
+
+/// Spawn a relay with `idle_timeout` and return it with sessions on its client and origin.
+fn idle_relay(
+    idle_timeout: Duration,
+) -> (
+    JoinHandle<Result<DatagramRelayOutcome, SessionError>>,
+    HttpDatagramSession<ServiceInput<DuplexStream>>,
+    HttpDatagramSession<ServiceInput<DuplexStream>>,
+) {
+    let (left, client) = socket(&Native::default());
+    let (right, origin) = socket(&Native::default());
+    let relay = spawn(async move {
+        HttpDatagramRelay::default()
+            .with_idle_timeout(idle_timeout)
+            .serve(BridgeIo(left, right))
+            .await
+    });
+    (
+        relay,
+        HttpDatagramSession::new(client),
+        HttpDatagramSession::new(origin),
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn forwarding_just_before_the_idle_deadline_postpones_it() {
+    let timeout = Duration::from_secs(10);
+    let (relay, mut client, mut origin) = idle_relay(timeout);
+    tokio::time::sleep(Duration::from_millis(9_999)).await;
+    let forwarded = tokio::time::Instant::now();
+    client
+        .send_datagram(Bytes::from_static(b"alive"))
+        .await
+        .unwrap();
+    assert!(origin.recv().await.unwrap().is_some());
+    let result = relay.await.unwrap();
+    assert!(
+        matches!(result, Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+    );
+    assert_eq!(forwarded.elapsed(), timeout);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_idle_deadline_follows_the_last_forwarded_datagram_closely() {
+    let timeout = Duration::from_millis(50);
+    let (relay, mut client, mut origin) = idle_relay(timeout);
+    let mut forwarded = tokio::time::Instant::now();
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        forwarded = tokio::time::Instant::now();
+        client
+            .send_datagram(Bytes::from_static(b"alive"))
+            .await
+            .unwrap();
+        assert!(origin.recv().await.unwrap().is_some());
+    }
+    relay.await.unwrap().unwrap_err();
+    let idle = forwarded.elapsed();
+    assert!(idle >= timeout, "expired early: {idle:?}");
+    assert!(
+        idle < timeout + Duration::from_millis(100),
+        "expired late: {idle:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_huge_idle_timeout_neither_panics_nor_expires() {
+    let (relay, mut client, mut origin) = idle_relay(Duration::MAX);
+    client
+        .send_datagram(Bytes::from_static(b"alive"))
+        .await
+        .unwrap();
+    assert!(origin.recv().await.unwrap().is_some());
+    tokio::time::sleep(Duration::from_hours(24 * 365)).await;
+    assert!(!relay.is_finished());
+}

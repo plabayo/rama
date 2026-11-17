@@ -7,10 +7,15 @@ use rama_core::{
     io::{AbortIo, BridgeIo, Io},
 };
 use rama_http_types::proto::capsule::CapsuleType;
+use rama_net::proxy::{IdleActivity, IdleGuard};
 use rama_utils::guard::DropGuard;
-use std::{io, pin::pin, time::Duration};
+use std::{
+    io,
+    pin::pin,
+    sync::atomic::{AtomicU8, Ordering},
+    time::Duration,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::{sync::watch, time::Instant};
 
 use super::{
     DatagramTransport, HttpDatagramSession, NativeSendError, SessionConfig, SessionError,
@@ -159,21 +164,26 @@ where
                 HttpDatagramSession::with_config(left, config.clone()).split();
             let (right_send, right_receive) =
                 HttpDatagramSession::with_config(right, config).split();
-            let (progress, observed) = if idle_timeout.is_some() {
-                let (progress, observed) = watch::channel(Instant::now());
-                (Some(progress), Some(observed))
-            } else {
-                (None, None)
-            };
+            let progress = idle_timeout.map(Progress::new);
             let exchange = exchange(
                 &scope,
                 close_timeout,
-                forward(left_receive, right_send, prefer_native, progress.clone()),
-                forward(right_receive, left_send, prefer_native, progress),
+                forward(
+                    left_receive,
+                    right_send,
+                    prefer_native,
+                    progress.as_ref().map(Forwarding::new),
+                ),
+                forward(
+                    right_receive,
+                    left_send,
+                    prefer_native,
+                    progress.as_ref().map(Forwarding::new),
+                ),
             );
             let (ingress_to_egress, egress_to_ingress) = tokio::select! {
                 result = exchange => result?,
-                () = idle(observed, idle_timeout) => return Err(SessionError::Io(io::Error::new(io::ErrorKind::TimedOut, "datagram relay idle timeout"))),
+                () = idle(progress.as_ref()) => return Err(SessionError::Io(io::Error::new(io::ErrorKind::TimedOut, "datagram relay idle timeout"))),
                 // Datagrams cannot drain: the relay runs through the graceful phase.
                 () = scope.aborted() => return Err(SessionError::Io(io::Error::new(io::ErrorKind::Interrupted, "datagram relay shutdown"))),
             };
@@ -186,21 +196,52 @@ where
     }
 }
 
-async fn idle(progress: Option<watch::Receiver<Instant>>, timeout: Option<Duration>) {
-    let (Some(mut progress), Some(timeout)) = (progress, timeout) else {
+/// Forwarding activity of a relay with an idle bound, shared by both directions.
+struct Progress {
+    timeout: Duration,
+    activity: IdleActivity,
+    // Directions still forwarding: once none is, idleness no longer ends the relay.
+    forwarding: AtomicU8,
+}
+
+impl Progress {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            activity: IdleActivity::new(),
+            forwarding: AtomicU8::new(0),
+        }
+    }
+}
+
+/// One direction's handle on [`Progress`], counted as forwarding until dropped.
+struct Forwarding<'a>(&'a Progress);
+
+impl<'a> Forwarding<'a> {
+    fn new(progress: &'a Progress) -> Self {
+        progress.forwarding.fetch_add(1, Ordering::Relaxed);
+        Self(progress)
+    }
+
+    fn record(&self) {
+        self.0.activity.record();
+    }
+}
+
+impl Drop for Forwarding<'_> {
+    fn drop(&mut self) {
+        self.0.forwarding.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+async fn idle(progress: Option<&Progress>) {
+    let Some(progress) = progress else {
         return std::future::pending().await;
     };
-    loop {
-        let deadline = *progress.borrow_and_update() + timeout;
-        if tokio::time::timeout_at(deadline, progress.changed())
-            .await
-            .is_err()
-        {
-            return;
-        }
-        if progress.has_changed().is_err() {
-            return std::future::pending().await;
-        }
+    let mut guard = IdleGuard::for_activity(progress.timeout, &progress.activity);
+    guard.expired(&progress.activity).await;
+    if progress.forwarding.load(Ordering::Relaxed) == 0 {
+        std::future::pending().await
     }
 }
 
@@ -289,7 +330,7 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
     mut receive: SessionReceiver<L>,
     mut send: SessionSender<R>,
     prefer_native: bool,
-    progress: Option<watch::Sender<Instant>>,
+    progress: Option<Forwarding<'_>>,
 ) -> Result<(DatagramRelayDirection, Ended<L, R>), SessionError> {
     let mut result = DatagramRelayDirection::default();
     let mut remaining = 0_u64;
@@ -313,7 +354,7 @@ async fn forward<L: AsyncRead, R: AsyncWrite>(
             Err(error) => return Err(error),
         }
         if let Some(progress) = &progress {
-            progress.send_replace(Instant::now());
+            progress.record();
         }
     }
 }
