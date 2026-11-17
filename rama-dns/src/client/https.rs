@@ -44,6 +44,8 @@ pub struct HttpsServiceBindings {
     /// ECH-capable discovery found only ECH-bearing compatible endpoints.
     /// RFC 9848 forbids bare endpoint fallback for this authority in that case.
     ech_reliant: bool,
+    /// Capability the lookup ran with, so subsets recompute reliance identically.
+    ech_capable: bool,
     /// Lookup failed; no partially validated records are exposed.
     failure: Option<BoxError>,
 }
@@ -67,6 +69,31 @@ impl HttpsServiceBindings {
     /// Whether compatible endpoints require ECH-reliant behavior.
     pub fn ech_reliant(&self) -> bool {
         self.ech_reliant
+    }
+
+    /// This result as if the same authority had been looked up for only `protocol`.
+    /// Reliance is recomputed over the remaining endpoints; a resolution failure
+    /// stays with the original result.
+    #[must_use]
+    pub fn restricted_to(&self, protocol: &ApplicationProtocol) -> Self {
+        let bindings: Vec<_> = self
+            .bindings
+            .iter()
+            .filter(|binding| binding.protocols.contains(protocol))
+            .map(|binding| HttpsServiceBinding {
+                record: binding.record.clone(),
+                target: binding.target.clone(),
+                protocols: vec![protocol.clone()],
+            })
+            .collect();
+        Self {
+            ech_reliant: ech_reliant(&bindings, self.ech_capable),
+            bindings,
+            alias_target: self.alias_target.clone(),
+            alias_followed: self.alias_followed,
+            ech_capable: self.ech_capable,
+            failure: None,
+        }
     }
 
     /// Require successful discovery, preserving the original resolver or record error.
@@ -157,7 +184,10 @@ async fn lookup_with_shuffle<R: DnsServiceBindingResolver>(
     max_aliases: NonZeroUsize,
     mut shuffle: impl FnMut(&mut [ServiceBindingRecord]) + Send,
 ) -> HttpsServiceBindings {
-    let mut result = HttpsServiceBindings::default();
+    let mut result = HttpsServiceBindings {
+        ech_capable,
+        ..Default::default()
+    };
     let Ok(domain) = authority.host.try_as_domain() else {
         return result;
     };
@@ -221,14 +251,18 @@ async fn lookup_with_shuffle<R: DnsServiceBindingResolver>(
                 HttpsServiceBinding::from_record(record, authority.port, protocols, ech_capable)
             })
             .collect();
-        result.ech_reliant = ech_capable
-            && !result.bindings.is_empty()
-            && result
-                .bindings
-                .iter()
-                .all(|binding| binding.record.binding.ech_config_list().is_some());
+        result.ech_reliant = ech_reliant(&result.bindings, ech_capable);
         return result;
     }
+}
+
+/// RFC 9848: reliant only when every compatible endpoint offers ECH.
+fn ech_reliant(bindings: &[HttpsServiceBinding], ech_capable: bool) -> bool {
+    ech_capable
+        && !bindings.is_empty()
+        && bindings
+            .iter()
+            .all(|binding| binding.record.binding.ech_config_list().is_some())
 }
 
 impl HttpsServiceBinding {

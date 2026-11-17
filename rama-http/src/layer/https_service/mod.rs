@@ -419,15 +419,21 @@ impl<R: DnsServiceBindingResolver + DnsAddressResolver + Clone> HttpsServiceLaye
                 if !protocols.contains(&candidate.protocol) {
                     continue;
                 }
-                let result = lookup_https_service_bindings(
-                    &self.resolver,
-                    &candidate.target,
-                    std::slice::from_ref(&candidate.protocol),
-                    capable,
-                    DEFAULT_HTTPS_ALIAS_LIMIT,
-                )
-                .await;
-                let result = self.check_discovery(result)?;
+                // The origin's own answer already covers an advertisement of itself.
+                let result = if candidate.target == input.authority {
+                    primary.restricted_to(&candidate.protocol)
+                } else {
+                    self.check_discovery(
+                        lookup_https_service_bindings(
+                            &self.resolver,
+                            &candidate.target,
+                            std::slice::from_ref(&candidate.protocol),
+                            capable,
+                            DEFAULT_HTTPS_ALIAS_LIMIT,
+                        )
+                        .await,
+                    )?
+                };
                 // A later timeout must suppress cached bare authorities whose
                 // records already established conditional ECH reliance.
                 *reliant |= result.ech_reliant();

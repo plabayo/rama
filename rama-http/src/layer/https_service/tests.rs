@@ -840,3 +840,150 @@ async fn strict_discovery_rejects_bounded_rrsets_without_dialing() {
         cause = cause.source().expect("retain bounded resolver cause");
     }
 }
+
+#[tokio::test]
+async fn same_origin_alternative_reuses_origin_https_answer() {
+    let ech: &[u8] = b"\x00\x05\xfe\x0d\x00\x01\x00";
+    let resolver = Resolver {
+        records: HashMap::from_iter([(
+            Domain::from_static("origin.example"),
+            vec![
+                record("origin.example", "ech.example", &[(1, b"\x02h3"), (5, ech)]),
+                record("origin.example", "plain.example", &[(1, b"\x02h2")]),
+            ],
+        )]),
+        ..Default::default()
+    };
+    let cache = AltSvcCache::default();
+    let request = input();
+    cache.record_frame(
+        &HttpOrigin::new(Protocol::HTTPS, request.authority.clone()).unwrap(),
+        rama_core::bytes::Bytes::from_static(b"h3=\":443\", h2=\"alt.example:443\", h3=\":8443\""),
+        std::time::Instant::now(),
+    );
+    let layer = HttpsServiceLayer::new()
+        .with_resolver(resolver.clone())
+        .with_ech_capable(true)
+        .with_cache(cache);
+    layer.discover(&request).await.unwrap();
+
+    let snapshot = request
+        .extensions()
+        .get_ref::<HttpServiceCandidates>()
+        .unwrap();
+    let observed: Vec<_> = snapshot
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            let extensions = snapshot.candidate_extensions(index).unwrap();
+            (
+                candidate.protocol.to_string(),
+                candidate.target.to_string(),
+                extensions
+                    .get_ref::<ConnectorTarget>()
+                    .map(|target| target.0.to_string()),
+                extensions
+                    .get_ref::<TargetEchServiceBinding>()
+                    .unwrap()
+                    .reliant,
+                extensions.contains::<TargetEchConfig>(),
+                extensions
+                    .get_ref::<HttpServiceSelection>()
+                    .map(|selection| selection.index),
+            )
+        })
+        .collect();
+    let entry = |protocol: ApplicationProtocol,
+                 target: &str,
+                 endpoint: Option<&str>,
+                 reliant: bool,
+                 config: bool,
+                 index: Option<usize>| {
+        (
+            protocol.to_string(),
+            target.to_owned(),
+            endpoint.map(ToOwned::to_owned),
+            reliant,
+            config,
+            index,
+        )
+    };
+    // Only the ECH-bearing record serves h3, so that alternative alone is reliant.
+    assert_eq!(
+        observed[..4],
+        [
+            entry(
+                ApplicationProtocol::HTTP_3,
+                "origin.example:443",
+                Some("ech.example.:443"),
+                true,
+                true,
+                Some(0)
+            ),
+            entry(
+                ApplicationProtocol::HTTP_3,
+                "origin.example:443",
+                None,
+                true,
+                false,
+                Some(0)
+            ),
+            entry(
+                ApplicationProtocol::HTTP_2,
+                "alt.example:443",
+                None,
+                false,
+                false,
+                Some(1)
+            ),
+            entry(
+                ApplicationProtocol::HTTP_3,
+                "origin.example:8443",
+                None,
+                false,
+                false,
+                Some(2)
+            ),
+        ]
+    );
+    let mut primary = observed[4..].to_vec();
+    primary.sort_unstable();
+    assert_eq!(
+        primary,
+        [
+            entry(
+                ApplicationProtocol::HTTP_2,
+                "ech.example.:443",
+                Some("ech.example.:443"),
+                false,
+                true,
+                None
+            ),
+            entry(
+                ApplicationProtocol::HTTP_2,
+                "plain.example.:443",
+                Some("plain.example.:443"),
+                false,
+                false,
+                None
+            ),
+            entry(
+                ApplicationProtocol::HTTP_3,
+                "ech.example.:443",
+                Some("ech.example.:443"),
+                false,
+                true,
+                None
+            ),
+        ]
+    );
+    // The origin answer serves its own advertisement; other authorities query.
+    assert_eq!(
+        *resolver.queries.lock(),
+        [
+            "HTTPS origin.example",
+            "HTTPS alt.example",
+            "HTTPS _8443._https.origin.example"
+        ]
+    );
+}
