@@ -1204,7 +1204,7 @@ impl rama_core::Service<Request<()>> for HeadEchoSink {
     async fn serve(&self, req: Request<()>) -> Result<Self::Output, Self::Error> {
         let mut response = Response::new(Body::empty());
         if req.extensions().contains::<SendAltUsed>() {
-            response.extensions().insert(SendAltUsed);
+            response.extensions().insert(SendAltUsed::new());
         }
         *response.headers_mut() = req.headers().clone();
         Ok(response)

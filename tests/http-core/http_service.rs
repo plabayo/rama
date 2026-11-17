@@ -330,7 +330,7 @@ impl Server {
     fn request(&self) -> Request {
         // Alt-Used is opt-in; these tests observe the alternative in use through it.
         let request = self.request_without_alt_used();
-        request.extensions().insert(SendAltUsed);
+        request.extensions().insert(SendAltUsed::new());
         request
     }
 

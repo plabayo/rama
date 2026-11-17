@@ -104,9 +104,18 @@ impl AltSvcLayer {
 ///
 /// Inserted by clients that emulate a peer which sends the header; an `Alt-Used`
 /// position reserved in the request headers keeps its place in field order.
-#[derive(Debug, Clone, Extension)]
+#[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(http))]
+#[non_exhaustive]
 pub struct SendAltUsed;
+
+impl SendAltUsed {
+    /// Create a new [`SendAltUsed`].
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 /// Outcome context for one dispatch, never stored on a shared service.
 struct Observation {
@@ -983,7 +992,7 @@ mod tests {
         ));
         for origin in [&established_origin, &other_origin, &established_origin] {
             let mut request = request(origin);
-            request.extensions().insert(SendAltUsed);
+            request.extensions().insert(SendAltUsed::new());
             request
                 .headers_mut()
                 .insert(AltUsed::name(), "stale.example:443".parse().unwrap());
@@ -1043,7 +1052,7 @@ mod tests {
                 .layer(connection(inner.clone(), alternative_connection(&origin)));
             let req = request(&origin);
             if requested {
-                req.extensions().insert(SendAltUsed);
+                req.extensions().insert(SendAltUsed::new());
             }
             service.serve(req).await.unwrap();
             let alt_used = seen
@@ -1063,7 +1072,7 @@ mod tests {
             service.set_send_alt_used(configured);
             let req = request(&origin);
             if requested {
-                req.extensions().insert(SendAltUsed);
+                req.extensions().insert(SendAltUsed::new());
             }
             service.serve(req).await.unwrap();
             assert_eq!(
@@ -1106,7 +1115,7 @@ mod tests {
         headers.insert("user-agent", "agent".parse().unwrap());
         headers.reserve_position(AltUsed::name());
         headers.insert("cookie", "a=1".parse().unwrap());
-        request.extensions().insert(SendAltUsed);
+        request.extensions().insert(SendAltUsed::new());
         service.serve(request).await.unwrap();
         let names: Vec<_> = seen.lock().iter().map(|(name, _)| name.clone()).collect();
         assert_eq!(names, ["user-agent", "alt-used", "cookie"]);

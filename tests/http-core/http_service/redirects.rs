@@ -37,7 +37,7 @@ fn request(server: &Server) -> Request {
         .body(Body::empty())
         .unwrap();
     // Alt-Used is opt-in; these tests observe the alternative in use through it.
-    request.extensions().insert(SendAltUsed);
+    request.extensions().insert(SendAltUsed::new());
     request
 }
 

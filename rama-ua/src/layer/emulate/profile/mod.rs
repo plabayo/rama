@@ -648,7 +648,7 @@ fn replay_request<Body>(
     if let Some(headers) = replayed.headers {
         *req.headers_mut() = headers;
         if replayed.send_alt_used {
-            req.extensions().insert(SendAltUsed);
+            req.extensions().insert(SendAltUsed::new());
         }
     }
     if let Some(pseudo_headers) = replayed.pseudo_headers {
