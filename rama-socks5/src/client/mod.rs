@@ -8,6 +8,6 @@ mod proxy_connector;
 mod proxy_error;
 
 #[doc(inline)]
-pub use proxy_connector::{Socks5ProxyConnector, Socks5ProxyConnectorLayer};
+pub use proxy_connector::{Socks5ConnectProxyConnector, Socks5ConnectProxyConnectorLayer};
 #[doc(inline)]
 pub use proxy_error::Socks5ProxyError;

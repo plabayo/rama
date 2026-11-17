@@ -180,8 +180,8 @@ async fn proxy_route_its_endpoints_do_not_establish_is_refused() {
     let endpoint = Endpoint::bind_client(WeakScope::detached(), SocketAddress::local_ipv4(0))
         .await
         .unwrap();
-    let proxy: ProxyAddress = "masque://proxy.example:443".parse().unwrap();
-    let other: ProxyAddress = "masque://other.example:443".parse().unwrap();
+    let proxy: ProxyAddress = "h3://proxy.example:443".parse().unwrap();
+    let other: ProxyAddress = "h3://other.example:443".parse().unwrap();
     for (route, peer) in [
         (None, true),
         (Some(EstablishedProxyRoute::Direct), true),

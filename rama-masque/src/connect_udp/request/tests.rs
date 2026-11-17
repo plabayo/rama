@@ -1,6 +1,6 @@
 use std::num::NonZeroU16;
 
-use rama_http::headers::CapsuleProtocol;
+use rama_http::{Body, headers::CapsuleProtocol};
 use rama_net::address::Host;
 
 use super::*;
@@ -23,8 +23,8 @@ const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP
 
 #[test]
 fn http1_request_is_a_get_upgrade() {
-    let request = connect_udp_request(
-        &proxy("masque://user:pass@proxy.example:4443"),
+    let request = connect_udp_request::<Body>(
+        &proxy("h3://user:pass@proxy.example:4443"),
         &target("2001:db8::42", 443),
         Version::HTTP_11,
     )
@@ -48,8 +48,8 @@ fn http1_request_is_a_get_upgrade() {
 #[test]
 fn http2_and_http3_requests_use_extended_connect() {
     for version in [Version::HTTP_2, Version::HTTP_3] {
-        let request = connect_udp_request(
-            &proxy("masque://proxy.example/masque?h={target_host}&p={target_port}"),
+        let request = connect_udp_request::<Body>(
+            &proxy("h3://proxy.example/masque?h={target_host}&p={target_port}"),
             &target("192.0.2.6", 53),
             version,
         )
@@ -73,14 +73,21 @@ fn http2_and_http3_requests_use_extended_connect() {
 }
 
 #[test]
-fn refuses_non_masque_proxies_and_old_versions() {
+fn refuses_proxies_without_connect_udp_and_old_versions() {
     let t = target("example.org", 443);
+    for proxy_address in [
+        "socks5://proxy.example",
+        "https://proxy.example/ip/{target}/{ipproto}",
+    ] {
+        assert_eq!(
+            connect_udp_request::<Body>(&proxy(proxy_address), &t, Version::HTTP_2).unwrap_err(),
+            ConnectUdpRequestError::NoConnectUdp,
+            "{proxy_address}"
+        );
+    }
     assert_eq!(
-        connect_udp_request(&proxy("https://proxy.example"), &t, Version::HTTP_2).unwrap_err(),
-        ConnectUdpRequestError::NotMasque
-    );
-    assert_eq!(
-        connect_udp_request(&proxy("masque://proxy.example"), &t, Version::HTTP_10).unwrap_err(),
+        connect_udp_request::<Body>(&proxy("h3://proxy.example"), &t, Version::HTTP_10)
+            .unwrap_err(),
         ConnectUdpRequestError::UnsupportedVersion(Version::HTTP_10)
     );
 }
@@ -88,9 +95,9 @@ fn refuses_non_masque_proxies_and_old_versions() {
 #[test]
 fn built_requests_match_on_the_proxy() {
     for (proxy_address, server_template) in [
-        ("masque://proxy.example", None),
+        ("h3://proxy.example", None),
         (
-            "masque://proxy.example/masque?h={target_host}&p={target_port}",
+            "h3://proxy.example/masque?h={target_host}&p={target_port}",
             Some("/masque?h={target_host}&p={target_port}"),
         ),
         (
@@ -103,7 +110,8 @@ fn built_requests_match_on_the_proxy() {
         for host in ["192.0.2.6", "2001:db8::42", "example.org"] {
             let target = target(host, 4433);
             for version in VERSIONS {
-                let request = connect_udp_request(&proxy(proxy_address), &target, version).unwrap();
+                let request =
+                    connect_udp_request::<Body>(&proxy(proxy_address), &target, version).unwrap();
                 assert_eq!(
                     matcher.match_request(&request),
                     Ok(target.clone()),
