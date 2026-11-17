@@ -24,6 +24,9 @@ use crate::{
 /// which percent-decodes and validates; [`From<Basic>`](UserInfo) is the
 /// percent-encoding reverse. The two types are kept distinct on purpose.
 ///
+/// Parsing: an unbracketed IPv6 address never carries a port (`::1:80` is one
+/// address); a port requires brackets (`[::1]:80`).
+///
 /// ## Examples
 ///
 /// - example.com
@@ -704,6 +707,9 @@ impl TryFrom<&[u8]> for Authority {
 /// [`Authority::view`], or parsed without allocation through
 /// [`AuthorityRef::parse_strict`].
 ///
+/// Parsing: an unbracketed IPv6 address never carries a port (`::1:80` is one
+/// address); a port requires brackets (`[::1]:80`).
+///
 /// `PartialEq` / `Eq` / `Hash` follow the same component-wise rules as
 /// the owned [`Authority`] (case-insensitive host via `HostRef`'s impl,
 /// strict equality on userinfo / port), so the two types are
@@ -884,6 +890,25 @@ mod tests {
             "[::1]",
             "[fe80::1%25eth0]:80",
             "[::1]x",
+            "::1",
+            "::1:80",
+            "user@::1",
+            "user:pw@::1:80",
+            "::ffff:1.2.3.4",
+            "2001:db8::1",
+            "fe80::1%25eth0",
+            "fe80::1%eth0",
+            "[fe80::1%eth0]",
+            ":::1",
+            "1::2::3",
+            "::1]",
+            "[::1",
+            "127.0.0.1",
+            "127.0.0.1:80",
+            "example.com",
+            "example.com:443",
+            ":80",
+            "a:b:c",
             "host:",
             "host:80",
             "user@",
@@ -914,11 +939,39 @@ mod tests {
                 assert_eq!(reparsed, eager.address, "{input}");
             }
         }
+    }
 
-        // bare IPv6 stays an eager-only convenience, displayed bracketed
-        let bare = Authority::try_from("::1").unwrap();
-        AuthorityRef::parse(b"::1").unwrap_err();
-        assert_eq!(bare.to_string().parse::<Authority>().unwrap(), bare);
+    #[test]
+    fn unbracketed_ipv6_never_carries_a_port() {
+        let loopback: Ipv6Addr = "::1".parse().unwrap();
+        let cases: [(&str, Ipv6Addr, Option<u16>); 4] = [
+            ("::1", loopback, None),
+            ("::1:80", "0:0:0:0:0:0:1:80".parse().unwrap(), None),
+            ("[::1]", loopback, None),
+            ("[::1]:80", loopback, Some(80)),
+        ];
+        for (input, address, port) in cases {
+            let owned = Authority::try_from(input).unwrap();
+            assert_eq!(
+                owned.address.host,
+                Host::Address(IpAddr::V6(address)),
+                "{input}"
+            );
+            assert_eq!(owned.address.port.as_u16(), port, "{input}");
+
+            for borrowed in [
+                AuthorityRef::parse(input.as_bytes()).unwrap(),
+                AuthorityRef::parse_strict(input.as_bytes()).unwrap(),
+            ] {
+                assert_eq!(
+                    borrowed.host(),
+                    HostRef::Address(IpAddr::V6(address)),
+                    "{input}"
+                );
+                assert_eq!(borrowed.port_u16(), port, "{input}");
+                assert_eq!(borrowed.into_owned(), owned, "{input}");
+            }
+        }
     }
     use std::assert_matches;
 
