@@ -1,13 +1,18 @@
 use std::time::Duration;
 
 use rama_core::{
-    Service, combinators::Either, error::BoxError, extensions::ExtensionsRef, io::Io,
-    layer::timeout::DefaultTimeout, telemetry::tracing,
+    Service,
+    combinators::Either,
+    error::BoxError,
+    extensions::{ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer},
+    io::Io,
+    layer::timeout::DefaultTimeout,
+    telemetry::tracing,
 };
 use rama_net::{
     address::{HostWithPort, SocketAddress},
     socket::SocketService,
-    stream::SocketInfo,
+    stream::{DefaultConnectionTransfer, SocketInfo},
 };
 use rama_udp::{UdpSocket, bind_udp_with_address};
 use rama_utils::macros::generate_set_and_with;
@@ -128,6 +133,8 @@ pub struct UdpRelay<B, I> {
 
     unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
     declared_client_udp_address_policy: DeclaredClientUdpAddressPolicy,
+
+    nested_connection_transfer: SharedNestedConnectionTransfer,
 }
 
 impl<B> UdpRelay<B, DirectUdpRelay> {
@@ -145,6 +152,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             relay_timeout: None,
             unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy::default(),
             declared_client_udp_address_policy: DeclaredClientUdpAddressPolicy::default(),
+            nested_connection_transfer: DefaultConnectionTransfer.into_shared(),
         }
     }
 
@@ -163,6 +171,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             relay_timeout: self.relay_timeout,
             unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
             declared_client_udp_address_policy: self.declared_client_udp_address_policy,
+            nested_connection_transfer: self.nested_connection_transfer,
         }
     }
 
@@ -181,6 +190,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             relay_timeout: self.relay_timeout,
             unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
             declared_client_udp_address_policy: self.declared_client_udp_address_policy,
+            nested_connection_transfer: self.nested_connection_transfer,
         }
     }
 }
@@ -202,6 +212,7 @@ impl<B, I> UdpRelay<B, I> {
             relay_timeout: self.relay_timeout,
             unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
             declared_client_udp_address_policy: self.declared_client_udp_address_policy,
+            nested_connection_transfer: self.nested_connection_transfer,
         }
     }
 
@@ -301,6 +312,19 @@ impl<B, I> UdpRelay<B, I> {
             self
         }
     }
+
+    generate_set_and_with! {
+        /// Set what the relayed datagrams keep from the SOCKS5 connection that
+        /// asked for the association.
+        ///
+        /// Defaults to [`DefaultConnectionTransfer`]. Chain transfers with
+        /// [`NestedConnectionTransfer::and`] to also carry your own connection-scoped
+        /// extension types to the inspector.
+        pub fn nested_connection_transfer(mut self, transfer: impl NestedConnectionTransfer) -> Self {
+            self.nested_connection_transfer = transfer.into_shared();
+            self
+        }
+    }
 }
 
 #[cfg(feature = "dns")]
@@ -375,7 +399,10 @@ where
             "socks5 server w/ destination {destination}: udp associate: try to bind incoming socket to destination {destination}",
         );
 
-        let extensions = stream.extensions().clone();
+        // Datagrams travel beside the SOCKS5 connection, not inside it.
+        let extensions = stream
+            .extensions()
+            .fork_nested_connection(&self.nested_connection_transfer);
 
         let HostWithPort {
             host: dest_host,
@@ -398,7 +425,8 @@ where
             return Err(Error::aborted("udp relay failed").with_context(reply_kind));
         };
         let client_address = SocketAddress::new(dest_addr, dest_port);
-        let tcp_peer_ip = SocketInfo::ingress(&extensions).map(|info| info.peer_addr().ip_addr);
+        let tcp_peer_ip =
+            SocketInfo::ingress(stream.extensions()).map(|info| info.peer_addr().ip_addr);
 
         if !self
             .declared_client_udp_address_policy
