@@ -100,6 +100,8 @@ pub struct ServeCommand {
 }
 
 #[derive(Debug, Subcommand)]
+// deferred variants only get their about (the args struct doc) when built, so `rama serve --help` lists them blank
+#[command(defer = false)]
 pub enum ServeSubcommand {
     Discard(discard::CliCommandDiscard),
     Echo(echo::CliCommandEcho),
