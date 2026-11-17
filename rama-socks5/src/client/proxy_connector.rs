@@ -831,7 +831,7 @@ mod tests {
         established
             .conn
             .extensions()
-            .self_get_arc::<AbortIo>()
+            .get_arc::<AbortIo>()
             .expect("the tunnel fronts the proxy stream")
             .abort();
         assert!(aborted.load(Ordering::Acquire));

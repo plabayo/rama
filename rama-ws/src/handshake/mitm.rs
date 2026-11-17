@@ -886,8 +886,8 @@ async fn relay_websocket_bridge<H, Ingress, Egress>(
     let mut egress_relay_extensions = egress_socket.extensions().fork();
 
     let aborts = Arc::new([
-        ingress_socket.extensions().self_get_arc::<AbortIo>(),
-        egress_socket.extensions().self_get_arc::<AbortIo>(),
+        ingress_socket.extensions().get_arc::<AbortIo>(),
+        egress_socket.extensions().get_arc::<AbortIo>(),
     ]);
     let (ingress_writer, ingress_reader) = ingress_socket.split();
     let (egress_writer, egress_reader) = egress_socket.split();

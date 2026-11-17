@@ -7,7 +7,7 @@ use rama_core::{
     Service,
     error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef},
-    io::{AbortIo, Io},
+    io::Io,
     telemetry::tracing,
 };
 use rama_http::{
@@ -448,7 +448,6 @@ where
         let tunnel_extensions = conn
             .extensions()
             .fork_nested_connection(&self.nested_connection_transfer);
-        AbortIo::front_same_io(conn.extensions(), &tunnel_extensions);
         conn.set_extensions(tunnel_extensions);
 
         let conn = MaybeHttpProxiedConnection::upgraded_proxy(conn, proxy_info);
@@ -795,6 +794,7 @@ mod tests {
         extensions::Extensions,
         futures::{Stream, stream},
         graceful::WeakScope,
+        io::AbortIo,
         layer::MapOutputLayer,
         service::service_fn,
     };
@@ -2285,7 +2285,7 @@ mod tests {
             .expect("proxy CONNECT handshake succeeds");
 
         conn.extensions()
-            .self_get_arc::<AbortIo>()
+            .get_arc::<AbortIo>()
             .expect("the tunnel fronts the upgraded transport")
             .abort();
         assert!(aborted.load(Ordering::Acquire));

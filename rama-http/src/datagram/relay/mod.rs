@@ -144,8 +144,8 @@ where
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
         // Reserve only each stream's own abort handle, never its parent connection's.
         // Construct the guard before the first poll so cancellation also covers setup.
-        let abort_left = left.extensions().self_get_arc::<AbortIo>();
-        let abort_right = right.extensions().self_get_arc::<AbortIo>();
+        let abort_left = left.extensions().get_arc::<AbortIo>();
+        let abort_right = right.extensions().get_arc::<AbortIo>();
         let mut guard = DropGuard::new(move || {
             if let Some(abort) = abort_left {
                 abort.abort();

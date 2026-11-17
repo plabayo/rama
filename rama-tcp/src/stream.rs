@@ -314,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn an_aborted_stream_resets_its_peer_on_drop() {
         let (stream, mut peer) = pair().await.unwrap();
-        let abort = stream.extensions().self_get_arc::<AbortIo>().unwrap();
+        let abort = stream.extensions().get_arc::<AbortIo>().unwrap();
         abort.abort();
         drop(stream);
         let error = peer.read(&mut [0; 8]).await.unwrap_err();
@@ -334,11 +334,7 @@ mod tests {
     #[tokio::test]
     async fn taking_the_tokio_stream_out_keeps_it_open() {
         let (stream, mut peer) = pair().await.unwrap();
-        stream
-            .extensions()
-            .self_get_arc::<AbortIo>()
-            .unwrap()
-            .abort();
+        stream.extensions().get_arc::<AbortIo>().unwrap().abort();
         // The caller owns the socket now: neither a close nor a reset happens here.
         let mut ours = TokioTcpStream::from(stream);
         ours.write_all(b"still").await.unwrap();

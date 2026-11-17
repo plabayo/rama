@@ -11,7 +11,6 @@ use rama_core::extensions::{
     Extension, ExtensionsRef, NestedConnectionTransfer, SharedNestedConnectionTransfer,
 };
 use rama_core::graceful::WeakScope;
-use rama_core::io::AbortIo;
 use rama_core::layer::{ConsumeErrLayer, MapOutputLayer};
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, extensions::Extensions, matcher::Matcher, service::BoxService};
@@ -290,7 +289,6 @@ fn is_tunnel_request(request: &Request) -> bool {
 /// The tunnelled transport as a new connection nested on the one the request arrived on.
 fn into_nested_connection(upgraded: Upgraded, transfer: &dyn NestedConnectionTransfer) -> Upgraded {
     let nested = upgraded.extensions().fork_nested_connection(transfer);
-    AbortIo::front_same_io(upgraded.extensions(), &nested);
     upgraded.with_extensions(nested)
 }
 

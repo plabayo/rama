@@ -949,11 +949,7 @@ where
     }
 
     pub(crate) fn abort(&self) {
-        if let Some(abort) = self
-            .io
-            .extensions()
-            .self_get_ref::<rama_core::io::AbortIo>()
-        {
+        if let Some(abort) = self.io.extensions().get_ref::<rama_core::io::AbortIo>() {
             abort.abort();
         }
     }

@@ -1022,11 +1022,7 @@ async fn connect_upstream_failure_resets_with_connect_error() {
                 .unwrap();
             let tunnel = upgrade.await.unwrap();
             acknowledged.await.unwrap();
-            tunnel
-                .extensions()
-                .self_get_arc::<AbortIo>()
-                .unwrap()
-                .abort();
+            tunnel.extensions().get_arc::<AbortIo>().unwrap().abort();
             drop(tunnel);
         });
         let response = client

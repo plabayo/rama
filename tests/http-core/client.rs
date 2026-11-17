@@ -3201,7 +3201,7 @@ mod conn {
             let mut tunnel = rama::http::io::upgrade::handle_upgrade(res).await.unwrap();
             tunnel
                 .extensions()
-                .self_get_arc::<AbortIo>()
+                .get_arc::<AbortIo>()
                 .expect("the upgraded tunnel publishes its abort")
                 .abort();
             let expected = if extended {

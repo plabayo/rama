@@ -1081,8 +1081,8 @@ struct Aborts {
 impl Aborts {
     fn new(left: &impl ExtensionsRef, right: &impl ExtensionsRef) -> Self {
         Self {
-            left: left.extensions().self_get_arc(),
-            right: right.extensions().self_get_arc(),
+            left: left.extensions().get_arc(),
+            right: right.extensions().get_arc(),
             triggered: AtomicBool::new(false),
             deferred: AtomicBool::new(false),
         }

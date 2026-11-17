@@ -1084,7 +1084,7 @@ async fn local_ends_close_native_sending_for_every_holder() {
                 .cloned()
                 .unwrap();
             let malformed = client_io.extensions().get_arc::<OnMalformedMessage>();
-            let upstream = client_io.extensions().self_get_arc::<AbortIo>();
+            let upstream = client_io.extensions().get_arc::<AbortIo>();
             let mut session = HttpDatagramSession::new(client_io);
             native_ready(&session).await;
             match end {
@@ -2414,7 +2414,7 @@ async fn local_abort_hooks_end_both_directions_at_once() {
                 hook.unwrap().call();
                 (Code::H3_MESSAGE_ERROR, false)
             } else {
-                let hook = server_io.extensions().self_get_arc::<AbortIo>();
+                let hook = server_io.extensions().get_arc::<AbortIo>();
                 hook.unwrap().abort();
                 // RFC 9220 §3: an Extended CONNECT tunnel aborts as H3_REQUEST_CANCELLED.
                 (Code::H3_REQUEST_CANCELLED, true)

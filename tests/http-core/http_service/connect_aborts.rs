@@ -118,7 +118,7 @@ impl Tunnel for TokioTcpStream {
 impl Tunnel for Upgraded {
     fn abort(self: Box<Self>) {
         use rama::extensions::ExtensionsRef as _;
-        self.extensions().self_get_arc::<AbortIo>().unwrap().abort();
+        self.extensions().get_arc::<AbortIo>().unwrap().abort();
     }
 }
 

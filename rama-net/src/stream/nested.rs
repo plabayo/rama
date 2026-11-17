@@ -5,10 +5,7 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::{
-    extensions::{Extensions, ExtensionsRef, NestedConnectionTransfer},
-    io::AbortIo,
-};
+use rama_core::extensions::{Extensions, ExtensionsRef, NestedConnectionTransfer};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::client::pool::ConnectionReuse;
@@ -73,7 +70,6 @@ impl<S: ExtensionsRef> NestedConnection<S> {
     /// on it.
     pub fn new(stream: S, transfer: &dyn NestedConnectionTransfer) -> Self {
         let extensions = stream.extensions().fork_nested_connection(transfer);
-        AbortIo::front_same_io(stream.extensions(), &extensions);
         Self { stream, extensions }
     }
 }
@@ -131,7 +127,10 @@ impl<S: AsyncWrite> AsyncWrite for NestedConnection<S> {
 mod tests {
     use super::*;
     use crate::client::pool::{ConnectionReusePolicy, ReuseKey};
-    use rama_core::extensions::{Extension, NoConnectionTransfer};
+    use rama_core::{
+        extensions::{Extension, NoConnectionTransfer},
+        io::AbortIo,
+    };
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -260,7 +259,7 @@ mod tests {
 
         let abort = nested
             .extensions()
-            .self_get_arc::<AbortIo>()
+            .get_arc::<AbortIo>()
             .expect("the nested connection fronts the same stream");
         abort.abort();
         assert!(aborted.load(Ordering::Acquire));

@@ -49,7 +49,6 @@ use rama_core::error::BoxError;
 use rama_core::extensions::Extension;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::io::AbortIo;
 use rama_core::io::Io;
 use rama_core::io::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
@@ -229,7 +228,6 @@ impl Upgraded {
         extensions.insert(StreamTransformed {
             by: "rama-http::Upgraded",
         });
-        AbortIo::front_same_io(io.extensions(), &extensions);
         Self {
             extensions,
             io: Rewind::new_buffered(Box::new(io), read_buf),
