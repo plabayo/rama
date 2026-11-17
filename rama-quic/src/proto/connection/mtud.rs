@@ -1,6 +1,7 @@
 use crate::proto::{Instant, MAX_UDP_PAYLOAD, MtuDiscoveryConfig};
 use rama_core::telemetry::tracing::trace;
 use rama_quic_proto::packet::SpaceId;
+use rama_utils::time::deadline_after;
 use std::cmp;
 
 /// Implements Datagram Packetization Layer Path Maximum Transmission Unit Discovery
@@ -254,7 +255,7 @@ impl EnabledMtuDiscovery {
                 state.last_probed_mtu = probe_udp_payload_size;
                 return Some(probe_udp_payload_size);
             } else {
-                let next_mtud_activation = now + self.config.interval;
+                let next_mtud_activation = deadline_after(now, self.config.interval);
                 self.phase = Phase::Complete(next_mtud_activation);
                 return None;
             }
@@ -289,7 +290,7 @@ impl EnabledMtuDiscovery {
     /// Called when a black hole is detected
     fn on_black_hole_detected(&mut self, now: Instant) {
         // Stop searching, if applicable, and reset the timer
-        let next_mtud_activation = now + self.config.black_hole_cooldown;
+        let next_mtud_activation = deadline_after(now, self.config.black_hole_cooldown);
         self.phase = Phase::Complete(next_mtud_activation);
     }
 }
@@ -683,6 +684,27 @@ mod tests {
         } else {
             panic!("Unexpected MTUD phase!");
         }
+    }
+
+    #[test]
+    fn unrepresentable_intervals_never_reactivate_discovery() {
+        let mut config = MtuDiscoveryConfig::default();
+        config
+            .set_upper_bound(9_000)
+            .set_interval(Duration::MAX)
+            .set_black_hole_cooldown(Duration::MAX);
+        let now = Instant::now();
+        let later = now + Duration::from_hours(24 * 365);
+        let mut mtud = MtuDiscovery::new(1_200, 1_200, None, config.clone());
+        drive_to_completion(&mut mtud, now, 1_500);
+        assert_eq!(mtud.poll_transmit(later, 42), None);
+
+        let mut mtud = MtuDiscovery::new(1_200, 1_200, None, config);
+        for i in 0..4 {
+            mtud.on_non_probe_lost(i * 2, 1300);
+        }
+        assert!(mtud.black_hole_detected(now));
+        assert_eq!(mtud.poll_transmit(later, 43), None);
     }
 
     #[test]

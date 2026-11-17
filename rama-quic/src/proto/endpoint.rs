@@ -1,4 +1,7 @@
-use rama_utils::collections::smallvec::{SmallVec, smallvec};
+use rama_utils::{
+    collections::smallvec::{SmallVec, smallvec},
+    time::deadline_after,
+};
 use std::{
     collections::{BTreeSet, hash_map},
     convert::TryFrom,
@@ -519,7 +522,7 @@ impl Endpoint {
     ) -> Option<Transmit> {
         if self
             .last_stateless_reset
-            .is_some_and(|last| last + self.config.min_reset_interval > now)
+            .is_some_and(|last| deadline_after(last, self.config.min_reset_interval) > now)
         {
             debug!("ignoring unexpected packet within minimum stateless reset interval");
             return None;

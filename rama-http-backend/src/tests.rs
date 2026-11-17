@@ -1658,6 +1658,33 @@ async fn test_h2_mitm_relay_late_upstream_settings_falls_back_to_native() {
     drop(cancel_drop_guard);
 }
 
+#[tokio::test]
+async fn test_h2_mitm_relay_unrepresentable_settings_timeout_keeps_waiting() {
+    let (mut client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, _silent_upstream) = tokio::io::duplex(kib(16));
+    let egress = MockSocket::new(relay_egress_stream);
+    egress
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
+    let relay = tokio::spawn(async move {
+        HttpMitmRelay::new(WeakScope::detached())
+            .with_eager_peer_settings_timeout(Duration::MAX)
+            .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
+            .await
+    });
+    client_stream
+        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .await
+        .unwrap();
+    client_stream
+        .write_all(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0])
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!relay.is_finished(), "the relay keeps waiting for SETTINGS");
+    relay.abort();
+}
+
 /// Spec-faithful `Some(0)` propagation: per RFC 9113 §6.5.2, `0` is a
 /// legal `SETTINGS_MAX_CONCURRENT_STREAMS` value. The relay must NOT
 /// floor/clamp it — downstream must see exactly what upstream

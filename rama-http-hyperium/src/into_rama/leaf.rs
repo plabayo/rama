@@ -66,7 +66,7 @@ impl TryIntoRamaHttp for http::HeaderMap {
     type Error = rama_http_types::Error;
 
     fn try_into_rama_http(self) -> Result<HeaderMap, rama_http_types::Error> {
-        let mut out = HeaderMap::with_capacity(self.len());
+        let mut out = HeaderMap::with_capacity(self.keys_len());
         let mut last: Option<HeaderName> = None;
         for (name, hv) in self {
             let mut out_hv = HeaderValue::from_bytes(hv.as_bytes())?;
@@ -96,7 +96,7 @@ impl TryIntoRamaHttp for &http::HeaderMap {
     /// (e.g. the headers of a third-party parser). Iterating by reference already repeats
     /// the name per value, so no multi-value bookkeeping is needed.
     fn try_into_rama_http(self) -> Result<HeaderMap, rama_http_types::Error> {
-        let mut out = HeaderMap::with_capacity(self.len());
+        let mut out = HeaderMap::with_capacity(self.keys_len());
         for (name, hv) in self {
             let name = HeaderName::from_bytes(name.as_str().as_bytes())?;
             let mut out_hv = HeaderValue::from_bytes(hv.as_bytes())?;

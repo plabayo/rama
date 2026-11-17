@@ -7,6 +7,7 @@ use rama_core::error::{BoxError, ErrorContext};
 use rama_core::futures::Stream;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::str::smol_str::SmolStr;
+use rama_utils::time::deadline_after;
 use std::{
     pin::Pin,
     task::{Context, Poll, ready},
@@ -157,8 +158,10 @@ where
 
     fn reset(self: Pin<&mut Self>) {
         let this = self.project();
-        this.alive_timer
-            .reset(tokio::time::Instant::now() + this.keep_alive.max_interval);
+        this.alive_timer.reset(deadline_after(
+            tokio::time::Instant::now(),
+            this.keep_alive.max_interval,
+        ));
     }
 }
 
@@ -193,7 +196,7 @@ where
 mod tests {
     use super::*;
     use rama_core::error::BoxErrorExt as _;
-    use rama_core::futures::{StreamExt as _, stream};
+    use rama_core::futures::{FutureExt as _, StreamExt as _, stream};
     use std::convert::Infallible;
 
     #[test]
@@ -252,6 +255,17 @@ mod tests {
         let event = stream.as_mut().next().await.unwrap().unwrap();
 
         assert_eq!(event.comment().collect::<Vec<_>>(), ["still here"]);
+    }
+
+    #[tokio::test]
+    async fn unrepresentable_keep_alive_interval_rearms_without_panicking() {
+        let event = Event::new().with_data("hello".to_owned());
+        let inner = stream::iter([Ok::<_, Infallible>(event.clone())]).chain(stream::pending());
+        let stream = KeepAliveStream::new(KeepAlive::new().with_interval(Duration::MAX), inner);
+        let mut stream = std::pin::pin!(stream);
+
+        assert_eq!(stream.as_mut().next().await.unwrap().unwrap(), event);
+        assert!(stream.as_mut().next().now_or_never().is_none());
     }
 
     #[tokio::test]

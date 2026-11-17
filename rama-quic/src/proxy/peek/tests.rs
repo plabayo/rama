@@ -256,6 +256,32 @@ async fn the_default_fallback_rejects() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_unrepresentable_peek_timeout_never_expires() {
+    timeout(Duration::from_secs(20), async {
+        let (client, ingress) = association();
+        let ingress_address = ingress.local_addr().unwrap();
+        let [first, second] = chrome_initials();
+        deliver(&ingress, &client, &first);
+        let peek = PeekQuicClientHelloService::new(
+            keys(),
+            service_fn(async |_: InputWithQuicClientHello<_>| Ok::<_, BoxError>(())),
+        )
+        .with_peek_timeout(Duration::MAX)
+        .with_peek_policy(PeekPolicy::FAIL_CLOSED);
+        let serving = peek.serve(ingress);
+        advance(Duration::from_hours(24 * 365)).await;
+        client
+            .create_sender()
+            .send(SendDatagram::new(ingress_address, &second))
+            .await
+            .unwrap();
+        serving.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_deadline_is_fixed_when_the_association_is_handed_over() {
     timeout(Duration::from_secs(20), async {
         let (client, ingress) = association();

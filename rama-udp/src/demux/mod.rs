@@ -33,6 +33,7 @@ use rama_net::{
     socket::local_addresses,
     stream::Socket,
 };
+use rama_utils::time::deadline_after;
 use tokio::{
     sync::mpsc,
     time::{Instant, Sleep, sleep},
@@ -605,7 +606,9 @@ impl<T: DatagramSender + Clone> DatagramSocket for DemuxedSocket<T> {
         }
         buffer[..datagram.payload.len()].copy_from_slice(&datagram.payload);
         metadata[0] = datagram.metadata;
-        self.idle.as_mut().reset(Instant::now() + self.idle_timeout);
+        self.idle
+            .as_mut()
+            .reset(deadline_after(Instant::now(), self.idle_timeout));
         Poll::Ready(Ok(1))
     }
 

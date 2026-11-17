@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant as StdInstant, SystemTime, UNIX_EPOCH};
 
 use tokio::time::Instant;
 
@@ -183,12 +183,40 @@ pub fn time_modulo_index(len: usize) -> usize {
 /// An unrepresentable deadline saturates to a far future instant, never to
 /// `start`, and this function never panics.
 #[must_use]
-pub fn deadline_after(start: Instant, mut timeout: Duration) -> Instant {
+pub fn deadline_after<I: MonotonicInstant>(start: I, mut timeout: Duration) -> I {
     loop {
         if let Some(deadline) = start.checked_add(timeout) {
             return deadline;
         }
         timeout /= 2;
+    }
+}
+
+/// The instants [`deadline_after`] accepts: the runtime's and [`std::time::Instant`].
+pub trait MonotonicInstant: private::Sealed {}
+
+impl MonotonicInstant for Instant {}
+impl MonotonicInstant for StdInstant {}
+
+mod private {
+    use super::{Duration, Instant, StdInstant};
+
+    pub trait Sealed: Copy {
+        fn checked_add(self, duration: Duration) -> Option<Self>;
+    }
+
+    impl Sealed for Instant {
+        #[inline]
+        fn checked_add(self, duration: Duration) -> Option<Self> {
+            Self::checked_add(&self, duration)
+        }
+    }
+
+    impl Sealed for StdInstant {
+        #[inline]
+        fn checked_add(self, duration: Duration) -> Option<Self> {
+            Self::checked_add(&self, duration)
+        }
     }
 }
 
@@ -269,6 +297,15 @@ mod tests {
         let now = Instant::now();
         assert!(deadline_after(now, Duration::MAX) > now);
         assert_eq!(deadline_after(now, Duration::ZERO), now);
+    }
+
+    #[test]
+    fn unrepresentable_std_deadlines_saturate_to_the_future() {
+        let now = StdInstant::now();
+        assert!(deadline_after(now, Duration::MAX) > now);
+        assert_eq!(deadline_after(now, Duration::ZERO), now);
+        let second = Duration::from_secs(1);
+        assert_eq!(deadline_after(now, second), now + second);
     }
 
     #[test]

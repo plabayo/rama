@@ -15,6 +15,7 @@ use rama_core::{
     service::MirrorService,
     telemetry::tracing,
 };
+use rama_utils::octets::mib;
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 
 use crate::{
@@ -26,7 +27,7 @@ use crate::{
 const DEFAULT_CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const RELAY_WRITER_QUEUE_CAPACITY: usize = 8;
 const DEFAULT_MESSAGE_INJECTION_QUEUE_CAPACITY: NonZeroUsize = NonZeroUsize::new(16).unwrap();
-const DEFAULT_MAX_INJECTED_MESSAGE_SIZE: usize = 16 << 20;
+const DEFAULT_MAX_INJECTED_MESSAGE_SIZE: usize = mib(16);
 
 /// Opt in to bounded reading while relay middleware awaits an external decision.
 ///

@@ -10,7 +10,9 @@ use std::{
     time::Duration,
 };
 
-use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
+use rama_utils::{
+    collections::smallvec::SmallVec, macros::generate_set_and_with, time::deadline_after,
+};
 use tokio::{task::unconstrained, time::Instant};
 
 use super::{
@@ -199,7 +201,7 @@ impl Scope {
             if let Some(timeout) = timeout {
                 self.make_root();
                 // Read once: counted from this instant, the deadline is not before it.
-                let deadline = Instant::now() + timeout;
+                let deadline = deadline_after(Instant::now(), timeout);
                 self.nodes
                     .for_each(|node| node.tighten_coming_deadline(false, deadline));
             }
@@ -227,7 +229,7 @@ impl Scope {
             if let Some(timeout) = timeout {
                 self.make_root();
                 // Read once: counted from this instant, the deadline is not before it.
-                let deadline = Instant::now() + timeout;
+                let deadline = deadline_after(Instant::now(), timeout);
                 self.nodes
                     .for_each(|node| node.tighten_coming_deadline(true, deadline));
             }

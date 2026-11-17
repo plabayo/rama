@@ -29,7 +29,10 @@ use rama_udp::{
     DatagramPeekInput, DatagramSocket, DatagramSocketExt as _, PrefixedDatagramSocket,
     RetainedDatagram, proxy::DatagramBridgeInput,
 };
-use rama_utils::octets::{kib, mib};
+use rama_utils::{
+    octets::{kib, mib},
+    time::deadline_after,
+};
 use tokio::time::{Instant, timeout_at};
 
 /// Optional first-datagram routing, sharing inspection's deadline and receive buffer.
@@ -470,7 +473,7 @@ where
 
     fn serve(&self, mut input: I) -> impl Future<Output = Result<O, BoxError>> + Send + '_ {
         // Fixed when the association is handed over, so a late first poll gains no time.
-        let deadline = Instant::now() + self.peek_timeout;
+        let deadline = deadline_after(Instant::now(), self.peek_timeout);
         let mut waiter = PeekWaiter::new()
             .with_policy(self.peek_policy)
             .maybe_with_scope(scope_context(input.extensions()));

@@ -206,7 +206,8 @@ fn strip_cookie<B>(request: &mut Request<B>) -> bool {
     let original = std::mem::take(request.headers_mut());
     let count = original.len();
     let mut removed = Vec::new();
-    let mut headers = HeaderMap::with_capacity(count);
+    // Distinct names always fit a map, unlike `count`, which also counts repeated values.
+    let mut headers = HeaderMap::with_capacity(original.keys_len());
     for (index, (name, value)) in original.into_ordered_iter().enumerate() {
         if name != COOKIE || !carries(&value) {
             headers.append(name, value);
@@ -560,6 +561,27 @@ mod tests {
         assert_eq!(seen.uri().query_or_empty(), "h3-bootstrap=1");
         assert!(seen.headers().contains_key(COOKIE));
         assert!(response.headers().get(SET_COOKIE).is_none());
+    }
+
+    #[tokio::test]
+    async fn more_repeated_values_than_a_map_has_room_for_names_do_not_panic() {
+        let mut request = Request::builder()
+            .uri("https://example.test/")
+            .header(COOKIE, "other=1; rama-h3-bootstrap=1")
+            .body(Body::empty())
+            .unwrap();
+        let repeated = 30_000;
+        for _ in 0..repeated {
+            request
+                .headers_mut()
+                .append("x-repeated", HeaderValue::from_static("1"));
+        }
+        let (seen, _response) = cleaned(true, request).await;
+        assert_eq!(
+            seen.headers().get_all("x-repeated").iter().count(),
+            repeated
+        );
+        assert_eq!(seen.headers().get(COOKIE).unwrap(), "other=1");
     }
 
     #[tokio::test]

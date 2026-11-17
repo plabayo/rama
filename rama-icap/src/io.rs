@@ -13,6 +13,7 @@ use rama_core::{
     graceful::{RunCutoff, WeakScope, scope_context},
     io::{Io, shutdown_within},
 };
+use rama_utils::octets::kib;
 use tokio::io::{
     AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadHalf, WriteHalf,
 };
@@ -31,10 +32,10 @@ use crate::{
 };
 
 /// Default number of bytes reserved for each socket read.
-pub const DEFAULT_READ_BUFFER_BYTES: usize = 8 * 1024;
+pub const DEFAULT_READ_BUFFER_BYTES: usize = kib(8);
 
 /// Default maximum bytes in encapsulated HTTP header sections.
-pub const DEFAULT_MAX_ENCAPSULATED_HEADER_BYTES: usize = 128 * 1024;
+pub const DEFAULT_MAX_ENCAPSULATED_HEADER_BYTES: usize = kib(128);
 
 /// Default time a peer may hold the write shutdown that closes a connection.
 ///

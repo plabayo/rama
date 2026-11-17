@@ -39,7 +39,7 @@ use rama_http_core::{
 use rama_http_types::proto::h3::{Code, SettingId, Settings};
 use rama_net::proxy::IoForwardService;
 use rama_quic_proto::{Side, VarInt};
-use rama_utils::guard::DropGuard;
+use rama_utils::{guard::DropGuard, time::deadline_after};
 use tokio::time::Instant;
 
 use super::mitm::{DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT, DefaultErrorResponse, DefaultMiddleware};
@@ -245,7 +245,7 @@ where
     ) -> impl Future<Output = Result<(), BoxError>> + Send + '_ {
         // Guards and the deadline are taken now, so a future dropped or first polled late
         // still closes both hops and cannot renew the readiness budget.
-        let settings_deadline = Instant::now() + self.settings_timeout;
+        let settings_deadline = deadline_after(Instant::now(), self.settings_timeout);
         let close_ingress = ingress.clone();
         let close_egress = egress.clone();
         let mut guard = DropGuard::new(move || {

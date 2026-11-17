@@ -6,6 +6,7 @@ use rama_net::{address::OptPort, uri::Uri};
 use rama_utils::{
     byte_set::{is_http_tchar, is_http_token},
     bytes::trim_ows,
+    octets::kib,
 };
 
 use crate::{
@@ -23,7 +24,7 @@ use super::{Framed, ScanStatus};
 pub const DEFAULT_MAX_HEADERS: usize = 64;
 
 /// Default maximum encoded size of an ICAP start line and header block.
-pub const DEFAULT_MAX_HEAD_BYTES: usize = 64 * 1024;
+pub const DEFAULT_MAX_HEAD_BYTES: usize = kib(64);
 
 /// Policy for the obsolete line folding admitted by RFC 3507.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

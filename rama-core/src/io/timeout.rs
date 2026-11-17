@@ -1,6 +1,6 @@
 use crate::extensions::{Extensions, ExtensionsRef};
 use pin_project_lite::pin_project;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{macros::generate_set_and_with, time::deadline_after};
 use std::{
     io::{self, SeekFrom},
     pin::Pin,
@@ -75,7 +75,9 @@ impl TimeoutState {
         };
 
         if !*this.active {
-            this.cur.as_mut().reset(Instant::now() + timeout);
+            this.cur
+                .as_mut()
+                .reset(deadline_after(Instant::now(), timeout));
             *this.active = true;
         }
 
@@ -600,6 +602,17 @@ mod test {
         let mut reader = pin!(TimeoutReader::new(reader).with_timeout(Duration::from_millis(500)));
 
         _ = reader.read(&mut [0]).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unrepresentable_timeout_never_fires() {
+        let reader = DelayIo::new(Instant::now() + Duration::from_hours(24 * 365));
+        let mut reader = pin!(TimeoutReader::new(reader).with_timeout(Duration::MAX));
+        _ = reader.read(&mut [0]).await.unwrap();
+
+        let writer = DelayIo::new(Instant::now() + Duration::from_hours(24 * 365));
+        let mut writer = pin!(TimeoutWriter::new(writer).with_timeout(Duration::MAX));
+        _ = writer.write(&[0]).await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

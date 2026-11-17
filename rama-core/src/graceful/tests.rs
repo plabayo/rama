@@ -202,6 +202,18 @@ fn timeout_is_observed_without_waiting() {
 }
 
 #[test]
+fn unrepresentable_timeouts_never_fire() {
+    rt().block_on(async {
+        let scope = Scope::new()
+            .with_timeout(Duration::MAX)
+            .with_hard_timeout(Duration::MAX);
+        advance(Duration::from_hours(24 * 365)).await;
+        assert!(!scope.is_cancelled());
+        assert!(!scope.is_aborted());
+    });
+}
+
+#[test]
 fn waiter_completes_at_the_deadline() {
     rt().block_on(async {
         let start = Instant::now();

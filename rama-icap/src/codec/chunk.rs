@@ -1,6 +1,9 @@
 use core::fmt;
 
-use rama_utils::byte_set::{is_http_tchar, is_http_token};
+use rama_utils::{
+    byte_set::{is_http_tchar, is_http_token},
+    octets::kib,
+};
 
 use crate::{
     byte_sets::{is_field_value_byte, is_horizontal_whitespace_byte, is_quoted_text_byte},
@@ -11,7 +14,7 @@ use super::head::Output;
 use super::{EncodeError, Framed, ParseStatus, ScanStatus};
 
 /// Default maximum encoded size of an ICAP chunk-size line.
-pub const DEFAULT_MAX_CHUNK_LINE_BYTES: usize = 8 * 1024;
+pub const DEFAULT_MAX_CHUNK_LINE_BYTES: usize = kib(8);
 
 /// A borrowed chunk extension.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
