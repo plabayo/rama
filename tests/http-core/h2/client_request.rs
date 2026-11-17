@@ -1461,6 +1461,69 @@ async fn malformed_response_headers_dont_unlink_stream() {
 }
 
 #[tokio::test]
+async fn malformed_response_head_resets_only_its_stream() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        // `:status: 200`, then `x-a: a\x01b` as a literal with incremental indexing;
+        // without END_STREAM, so the stream is still open to be reset
+        let block = b"\x88\x40\x03x-a\x03a\x01b";
+        let mut frame = vec![0, 0, block.len() as u8, 0x01, 0x04, 0, 0, 0, 1];
+        frame.extend_from_slice(block);
+        srv.send_bytes(&frame).await;
+        // the reset may go out with the next request, so either comes first
+        let (mut reset, mut request) = (false, false);
+        while !(reset && request) {
+            match srv.next().await.unwrap().unwrap() {
+                frame::Frame::Reset(rst) if rst.stream_id() == StreamId::from(1) => {
+                    assert_eq!(rst.reason(), Reason::PROTOCOL_ERROR);
+                    reset = true;
+                }
+                frame::Frame::Headers(head) if head.stream_id() == StreamId::from(3) => {
+                    request = true;
+                }
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        }
+        srv.send_frame(frames::headers(3).response(200).field("x-b", "ok").eos())
+            .await;
+    };
+
+    let h2 = async move {
+        let (mut client, h2) = client::Builder::new()
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        tokio::spawn(async {
+            h2.await.expect("connection failed");
+        });
+        let request = || {
+            Request::builder()
+                .uri("https://example.com/")
+                .body(())
+                .unwrap()
+        };
+        let (response, _) = client.send_request(request(), true).unwrap();
+        let err = response.await.expect_err("malformed response");
+        assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
+        let (response, _) = client.send_request(request(), true).unwrap();
+        let response = response.await.unwrap();
+        assert_eq!(response.headers()["x-b"], "ok");
+    };
+
+    join(srv, h2).await;
+}
+
+#[tokio::test]
 async fn allow_empty_data_for_head() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();

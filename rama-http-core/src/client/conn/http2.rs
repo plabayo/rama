@@ -564,11 +564,21 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Sets the max size of received header frames.
+        /// Sets the max decoded size of a received header list.
         ///
-        /// Default is currently 16KB, but can change.
+        /// Default is 1 MiB, but can change.
         pub fn max_header_list_size(mut self, max: u32) -> Self {
             self.h2_builder.max_header_list_size = max;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets how many fields a received header list may hold.
+        ///
+        /// Default is 4096, but can change.
+        pub fn max_headers(mut self, max: usize) -> Self {
+            self.h2_builder.max_headers = max;
             self
         }
     }

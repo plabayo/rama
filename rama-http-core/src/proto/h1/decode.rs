@@ -11,18 +11,22 @@ use rama_core::{
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, body::Frame, header::trailer::is_never_a_trailer,
 };
+use rama_utils::octets::{kib, kib_u64};
 
 use self::Kind::{Chunked, Eof, Length};
-use super::{DecodedLength, io::MemRead, role::DEFAULT_MAX_HEADERS};
+use super::{DecodedLength, io::MemRead};
 
 /// Maximum amount of bytes allowed in chunked extensions.
 ///
 /// This limit is currentlty applied for the entire body, not per chunk.
-const CHUNKED_EXTENSIONS_LIMIT: u64 = 1024 * 16;
+const CHUNKED_EXTENSIONS_LIMIT: u64 = kib_u64(16);
 
 /// Maximum number of bytes allowed for all trailer fields, unless a maximum
 /// header size is configured.
-const TRAILER_LIMIT: usize = 1024 * 16;
+const TRAILER_LIMIT: usize = kib(16);
+
+/// Fields in chunked trailers, unless the header count is configured.
+const DEFAULT_MAX_TRAILERS: usize = 100;
 
 /// Decoders to handle different Transfer-Encodings.
 ///
@@ -184,7 +188,7 @@ impl Decoder {
                 h1_max_headers,
                 h1_max_header_size,
             } => {
-                let h1_max_headers = h1_max_headers.unwrap_or(DEFAULT_MAX_HEADERS);
+                let h1_max_headers = h1_max_headers.unwrap_or(DEFAULT_MAX_TRAILERS);
                 let h1_max_header_size = h1_max_header_size.unwrap_or(TRAILER_LIMIT);
                 loop {
                     let mut buf = None;
@@ -807,7 +811,7 @@ mod tests {
                             chunk_buf: &mut None,
                             trailers_buf: &mut None,
                             trailers_cnt: &mut trailers_cnt,
-                            max_headers_cnt: DEFAULT_MAX_HEADERS,
+                            max_headers_cnt: DEFAULT_MAX_TRAILERS,
                             max_headers_bytes: TRAILER_LIMIT,
                         },
                     )
@@ -839,7 +843,7 @@ mod tests {
                             chunk_buf: &mut None,
                             trailers_buf: &mut None,
                             trailers_cnt: &mut trailers_cnt,
-                            max_headers_cnt: DEFAULT_MAX_HEADERS,
+                            max_headers_cnt: DEFAULT_MAX_TRAILERS,
                             max_headers_bytes: TRAILER_LIMIT,
                         },
                     )

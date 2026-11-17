@@ -24,6 +24,7 @@ use crate::h3::qlog::{
     PeerEventBudget, QPACK_INSTRUCTION_EVENTS,
     qpack::{self as metadata, Instruction},
 };
+use crate::proto::DEFAULT_MAX_HEADER_LIST_SIZE;
 
 mod boundary;
 mod insertion;
@@ -210,7 +211,8 @@ impl Default for EncoderConfig {
             defer_dynamic_first_section: false,
             capacity_before_first_section: false,
             field_section_base: FieldSectionBase::default(),
-            max_field_section_size: kib(64),
+            // What a peer receives by default; a peer advertising less lowers it.
+            max_field_section_size: DEFAULT_MAX_HEADER_LIST_SIZE,
             max_encoder_stream_bytes: kib(64),
             max_outstanding_sections: 1024,
             max_outstanding_references: 16_384,

@@ -352,9 +352,10 @@ mod response_body_lengths {
         let client = TestClient::new().http2_only();
         let uri = Uri::from_authority(Protocol::HTTP, server.addr());
 
+        // the known body frames itself, as over HTTP/1.1
         let res = client.get(uri).await.unwrap();
-        assert_eq!(res.headers().get("content-length").unwrap(), "10");
-        assert_eq!(res.body().size_hint().exact(), Some(10));
+        assert_eq!(res.headers().get("content-length").unwrap(), "13");
+        assert_eq!(res.body().size_hint().exact(), Some(13));
     }
 
     #[tokio::test]
@@ -2949,6 +2950,127 @@ async fn max_header_size() {
         assert_eq!(served.is_ok(), accepted, "{long_header} {max_buf_size:?}");
         client.join().unwrap();
     }
+}
+
+/// By default a request head of 1 MiB or 4096 fields is served; one past either gets 431.
+#[tokio::test]
+async fn default_header_limits_h1() {
+    // (fields, value length, accepted)
+    // the request carries two more fields: host and connection
+    for (fields, value_len, accepted) in [
+        (4094, 1, true),
+        (4095, 1, false),
+        (1, 1_048_000, true),
+        (1, 1_049_000, false),
+    ] {
+        let (listener, addr) = setup_tcp_listener();
+        let client = thread::spawn(move || {
+            let mut head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n".to_vec();
+            let value = vec![b'v'; value_len];
+            for i in 0..fields {
+                head.extend_from_slice(format!("x-{i}: ").as_bytes());
+                head.extend_from_slice(&value);
+                head.extend_from_slice(b"\r\n");
+            }
+            head.extend_from_slice(b"\r\n");
+            let mut tcp = connect(&addr);
+            // the server may answer 431 before all of it is sent
+            _ = tcp.write_all(&head);
+            let mut buf = [0; 256];
+            let n = tcp.read(&mut buf).expect("read response");
+            let expected = if accepted {
+                "HTTP/1.1 200 "
+            } else {
+                "HTTP/1.1 431 "
+            };
+            assert_eq!(
+                s(&buf[..n.min(expected.len())]),
+                expected,
+                "{fields} x {value_len}"
+            );
+        });
+        let (socket, _) = listener.accept().await.unwrap();
+        let served = http1::Builder::new()
+            .serve_connection(ServiceInput::new(socket), RamaHttpService::new(HelloWorld))
+            .await;
+        assert_eq!(served.is_ok(), accepted, "{fields} x {value_len}");
+        client.join().unwrap();
+    }
+}
+
+/// A keep-alive interval or timeout too large to add to the clock is a bound never reached.
+#[tokio::test]
+async fn h2_keep_alive_durations_past_the_clock_do_not_panic() {
+    for (interval, timeout) in [
+        (Duration::MAX, Duration::from_secs(20)),
+        (Duration::from_millis(10), Duration::MAX),
+    ] {
+        let (listener, addr) = setup_tcp_listener();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            http2::Builder::new(WeakScope::detached())
+                .with_keep_alive_interval(interval)
+                .with_keep_alive_timeout(timeout)
+                .serve_connection(ServiceInput::new(socket), RamaHttpService::new(HelloWorld))
+                .await
+        });
+        let conn = ServiceInput::new(connect_async(addr).await);
+        let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
+        let connection = tokio::spawn(connection);
+        let mut h2 = h2.ready().await.unwrap();
+        for _ in 0..2 {
+            let request = Request::get("https://localhost/").body(()).unwrap();
+            let (response, _) = h2.send_request(request, true).unwrap();
+            assert_eq!(response.await.unwrap().status(), StatusCode::OK);
+            // past the short interval, so a ping goes out and its timeout is armed
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            h2 = h2.ready().await.unwrap();
+        }
+        drop(h2);
+        connection.await.unwrap().unwrap();
+        // how the server sees the client leave does not matter, only that it did not panic
+        _ = server.await.unwrap();
+    }
+}
+
+/// By default a request header list of 1 MiB or 4096 fields is served; one past either gets 431.
+#[tokio::test]
+async fn default_header_limits_h2() {
+    let (listener, addr) = setup_tcp_listener();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        http2::Builder::new(WeakScope::detached())
+            .serve_connection(ServiceInput::new(socket), RamaHttpService::new(HelloWorld))
+            .await
+            .unwrap();
+    });
+    let conn = ServiceInput::new(connect_async(addr).await);
+    let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
+    let connection = tokio::spawn(connection);
+    let mut h2 = h2.ready().await.unwrap();
+    // (fields, value length, expected status)
+    for (fields, value_len, status) in [
+        (4096, 1, StatusCode::OK),
+        (4097, 1, StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE),
+        (1, 1_048_000, StatusCode::OK),
+        (1, 1_049_000, StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE),
+    ] {
+        let mut request = Request::get("https://localhost/").body(()).unwrap();
+        let value = HeaderValue::from_str(&"v".repeat(value_len)).unwrap();
+        for i in 0..fields {
+            request.headers_mut().append(
+                HeaderName::try_from(format!("x-{i}")).unwrap(),
+                value.clone(),
+            );
+        }
+        let (response, _) = h2.send_request(request, true).unwrap();
+        let response = response.await.unwrap();
+        assert_eq!(response.status(), status, "{fields} x {value_len}");
+        h2 = h2.ready().await.unwrap();
+    }
+    drop(h2);
+    connection.await.unwrap().unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

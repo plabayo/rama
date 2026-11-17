@@ -36,6 +36,7 @@ use rama_http_types::{
     },
 };
 use rama_net::{client::pool::ConnectionAdmission, conn::MaxConcurrency};
+use rama_utils::octets::{kib_u32, mib_u32};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
@@ -52,7 +53,10 @@ use crate::{
         client::{Builder, Connection, ResponseFuture, SendRequest},
     },
     headers,
-    proto::{DEFAULT_MAX_INFORMATIONAL_RESPONSES, DEFAULT_REFUSED_STREAM_BUDGET, Dispatched},
+    proto::{
+        DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_HEADERS, DEFAULT_MAX_INFORMATIONAL_RESPONSES,
+        DEFAULT_REFUSED_STREAM_BUDGET, Dispatched,
+    },
 };
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
@@ -68,11 +72,10 @@ type ConnEof = oneshot::Receiver<Infallible>;
 // Our defaults are chosen for the "majority" case, which usually are not
 // resource constrained, and so the spec default of 64kb can be too limiting
 // for performance.
-const DEFAULT_CONN_WINDOW: u32 = 1024 * 1024 * 5; // 5mb
-const DEFAULT_STREAM_WINDOW: u32 = 1024 * 1024 * 2; // 2mb
-const DEFAULT_MAX_FRAME_SIZE: u32 = 1024 * 16; // 16kb
-const DEFAULT_MAX_SEND_BUF_SIZE: u32 = 1024 * 1024; // 1mb
-const DEFAULT_MAX_HEADER_LIST_SIZE: u32 = 1024 * 16; // 16kb
+const DEFAULT_CONN_WINDOW: u32 = mib_u32(5);
+const DEFAULT_STREAM_WINDOW: u32 = mib_u32(2);
+const DEFAULT_MAX_FRAME_SIZE: u32 = kib_u32(16);
+const DEFAULT_MAX_SEND_BUF_SIZE: u32 = mib_u32(1);
 
 // The maximum number of concurrent streams that the client is allowed to open
 // before it receives the initial SETTINGS frame from the server.
@@ -94,6 +97,7 @@ pub(crate) struct Config {
     pub(crate) refuse_push_promises: bool,
     pub(crate) max_frame_size: Option<u32>,
     pub(crate) max_header_list_size: u32,
+    pub(crate) max_headers: usize,
     pub(crate) keep_alive_interval: Option<Duration>,
     pub(crate) keep_alive_timeout: Duration,
     pub(crate) keep_alive_while_idle: bool,
@@ -123,7 +127,8 @@ impl Default for Config {
             initial_max_send_streams: DEFAULT_INITIAL_MAX_SEND_STREAMS,
             refuse_push_promises: false,
             max_frame_size: Some(DEFAULT_MAX_FRAME_SIZE),
-            max_header_list_size: DEFAULT_MAX_HEADER_LIST_SIZE,
+            max_header_list_size: DEFAULT_MAX_HEADER_LIST_SIZE as u32,
+            max_headers: DEFAULT_MAX_HEADERS,
             keep_alive_interval: None,
             keep_alive_timeout: Duration::from_secs(20),
             keep_alive_while_idle: false,
@@ -151,6 +156,7 @@ pub(crate) fn new_builder(config: &Config) -> Builder {
         .with_initial_window_size(config.initial_stream_window_size)
         .with_initial_connection_window_size(config.initial_conn_window_size)
         .with_max_header_list_size(config.max_header_list_size)
+        .with_max_headers(config.max_headers)
         .with_max_send_buffer_size(config.max_send_buffer_size)
         .with_max_informational_responses(config.max_informational_responses)
         .maybe_with_refused_stream_budget(config.refused_stream_budget)
@@ -568,6 +574,7 @@ where
     body_tx: SendStream<SendBuf<B::Data>>,
     body: B,
     allowed_trailers: Option<Arc<ForbiddenTrailers>>,
+    content_length: Option<u64>,
     cb: Callback<Request<B>, Response<IncomingBody>>,
 }
 
@@ -721,7 +728,8 @@ where
 
         let send_stream = if !f.is_connect {
             if !f.eos {
-                let mut pipe = PipeToSendStream::new(f.body, f.body_tx, f.allowed_trailers);
+                let mut pipe =
+                    PipeToSendStream::new(f.body, f.body_tx, f.allowed_trailers, f.content_length);
 
                 // eagerly see if the body pipe is ready and
                 // can thus skip allocating in the executor
@@ -962,11 +970,13 @@ where
                     if eos {
                         headers::drop_undeliverable_content_length(req.headers_mut());
                     }
-                    if let Some(len) = body.size_hint().exact()
-                        && (len != 0 || headers::method_has_defined_payload_semantics(req.method()))
-                    {
-                        headers::set_content_length_if_missing(req.headers_mut(), len);
+                    if let Some(len) = body.size_hint().exact() {
+                        headers::correct_content_length(req.headers_mut(), len);
+                        if len != 0 || headers::method_has_defined_payload_semantics(req.method()) {
+                            headers::set_content_length_if_missing(req.headers_mut(), len);
+                        }
                     }
+                    let content_length = headers::content_length_parse_all(req.headers());
 
                     let allowed_trailers = req.extensions().get_arc::<ForbiddenTrailers>();
                     let is_connect = req.method() == Method::CONNECT;
@@ -1010,6 +1020,7 @@ where
                         body_tx,
                         body,
                         allowed_trailers,
+                        content_length,
                         cb,
                     };
 

@@ -626,6 +626,29 @@ async fn native_h3_mitm_waits_past_the_deadline_for_client_settings_without_cont
 }
 
 #[tokio::test(start_paused = true)]
+async fn native_h3_mitm_with_an_unrepresentable_settings_timeout_keeps_waiting() {
+    timeout(LIMIT, async {
+        let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
+        let (_egress_endpoint, _origin_endpoint, egress, origin) = hop().await;
+        let relay = Http3MitmRelay::new(WeakScope::detached())
+            .with_settings_timeout(Duration::MAX)
+            .with_ingress_config(ordinary_config())
+            .with_egress_config(ordinary_config());
+        let mut pending = Box::pin(relay.serve(BridgeIo(ingress, egress)));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), &mut pending)
+                .await
+                .is_err(),
+            "the relay keeps waiting for SETTINGS"
+        );
+        drop(pending);
+        assert_relay_ended([&browser, &origin]).await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn native_h3_mitm_forwards_priority_before_headers_and_during_body() {
     timeout(LIMIT, async {
         let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
@@ -1913,12 +1936,12 @@ async fn native_h3_mitm_fits_origin_settings_to_ingress_and_both_hop_capabilitie
             let mut ingress_config = Config::default();
             let mut egress_config = Config::default();
             let local = ingress_config.decoder;
-            assert!(local.max_field_section_size < mib(1));
             let mut advertised = Settings::new();
             // What the browser must see instead: lowered to ingress budgets, grants dropped.
             let mut expected = Settings::new();
+            // An origin limit past the ingress budget is lowered to it.
             let field_limit = if case == "field limit" {
-                mib_u64(1)
+                local.max_field_section_size as u64 + 1
             } else {
                 kib_u64(1)
             };

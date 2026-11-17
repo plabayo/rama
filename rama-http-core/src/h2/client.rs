@@ -141,7 +141,7 @@ use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RateBudget, RecvStream, SendStream};
 use crate::proto::{
-    DEFAULT_MAX_INFORMATIONAL_RESPONSES, DEFAULT_REFUSED_STREAM_BUDGET,
+    DEFAULT_MAX_HEADERS, DEFAULT_MAX_INFORMATIONAL_RESPONSES, DEFAULT_REFUSED_STREAM_BUDGET,
     target::{OutgoingHost, host_is_wire_authority, outgoing_host},
 };
 use rama_core::bytes::{Buf, Bytes};
@@ -346,6 +346,9 @@ pub struct Builder {
 
     /// Maximum amount of bytes to "buffer" for writing per stream.
     max_send_buffer_size: u32,
+
+    /// Fields a received header block may hold.
+    max_headers: usize,
 
     /// Maximum number of locally reset streams to keep at a time.
     reset_stream_max: usize,
@@ -768,6 +771,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
+            max_headers: DEFAULT_MAX_HEADERS,
             reset_stream_duration: Duration::from_secs(proto::DEFAULT_RESET_STREAM_SECS),
             reset_stream_max: proto::DEFAULT_RESET_STREAM_MAX,
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
@@ -991,6 +995,18 @@ impl Builder {
                 .get_or_insert_default()
                 .config
                 .max_header_list_size = max;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets how many fields a received header block may hold.
+        ///
+        /// A block with more is handled as one over the max header list size.
+        ///
+        /// The default value is 4096.
+        pub fn max_headers(mut self, max: usize) -> Self {
+            self.max_headers = max;
             self
         }
     }
@@ -1677,6 +1693,7 @@ where
         if let Some(max) = initial_settings.config.max_header_list_size {
             codec.set_max_recv_header_list_size(max as usize);
         }
+        codec.set_max_recv_headers(builder.max_headers);
 
         // Send initial settings frame
         let advertised = advertised.unwrap_or_else(|| initial_settings.clone());

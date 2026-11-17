@@ -175,7 +175,7 @@ impl FuzzHpack {
             decoder
                 .decode(&mut Cursor::new(&mut buf), |h| {
                     let e = expect.remove(0);
-                    assert_eq!(h, e);
+                    assert_eq!(h.unwrap(), e);
                     ControlFlow::Continue(())
                 })
                 .expect("full decode");

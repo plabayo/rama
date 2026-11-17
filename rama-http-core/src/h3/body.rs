@@ -292,6 +292,12 @@ where
                         ));
                     }
                     trailers_seen = true;
+                    if remaining.is_some_and(|len| len != 0) {
+                        return Err(Error::stream(
+                            Code::H3_MESSAGE_ERROR,
+                            "outgoing body shorter than content-length",
+                        ));
+                    }
                     let bytes =
                         super::stream::encode_trailers(&shared, id, &trailers, allowed_trailers)?;
                     writer.queue(FrameType::HEADERS, bytes)?;

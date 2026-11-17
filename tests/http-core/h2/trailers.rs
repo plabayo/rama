@@ -315,3 +315,65 @@ async fn recv_trailers_drop_fields_that_never_belong_in_trailers() {
 
     join(srv, client).await;
 }
+
+/// Trailers past the header list size or count limit are a stream error: no status can
+/// follow at that point, so the body ends in an error.
+#[tokio::test]
+async fn recv_trailers_past_the_limits_fail_the_body() {
+    h2_support::trace_init!();
+    for (trailers, max_list, max_headers) in [
+        (
+            frames::headers(1).field("x-big", "a".repeat(512)),
+            256,
+            4096,
+        ),
+        (
+            frames::headers(1)
+                .field("x-a", "1")
+                .field("x-b", "2")
+                .field("x-c", "3"),
+            16 << 10,
+            2,
+        ),
+    ] {
+        let (io, mut srv) = mock::new();
+        let srv = async move {
+            srv.assert_client_handshake().await;
+            srv.recv_frame(
+                frames::headers(1)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+            srv.send_frame(frames::headers(1).response(200)).await;
+            srv.send_frame(frames::data(1, "hello")).await;
+            srv.send_frame(trailers.eos()).await;
+            // END_STREAM closed the stream, so the error stays local and the client leaves
+            srv.recv_frame(frames::go_away(0)).await;
+        };
+
+        let client = async move {
+            let (mut client, conn) = client::Builder::new()
+                .with_max_header_list_size(max_list)
+                .with_max_headers(max_headers)
+                .handshake::<_, Bytes>(io)
+                .await
+                .expect("handshake");
+            let conn = tokio::spawn(async move {
+                conn.await.expect("client");
+            });
+            let resp = client.get("https://example.com/").await.expect("response");
+            let mut body = resp.into_body();
+            let data = poll_fn(|cx| body.poll_data(cx)).await.unwrap().unwrap();
+            assert_eq!(data, "hello");
+            let error = poll_fn(|cx| body.poll_trailers(cx))
+                .await
+                .expect_err("trailers past the limits");
+            assert_eq!(error.reason(), Some(Reason::PROTOCOL_ERROR));
+            drop((client, body));
+            conn.await.unwrap();
+        };
+
+        join(srv, client).await;
+    }
+}

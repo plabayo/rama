@@ -92,9 +92,9 @@ fn parse(fields: Vec<FieldPair>, trailers: bool) -> Result<Fields, Error> {
         }
         let mut value = HeaderValue::from_maybe_shared(field.value)
             .map_err(|_error| malformed("invalid field value"))?;
-        // RFC 9110 §5.5: outer whitespace is not part of the value, as HTTP/1 parsers drop it.
+        // RFC 9114 §4.2 and RFC 9113 §8.2.1: outer SP or HTAB makes the message malformed.
         if value.has_outer_whitespace() {
-            value.trim_outer_whitespace();
+            return Err(malformed("field value with outer whitespace"));
         }
         value.set_sensitive(field.never_index);
         result
@@ -845,10 +845,12 @@ mod tests {
     }
 
     #[test]
-    fn incoming_field_boundaries_are_trimmed_and_outgoing_ones_rejected() {
+    fn field_boundary_whitespace_is_rejected_both_ways() {
         for value in [" leading", "trailing ", "\tleading", "trailing\t"] {
-            let parsed = parse(fields(&[("x-test", value)]), false).unwrap();
-            assert_eq!(parsed.headers["x-test"], value.trim(), "{value:?}");
+            assert!(
+                parse(fields(&[("x-test", value)]), false).is_err(),
+                "{value:?}"
+            );
             let mut headers = HeaderMap::new();
             headers.insert("x-test", HeaderValue::from_static(value));
             assert!(validate_outgoing(&headers, Outgoing::Response).is_err());
@@ -1321,7 +1323,7 @@ mod tests {
         let head = frame::Head::parse(&wire[..9]).unwrap();
         let (mut frame, mut payload) = frame::Headers::load(head, wire.split_off(9)).unwrap();
         frame
-            .load_hpack(&mut payload, 4096, &mut hpack::Decoder::new(4096))
+            .load_hpack(&mut payload, 4096, 64, &mut hpack::Decoder::new(4096))
             .unwrap();
         let (pseudo, headers) = frame.into_parts();
         let mut forwarded = self::request(fields(&[
@@ -1397,12 +1399,8 @@ mod tests {
         for name in ["", "Upper", "bad name", ":Status", ":status ", ":protocol"] {
             response(fields(&[(":status", "200"), (name, "x")])).unwrap_err();
         }
-        for value in ["a\0b", "a\rb", "a\nb"] {
+        for value in ["a\0b", "a\rb", "a\nb", " leading", "trailing\t"] {
             response(fields(&[(":status", "200"), ("x", value)])).unwrap_err();
-        }
-        for value in [" leading", "trailing\t"] {
-            let response = response(fields(&[(":status", "200"), ("x", value)])).unwrap();
-            assert_eq!(response.headers()["x"], value.trim());
         }
     }
 
@@ -3707,19 +3705,33 @@ mod tests {
     }
 
     #[test]
-    fn outer_whitespace_of_field_values_is_trimmed_on_h1_and_h3() {
+    fn outer_whitespace_of_field_values_is_trimmed_on_h1_and_malformed_on_h3() {
         let (_, h1) = h1::receive("GET / HTTP/1.1\r\nHost: example.com\r\nx-a: \t v w \t\r\n\r\n");
+        assert_eq!(h1["x-a"], "v w");
+        for value in [" v", "v ", "\tv", "v\t"] {
+            let h3 = request(fields(&[
+                (":method", "GET"),
+                (":scheme", "https"),
+                (":authority", "example.com"),
+                (":path", "/"),
+                ("x-a", value),
+            ]));
+            assert_eq!(h3.unwrap_err().code(), Code::H3_MESSAGE_ERROR, "{value:?}");
+            let h3_trailers = trailers(fields(&[("x-a", value)]));
+            assert_eq!(
+                h3_trailers.unwrap_err().code(),
+                Code::H3_MESSAGE_ERROR,
+                "{value:?}"
+            );
+        }
         let h3 = request(fields(&[
             (":method", "GET"),
             (":scheme", "https"),
             (":authority", "example.com"),
             (":path", "/"),
-            ("x-a", " \t v w \t"),
+            ("x-a", "v w"),
         ]))
         .unwrap();
-        let h3_trailers = trailers(fields(&[("x-a", " v w ")])).unwrap();
-        assert_eq!(h1["x-a"], "v w");
         assert_eq!(h3.headers()["x-a"], "v w");
-        assert_eq!(h3_trailers["x-a"], "v w");
     }
 }

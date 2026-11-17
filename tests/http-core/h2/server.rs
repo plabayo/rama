@@ -346,7 +346,9 @@ async fn serve_connect_rejects_malformed_content_length() {
                     .field("content-length", "invalid"),
             )
             .await;
-        client.recv_frame(frames::reset(1).protocol_error()).await;
+        client
+            .recv_frame(frames::headers(1).response(400).eos())
+            .await;
     };
     let server = async move {
         let mut srv = server::Builder::new()
@@ -811,7 +813,9 @@ async fn recv_invalid_authority() {
         let settings = client.assert_server_handshake().await;
         assert_default_settings!(settings);
         client.send_frame(bad_headers).await;
-        client.recv_frame(frames::reset(1).protocol_error()).await;
+        client
+            .recv_frame(frames::headers(1).response(400).eos())
+            .await;
     };
 
     let srv = async move {
@@ -844,11 +848,21 @@ async fn recv_connection_header() {
             .send_frame(req(7, "transfer-encoding", "chunked"))
             .await;
         client.send_frame(req(9, "upgrade", "HTTP/2")).await;
-        client.recv_frame(frames::reset(1).protocol_error()).await;
-        client.recv_frame(frames::reset(3).protocol_error()).await;
-        client.recv_frame(frames::reset(5).protocol_error()).await;
-        client.recv_frame(frames::reset(7).protocol_error()).await;
-        client.recv_frame(frames::reset(9).protocol_error()).await;
+        client
+            .recv_frame(frames::headers(1).response(400).eos())
+            .await;
+        client
+            .recv_frame(frames::headers(3).response(400).eos())
+            .await;
+        client
+            .recv_frame(frames::headers(5).response(400).eos())
+            .await;
+        client
+            .recv_frame(frames::headers(7).response(400).eos())
+            .await;
+        client
+            .recv_frame(frames::headers(9).response(400).eos())
+            .await;
     };
 
     let srv = async move {
@@ -1361,6 +1375,161 @@ async fn too_big_headers_sends_reset_after_431_if_not_eos() {
     join(client, srv).await;
 }
 
+/// A HEADERS frame with END_HEADERS for a GET of `https://example.com/` plus `extra`.
+fn raw_request_headers(stream_id: u8, end_stream: bool, extra: &[u8]) -> Vec<u8> {
+    let mut block = b"\x82\x87\x84\x01\x0bexample.com".to_vec();
+    block.extend_from_slice(extra);
+    let flags = if end_stream { 0x05 } else { 0x04 };
+    let mut frame = vec![0, 0, block.len() as u8, 0x01, flags, 0, 0, 0, stream_id];
+    frame.extend_from_slice(&block);
+    frame
+}
+
+#[tokio::test]
+async fn malformed_request_heads_get_400_and_cost_only_their_stream() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        client.assert_server_handshake().await;
+        // invalid value, invalid name, outer whitespace: each one a malformed request
+        let cases: [(u8, &[u8]); 3] = [
+            (1, b"\x40\x03x-a\x03a\x01b"),
+            (3, b"\x00\x03X-B\x01v"),
+            (5, b"\x00\x03x-c\x02v "),
+        ];
+        for (id, extra) in cases {
+            client
+                .send_bytes(&raw_request_headers(id, true, extra))
+                .await;
+            client
+                .recv_frame(frames::headers(id as u32).response(400).eos())
+                .await;
+        }
+        // without END_STREAM the stream is reset after the answer
+        client
+            .send_bytes(&raw_request_headers(7, false, b"\xBE"))
+            .await;
+        client
+            .recv_frame(frames::headers(7).response(400).eos())
+            .await;
+        client.recv_frame(frames::reset(7).protocol_error()).await;
+        // the connection, and its HPACK state, still serve the next request
+        client
+            .send_bytes(&raw_request_headers(9, true, b"\x00\x03x-d\x02ok"))
+            .await;
+        client
+            .recv_frame(frames::headers(9).response(200).eos())
+            .await;
+    };
+
+    let srv = async move {
+        let mut srv = server::Builder::new()
+            .handshake::<_, Bytes>(io)
+            .await
+            .expect("handshake");
+        let (req, mut respond) = srv.next().await.unwrap().unwrap();
+        assert_eq!(req.headers()["x-d"], "ok");
+        respond.send_response(Response::new(()), true).unwrap();
+        assert!(srv.next().await.is_none());
+        assert_eq!(srv.num_refused_streams(), 4);
+    };
+
+    join(client, srv).await;
+}
+
+/// A raw frame of `kind` with `flags` on `stream_id`.
+fn raw_frame(kind: u8, flags: u8, stream_id: u8, payload: &[u8]) -> Vec<u8> {
+    let len = payload.len();
+    let mut frame = vec![
+        (len >> 16) as u8,
+        (len >> 8) as u8,
+        len as u8,
+        kind,
+        flags,
+        0,
+        0,
+        0,
+        stream_id,
+    ];
+    frame.extend_from_slice(payload);
+    frame
+}
+
+/// Each kind of malformed request is answered with 400 before its stream ends, also when
+/// the field block spans CONTINUATION frames, whose HPACK updates still apply.
+#[tokio::test]
+async fn every_malformed_request_gets_400() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        client.assert_server_handshake().await;
+        let authority = b"\x01\x0bexample.com".as_slice();
+        let cases: [&[&[u8]]; 7] = [
+            // connection-specific field
+            &[b"\x82\x87\x84", authority, b"\x00\x0aconnection\x05close"],
+            // `te` other than trailers
+            &[b"\x82\x87\x84", authority, b"\x00\x02te\x04gzip"],
+            // pseudo-header after a regular field
+            &[b"\x82\x87", authority, b"\x00\x03x-a\x01v\x84"],
+            // repeated pseudo-header
+            &[b"\x82\x87\x84\x84", authority],
+            // missing `:method`
+            &[b"\x87\x84", authority],
+            // `:status` in a request
+            &[b"\x82\x87\x84\x88", authority],
+            // unparsable content-length
+            &[b"\x82\x87\x84", authority, b"\x00\x0econtent-length\x03abc"],
+        ];
+        let mut id = 1u8;
+        for case in cases {
+            client
+                .send_bytes(&raw_frame(1, 0x05, id, &case.concat()))
+                .await;
+            client
+                .recv_frame(frames::headers(u32::from(id)).response(400).eos())
+                .await;
+            id += 2;
+        }
+        // a malformed first frame, then a CONTINUATION indexing `x-q: v`
+        let first = [
+            &b"\x82\x87\x84"[..],
+            authority,
+            b"\x40\x0aconnection\x05close",
+        ]
+        .concat();
+        client.send_bytes(&raw_frame(1, 0x01, id, &first)).await;
+        client
+            .send_bytes(&raw_frame(9, 0x04, id, b"\x40\x03x-q\x01v"))
+            .await;
+        client
+            .recv_frame(frames::headers(u32::from(id)).response(400).eos())
+            .await;
+        id += 2;
+        // the indexed `x-q: v` is where the peer put it
+        let next = [&b"\x82\x87\x84"[..], authority, b"\xbe"].concat();
+        client.send_bytes(&raw_frame(1, 0x05, id, &next)).await;
+        client
+            .recv_frame(frames::headers(u32::from(id)).response(200).eos())
+            .await;
+    };
+
+    let srv = async move {
+        let mut srv = server::Builder::new()
+            .handshake::<_, Bytes>(io)
+            .await
+            .expect("handshake");
+        let (req, mut respond) = srv.next().await.unwrap().unwrap();
+        assert_eq!(req.headers()["x-q"], "v");
+        respond.send_response(Response::new(()), true).unwrap();
+        assert!(srv.next().await.is_none());
+        assert_eq!(srv.num_refused_streams(), 8);
+    };
+
+    join(client, srv).await;
+}
+
 #[tokio::test]
 async fn abusive_headers_send_goaway() {
     h2_support::trace_init!();
@@ -1476,7 +1645,9 @@ async fn every_content_length_line_counts() {
                     .recv_frame(frames::headers(1).response(200).eos())
                     .await;
             } else {
-                client.recv_frame(frames::reset(1).protocol_error()).await;
+                client
+                    .recv_frame(frames::headers(1).response(400).eos())
+                    .await;
             }
             idle_ms(10).await;
         };
@@ -1696,7 +1867,9 @@ async fn server_error_on_status_in_request() {
         client
             .send_frame(frames::headers(1).status(StatusCode::OK))
             .await;
-        client.recv_frame(frames::reset(1).protocol_error()).await;
+        client
+            .recv_frame(frames::headers(1).response(400).eos())
+            .await;
     };
 
     let srv = async move {
@@ -1919,7 +2092,9 @@ async fn extended_connect_protocol_disabled_by_default() {
             )))
             .await;
 
-        client.recv_frame(frames::reset(1).protocol_error()).await;
+        client
+            .recv_frame(frames::headers(1).response(400).eos())
+            .await;
     };
 
     let srv = async move {
@@ -2008,7 +2183,9 @@ async fn reject_pseudo_protocol_on_non_connect_request() {
             )))
             .await;
 
-        client.recv_frame(frames::reset(1).protocol_error()).await;
+        client
+            .recv_frame(frames::headers(1).response(400).eos())
+            .await;
     };
 
     let srv = async move {
@@ -2051,7 +2228,9 @@ async fn reject_extended_connect_request_without_scheme() {
             }))
             .await;
 
-        client.recv_frame(frames::reset(1).protocol_error()).await;
+        client
+            .recv_frame(frames::headers(1).response(400).eos())
+            .await;
     };
 
     let srv = async move {
@@ -2094,7 +2273,9 @@ async fn reject_extended_connect_request_without_path() {
             }))
             .await;
 
-        client.recv_frame(frames::reset(1).protocol_error()).await;
+        client
+            .recv_frame(frames::headers(1).response(400).eos())
+            .await;
     };
 
     let srv = async move {
@@ -2134,7 +2315,9 @@ async fn reject_informational_status_header_in_request() {
             .send_frame(frames::headers(1).response(status_code))
             .await;
 
-        client.recv_frame(frames::reset(1).protocol_error()).await;
+        client
+            .recv_frame(frames::headers(1).response(400).eos())
+            .await;
     };
 
     let srv = async move {

@@ -45,6 +45,21 @@ const CASES: &[Case] = &[
     ("GET", 200, &[], Payload::Known(b"hello"), Some("5")),
     ("GET", 200, &[], Payload::Empty, None),
     ("GET", 200, &[], Payload::Streamed(b"hello"), None),
+    // A known body frames itself: a declared length it does not have is rewritten.
+    (
+        "GET",
+        200,
+        &[("content-length", "10")],
+        Payload::Known(b"hello"),
+        Some("5"),
+    ),
+    (
+        "GET",
+        200,
+        &[("content-length", "10")],
+        Payload::Empty,
+        Some("0"),
+    ),
     (
         "GET",
         204,
@@ -293,4 +308,51 @@ async fn http3_rejects_bodies_that_disagree_with_their_advertised_length() {
         .await
         .unwrap();
     }
+}
+
+/// A request body of known length frames itself: a declared length it does not have is
+/// rewritten before the head is sent.
+#[tokio::test]
+async fn http3_request_content_length_follows_a_known_body() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, client_driver) = client::handshake::<Body, _>(
+            pair.client.clone(),
+            Config::default(),
+            WeakScope::detached(),
+        )
+        .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let serve = spawn(async move {
+            let (request, response_stream) =
+                server.accept().await.unwrap().resolve().await.unwrap();
+            let length = request.headers()["content-length"].clone();
+            let body = request.into_body().collect().await.unwrap().to_bytes();
+            response_stream
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+            (length, body)
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("https://localhost/")
+            .header("content-length", "10")
+            .body(Body::from(Bytes::from_static(b"hey")))
+            .unwrap();
+        let response = client.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (length, body) = serve.await.unwrap();
+        assert_eq!(length, "3");
+        assert_eq!(body.as_ref(), b"hey");
+        pair.client.close(0u32, b"test complete");
+        _ = client_driver.await.unwrap();
+        _ = server_driver.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }

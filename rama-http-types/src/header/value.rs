@@ -398,23 +398,6 @@ impl HeaderValue {
         has_outer_whitespace(self.as_bytes())
     }
 
-    /// Remove leading and trailing SP and HTAB, sharing the remaining bytes.
-    ///
-    /// RFC 9110 §5.5 excludes such whitespace from a field value, so a parser
-    /// receiving it drops it before evaluating the value.
-    pub fn trim_outer_whitespace(&mut self) {
-        let bytes = self.inner.as_ref();
-        let start = bytes
-            .iter()
-            .position(|b| !matches!(b, b' ' | b'\t'))
-            .unwrap_or(bytes.len());
-        let end = bytes
-            .iter()
-            .rposition(|b| !matches!(b, b' ' | b'\t'))
-            .map_or(start, |last| last + 1);
-        self.inner = self.inner.slice(start..end);
-    }
-
     /// Mark that the header value represents sensitive information.
     ///
     /// # Examples
@@ -1077,23 +1060,6 @@ fn quoted_field_values_remain_valid() {
     let value = HeaderValue::from_static("\"quoted field value\"");
     assert!(!value.has_outer_whitespace());
     assert!(is_valid_h2_h3_field_value(value.as_bytes()));
-}
-
-#[test]
-fn trim_outer_whitespace_keeps_inner_whitespace_and_sensitivity() {
-    for (raw, trimmed) in [
-        (" \t v w \t ", "v w"),
-        ("v", "v"),
-        ("   ", ""),
-        ("", ""),
-        ("\tv", "v"),
-    ] {
-        let mut value = HeaderValue::from_static(raw);
-        value.set_sensitive(true);
-        value.trim_outer_whitespace();
-        assert_eq!(value, trimmed);
-        assert!(value.is_sensitive());
-    }
 }
 
 #[cfg(test)]

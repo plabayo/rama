@@ -9,6 +9,8 @@ use rama_http_types::proto::h2::hpack;
 
 use rama_core::futures::Stream;
 
+use crate::proto::{DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_HEADERS};
+
 use rama_core::bytes::{Buf, BytesMut};
 use rama_core::stream::codec::FramedRead as InnerFramedRead;
 use rama_core::stream::codec::{LengthDelimitedCodec, LengthDelimitedCodecError};
@@ -19,9 +21,6 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::{io::AsyncRead, task::coop};
-
-// 16 MB "sane default" taken from golang http2
-const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: usize = 16 << 20;
 
 #[derive(Debug)]
 pub(super) struct FramedRead<T> {
@@ -54,6 +53,9 @@ struct FrameDecoder {
     hpack: hpack::Decoder,
 
     max_header_list_size: usize,
+
+    /// Fields a received header block may hold.
+    max_headers: usize,
 
     max_continuation_frames: usize,
 
@@ -176,6 +178,12 @@ impl<T> FramedRead<T> {
     pub(super) fn set_header_table_size(&mut self, val: usize) {
         self.decoder.set_header_table_size(val);
     }
+
+    /// Update how many fields a received header block may hold.
+    #[inline]
+    pub(super) fn set_max_headers(&mut self, val: usize) {
+        self.decoder.max_headers = val;
+    }
 }
 
 impl<T: ExtensionsRef> ExtensionsRef for FramedRead<T> {
@@ -195,10 +203,11 @@ fn calc_max_continuation_frames(header_max: usize, frame_max: usize) -> usize {
 
 impl FrameDecoder {
     fn new(max_frame_size: usize) -> Self {
-        let max_header_list_size = DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE;
+        let max_header_list_size = DEFAULT_MAX_HEADER_LIST_SIZE;
         Self {
             hpack: hpack::Decoder::new(DEFAULT_SETTINGS_HEADER_TABLE_SIZE),
             max_header_list_size,
+            max_headers: DEFAULT_MAX_HEADERS,
             max_continuation_frames: calc_max_continuation_frames(
                 max_header_list_size,
                 max_frame_size,
@@ -276,7 +285,12 @@ fn decode_frame(decoder: &mut FrameDecoder, mut bytes: BytesMut) -> Result<Optio
             let is_end_headers = frame.is_end_headers();
 
             // Load the HPACK encoded headers
-            match frame.load_hpack(&mut payload, decoder.max_header_list_size, &mut decoder.hpack) {
+            match frame.load_hpack(
+                &mut payload,
+                decoder.max_header_list_size,
+                decoder.max_headers,
+                &mut decoder.hpack,
+            ) {
                 Ok(_) => {},
                 Err(frame::Error::Hpack(hpack::DecoderError::NeedMore(_))) if !is_end_headers => {},
                 Err(frame::Error::MalformedMessage) => {
@@ -485,6 +499,7 @@ fn decode_frame(decoder: &mut FrameDecoder, mut bytes: BytesMut) -> Result<Optio
             match partial.frame.load_hpack(
                 &mut partial.buf,
                 decoder.max_header_list_size,
+                decoder.max_headers,
                 &mut decoder.hpack,
             ) {
                 Ok(_) => {}
@@ -519,6 +534,18 @@ fn decode_frame(decoder: &mut FrameDecoder, mut bytes: BytesMut) -> Result<Optio
             return Ok(None);
         }
     };
+
+    // A stream cannot depend on itself (RFC 9113 §5.3.1): a stream error, raised only now
+    // that its field block updated the connection's HPACK state.
+    if let Frame::Headers(ref headers) = frame
+        && headers.depends_on_itself()
+    {
+        proto_err!(stream: "HEADERS stream depends on itself; stream={:?}", headers.stream_id());
+        return Err(Error::library_reset(
+            headers.stream_id(),
+            Reason::PROTOCOL_ERROR,
+        ));
+    }
 
     Ok(Some(frame))
 }
@@ -601,11 +628,16 @@ impl Continuable {
         &mut self,
         src: &mut BytesMut,
         max_header_list_size: usize,
+        max_headers: usize,
         decoder: &mut hpack::Decoder,
     ) -> Result<(), frame::Error> {
         match *self {
-            Self::Headers(ref mut h) => h.load_hpack(src, max_header_list_size, decoder),
-            Self::PushPromise(ref mut p) => p.load_hpack(src, max_header_list_size, decoder),
+            Self::Headers(ref mut h) => {
+                h.load_hpack(src, max_header_list_size, max_headers, decoder)
+            }
+            Self::PushPromise(ref mut p) => {
+                p.load_hpack(src, max_header_list_size, max_headers, decoder)
+            }
         }
     }
 }

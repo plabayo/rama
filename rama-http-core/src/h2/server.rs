@@ -121,10 +121,10 @@
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RateBudget, RecvStream, SendStream};
-use crate::proto::DEFAULT_REFUSED_STREAM_BUDGET;
 use crate::proto::target::{
     AsteriskHostError, asterisk_host, normalize_received, received_authority, several_hosts,
 };
+use crate::proto::{DEFAULT_MAX_HEADERS, DEFAULT_REFUSED_STREAM_BUDGET};
 use crate::server::conn::timeout::Activity;
 
 use rama_core::bytes::{Buf, Bytes, BytesMut};
@@ -294,6 +294,9 @@ pub struct Builder {
 
     /// Maximum amount of bytes to "buffer" for writing per stream.
     max_send_buffer_size: u32,
+
+    /// Fields a received header block may hold.
+    max_headers: usize,
 
     /// Budget of streams refused or reset for what the peer sent.
     ///
@@ -590,6 +593,7 @@ where
         if let Some(max) = builder.settings.config.max_header_list_size {
             codec.set_max_recv_header_list_size(max as usize);
         }
+        codec.set_max_recv_headers(builder.max_headers);
 
         // Send initial settings frame.
         let advertised = advertised.unwrap_or_else(|| builder.settings.clone());
@@ -898,6 +902,7 @@ impl Builder {
             settings: Settings::default(),
             initial_target_connection_window_size: None,
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
+            max_headers: DEFAULT_MAX_HEADERS,
             refused_stream_budget: Some(DEFAULT_REFUSED_STREAM_BUDGET),
             data_frame_budget: proto::DataFrameBudget::Auto,
         }
@@ -1075,6 +1080,18 @@ impl Builder {
         /// ```
         pub fn max_header_list_size(mut self, max: Option<u32>) -> Self {
             self.settings.config.max_header_list_size = max;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets how many fields a received header block may hold.
+        ///
+        /// A block with more is handled as one over the max header list size.
+        ///
+        /// The default value is 4096.
+        pub fn max_headers(mut self, max: usize) -> Self {
+            self.max_headers = max;
             self
         }
     }

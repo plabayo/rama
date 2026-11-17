@@ -8,10 +8,11 @@ use super::{Header, header::Name, huffman};
 
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
+use rama_utils::octets::kib;
 
 use crate::header::{HeaderName, HeaderValue};
 
-const DEFAULT_MAX_ALLOWED_SIZE: usize = 4 * 1024;
+const DEFAULT_MAX_ALLOWED_SIZE: usize = kib(4);
 
 #[derive(Debug)]
 pub struct Encoder {
@@ -640,6 +641,7 @@ mod test {
                 assert_eq!(encoded[0] & 0xf0, 0x10);
                 decoder
                     .decode(&mut Cursor::new(&mut encoded), |decoded| {
+                        let decoded = decoded.unwrap();
                         assert_eq!(decoded, sensitive.clone().reify().unwrap());
                         assert!(decoded.is_sensitive());
                         ControlFlow::Continue(())

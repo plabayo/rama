@@ -190,6 +190,9 @@ struct HeaderBlock {
     /// Set to true if decoding went over the max header list size.
     is_over_size: bool,
 
+    /// Set to true if a field name or value is not valid: the message is malformed.
+    is_malformed: bool,
+
     /// Pseudo headers, these are broken out as they must be sent as part of the
     /// headers frame.
     pseudo: Pseudo,
@@ -201,19 +204,22 @@ impl PartialEq for HeaderBlock {
             fields,
             field_size,
             is_over_size,
+            is_malformed,
             pseudo,
         } = self;
         let Self {
             fields: other_fields,
             field_size: other_field_size,
             is_over_size: other_is_over_size,
+            is_malformed: other_is_malformed,
             pseudo: other_pseudo,
         } = other;
-        (fields.get(), field_size, is_over_size, pseudo)
+        (fields.get(), field_size, is_over_size, is_malformed, pseudo)
             == (
                 other_fields.get(),
                 other_field_size,
                 other_is_over_size,
+                other_is_malformed,
                 other_pseudo,
             )
     }
@@ -249,6 +255,7 @@ impl Headers {
                 field_size: calculate_headermap_size(&fields),
                 fields: Fields::Owned(fields),
                 is_over_size: false,
+                is_malformed: false,
                 pseudo,
             },
             flags: HeadersFlag::default(),
@@ -267,6 +274,7 @@ impl Headers {
                 field_size: calculate_headermap_size(&fields),
                 fields: Fields::Owned(fields),
                 is_over_size: false,
+                is_malformed: false,
                 pseudo: Pseudo::default(),
             },
             flags,
@@ -304,10 +312,6 @@ impl Headers {
             }
             let stream_dep = StreamDependency::load(&src[..5])?;
 
-            if stream_dep.dependency_id == head.stream_id() {
-                return Err(Error::InvalidDependencyId);
-            }
-
             // Drop the next 5 bytes
             src.advance(5);
 
@@ -332,6 +336,7 @@ impl Headers {
                 fields: Fields::Owned(HeaderMap::new()),
                 field_size: 0,
                 is_over_size: false,
+                is_malformed: false,
                 pseudo: Pseudo::default(),
             },
             flags,
@@ -344,9 +349,11 @@ impl Headers {
         &mut self,
         src: &mut BytesMut,
         max_header_list_size: usize,
+        max_headers: usize,
         decoder: &mut hpack::Decoder,
     ) -> Result<(), Error> {
-        self.header_block.load(src, max_header_list_size, decoder)
+        self.header_block
+            .load(src, max_header_list_size, max_headers, decoder)
     }
 
     pub fn stream_id(&self) -> StreamId {
@@ -355,6 +362,14 @@ impl Headers {
 
     pub fn is_end_headers(&self) -> bool {
         self.flags.is_end_headers()
+    }
+
+    /// Whether the stream depends on itself: a stream error once its field block is decoded,
+    /// as the HPACK state it updates is the connection's (RFC 9113 §5.3.1).
+    pub fn depends_on_itself(&self) -> bool {
+        self.stream_dep
+            .as_ref()
+            .is_some_and(|dep| dep.dependency_id == self.stream_id)
     }
 
     pub fn set_end_headers(&mut self) {
@@ -371,6 +386,11 @@ impl Headers {
 
     pub fn is_over_size(&self) -> bool {
         self.header_block.is_over_size
+    }
+
+    /// Whether a field name or value in the decoded block is not valid.
+    pub fn is_malformed(&self) -> bool {
+        self.header_block.is_malformed
     }
 
     pub fn calculate_header_list_size(&self) -> usize {
@@ -511,6 +531,7 @@ impl PushPromise {
                 field_size: calculate_headermap_size(&fields),
                 fields: Fields::Owned(fields),
                 is_over_size: false,
+                is_malformed: false,
                 pseudo,
             },
             promised_id,
@@ -605,6 +626,7 @@ impl PushPromise {
                 fields: Fields::Owned(HeaderMap::new()),
                 field_size: 0,
                 is_over_size: false,
+                is_malformed: false,
                 pseudo: Pseudo::default(),
             },
             promised_id,
@@ -617,9 +639,11 @@ impl PushPromise {
         &mut self,
         src: &mut BytesMut,
         max_header_list_size: usize,
+        max_headers: usize,
         decoder: &mut hpack::Decoder,
     ) -> Result<(), Error> {
-        self.header_block.load(src, max_header_list_size, decoder)
+        self.header_block
+            .load(src, max_header_list_size, max_headers, decoder)
     }
 
     pub fn calculate_header_list_size(&self) -> usize {
@@ -644,6 +668,11 @@ impl PushPromise {
 
     pub fn is_over_size(&self) -> bool {
         self.header_block.is_over_size
+    }
+
+    /// Whether a field name or value in the decoded block is not valid.
+    pub fn is_malformed(&self) -> bool {
+        self.header_block.is_malformed
     }
 
     pub fn encode(
@@ -1070,10 +1099,10 @@ impl HeaderBlock {
         &mut self,
         src: &mut BytesMut,
         max_header_list_size: usize,
+        max_headers: usize,
         decoder: &mut hpack::Decoder,
     ) -> Result<(), Error> {
         let mut reg = !self.fields.get().is_empty();
-        let mut malformed = false;
         let mut header_list_way_too_large = false;
         let mut headers_size = self.calculate_header_list_size();
         let max_header_list_abuse_size =
@@ -1099,10 +1128,13 @@ impl HeaderBlock {
             ($field:ident, $val:expr) => {{
                 if reg {
                     tracing::trace!("load_hpack; header malformed -- pseudo not at head of block");
-                    malformed = true;
+                    self.is_malformed = true;
                 } else if self.pseudo.$field.is_some() {
                     tracing::trace!("load_hpack; header malformed -- repeated pseudo");
-                    malformed = true;
+                    self.is_malformed = true;
+                } else if !header::is_valid_h2_h3_field_value($val.as_str().as_bytes()) {
+                    tracing::trace!("load_hpack; header malformed -- invalid pseudo value");
+                    self.is_malformed = true;
                 } else {
                     let __val = $val;
                     headers_size +=
@@ -1124,21 +1156,34 @@ impl HeaderBlock {
         // the hpack state is connection level. In order to maintain correct
         // state for other streams, the hpack decoding process must complete.
         let res = decoder.decode(&mut cursor, |header| {
+            let header = match header {
+                Ok(header) => header,
+                Err(field) => {
+                    tracing::trace!("load_hpack; invalid field name or value");
+                    self.is_malformed = true;
+                    headers_size += decoded_header_size(field.name().len(), field.value().len());
+                    return check_size!();
+                }
+            };
             if let hpack::Header::NeverIndexed(ref value) = header {
                 self.pseudo.sensitivity.set_sensitive(value.name(), true);
             }
             match header {
-                hpack::Header::Field { name, mut value } => {
-                    // Trimmed here, not in HPACK, whose table holds the value as sent.
-                    if value.has_outer_whitespace() {
-                        value.trim_outer_whitespace();
-                    }
+                hpack::Header::Field { name, value } => {
                     // Connection level header fields are not supported and must
                     // result in a protocol error.
 
-                    if header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&&name) {
+                    if value.has_outer_whitespace() {
+                        // RFC 9113 §8.2.1: outer SP or HTAB makes the message malformed.
+                        tracing::trace!("load_hpack; field value with outer whitespace");
+                        self.is_malformed = true;
+                        headers_size += decoded_header_size(name.as_str().len(), value.len());
+                        if check_size!().is_break() {
+                            return ControlFlow::Break(());
+                        }
+                    } else if header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&&name) {
                         tracing::trace!("load_hpack; connection level header");
-                        malformed = true;
+                        self.is_malformed = true;
                     } else if name == header::TE
                         && !header::hop_by_hop::is_te_trailers(value.as_bytes())
                     {
@@ -1146,7 +1191,7 @@ impl HeaderBlock {
                             "load_hpack; TE header not set to trailers; val={:?}",
                             value
                         );
-                        malformed = true;
+                        self.is_malformed = true;
                     } else {
                         reg = true;
 
@@ -1154,6 +1199,10 @@ impl HeaderBlock {
                         headers_size += header_size;
                         if check_size!().is_break() {
                             return ControlFlow::Break(());
+                        }
+                        if !self.is_over_size && self.fields.get().len() >= max_headers {
+                            tracing::trace!("load_hpack; header count over max");
+                            self.is_over_size = true;
                         }
                         if !self.is_over_size {
                             self.field_size += header_size;
@@ -1211,11 +1260,6 @@ impl HeaderBlock {
         if header_list_way_too_large {
             tracing::trace!("header list way too large; aborting connection");
             return Err(Error::HeaderListWayTooLarge);
-        }
-
-        if malformed {
-            tracing::trace!("malformed message");
-            return Err(Error::MalformedMessage);
         }
 
         Ok(())
@@ -1696,7 +1740,12 @@ mod test {
         let mut decoder = hpack::Decoder::new(4096);
         const DEFAULT_MAX_HEADER_LIST_SIZE: usize = 16 << 20; // 16 MB
         headers
-            .load_hpack(&mut hpack_data, DEFAULT_MAX_HEADER_LIST_SIZE, &mut decoder)
+            .load_hpack(
+                &mut hpack_data,
+                DEFAULT_MAX_HEADER_LIST_SIZE,
+                usize::MAX,
+                &mut decoder,
+            )
             .expect("load_hpack should return Ok");
 
         // Verify that is_over_size was set (try_append returned Err)
@@ -1706,23 +1755,157 @@ mod test {
         );
     }
 
+    fn load_block(
+        block: &[u8],
+        stream_id: u32,
+        decoder: &mut hpack::Decoder,
+    ) -> (Headers, Result<(), Error>) {
+        let head = Head::new(Kind::Headers, 0x04, StreamId::from(stream_id));
+        let (mut headers, mut hpack_data) = Headers::load(head, BytesMut::from(block)).unwrap();
+        let res = headers.load_hpack(&mut hpack_data, 16 << 20, usize::MAX, decoder);
+        (headers, res)
+    }
+
     #[test]
-    fn outer_whitespace_of_field_values_is_trimmed_after_hpack_indexing() {
+    fn a_block_with_more_fields_than_allowed_is_over_size() {
         let mut hpack = vec![0x82u8, 0x86, 0x84];
-        // literal with incremental indexing, new name `x-a`, value ` \t v w \t` (8 bytes)
-        hpack.extend_from_slice(b"\x40\x03x-a\x08 \t v w \t");
-        // the same field again, from the dynamic table as the peer indexed it
-        hpack.push(0xBE);
-        let head = Head::new(Kind::Headers, 0x04, StreamId::from(1));
-        let (mut headers, mut hpack_data) =
-            Headers::load(head, BytesMut::from(&hpack[..])).unwrap();
+        for _ in 0..3 {
+            hpack.extend_from_slice(b"\x00\x03x-a\x01v");
+        }
+        for (max_headers, over_size) in [(3, false), (2, true)] {
+            let head = Head::new(Kind::Headers, 0x04, StreamId::from(1));
+            let (mut headers, mut hpack_data) =
+                Headers::load(head, BytesMut::from(&hpack[..])).unwrap();
+            let mut decoder = hpack::Decoder::new(4096);
+            headers
+                .load_hpack(&mut hpack_data, 16 << 20, max_headers, &mut decoder)
+                .unwrap();
+            assert_eq!(headers.is_over_size(), over_size, "{max_headers}");
+        }
+    }
+
+    #[test]
+    fn every_malformed_field_marks_the_block_and_keeps_hpack_in_sync() {
         let mut decoder = hpack::Decoder::new(4096);
-        headers
-            .load_hpack(&mut hpack_data, 16 << 20, &mut decoder)
+        for block in [
+            // connection-specific field, as a literal with incremental indexing
+            &b"\x82\x86\x84\x40\x0aconnection\x05close"[..],
+            // `te` other than trailers
+            b"\x82\x86\x84\x00\x02te\x04gzip",
+            // pseudo-header after a regular field
+            b"\x82\x86\x00\x03x-a\x01v\x84",
+            // repeated pseudo-header
+            b"\x82\x86\x84\x84",
+        ] {
+            let (headers, res) = load_block(block, 1, &mut decoder);
+            res.unwrap();
+            assert!(headers.is_malformed(), "{block:?}");
+        }
+        // the indexed `connection: close` is still where the peer put it
+        let (headers, res) = load_block(b"\x82\x86\x84\x00\x03x-z\x02ok", 3, &mut decoder);
+        res.unwrap();
+        assert!(!headers.is_malformed());
+        assert_eq!(decoder_table_newest(&mut decoder), "connection");
+    }
+
+    /// The name of the newest dynamic table entry, read back through an indexed field.
+    fn decoder_table_newest(decoder: &mut hpack::Decoder) -> String {
+        let mut src = BytesMut::from(&b"\xBE"[..]);
+        let mut name = String::new();
+        decoder
+            .decode(&mut Cursor::new(&mut src), |field| {
+                if let Ok(hpack::Header::Field { name: field, .. }) = field {
+                    name = field.as_str().to_owned();
+                }
+                ControlFlow::Continue(())
+            })
             .unwrap();
-        assert!(!headers.is_over_size());
-        let values: Vec<_> = headers.fields().get_all("x-a").iter().collect();
-        assert_eq!(values, ["v w", "v w"]);
+        name
+    }
+
+    #[test]
+    fn a_self_dependent_block_is_still_decoded() {
+        let mut decoder = hpack::Decoder::new(4096);
+        // PRIORITY flag, stream 1 depending on itself, then `x-a: v` with incremental indexing
+        let mut payload = vec![0, 0, 0, 1, 16];
+        payload.extend_from_slice(b"\x82\x86\x84\x40\x03x-a\x01v");
+        let head = Head::new(Kind::Headers, 0x24, StreamId::from(1));
+        let (mut headers, mut hpack_data) =
+            Headers::load(head, BytesMut::from(&payload[..])).unwrap();
+        headers
+            .load_hpack(&mut hpack_data, 16 << 20, usize::MAX, &mut decoder)
+            .unwrap();
+        assert!(headers.depends_on_itself());
+        assert_eq!(decoder_table_newest(&mut decoder), "x-a");
+    }
+
+    #[test]
+    fn invalid_field_names_and_values_mark_the_message_malformed() {
+        let mut decoder = hpack::Decoder::new(4096);
+        for field in [
+            &b"\x40\x03X-A\x01v"[..],
+            b"\x40\x03x-b\x03a\x01b",
+            b"\x00\x04:foo\x01v",
+            b"\x00\x00\x01v",
+            // `:path` (index 4) with a control byte
+            b"\x04\x03/\x00a",
+        ] {
+            let mut hpack = vec![0x82u8, 0x86];
+            hpack.extend_from_slice(field);
+            hpack.extend_from_slice(b"\x00\x03x-z\x02ok");
+            let (headers, res) = load_block(&hpack, 1, &mut decoder);
+            res.unwrap();
+            assert!(headers.is_malformed(), "{field:?}");
+            assert!(!headers.is_over_size(), "{field:?}");
+        }
+        let (headers, res) = load_block(b"\x82\x86\x84\x00\x03x-z\x02ok", 3, &mut decoder);
+        res.unwrap();
+        assert!(!headers.is_malformed());
+        assert_eq!(headers.fields()["x-z"], "ok");
+    }
+
+    #[test]
+    fn outer_whitespace_of_field_values_makes_the_message_malformed() {
+        let mut decoder = hpack::Decoder::new(4096);
+        for value in [&b" v"[..], b"v ", b"\tv", b"v\t"] {
+            let mut hpack = vec![0x82u8, 0x86, 0x84, 0x00, 0x03];
+            hpack.extend_from_slice(b"x-a");
+            hpack.push(value.len() as u8);
+            hpack.extend_from_slice(value);
+            let (headers, res) = load_block(&hpack, 1, &mut decoder);
+            res.unwrap();
+            assert!(headers.is_malformed(), "{value:?}");
+        }
+        // pseudo-header values are field values too: `:path` (index 4) with outer whitespace
+        let (headers, res) = load_block(b"\x82\x86\x04\x03/a ", 5, &mut decoder);
+        res.unwrap();
+        assert!(headers.is_malformed());
+        // inner whitespace stays part of the value
+        let (headers, res) = load_block(b"\x82\x86\x84\x00\x03x-a\x03v w", 3, &mut decoder);
+        res.unwrap();
+        assert!(!headers.is_malformed());
+        assert_eq!(headers.fields()["x-a"], "v w");
+    }
+
+    #[test]
+    fn a_malformed_block_keeps_the_hpack_table_in_sync() {
+        let mut decoder = hpack::Decoder::new(4096);
+        // literal with incremental indexing: `x-a: " v "` (malformed) then `x-b: ok`
+        let (headers, res) = load_block(
+            b"\x82\x86\x84\x40\x03x-a\x03 v \x40\x03x-b\x02ok",
+            1,
+            &mut decoder,
+        );
+        res.unwrap();
+        assert!(headers.is_malformed());
+        // index 62 is the newest entry, index 63 the one before it
+        let (headers, res) = load_block(b"\x82\x86\x84\xBE", 3, &mut decoder);
+        res.unwrap();
+        assert!(!headers.is_malformed());
+        assert_eq!(headers.fields()["x-b"], "ok");
+        let (headers, res) = load_block(b"\x82\x86\x84\xBF", 5, &mut decoder);
+        res.unwrap();
+        assert!(headers.is_malformed());
     }
 
     #[test]

@@ -26,6 +26,7 @@ use rama_http_types::{
     proto::h2::frame::Settings,
     proto::{ext::Protocol, h2::ext::ResetStream},
 };
+use rama_utils::octets::{kib_u32, mib_u32};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{PipeToSendStream, SendBuf, ping};
@@ -36,7 +37,10 @@ use crate::{
         server::{Connection, Handshake, SendResponse},
     },
     headers,
-    proto::{DEFAULT_REFUSED_STREAM_BUDGET, Dispatched, h2::ping::Recorder},
+    proto::{
+        DEFAULT_MAX_HEADER_LIST_SIZE, DEFAULT_MAX_HEADERS, DEFAULT_REFUSED_STREAM_BUDGET,
+        Dispatched, h2::ping::Recorder,
+    },
     server::conn::timeout::{Activity, ConnTimer, Expired, HeaderReadTimeout, IdleTimeout},
 };
 
@@ -46,11 +50,10 @@ use crate::{
 //
 // At the same time, a server more often has multiple clients connected, and
 // so is more likely to use more resources than a client would.
-const DEFAULT_CONN_WINDOW: u32 = 1024 * 1024; // 1mb
-const DEFAULT_STREAM_WINDOW: u32 = 1024 * 1024; // 1mb
-const DEFAULT_MAX_FRAME_SIZE: u32 = 1024 * 16; // 16kb
-const DEFAULT_MAX_SEND_BUF_SIZE: u32 = 1024 * 400; // 400kb
-const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: u32 = 1024 * 16; // 16kb
+const DEFAULT_CONN_WINDOW: u32 = mib_u32(1);
+const DEFAULT_STREAM_WINDOW: u32 = mib_u32(1);
+const DEFAULT_MAX_FRAME_SIZE: u32 = kib_u32(16);
+const DEFAULT_MAX_SEND_BUF_SIZE: u32 = kib_u32(400);
 
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
@@ -71,6 +74,7 @@ pub(crate) struct Config {
     pub(crate) max_send_buffer_size: u32,
     pub(crate) header_table_size: Option<u32>,
     pub(crate) max_header_list_size: u32,
+    pub(crate) max_headers: usize,
     pub(crate) strict_connect_framing: bool,
     pub(crate) header_read_timeout: Option<HeaderReadTimeout>,
     pub(crate) idle_timeout: Option<IdleTimeout>,
@@ -95,7 +99,8 @@ impl Default for Config {
             keep_alive_interval: None,
             keep_alive_timeout: Duration::from_secs(20),
             max_send_buffer_size: DEFAULT_MAX_SEND_BUF_SIZE,
-            max_header_list_size: DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE,
+            max_header_list_size: DEFAULT_MAX_HEADER_LIST_SIZE as u32,
+            max_headers: DEFAULT_MAX_HEADERS,
             strict_connect_framing: false,
             header_read_timeout: Some(HeaderReadTimeout::default()),
             idle_timeout: Some(IdleTimeout::default()),
@@ -172,6 +177,7 @@ where
             .with_initial_connection_window_size(config.initial_conn_window_size)
             .with_max_frame_size(config.max_frame_size)
             .with_max_header_list_size(config.max_header_list_size)
+            .with_max_headers(config.max_headers)
             .maybe_with_refused_stream_budget(config.refused_stream_budget)
             .maybe_with_data_frame_budget(config.data_frame_budget)
             .with_max_send_buffer_size(config.max_send_buffer_size);
@@ -728,15 +734,26 @@ where
                     if !body.is_end_stream() {
                         // automatically set Content-Length from body...
                         if let Some(len) = response_length.implied(body.size_hint().exact()) {
+                            headers::correct_content_length(res.headers_mut(), len);
                             headers::set_content_length_if_missing(res.headers_mut(), len);
                         }
 
                         let allowed_trailers = res.extensions().get_arc::<ForbiddenTrailers>();
+                        let content_length = headers::content_length_parse_all(res.headers());
                         let body_tx = reply!(me, res, false);
                         H2StreamState::Body {
-                            pipe: PipeToSendStream::new(body, body_tx, allowed_trailers),
+                            pipe: PipeToSendStream::new(
+                                body,
+                                body_tx,
+                                allowed_trailers,
+                                content_length,
+                            ),
                         }
                     } else {
+                        // An empty body frames itself: a declared length is corrected, not invented.
+                        if response_length.implied(Some(0)).is_some() {
+                            headers::correct_content_length(res.headers_mut(), 0);
+                        }
                         reply!(me, res, true);
                         return Poll::Ready(Ok(()));
                     }

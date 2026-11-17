@@ -784,17 +784,24 @@ where
         // the user's headers be.
     }
 
-    pub(crate) fn write_body(&mut self, chunk: B) {
+    pub(crate) fn write_body(&mut self, chunk: B) -> crate::Result<()> {
         debug_assert!(self.can_write_body() && self.can_buffer_body());
         // empty chunks should be discarded at Dispatcher level
         debug_assert!(chunk.remaining() != 0);
 
         let state = match &mut self.state.writing {
             Writing::Body(encoder) => {
-                self.io.buffer(encoder.encode(chunk));
+                match encoder.encode(chunk) {
+                    Ok(encoded) => self.io.buffer(encoded),
+                    Err(past_eof) => {
+                        // The declared length is all the peer reads: the connection cannot go on.
+                        self.state.writing = Writing::Closed;
+                        return Err(crate::Error::new_body_write_aborted().with(past_eof));
+                    }
+                }
 
                 if !encoder.is_eof() {
-                    return;
+                    return Ok(());
                 }
 
                 if encoder.is_last() {
@@ -807,6 +814,7 @@ where
         };
 
         self.state.writing = state;
+        Ok(())
     }
 
     pub(crate) fn write_trailers(&mut self, trailers: &HeaderMap) {
@@ -836,26 +844,27 @@ where
         }
     }
 
-    pub(crate) fn write_body_and_end(&mut self, chunk: B) {
+    pub(crate) fn write_body_and_end(&mut self, chunk: B) -> crate::Result<()> {
         debug_assert!(self.can_write_body() && self.can_buffer_body());
         // empty chunks should be discarded at Dispatcher level
         debug_assert!(chunk.remaining() != 0);
 
         let state = match &mut self.state.writing {
-            Writing::Body(encoder) => {
-                let can_keep_alive = encoder.encode_and_end(chunk, self.io.write_buf());
-                if can_keep_alive {
-                    Writing::KeepAlive
-                } else {
-                    Writing::Closed
+            Writing::Body(encoder) => match encoder.encode_and_end(chunk, self.io.write_buf()) {
+                Ok(true) => Writing::KeepAlive,
+                Ok(false) => Writing::Closed,
+                Err(mismatch) => {
+                    self.state.writing = Writing::Closed;
+                    return Err(crate::Error::new_body_write_aborted().with(mismatch));
                 }
-            }
+            },
             Writing::Closed | Writing::KeepAlive | Writing::Init => {
                 unreachable!("write_body invalid state: {:?}", self.state.writing)
             }
         };
 
         self.state.writing = state;
+        Ok(())
     }
 
     pub(crate) fn end_body(&mut self) -> crate::Result<()> {
@@ -1749,7 +1758,7 @@ mod tests {
             .build();
         let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
         conn.state.writing = Writing::Body(Encoder::chunked());
-        conn.write_body(Bytes::from_static(b"headers"));
+        conn.write_body(Bytes::from_static(b"headers")).unwrap();
         conn.end_body().unwrap();
         tokio_test::task::spawn(()).enter(|cx, _| {
             assert!(conn.poll_flush(cx).is_ready());

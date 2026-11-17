@@ -84,6 +84,47 @@ impl fmt::Display for NeedMore {
 
 impl std::error::Error for NeedMore {}
 
+/// A field that decoded but is not a valid HTTP field: the message carrying it is malformed.
+///
+/// HPACK state is shared by the connection, so it stays in the dynamic table as sent.
+#[derive(Debug, Clone)]
+pub struct MalformedField {
+    name: Bytes,
+    value: Bytes,
+}
+
+impl MalformedField {
+    fn new(name: Bytes, value: Bytes) -> Self {
+        Self { name, value }
+    }
+
+    /// The field name as sent.
+    #[must_use]
+    pub fn name(&self) -> &[u8] {
+        &self.name
+    }
+
+    /// The field value as sent.
+    #[must_use]
+    pub fn value(&self) -> &[u8] {
+        &self.value
+    }
+
+    fn len(&self) -> usize {
+        32 + self.name.len() + self.value.len()
+    }
+
+    fn detached(&self) -> Self {
+        Self {
+            name: Bytes::copy_from_slice(&self.name),
+            value: Bytes::copy_from_slice(&self.value),
+        }
+    }
+}
+
+/// A decoded field: a header, or a field that makes its message malformed.
+pub type DecodedField = Result<Header, MalformedField>;
+
 /// Decodes headers using HPACK
 #[derive(Debug)]
 pub struct Decoder {
@@ -187,7 +228,7 @@ enum Representation {
 
 #[derive(Debug)]
 struct Table {
-    entries: VecDeque<Header>,
+    entries: VecDeque<DecodedField>,
     size: usize,
     max_size: usize,
 }
@@ -230,7 +271,7 @@ impl Decoder {
         mut f: F,
     ) -> Result<(), DecoderError>
     where
-        F: FnMut(Header) -> ControlFlow<()>,
+        F: FnMut(DecodedField) -> ControlFlow<()>,
     {
         let mut can_resize = true;
 
@@ -262,7 +303,10 @@ impl Decoder {
 
                     // The table keeps its own copy: the entry outlives the header block it
                     // arrived in, and the table size counts only names and values.
-                    self.table.insert(entry.detached());
+                    self.table.insert(match &entry {
+                        Ok(header) => Ok(header.detached()),
+                        Err(field) => Err(field.detached()),
+                    });
                     consume(src);
 
                     if f(entry).is_break() {
@@ -279,7 +323,9 @@ impl Decoder {
                 }
                 Representation::LiteralNeverIndexed => {
                     can_resize = false;
-                    let entry = self.decode_literal(src, false)?.with_sensitive(true);
+                    let entry = self
+                        .decode_literal(src, false)?
+                        .map(|header| header.with_sensitive(true));
                     consume(src);
 
                     if f(entry).is_break() {
@@ -319,7 +365,10 @@ impl Decoder {
         Ok(())
     }
 
-    fn decode_indexed(&self, buf: &mut Cursor<&mut BytesMut>) -> Result<Header, DecoderError> {
+    fn decode_indexed(
+        &self,
+        buf: &mut Cursor<&mut BytesMut>,
+    ) -> Result<DecodedField, DecoderError> {
         let index = decode_int(buf, 7)?;
         self.table.get(index)
     }
@@ -328,7 +377,7 @@ impl Decoder {
         &mut self,
         buf: &mut Cursor<&mut BytesMut>,
         index: bool,
-    ) -> Result<Header, DecoderError> {
+    ) -> Result<DecodedField, DecoderError> {
         let prefix = if index { 6 } else { 4 };
 
         // Extract the table index for the name, or 0 if not indexed
@@ -343,12 +392,18 @@ impl Decoder {
             // Read the name as a literal
             let name = name_marker.consume(buf);
             let value = compact_if_indexed(value_marker.consume(buf), index);
-            Header::try_new(&name, value)
+            Ok(Header::try_new(&name, value.clone())
+                .map_err(|_error| MalformedField::new(name, value)))
         } else {
             let e = self.table.get(table_idx)?;
             let value = compact_if_indexed(self.decode_string(buf)?, index);
 
-            e.name().into_entry(value)
+            Ok(match e {
+                Ok(header) => header.name().into_entry(value.clone()).map_err(|_error| {
+                    MalformedField::new(Bytes::copy_from_slice(header.name().as_slice()), value)
+                }),
+                Err(field) => Err(MalformedField::new(field.name, value)),
+            })
         }
     }
 
@@ -549,6 +604,13 @@ fn consume(buf: &mut Cursor<&mut BytesMut>) {
     buf.set_position(0);
 }
 
+fn entry_len(entry: &DecodedField) -> usize {
+    match entry {
+        Ok(header) => header.len(),
+        Err(field) => field.len(),
+    }
+}
+
 // ===== impl Table =====
 
 impl Table {
@@ -572,13 +634,13 @@ impl Table {
     ///
     /// This is according to the [HPACK spec, section 2.3.3.]
     /// (http://http2.github.io/http2-spec/compression.html#index.address.space)
-    fn get(&self, index: usize) -> Result<Header, DecoderError> {
+    fn get(&self, index: usize) -> Result<DecodedField, DecoderError> {
         if index == 0 {
             return Err(DecoderError::InvalidTableIndex);
         }
 
         if index <= 61 {
-            return Ok(get_static(index));
+            return Ok(Ok(get_static(index)));
         }
 
         // Convert the index for lookup in the entries structure.
@@ -588,8 +650,8 @@ impl Table {
         }
     }
 
-    fn insert(&mut self, entry: Header) {
-        let len = entry.len();
+    fn insert(&mut self, entry: DecodedField) {
+        let len = entry_len(&entry);
 
         self.reserve(len);
 
@@ -611,7 +673,7 @@ impl Table {
         while self.size + size > self.max_size {
             match self.entries.pop_back() {
                 Some(last) => {
-                    self.size -= last.len();
+                    self.size -= entry_len(&last);
                 }
                 None => return,
             }
@@ -627,7 +689,7 @@ impl Table {
                     panic!("Size of table != 0, but no headers left!");
                 };
 
-                self.size -= last.len();
+                self.size -= entry_len(last);
             }
 
             self.entries.pop_back();
@@ -917,12 +979,62 @@ mod test {
             de.decode(&mut Cursor::new(&mut src), |_| ControlFlow::Continue(()))
                 .unwrap();
             let entry = de.table.entries.front().expect("the literal is indexed");
+            let entry = entry.as_ref().expect("a valid field");
             assert_eq!(entry.value_slice(), b"value", "{name}");
             assert!(
                 !backing.contains(&entry.value_slice().as_ptr().addr()),
                 "{name}"
             );
         }
+    }
+
+    /// An invalid field is a malformed message, not a compression error: the table keeps it.
+    #[test]
+    fn invalid_fields_are_reported_and_still_indexed() {
+        let mut src = BytesMut::new();
+        // literal with indexing: uppercase name, then a value with a control byte
+        src.extend_from_slice(b"\x40\x03X-A\x01v");
+        src.extend_from_slice(b"\x40\x03x-b\x03a\x01b");
+        // literal with indexing, invalid `:method` value through the static name
+        src.extend_from_slice(b"\x42\x03G T");
+        // indexed: each of the three entries again, newest first
+        src.extend_from_slice(&[0x80 | 62, 0x80 | 63, 0x80 | 64]);
+        // literal without indexing, an unknown pseudo-header
+        src.extend_from_slice(b"\x00\x04:foo\x01v");
+        // literal with indexing, a valid field after all of them
+        src.extend_from_slice(b"\x40\x03x-c\x02ok");
+        let mut de = Decoder::new(4096);
+        let mut decoded = Vec::new();
+        de.decode(&mut Cursor::new(&mut src), |field| {
+            decoded.push(field);
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+        let malformed: Vec<_> = decoded[..7]
+            .iter()
+            .map(|field| {
+                let field = field.as_ref().expect_err("invalid field");
+                (field.name().to_vec(), field.value().to_vec())
+            })
+            .collect();
+        assert_eq!(
+            malformed,
+            [
+                (b"X-A".to_vec(), b"v".to_vec()),
+                (b"x-b".to_vec(), b"a\x01b".to_vec()),
+                (b":method".to_vec(), b"G T".to_vec()),
+                (b":method".to_vec(), b"G T".to_vec()),
+                (b"x-b".to_vec(), b"a\x01b".to_vec()),
+                (b"X-A".to_vec(), b"v".to_vec()),
+                (b":foo".to_vec(), b"v".to_vec()),
+            ]
+        );
+        assert_matches!(
+            &decoded[7],
+            Ok(Header::Field { name, value }) if name == "x-c" && value == "ok",
+        );
+        assert_eq!(de.table.entries.len(), 4);
+        assert_eq!(de.table.size(), 4 * 32 + 4 + 6 + 10 + 5);
     }
 
     #[test]
@@ -962,7 +1074,7 @@ mod test {
             })
             .unwrap();
 
-        let header = decoded.unwrap();
+        let header = decoded.unwrap().unwrap();
         assert!(header.is_sensitive());
         assert_matches!(
             header,
@@ -998,7 +1110,7 @@ mod test {
                 })
                 .unwrap();
 
-            let value = decoded.expect(case);
+            let value = decoded.expect(case).unwrap();
             let value = value.value_slice();
             assert_eq!(value, b"value", "{case}");
             assert_eq!(source.contains(&value.as_ptr()), shared, "{case}");
@@ -1017,7 +1129,7 @@ mod test {
 
         let mut res = vec![];
         de.decode(&mut Cursor::new(&mut buf), |h| {
-            res.push(h);
+            res.push(h.unwrap());
             ControlFlow::Continue(())
         })
         .unwrap();
@@ -1058,7 +1170,7 @@ mod test {
         let mut res = vec![];
         let e = de
             .decode(&mut Cursor::new(&mut buf), |h| {
-                res.push(h);
+                res.push(h.unwrap());
                 ControlFlow::Continue(())
             })
             .unwrap_err();
@@ -1068,7 +1180,7 @@ mod test {
         // extend buf with the remaining header value
         buf.extend(&value[1..]);
         de.decode(&mut Cursor::new(&mut buf), |h| {
-            res.push(h);
+            res.push(h.unwrap());
             ControlFlow::Continue(())
         })
         .unwrap();
