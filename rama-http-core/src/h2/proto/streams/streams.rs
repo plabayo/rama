@@ -792,6 +792,7 @@ impl Inner {
             );
 
             let res = if stream.state.is_recv_headers() {
+                let request_ended = frame.is_end_stream();
                 let refusal = match actions.recv.recv_headers(frame, stream, counts) {
                     Ok(()) => Ok(()),
                     Err(RecvHeaderBlockError::State(Error::Reset(
@@ -800,7 +801,10 @@ impl Inner {
                         Initiator::Library,
                     ))) if id == stream.id && counts.peer().is_server() => {
                         // RFC 9113 §8.1.1: a malformed request is answered before its reset.
-                        Err(RecvHeaderBlockError::Refused(Some(super::recv::bad_request(id))))
+                        Err(RecvHeaderBlockError::Refused(Some(super::recv::bad_request(
+                            id,
+                            request_ended,
+                        ))))
                     }
                     other => other,
                 };

@@ -813,9 +813,8 @@ async fn recv_invalid_authority() {
         let settings = client.assert_server_handshake().await;
         assert_default_settings!(settings);
         client.send_frame(bad_headers).await;
-        client
-            .recv_frame(frames::headers(1).response(400).eos())
-            .await;
+        client.recv_frame(frames::headers(1).response(400)).await;
+        client.recv_frame(frames::reset(1).protocol_error()).await;
     };
 
     let srv = async move {
@@ -841,28 +840,19 @@ async fn recv_connection_header() {
     let client = async move {
         let settings = client.assert_server_handshake().await;
         assert_default_settings!(settings);
-        client.send_frame(req(1, "connection", "foo")).await;
-        client.send_frame(req(3, "keep-alive", "5")).await;
-        client.send_frame(req(5, "proxy-connection", "bar")).await;
-        client
-            .send_frame(req(7, "transfer-encoding", "chunked"))
-            .await;
-        client.send_frame(req(9, "upgrade", "HTTP/2")).await;
-        client
-            .recv_frame(frames::headers(1).response(400).eos())
-            .await;
-        client
-            .recv_frame(frames::headers(3).response(400).eos())
-            .await;
-        client
-            .recv_frame(frames::headers(5).response(400).eos())
-            .await;
-        client
-            .recv_frame(frames::headers(7).response(400).eos())
-            .await;
-        client
-            .recv_frame(frames::headers(9).response(400).eos())
-            .await;
+        // one at a time: each answer and its reset arrive before the next request
+        let cases = [
+            (1, "connection", "foo"),
+            (3, "keep-alive", "5"),
+            (5, "proxy-connection", "bar"),
+            (7, "transfer-encoding", "chunked"),
+            (9, "upgrade", "HTTP/2"),
+        ];
+        for (id, name, value) in cases {
+            client.send_frame(req(id, name, value)).await;
+            client.recv_frame(frames::headers(id).response(400)).await;
+            client.recv_frame(frames::reset(id).protocol_error()).await;
+        }
     };
 
     let srv = async move {
@@ -1403,7 +1393,10 @@ async fn malformed_request_heads_get_400_and_cost_only_their_stream() {
                 .send_bytes(&raw_request_headers(id, true, extra))
                 .await;
             client
-                .recv_frame(frames::headers(id as u32).response(400).eos())
+                .recv_frame(frames::headers(id as u32).response(400))
+                .await;
+            client
+                .recv_frame(frames::reset(id as u32).protocol_error())
                 .await;
         }
         // without END_STREAM the stream is reset after the answer
@@ -1488,7 +1481,10 @@ async fn every_malformed_request_gets_400() {
                 .send_bytes(&raw_frame(1, 0x05, id, &case.concat()))
                 .await;
             client
-                .recv_frame(frames::headers(u32::from(id)).response(400).eos())
+                .recv_frame(frames::headers(u32::from(id)).response(400))
+                .await;
+            client
+                .recv_frame(frames::reset(u32::from(id)).protocol_error())
                 .await;
             id += 2;
         }
@@ -1504,7 +1500,10 @@ async fn every_malformed_request_gets_400() {
             .send_bytes(&raw_frame(9, 0x04, id, b"\x40\x03x-q\x01v"))
             .await;
         client
-            .recv_frame(frames::headers(u32::from(id)).response(400).eos())
+            .recv_frame(frames::headers(u32::from(id)).response(400))
+            .await;
+        client
+            .recv_frame(frames::reset(u32::from(id)).protocol_error())
             .await;
         id += 2;
         // the indexed `x-q: v` is where the peer put it

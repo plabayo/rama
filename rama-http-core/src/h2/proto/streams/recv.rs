@@ -216,7 +216,10 @@ impl Recv {
                 stream.id
             );
             return if counts.peer().is_server() && is_initial {
-                Err(RecvHeaderBlockError::Refused(Some(bad_request(stream.id))))
+                Err(RecvHeaderBlockError::Refused(Some(bad_request(
+                    stream.id,
+                    frame.is_end_stream(),
+                ))))
             } else {
                 Err(RecvHeaderBlockError::Refused(None))
             };
@@ -1518,14 +1521,19 @@ impl Open {
 }
 
 /// The answer a server gives a malformed request before resetting its stream.
-pub(super) fn bad_request(id: StreamId) -> frame::Headers {
+///
+/// A request that ended its side leaves the answer open, as a stream closed
+/// from both sides can no longer carry the reset.
+pub(super) fn bad_request(id: StreamId, request_ended: bool) -> frame::Headers {
     let mut res = frame::Headers::new(
         id,
         frame::Pseudo::response(rama_http_types::StatusCode::BAD_REQUEST),
         HeaderMap::new(),
         None,
     );
-    res.set_end_stream();
+    if !request_ended {
+        res.set_end_stream();
+    }
     res
 }
 

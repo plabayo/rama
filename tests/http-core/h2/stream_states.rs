@@ -833,9 +833,8 @@ async fn recv_next_stream_id_updated_by_malformed_headers() {
         assert_default_settings!(settings);
         // bad headers -- answered with 400.
         client.send_frame(bad_headers).await;
-        client
-            .recv_frame(frames::headers(1).response(400).eos())
-            .await;
+        client.recv_frame(frames::headers(1).response(400)).await;
+        client.recv_frame(frames::reset(1).protocol_error()).await;
         // this frame is good, but the stream id should already have been incr'd
         client
             .send_frame(
